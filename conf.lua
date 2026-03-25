@@ -1,11 +1,11 @@
 -- conf.lua  (Love2D window configuration)
 function love.conf(t)
-	t.identity = "ghostty-love"
+	t.identity = "hollow"
 	t.version = "11.5" -- minimum Love version
 	-- Set GHOSTTY_LOVE_DEBUG=1 (or use launch.sh --console) to see errors.
 	t.console = (os.getenv("GHOSTTY_LOVE_DEBUG") == "1")
 
-	t.window.title = "ghostty-love"
+	t.window.title = "hollow"
 	t.window.width = 1280
 	t.window.height = 800
 	t.window.resizable = true

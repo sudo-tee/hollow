@@ -10,6 +10,7 @@ local defaults = {
     font_path       = nil,      -- nil = use built-in monospace
     font_hinting    = "normal",
     font_supersample = 1,
+    startup_present_frame = true,
     font_bold_path  = nil,
     font_italic_path = nil,
     font_bold_italic_path = nil,

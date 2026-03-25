@@ -1,35 +1,30 @@
 -- conf/init.lua
--- Example user configuration for ghostty-love.
+-- Example user configuration for hollow.
 -- Copy this to ~/.config/ghostty-love/init.lua and customize.
 --
--- `ghostty` is available as a global by the time this file runs.
+-- `hollow` is available as a global by the time this file runs.
 
-local g = ghostty
+local g = hollow
 
 -- ── Shell / WSL (Windows users) ──────────────────────────────────────────────
 -- Running the Windows Love2D build?  Choose your shell here.
 --
 -- Option A: native PowerShell (default on Windows)
--- ghostty.set_config({ shell = "pwsh.exe" })
+-- hollow.set_config({ shell = "pwsh.exe" })
 --
 -- Option B: WSL default distro
--- ghostty.set_config({ shell = "wsl.exe" })
+-- hollow.set_config({ shell = "wsl.exe" })
 --
 -- Option C: specific WSL distro + shell
--- ghostty.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
+-- hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
 --
--- List what distros you have:
-if ghostty.wsl.available then
-	local distros = ghostty.wsl.distros()
-	ghostty.log("WSL distros found:", table.concat(distros, ", "))
-	-- Uncomment to default to WSL:
-	-- ghostty.set_config({ shell = "wsl.exe" })
-end
+-- Avoid probing installed distros during startup; `wsl.exe --list` can be
+-- surprisingly slow on some Windows setups.
 
 -- Running Love2D *inside* WSL2 (the Linux build)?  Shell is auto-detected
 -- from $SHELL.  You can still override:
--- if ghostty.wsl.is_guest then
---     ghostty.set_config({ shell = "/bin/fish" })
+-- if hollow.wsl.is_guest then
+--     hollow.set_config({ shell = "/bin/fish" })
 -- end
 
 g.set_config({
@@ -38,7 +33,8 @@ g.set_config({
 	font_hinting = "light",
 	-- Experimental pane supersampling.  1 = off, 2 = render text to a 2x canvas
 	-- and scale it back down.
-	font_supersample = 2,
+	font_supersample = 1,
+	startup_present_frame = true,
 	-- Set font_path to a Nerd Font for icon/glyph support.
 	-- Love2D on Windows: use a Windows path (forward slashes are fine).
 	--   font_path = "C:/Windows/Fonts/CaskaydiaCoveNerdFont-Regular.ttf",
@@ -128,13 +124,13 @@ end)
 
 -- ── Event hooks ──────────────────────────────────────────────────────────────
 g.on("app:ready", function()
-	g.log("ghostty-love ready! Version:", g.version:to_string())
+	g.log("hollow ready! Version:", g.version:to_string())
 end)
 
 g.on("pane:focus", function(pane)
 	-- e.g. update window title
 	if pane then
-		love.window.setTitle("ghostty-love — " .. (pane.title or "terminal"))
+		love.window.setTitle("hollow - " .. (pane.title or "terminal"))
 	end
 end)
 

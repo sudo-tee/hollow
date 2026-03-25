@@ -1,10 +1,10 @@
 -- src/api/init.lua
--- The `ghostty` global: the public scripting API exposed to user init.lua.
+-- The `hollow` global: the public scripting API exposed to user init.lua.
 -- Modelled on WezTerm's wezterm module.
 --
 -- Usage in ~/.config/ghostty-love/init.lua:
 --
---   local g = ghostty   -- already global
+--   local g = hollow   -- already global
 --
 --   g.on("app:ready", function()
 --       g.set_config({ font_size = 16, shell = "/bin/fish" })
@@ -36,7 +36,7 @@ function M.create()
 
     -- ── Config ───────────────────────────────────────────────────────────────
     --- Set one or more config values.
-    --- ghostty.set_config({ font_size = 16, shell = "/bin/fish" })
+    --- hollow.set_config({ font_size = 16, shell = "/bin/fish" })
     function api.set_config(tbl)
         Config.merge(tbl)
     end
@@ -47,7 +47,7 @@ function M.create()
 
     -- ── Events ───────────────────────────────────────────────────────────────
     --- Subscribe to an event.
-    --- ghostty.on("pane:focus", function(pane) print(pane.title) end)
+    --- hollow.on("pane:focus", function(pane) print(pane.title) end)
     function api.on(event, fn)
         EventBus.on(event, fn)
     end
@@ -68,8 +68,8 @@ function M.create()
     api.keys = {}
 
     --- Bind a key combination to an action name (string) or a callback.
-    --- ghostty.keys.bind({ ctrl=true, shift=true }, "p", "new_tab")
-    --- ghostty.keys.bind({ super=true }, "k", function() print("hi") end)
+    --- hollow.keys.bind({ ctrl=true, shift=true }, "p", "new_tab")
+    --- hollow.keys.bind({ super=true }, "k", function() print("hi") end)
     function api.keys.bind(mods, key, action_or_fn)
         if type(action_or_fn) == "function" then
             -- Wrap in an event so the dispatcher can call it
@@ -169,7 +169,7 @@ function M.create()
         for _, v in ipairs({...}) do
             table.insert(parts, tostring(v))
         end
-        io.stderr:write("[ghostty] " .. table.concat(parts, "\t") .. "\n")
+        io.stderr:write("[hollow] " .. table.concat(parts, "\t") .. "\n")
     end
 
     return api

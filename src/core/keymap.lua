@@ -9,7 +9,7 @@ local M = {}
 
 -- ── Default bindings ─────────────────────────────────────────────────────────
 -- Format: { mods={ctrl,shift,alt,super}, key="x" } → "action"
--- User config can add/override via ghostty.keys.bind(...)
+-- User config can add/override via hollow.keys.bind(...)
 
 local default_bindings = {
     -- Tabs

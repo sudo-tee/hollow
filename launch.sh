@@ -35,13 +35,13 @@ for arg in "$@"; do
 	esac
 done
 
-# Copy the DLL next to love.exe if it isn't there already.
-# This is the most reliable way for the Windows binary to find it.
+# Optionally copy the DLL next to love.exe.
+# Disabled by default because Program Files usually needs elevation.
 LOVE_DIR="$(dirname "$LOVE_EXE")"
 DLL_SRC="$SCRIPT_DIR/ghostty-vt.dll"
 DLL_DST="$LOVE_DIR/ghostty-vt.dll"
 
-if [[ -f "$DLL_SRC" ]]; then
+if [[ "${COPY_GHOSTTY_DLL:-0}" == "1" && -f "$DLL_SRC" ]]; then
 	if [[ ! -f "$DLL_DST" ]] || ! cmp -s "$DLL_SRC" "$DLL_DST"; then
 		echo "[launch] Copying ghostty-vt.dll → $LOVE_DIR"
 		cp "$DLL_SRC" "$DLL_DST"

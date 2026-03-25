@@ -3,7 +3,7 @@
 -- Inspired by WezTerm's wezterm.status_bar_*
 --
 -- Each "segment" is a table: { text, fg, bg, sep }
--- Users call ghostty.status_bar.set_left({...}) / set_right({...})
+-- Users call hollow.status_bar.set_left({...}) / set_right({...})
 -- from their init.lua.
 
 local Config = require("src.core.config")

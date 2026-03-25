@@ -32,7 +32,7 @@ ghostty-love/
     │   ├── tab_bar.lua       # Tab bar (click-to-switch, bell indicator)
     │   └── status_bar.lua    # Scriptable status bar (left/right segments)
     └── api/
-        └── init.lua          # `ghostty` global – public scripting API
+        └── init.lua          # `hollow` global - public scripting API
 ```
 
 ### Object hierarchy
@@ -82,12 +82,12 @@ cd ghostty-love && love .
 ## User Configuration
 
 Copy `conf/init.lua` to `~/.config/ghostty-love/init.lua` and edit it.
-The `ghostty` global is available before the file runs.
+The `hollow` global is available before the file runs.
 
 ### Font
 
 ```lua
-ghostty.set_config({
+hollow.set_config({
     font_path = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
     font_size = 15,
 })
@@ -96,8 +96,8 @@ ghostty.set_config({
 ### Colours
 
 ```lua
-local c = ghostty.color
-ghostty.set_config({
+local c = hollow.color
+hollow.set_config({
     colors = {
         background = c.from_hex("#1e1e2e"),
         cursor     = c.from_hex("#f5e0dc"),
@@ -110,12 +110,12 @@ ghostty.set_config({
 
 ```lua
 -- Bind to a built-in action
-ghostty.keys.bind({ ctrl=true, shift=true }, "h", "split_h")
-ghostty.keys.bind({ ctrl=true, shift=true }, "v", "split_v")
+hollow.keys.bind({ ctrl=true, shift=true }, "h", "split_h")
+hollow.keys.bind({ ctrl=true, shift=true }, "v", "split_v")
 
 -- Bind to a Lua callback
-ghostty.keys.bind({ super=true }, "k", function()
-    ghostty.actions.new_tab()
+hollow.keys.bind({ super=true }, "k", function()
+    hollow.actions.new_tab()
 end)
 ```
 
@@ -126,14 +126,14 @@ Available built-in actions: `new_tab`, `close_tab`, `next_tab`, `prev_tab`,
 ### Status bar
 
 ```lua
-ghostty.status_bar.set_left(function(workspace, tab, pane)
+hollow.status_bar.set_left(function(workspace, tab, pane)
     return {
         { text = "  " .. workspace.name .. "  ", fg={1,1,1,1}, bg={0.4,0.2,0.8,1} },
         { text = "  " .. (pane and pane.title or "") .. "  " },
     }
 end)
 
-ghostty.status_bar.set_right(function(ws, tab, pane)
+hollow.status_bar.set_right(function(ws, tab, pane)
     return {
         { text = "  " .. os.date("%H:%M") .. "  ", bg={0.1,0.1,0.15,1} },
     }
@@ -145,14 +145,14 @@ Each segment: `{ text = "...", fg = {r,g,b,a}, bg = {r,g,b,a} }` (all optional e
 ### Event hooks
 
 ```lua
-ghostty.on("app:ready",        function() end)
-ghostty.on("app:update",       function(dt) end)
-ghostty.on("app:resize",       function(w, h) end)
-ghostty.on("app:quit",         function() end)
-ghostty.on("pane:focus",       function(pane) end)
-ghostty.on("workspace:switch", function(idx) end)
+hollow.on("app:ready",        function() end)
+hollow.on("app:update",       function(dt) end)
+hollow.on("app:resize",       function(w, h) end)
+hollow.on("app:quit",         function() end)
+hollow.on("pane:focus",       function(pane) end)
+hollow.on("workspace:switch", function(idx) end)
 -- action:NAME fires for any unhandled dispatch action
-ghostty.on("action:my_action", function() end)
+hollow.on("action:my_action", function() end)
 ```
 
 ---

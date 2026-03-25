@@ -32,9 +32,9 @@ including Windows 11. If you're on an older build, upgrade or use WSL2.
 
 ```lua
 -- conf/init.lua
-ghostty.set_config({ shell = "pwsh.exe" })        -- PowerShell 7
--- ghostty.set_config({ shell = "powershell.exe" }) -- PowerShell 5
--- ghostty.set_config({ shell = "cmd.exe" })
+hollow.set_config({ shell = "pwsh.exe" })        -- PowerShell 7
+-- hollow.set_config({ shell = "powershell.exe" }) -- PowerShell 5
+-- hollow.set_config({ shell = "cmd.exe" })
 ```
 
 Launch:
@@ -56,16 +56,16 @@ Then in your config:
 -- conf/init.lua
 
 -- Default distro, default shell:
-ghostty.set_config({ shell = "wsl.exe" })
+hollow.set_config({ shell = "wsl.exe" })
 
 -- Specific distro + shell:
-ghostty.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
+hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
 
 -- Or via the API helper:
-ghostty.on("app:ready", function()
+hollow.on("app:ready", function()
     -- list distros at startup
-    for _, d in ipairs(ghostty.wsl.distros()) do
-        ghostty.log("distro:", d)
+    for _, d in ipairs(hollow.wsl.distros()) do
+        hollow.log("distro:", d)
     end
 end)
 ```
