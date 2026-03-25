@@ -11,18 +11,6 @@
 --          draw background quad, glyph, underline, bold
 --   4. draw cursor (as screen-space overlay, not baked into the pane canvas)
 --
--- HiDPI notes:
---   • conf.lua must set t.window.highdpi = true
---   • Fonts are loaded at LOGICAL size (no manual DPI multiply).
---     Love2D's HiDPI path rasterises at the correct physical resolution
---     internally, so multiplying by getDPIScale() would double-scale and
---     produce blurry output.
---   • All draw coordinates are logical pixels.  The OS compositor handles
---     the physical→display mapping.
---   • Font atlas filter is "linear"/"linear" — nearest is only correct for
---     integer 1× displays; on any HiDPI or fractional-DPI display it
---     produces jagged glyphs.
---
 -- Dirty-row pane caching:
 --   Each pane has a persistent canvas.  Frames where the render state is
 --   not dirty skip all row iteration and just blit the cached canvas.
@@ -30,256 +18,48 @@
 --   only the rows that carry the per-row DIRTY flag, preserving unchanged
 --   rows in the canvas.  A full invalidation (resize, font change, initial
 --   render) forces a clear + full redraw.
-local ffi = require("ffi")
-local bit = require("bit")
-local gffi = require("src.core.ghostty_ffi")
+--
+-- Companion modules:
+--   src/renderer/font.lua  — font loading and family utilities
+--   src/renderer/stats.lua — per-frame stats counters and debug overlay
+local ffi    = require("ffi")
+local bit    = require("bit")
+local gffi   = require("src.core.ghostty_ffi")
 local Config = require("src.core.config")
-local lib = gffi.lib
-local M = {}
+local Font   = require("src.renderer.font")
+local Stats  = require("src.renderer.stats")
+local lib    = gffi.lib
+local M      = {}
+
+-- Alias the live stats table so the draw path can increment counters with no
+-- function-call overhead:  stats.glyph_draws = stats.glyph_draws + 1
+local stats = Stats.stats
+
+-- ── Stats / debug overlay API (delegated to stats.lua) ────────────────────────
+-- Callers (app.lua, api/init.lua) continue to use Renderer.begin_frame() etc.
+M.begin_frame        = Stats.begin_frame
+M.end_frame          = Stats.end_frame
+M.get_stats          = Stats.get_stats
+M.set_debug_overlay  = Stats.set_debug_overlay
+M.draw_debug_overlay = Stats.draw_debug_overlay
 
 -- ── Renderer state ────────────────────────────────────────────────────────────
-local font_normal = nil
-local font_bold = nil
-local font_italic = nil
-local font_bold_italic = nil
-local font_normal_ss = nil
-local font_bold_ss = nil
-local font_italic_ss = nil
+local font_normal         = nil
+local font_bold           = nil
+local font_italic         = nil
+local font_bold_italic    = nil
+local font_normal_ss      = nil
+local font_bold_ss        = nil
+local font_italic_ss      = nil
 local font_bold_italic_ss = nil
-local char_w = 8
-local char_h = 16
-local baseline_offset = 0 -- pixels from cell top to font baseline
-local cfg_colors = nil
+local char_w          = 8
+local char_h          = 16
+local baseline_offset = 0   -- pixels from cell top to font baseline
+local cfg_colors      = nil
 local font_supersample = 1
 -- pane_canvas_cache[pane] = { canvas, w, h, dirty_all }
 local pane_canvas_cache = setmetatable({}, { __mode = "k" })
 local codepoints_to_utf8
-
--- ── Per-frame renderer statistics ────────────────────────────────────────────
--- Counters are reset by M.begin_frame() and finalized by M.end_frame().
--- Overhead is a handful of integer increments per draw operation — low
--- enough to keep enabled during development.
-local stats = {
-	frame_time_ms          = 0,
-	panes_drawn            = 0,
-	canvas_full_redraws    = 0,
-	canvas_partial_redraws = 0,
-	canvas_skipped         = 0,
-	rows_redrawn           = 0,
-	cells_visited          = 0,
-	glyph_draws            = 0,
-	bg_rect_draws          = 0,
-	underline_draws        = 0,
-	font_switches          = 0,
-	set_color_calls        = 0,
-}
-local _frame_start_time = 0
-local _debug_overlay_enabled = false
-local _debug_font = nil -- lazily created small font for the overlay
-
--- ── Load a font at LOGICAL size ───────────────────────────────────────────────
--- Do NOT multiply size by getDPIScale() here.  With t.window.highdpi = true
--- Love2D handles the physical rasterisation automatically.  If you also
--- multiply the size you end up loading at (size * dpi²) which is too large
--- and then gets scaled back down blurry.
-local function load_font(path, size, hinting)
-	-- Try Love2D virtual FS first (relative paths / files inside project dir)
-	if love.filesystem.getInfo(path) then
-		print("[renderer] Loading font from virtual FS: " .. path)
-		return love.graphics.newFont(path, size, hinting)
-	end
-	-- Fall back to native IO for absolute paths outside the project dir
-	local f, err = io.open(path, "rb")
-	if not f then
-		error("Could not open file " .. path .. ": " .. tostring(err))
-	end
-	local data = f:read("*a")
-	f:close()
-	local filedata = love.filesystem.newFileData(data, path)
-	return love.graphics.newFont(filedata, size, hinting)
-end
-
--- Apply shared settings to every loaded font object.
--- "linear" filtering is correct for HiDPI / fractional-DPI displays.
--- "nearest" only works cleanly on integer-scale (1×) displays and produces
--- jagged diagonals on everything else.
-local function configure_font(font)
-	font:setFilter("linear", "linear")
-	font:setLineHeight(1.0) -- control row height through char_h directly
-	return font
-end
-
--- ── Style-variant path helpers ────────────────────────────────────────────────
-local function style_candidates(path, from_pat, repls)
-	local out, seen = {}, {}
-	if type(repls) == "string" then
-		repls = { repls }
-	end
-	for _, repl in ipairs(repls) do
-		local candidate, n = path:gsub(from_pat, repl, 1)
-		if n > 0 and candidate ~= path and not seen[candidate] then
-			seen[candidate] = true
-			out[#out + 1] = candidate
-		end
-	end
-	return out
-end
-
-local function font_exists(path)
-	if love.filesystem.getInfo(path) then
-		return true
-	end
-	local f = io.open(path, "rb")
-	if f then
-		f:close()
-		return true
-	end
-	return false
-end
-
-local function derive_font_variant(base_path, kind)
-	if not base_path then
-		return nil
-	end
-	local candidates = {}
-	local function add(list)
-		for _, item in ipairs(list) do
-			candidates[#candidates + 1] = item
-		end
-	end
-	if kind == "bold" then
-		add(style_candidates(base_path, "Regular([%._-])", "Bold%1"))
-		add(style_candidates(base_path, "Regular%.", { "Bold.", "Medium." }))
-		add(style_candidates(base_path, "%-Regular", { "-Bold", "-Medium" }))
-	elseif kind == "italic" then
-		add(style_candidates(base_path, "Regular([%._-])", "Italic%1"))
-		add(style_candidates(base_path, "Regular%.", { "Italic." }))
-		add(style_candidates(base_path, "%-Regular", { "-Italic" }))
-	elseif kind == "bold_italic" then
-		add(style_candidates(base_path, "Regular([%._-])", "BoldItalic%1"))
-		add(style_candidates(base_path, "Regular%.", { "BoldItalic.", "MediumItalic." }))
-		add(style_candidates(base_path, "%-Regular", { "-BoldItalic", "-MediumItalic" }))
-	end
-	for _, candidate in ipairs(candidates) do
-		if font_exists(candidate) then
-			return candidate
-		end
-	end
-	return nil
-end
-
-local function load_font_family(font_path, font_size, font_hinting)
-	local family = {}
-	local font_bold_path = Config.get("font_bold_path")
-	local font_italic_path = Config.get("font_italic_path")
-	local font_bold_italic_path = Config.get("font_bold_italic_path")
-
-	if font_path then
-		family.normal = configure_font(load_font(font_path, font_size, font_hinting))
-	else
-		family.normal = configure_font(love.graphics.newFont(font_size, font_hinting))
-	end
-
-	family.bold = family.normal
-	family.italic = family.normal
-	family.bold_italic = family.normal
-
-	if font_path then
-		local bold_path = font_bold_path or derive_font_variant(font_path, "bold")
-		local italic_path = font_italic_path or derive_font_variant(font_path, "italic")
-		local bold_italic_path = font_bold_italic_path or derive_font_variant(font_path, "bold_italic")
-
-		if bold_path then
-			family.bold = configure_font(load_font(bold_path, font_size, font_hinting))
-			print("[renderer] Loading bold font: " .. bold_path)
-		end
-		if italic_path then
-			family.italic = configure_font(load_font(italic_path, font_size, font_hinting))
-			print("[renderer] Loading italic font: " .. italic_path)
-		end
-		if bold_italic_path then
-			family.bold_italic = configure_font(load_font(bold_italic_path, font_size, font_hinting))
-			print("[renderer] Loading bold italic font: " .. bold_italic_path)
-		end
-	end
-
-	return family
-end
-
--- ── Stats API ─────────────────────────────────────────────────────────────────
-
--- Call once at the start of each draw frame (before drawing any panes).
-function M.begin_frame()
-	_frame_start_time = love.timer.getTime()
-	stats.panes_drawn            = 0
-	stats.canvas_full_redraws    = 0
-	stats.canvas_partial_redraws = 0
-	stats.canvas_skipped         = 0
-	stats.rows_redrawn           = 0
-	stats.cells_visited          = 0
-	stats.glyph_draws            = 0
-	stats.bg_rect_draws          = 0
-	stats.underline_draws        = 0
-	stats.font_switches          = 0
-	stats.set_color_calls        = 0
-end
-
--- Call once at the end of each draw frame (after drawing everything).
-function M.end_frame()
-	stats.frame_time_ms = (love.timer.getTime() - _frame_start_time) * 1000
-end
-
--- Returns the current stats table (read-only; reset each frame).
-function M.get_stats()
-	return stats
-end
-
--- Enable or disable the on-screen debug overlay.
-function M.set_debug_overlay(enabled)
-	_debug_overlay_enabled = enabled
-end
-
--- Draw a small overlay in the top-right corner showing per-frame stats.
--- Call after all panes and UI elements have been drawn.
-function M.draw_debug_overlay()
-	if not _debug_overlay_enabled then
-		return
-	end
-	if not _debug_font then
-		-- Size 10 is intentionally small — the overlay is a compact status
-		-- widget and should not obscure terminal content.
-		_debug_font = love.graphics.newFont(10)
-	end
-	local win_w = love.graphics.getWidth()
-	local s = stats
-	local lines = {
-		string.format("frame: %.2f ms", s.frame_time_ms),
-		string.format("panes: %d  full:%d  part:%d  skip:%d",
-			s.panes_drawn, s.canvas_full_redraws,
-			s.canvas_partial_redraws, s.canvas_skipped),
-		string.format("rows:%d  cells:%d  glyphs:%d",
-			s.rows_redrawn, s.cells_visited, s.glyph_draws),
-		string.format("bgr:%d  ul:%d  fsw:%d  clr:%d",
-			s.bg_rect_draws, s.underline_draws,
-			s.font_switches, s.set_color_calls),
-	}
-	local pad_x, pad_y = 6, 4
-	local line_h = 14
-	local box_w = 244
-	local box_h = #lines * line_h + pad_y * 2
-	local bx = win_w - box_w - 4
-	local by = 4
-	local saved_font = love.graphics.getFont()
-	love.graphics.setFont(_debug_font)
-	love.graphics.setColor(0, 0, 0, 0.72)
-	love.graphics.rectangle("fill", bx, by, box_w, box_h)
-	love.graphics.setColor(0.9, 0.9, 0.2, 1)
-	for i, line in ipairs(lines) do
-		love.graphics.print(line, bx + pad_x, by + pad_y + (i - 1) * line_h)
-	end
-	love.graphics.setFont(saved_font)
-	love.graphics.setColor(1, 1, 1, 1)
-end
 
 -- ── Cache management ──────────────────────────────────────────────────────────
 
@@ -593,7 +373,7 @@ function M.init(font_path, font_size)
 	local font_hinting = Config.get("font_hinting") or "normal"
 	font_supersample = math.max(1, math.floor(Config.get("font_supersample") or 1))
 
-	local family = load_font_family(font_path, font_size, font_hinting)
+	local family = Font.load_family(font_path, font_size, font_hinting)
 	font_normal = family.normal
 	font_bold = family.bold
 	font_italic = family.italic
@@ -605,7 +385,7 @@ function M.init(font_path, font_size)
 	font_italic_ss = nil
 	font_bold_italic_ss = nil
 	if font_supersample > 1 then
-		local ss_family = load_font_family(font_path, font_size * font_supersample, font_hinting)
+		local ss_family = Font.load_family(font_path, font_size * font_supersample, font_hinting)
 		font_normal_ss = ss_family.normal
 		font_bold_ss = ss_family.bold
 		font_italic_ss = ss_family.italic
