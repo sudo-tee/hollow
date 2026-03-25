@@ -110,6 +110,9 @@ function App.draw()
 		return
 	end
 
+	-- Begin per-frame renderer stats collection.
+	Renderer.begin_frame()
+
 	-- Draw all panes in the active tab
 	local panes = tab:all_panes()
 
@@ -126,6 +129,10 @@ function App.draw()
 
 	-- Status bar
 	StatusBar.draw(ws, tab, focused_pane())
+
+	-- Finalise frame timing and draw optional debug overlay.
+	Renderer.end_frame()
+	Renderer.draw_debug_overlay()
 end
 
 -- ── Input routing ────────────────────────────────────────────────────────────

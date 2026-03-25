@@ -9,7 +9,7 @@
 --        while row_cells_next(cells):
 --          read GRAPHEMES_LEN, GRAPHEMES_BUF, STYLE, FG_COLOR, BG_COLOR
 --          draw background quad, glyph, underline, bold
---   4. draw cursor
+--   4. draw cursor (as screen-space overlay, not baked into the pane canvas)
 --
 -- HiDPI notes:
 --   • conf.lua must set t.window.highdpi = true
@@ -22,6 +22,14 @@
 --   • Font atlas filter is "linear"/"linear" — nearest is only correct for
 --     integer 1× displays; on any HiDPI or fractional-DPI display it
 --     produces jagged glyphs.
+--
+-- Dirty-row pane caching:
+--   Each pane has a persistent canvas.  Frames where the render state is
+--   not dirty skip all row iteration and just blit the cached canvas.
+--   When the render state is dirty the renderer iterates rows and redraws
+--   only the rows that carry the per-row DIRTY flag, preserving unchanged
+--   rows in the canvas.  A full invalidation (resize, font change, initial
+--   render) forces a clear + full redraw.
 local ffi = require("ffi")
 local bit = require("bit")
 local gffi = require("src.core.ghostty_ffi")
@@ -43,8 +51,31 @@ local char_h = 16
 local baseline_offset = 0 -- pixels from cell top to font baseline
 local cfg_colors = nil
 local font_supersample = 1
+-- pane_canvas_cache[pane] = { canvas, w, h, dirty_all }
 local pane_canvas_cache = setmetatable({}, { __mode = "k" })
 local codepoints_to_utf8
+
+-- ── Per-frame renderer statistics ────────────────────────────────────────────
+-- Counters are reset by M.begin_frame() and finalized by M.end_frame().
+-- Overhead is a handful of integer increments per draw operation — low
+-- enough to keep enabled during development.
+local stats = {
+	frame_time_ms          = 0,
+	panes_drawn            = 0,
+	canvas_full_redraws    = 0,
+	canvas_partial_redraws = 0,
+	canvas_skipped         = 0,
+	rows_redrawn           = 0,
+	cells_visited          = 0,
+	glyph_draws            = 0,
+	bg_rect_draws          = 0,
+	underline_draws        = 0,
+	font_switches          = 0,
+	set_color_calls        = 0,
+}
+local _frame_start_time = 0
+local _debug_overlay_enabled = false
+local _debug_font = nil -- lazily created small font for the overlay
 
 -- ── Load a font at LOGICAL size ───────────────────────────────────────────────
 -- Do NOT multiply size by getDPIScale() here.  With t.window.highdpi = true
@@ -175,15 +206,111 @@ local function load_font_family(font_path, font_size, font_hinting)
 	return family
 end
 
+-- ── Stats API ─────────────────────────────────────────────────────────────────
+
+-- Call once at the start of each draw frame (before drawing any panes).
+function M.begin_frame()
+	_frame_start_time = love.timer.getTime()
+	stats.panes_drawn            = 0
+	stats.canvas_full_redraws    = 0
+	stats.canvas_partial_redraws = 0
+	stats.canvas_skipped         = 0
+	stats.rows_redrawn           = 0
+	stats.cells_visited          = 0
+	stats.glyph_draws            = 0
+	stats.bg_rect_draws          = 0
+	stats.underline_draws        = 0
+	stats.font_switches          = 0
+	stats.set_color_calls        = 0
+end
+
+-- Call once at the end of each draw frame (after drawing everything).
+function M.end_frame()
+	stats.frame_time_ms = (love.timer.getTime() - _frame_start_time) * 1000
+end
+
+-- Returns the current stats table (read-only; reset each frame).
+function M.get_stats()
+	return stats
+end
+
+-- Enable or disable the on-screen debug overlay.
+function M.set_debug_overlay(enabled)
+	_debug_overlay_enabled = enabled
+end
+
+-- Draw a small overlay in the top-right corner showing per-frame stats.
+-- Call after all panes and UI elements have been drawn.
+function M.draw_debug_overlay()
+	if not _debug_overlay_enabled then
+		return
+	end
+	if not _debug_font then
+		-- Size 10 is intentionally small — the overlay is a compact status
+		-- widget and should not obscure terminal content.
+		_debug_font = love.graphics.newFont(10)
+	end
+	local win_w = love.graphics.getWidth()
+	local s = stats
+	local lines = {
+		string.format("frame: %.2f ms", s.frame_time_ms),
+		string.format("panes: %d  full:%d  part:%d  skip:%d",
+			s.panes_drawn, s.canvas_full_redraws,
+			s.canvas_partial_redraws, s.canvas_skipped),
+		string.format("rows:%d  cells:%d  glyphs:%d",
+			s.rows_redrawn, s.cells_visited, s.glyph_draws),
+		string.format("bgr:%d  ul:%d  fsw:%d  clr:%d",
+			s.bg_rect_draws, s.underline_draws,
+			s.font_switches, s.set_color_calls),
+	}
+	local pad_x, pad_y = 6, 4
+	local line_h = 14
+	local box_w = 244
+	local box_h = #lines * line_h + pad_y * 2
+	local bx = win_w - box_w - 4
+	local by = 4
+	local saved_font = love.graphics.getFont()
+	love.graphics.setFont(_debug_font)
+	love.graphics.setColor(0, 0, 0, 0.72)
+	love.graphics.rectangle("fill", bx, by, box_w, box_h)
+	love.graphics.setColor(0.9, 0.9, 0.2, 1)
+	for i, line in ipairs(lines) do
+		love.graphics.print(line, bx + pad_x, by + pad_y + (i - 1) * line_h)
+	end
+	love.graphics.setFont(saved_font)
+	love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- ── Cache management ──────────────────────────────────────────────────────────
+
+-- Mark every cached pane canvas as needing a full redraw.
+-- Call after font or config changes that affect rendering output.
+function M.invalidate_all()
+	for _, cached in pairs(pane_canvas_cache) do
+		cached.dirty_all = true
+	end
+end
+
+-- Return the cache record for this pane at the given canvas dimensions,
+-- creating a new canvas (and marking dirty_all) if dimensions changed.
 local function ensure_pane_canvas(pane, w, h)
 	local cached = pane_canvas_cache[pane]
 	if cached and cached.w == w and cached.h == h then
-		return cached.canvas
+		return cached
 	end
 	local canvas = love.graphics.newCanvas(w, h)
 	canvas:setFilter("linear", "linear")
-	pane_canvas_cache[pane] = { canvas = canvas, w = w, h = h }
-	return canvas
+	cached = { canvas = canvas, w = w, h = h, dirty_all = true }
+	pane_canvas_cache[pane] = cached
+	return cached
+end
+
+-- Composite the pane canvas onto the screen at the pane's logical position.
+local function blit_canvas(cached, px, scale)
+	love.graphics.setScissor(px.x, px.y, px.w, px.h)
+	love.graphics.setColor(1, 1, 1, 1)
+	love.graphics.draw(cached.canvas, px.x, px.y, 0, 1 / scale, 1 / scale)
+	love.graphics.setScissor()
 end
 
 local function pick_style_font(is_bold, is_italic, normal_font, bold_font, italic_font, bold_italic_font)
@@ -207,10 +334,53 @@ local _u16 = ffi.new("uint16_t[1]")
 local _u32 = ffi.new("uint32_t[1]")
 local _bool = ffi.new("bool[1]")
 local _bool_false = ffi.new("bool[1]", { false })
+local _row_dirty_flag = ffi.new("bool[1]")
 
 _style.size = ffi.sizeof("GhosttyStyle")
 
-local function draw_pane_contents(pane, is_focused, ox, oy, pw, ph, scale, normal_font, bold_font, italic_font, bold_italic_font)
+-- ── Color helper ──────────────────────────────────────────────────────────────
+-- Extract default fg/bg colours from the render state colours struct,
+-- falling back to config values when ghostty returns no colours.
+local function get_pane_colors(rs)
+	local colors_struct = gffi.rs_colors(rs)
+	local fg_r, fg_g, fg_b, bg_r, bg_g, bg_b
+	if colors_struct then
+		fg_r = colors_struct.foreground.r / 255
+		fg_g = colors_struct.foreground.g / 255
+		fg_b = colors_struct.foreground.b / 255
+		bg_r = colors_struct.background.r / 255
+		bg_g = colors_struct.background.g / 255
+		bg_b = colors_struct.background.b / 255
+	else
+		local c = cfg_colors or {}
+		local fg = c.foreground or { 0.9, 0.9, 0.9 }
+		local bg = c.background or { 0.0, 0.0, 0.0 }
+		fg_r, fg_g, fg_b = fg[1], fg[2], fg[3]
+		bg_r, bg_g, bg_b = bg[1], bg[2], bg[3]
+	end
+	return fg_r, fg_g, fg_b, bg_r, bg_g, bg_b, colors_struct
+end
+
+-- ── Draw rows to canvas ───────────────────────────────────────────────────────
+-- Renders terminal cell content into the currently-bound canvas.
+-- Call with the canvas already set and the graphics origin reset to (0,0).
+--
+--   pane          : the pane being rendered
+--   dirty_only    : true → only redraw rows that carry the per-row DIRTY flag
+--                   false → redraw all rows (used for full-invalidation frames)
+--   ox, oy        : canvas draw origin (always 0,0 for our canvas-based path)
+--   pw, ph        : canvas dimensions in pixels
+--   scale         : font_supersample or 1
+--   *_font        : resolved font objects for the four style variants
+--   def_fg/bg_*   : default foreground / background colours (0-1 floats)
+--
+-- The function clears per-row dirty flags as it processes rows, then clears
+-- the pane-level dirty flag when done.
+local function draw_rows_to_canvas(
+	pane, dirty_only, ox, oy, pw, ph, scale,
+	normal_font, bold_font, italic_font, bold_italic_font,
+	def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b
+)
 	local rs = pane.render_state
 	local row_iter_box = pane.row_iter_box
 	local cells_box = pane.row_cells_box
@@ -222,27 +392,14 @@ local function draw_pane_contents(pane, is_focused, ox, oy, pw, ph, scale, norma
 	local cell_h = char_h * scale
 	local baseline = baseline_offset * scale
 
-	local colors_struct = gffi.rs_colors(rs)
-	local def_fg_r, def_fg_g, def_fg_b
-	local def_bg_r, def_bg_g, def_bg_b
-
-	if colors_struct then
-		def_fg_r = colors_struct.foreground.r / 255
-		def_fg_g = colors_struct.foreground.g / 255
-		def_fg_b = colors_struct.foreground.b / 255
-		def_bg_r = colors_struct.background.r / 255
-		def_bg_g = colors_struct.background.g / 255
-		def_bg_b = colors_struct.background.b / 255
-	else
-		local c = cfg_colors or {}
-		local fg = c.foreground or { 0.9, 0.9, 0.9 }
-		local bg = c.background or { 0.0, 0.0, 0.0 }
-		def_fg_r, def_fg_g, def_fg_b = fg[1], fg[2], fg[3]
-		def_bg_r, def_bg_g, def_bg_b = bg[1], bg[2], bg[3]
+	if not dirty_only then
+		-- Full redraw: paint default background over entire canvas first.
+		love.graphics.setColor(def_bg_r, def_bg_g, def_bg_b, 1)
+		love.graphics.rectangle("fill", ox, oy, pw, ph)
+		stats.set_color_calls = stats.set_color_calls + 1
+		stats.bg_rect_draws   = stats.bg_rect_draws + 1
 	end
 
-	love.graphics.setColor(def_bg_r, def_bg_g, def_bg_b, 1)
-	love.graphics.rectangle("fill", ox, oy, pw, ph)
 	love.graphics.setFont(normal_font)
 
 	if not gffi.rs_get_row_iterator(rs, row_iter_box) then
@@ -252,117 +409,179 @@ local function draw_pane_contents(pane, is_focused, ox, oy, pw, ph, scale, norma
 	local row_y = 0
 	while lib.ghostty_render_state_row_iterator_next(row_iter_box[0]) do
 		local py = oy + row_y * cell_h
-		if gffi.row_get_cells(row_iter_box[0], cells_box) then
-			local col_x = 0
-			while lib.ghostty_render_state_row_cells_next(cells_box[0]) do
-				local cx = ox + col_x * cell_w
-				_grapheme_len[0] = 0
-				lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.GRAPHEMES_LEN, _grapheme_len)
-				local glen = tonumber(_grapheme_len[0])
 
-				if glen == 0 then
-					local res_bg = lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
-					if res_bg == gffi.GHOSTTY_SUCCESS then
-						love.graphics.setColor(_bg_rgb.r / 255, _bg_rgb.g / 255, _bg_rgb.b / 255, 1)
-						love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-					end
-				else
-					local clen = math.min(glen, 16)
-					lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.GRAPHEMES_BUF, _grapheme_buf)
-					local cps = {}
-					for i = 0, clen - 1 do
-						cps[i + 1] = tonumber(_grapheme_buf[i])
-					end
-					local text = codepoints_to_utf8(cps, clen)
-
-					_style.size = ffi.sizeof("GhosttyStyle")
-					lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.STYLE, _style)
-					local bold = _style.bold
-					local italic = _style.italic
-					local underline = _style.underline ~= 0
-					local inverse = _style.inverse
-
-					local fg_r, fg_g, fg_b = def_fg_r, def_fg_g, def_fg_b
-					local res_fg = lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.FG_COLOR, _fg_rgb)
-					if res_fg == gffi.GHOSTTY_SUCCESS then
-						fg_r = _fg_rgb.r / 255
-						fg_g = _fg_rgb.g / 255
-						fg_b = _fg_rgb.b / 255
-					end
-
-					local bg_r, bg_g, bg_b = def_bg_r, def_bg_g, def_bg_b
-					local has_bg = false
-					local res_bg = lib.ghostty_render_state_row_cells_get(cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
-					if res_bg == gffi.GHOSTTY_SUCCESS then
-						bg_r = _bg_rgb.r / 255
-						bg_g = _bg_rgb.g / 255
-						bg_b = _bg_rgb.b / 255
-						has_bg = true
-					end
-
-					if inverse then
-						fg_r, fg_g, fg_b, bg_r, bg_g, bg_b = bg_r, bg_g, bg_b, fg_r, fg_g, fg_b
-						has_bg = true
-					end
-
-					if has_bg then
-						love.graphics.setColor(bg_r, bg_g, bg_b, 1)
-						love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-					end
-
-					if text then
-						love.graphics.setColor(fg_r, fg_g, fg_b, 1)
-						local draw_font = pick_style_font(bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
-						if draw_font ~= normal_font then
-							love.graphics.setFont(draw_font)
-						end
-						love.graphics.print(text, cx, py + baseline)
-						if draw_font ~= normal_font then
-							love.graphics.setFont(normal_font)
-						end
-					end
-
-					if underline then
-						love.graphics.setColor(fg_r, fg_g, fg_b, 1)
-						love.graphics.rectangle("fill", cx, py + cell_h - math.max(1, scale), cell_w, math.max(1, scale))
-					end
-				end
-
-				col_x = col_x + 1
-			end
+		local should_draw = true
+		if dirty_only then
+			_row_dirty_flag[0] = false
+			lib.ghostty_render_state_row_get(row_iter_box[0], gffi.ROW_DATA.DIRTY, _row_dirty_flag)
+			should_draw = _row_dirty_flag[0]
 		end
-		lib.ghostty_render_state_row_set(row_iter_box[0], gffi.ROW_OPT.DIRTY, _bool_false)
+
+		if should_draw then
+			if dirty_only then
+				-- Partial redraw: clear just this row with default bg before
+				-- redrawing, so that cells that disappeared don't leave ghosts.
+				love.graphics.setColor(def_bg_r, def_bg_g, def_bg_b, 1)
+				love.graphics.rectangle("fill", ox, py, pw, cell_h)
+				stats.set_color_calls = stats.set_color_calls + 1
+				stats.bg_rect_draws   = stats.bg_rect_draws + 1
+			end
+
+			stats.rows_redrawn = stats.rows_redrawn + 1
+
+			if gffi.row_get_cells(row_iter_box[0], cells_box) then
+				local col_x = 0
+				while lib.ghostty_render_state_row_cells_next(cells_box[0]) do
+					local cx = ox + col_x * cell_w
+					stats.cells_visited = stats.cells_visited + 1
+
+					_grapheme_len[0] = 0
+					lib.ghostty_render_state_row_cells_get(
+						cells_box[0], gffi.CELL_DATA.GRAPHEMES_LEN, _grapheme_len)
+					local glen = tonumber(_grapheme_len[0])
+
+					if glen == 0 then
+						local res_bg = lib.ghostty_render_state_row_cells_get(
+							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
+						if res_bg == gffi.GHOSTTY_SUCCESS then
+							love.graphics.setColor(
+								_bg_rgb.r / 255, _bg_rgb.g / 255, _bg_rgb.b / 255, 1)
+							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
+							stats.set_color_calls = stats.set_color_calls + 1
+							stats.bg_rect_draws   = stats.bg_rect_draws + 1
+						end
+					else
+						local clen = math.min(glen, 16)
+						lib.ghostty_render_state_row_cells_get(
+							cells_box[0], gffi.CELL_DATA.GRAPHEMES_BUF, _grapheme_buf)
+						local cps = {}
+						for i = 0, clen - 1 do
+							cps[i + 1] = tonumber(_grapheme_buf[i])
+						end
+						local text = codepoints_to_utf8(cps, clen)
+
+						_style.size = ffi.sizeof("GhosttyStyle")
+						lib.ghostty_render_state_row_cells_get(
+							cells_box[0], gffi.CELL_DATA.STYLE, _style)
+						local bold      = _style.bold
+						local italic    = _style.italic
+						local underline = _style.underline ~= 0
+						local inverse   = _style.inverse
+
+						local fg_r, fg_g, fg_b = def_fg_r, def_fg_g, def_fg_b
+						local res_fg = lib.ghostty_render_state_row_cells_get(
+							cells_box[0], gffi.CELL_DATA.FG_COLOR, _fg_rgb)
+						if res_fg == gffi.GHOSTTY_SUCCESS then
+							fg_r = _fg_rgb.r / 255
+							fg_g = _fg_rgb.g / 255
+							fg_b = _fg_rgb.b / 255
+						end
+
+						local bg_r, bg_g, bg_b = def_bg_r, def_bg_g, def_bg_b
+						local has_bg = false
+						local res_bg = lib.ghostty_render_state_row_cells_get(
+							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
+						if res_bg == gffi.GHOSTTY_SUCCESS then
+							bg_r   = _bg_rgb.r / 255
+							bg_g   = _bg_rgb.g / 255
+							bg_b   = _bg_rgb.b / 255
+							has_bg = true
+						end
+
+						if inverse then
+							fg_r, fg_g, fg_b, bg_r, bg_g, bg_b =
+								bg_r, bg_g, bg_b, fg_r, fg_g, fg_b
+							has_bg = true
+						end
+
+						if has_bg then
+							love.graphics.setColor(bg_r, bg_g, bg_b, 1)
+							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
+							stats.set_color_calls = stats.set_color_calls + 1
+							stats.bg_rect_draws   = stats.bg_rect_draws + 1
+						end
+
+						if text then
+							love.graphics.setColor(fg_r, fg_g, fg_b, 1)
+							stats.set_color_calls = stats.set_color_calls + 1
+							local draw_font = pick_style_font(
+								bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
+							if draw_font ~= normal_font then
+								love.graphics.setFont(draw_font)
+								stats.font_switches = stats.font_switches + 1
+							end
+							love.graphics.print(text, cx, py + baseline)
+							stats.glyph_draws = stats.glyph_draws + 1
+							if draw_font ~= normal_font then
+								love.graphics.setFont(normal_font)
+								stats.font_switches = stats.font_switches + 1
+							end
+						end
+
+						if underline then
+							love.graphics.setColor(fg_r, fg_g, fg_b, 1)
+							love.graphics.rectangle(
+								"fill", cx, py + cell_h - math.max(1, scale),
+								cell_w, math.max(1, scale))
+							stats.set_color_calls = stats.set_color_calls + 1
+							stats.underline_draws = stats.underline_draws + 1
+						end
+					end
+
+					col_x = col_x + 1
+				end
+			end
+
+			-- Clear the per-row dirty flag now that we have redrawn this row.
+			lib.ghostty_render_state_row_set(row_iter_box[0], gffi.ROW_OPT.DIRTY, _bool_false)
+		end
+		-- (Non-dirty rows: iterator already positioned; no cell iteration needed.)
+
 		row_y = row_y + 1
 	end
 
+	-- Clear the pane-level dirty flag so idle frames can skip redrawing.
 	_u32[0] = gffi.RS_DIRTY.FALSE
 	lib.ghostty_render_state_set(rs, gffi.RS_OPT.DIRTY, _u32)
+end
 
-	if is_focused then
-		_bool[0] = false
-		lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VISIBLE, _bool)
-		local cursor_visible = _bool[0]
-		_bool[0] = false
-		lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_HAS_VALUE, _bool)
-		local cursor_in_vp = _bool[0]
-		if cursor_visible and cursor_in_vp then
-			_u16[0] = 0
-			lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_X, _u16)
-			local cx_col = tonumber(_u16[0])
-			_u16[0] = 0
-			lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_Y, _u16)
-			local cx_row = tonumber(_u16[0])
-			local cur_r, cur_g, cur_b
-			if colors_struct and colors_struct.cursor_has_value then
-				cur_r = colors_struct.cursor.r / 255
-				cur_g = colors_struct.cursor.g / 255
-				cur_b = colors_struct.cursor.b / 255
-			else
-				cur_r, cur_g, cur_b = def_fg_r, def_fg_g, def_fg_b
-			end
-			love.graphics.setColor(cur_r, cur_g, cur_b, 0.85)
-			love.graphics.rectangle("fill", ox + cx_col * cell_w, oy + cx_row * cell_h, cell_w, cell_h)
+-- ── Draw cursor overlay ───────────────────────────────────────────────────────
+-- Draws the cursor rectangle directly onto the screen (not into the canvas)
+-- so that cursor state changes (movement, blink) do not invalidate the
+-- cached pane canvas.
+local function draw_cursor_overlay(pane, is_focused, ox, oy, cell_w, cell_h,
+	colors_struct, def_fg_r, def_fg_g, def_fg_b)
+	if not is_focused then
+		return
+	end
+	local rs = pane.render_state
+	_bool[0] = false
+	lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VISIBLE, _bool)
+	local cursor_visible = _bool[0]
+	_bool[0] = false
+	lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_HAS_VALUE, _bool)
+	local cursor_in_vp = _bool[0]
+	if cursor_visible and cursor_in_vp then
+		_u16[0] = 0
+		lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_X, _u16)
+		local cx_col = tonumber(_u16[0])
+		_u16[0] = 0
+		lib.ghostty_render_state_get(rs, gffi.RS_DATA.CURSOR_VIEWPORT_Y, _u16)
+		local cx_row = tonumber(_u16[0])
+		local cur_r, cur_g, cur_b
+		if colors_struct and colors_struct.cursor_has_value then
+			cur_r = colors_struct.cursor.r / 255
+			cur_g = colors_struct.cursor.g / 255
+			cur_b = colors_struct.cursor.b / 255
+		else
+			cur_r, cur_g, cur_b = def_fg_r, def_fg_g, def_fg_b
 		end
+		love.graphics.setColor(cur_r, cur_g, cur_b, 0.85)
+		love.graphics.rectangle(
+			"fill",
+			ox + cx_col * cell_w,
+			oy + cx_row * cell_h,
+			cell_w, cell_h)
 	end
 end
 
@@ -416,6 +635,9 @@ function M.init(font_path, font_size)
 	end
 
 	cfg_colors = Config.get("colors")
+
+	-- Font or config changed: all cached pane canvases are now stale.
+	M.invalidate_all()
 
 	print(
 		string.format(
@@ -492,48 +714,86 @@ function codepoints_to_utf8(cps, len)
 	return table.concat(parts)
 end
 
--- ── Scratch FFI allocations (reused per frame) ───────────────────────────────
 -- ── Draw one pane ─────────────────────────────────────────────────────────────
 function M.draw_pane(pane, is_focused)
 	local px = pane.px_rect
 	if not pane.render_state or not px then
 		return
 	end
-	if font_supersample > 1 and font_normal_ss then
-		local cw = math.max(1, math.floor(px.w * font_supersample + 0.5))
-		local ch = math.max(1, math.floor(px.h * font_supersample + 0.5))
-		local canvas = ensure_pane_canvas(pane, cw, ch)
-		local prev_canvas = love.graphics.getCanvas()
-		love.graphics.push("all")
-		love.graphics.setCanvas(canvas)
-		love.graphics.clear(0, 0, 0, 0)
-		love.graphics.origin()
-		draw_pane_contents(
-			pane,
-			is_focused,
-			0,
-			0,
-			cw,
-			ch,
-			font_supersample,
-			font_normal_ss,
-			font_bold_ss,
-			font_italic_ss,
-			font_bold_italic_ss
-		)
-		love.graphics.setCanvas(prev_canvas)
-		love.graphics.pop()
-		love.graphics.setScissor(px.x, px.y, px.w, px.h)
-		love.graphics.setColor(1, 1, 1, 1)
-		love.graphics.draw(canvas, px.x, px.y, 0, 1 / font_supersample, 1 / font_supersample)
-		love.graphics.setScissor()
+
+	stats.panes_drawn = stats.panes_drawn + 1
+
+	local rs = pane.render_state
+
+	-- Choose font family based on supersample setting.
+	local use_ss = font_supersample > 1 and font_normal_ss ~= nil
+	local scale = use_ss and font_supersample or 1
+	local nf  = use_ss and font_normal_ss     or font_normal
+	local bf  = use_ss and font_bold_ss       or font_bold
+	local itf = use_ss and font_italic_ss     or font_italic
+	local bif = use_ss and font_bold_italic_ss or font_bold_italic
+
+	-- Canvas dimensions: supersample path uses a larger off-screen canvas.
+	local cw = math.max(1, math.floor(px.w * scale + 0.5))
+	local ch = math.max(1, math.floor(px.h * scale + 0.5))
+
+	-- Get/create the persistent per-pane canvas (dirty_all = true on first use
+	-- or whenever dimensions changed, e.g. after a resize).
+	local cached = ensure_pane_canvas(pane, cw, ch)
+
+	-- Check the pane-level dirty flag from the render state.
+	_u32[0] = 0
+	lib.ghostty_render_state_get(rs, gffi.RS_DATA.DIRTY, _u32)
+	local rs_dirty = _u32[0] ~= 0
+
+	-- Resolve default colours (needed for both canvas drawing and cursor).
+	local def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b, colors_struct =
+		get_pane_colors(rs)
+
+	if not rs_dirty and not cached.dirty_all then
+		-- ── Idle frame ────────────────────────────────────────────────────────
+		-- Nothing changed in the terminal: blit the cached canvas and draw
+		-- the cursor overlay without iterating any rows.
+		stats.canvas_skipped = stats.canvas_skipped + 1
+		blit_canvas(cached, px, scale)
+		-- Cursor overlay uses logical (screen-space) cell dimensions.
+		draw_cursor_overlay(pane, is_focused,
+			px.x, px.y, char_w, char_h, colors_struct, def_fg_r, def_fg_g, def_fg_b)
 		love.graphics.setColor(1, 1, 1, 1)
 		return
 	end
 
-	love.graphics.setScissor(px.x, px.y, px.w, px.h)
-	draw_pane_contents(pane, is_focused, px.x, px.y, px.w, px.h, 1, font_normal, font_bold, font_italic, font_bold_italic)
-	love.graphics.setScissor()
+	-- ── Canvas update ─────────────────────────────────────────────────────────
+	local prev_canvas = love.graphics.getCanvas()
+	love.graphics.push("all")
+	love.graphics.setCanvas(cached.canvas)
+	love.graphics.origin()
+
+	local dirty_only = not cached.dirty_all
+	if cached.dirty_all then
+		-- Full invalidation: draw_rows_to_canvas will paint the default bg over
+		-- the entire canvas, so no explicit canvas clear is needed.
+		stats.canvas_full_redraws = stats.canvas_full_redraws + 1
+	else
+		stats.canvas_partial_redraws = stats.canvas_partial_redraws + 1
+	end
+
+	draw_rows_to_canvas(
+		pane, dirty_only, 0, 0, cw, ch, scale,
+		nf, bf, itf, bif,
+		def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b)
+
+	cached.dirty_all = false
+
+	love.graphics.setCanvas(prev_canvas)
+	love.graphics.pop()
+
+	-- ── Composite + cursor ────────────────────────────────────────────────────
+	blit_canvas(cached, px, scale)
+	-- Cursor overlay uses logical (screen-space) cell dimensions, not canvas-
+	-- space ones, because it is drawn directly onto the screen after blitting.
+	draw_cursor_overlay(pane, is_focused,
+		px.x, px.y, char_w, char_h, colors_struct, def_fg_r, def_fg_g, def_fg_b)
 	love.graphics.setColor(1, 1, 1, 1)
 end
 

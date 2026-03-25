@@ -95,6 +95,27 @@ function M.create()
         StatusBar.set_right(fn_or_segments)
     end
 
+    -- ── Renderer ─────────────────────────────────────────────────────────────
+    api.renderer = {}
+
+    --- Enable or disable the on-screen renderer debug overlay.
+    --- hollow.renderer.set_debug_overlay(true)
+    function api.renderer.set_debug_overlay(enabled)
+        require("src.renderer.terminal").set_debug_overlay(enabled)
+    end
+
+    --- Return the per-frame renderer stats table.
+    --- Stats are reset at the start of each draw frame.
+    --- hollow.renderer.get_stats() → { frame_time_ms, panes_drawn, ... }
+    function api.renderer.get_stats()
+        return require("src.renderer.terminal").get_stats()
+    end
+
+    --- Invalidate all pane caches, forcing a full redraw next frame.
+    function api.renderer.invalidate_all()
+        require("src.renderer.terminal").invalidate_all()
+    end
+
     -- ── Tab / workspace control ───────────────────────────────────────────────
     -- These call App._dispatch – lazy require to avoid circular deps.
     local function dispatch(action, args)
