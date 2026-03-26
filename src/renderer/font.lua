@@ -10,6 +10,7 @@
 
 local Config = require("src.core.config")
 local M = {}
+local font_exists
 
 local function resolved_font_filter()
 	local filter = Config.get("font_filter") or "linear"
@@ -46,6 +47,30 @@ local function configure_font(font)
 	return font
 end
 
+local function load_fallbacks(paths, size, hinting)
+	if type(paths) ~= "table" then
+		return nil
+	end
+	local out = {}
+	for _, path in ipairs(paths) do
+		if path and font_exists(path) then
+			out[#out + 1] = configure_font(load_font(path, size, hinting))
+			print("[renderer] Loading fallback font: " .. path)
+		end
+	end
+	if #out == 0 then
+		return nil
+	end
+	return out
+end
+
+local function apply_fallbacks(font, fallbacks)
+	if fallbacks and #fallbacks > 0 then
+		font:setFallbacks(unpack(fallbacks))
+	end
+	return font
+end
+
 function M.get_filter()
 	return resolved_font_filter()
 end
@@ -66,7 +91,7 @@ local function style_candidates(path, from_pat, repls)
 	return out
 end
 
-local function font_exists(path)
+font_exists = function(path)
 	if love.filesystem.getInfo(path) then
 		return true
 	end
@@ -123,12 +148,20 @@ function M.load_family(font_path, font_size, font_hinting)
 	local bold_path        = Config.get("font_bold_path")
 	local italic_path      = Config.get("font_italic_path")
 	local bold_italic_path = Config.get("font_bold_italic_path")
+	local fallback_paths   = Config.get("font_fallback_paths")
+	local normal_font
+
+	local fallback_fonts = load_fallbacks(fallback_paths, font_size, font_hinting)
 
 	if font_path then
-		family.normal = configure_font(load_font(font_path, font_size, font_hinting))
+		normal_font = configure_font(load_font(font_path, font_size, font_hinting))
+		family.normal = apply_fallbacks(normal_font, fallback_fonts)
 	else
-		family.normal = configure_font(love.graphics.newFont(font_size, font_hinting))
+		normal_font = configure_font(love.graphics.newFont(font_size, font_hinting))
+		family.normal = apply_fallbacks(normal_font, fallback_fonts)
 	end
+
+	family.fallbacks = fallback_fonts or {}
 
 	family.bold       = family.normal
 	family.italic     = family.normal
@@ -140,15 +173,21 @@ function M.load_family(font_path, font_size, font_hinting)
 		bold_italic_path = bold_italic_path or derive_variant(font_path, "bold_italic")
 
 		if bold_path then
-			family.bold = configure_font(load_font(bold_path, font_size, font_hinting))
+			family.bold = apply_fallbacks(
+				configure_font(load_font(bold_path, font_size, font_hinting)),
+				fallback_fonts)
 			print("[renderer] Loading bold font: " .. bold_path)
 		end
 		if italic_path then
-			family.italic = configure_font(load_font(italic_path, font_size, font_hinting))
+			family.italic = apply_fallbacks(
+				configure_font(load_font(italic_path, font_size, font_hinting)),
+				fallback_fonts)
 			print("[renderer] Loading italic font: " .. italic_path)
 		end
 		if bold_italic_path then
-			family.bold_italic = configure_font(load_font(bold_italic_path, font_size, font_hinting))
+			family.bold_italic = apply_fallbacks(
+				configure_font(load_font(bold_italic_path, font_size, font_hinting)),
+				fallback_fonts)
 			print("[renderer] Loading bold italic font: " .. bold_italic_path)
 		end
 	end

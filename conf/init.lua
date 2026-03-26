@@ -58,6 +58,12 @@ g.set_config({
 	-- font_bold_path = "fonts/RecMonoLinearNerdFontMono-Bold.ttf",
 	-- font_italic_path = "fonts/RecMonoLinearNerdFontMono-Italic.ttf",
 	-- font_bold_italic_path = "fonts/RecMonoLinearNerdFontMono-BoldItalic.ttf",
+	
+	-- Fallback fonts to use for missing glyphs. They are tried in order.
+	font_fallback_paths = {
+		"fonts/SymbolsNerdFontMono-Regular.ttf",
+	},
+
 	--   font_path = "C:/Users/YourName/AppData/Local/Microsoft/Windows/Fonts/JetBrainsMonoNerdFont-Regular.ttf",
 	-- Love2D inside WSL2 (Linux build): use a Linux path.
 	--   font_path = "/usr/share/fonts/truetype/nerd-fonts/JetBrainsMonoNerdFont-Regular.ttf",

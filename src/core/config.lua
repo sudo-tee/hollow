@@ -16,6 +16,7 @@ local defaults = {
     font_bold_path  = nil,
     font_italic_path = nil,
     font_bold_italic_path = nil,
+    font_fallback_paths = { "fonts/SymbolsNerdFontMono-Regular.ttf" },
     tab_bar_height  = 26,
     status_bar_height = 22,
     split_gap       = 2,
