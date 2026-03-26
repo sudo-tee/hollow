@@ -10,6 +10,7 @@ local KeyMap = require("src.core.keymap")
 local Config = require("src.core.config")
 local EventBus = require("src.core.event_bus")
 local GhosttyFFI = require("src.core.ghostty_ffi")
+local Window = require("src.core.window")
 
 local App = {}
 
@@ -65,6 +66,10 @@ function App.init()
 
 	-- Emit startup event for user scripts
 	EventBus.emit("app:ready")
+
+	-- Apply window decoration overrides (e.g. no_titlebar) after the window
+	-- is fully up so the HWND is reachable.
+	Window.apply_decorations()
 end
 
 -- ── Active workspace helpers ─────────────────────────────────────────────────

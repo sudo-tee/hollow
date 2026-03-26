@@ -19,6 +19,7 @@ local defaults = {
     tab_bar_height  = 26,
     status_bar_height = 22,
     split_gap       = 2,
+    no_titlebar     = false,    -- Windows only: hide title bar, keep resize border
 
     -- Colours (RGBA 0-1)
     colors = {

@@ -38,7 +38,7 @@ g.set_config({
 	-- Synthetic horizontal stroke thickening in pixels. 0 = off.
 	-- With font_filter="nearest": use 0 (off) or 1.0 (crisp 1px thicker).
 	-- With font_filter="linear": fractional values like 0.5 give subtle weight.
-	font_embolden = 0.1,
+	font_embolden = 0.15,
 	-- Experimental pane supersampling.  1 = off, 2 = render text to a 2x canvas
 	-- and scale it back down.
 	font_supersample = 1,
@@ -71,6 +71,9 @@ g.set_config({
 	tab_bar_height = 26,
 	status_bar_height = 22,
 	split_gap = 2,
+	-- Windows only: hide the OS title bar while keeping the resize border.
+	-- Gives a WezTerm-style chrome-free look. Snap/minimize/maximize still work.
+	no_titlebar = true,
 })
 
 -- Override colour palette
