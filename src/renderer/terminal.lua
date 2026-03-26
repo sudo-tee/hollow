@@ -42,6 +42,8 @@ M.end_frame          = Stats.end_frame
 M.get_stats          = Stats.get_stats
 M.set_debug_overlay  = Stats.set_debug_overlay
 M.draw_debug_overlay = Stats.draw_debug_overlay
+M.toggle_debug_overlay = Stats.toggle_debug_overlay
+M.get_debug_overlay = Stats.get_debug_overlay
 
 -- ── Renderer state ────────────────────────────────────────────────────────────
 local font_normal         = nil

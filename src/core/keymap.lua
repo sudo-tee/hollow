@@ -28,6 +28,8 @@ local default_bindings = {
     { mods={ctrl=true,shift=true}, key="n",     action="new_workspace"   },
     { mods={ctrl=true,shift=true}, key="right", action="next_workspace"  },
     { mods={ctrl=true,shift=true}, key="left",  action="prev_workspace"  },
+    -- Debug
+    { mods={},                    key="f12",   action="toggle_debug_overlay" },
 }
 
 local user_bindings = {}  -- populated by Config / API

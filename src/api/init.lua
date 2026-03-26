@@ -104,6 +104,17 @@ function M.create()
         require("src.renderer.terminal").set_debug_overlay(enabled)
     end
 
+    --- Toggle the renderer debug overlay, returns the new state.
+    --- hollow.renderer.toggle_debug_overlay() -> true|false
+    function api.renderer.toggle_debug_overlay()
+        return require("src.renderer.terminal").toggle_debug_overlay()
+    end
+
+    --- Return whether the debug overlay is enabled.
+    function api.renderer.get_debug_overlay()
+        return require("src.renderer.terminal").get_debug_overlay()
+    end
+
     --- Return the per-frame renderer stats table.
     --- Stats are reset at the start of each draw frame.
     --- hollow.renderer.get_stats() → { frame_time_ms, panes_drawn, ... }

@@ -272,6 +272,9 @@ function App._dispatch(action, args)
 		App.switch_workspace((active_ws_idx % #workspaces) + 1)
 	elseif action == "prev_workspace" then
 		App.switch_workspace(((active_ws_idx - 2) % #workspaces) + 1)
+	elseif action == "toggle_debug_overlay" then
+		-- Toggle the renderer debug overlay (show/hide on-screen stats)
+		Renderer.toggle_debug_overlay()
 	elseif action == "switch_workspace" and args then
 		App.switch_workspace(args)
 	else
