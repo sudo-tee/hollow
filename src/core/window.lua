@@ -24,6 +24,7 @@ local M = {}
 if not Platform.is_windows then
     function M.strip_titlebar() end
     function M.apply_decorations() end
+    function M.begin_drag() return false end
     return M
 end
 
@@ -53,6 +54,8 @@ ffi.cdef([[
     LRESULT  DefWindowProcW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT  CallWindowProcW(WNDPROC lpPrevWndFunc, HWND hWnd,
                              UINT msg, WPARAM wParam, LPARAM lParam);
+    bool     ReleaseCapture(void);
+    LRESULT  SendMessageW(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
     bool     GetWindowRect(HWND hWnd, RECT* lpRect);
 
     /* kernel32.dll */
@@ -76,9 +79,11 @@ local SWP_FRAMECHANGED = 0x0020
 
 local WM_NCCALCSIZE = 0x0083
 local WM_NCHITTEST  = 0x0084
+local WM_NCLBUTTONDOWN = 0x00A1
 
 -- NCHITTEST return values for resize hit-testing along the top edge
 local HTCLIENT      = 1
+local HTCAPTION     = 2
 local HTTOP         = 12
 local HTTOPLEFT     = 13
 local HTTOPRIGHT    = 14
@@ -201,6 +206,22 @@ function M.apply_decorations()
     if Config.get("no_titlebar") then
         M.strip_titlebar()
     end
+end
+
+function M.begin_drag()
+    if not Config.get("no_titlebar") then
+        return false
+    end
+
+    local hwnd = get_own_hwnd()
+    if not hwnd then
+        print("[window] begin_drag: could not find own HWND")
+        return false
+    end
+
+    user32.ReleaseCapture()
+    user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+    return true
 end
 
 return M

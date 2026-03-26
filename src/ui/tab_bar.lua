@@ -3,6 +3,7 @@
 -- Supports click-to-switch. Tab titles follow the focused pane's OSC-2 title.
 
 local Config = require("src.core.config")
+local Window = require("src.core.window")
 
 local M = {}
 
@@ -19,6 +20,11 @@ end
 
 -- Stored tab rects for hit-testing
 local tab_rects = {}
+local plus_rect = nil
+
+local function point_in_rect(x, y, rect)
+    return rect and x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h
+end
 
 function M.draw(workspace, active_tab)
     init()
@@ -30,6 +36,7 @@ function M.draw(workspace, active_tab)
     love.graphics.rectangle("fill", r.x, y, r.w, tab_bar_h)
 
     tab_rects = {}
+    plus_rect = nil
 
     local x = r.x
     local tab_pad_x = 14
@@ -83,6 +90,7 @@ function M.draw(workspace, active_tab)
     love.graphics.setColor(0.60, 0.60, 0.60, 1)
     local ty = math.floor(y + (tab_bar_h - font:getHeight()) / 2)
     love.graphics.print("+", math.floor(x + 9), ty)
+    plus_rect = {x = x, y = y, w = plus_w, h = tab_bar_h}
 
     love.graphics.setFont(saved_font)
     love.graphics.setColor(1, 1, 1, 1)
@@ -90,12 +98,21 @@ end
 
 function M.mousepressed(workspace, x, y, button)
     if button ~= 1 then return end
+
+    if point_in_rect(x, y, plus_rect) then
+        workspace:new_tab()
+        return
+    end
+
     for _, rect in ipairs(tab_rects) do
-        if x >= rect.x and x < rect.x + rect.w and
-           y >= rect.y and y < rect.y + rect.h then
+        if point_in_rect(x, y, rect) then
             workspace:switch_tab(rect.idx)
             return
         end
+    end
+
+    if Window.begin_drag() then
+        return
     end
 end
 
