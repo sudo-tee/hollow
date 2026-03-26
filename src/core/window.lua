@@ -41,6 +41,9 @@ ffi.cdef([[
 
     typedef LRESULT (__stdcall *WNDPROC)(HWND, UINT, WPARAM, LPARAM);
 
+    typedef struct { int left; int top; int right; int bottom; } RECT;
+    typedef struct { int left; int top; int right; int bottom; } MARGINS;
+
     HWND     GetForegroundWindow(void);
     DWORD    GetWindowThreadProcessId(HWND hWnd, DWORD* lpdwProcessId);
     LONG_PTR GetWindowLongPtrW(HWND hWnd, int nIndex);
@@ -50,16 +53,13 @@ ffi.cdef([[
     LRESULT  DefWindowProcW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT  CallWindowProcW(WNDPROC lpPrevWndFunc, HWND hWnd,
                              UINT msg, WPARAM wParam, LPARAM lParam);
+    bool     GetWindowRect(HWND hWnd, RECT* lpRect);
 
     /* kernel32.dll */
     DWORD GetCurrentProcessId(void);
 
-    typedef struct { int left; int top; int right; int bottom; } MARGINS;
-    typedef struct { int left; int top; int right; int bottom; } RECT;
-
     /* dwmapi.dll */
     int __stdcall DwmExtendFrameIntoClientArea(HWND hWnd, const MARGINS* pMarInset);
-    int __stdcall DwmIsCompositionEnabled(bool* pfEnabled);
 ]])
 
 -- ── Constants ────────────────────────────────────────────────────────────────
@@ -109,36 +109,50 @@ local _orig_wndproc = nil
 local _wndproc_cb   = nil
 
 local function install_wndproc(hwnd)
-    -- Capture the original WNDPROC so we can chain calls.
     local orig_ptr = user32.GetWindowLongPtrW(hwnd, GWL_WNDPROC)
     _orig_wndproc = ffi.cast("WNDPROC", orig_ptr)
 
     _wndproc_cb = ffi.cast("WNDPROC", function(h, msg, wp, lp)
+
         if msg == WM_NCCALCSIZE and wp ~= 0 then
-            -- Return 0 with zeroed NCCALCSIZE_PARAMS so the client area
-            -- is the full window rect — this eliminates the DWM top border.
-            -- We still need the resize border on sides and bottom, which DWM
-            -- handles via WS_THICKFRAME hit-testing in WM_NCHITTEST below.
+            -- Call the default handler first so it fills in the normal insets
+            -- (sides + bottom get the standard WS_THICKFRAME resize border).
+            -- Then override only the top: set it to window_top + 1 so the
+            -- title bar height is gone but 1 px DWM accent border remains.
+            local rects = ffi.cast("RECT*", lp)
+            local window_top = rects[0].top          -- save before default clobbers
+            user32.CallWindowProcW(_orig_wndproc, h, msg, wp, lp)
+            rects[0].top = window_top + 1            -- 1 px top inset only
             return 0
         end
 
         if msg == WM_NCHITTEST then
-            -- Let the default handler decide first.
             local result = user32.CallWindowProcW(_orig_wndproc, h, msg, wp, lp)
-            -- If the default says HTCLIENT on the top few pixels, promote it to
-            -- HTTOP so the user can still drag-resize from the top edge.
+            -- After zeroing NCCALCSIZE the top resize band disappears because
+            -- it was part of the non-client area.  Restore it: if the cursor
+            -- is within RESIZE_BAND px of the top window edge, return HTTOP
+            -- (or the corner variants) so drag-resize still works.
             if result == HTCLIENT then
-                -- Decode cursor Y from lParam (low 16 bits = X, high 16 bits = Y,
-                -- both in screen coords as signed 16-bit values).
-                local screen_y = bit.arshift(bit.lshift(lp, 16), 16) -- wrong axis
-                -- lParam for WM_NCHITTEST: low word = x, high word = y
-                local y = bit.arshift(bit.band(lp, 0xFFFF0000), 16)
-                -- Get window rect to find the top edge in screen coords
-                -- (we approximate: if within 4px of the top use HTTOP)
-                -- A simpler approach: just use CallWindowProcW result for edges
-                -- and let HTCLIENT through otherwise.
-                _ = screen_y  -- suppress unused warning
-                _ = y
+                local RESIZE_BAND = 4  -- px, matches Windows default
+                local wr = ffi.new("RECT")
+                user32.GetWindowRect(h, wr)
+                -- lParam screen coords: low word = x, high word = y (signed)
+                local sy = bit.arshift(bit.lshift(tonumber(lp), 0), 0)
+                -- extract high 16 bits as signed
+                local screen_y = bit.arshift(bit.band(tonumber(lp), 0xFFFF0000), 16)
+                local screen_x = bit.bor(bit.band(tonumber(lp), 0xFFFF),
+                    bit.arshift(bit.band(tonumber(lp), 0x8000), 0) ~= 0
+                    and -0x10000 or 0)
+                _ = sy
+                if screen_y >= wr.top and screen_y < wr.top + RESIZE_BAND then
+                    if screen_x < wr.left + RESIZE_BAND then
+                        return HTTOPLEFT
+                    elseif screen_x >= wr.right - RESIZE_BAND then
+                        return HTTOPRIGHT
+                    else
+                        return HTTOP
+                    end
+                end
             end
             return result
         end
@@ -168,11 +182,10 @@ function M.strip_titlebar()
     --    zero-height non-client top border.
     install_wndproc(hwnd)
 
-    -- 3. Collapse DWM's own compositor frame (removes the ~1 px DWM shadow
-    --    strip at the top).  Margins of {0,0,0,0} collapse the sheet;
-    --    {-1,-1,-1,-1} extends the sheet into the whole client area (glass
-    --    effect, not needed here — use 0).
-    local margins = ffi.new("MARGINS", {0, 0, 0, 0})
+    -- 3. Extend DWM frame by 1 px on top so the compositor keeps its drop
+    --    shadow and the window is visually distinct from the desktop.
+    --    {left, right, top, bottom} — only top matters here.
+    local margins = ffi.new("MARGINS", {0, 0, 1, 0})
     dwmapi.DwmExtendFrameIntoClientArea(hwnd, margins)
 
     -- 4. Force a non-client repaint.
