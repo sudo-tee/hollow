@@ -4,7 +4,7 @@
 -- Handles:
 --   • Loading font files at LOGICAL size (never multiply by DPIScale here —
 --     Love2D handles physical rasterisation automatically with highdpi=true).
---   • Applying "linear" filter settings for HiDPI / fractional-DPI displays.
+--   • Applying filter settings (default "nearest" for pixel-crisp glyph sampling).
 --   • Deriving bold/italic/bold_italic variant paths from a regular font path.
 --   • Loading all four style variants as a family table.
 

@@ -62,9 +62,10 @@ g.set_config({
 	-- Fallback fonts to use for missing glyphs. They are tried in order.
 	-- You can specify just the path, or a table with `path` and `scale`.
 	font_fallback_paths = {
-		{ "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7, offset_y = 2 },
-		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf", scale = 1 },
+		{ path = "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7, offset_y = 2 },
+		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf" },
 	},
+	font_ligatures = true, -- Enable font ligatures (if supported by the font)
 
 	--   font_path = "C:/Users/YourName/AppData/Local/Microsoft/Windows/Fonts/JetBrainsMonoNerdFont-Regular.ttf",
 	-- Love2D inside WSL2 (Linux build): use a Linux path.
@@ -88,8 +89,8 @@ g.set_config({
 local c = g.color
 g.set_config({
 	colors = {
-		background = c.from_hex("#0d0f14"),
-		foreground = c.from_hex("#cdd6f4"),
+		background = c.from_hex("#1F1F28"),
+		foreground = c.from_hex("#dcd7ba"),
 		cursor = c.from_hex("#f5a97f"),
 		selection = { 0.24, 0.43, 0.73, 0.4 },
 

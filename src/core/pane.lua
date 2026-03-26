@@ -26,6 +26,32 @@ Pane.__index = Pane
 
 local next_id = 1
 
+-- Parses a shell string that may be a WSL invocation (e.g. "wsl.exe --distribution D --exec /bin/fish")
+-- and returns a table with .distro/.shell fields, or nil if it's not a WSL command.
+local function parse_wsl_tokens(s)
+    if not s then return nil end
+    local t = {}
+    for tok in s:gmatch("%S+") do t[#t+1] = tok end
+    if #t == 0 then return nil end
+    local first = t[1]:lower()
+    if first ~= "wsl.exe" and first ~= "wsl" then return nil end
+    local out = {}
+    local i = 2
+    while i <= #t do
+        local tok = t[i]
+        if tok == "--distribution" and i + 1 <= #t then
+            out.distro = t[i+1]
+            i = i + 2
+        elseif tok == "--exec" and i + 1 <= #t then
+            out.shell = t[i+1]
+            i = i + 2
+        else
+            i = i + 1
+        end
+    end
+    return out
+end
+
 -- LuaJIT null-pointer check: cdata NULL != Lua nil, must cast.
 local function is_null(p)
     return p == nil or ffi.cast("void*", p) == nil
@@ -88,8 +114,23 @@ function Pane.new(cols, rows, opts)
     self.term = gffi.new_terminal(self.cols, self.rows)
 
     -- ── 2. Spawn PTY ──────────────────────────────────────────────────────────
-    local shell = opts.shell or Config.get("shell") or "/bin/sh"
-    self.pty = Pty.spawn(shell, self.cols, self.rows, opts)
+    -- Let Pty.spawn resolve a sensible platform-specific default when no
+    -- shell is configured. Passing a hardcoded "/bin/sh" on Windows causes
+    -- CreateProcessA failures (GLE=2) when the binary isn't present.
+    local shell = opts.shell or Config.get("shell")
+
+    -- If the configured shell looks like a WSL invocation (e.g. "wsl.exe"
+    -- or "wsl.exe --distribution D --exec /bin/fish"), prefer the WSL
+    -- wrapper which constructs the command safely for ConPTY on Windows.
+    local wsl_opts = parse_wsl_tokens(shell)
+    if wsl_opts then
+        for k,v in pairs(opts) do if wsl_opts[k] == nil then wsl_opts[k] = v end end
+        wsl_opts.cols = self.cols
+        wsl_opts.rows = self.rows
+        self.pty = Pty.spawn_wsl(wsl_opts)
+    else
+        self.pty = Pty.spawn(shell, self.cols, self.rows, opts)
+    end
 
     -- ── 3. Register effect callbacks ──────────────────────────────────────────
     -- We use closures so each pane instance has its own callback state.

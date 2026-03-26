@@ -104,7 +104,7 @@ local function blit_canvas(cached, px, scale)
 	love.graphics.setScissor(px.x, px.y, px.w, px.h)
 	love.graphics.setBlendMode("alpha", "premultiplied")
 	love.graphics.setColor(1, 1, 1, 1)
-	love.graphics.draw(cached.canvas, px.x, px.y, 0, 1 / scale, 1 / scale)
+	love.graphics.draw(cached.canvas, math.floor(px.x), math.floor(px.y), 0, 1 / scale, 1 / scale)
 	love.graphics.setBlendMode("alpha", "alphamultiply")
 	love.graphics.setScissor()
 end

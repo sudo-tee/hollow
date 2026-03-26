@@ -9,7 +9,7 @@ local defaults = {
 	font_size       = 14,
 	font_path       = nil,      -- nil = use built-in monospace
 	font_hinting    = "normal",
-	font_filter     = "linear",
+	font_filter     = "nearest",
 	font_embolden   = 0,
 	font_supersample = 1,
     startup_present_frame = true,
@@ -71,11 +71,30 @@ end
 config = deep_copy(defaults)
 
 function M.load()
-    local paths = {
-        Platform.config_dir() .. (Platform.is_windows and "\\init.lua" or "/init.lua"),
-        "./conf/init.lua",   -- project-local fallback for dev
-    }
-    for _, p in ipairs(paths) do
+    local tried = {}
+
+    table.insert(tried, Platform.config_dir() .. (Platform.is_windows and "\\init.lua" or "/init.lua"))
+
+    -- love.filesystem.load works inside a .love bundle or when launched from a
+    -- different working directory; io.open cannot reach virtual-FS paths.
+    if love and love.filesystem and love.filesystem.load then
+        local chunk, err = love.filesystem.load("conf/init.lua")
+        if chunk then
+            local ok, err2 = pcall(chunk)
+            if not ok then
+                io.stderr:write("[config] Error in conf/init.lua: " .. tostring(err2) .. "\n")
+            else
+                print("[config] Loaded: conf/init.lua (virtual FS)")
+                return
+            end
+        end
+        local src_base = love.filesystem.getSourceBaseDirectory() or "."
+        table.insert(tried, src_base .. "/conf/init.lua")
+    end
+
+    table.insert(tried, "./conf/init.lua")
+
+    for _, p in ipairs(tried) do
         local f = io.open(p, "r")
         if f then
             f:close()
@@ -88,7 +107,10 @@ function M.load()
             return
         end
     end
-    print("[config] No user config found, using defaults.")
+
+    io.stderr:write("[config] No user config found. Paths tried:\n")
+    for _, p in ipairs(tried) do io.stderr:write("  " .. tostring(p) .. "\n") end
+    print("[config] Using defaults.")
 end
 
 -- Run the user init script (executes after API is set up)
