@@ -481,12 +481,18 @@ local function draw_rows_to_canvas(
 						local res_bg = lib.ghostty_render_state_row_cells_get(
 							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
 						if res_bg == gffi.GHOSTTY_SUCCESS then
-							flush_glyph_batches()
-							set_color_if_needed(
-								byte_to_float[_bg_rgb.r], byte_to_float[_bg_rgb.g], byte_to_float[_bg_rgb.b], 1)
-							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-							if counters_enabled then
-								stats.bg_rect_draws = stats.bg_rect_draws + 1
+							local br = byte_to_float[_bg_rgb.r]
+							local bg_c = byte_to_float[_bg_rgb.g]
+							local bb = byte_to_float[_bg_rgb.b]
+							-- Skip drawing if it matches the default background, which we already cleared the row with.
+							-- This prevents overwriting glyphs from previous cells that bleed into this empty cell.
+							if math.abs(br - def_bg_r) > 0.001 or math.abs(bg_c - def_bg_g) > 0.001 or math.abs(bb - def_bg_b) > 0.001 then
+								flush_glyph_batches()
+								set_color_if_needed(br, bg_c, bb, 1)
+								love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
+								if counters_enabled then
+									stats.bg_rect_draws = stats.bg_rect_draws + 1
+								end
 							end
 						end
 					else
@@ -541,11 +547,13 @@ local function draw_rows_to_canvas(
 								bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
 
 							if has_bg then
-								flush_glyph_batches()
-								set_color_if_needed(bg_r, bg_g, bg_b, 1)
-								love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-								if counters_enabled then
-									stats.bg_rect_draws = stats.bg_rect_draws + 1
+								if math.abs(bg_r - def_bg_r) > 0.001 or math.abs(bg_g - def_bg_g) > 0.001 or math.abs(bg_b - def_bg_b) > 0.001 then
+									flush_glyph_batches()
+									set_color_if_needed(bg_r, bg_g, bg_b, 1)
+									love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
+									if counters_enabled then
+										stats.bg_rect_draws = stats.bg_rect_draws + 1
+									end
 								end
 							end
 

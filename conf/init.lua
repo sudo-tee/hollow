@@ -58,10 +58,12 @@ g.set_config({
 	-- font_bold_path = "fonts/RecMonoLinearNerdFontMono-Bold.ttf",
 	-- font_italic_path = "fonts/RecMonoLinearNerdFontMono-Italic.ttf",
 	-- font_bold_italic_path = "fonts/RecMonoLinearNerdFontMono-BoldItalic.ttf",
-	
+
 	-- Fallback fonts to use for missing glyphs. They are tried in order.
+	-- You can specify just the path, or a table with `path` and `scale`.
 	font_fallback_paths = {
-		"fonts/SymbolsNerdFontMono-Regular.ttf",
+		{ "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7 },
+		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf", scale = 0.8 },
 	},
 
 	--   font_path = "C:/Users/YourName/AppData/Local/Microsoft/Windows/Fonts/JetBrainsMonoNerdFont-Regular.ttf",

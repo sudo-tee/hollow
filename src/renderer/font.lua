@@ -52,10 +52,19 @@ local function load_fallbacks(paths, size, hinting)
 		return nil
 	end
 	local out = {}
-	for _, path in ipairs(paths) do
+	for _, item in ipairs(paths) do
+		local path
+		local scale = 1.0
+		if type(item) == "table" then
+			path = item.path or item[1]
+			scale = item.scale or 1.0
+		else
+			path = item
+		end
+
 		if path and font_exists(path) then
-			out[#out + 1] = configure_font(load_font(path, size, hinting))
-			print("[renderer] Loading fallback font: " .. path)
+			out[#out + 1] = configure_font(load_font(path, math.floor(size * scale), hinting))
+			print("[renderer] Loading fallback font: " .. path .. " (scale " .. scale .. ")")
 		end
 	end
 	if #out == 0 then
