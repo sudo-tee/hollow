@@ -221,13 +221,15 @@ function App.mousepressed(x, y, button, istouch, presses)
 	if not ws then
 		return
 	end
+	if TabBar.mousepressed(ws, x, y, button) then
+		return
+	end
 	-- Click to focus a pane
 	local pane = ws:get_pane_at(x, y)
 	if pane then
 		ws:active_tab():focus_pane(pane)
 		EventBus.emit("pane:focus", pane)
 	end
-	TabBar.mousepressed(ws, x, y, button)
 end
 
 function App.mousereleased(x, y, button) end

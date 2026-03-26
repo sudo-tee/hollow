@@ -22,8 +22,8 @@ local default_bindings = {
     { mods={ctrl=true,shift=true}, key="e",     action="split_v"         },
     { mods={ctrl=true,shift=true}, key="q",     action="close_pane"      },
     -- Focus
-    { mods={ctrl=true},            key="[",     action="focus_prev"      },
-    { mods={ctrl=true},            key="]",     action="focus_next"      },
+    { mods={ctrl=true,shift=true}, key="[",     action="focus_prev"      },
+    { mods={ctrl=true,shift=true}, key="]",     action="focus_next"      },
     -- Workspaces
     { mods={ctrl=true,shift=true}, key="n",     action="new_workspace"   },
     { mods={ctrl=true,shift=true}, key="right", action="next_workspace"  },
@@ -104,6 +104,8 @@ function M.encode(key, mods)
         if byte and byte >= 97 and byte <= 122 then  -- a-z
             return string.char(byte - 96)
         end
+        if key == "[" then return string.char(27) end
+        if key == "]" then return string.char(29) end
     end
     -- Special keys
     if special[key] then return special[key] end

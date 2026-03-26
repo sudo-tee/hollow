@@ -88,7 +88,7 @@ The `hollow` global is available before the file runs.
 
 ```lua
 hollow.set_config({
-    font_path = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
+    font_path = "fonts/JetBrainsMonoNerdFont-Regular.ttf",
     font_size = 15,
 })
 ```

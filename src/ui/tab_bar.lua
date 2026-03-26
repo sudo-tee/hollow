@@ -97,23 +97,30 @@ function M.draw(workspace, active_tab)
 end
 
 function M.mousepressed(workspace, x, y, button)
-    if button ~= 1 then return end
+    if button ~= 1 then return false end
+
+    local r = workspace.rect
+    if y < r.y or y >= r.y + tab_bar_h or x < r.x or x >= r.x + r.w then
+        return false
+    end
 
     if point_in_rect(x, y, plus_rect) then
         workspace:new_tab()
-        return
+        return true
     end
 
     for _, rect in ipairs(tab_rects) do
         if point_in_rect(x, y, rect) then
             workspace:switch_tab(rect.idx)
-            return
+            return true
         end
     end
 
     if Window.begin_drag() then
-        return
+        return true
     end
+
+    return true
 end
 
 return M

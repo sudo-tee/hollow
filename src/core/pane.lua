@@ -17,6 +17,7 @@ local bit    = require("bit")
 local gffi   = require("src.core.ghostty_ffi")
 local Pty    = require("src.core.pty")
 local Config = require("src.core.config")
+local KeyMap = require("src.core.keymap")
 
 local lib = gffi.lib
 
@@ -215,6 +216,12 @@ end
 function Pane:send_key(love_key, mods, action)
     if self._child_exited then return end
 
+    local fallback = KeyMap.encode(love_key, mods or {})
+    if fallback and (love_key == "escape" or (mods and mods.ctrl and love_key == "[")) then
+        self.pty:write_str(fallback)
+        return true
+    end
+
     local gkey   = gffi.love_key_to_ghostty(love_key)
     if gkey == gffi.KEY.UNIDENTIFIED then return end
 
@@ -251,14 +258,20 @@ function Pane:send_key(love_key, mods, action)
     return false
 end
 
--- Send raw text (e.g. from love.textinput, or paste).
+-- Send raw text from normal typing / IME composition.
 function Pane:send_text(text)
+    if self._child_exited then return end
+    self.pty:write_str(text)
+end
+
+-- Send pasted text, using bracketed paste only when the app requested it.
+function Pane:send_paste(text)
     if self._child_exited then return end
     if gffi.terminal_mode(self.term, gffi.MODE.BRACKETED_PASTE) then
         self.pty:write_str("\27[200~" .. text .. "\27[201~")
-    else
-        self.pty:write_str(text)
+        return
     end
+    self.pty:write_str(text)
 end
 
 -- ── Resize ────────────────────────────────────────────────────────────────────
