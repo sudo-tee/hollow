@@ -55,15 +55,20 @@ local function load_fallbacks(paths, size, hinting)
 	for _, item in ipairs(paths) do
 		local path
 		local scale = 1.0
+		local offset_x = 0
+		local offset_y = 0
 		if type(item) == "table" then
 			path = item.path or item[1]
 			scale = item.scale or 1.0
+			offset_x = item.offset_x or 0
+			offset_y = item.offset_y or 0
 		else
 			path = item
 		end
 
 		if path and font_exists(path) then
-			out[#out + 1] = configure_font(load_font(path, math.floor(size * scale), hinting))
+			local f = configure_font(load_font(path, math.floor(size * scale), hinting))
+			out[#out + 1] = { font = f, offset_x = offset_x, offset_y = offset_y }
 			print("[renderer] Loading fallback font: " .. path .. " (scale " .. scale .. ")")
 		end
 	end
@@ -71,13 +76,6 @@ local function load_fallbacks(paths, size, hinting)
 		return nil
 	end
 	return out
-end
-
-local function apply_fallbacks(font, fallbacks)
-	if fallbacks and #fallbacks > 0 then
-		font:setFallbacks(unpack(fallbacks))
-	end
-	return font
 end
 
 function M.get_filter()
@@ -164,10 +162,10 @@ function M.load_family(font_path, font_size, font_hinting)
 
 	if font_path then
 		normal_font = configure_font(load_font(font_path, font_size, font_hinting))
-		family.normal = apply_fallbacks(normal_font, fallback_fonts)
+		family.normal = normal_font
 	else
 		normal_font = configure_font(love.graphics.newFont(font_size, font_hinting))
-		family.normal = apply_fallbacks(normal_font, fallback_fonts)
+		family.normal = normal_font
 	end
 
 	family.fallbacks = fallback_fonts or {}
@@ -182,21 +180,15 @@ function M.load_family(font_path, font_size, font_hinting)
 		bold_italic_path = bold_italic_path or derive_variant(font_path, "bold_italic")
 
 		if bold_path then
-			family.bold = apply_fallbacks(
-				configure_font(load_font(bold_path, font_size, font_hinting)),
-				fallback_fonts)
+			family.bold = configure_font(load_font(bold_path, font_size, font_hinting))
 			print("[renderer] Loading bold font: " .. bold_path)
 		end
 		if italic_path then
-			family.italic = apply_fallbacks(
-				configure_font(load_font(italic_path, font_size, font_hinting)),
-				fallback_fonts)
+			family.italic = configure_font(load_font(italic_path, font_size, font_hinting))
 			print("[renderer] Loading italic font: " .. italic_path)
 		end
 		if bold_italic_path then
-			family.bold_italic = apply_fallbacks(
-				configure_font(load_font(bold_italic_path, font_size, font_hinting)),
-				fallback_fonts)
+			family.bold_italic = configure_font(load_font(bold_italic_path, font_size, font_hinting))
 			print("[renderer] Loading bold italic font: " .. bold_italic_path)
 		end
 	end

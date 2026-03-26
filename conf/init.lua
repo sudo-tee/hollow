@@ -63,7 +63,7 @@ g.set_config({
 	-- You can specify just the path, or a table with `path` and `scale`.
 	font_fallback_paths = {
 		{ "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7 },
-		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf", scale = 0.8 },
+		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf", scale = 1 },
 	},
 
 	--   font_path = "C:/Users/YourName/AppData/Local/Microsoft/Windows/Fonts/JetBrainsMonoNerdFont-Regular.ttf",

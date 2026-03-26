@@ -55,6 +55,8 @@ local font_normal_ss      = nil
 local font_bold_ss        = nil
 local font_italic_ss      = nil
 local font_bold_italic_ss = nil
+local font_fallbacks      = nil
+local font_fallbacks_ss   = nil
 local font_filter         = "linear"
 local font_embolden       = 0
 local char_w          = 8
@@ -147,7 +149,7 @@ local function new_glyph_page(atlas)
 	}
 end
 
-local function ensure_glyph_atlas(font, cell_w, cell_h, baseline)
+local function ensure_glyph_atlas(font, cell_w, cell_h, baseline, scale_factor, fallbacks)
 	local cached = glyph_atlas_cache[font]
 	if cached and cached.cell_w == cell_w and cached.cell_h == cell_h and cached.baseline == baseline then
 		return cached
@@ -157,6 +159,8 @@ local function ensure_glyph_atlas(font, cell_w, cell_h, baseline)
 		cell_w = cell_w,
 		cell_h = cell_h,
 		baseline = baseline,
+		scale = scale_factor,
+		fallbacks = fallbacks,
 		page_cols = 32,
 		page_rows = 16,
 		batch_target = 0,
@@ -217,9 +221,24 @@ local function atlas_get_quad(atlas, cp)
 	local pr, pg, pb, pa = love.graphics.getColor()
 	love.graphics.setCanvas(page.canvas)
 	love.graphics.origin()
-	love.graphics.setFont(atlas.font)
+
+	local draw_font = atlas.font
+	local dx, dy = 0, 0
+	if atlas.fallbacks and not draw_font:hasGlyphs(text) then
+		for i = 1, #atlas.fallbacks do
+			local fb = atlas.fallbacks[i]
+			if fb.font:hasGlyphs(text) then
+				draw_font = fb.font
+				dx = (fb.offset_x or 0) * atlas.scale
+				dy = (fb.offset_y or 0) * atlas.scale
+				break
+			end
+		end
+	end
+
+	love.graphics.setFont(draw_font)
 	love.graphics.setColor(1, 1, 1, 1)
-	draw_text_with_embolden(text, gx, gy + atlas.baseline)
+	draw_text_with_embolden(text, gx + dx, gy + atlas.baseline + dy)
 	love.graphics.setCanvas(prev_canvas)
 	love.graphics.setFont(prev_font)
 	love.graphics.setColor(pr, pg, pb, pa)
@@ -239,11 +258,11 @@ local function atlas_get_quad(atlas, cp)
 	return entry
 end
 
-local function prewarm_glyph_range(font, cell_w, cell_h, baseline, first_cp, last_cp, sprite_count)
+local function prewarm_glyph_range(font, cell_w, cell_h, baseline, scale, fallbacks, first_cp, last_cp, sprite_count)
 	if not font then
 		return
 	end
-	local atlas = ensure_glyph_atlas(font, cell_w, cell_h, baseline)
+	local atlas = ensure_glyph_atlas(font, cell_w, cell_h, baseline, scale, fallbacks)
 	ensure_glyph_batch(atlas, sprite_count or 128)
 	for cp = first_cp, last_cp do
 		atlas_get_quad(atlas, cp)
@@ -333,7 +352,7 @@ end
 -- the pane-level dirty flag when done.
 local function draw_rows_to_canvas(
 	pane, dirty_only, ox, oy, pw, ph, scale,
-	normal_font, bold_font, italic_font, bold_italic_font,
+	normal_font, bold_font, italic_font, bold_italic_font, fallbacks,
 	def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b, colors_struct
 )
 	local rs = pane.render_state
@@ -350,10 +369,10 @@ local function draw_rows_to_canvas(
 	local current_font = normal_font
 	local current_r, current_g, current_b = -1, -1, -1
 	local cols = math.max(1, math.floor((pw + cell_w - 1) / cell_w))
-	local normal_atlas = ensure_glyph_atlas(normal_font, cell_w, cell_h, baseline)
-	local bold_atlas = ensure_glyph_atlas(bold_font, cell_w, cell_h, baseline)
-	local italic_atlas = ensure_glyph_atlas(italic_font, cell_w, cell_h, baseline)
-	local bold_italic_atlas = ensure_glyph_atlas(bold_italic_font, cell_w, cell_h, baseline)
+	local normal_atlas = ensure_glyph_atlas(normal_font, cell_w, cell_h, baseline, scale, fallbacks)
+	local bold_atlas = ensure_glyph_atlas(bold_font, cell_w, cell_h, baseline, scale, fallbacks)
+	local italic_atlas = ensure_glyph_atlas(italic_font, cell_w, cell_h, baseline, scale, fallbacks)
+	local bold_italic_atlas = ensure_glyph_atlas(bold_italic_font, cell_w, cell_h, baseline, scale, fallbacks)
 	local atlases = { normal_atlas }
 	if bold_atlas ~= normal_atlas then atlases[#atlases + 1] = bold_atlas end
 	if italic_atlas ~= normal_atlas and italic_atlas ~= bold_atlas then atlases[#atlases + 1] = italic_atlas end
@@ -560,17 +579,45 @@ local function draw_rows_to_canvas(
 							if text then
 								if not has_bg and not underline then
 									flush_glyph_batches()
+									
+									local dx, dy = 0, 0
+									if fallbacks and not draw_font:hasGlyphs(text) then
+										for i = 1, #fallbacks do
+											local fb = fallbacks[i]
+											if fb.font:hasGlyphs(text) then
+												draw_font = fb.font
+												dx = (fb.offset_x or 0) * scale
+												dy = (fb.offset_y or 0) * scale
+												break
+											end
+										end
+									end
+
 									set_font_if_needed(draw_font)
 									set_color_if_needed(fg_r, fg_g, fg_b, 1)
-									draw_text_with_embolden(text, cx, py + baseline)
+									draw_text_with_embolden(text, cx + dx, py + baseline + dy)
 									if counters_enabled then
 										stats.glyph_draws = stats.glyph_draws + 1 + (font_embolden > 0 and 1 or 0)
 									end
 								else
 									flush_glyph_batches()
+									
+									local dx, dy = 0, 0
+									if fallbacks and not draw_font:hasGlyphs(text) then
+										for i = 1, #fallbacks do
+											local fb = fallbacks[i]
+											if fb.font:hasGlyphs(text) then
+												draw_font = fb.font
+												dx = (fb.offset_x or 0) * scale
+												dy = (fb.offset_y or 0) * scale
+												break
+											end
+										end
+									end
+
 									set_font_if_needed(draw_font)
 									set_color_if_needed(fg_r, fg_g, fg_b, 1)
-									draw_text_with_embolden(text, cx, py + baseline)
+									draw_text_with_embolden(text, cx + dx, py + baseline + dy)
 									if counters_enabled then
 										stats.glyph_draws = stats.glyph_draws + 1 + (font_embolden > 0 and 1 or 0)
 									end
@@ -663,18 +710,21 @@ function M.init(font_path, font_size)
 	font_bold = family.bold
 	font_italic = family.italic
 	font_bold_italic = family.bold_italic
+	font_fallbacks = family.fallbacks
 	love.graphics.setFont(font_normal)
 
 	font_normal_ss = nil
 	font_bold_ss = nil
 	font_italic_ss = nil
 	font_bold_italic_ss = nil
+	font_fallbacks_ss = nil
 	if font_supersample > 1 then
 		local ss_family = Font.load_family(font_path, font_size * font_supersample, font_hinting)
 		font_normal_ss = ss_family.normal
 		font_bold_ss = ss_family.bold
 		font_italic_ss = ss_family.italic
 		font_bold_italic_ss = ss_family.bold_italic
+		font_fallbacks_ss = ss_family.fallbacks
 	end
 
 	-- ── Cell metrics ──────────────────────────────────────────────────────────
@@ -703,18 +753,18 @@ function M.init(font_path, font_size)
 	local atlas_cell_w = char_w * font_supersample
 	local atlas_cell_h = char_h * font_supersample
 	local atlas_baseline = baseline_offset * font_supersample
-	prewarm_glyph_range(font_normal, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
-	prewarm_glyph_range(font_bold, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
-	prewarm_glyph_range(font_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
-	prewarm_glyph_range(font_bold_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
+	prewarm_glyph_range(font_normal, atlas_cell_w, atlas_cell_h, atlas_baseline, font_supersample, font_fallbacks, 33, 126, 256)
+	prewarm_glyph_range(font_bold, atlas_cell_w, atlas_cell_h, atlas_baseline, font_supersample, font_fallbacks, 33, 126, 256)
+	prewarm_glyph_range(font_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, font_supersample, font_fallbacks, 33, 126, 256)
+	prewarm_glyph_range(font_bold_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, font_supersample, font_fallbacks, 33, 126, 256)
 	if font_normal_ss then
 		local ss_cell_w = char_w * font_supersample
 		local ss_cell_h = char_h * font_supersample
 		local ss_baseline = baseline_offset * font_supersample
-		prewarm_glyph_range(font_normal_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
-		prewarm_glyph_range(font_bold_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
-		prewarm_glyph_range(font_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
-		prewarm_glyph_range(font_bold_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
+		prewarm_glyph_range(font_normal_ss, ss_cell_w, ss_cell_h, ss_baseline, font_supersample, font_fallbacks_ss, 33, 126, 256)
+		prewarm_glyph_range(font_bold_ss, ss_cell_w, ss_cell_h, ss_baseline, font_supersample, font_fallbacks_ss, 33, 126, 256)
+		prewarm_glyph_range(font_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, font_supersample, font_fallbacks_ss, 33, 126, 256)
+		prewarm_glyph_range(font_bold_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, font_supersample, font_fallbacks_ss, 33, 126, 256)
 	end
 
 	-- Font or config changed: all cached pane canvases are now stale.
@@ -864,7 +914,7 @@ function M.draw_pane(pane, is_focused)
 
 	draw_rows_to_canvas(
 		pane, dirty_only, 0, 0, cw, ch, scale,
-		nf, bf, itf, bif,
+		nf, bf, itf, bif, use_ss and font_fallbacks_ss or font_fallbacks,
 		def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b, colors_struct)
 
 	cached.dirty_all = false
