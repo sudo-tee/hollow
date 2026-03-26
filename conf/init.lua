@@ -31,6 +31,14 @@ g.set_config({
 	font_size = 15,
 	-- Hinting options: "normal", "light", "mono", "none"
 	font_hinting = "light",
+	-- Texture sampling for font/canvas rendering: "linear" or "nearest"
+	-- "nearest" gives sharper glyph edges at 1:1 scale (no fractional DPI).
+	-- "linear" is softer but handles non-integer DPI scales more gracefully.
+	font_filter = "nearest",
+	-- Synthetic horizontal stroke thickening in pixels. 0 = off.
+	-- With font_filter="nearest": use 0 (off) or 1.0 (crisp 1px thicker).
+	-- With font_filter="linear": fractional values like 0.5 give subtle weight.
+	font_embolden = 0.1,
 	-- Experimental pane supersampling.  1 = off, 2 = render text to a 2x canvas
 	-- and scale it back down.
 	font_supersample = 1,

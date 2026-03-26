@@ -55,6 +55,8 @@ local font_normal_ss      = nil
 local font_bold_ss        = nil
 local font_italic_ss      = nil
 local font_bold_italic_ss = nil
+local font_filter         = "linear"
+local font_embolden       = 0
 local char_w          = 8
 local char_h          = 16
 local baseline_offset = 0   -- pixels from cell top to font baseline
@@ -62,7 +64,9 @@ local cfg_colors      = nil
 local font_supersample = 1
 -- pane_canvas_cache[pane] = { canvas, w, h, dirty_all }
 local pane_canvas_cache = setmetatable({}, { __mode = "k" })
+local glyph_atlas_cache = setmetatable({}, { __mode = "k" })
 local codepoints_to_utf8
+local utf8_char
 local byte_to_float = {}
 
 for i = 0, 255 do
@@ -87,7 +91,7 @@ local function ensure_pane_canvas(pane, w, h)
 		return cached
 	end
 	local canvas = love.graphics.newCanvas(w, h)
-	canvas:setFilter("linear", "linear")
+	canvas:setFilter(font_filter, font_filter)
 	cached = { canvas = canvas, w = w, h = h, dirty_all = true }
 	pane_canvas_cache[pane] = cached
 	return cached
@@ -96,9 +100,25 @@ end
 -- Composite the pane canvas onto the screen at the pane's logical position.
 local function blit_canvas(cached, px, scale)
 	love.graphics.setScissor(px.x, px.y, px.w, px.h)
+	love.graphics.setBlendMode("alpha", "premultiplied")
 	love.graphics.setColor(1, 1, 1, 1)
 	love.graphics.draw(cached.canvas, px.x, px.y, 0, 1 / scale, 1 / scale)
+	love.graphics.setBlendMode("alpha", "alphamultiply")
 	love.graphics.setScissor()
+end
+
+local function draw_text_with_embolden(text, x, y)
+	love.graphics.print(text, x, y)
+	if font_embolden > 0 then
+		love.graphics.print(text, x + font_embolden, y)
+	end
+end
+
+local function atlas_add_with_embolden(batch, quad, x, y)
+	batch:add(quad, x, y)
+	if font_embolden > 0 then
+		batch:add(quad, x + font_embolden, y)
+	end
 end
 
 local function pick_style_font(is_bold, is_italic, normal_font, bold_font, italic_font, bold_italic_font)
@@ -110,6 +130,124 @@ local function pick_style_font(is_bold, is_italic, normal_font, bold_font, itali
 		return italic_font
 	end
 	return normal_font
+end
+
+local function new_glyph_page(atlas)
+	local canvas = love.graphics.newCanvas(
+		atlas.page_cols * atlas.cell_w,
+		atlas.page_rows * atlas.cell_h
+	)
+	canvas:setFilter(font_filter, font_filter)
+	return {
+		canvas = canvas,
+		batch = nil,
+		batch_size = 0,
+		pending_count = 0,
+		next_slot = 0,
+	}
+end
+
+local function ensure_glyph_atlas(font, cell_w, cell_h, baseline)
+	local cached = glyph_atlas_cache[font]
+	if cached and cached.cell_w == cell_w and cached.cell_h == cell_h and cached.baseline == baseline then
+		return cached
+	end
+	cached = {
+		font = font,
+		cell_w = cell_w,
+		cell_h = cell_h,
+		baseline = baseline,
+		page_cols = 32,
+		page_rows = 16,
+		batch_target = 0,
+		pages = {},
+		glyphs = {},
+	}
+	glyph_atlas_cache[font] = cached
+	return cached
+end
+
+local function ensure_glyph_batch(atlas, sprite_count)
+	atlas.batch_target = math.max(atlas.batch_target or 0, sprite_count, 1)
+	for i = 1, #atlas.pages do
+		local page = atlas.pages[i]
+		if not page.batch or page.batch_size < atlas.batch_target then
+			page.batch_size = atlas.batch_target
+			page.batch = love.graphics.newSpriteBatch(page.canvas, page.batch_size, "stream")
+		end
+	end
+	return atlas
+end
+
+local function atlas_get_quad(atlas, cp)
+	local entry = atlas.glyphs[cp]
+	if entry then
+		return entry
+	end
+	if not utf8_char then
+		return nil
+	end
+
+	local page = atlas.pages[#atlas.pages]
+	local page_capacity = atlas.page_cols * atlas.page_rows
+	if not page or page.next_slot >= page_capacity then
+		page = new_glyph_page(atlas)
+		atlas.pages[#atlas.pages + 1] = page
+		if atlas.batch_target > 0 then
+			page.batch_size = atlas.batch_target
+			page.batch = love.graphics.newSpriteBatch(page.canvas, page.batch_size, "stream")
+		end
+	end
+
+	local slot = page.next_slot
+	page.next_slot = slot + 1
+	local gx = (slot % atlas.page_cols) * atlas.cell_w
+	local gy = math.floor(slot / atlas.page_cols) * atlas.cell_h
+	local text = utf8_char(cp)
+	if not text then
+		return nil
+	end
+
+	local was_on_canvas = love.graphics.getCanvas() ~= nil
+	if was_on_canvas then
+		return nil
+	end
+	local prev_canvas = love.graphics.getCanvas()
+	local prev_font = love.graphics.getFont()
+	local pr, pg, pb, pa = love.graphics.getColor()
+	love.graphics.setCanvas(page.canvas)
+	love.graphics.origin()
+	love.graphics.setFont(atlas.font)
+	love.graphics.setColor(1, 1, 1, 1)
+	draw_text_with_embolden(text, gx, gy + atlas.baseline)
+	love.graphics.setCanvas(prev_canvas)
+	love.graphics.setFont(prev_font)
+	love.graphics.setColor(pr, pg, pb, pa)
+
+	entry = {
+		page = page,
+		quad = love.graphics.newQuad(
+			gx,
+			gy,
+			atlas.cell_w,
+			atlas.cell_h,
+			atlas.page_cols * atlas.cell_w,
+			atlas.page_rows * atlas.cell_h
+		),
+	}
+	atlas.glyphs[cp] = entry
+	return entry
+end
+
+local function prewarm_glyph_range(font, cell_w, cell_h, baseline, first_cp, last_cp, sprite_count)
+	if not font then
+		return
+	end
+	local atlas = ensure_glyph_atlas(font, cell_w, cell_h, baseline)
+	ensure_glyph_batch(atlas, sprite_count or 128)
+	for cp = first_cp, last_cp do
+		atlas_get_quad(atlas, cp)
+	end
 end
 
 local function stat_inc(key)
@@ -167,6 +305,17 @@ local function resolve_style_color(style_color, colors_struct, def_r, def_g, def
 	return def_r, def_g, def_b, false
 end
 
+local function measure_cell_width(font)
+	local max_w = 0
+	for cp = 32, 126 do
+		local ch = string.char(cp)
+		max_w = math.max(max_w, font:getWidth(ch))
+	end
+	max_w = math.max(max_w, font:getWidth(string.rep("W", 32)) / 32)
+	max_w = math.max(max_w, font:getWidth(string.rep(" ", 32)) / 32)
+	return math.floor(max_w + 0.5)
+end
+
 -- ── Draw rows to canvas ───────────────────────────────────────────────────────
 -- Renders terminal cell content into the currently-bound canvas.
 -- Call with the canvas already set and the graphics origin reset to (0,0).
@@ -200,12 +349,20 @@ local function draw_rows_to_canvas(
 	local counters_enabled = stats_flags.counters_enabled
 	local current_font = normal_font
 	local current_r, current_g, current_b = -1, -1, -1
-
-	local run_parts = {}
-	local run_len = 0
-	local run_x = 0
-	local run_font = nil
-	local run_fg_r, run_fg_g, run_fg_b = 0, 0, 0
+	local cols = math.max(1, math.floor((pw + cell_w - 1) / cell_w))
+	local normal_atlas = ensure_glyph_atlas(normal_font, cell_w, cell_h, baseline)
+	local bold_atlas = ensure_glyph_atlas(bold_font, cell_w, cell_h, baseline)
+	local italic_atlas = ensure_glyph_atlas(italic_font, cell_w, cell_h, baseline)
+	local bold_italic_atlas = ensure_glyph_atlas(bold_italic_font, cell_w, cell_h, baseline)
+	local atlases = { normal_atlas }
+	if bold_atlas ~= normal_atlas then atlases[#atlases + 1] = bold_atlas end
+	if italic_atlas ~= normal_atlas and italic_atlas ~= bold_atlas then atlases[#atlases + 1] = italic_atlas end
+	if bold_italic_atlas ~= normal_atlas and bold_italic_atlas ~= bold_atlas and bold_italic_atlas ~= italic_atlas then
+		atlases[#atlases + 1] = bold_italic_atlas
+	end
+	for i = 1, #atlases do
+		ensure_glyph_batch(atlases[i], cols)
+	end
 
 	local function set_color_if_needed(r, g, b, a)
 		if current_r ~= r or current_g ~= g or current_b ~= b then
@@ -227,20 +384,34 @@ local function draw_rows_to_canvas(
 		end
 	end
 
-	local function flush_text_run(py)
-		if run_len == 0 then
-			return
+	local function glyph_atlas_for_font(font)
+		if font == bold_italic_font then
+			return bold_italic_atlas
+		elseif font == bold_font then
+			return bold_atlas
+		elseif font == italic_font then
+			return italic_atlas
 		end
-		set_font_if_needed(run_font)
-		set_color_if_needed(run_fg_r, run_fg_g, run_fg_b, 1)
-		love.graphics.print(table.concat(run_parts, "", 1, run_len), run_x, py + baseline)
-		if counters_enabled then
-			stats.glyph_draws = stats.glyph_draws + 1
+		return normal_atlas
+	end
+
+	local function flush_glyph_batches()
+		for i = 1, #atlases do
+			local atlas = atlases[i]
+			for j = 1, #atlas.pages do
+				local page = atlas.pages[j]
+				if page.pending_count > 0 then
+					set_color_if_needed(1, 1, 1, 1)
+					page.batch:flush()
+					love.graphics.draw(page.batch)
+					if counters_enabled then
+						stats.glyph_draws = stats.glyph_draws + page.pending_count
+					end
+					page.batch:clear()
+					page.pending_count = 0
+				end
+			end
 		end
-		for i = 1, run_len do
-			run_parts[i] = nil
-		end
-		run_len = 0
 	end
 
 	if not dirty_only then
@@ -270,7 +441,15 @@ local function draw_rows_to_canvas(
 		end
 
 		if should_draw then
-			run_len = 0
+			for i = 1, #atlases do
+				for j = 1, #atlases[i].pages do
+					local page = atlases[i].pages[j]
+					if page.batch then
+						page.batch:clear()
+					end
+					page.pending_count = 0
+				end
+			end
 			if dirty_only then
 				-- Partial redraw: clear just this row with default bg before
 				-- redrawing, so that cells that disappeared don't leave ghosts.
@@ -302,26 +481,13 @@ local function draw_rows_to_canvas(
 						local res_bg = lib.ghostty_render_state_row_cells_get(
 							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
 						if res_bg == gffi.GHOSTTY_SUCCESS then
-							flush_text_run(py)
+							flush_glyph_batches()
 							set_color_if_needed(
 								byte_to_float[_bg_rgb.r], byte_to_float[_bg_rgb.g], byte_to_float[_bg_rgb.b], 1)
 							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
 							if counters_enabled then
 								stats.bg_rect_draws = stats.bg_rect_draws + 1
 							end
-						else
-							if run_len == 0 then
-								run_x = cx
-								run_font = normal_font
-								run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
-							elseif run_font ~= normal_font or run_fg_r ~= def_fg_r or run_fg_g ~= def_fg_g or run_fg_b ~= def_fg_b then
-								flush_text_run(py)
-								run_x = cx
-								run_font = normal_font
-								run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
-							end
-							run_len = run_len + 1
-							run_parts[run_len] = " "
 						end
 					else
 						local clen = math.min(glen, 16)
@@ -337,22 +503,22 @@ local function draw_rows_to_canvas(
 						local inverse   = _style.inverse
 
 						local handled_plain_ascii = false
-						if not bold and not italic and not underline and not inverse
-							and _style.fg_color.tag == 0 and _style.bg_color.tag == 0 and clen == 1 then
+						if not underline and not inverse and _style.bg_color.tag == 0 and clen == 1 then
 							local cp = tonumber(_grapheme_buf[0])
-							if cp >= 32 and cp < 127 then
-								if run_len == 0 then
-									run_x = cx
-									run_font = normal_font
-									run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
-								elseif run_font ~= normal_font or run_fg_r ~= def_fg_r or run_fg_g ~= def_fg_g or run_fg_b ~= def_fg_b then
-									flush_text_run(py)
-									run_x = cx
-									run_font = normal_font
-									run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
+							if cp and cp > 32 then
+								local draw_font = pick_style_font(
+									bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
+								local atlas = glyph_atlas_for_font(draw_font)
+								local glyph = atlas_get_quad(atlas, cp)
+								if glyph then
+									local fg_r, fg_g, fg_b = resolve_style_color(
+										_style.fg_color, colors_struct, def_fg_r, def_fg_g, def_fg_b)
+									glyph.page.batch:setColor(fg_r, fg_g, fg_b, 1)
+									atlas_add_with_embolden(glyph.page.batch, glyph.quad, cx, py)
+									glyph.page.pending_count = glyph.page.pending_count + 1 + (font_embolden > 0 and 1 or 0)
+									handled_plain_ascii = true
 								end
-								run_len = run_len + 1
-								run_parts[run_len] = string.char(cp)
+							elseif cp == 32 then
 								handled_plain_ascii = true
 							end
 						end
@@ -375,7 +541,7 @@ local function draw_rows_to_canvas(
 								bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
 
 							if has_bg then
-								flush_text_run(py)
+								flush_glyph_batches()
 								set_color_if_needed(bg_r, bg_g, bg_b, 1)
 								love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
 								if counters_enabled then
@@ -385,31 +551,26 @@ local function draw_rows_to_canvas(
 
 							if text then
 								if not has_bg and not underline then
-									if run_len == 0 then
-										run_x = cx
-										run_font = draw_font
-										run_fg_r, run_fg_g, run_fg_b = fg_r, fg_g, fg_b
-									elseif run_font ~= draw_font or run_fg_r ~= fg_r or run_fg_g ~= fg_g or run_fg_b ~= fg_b then
-										flush_text_run(py)
-										run_x = cx
-										run_font = draw_font
-										run_fg_r, run_fg_g, run_fg_b = fg_r, fg_g, fg_b
-									end
-									run_len = run_len + 1
-									run_parts[run_len] = text
-								else
-									flush_text_run(py)
+									flush_glyph_batches()
 									set_font_if_needed(draw_font)
 									set_color_if_needed(fg_r, fg_g, fg_b, 1)
-									love.graphics.print(text, cx, py + baseline)
+									draw_text_with_embolden(text, cx, py + baseline)
 									if counters_enabled then
-										stats.glyph_draws = stats.glyph_draws + 1
+										stats.glyph_draws = stats.glyph_draws + 1 + (font_embolden > 0 and 1 or 0)
+									end
+								else
+									flush_glyph_batches()
+									set_font_if_needed(draw_font)
+									set_color_if_needed(fg_r, fg_g, fg_b, 1)
+									draw_text_with_embolden(text, cx, py + baseline)
+									if counters_enabled then
+										stats.glyph_draws = stats.glyph_draws + 1 + (font_embolden > 0 and 1 or 0)
 									end
 								end
 							end
 
 							if underline then
-								flush_text_run(py)
+								flush_glyph_batches()
 								set_color_if_needed(fg_r, fg_g, fg_b, 1)
 								love.graphics.rectangle(
 									"fill", cx, py + cell_h - math.max(1, scale),
@@ -423,7 +584,7 @@ local function draw_rows_to_canvas(
 
 					col_x = col_x + 1
 				end
-				flush_text_run(py)
+				flush_glyph_batches()
 			end
 
 			-- Clear the per-row dirty flag now that we have redrawn this row.
@@ -486,6 +647,8 @@ function M.init(font_path, font_size)
 	font_size = font_size or 14
 	local font_hinting = Config.get("font_hinting") or "normal"
 	font_supersample = math.max(1, math.floor(Config.get("font_supersample") or 1))
+	font_filter = Font.get_filter()
+	font_embolden = math.max(0, Config.get("font_embolden") or 0)
 
 	local family = Font.load_family(font_path, font_size, font_hinting)
 	font_normal = family.normal
@@ -509,7 +672,7 @@ function M.init(font_path, font_size)
 	-- ── Cell metrics ──────────────────────────────────────────────────────────
 	-- Use integer cell dimensions to avoid accumulated sub-pixel drift across
 	-- columns / rows.
-	char_w = math.floor(font_normal:getWidth("W") + 0.5)
+	char_w = measure_cell_width(font_normal)
 	char_h = math.floor(font_normal:getHeight() + 0.5)
 
 	-- Baseline offset: distance from cell top to where Love2D places the
@@ -529,6 +692,22 @@ function M.init(font_path, font_size)
 	end
 
 	cfg_colors = Config.get("colors")
+	local atlas_cell_w = char_w * font_supersample
+	local atlas_cell_h = char_h * font_supersample
+	local atlas_baseline = baseline_offset * font_supersample
+	prewarm_glyph_range(font_normal, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
+	prewarm_glyph_range(font_bold, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
+	prewarm_glyph_range(font_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
+	prewarm_glyph_range(font_bold_italic, atlas_cell_w, atlas_cell_h, atlas_baseline, 33, 126, 256)
+	if font_normal_ss then
+		local ss_cell_w = char_w * font_supersample
+		local ss_cell_h = char_h * font_supersample
+		local ss_baseline = baseline_offset * font_supersample
+		prewarm_glyph_range(font_normal_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
+		prewarm_glyph_range(font_bold_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
+		prewarm_glyph_range(font_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
+		prewarm_glyph_range(font_bold_italic_ss, ss_cell_w, ss_cell_h, ss_baseline, 33, 126, 256)
+	end
 
 	-- Font or config changed: all cached pane canvases are now stale.
 	M.invalidate_all()
@@ -559,7 +738,7 @@ end
 
 -- ── UTF-8 encoding (LuaJIT / Lua 5.1 has no utf8.char) ───────────────────────
 local utf8_cache = {}
-local function utf8_char(cp)
+utf8_char = function(cp)
 	if cp <= 0 then
 		return nil
 	end

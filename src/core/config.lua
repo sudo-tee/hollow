@@ -6,10 +6,12 @@ local M = {}
 
 local defaults = {
     shell           = nil,          -- resolved lazily via Platform.default_shell()
-    font_size       = 14,
-    font_path       = nil,      -- nil = use built-in monospace
-    font_hinting    = "normal",
-    font_supersample = 1,
+	font_size       = 14,
+	font_path       = nil,      -- nil = use built-in monospace
+	font_hinting    = "normal",
+	font_filter     = "linear",
+	font_embolden   = 0,
+	font_supersample = 1,
     startup_present_frame = true,
     font_bold_path  = nil,
     font_italic_path = nil,

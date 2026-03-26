@@ -11,6 +11,14 @@
 local Config = require("src.core.config")
 local M = {}
 
+local function resolved_font_filter()
+	local filter = Config.get("font_filter") or "linear"
+	if filter ~= "nearest" and filter ~= "linear" then
+		filter = "linear"
+	end
+	return filter
+end
+
 -- ── Internal helpers ──────────────────────────────────────────────────────────
 
 -- Load a single font file at the given logical size.
@@ -31,14 +39,15 @@ local function load_font(path, size, hinting)
 	return love.graphics.newFont(filedata, size, hinting)
 end
 
--- Apply shared settings to every loaded font object.
--- "linear" filtering is correct for HiDPI / fractional-DPI displays.
--- "nearest" only works cleanly on integer-scale (1×) displays and produces
--- jagged diagonals on everything else.
 local function configure_font(font)
-	font:setFilter("linear", "linear")
+	local filter = resolved_font_filter()
+	font:setFilter(filter, filter)
 	font:setLineHeight(1.0) -- control row height through char_h directly
 	return font
+end
+
+function M.get_filter()
+	return resolved_font_filter()
 end
 
 -- Produce candidate paths by applying a single substitution to path.
