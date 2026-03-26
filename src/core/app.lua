@@ -52,6 +52,10 @@ function App.init()
 	love.graphics.setBlendMode("alpha", "alphamultiply")
 	love.keyboard.setKeyRepeat(true)
 
+	-- Set app icon
+	local icon = love.image.newImageData("assets/logo.png")
+	love.window.setIcon(icon)
+
 	-- Font setup (pass to renderer)
 	local font_path = Config.get("font_path") or nil
 	local font_size = Config.get("font_size") or 14
