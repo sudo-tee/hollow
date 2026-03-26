@@ -62,7 +62,7 @@ g.set_config({
 	-- Fallback fonts to use for missing glyphs. They are tried in order.
 	-- You can specify just the path, or a table with `path` and `scale`.
 	font_fallback_paths = {
-		{ "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7 },
+		{ "fonts/NotoSansSymbols2-Regular.ttf", scale = 0.7, offset_y = 2 },
 		{ path = "fonts/SymbolsNerdFontMono-Regular.ttf", scale = 1 },
 	},
 
