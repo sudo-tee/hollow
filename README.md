@@ -1,8 +1,14 @@
-# ghostty-love
+# Hollow
+
+<div align="center">
+  <img src="assets/banner.png" alt="Opencode logo" width="30%" />
+</div>
 
 A **Love2D / LuaJIT** terminal emulator frontend powered by **libghostty-VT** for VT parsing,
 with a **WezTerm-inspired scriptable Lua API**, full split panes, tabs, workspaces, and a
 customisable status bar.
+
+This is a proof-of-concept / playground this is not intended for production.
 
 ---
 
@@ -50,10 +56,10 @@ App
 
 ## Dependencies
 
-| Dependency | Purpose |
-|---|---|
-| [Love2D](https://love2d.org) ≥ 11.4 | Window, graphics, input, LuaJIT |
-| **libghostty-VT** | VT / ANSI / kitty protocol parsing & terminal state |
+| Dependency                          | Purpose                                             |
+| ----------------------------------- | --------------------------------------------------- |
+| [Love2D](https://love2d.org) ≥ 11.4 | Window, graphics, input, LuaJIT                     |
+| **libghostty-VT**                   | VT / ANSI / kitty protocol parsing & terminal state |
 
 ### Getting libghostty-VT
 
@@ -159,20 +165,20 @@ hollow.on("action:my_action", function() end)
 
 ## Default Key Bindings
 
-| Binding | Action |
-|---|---|
-| `Ctrl+Shift+T` | New tab |
-| `Ctrl+Shift+W` | Close tab |
-| `Ctrl+Tab` | Next tab |
-| `Ctrl+Shift+Tab` | Previous tab |
-| `Ctrl+Shift+D` | Split horizontal |
-| `Ctrl+Shift+E` | Split vertical |
-| `Ctrl+Shift+Q` | Close pane |
-| `Ctrl+]` | Focus next pane |
-| `Ctrl+[` | Focus previous pane |
-| `Ctrl+Shift+N` | New workspace |
-| `Ctrl+Shift+→` | Next workspace |
-| `Ctrl+Shift+←` | Previous workspace |
+| Binding          | Action              |
+| ---------------- | ------------------- |
+| `Ctrl+Shift+T`   | New tab             |
+| `Ctrl+Shift+W`   | Close tab           |
+| `Ctrl+Tab`       | Next tab            |
+| `Ctrl+Shift+Tab` | Previous tab        |
+| `Ctrl+Shift+D`   | Split horizontal    |
+| `Ctrl+Shift+E`   | Split vertical      |
+| `Ctrl+Shift+Q`   | Close pane          |
+| `Ctrl+]`         | Focus next pane     |
+| `Ctrl+[`         | Focus previous pane |
+| `Ctrl+Shift+N`   | New workspace       |
+| `Ctrl+Shift+→`   | Next workspace      |
+| `Ctrl+Shift+←`   | Previous workspace  |
 
 ---
 
