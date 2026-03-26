@@ -34,6 +34,7 @@ local M      = {}
 -- Alias the live stats table so the draw path can increment counters with no
 -- function-call overhead:  stats.glyph_draws = stats.glyph_draws + 1
 local stats = Stats.stats
+local stats_flags = Stats.flags
 
 -- ── Stats / debug overlay API (delegated to stats.lua) ────────────────────────
 -- Callers (app.lua, api/init.lua) continue to use Renderer.begin_frame() etc.
@@ -62,6 +63,11 @@ local font_supersample = 1
 -- pane_canvas_cache[pane] = { canvas, w, h, dirty_all }
 local pane_canvas_cache = setmetatable({}, { __mode = "k" })
 local codepoints_to_utf8
+local byte_to_float = {}
+
+for i = 0, 255 do
+	byte_to_float[i] = i / 255
+end
 
 -- ── Cache management ──────────────────────────────────────────────────────────
 
@@ -106,6 +112,12 @@ local function pick_style_font(is_bold, is_italic, normal_font, bold_font, itali
 	return normal_font
 end
 
+local function stat_inc(key)
+	if stats_flags.counters_enabled then
+		stats[key] = stats[key] + 1
+	end
+end
+
 -- ── Scratch FFI allocations (reused per frame) ───────────────────────────────
 local _grapheme_len = ffi.new("uint32_t[1]")
 local _grapheme_buf = ffi.new("uint32_t[16]")
@@ -127,12 +139,12 @@ local function get_pane_colors(rs)
 	local colors_struct = gffi.rs_colors(rs)
 	local fg_r, fg_g, fg_b, bg_r, bg_g, bg_b
 	if colors_struct then
-		fg_r = colors_struct.foreground.r / 255
-		fg_g = colors_struct.foreground.g / 255
-		fg_b = colors_struct.foreground.b / 255
-		bg_r = colors_struct.background.r / 255
-		bg_g = colors_struct.background.g / 255
-		bg_b = colors_struct.background.b / 255
+		fg_r = byte_to_float[colors_struct.foreground.r]
+		fg_g = byte_to_float[colors_struct.foreground.g]
+		fg_b = byte_to_float[colors_struct.foreground.b]
+		bg_r = byte_to_float[colors_struct.background.r]
+		bg_g = byte_to_float[colors_struct.background.g]
+		bg_b = byte_to_float[colors_struct.background.b]
 	else
 		local c = cfg_colors or {}
 		local fg = c.foreground or { 0.9, 0.9, 0.9 }
@@ -141,6 +153,18 @@ local function get_pane_colors(rs)
 		bg_r, bg_g, bg_b = bg[1], bg[2], bg[3]
 	end
 	return fg_r, fg_g, fg_b, bg_r, bg_g, bg_b, colors_struct
+end
+
+local function resolve_style_color(style_color, colors_struct, def_r, def_g, def_b)
+	local tag = style_color.tag
+	if tag == 2 then
+		local rgb = style_color.value.rgb
+		return byte_to_float[rgb.r], byte_to_float[rgb.g], byte_to_float[rgb.b], true
+	elseif tag == 1 and colors_struct then
+		local rgb = colors_struct.palette[style_color.value.palette]
+		return byte_to_float[rgb.r], byte_to_float[rgb.g], byte_to_float[rgb.b], true
+	end
+	return def_r, def_g, def_b, false
 end
 
 -- ── Draw rows to canvas ───────────────────────────────────────────────────────
@@ -161,7 +185,7 @@ end
 local function draw_rows_to_canvas(
 	pane, dirty_only, ox, oy, pw, ph, scale,
 	normal_font, bold_font, italic_font, bold_italic_font,
-	def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b
+	def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b, colors_struct
 )
 	local rs = pane.render_state
 	local row_iter_box = pane.row_iter_box
@@ -173,13 +197,59 @@ local function draw_rows_to_canvas(
 	local cell_w = char_w * scale
 	local cell_h = char_h * scale
 	local baseline = baseline_offset * scale
+	local counters_enabled = stats_flags.counters_enabled
+	local current_font = normal_font
+	local current_r, current_g, current_b = -1, -1, -1
+
+	local run_parts = {}
+	local run_len = 0
+	local run_x = 0
+	local run_font = nil
+	local run_fg_r, run_fg_g, run_fg_b = 0, 0, 0
+
+	local function set_color_if_needed(r, g, b, a)
+		if current_r ~= r or current_g ~= g or current_b ~= b then
+			love.graphics.setColor(r, g, b, a or 1)
+			current_r, current_g, current_b = r, g, b
+			if counters_enabled then
+				stats.set_color_calls = stats.set_color_calls + 1
+			end
+		end
+	end
+
+	local function set_font_if_needed(font)
+		if current_font ~= font then
+			love.graphics.setFont(font)
+			current_font = font
+			if counters_enabled then
+				stats.font_switches = stats.font_switches + 1
+			end
+		end
+	end
+
+	local function flush_text_run(py)
+		if run_len == 0 then
+			return
+		end
+		set_font_if_needed(run_font)
+		set_color_if_needed(run_fg_r, run_fg_g, run_fg_b, 1)
+		love.graphics.print(table.concat(run_parts, "", 1, run_len), run_x, py + baseline)
+		if counters_enabled then
+			stats.glyph_draws = stats.glyph_draws + 1
+		end
+		for i = 1, run_len do
+			run_parts[i] = nil
+		end
+		run_len = 0
+	end
 
 	if not dirty_only then
 		-- Full redraw: paint default background over entire canvas first.
-		love.graphics.setColor(def_bg_r, def_bg_g, def_bg_b, 1)
+		set_color_if_needed(def_bg_r, def_bg_g, def_bg_b, 1)
 		love.graphics.rectangle("fill", ox, oy, pw, ph)
-		stats.set_color_calls = stats.set_color_calls + 1
-		stats.bg_rect_draws   = stats.bg_rect_draws + 1
+		if counters_enabled then
+			stats.bg_rect_draws = stats.bg_rect_draws + 1
+		end
 	end
 
 	love.graphics.setFont(normal_font)
@@ -200,47 +270,63 @@ local function draw_rows_to_canvas(
 		end
 
 		if should_draw then
+			run_len = 0
 			if dirty_only then
 				-- Partial redraw: clear just this row with default bg before
 				-- redrawing, so that cells that disappeared don't leave ghosts.
-				love.graphics.setColor(def_bg_r, def_bg_g, def_bg_b, 1)
+				set_color_if_needed(def_bg_r, def_bg_g, def_bg_b, 1)
 				love.graphics.rectangle("fill", ox, py, pw, cell_h)
-				stats.set_color_calls = stats.set_color_calls + 1
-				stats.bg_rect_draws   = stats.bg_rect_draws + 1
+				if counters_enabled then
+					stats.bg_rect_draws = stats.bg_rect_draws + 1
+				end
 			end
 
-			stats.rows_redrawn = stats.rows_redrawn + 1
+			if counters_enabled then
+				stats.rows_redrawn = stats.rows_redrawn + 1
+			end
 
 			if gffi.row_get_cells(row_iter_box[0], cells_box) then
 				local col_x = 0
 				while lib.ghostty_render_state_row_cells_next(cells_box[0]) do
 					local cx = ox + col_x * cell_w
-					stats.cells_visited = stats.cells_visited + 1
+					if counters_enabled then
+						stats.cells_visited = stats.cells_visited + 1
+					end
 
 					_grapheme_len[0] = 0
 					lib.ghostty_render_state_row_cells_get(
 						cells_box[0], gffi.CELL_DATA.GRAPHEMES_LEN, _grapheme_len)
-					local glen = tonumber(_grapheme_len[0])
+					local glen = _grapheme_len[0]
 
 					if glen == 0 then
 						local res_bg = lib.ghostty_render_state_row_cells_get(
 							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
 						if res_bg == gffi.GHOSTTY_SUCCESS then
-							love.graphics.setColor(
-								_bg_rgb.r / 255, _bg_rgb.g / 255, _bg_rgb.b / 255, 1)
+							flush_text_run(py)
+							set_color_if_needed(
+								byte_to_float[_bg_rgb.r], byte_to_float[_bg_rgb.g], byte_to_float[_bg_rgb.b], 1)
 							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-							stats.set_color_calls = stats.set_color_calls + 1
-							stats.bg_rect_draws   = stats.bg_rect_draws + 1
+							if counters_enabled then
+								stats.bg_rect_draws = stats.bg_rect_draws + 1
+							end
+						else
+							if run_len == 0 then
+								run_x = cx
+								run_font = normal_font
+								run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
+							elseif run_font ~= normal_font or run_fg_r ~= def_fg_r or run_fg_g ~= def_fg_g or run_fg_b ~= def_fg_b then
+								flush_text_run(py)
+								run_x = cx
+								run_font = normal_font
+								run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
+							end
+							run_len = run_len + 1
+							run_parts[run_len] = " "
 						end
 					else
 						local clen = math.min(glen, 16)
 						lib.ghostty_render_state_row_cells_get(
 							cells_box[0], gffi.CELL_DATA.GRAPHEMES_BUF, _grapheme_buf)
-						local cps = {}
-						for i = 0, clen - 1 do
-							cps[i + 1] = tonumber(_grapheme_buf[i])
-						end
-						local text = codepoints_to_utf8(cps, clen)
 
 						_style.size = ffi.sizeof("GhosttyStyle")
 						lib.ghostty_render_state_row_cells_get(
@@ -250,68 +336,94 @@ local function draw_rows_to_canvas(
 						local underline = _style.underline ~= 0
 						local inverse   = _style.inverse
 
-						local fg_r, fg_g, fg_b = def_fg_r, def_fg_g, def_fg_b
-						local res_fg = lib.ghostty_render_state_row_cells_get(
-							cells_box[0], gffi.CELL_DATA.FG_COLOR, _fg_rgb)
-						if res_fg == gffi.GHOSTTY_SUCCESS then
-							fg_r = _fg_rgb.r / 255
-							fg_g = _fg_rgb.g / 255
-							fg_b = _fg_rgb.b / 255
+						local handled_plain_ascii = false
+						if not bold and not italic and not underline and not inverse
+							and _style.fg_color.tag == 0 and _style.bg_color.tag == 0 and clen == 1 then
+							local cp = tonumber(_grapheme_buf[0])
+							if cp >= 32 and cp < 127 then
+								if run_len == 0 then
+									run_x = cx
+									run_font = normal_font
+									run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
+								elseif run_font ~= normal_font or run_fg_r ~= def_fg_r or run_fg_g ~= def_fg_g or run_fg_b ~= def_fg_b then
+									flush_text_run(py)
+									run_x = cx
+									run_font = normal_font
+									run_fg_r, run_fg_g, run_fg_b = def_fg_r, def_fg_g, def_fg_b
+								end
+								run_len = run_len + 1
+								run_parts[run_len] = string.char(cp)
+								handled_plain_ascii = true
+							end
 						end
 
-						local bg_r, bg_g, bg_b = def_bg_r, def_bg_g, def_bg_b
-						local has_bg = false
-						local res_bg = lib.ghostty_render_state_row_cells_get(
-							cells_box[0], gffi.CELL_DATA.BG_COLOR, _bg_rgb)
-						if res_bg == gffi.GHOSTTY_SUCCESS then
-							bg_r   = _bg_rgb.r / 255
-							bg_g   = _bg_rgb.g / 255
-							bg_b   = _bg_rgb.b / 255
-							has_bg = true
-						end
+						if not handled_plain_ascii then
+							local text = codepoints_to_utf8(_grapheme_buf, clen)
+							local fg_r, fg_g, fg_b = resolve_style_color(
+								_style.fg_color, colors_struct, def_fg_r, def_fg_g, def_fg_b)
 
-						if inverse then
-							fg_r, fg_g, fg_b, bg_r, bg_g, bg_b =
-								bg_r, bg_g, bg_b, fg_r, fg_g, fg_b
-							has_bg = true
-						end
+							local bg_r, bg_g, bg_b, has_bg = resolve_style_color(
+								_style.bg_color, colors_struct, def_bg_r, def_bg_g, def_bg_b)
 
-						if has_bg then
-							love.graphics.setColor(bg_r, bg_g, bg_b, 1)
-							love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
-							stats.set_color_calls = stats.set_color_calls + 1
-							stats.bg_rect_draws   = stats.bg_rect_draws + 1
-						end
+							if inverse then
+								fg_r, fg_g, fg_b, bg_r, bg_g, bg_b =
+									bg_r, bg_g, bg_b, fg_r, fg_g, fg_b
+								has_bg = true
+							end
 
-						if text then
-							love.graphics.setColor(fg_r, fg_g, fg_b, 1)
-							stats.set_color_calls = stats.set_color_calls + 1
 							local draw_font = pick_style_font(
 								bold, italic, normal_font, bold_font, italic_font, bold_italic_font)
-							if draw_font ~= normal_font then
-								love.graphics.setFont(draw_font)
-								stats.font_switches = stats.font_switches + 1
-							end
-							love.graphics.print(text, cx, py + baseline)
-							stats.glyph_draws = stats.glyph_draws + 1
-							if draw_font ~= normal_font then
-								love.graphics.setFont(normal_font)
-								stats.font_switches = stats.font_switches + 1
-							end
-						end
 
-						if underline then
-							love.graphics.setColor(fg_r, fg_g, fg_b, 1)
-							love.graphics.rectangle(
-								"fill", cx, py + cell_h - math.max(1, scale),
-								cell_w, math.max(1, scale))
-							stats.set_color_calls = stats.set_color_calls + 1
-							stats.underline_draws = stats.underline_draws + 1
+							if has_bg then
+								flush_text_run(py)
+								set_color_if_needed(bg_r, bg_g, bg_b, 1)
+								love.graphics.rectangle("fill", cx, py, cell_w, cell_h)
+								if counters_enabled then
+									stats.bg_rect_draws = stats.bg_rect_draws + 1
+								end
+							end
+
+							if text then
+								if not has_bg and not underline then
+									if run_len == 0 then
+										run_x = cx
+										run_font = draw_font
+										run_fg_r, run_fg_g, run_fg_b = fg_r, fg_g, fg_b
+									elseif run_font ~= draw_font or run_fg_r ~= fg_r or run_fg_g ~= fg_g or run_fg_b ~= fg_b then
+										flush_text_run(py)
+										run_x = cx
+										run_font = draw_font
+										run_fg_r, run_fg_g, run_fg_b = fg_r, fg_g, fg_b
+									end
+									run_len = run_len + 1
+									run_parts[run_len] = text
+								else
+									flush_text_run(py)
+									set_font_if_needed(draw_font)
+									set_color_if_needed(fg_r, fg_g, fg_b, 1)
+									love.graphics.print(text, cx, py + baseline)
+									if counters_enabled then
+										stats.glyph_draws = stats.glyph_draws + 1
+									end
+								end
+							end
+
+							if underline then
+								flush_text_run(py)
+								set_color_if_needed(fg_r, fg_g, fg_b, 1)
+								love.graphics.rectangle(
+									"fill", cx, py + cell_h - math.max(1, scale),
+									cell_w, math.max(1, scale))
+								if counters_enabled then
+									stats.underline_draws = stats.underline_draws + 1
+								end
+							end
 						end
 					end
 
 					col_x = col_x + 1
 				end
+				flush_text_run(py)
 			end
 
 			-- Clear the per-row dirty flag now that we have redrawn this row.
@@ -483,9 +595,13 @@ function codepoints_to_utf8(cps, len)
 	if len == 0 then
 		return nil
 	end
+	if len == 1 then
+		return utf8_char(tonumber(cps[0] or cps[1]))
+	end
 	local parts = {}
-	for i = 1, len do
-		local s = utf8_char(cps[i])
+	local base = cps[0] ~= nil and 0 or 1
+	for i = 0, len - 1 do
+		local s = utf8_char(tonumber(cps[base + i]))
 		if s then
 			parts[#parts + 1] = s
 		end
@@ -503,7 +619,7 @@ function M.draw_pane(pane, is_focused)
 		return
 	end
 
-	stats.panes_drawn = stats.panes_drawn + 1
+	stat_inc("panes_drawn")
 
 	local rs = pane.render_state
 
@@ -536,7 +652,7 @@ function M.draw_pane(pane, is_focused)
 		-- ── Idle frame ────────────────────────────────────────────────────────
 		-- Nothing changed in the terminal: blit the cached canvas and draw
 		-- the cursor overlay without iterating any rows.
-		stats.canvas_skipped = stats.canvas_skipped + 1
+		stat_inc("canvas_skipped")
 		blit_canvas(cached, px, scale)
 		-- Cursor overlay uses logical (screen-space) cell dimensions.
 		draw_cursor_overlay(pane, is_focused,
@@ -547,28 +663,26 @@ function M.draw_pane(pane, is_focused)
 
 	-- ── Canvas update ─────────────────────────────────────────────────────────
 	local prev_canvas = love.graphics.getCanvas()
-	love.graphics.push("all")
 	love.graphics.setCanvas(cached.canvas)
 	love.graphics.origin()
 
-	local dirty_only = not cached.dirty_all
-	if cached.dirty_all then
+	local dirty_only = not cached.dirty_all and _u32[0] == gffi.RS_DIRTY.TRUE
+	if cached.dirty_all or _u32[0] == gffi.RS_DIRTY.FULL then
 		-- Full invalidation: draw_rows_to_canvas will paint the default bg over
 		-- the entire canvas, so no explicit canvas clear is needed.
-		stats.canvas_full_redraws = stats.canvas_full_redraws + 1
+		stat_inc("canvas_full_redraws")
 	else
-		stats.canvas_partial_redraws = stats.canvas_partial_redraws + 1
+		stat_inc("canvas_partial_redraws")
 	end
 
 	draw_rows_to_canvas(
 		pane, dirty_only, 0, 0, cw, ch, scale,
 		nf, bf, itf, bif,
-		def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b)
+		def_fg_r, def_fg_g, def_fg_b, def_bg_r, def_bg_g, def_bg_b, colors_struct)
 
 	cached.dirty_all = false
 
 	love.graphics.setCanvas(prev_canvas)
-	love.graphics.pop()
 
 	-- ── Composite + cursor ────────────────────────────────────────────────────
 	blit_canvas(cached, px, scale)

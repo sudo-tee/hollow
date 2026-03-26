@@ -12,6 +12,10 @@
 
 local M = {}
 
+M.flags = {
+	counters_enabled = false,
+}
+
 -- ── Stats table ───────────────────────────────────────────────────────────────
 -- Exposed directly (as M.stats) so the hot draw path can write counters
 -- without incurring Lua function-call overhead:
@@ -50,6 +54,7 @@ local _cached_lines = nil
 function M.begin_frame()
 	_frame_start_time = love.timer.getTime()
 	local s = M.stats
+	M.flags.counters_enabled = _debug_overlay_enabled
 	-- Reset frame timing values; fps computed in end_frame
 	s.frame_time_ms = 0
 	s.fps = 0
