@@ -197,6 +197,11 @@ end
 function Pane:update()
     if self._child_exited then return end
 
+    if self.pty and self.pty.is_alive and not self.pty:is_alive() then
+        self._child_exited = true
+        return
+    end
+
     local data = self.pty:read()
     if data and #data > 0 then
         gffi.terminal_write(self.term, data)
@@ -207,6 +212,10 @@ function Pane:update()
 
     -- Snapshot terminal state into render state for this frame
     lib.ghostty_render_state_update(self.render_state, self.term)
+
+    if self.pty and self.pty.is_alive and not self.pty:is_alive() then
+        self._child_exited = true
+    end
 end
 
 -- ── Input ─────────────────────────────────────────────────────────────────────
@@ -348,6 +357,7 @@ function Pane:get_scrollbar()  return gffi.terminal_scrollbar(self.term) end
 
 function Pane:destroy()
     if self.pty then self.pty:close() end
+    self._child_exited = true
     if self.mouse_event    then lib.ghostty_mouse_event_free(self.mouse_event) end
     if self.mouse_encoder  then lib.ghostty_mouse_encoder_free(self.mouse_encoder) end
     if self.key_event      then lib.ghostty_key_event_free(self.key_event) end

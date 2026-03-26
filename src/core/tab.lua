@@ -90,6 +90,29 @@ end
 
 function Tab:update()
     if self.root then self.root:update() end
+
+    while self.root do
+        local dead = nil
+        for _, pane in ipairs(self:all_panes()) do
+            if not pane:is_alive() then
+                dead = pane
+                break
+            end
+        end
+        if not dead then
+            break
+        end
+        self.root = Split.close_pane(self.root, dead)
+        if self.root then
+            local panes = self:all_panes()
+            if self.focused == dead or not self.focused or not self.focused:is_alive() then
+                self.focused = panes[1]
+            end
+        else
+            self.focused = nil
+        end
+    end
+
     -- Tab title follows focused pane title
     if self.focused then
         self.title = self.focused.title

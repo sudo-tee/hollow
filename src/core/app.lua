@@ -110,10 +110,27 @@ end
 
 -- ── Update ───────────────────────────────────────────────────────────────────
 function App.update(dt)
-	for _, ws in ipairs(workspaces) do
-		ws:update()
-	end
-	EventBus.emit("app:update", dt)
+    local idx = 1
+    while idx <= #workspaces do
+        local ws = workspaces[idx]
+        local empty = ws:update()
+        if empty then
+            ws:destroy()
+            table.remove(workspaces, idx)
+            if #workspaces == 0 then
+                love.event.quit(0)
+                return
+            end
+            if active_ws_idx > #workspaces then
+                active_ws_idx = #workspaces
+            elseif idx <= active_ws_idx and active_ws_idx > 1 then
+                active_ws_idx = active_ws_idx - 1
+            end
+        else
+            idx = idx + 1
+        end
+    end
+    EventBus.emit("app:update", dt)
 end
 
 -- ── Draw ─────────────────────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ if not Platform.is_windows then
         int     fcntl(int fd, int cmd, ...);
         int     ioctl(int fd, unsigned long req, ...);
         int     kill (pid_t pid, int sig);
+        int     waitpid(pid_t pid, int *status, int options);
         void    _exit(int status);
     ]]
 
@@ -53,6 +54,7 @@ if not Platform.is_windows then
     local F_SETFL    = 4
     local O_NONBLOCK = Platform.is_mac and 0x0004 or 0x0800
     local TIOCSWINSZ = Platform.is_mac and 0x80087467 or 0x5414
+    local WNOHANG    = 1
 
     function M.spawn(cmd, cols, rows, opts)
         cmd  = cmd  or Platform.default_shell()
@@ -86,12 +88,29 @@ if not Platform.is_windows then
             pid  = pid,
             cols = cols,
             rows = rows,
+            alive = true,
+            _closed = false,
             _buf = ffi.new("uint8_t[4096]"),
+            _wait_status = ffi.new("int[1]"),
         }
+
+        function self:is_alive()
+            if self._closed or not self.alive then
+                return false
+            end
+            local res = ffi.C.waitpid(self.pid, self._wait_status, WNOHANG)
+            if res == self.pid then
+                self.alive = false
+            end
+            return self.alive
+        end
 
         function self:read(max)
             local n = ffi.C.read(self.fd, self._buf, math.min(max or 4096, 4096))
             if n > 0 then return ffi.string(self._buf, n) end
+            if n == 0 then
+                self.alive = false
+            end
             return nil
         end
 
@@ -106,8 +125,13 @@ if not Platform.is_windows then
         end
 
         function self:close()
-            ffi.C.kill(self.pid, 15) -- SIGTERM
+            if self._closed then return end
+            if self:is_alive() then
+                ffi.C.kill(self.pid, 15) -- SIGTERM
+            end
             ffi.C.close(self.fd)
+            self._closed = true
+            self.alive = false
         end
 
         return self
@@ -193,6 +217,7 @@ else
         BOOL  TerminateProcess(HANDLE hProc, UINT uCode);
         BOOL  CloseHandle(HANDLE h);
         DWORD GetLastError(void);
+        DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
 
         /* Thread attribute list */
         BOOL InitializeProcThreadAttributeList(LPVOID list, DWORD cnt,
@@ -206,6 +231,7 @@ else
     local k32 = ffi.load("kernel32")
 
     local S_OK                              = 0
+    local WAIT_OBJECT_0                     = 0
     local EXTENDED_STARTUPINFO_PRESENT      = 0x00080000
     -- PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE:
     -- ProcThreadAttributeValue(22, Thread=FALSE, Input=TRUE, Additive=FALSE)
@@ -284,16 +310,29 @@ else
             hWrite   = pin_w,    -- parent writes input here
             cols     = cols,
             rows     = rows,
+            alive    = true,
+            _closed  = false,
             _rbuf    = ffi.new("uint8_t[4096]"),
             _rd      = ffi.new("DWORD[1]"),
             _wr      = ffi.new("DWORD[1]"),
             _avail   = ffi.new("DWORD[1]"),
         }
 
+        function self:is_alive()
+            if self._closed or not self.alive then
+                return false
+            end
+            if k32.WaitForSingleObject(self.hProcess, 0) == WAIT_OBJECT_0 then
+                self.alive = false
+            end
+            return self.alive
+        end
+
         function self:read(max)
             self._avail[0] = 0
             if k32.PeekNamedPipe(self.hRead, nil, 0, nil,
                                   self._avail, nil) == 0 then
+                self.alive = false
                 return nil
             end
             local n = math.min(tonumber(self._avail[0]), max or 4096, 4096)
@@ -318,12 +357,17 @@ else
         end
 
         function self:close()
-            k32.TerminateProcess(self.hProcess, 0)
+            if self._closed then return end
+            if self:is_alive() then
+                k32.TerminateProcess(self.hProcess, 0)
+            end
             k32.CloseHandle(self.hProcess)
             k32.CloseHandle(self.hThread)
             k32.CloseHandle(self.hRead)
             k32.CloseHandle(self.hWrite)
             k32.ClosePseudoConsole(self.hpc)
+            self._closed = true
+            self.alive = false
         end
 
         return self

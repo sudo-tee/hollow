@@ -96,7 +96,14 @@ function Workspace:cycle_focus(dir) self:active_tab():cycle_focus(dir) end
 
 function Workspace:update()
     local tab = self:active_tab()
-    if tab then tab:update() end
+    if not tab then
+        return true
+    end
+    tab:update()
+    if tab.root == nil then
+        return self:close_tab(self.active_idx)
+    end
+    return false
 end
 
 function Workspace:relayout(rect)
