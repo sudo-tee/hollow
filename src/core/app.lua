@@ -33,10 +33,23 @@ local function sync_cell_metrics()
 	Split.set_cell_size(cw, ch, cw_px, ch_px)
 end
 
+local function is_printable_key(key)
+	return key == "space" or #key == 1
+end
+
+local function should_route_keypress(key, mods)
+	if not is_printable_key(key) then
+		return true
+	end
+
+	return mods.ctrl or mods.alt or mods.super
+end
+
 -- ── Init ─────────────────────────────────────────────────────────────────────
 function App.init()
 	win_w, win_h = love.graphics.getDimensions()
 	love.graphics.setBlendMode("alpha", "alphamultiply")
+	love.keyboard.setKeyRepeat(true)
 
 	-- Font setup (pass to renderer)
 	local font_path = Config.get("font_path") or nil
@@ -153,7 +166,9 @@ function App.keypressed(key, scancode, isrepeat)
 	-- Check global keybindings first (tab/split/workspace actions)
 	local action = KeyMap.match(key, mods)
 	if action then
-		App._dispatch(action)
+		if not isrepeat then
+			App._dispatch(action)
+		end
 		_last_key_handled = true
 		return
 	end
@@ -169,7 +184,7 @@ function App.keypressed(key, scancode, isrepeat)
 	local action_type = isrepeat and GhosttyFFI.KEY_ACTION.REPEAT or GhosttyFFI.KEY_ACTION.PRESS
 
 	local pane = focused_pane()
-	if pane then
+	if pane and should_route_keypress(key, mods) then
 		-- send_key returns true when it successfully wrote bytes to the PTY
 		local sent = pane:send_key(key, mods, action_type)
 		if sent then
