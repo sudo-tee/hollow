@@ -41,8 +41,9 @@ local MODS_SUPER = 0x08
 -- Key handler: called before the terminal sees each key.
 -- Return true to consume the key (prevents it from being sent to the pty).
 g.on_key(function(key, mods)
-	local ctrl  = (mods & MODS_CTRL)  ~= 0
-	local shift = (mods & MODS_SHIFT) ~= 0
+	local band = bit.band
+	local ctrl  = band(mods, MODS_CTRL)  ~= 0
+	local shift = band(mods, MODS_SHIFT) ~= 0
 
 	-- Ctrl+\ -> vertical split
 	if ctrl and not shift and key == "backslash" then

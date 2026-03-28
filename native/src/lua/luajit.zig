@@ -178,10 +178,12 @@ pub const Runtime = struct {
         defer self.allocator.free(zpath);
 
         if (self.context.api.load_file(self.state, zpath) != 0) {
+            logLuaError(self.context.api, self.state, "load_file");
             return error.LuaLoadFailed;
         }
 
         if (self.context.api.pcall(self.state, 0, 0, 0) != 0) {
+            logLuaError(self.context.api, self.state, "pcall");
             return error.LuaRuntimeFailed;
         }
     }
@@ -197,11 +199,13 @@ pub const Runtime = struct {
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.on_key_ref;
+        std.log.info("fireOnKey: key={s} mods=0x{x} on_key_ref={d}", .{ key, mods, ref });
         if (ref == LUA_NOREF) return false;
 
         // Push the handler function from the registry.
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
         const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        std.log.info("fireOnKey: rawgeti fn_type={d}", .{@intFromEnum(fn_type)});
         if (fn_type == .function) {
             const zkey = std.heap.page_allocator.dupeZ(u8, key) catch {
                 pop(api, self.state, 1);
@@ -212,10 +216,12 @@ pub const Runtime = struct {
             api.push_number(self.state, @floatFromInt(mods));
             const rc = api.pcall(self.state, 2, 1, 0);
             if (rc != 0) {
+                std.log.err("fireOnKey: pcall failed rc={d}", .{rc});
                 pop(api, self.state, 1);
                 return false;
             }
             const consumed = api.to_boolean(self.state, -1) != 0;
+            std.log.info("fireOnKey: consumed={}", .{consumed});
             pop(api, self.state, 1);
             return consumed;
         }
@@ -401,6 +407,16 @@ fn asInt(comptime T: type, value: f64) !T {
         return error.OutOfRange;
     }
     return @intFromFloat(value);
+}
+
+fn logLuaError(api: Api, state: *State, ctx_label: []const u8) void {
+    var len: usize = 0;
+    if (api.to_lstring(state, -1, &len)) |ptr| {
+        std.log.err("lua {s} error: {s}", .{ ctx_label, ptr[0..len] });
+    } else {
+        std.log.err("lua {s} error: (no message)", .{ctx_label});
+    }
+    pop(api, state, 1);
 }
 
 fn pop(api: Api, state: *State, count: c_int) void {
