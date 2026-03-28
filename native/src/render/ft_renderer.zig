@@ -22,6 +22,7 @@ const fonts = @import("fonts");
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
 const ATLAS_BPP: u32 = 4; // RGBA8
+const glyph_weight_boost: f32 = 1.12;
 
 // ── Glyph cache entry ─────────────────────────────────────────────────────────
 const Glyph = struct {
@@ -106,6 +107,7 @@ pub const FtRenderer = struct {
         var ft_lib: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&ft_lib) != 0) return error.FtInitFailed;
         errdefer _ = ft.FT_Done_FreeType(ft_lib);
+        _ = ft.FT_Library_SetLcdFilter(ft_lib, ft.FT_LCD_FILTER_LIGHT);
 
         const face_regular = try loadFace(ft_lib, fonts.regular, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_regular);
@@ -473,11 +475,7 @@ pub const FtRenderer = struct {
             else => self.face_regular,
         };
 
-        // FT_LOAD_RENDER renders into a grey bitmap immediately.
-        // FT_LOAD_FORCE_AUTOHINT: use FreeType's auto-hinter even when the font
-        // has its own hints.  This produces consistently crisp, well-stroked glyphs
-        // at typical terminal sizes (14–24px) regardless of TTF hinting quality.
-        const load_flags = ft.FT_LOAD_RENDER | ft.FT_LOAD_FORCE_AUTOHINT;
+        const load_flags = ft.FT_LOAD_DEFAULT | ft.FT_LOAD_FORCE_AUTOHINT | ft.FT_LOAD_TARGET_LCD;
         var err = ft.FT_Load_Glyph(primary_face, glyph_id, load_flags);
         var used_face = primary_face;
 
@@ -493,12 +491,23 @@ pub const FtRenderer = struct {
         }
 
         const slot = used_face.*.glyph;
+        if (slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
+            ft.FT_GlyphSlot_Embolden(slot);
+        }
+        if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_LCD) != 0) {
+            if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
+                self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
+                return null;
+            }
+        }
         const bmp = &slot.*.bitmap;
 
         // Only handle grey bitmaps (FT_PIXEL_MODE_GRAY).
         // Space characters and some glyphs produce zero-size bitmaps — cache them
         // with zero dimensions so we still get the correct advance.
-        if (bmp.*.pixel_mode != ft.FT_PIXEL_MODE_GRAY or bmp.*.width == 0 or bmp.*.rows == 0) {
+        const is_gray = bmp.*.pixel_mode == ft.FT_PIXEL_MODE_GRAY;
+        const is_lcd = bmp.*.pixel_mode == ft.FT_PIXEL_MODE_LCD;
+        if ((!is_gray and !is_lcd) or bmp.*.width == 0 or bmp.*.rows == 0) {
             const g = Glyph{
                 .s0 = 0,
                 .t0 = 0,
@@ -514,7 +523,7 @@ pub const FtRenderer = struct {
             return g;
         }
 
-        const bw = bmp.*.width;
+        const bw: u32 = if (is_lcd) @divFloor(bmp.*.width, 3) else bmp.*.width;
         const bh = bmp.*.rows;
         // pitch can be negative for bottom-up bitmaps; stride is always |pitch|.
         const stride: u32 = @intCast(@abs(bmp.*.pitch));
@@ -541,12 +550,22 @@ pub const FtRenderer = struct {
 
             var col: u32 = 0;
             while (col < bw) : (col += 1) {
-                const cov = src_ptr[col];
                 const dst = dst_base + col * ATLAS_BPP;
-                self.atlas_data[dst + 0] = cov; // R
-                self.atlas_data[dst + 1] = cov; // G
-                self.atlas_data[dst + 2] = cov; // B
-                self.atlas_data[dst + 3] = cov; // A
+                if (is_lcd) {
+                    const r = boostCoverage(src_ptr[col * 3]);
+                    const g = boostCoverage(src_ptr[col * 3 + 1]);
+                    const b = boostCoverage(src_ptr[col * 3 + 2]);
+                    self.atlas_data[dst + 0] = r;
+                    self.atlas_data[dst + 1] = g;
+                    self.atlas_data[dst + 2] = b;
+                    self.atlas_data[dst + 3] = @max(r, @max(g, b));
+                } else {
+                    const cov = boostCoverage(src_ptr[col]);
+                    self.atlas_data[dst + 0] = cov;
+                    self.atlas_data[dst + 1] = cov;
+                    self.atlas_data[dst + 2] = cov;
+                    self.atlas_data[dst + 3] = cov;
+                }
             }
         }
         self.atlas_dirty = true;
@@ -687,4 +706,10 @@ fn encodeUtf8(cp: u32, buf: []u8) error{BufferTooSmall}!usize {
     buf[2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
     buf[3] = @intCast(0x80 | (cp & 0x3F));
     return 4;
+}
+
+fn boostCoverage(cov: u8) u8 {
+    if (cov == 0 or cov == 255) return cov;
+    const boosted = @as(f32, @floatFromInt(cov)) * glyph_weight_boost + 6.0;
+    return @intFromFloat(@min(255.0, boosted));
 }

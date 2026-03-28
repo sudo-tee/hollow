@@ -5,6 +5,8 @@
 #include FT_BITMAP_H
 #include FT_OUTLINE_H
 #include FT_SIZES_H
+#include FT_LCD_FILTER_H
+#include FT_SYNTHESIS_H
 
 #include <hb.h>
 #include <hb-ft.h>
