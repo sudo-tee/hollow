@@ -17,6 +17,9 @@ pub const Pane = struct {
     mouse_encoder: ?*anyopaque = null,
     mouse_event: ?*anyopaque = null,
     title: []u8 = &.{},
+    /// Set to true after the first updateRenderState call so the renderer
+    /// can skip rendering panes whose ghostty state is not yet initialized.
+    render_state_ready: bool = false,
     read_buf: [65536]u8 = [_]u8{0} ** 65536,
     logged_first_pty_read: bool = false,
     pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
@@ -162,6 +165,8 @@ pub const Pane = struct {
         self.render_state = new_render_state;
         self.row_iterator = new_row_iterator;
         self.row_cells = new_row_cells;
+        // New render_state needs at least one updateRenderState before rendering.
+        self.render_state_ready = false;
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8) void {

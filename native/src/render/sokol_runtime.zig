@@ -149,6 +149,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         if (app.ghostty) |*runtime| {
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
+                    // Skip panes whose render_state has not been initialized yet
+                    // (avoids crashing ghostty on the first frame after a split).
+                    if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -167,7 +170,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     );
                 }
             } else if (app.activePane()) |pane| {
-                renderer.queueInViewport(
+                if (pane.render_state_ready) renderer.queueInViewport(
                     runtime,
                     pane.render_state,
                     &pane.row_iterator,

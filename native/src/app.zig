@@ -267,6 +267,8 @@ pub const App = struct {
             runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
             runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
         }
+        // Immediately resize all panes to their correct sub-rect sizes.
+        self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
         std.log.info("app: pane split direction={s}", .{@tagName(direction)});
     }
 
@@ -316,6 +318,7 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 try pane.pollPty(runtime);
                 try runtime.updateRenderState(pane.render_state, pane.terminal);
+                pane.render_state_ready = true;
             }
         }
     }
