@@ -28,6 +28,16 @@ pub const SplitNode = struct {
         };
     }
 
+    pub fn initSplit(first: *SplitNode, second: *SplitNode, direction: SplitDirection, ratio: f32) SplitNode {
+        return .{
+            .kind = .split,
+            .first = first,
+            .second = second,
+            .direction = direction,
+            .ratio = std.math.clamp(ratio, 0.1, 0.9),
+        };
+    }
+
     pub fn deinit(self: *SplitNode, allocator: std.mem.Allocator) void {
         if (self.first) |first| {
             first.deinit(allocator);
@@ -57,6 +67,49 @@ pub const Tab = struct {
             const pane = self.tab.panes.items[self.index];
             self.index += 1;
             return pane;
+        }
+    };
+
+    pub const Leaf = struct {
+        node: *SplitNode,
+        pane: *Pane,
+    };
+
+    pub const LeafIterator = struct {
+        stack: [64]*SplitNode = undefined,
+        len: usize = 0,
+
+        pub fn init(root: ?*SplitNode) LeafIterator {
+            var iter = LeafIterator{};
+            if (root) |node| {
+                iter.stack[0] = node;
+                iter.len = 1;
+            }
+            return iter;
+        }
+
+        pub fn next(self: *LeafIterator) ?Leaf {
+            while (self.len > 0) {
+                self.len -= 1;
+                const node = self.stack[self.len];
+                switch (node.kind) {
+                    .pane => {
+                        const pane = node.pane orelse continue;
+                        return .{ .node = node, .pane = pane };
+                    },
+                    .split => {
+                        if (node.second) |second| {
+                            self.stack[self.len] = second;
+                            self.len += 1;
+                        }
+                        if (node.first) |first| {
+                            self.stack[self.len] = first;
+                            self.len += 1;
+                        }
+                    },
+                }
+            }
+            return null;
         }
     };
 
@@ -97,11 +150,41 @@ pub const Tab = struct {
         return .{ .tab = self };
     }
 
+    pub fn leafIterator(self: *Tab) LeafIterator {
+        return LeafIterator.init(self.root_split);
+    }
+
+    pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
+        const current_pane = self.active_pane orelse return error.NoActivePane;
+        const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
+
+        const existing_leaf = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(existing_leaf);
+        existing_leaf.* = SplitNode.initPane(current_pane);
+
+        const new_leaf = try self.allocator.create(SplitNode);
+        errdefer self.allocator.destroy(new_leaf);
+        new_leaf.* = SplitNode.initPane(new_pane);
+
+        target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, ratio);
+        try self.panes.append(self.allocator, new_pane);
+        self.active_pane = new_pane;
+    }
+
+    pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
+        return self.root_split;
+    }
+
     fn initRootSplitForPane(self: *Tab, pane: *Pane) !void {
         if (self.root_split != null) return;
         const root = try self.allocator.create(SplitNode);
         root.* = SplitNode.initPane(pane);
         self.root_split = root;
+    }
+
+    fn findPaneLeaf(self: *Tab, pane: *Pane) ?*SplitNode {
+        const root = self.root_split orelse return null;
+        return findPaneLeafNode(root, pane);
     }
 };
 
@@ -159,6 +242,11 @@ pub const Workspace = struct {
 
     pub fn paneIterator(self: *Workspace) PaneIterator {
         return .{ .workspace = self };
+    }
+
+    pub fn activeSplitRoot(self: *Workspace) ?*SplitNode {
+        const tab = self.activeTab() orelse return null;
+        return tab.activeSplitRoot();
     }
 };
 
@@ -257,6 +345,11 @@ pub const Mux = struct {
         return .{ .mux = self };
     }
 
+    pub fn activeSplitRoot(self: *Mux) ?*SplitNode {
+        const tab = self.activeTab() orelse return null;
+        return tab.activeSplitRoot();
+    }
+
     fn createWorkspace(self: *Mux) !*Workspace {
         const workspace = try self.allocator.create(Workspace);
         workspace.* = Workspace.init(self.allocator, self.allocId());
@@ -284,3 +377,21 @@ pub const Mux = struct {
         return id;
     }
 };
+
+fn findPaneLeafNode(node: *SplitNode, pane: *Pane) ?*SplitNode {
+    switch (node.kind) {
+        .pane => {
+            if (node.pane == pane) return node;
+            return null;
+        },
+        .split => {
+            if (node.first) |first| {
+                if (findPaneLeafNode(first, pane)) |match| return match;
+            }
+            if (node.second) |second| {
+                if (findPaneLeafNode(second, pane)) |match| return match;
+            }
+            return null;
+        },
+    }
+}
