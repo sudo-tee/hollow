@@ -3,11 +3,62 @@ const Config = @import("config.zig").Config;
 const Pane = @import("pane.zig").Pane;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 
+pub const SplitDirection = enum {
+    horizontal,
+    vertical,
+};
+
+pub const SplitNode = struct {
+    kind: Kind,
+    pane: ?*Pane = null,
+    first: ?*SplitNode = null,
+    second: ?*SplitNode = null,
+    direction: SplitDirection = .vertical,
+    ratio: f32 = 0.5,
+
+    pub const Kind = enum {
+        pane,
+        split,
+    };
+
+    pub fn initPane(pane: *Pane) SplitNode {
+        return .{
+            .kind = .pane,
+            .pane = pane,
+        };
+    }
+
+    pub fn deinit(self: *SplitNode, allocator: std.mem.Allocator) void {
+        if (self.first) |first| {
+            first.deinit(allocator);
+            allocator.destroy(first);
+        }
+        if (self.second) |second| {
+            second.deinit(allocator);
+            allocator.destroy(second);
+        }
+        self.* = undefined;
+    }
+};
+
 pub const Tab = struct {
     allocator: std.mem.Allocator,
     id: usize,
     panes: std.ArrayList(*Pane),
     active_pane: ?*Pane = null,
+    root_split: ?*SplitNode = null,
+
+    pub const PaneIterator = struct {
+        tab: *Tab,
+        index: usize = 0,
+
+        pub fn next(self: *PaneIterator) ?*Pane {
+            if (self.index >= self.tab.panes.items.len) return null;
+            const pane = self.tab.panes.items[self.index];
+            self.index += 1;
+            return pane;
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator, id: usize) Tab {
         return .{
@@ -18,6 +69,10 @@ pub const Tab = struct {
     }
 
     pub fn deinit(self: *Tab, runtime: *GhosttyRuntime) void {
+        if (self.root_split) |root| {
+            root.deinit(self.allocator);
+            self.allocator.destroy(root);
+        }
         for (self.panes.items) |pane| {
             pane.deinit(runtime);
             self.allocator.destroy(pane);
@@ -28,11 +83,25 @@ pub const Tab = struct {
 
     pub fn appendPane(self: *Tab, pane: *Pane) !void {
         try self.panes.append(self.allocator, pane);
-        if (self.active_pane == null) self.active_pane = pane;
+        if (self.active_pane == null) {
+            self.active_pane = pane;
+            try self.initRootSplitForPane(pane);
+        }
     }
 
     pub fn activePane(self: *Tab) ?*Pane {
         return self.active_pane;
+    }
+
+    pub fn paneIterator(self: *Tab) PaneIterator {
+        return .{ .tab = self };
+    }
+
+    fn initRootSplitForPane(self: *Tab, pane: *Pane) !void {
+        if (self.root_split != null) return;
+        const root = try self.allocator.create(SplitNode);
+        root.* = SplitNode.initPane(pane);
+        self.root_split = root;
     }
 };
 
@@ -41,6 +110,26 @@ pub const Workspace = struct {
     id: usize,
     tabs: std.ArrayList(*Tab),
     active_tab: ?*Tab = null,
+
+    pub const PaneIterator = struct {
+        workspace: *Workspace,
+        tab_index: usize = 0,
+        pane_iter: ?Tab.PaneIterator = null,
+
+        pub fn next(self: *PaneIterator) ?*Pane {
+            while (true) {
+                if (self.pane_iter) |*pane_iter| {
+                    if (pane_iter.next()) |pane| return pane;
+                    self.pane_iter = null;
+                }
+
+                if (self.tab_index >= self.workspace.tabs.items.len) return null;
+                const tab = self.workspace.tabs.items[self.tab_index];
+                self.tab_index += 1;
+                self.pane_iter = tab.paneIterator();
+            }
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator, id: usize) Workspace {
         return .{
@@ -67,6 +156,10 @@ pub const Workspace = struct {
     pub fn activeTab(self: *Workspace) ?*Tab {
         return self.active_tab;
     }
+
+    pub fn paneIterator(self: *Workspace) PaneIterator {
+        return .{ .workspace = self };
+    }
 };
 
 pub const Mux = struct {
@@ -74,6 +167,26 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
+
+    pub const PaneIterator = struct {
+        mux: *Mux,
+        workspace_index: usize = 0,
+        pane_iter: ?Workspace.PaneIterator = null,
+
+        pub fn next(self: *PaneIterator) ?*Pane {
+            while (true) {
+                if (self.pane_iter) |*pane_iter| {
+                    if (pane_iter.next()) |pane| return pane;
+                    self.pane_iter = null;
+                }
+
+                if (self.workspace_index >= self.mux.workspaces.items.len) return null;
+                const workspace = self.mux.workspaces.items[self.workspace_index];
+                self.workspace_index += 1;
+                self.pane_iter = workspace.paneIterator();
+            }
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator) Mux {
         return .{
@@ -138,6 +251,10 @@ pub const Mux = struct {
     pub fn activePane(self: *Mux) ?*Pane {
         const tab = self.activeTab() orelse return null;
         return tab.activePane();
+    }
+
+    pub fn paneIterator(self: *Mux) PaneIterator {
+        return .{ .mux = self };
     }
 
     fn createWorkspace(self: *Mux) !*Workspace {

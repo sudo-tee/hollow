@@ -120,7 +120,7 @@ pub const App = struct {
 
     pub fn tick(self: *App) !void {
         self.flushPendingResize();
-        if (self.ghostty) |*runtime| try self.tickActivePane(runtime);
+        if (self.ghostty) |*runtime| try self.tickPanes(runtime);
         if (!self.logged_first_render_update) {
             self.logged_first_render_update = true;
             std.log.info("first render-state update complete", .{});
@@ -159,12 +159,7 @@ pub const App = struct {
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
         self.cell_width_px = @max(1, cell_w);
         self.cell_height_px = @max(1, cell_h);
-        if (self.ghostty) |*runtime| {
-            if (self.activePane()) |pane| {
-                pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
-                pane.setMouseSize(runtime, self.config.window_width, self.config.window_height, self.cell_width_px, self.cell_height_px);
-            }
-        }
+        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
         std.log.info("app: cell_size updated cell={d}x{d}", .{ self.cell_width_px, self.cell_height_px });
     }
 
@@ -175,13 +170,7 @@ pub const App = struct {
         self.config.cols = @max(1, @as(u16, @intCast(pixel_width / @max(@as(u32, 1), self.cell_width_px))));
         self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
 
-        if (self.ghostty) |*runtime| {
-            if (self.activePane()) |pane| {
-                pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
-                pane.recreateRenderHelpers(runtime);
-                pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
-            }
-        }
+        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, pixel_width, pixel_height, true);
 
         std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
     }
@@ -287,10 +276,25 @@ pub const App = struct {
         self.resize(self.pending_width, self.pending_height);
     }
 
-    fn tickActivePane(self: *App, runtime: *GhosttyRuntime) !void {
-        const pane = self.activePane() orelse return;
-        try pane.pollPty(runtime);
-        try runtime.updateRenderState(pane.render_state, pane.terminal);
+    fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                try pane.pollPty(runtime);
+                try runtime.updateRenderState(pane.render_state, pane.terminal);
+            }
+        }
+    }
+
+    fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool) void {
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
+                if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
+                pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
+            }
+        }
     }
 };
 
