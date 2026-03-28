@@ -12,6 +12,10 @@ const LuaType = enum(c_int) {
     number = 3,
     string = 4,
     table = 5,
+    function = 6,
+    userdata = 7,
+    thread = 8,
+    _,
 };
 
 const Api = struct {
@@ -198,8 +202,7 @@ pub const Runtime = struct {
         // Push the handler function from the registry.
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
         const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
-        if (fn_type != .table and fn_type != .lightuserdata) {
-            // It's a function — push args
+        if (fn_type == .function) {
             const zkey = std.heap.page_allocator.dupeZ(u8, key) catch {
                 pop(api, self.state, 1);
                 return false;
@@ -433,17 +436,20 @@ fn l_on_key(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
-        // Expect a function (LuaType has no .function variant — it's not in our enum,
-        // but value_type returns 6 for functions). Accept anything non-nil.
-        if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .nil_type) {
-            // Unregister
-            if (ctx.on_key_ref != LUA_NOREF) {
-                api.unref(state, LUA_REGISTRYINDEX, ctx.on_key_ref);
-                ctx.on_key_ref = LUA_NOREF;
-            }
-            return 0;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    // nil argument → unregister handler
+    if (arg_type == .nil_type) {
+        if (ctx.on_key_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.on_key_ref);
+            ctx.on_key_ref = LUA_NOREF;
         }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_key expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        return 0;
     }
 
     // Unregister old handler if any.
@@ -451,11 +457,7 @@ fn l_on_key(state: *State) callconv(.c) c_int {
         api.unref(state, LUA_REGISTRYINDEX, ctx.on_key_ref);
     }
 
-    // The function is at stack index 1 — duplicate it to the top so luaL_ref
-    // can pop it without disturbing the original argument.
-    // We use lua_pushvalue (which we don't have)... use rawgeti trick instead:
-    // Actually: the function is already on the stack at position 1. luaL_ref
-    // pops the top element. Since arg 1 IS the top (argc=1), just call ref.
+    // The function is at stack index 1 (top). luaL_ref pops it and returns a ref.
     ctx.on_key_ref = api.ref(state, LUA_REGISTRYINDEX);
     std.log.info("lua: on_key handler registered", .{});
     return 0;
