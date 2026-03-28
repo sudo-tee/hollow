@@ -8,6 +8,9 @@ const ghostty = @import("term/ghostty.zig");
 const Mux = @import("mux.zig").Mux;
 const Workspace = @import("mux.zig").Workspace;
 const Tab = @import("mux.zig").Tab;
+const SplitDirection = @import("mux.zig").SplitDirection;
+const LayoutLeaf = @import("mux.zig").LayoutLeaf;
+const MAX_LAYOUT_LEAVES = @import("mux.zig").MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 
@@ -241,6 +244,28 @@ pub const App = struct {
         return null;
     }
 
+    pub fn splitPane(self: *App, direction: SplitDirection) void {
+        var mux = &(self.mux orelse return);
+        var runtime = &(self.ghostty orelse return);
+        mux.splitActivePane(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction) catch |err| {
+            std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
+            return;
+        };
+        // Register callbacks for the new active pane
+        if (mux.activePane()) |new_pane| {
+            runtime.setWritePtyCallback(new_pane.terminal, writePtyCallback);
+            runtime.setSizeCallback(new_pane.terminal, sizeCallback);
+            runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
+            runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
+        }
+        std.log.info("app: pane split direction={s}", .{@tagName(direction)});
+    }
+
+    pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
+        if (self.mux) |*mux| return mux.computeActiveLayout(self.config.window_width, self.config.window_height, out);
+        return out[0..0];
+    }
+
     pub fn activeTitle(self: *App) []const u8 {
         if (self.activePane()) |pane| return pane.title;
         return self.config.windowTitle();
@@ -288,11 +313,25 @@ pub const App = struct {
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool) void {
         if (self.mux) |*mux| {
-            var panes = mux.paneIterator();
-            while (panes.next()) |pane| {
-                pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
-                if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
-                pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
+            var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            const leaves = mux.computeActiveLayout(pixel_width, pixel_height, &layout_buf);
+            if (leaves.len > 0) {
+                // Resize each pane to its computed sub-rect.
+                for (leaves) |leaf| {
+                    const cols: u16 = @max(1, @as(u16, @intCast(leaf.bounds.width / @max(1, self.cell_width_px))));
+                    const rows: u16 = @max(1, @as(u16, @intCast(leaf.bounds.height / @max(1, self.cell_height_px))));
+                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
+                    if (recreate_render_helpers) leaf.pane.recreateRenderHelpers(runtime);
+                    leaf.pane.setMouseSize(runtime, leaf.bounds.width, leaf.bounds.height, self.cell_width_px, self.cell_height_px);
+                }
+            } else {
+                // Fallback: no split tree yet, resize all panes to full window.
+                var panes = mux.paneIterator();
+                while (panes.next()) |pane| {
+                    pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
+                    if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
+                    pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
+                }
             }
         }
     }

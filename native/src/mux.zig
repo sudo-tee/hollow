@@ -8,6 +8,67 @@ pub const SplitDirection = enum {
     vertical,
 };
 
+/// Axis-aligned pixel rectangle for a single pane.
+pub const PaneBounds = struct {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+};
+
+/// A single entry produced by layout traversal.
+pub const LayoutLeaf = struct {
+    pane: *Pane,
+    bounds: PaneBounds,
+};
+
+/// Maximum number of panes that layout supports in one pass.
+pub const MAX_LAYOUT_LEAVES = 64;
+
+/// Walk a SplitNode tree and fill `out` with one LayoutLeaf per pane leaf.
+/// Returns the number of entries written.
+/// `bounds` is the pixel rectangle available to `node`.
+pub fn layoutSplitTree(
+    node: *SplitNode,
+    bounds: PaneBounds,
+    out: []LayoutLeaf,
+    written: *usize,
+) void {
+    switch (node.kind) {
+        .pane => {
+            const pane = node.pane orelse return;
+            if (written.* >= out.len) return;
+            out[written.*] = .{ .pane = pane, .bounds = bounds };
+            written.* += 1;
+        },
+        .split => {
+            const first = node.first orelse return;
+            const second = node.second orelse return;
+            const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
+            var first_bounds: PaneBounds = undefined;
+            var second_bounds: PaneBounds = undefined;
+            switch (node.direction) {
+                .vertical => {
+                    // Split left/right
+                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.width)) * ratio));
+                    const second_w = if (bounds.width > first_w) bounds.width - first_w else 0;
+                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                    second_bounds = .{ .x = bounds.x + first_w, .y = bounds.y, .width = second_w, .height = bounds.height };
+                },
+                .horizontal => {
+                    // Split top/bottom
+                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.height)) * ratio));
+                    const second_h = if (bounds.height > first_h) bounds.height - first_h else 0;
+                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h, .width = bounds.width, .height = second_h };
+                },
+            }
+            layoutSplitTree(first, first_bounds, out, written);
+            layoutSplitTree(second, second_bounds, out, written);
+        },
+    }
+}
+
 pub const SplitNode = struct {
     kind: Kind,
     pane: ?*Pane = null,
@@ -173,6 +234,21 @@ pub const Tab = struct {
 
     pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
         return self.root_split;
+    }
+
+    /// Compute pixel bounds for every leaf pane in this tab's split tree.
+    /// Returns a slice into `out` (length = number of panes).
+    pub fn computeLayout(self: *Tab, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
+        const root = self.root_split orelse return out[0..0];
+        const full_bounds = PaneBounds{
+            .x = 0,
+            .y = 0,
+            .width = window_width,
+            .height = window_height,
+        };
+        var written: usize = 0;
+        layoutSplitTree(root, full_bounds, out, &written);
+        return out[0..written];
     }
 
     fn initRootSplitForPane(self: *Tab, pane: *Pane) !void {
@@ -350,6 +426,12 @@ pub const Mux = struct {
         return tab.activeSplitRoot();
     }
 
+    /// Compute pixel bounds for every pane in the active tab.
+    pub fn computeActiveLayout(self: *Mux, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
+        const tab = self.activeTab() orelse return out[0..0];
+        return tab.computeLayout(window_width, window_height, out);
+    }
+
     fn createWorkspace(self: *Mux) !*Workspace {
         const workspace = try self.allocator.create(Workspace);
         workspace.* = Workspace.init(self.allocator, self.allocId());
@@ -362,13 +444,25 @@ pub const Mux = struct {
         return tab;
     }
 
-    fn createPane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Pane {
+    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
         try pane.bootstrap(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
         return pane;
+    }
+
+    /// Split the active pane, spawning a new pane in the given direction.
+    /// The new pane becomes the active pane.
+    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection) !void {
+        const tab = self.activeTab() orelse return error.NoActiveTab;
+        const new_pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        errdefer {
+            new_pane.deinit(runtime);
+            self.allocator.destroy(new_pane);
+        }
+        try tab.splitActivePane(new_pane, direction, 0.5);
     }
 
     fn allocId(self: *Mux) usize {

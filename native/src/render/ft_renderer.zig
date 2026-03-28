@@ -281,18 +281,51 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
+        self.drawInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h);
+    }
+
+    pub fn drawInViewport(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        render_state: ?*anyopaque,
+        row_iterator: *?*anyopaque,
+        row_cells: *?*anyopaque,
+        offset_x: f32,
+        offset_y: f32,
+        pane_w: f32,
+        pane_h: f32,
+        fb_w: f32,
+        fb_h: f32,
+    ) void {
+        _ = fb_w;
+        _ = fb_h;
         const colors = runtime.renderStateColors(render_state) orelse return;
         const default_bg = colors.background;
         const default_fg = colors.foreground;
 
         c.sgl_defaults();
+        // Set viewport and scissor to this pane's sub-rect.
+        c.sgl_viewport(
+            @as(c_int, @intFromFloat(offset_x)),
+            @as(c_int, @intFromFloat(offset_y)),
+            @as(c_int, @intFromFloat(pane_w)),
+            @as(c_int, @intFromFloat(pane_h)),
+            true,
+        );
+        c.sgl_scissor_rect(
+            @as(c_int, @intFromFloat(offset_x)),
+            @as(c_int, @intFromFloat(offset_y)),
+            @as(c_int, @intFromFloat(pane_w)),
+            @as(c_int, @intFromFloat(pane_h)),
+            true,
+        );
         c.sgl_matrix_mode_projection();
         c.sgl_load_identity();
-        c.sgl_ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
+        c.sgl_ortho(0.0, pane_w, pane_h, 0.0, -1.0, 1.0);
 
         if (!self.logged_first_draw) {
             std.log.info("ft_renderer first draw: screen={d:.0}x{d:.0} cell={d:.1}x{d:.1}", .{
-                screen_w, screen_h, self.cell_w, self.cell_h,
+                pane_w, pane_h, self.cell_w, self.cell_h,
             });
         }
 
