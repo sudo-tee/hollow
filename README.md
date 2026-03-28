@@ -1,203 +1,108 @@
 # Hollow
 
-<div align="center">
-  <img src="assets/banner.png" alt="Opencode logo" width="30%" />
-</div>
+This branch is the start of the native rewrite.
 
-A **Love2D / LuaJIT** terminal emulator frontend powered by **libghostty-VT** for VT parsing,
-with a **WezTerm-inspired scriptable Lua API**, full split panes, tabs, workspaces, and a
-customisable status bar.
+The old Love2D/Lua code is still in the repo as reference material, but the new work now starts in `native/` with a Zig-first core that still keeps `libghostty-vt` and LuaJIT in the loop.
 
-This is a proof-of-concept / playground this is not intended for production.
+## Direction
 
----
+- `Zig` for the core runtime, platform layer, PTY layer, and terminal orchestration
+- `LuaJIT` as the hackable host scripting layer
+- `libghostty-vt` as the VT/parser/render-state engine
+- renderer seam shaped for `sokol` now and a future `webgpu` backend later
+- Windows treated as a first-class target instead of a fallback port
 
-## Architecture
+## Current layout
 
-```
-ghostty-love/
-├── main.lua                  # Love2D entry point; wires events → App
-├── conf.lua                  # Love2D window config
-├── conf/
-│   └── init.lua              # Example user config (copy to ~/.config/ghostty-love/)
-└── src/
-    ├── core/
-    │   ├── ghostty_ffi.lua   # LuaJIT FFI bindings for libghostty-VT
-    │   ├── pty.lua           # POSIX forkpty / ConPTY abstraction
-    │   ├── pane.lua          # Terminal pane (surface + PTY)
-    │   ├── split.lua         # Recursive binary split tree
-    │   ├── tab.lua           # Tab (owns a split tree)
-    │   ├── workspace.lua     # Workspace (owns tabs)
-    │   ├── app.lua           # Top-level orchestrator
-    │   ├── config.lua        # Config loader / store
-    │   ├── keymap.lua        # Key binding matcher + VT encoder
-    │   └── event_bus.lua     # Pub/sub event system
-    ├── renderer/
-    │   └── terminal.lua      # Love2D glyph/cell renderer
-    ├── ui/
-    │   ├── tab_bar.lua       # Tab bar (click-to-switch, bell indicator)
-    │   └── status_bar.lua    # Scriptable status bar (left/right segments)
-    └── api/
-        └── init.lua          # `hollow` global - public scripting API
+```text
+build.zig
+conf/init.lua
+native/
+  src/
+    app.zig
+    config.zig
+    main.zig
+    platform.zig
+    lua/luajit.zig
+    term/ghostty.zig
+    render/
+      backend.zig
+      null_backend.zig
+docs/rewrite-architecture.md
 ```
 
-### Object hierarchy
+## What works today
 
-```
-App
-└── Workspace[]       (switchable like i3 workspaces)
-    └── Tab[]         (own a split tree each)
-        └── SplitNode (recursive binary tree)
-            └── Leaf  (wraps one Pane)
-                └── Pane  (one libghostty-VT surface + one PTY child)
-```
+- native Zig build entry point via `zig build`
+- dynamic LuaJIT loading and a tiny `hollow` Lua API
+- config bootstrap from `conf/init.lua` or `~/.config/hollow/init.lua`
+- dynamic `libghostty-vt` loading and terminal/render-state bootstrap
+- Windows-first `sokol_app` frontend path with a native event loop
+- ConPTY backend for Windows and `forkpty` backend for Unix
+- first-pass terminal rendering from Ghostty row/cell state into a native window
 
----
-
-## Dependencies
-
-| Dependency                          | Purpose                                             |
-| ----------------------------------- | --------------------------------------------------- |
-| [Love2D](https://love2d.org) ≥ 11.4 | Window, graphics, input, LuaJIT                     |
-| **libghostty-VT**                   | VT / ANSI / kitty protocol parsing & terminal state |
-
-### Getting libghostty-VT
-
-Build from the [ghostty](https://github.com/ghostty-org/ghostty) source tree with the
-`libghostty` target, then copy the resulting `.so` / `.dylib` / `.dll` next to `main.lua`:
+## Build
 
 ```bash
-# Example (adjust paths to your ghostty checkout)
-cd ghostty
-zig build libghostty -Doptimize=ReleaseFast
-cp zig-out/lib/libghostty-VT.so /path/to/ghostty-love/
+zig build
+zig build test
+zig build run
+zig build -Dtarget=x86_64-windows-gnu
 ```
 
----
+The Windows executable is emitted at `zig-out/bin/hollow-native.exe`.
 
-## Running
+For Windows, place a LuaJIT runtime DLL next to the exe as one of:
 
-```bash
-love /path/to/ghostty-love
-# or on Linux if love is in PATH:
-cd ghostty-love && love .
-```
+- `zig-out/bin/luajit-5.1.dll`
+- `zig-out/bin/luajit.dll`
+- `zig-out/bin/lua51.dll`
 
----
+The app already installs `zig-out/bin/ghostty-vt.dll` during a Windows build.
 
-## User Configuration
+The runtime now also searches relative to the executable directory, not just the current working directory.
 
-Copy `conf/init.lua` to `~/.config/ghostty-love/init.lua` and edit it.
-The `hollow` global is available before the file runs.
+## Windows-first runtime
 
-### Font
+- `native/src/render/sokol_runtime.zig` runs the app through `sokol_app`
+- Windows uses `D3D11` via Sokol; Linux keeps a fallback GL path for now
+- `native/src/pty/pty_windows.zig` uses ConPTY for the shell bridge
+- terminal content comes from `libghostty-vt` row/cell iteration, then gets painted into the Sokol window
+
+Current renderer status:
+
+- background, frame chrome, and first visible row are rendered natively
+- keyboard, mouse, focus, resize, and scroll events are wired into Ghostty + PTY
+- text rendering is still an early pass using `sokol_debugtext`, not a full glyph atlas yet
+
+## Config model
+
+The new Lua host API is intentionally tiny right now:
 
 ```lua
 hollow.set_config({
-    font_path = "fonts/JetBrainsMonoNerdFont-Regular.ttf",
-    font_size = 15,
+    backend = "sokol",
+    shell = "pwsh.exe",
+    ghostty_library = "ghostty-vt.dll",
+    cols = 120,
+    rows = 34,
+    scrollback = 20000,
+    window_title = "hollow",
 })
 ```
 
-### Colours
+Available helpers:
 
-```lua
-local c = hollow.color
-hollow.set_config({
-    colors = {
-        background = c.from_hex("#1e1e2e"),
-        cursor     = c.from_hex("#f5e0dc"),
-        -- ... see conf/init.lua for full schema
-    }
-})
-```
+- `hollow.log(...)`
+- `hollow.platform.os`
+- `hollow.platform.is_windows`
+- `hollow.platform.is_linux`
+- `hollow.platform.is_macos`
+- `hollow.platform.default_shell`
 
-### Key bindings
+## Next steps
 
-```lua
--- Bind to a built-in action
-hollow.keys.bind({ ctrl=true, shift=true }, "h", "split_h")
-hollow.keys.bind({ ctrl=true, shift=true }, "v", "split_v")
-
--- Bind to a Lua callback
-hollow.keys.bind({ super=true }, "k", function()
-    hollow.actions.new_tab()
-end)
-```
-
-Available built-in actions: `new_tab`, `close_tab`, `next_tab`, `prev_tab`,
-`split_h`, `split_v`, `close_pane`, `focus_next`, `focus_prev`,
-`new_workspace`, `next_workspace`, `prev_workspace`.
-
-### Status bar
-
-```lua
-hollow.status_bar.set_left(function(workspace, tab, pane)
-    return {
-        { text = "  " .. workspace.name .. "  ", fg={1,1,1,1}, bg={0.4,0.2,0.8,1} },
-        { text = "  " .. (pane and pane.title or "") .. "  " },
-    }
-end)
-
-hollow.status_bar.set_right(function(ws, tab, pane)
-    return {
-        { text = "  " .. os.date("%H:%M") .. "  ", bg={0.1,0.1,0.15,1} },
-    }
-end)
-```
-
-Each segment: `{ text = "...", fg = {r,g,b,a}, bg = {r,g,b,a} }` (all optional except `text`).
-
-### Event hooks
-
-```lua
-hollow.on("app:ready",        function() end)
-hollow.on("app:update",       function(dt) end)
-hollow.on("app:resize",       function(w, h) end)
-hollow.on("app:quit",         function() end)
-hollow.on("pane:focus",       function(pane) end)
-hollow.on("workspace:switch", function(idx) end)
--- action:NAME fires for any unhandled dispatch action
-hollow.on("action:my_action", function() end)
-```
-
----
-
-## Default Key Bindings
-
-| Binding          | Action              |
-| ---------------- | ------------------- |
-| `Ctrl+Shift+T`   | New tab             |
-| `Ctrl+Shift+W`   | Close tab           |
-| `Ctrl+Tab`       | Next tab            |
-| `Ctrl+Shift+Tab` | Previous tab        |
-| `Ctrl+Shift+D`   | Split horizontal    |
-| `Ctrl+Shift+E`   | Split vertical      |
-| `Ctrl+Shift+Q`   | Close pane          |
-| `Ctrl+]`         | Focus next pane     |
-| `Ctrl+[`         | Focus previous pane |
-| `Ctrl+Shift+N`   | New workspace       |
-| `Ctrl+Shift+→`   | Next workspace      |
-| `Ctrl+Shift+←`   | Previous workspace  |
-
----
-
-## Roadmap / TODO
-
-- [ ] Windows ConPTY support (winpty binding)
-- [ ] Kitty keyboard protocol full implementation
-- [ ] GPU-accelerated glyph atlas (Love2D SpriteBatch)
-- [ ] Ligature support via HarfBuzz FFI
-- [ ] True-colour image / sixel rendering via iTerm2 protocol
-- [ ] Mouse reporting passthrough to apps
-- [ ] Search / find-in-scrollback
-- [ ] Copy-on-select / OSC 52 clipboard
-- [ ] Session persistence (serialize pane layout)
-- [ ] Multiplexer mode (multiple windows share one server process)
-- [ ] Plugin system (load additional `.lua` files from a plugins/ dir)
-
----
-
-## License
-
-MIT — see `LICENSE`.
+- expand the Sokol renderer from first-row proof to full-grid rendering
+- replace `sokol_debugtext` with a real glyph atlas / font pipeline
+- harden ConPTY process lifecycle and Windows packaging of LuaJIT + `libghostty-vt`
+- expand Lua from config-only into events, actions, and layout control

@@ -1,0 +1,24 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Build outputs
+*.exe
+*.exe.old
+
+# Runtime DLLs (fetch via MSYS2: see README)
+*.dll
+
+# Scratch / debug images and logs
+*.png
+*.patch
+err.txt
+error_out.txt
+out.txt
+
+# Scratch Lua test files
+main_test.lua
+test_fallback.lua
+
+# ghostty full source tree (237MB — not committed)
+third_party/ghostty/

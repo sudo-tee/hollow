@@ -1,79 +1,75 @@
 #!/usr/bin/env bash
-# launch.sh – run ghostty-love from WSL using the Windows Love2D binary
-#
-# Usage:
-#   ./launch.sh            # normal launch
-#   ./launch.sh --log      # write stderr to /tmp/ghostty-love.log
-#   ./launch.sh --console  # open a Windows console window (shows Lua errors)
-#
-# Requirements:
-#   - Love2D for Windows installed at C:\Program Files\LOVE\love.exe
-#     (override with LOVE_EXE env var)
-#   - ghostty-vt.dll in the project directory (already there)
-
 set -euo pipefail
 
-LOVE_EXE="${LOVE_EXE:-/mnt/c/Program Files/LOVE/love.exe}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BIN_DIR="$SCRIPT_DIR/zig-out/bin"
+EXE_NAME="hollow-native.exe"
+EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
 
-# Convert the WSL path of the project to a Windows path that love.exe understands
-WIN_PATH="$(wslpath -w "$SCRIPT_DIR")"
-
-LOG=0
-CONSOLE=0
+TARGET="x86_64-windows-gnu"
+BUILD=1
+RUN=1
 
 for arg in "$@"; do
 	case "$arg" in
-	--log) LOG=1 ;;
-	--console) CONSOLE=1 ;;
+	--no-build) BUILD=0 ;;
+	--build-only) RUN=0 ;;
 	--help | -h)
-		echo "Usage: $0 [--log] [--console]"
-		echo "  --log      Write stderr output to /tmp/ghostty-love.log"
-		echo "  --console  Open a Windows console window (shows Lua errors live)"
+		echo "Usage: $0 [--no-build] [--build-only]"
 		exit 0
 		;;
 	esac
 done
 
-# Optionally copy the DLL next to love.exe.
-# Disabled by default because Program Files usually needs elevation.
-LOVE_DIR="$(dirname "$LOVE_EXE")"
-DLL_SRC="$SCRIPT_DIR/ghostty-vt.dll"
-DLL_DST="$LOVE_DIR/ghostty-vt.dll"
+if [[ $BUILD -eq 1 ]]; then
+	echo "[launch] building Windows target"
+	# Default to temp caches to avoid WSL-on-/mnt/c rename failures.
+	# Allow the user to override by setting ZIG_LOCAL_CACHE_DIR or ZIG_GLOBAL_CACHE_DIR.
+	ZIG_LOCAL_CACHE_DIR=${ZIG_LOCAL_CACHE_DIR:-/tmp/hollow-zig-cache}
+	ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR:-/tmp/hollow-zig-global}
+	echo "[launch] using ZIG_LOCAL_CACHE_DIR=$ZIG_LOCAL_CACHE_DIR ZIG_GLOBAL_CACHE_DIR=$ZIG_GLOBAL_CACHE_DIR"
+	zig build -Dtarget="$TARGET" \
+		--cache-dir "$ZIG_LOCAL_CACHE_DIR" \
+		--global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
+fi
 
-if [[ "${COPY_GHOSTTY_DLL:-0}" == "1" && -f "$DLL_SRC" ]]; then
-	if [[ ! -f "$DLL_DST" ]] || ! cmp -s "$DLL_SRC" "$DLL_DST"; then
-		echo "[launch] Copying ghostty-vt.dll → $LOVE_DIR"
-		cp "$DLL_SRC" "$DLL_DST"
+mkdir -p "$SCRIPT_DIR"
+
+copy_if_exists() {
+	local src="$1"
+	local dst="$2"
+	if [[ -f "$src" ]]; then
+		if [[ "$src" == "$dst" ]]; then
+			return
+		fi
+		if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+			return
+		fi
+		if [[ -f "$dst" ]]; then
+			rm -f "$dst" 2>/dev/null || true
+		fi
+		cp "$src" "$dst"
 	fi
+}
+
+copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
+copy_if_exists "$BIN_DIR/ghostty-vt.dll" "$SCRIPT_DIR/ghostty-vt.dll"
+copy_if_exists "$BIN_DIR/lua51.dll" "$SCRIPT_DIR/lua51.dll"
+copy_if_exists "$SCRIPT_DIR/lua51.dll" "$BIN_DIR/lua51.dll"
+
+for _dll in libfreetype-6.dll libharfbuzz-0.dll libgcc_s_seh-1.dll libstdc++-6.dll \
+            libwinpthread-1.dll \
+            libglib-2.0-0.dll libbrotlidec.dll libbrotlicommon.dll \
+            libbz2-1.dll libpng16-16.dll zlib1.dll libpcre2-8-0.dll \
+            libiconv-2.dll libintl-8.dll; do
+    copy_if_exists "$BIN_DIR/$_dll" "$SCRIPT_DIR/$_dll"
+done
+
+if [[ ! -f "$SCRIPT_DIR/lua51.dll" ]]; then
+	echo "[launch] warning: lua51.dll missing from project root"
 fi
 
-# Build the argument list
-LOVE_ARGS=("$WIN_PATH")
-
-# --console opens a Windows cmd window so you can see print() and errors.
-# Omit it for a clean launch once everything is working.
-if [[ $CONSOLE -eq 1 ]]; then
-	LOVE_ARGS+=("--console")
-	export GHOSTTY_LOVE_DEBUG=1
-fi
-
-echo "[launch] Running: \"$LOVE_EXE\" ${LOVE_ARGS[*]}"
-
-if [[ $LOG -eq 1 ]]; then
-	LOG_FILE="/tmp/ghostty-love.log"
-	echo "[launch] Logging stderr → $LOG_FILE"
-	# Run detached so the terminal isn't blocked; stderr goes to the log.
-	"$LOVE_EXE" "${LOVE_ARGS[@]}" 2>"$LOG_FILE" &
-	LOVE_PID=$!
-	echo "[launch] PID $LOVE_PID  –  tail -f $LOG_FILE"
-	# Show the log in this terminal while the app runs
-	tail -f "$LOG_FILE" &
-	TAIL_PID=$!
-	wait $LOVE_PID
-	kill $TAIL_PID 2>/dev/null || true
-	echo "[launch] love.exe exited."
-else
-	# Foreground – stderr goes straight to the WSL terminal
-	exec "$LOVE_EXE" "${LOVE_ARGS[@]}"
+if [[ $RUN -eq 1 ]]; then
+	echo "[launch] running $EXE_PATH"
+	exec "$EXE_PATH"
 fi
