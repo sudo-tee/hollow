@@ -35,8 +35,6 @@ pub const App = struct {
     frame_count: usize = 0,
     logged_first_pty_read: bool = false,
     logged_first_render_update: bool = false,
-    sent_win32_input_disable: bool = false,
-    saw_win32_input_enable: bool = false,
     cell_width_px: u32 = 8,
     cell_height_px: u32 = 16,
     pending_resize: bool = false,
@@ -212,20 +210,11 @@ pub const App = struct {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
-                    self.saw_win32_input_enable = false;
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
                     if (pty_bytes.len > 0) {
                         self.ghostty.?.terminalWrite(self.terminal, pty_bytes);
                     }
 
-                    if (platform.isWindows() and self.saw_win32_input_enable and !self.sent_win32_input_disable) {
-                        self.sent_win32_input_disable = true;
-                        const disable_win32_input = "\x1b[?9001l";
-                        pty.writeAll(disable_win32_input) catch |err| {
-                            std.log.err("app: failed to send ?9001l: {s}", .{@errorName(err)});
-                        };
-                        std.log.info("app: sent ESC[?9001l to disable Win32 input mode", .{});
-                    }
                 }
             }
             self.ghostty.?.syncKeyEncoder(self.key_encoder, self.terminal);
@@ -444,7 +433,6 @@ pub const App = struct {
         while (read_idx < combined_len) {
             const remaining = self.pty_sanitize_buf[read_idx..combined_len];
             if (std.mem.startsWith(u8, remaining, enable)) {
-                self.saw_win32_input_enable = true;
                 read_idx += enable.len;
                 continue;
             }
