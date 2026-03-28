@@ -123,10 +123,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var clear_g: f32 = 0.08;
     var clear_b: f32 = 0.11;
     if (app.ghostty) |*runtime| {
-        if (runtime.renderStateColors(app.render_state)) |colors| {
-            clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
-            clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
-            clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+        if (app.activePane()) |pane| {
+            if (runtime.renderStateColors(pane.render_state)) |colors| {
+                clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
+                clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
+                clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+            }
         }
     }
 
@@ -139,14 +141,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Draw cells using the FreeType renderer.
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
-            renderer.draw(
-                runtime,
-                app.render_state,
-                &app.row_iterator,
-                &app.row_cells,
-                width,
-                height,
-            );
+            if (app.activePane()) |pane| {
+                renderer.draw(
+                    runtime,
+                    pane.render_state,
+                    &pane.row_iterator,
+                    &pane.row_cells,
+                    width,
+                    height,
+                );
+            }
         }
     }
 
@@ -155,7 +159,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     g_renderer_ready = true;
 
-    c.sapp_set_window_title(titleCString(app.title));
+    c.sapp_set_window_title(titleCString(app.activeTitle()));
 }
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
