@@ -5,6 +5,9 @@ const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
 const LuaRuntime = @import("lua/luajit.zig").Runtime;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
+const Mux = @import("mux.zig").Mux;
+const Workspace = @import("mux.zig").Workspace;
+const Tab = @import("mux.zig").Tab;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 
@@ -19,7 +22,7 @@ pub const App = struct {
     lua: ?LuaRuntime = null,
     ghostty: ?GhosttyRuntime = null,
     renderer: ?Backend = null,
-    pane: ?Pane = null,
+    mux: ?Mux = null,
     loaded_config_path: ?[]u8 = null,
     frame_count: usize = 0,
     logged_first_render_update: bool = false,
@@ -48,9 +51,9 @@ pub const App = struct {
         }
 
         if (self.ghostty) |*runtime| {
-            if (self.pane) |*pane| {
-                pane.deinit(runtime);
-                self.pane = null;
+            if (self.mux) |*mux| {
+                mux.deinit(runtime);
+                self.mux = null;
             }
             runtime.deinit();
             self.ghostty = null;
@@ -77,12 +80,12 @@ pub const App = struct {
         var runtime = try GhosttyRuntime.init(self.allocator, self.config.ghosttyLibrary());
         errdefer runtime.deinit();
 
-        var pane = Pane.init(self.allocator);
-        errdefer pane.deinit(&runtime);
-        try pane.bootstrap(&runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
+        var mux = Mux.init(self.allocator);
+        errdefer mux.deinit(&runtime);
+        try mux.bootstrapSingle(&runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
         self.ghostty = runtime;
-        self.pane = pane;
+        self.mux = mux;
         self.renderer = Backend.init(self.allocator, self.config);
 
         write_bridge = self;
@@ -117,12 +120,7 @@ pub const App = struct {
 
     pub fn tick(self: *App) !void {
         self.flushPendingResize();
-        if (self.ghostty) |*runtime| {
-            if (self.pane) |*pane| {
-                try pane.pollPty(runtime);
-                try runtime.updateRenderState(pane.render_state, pane.terminal);
-            }
-        }
+        if (self.ghostty) |*runtime| try self.tickActivePane(runtime);
         if (!self.logged_first_render_update) {
             self.logged_first_render_update = true;
             std.log.info("first render-state update complete", .{});
@@ -133,7 +131,7 @@ pub const App = struct {
     pub fn captureSnapshot(self: *App) ?FrameSnapshot {
         if (self.renderer) |*renderer| {
             if (self.ghostty) |*runtime| {
-                if (self.pane) |*pane| {
+                if (self.activePane()) |pane| {
                     return renderer.fillSnapshot(runtime, pane.render_state, &pane.row_iterator, &pane.row_cells, self.config, pane.title);
                 }
             }
@@ -154,14 +152,15 @@ pub const App = struct {
     }
 
     pub fn sendText(self: *App, text: []const u8) !void {
-        if (self.pane) |*pane| try pane.sendText(text);
+        const pane = self.activePane() orelse return;
+        try pane.sendText(text);
     }
 
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
         self.cell_width_px = @max(1, cell_w);
         self.cell_height_px = @max(1, cell_h);
         if (self.ghostty) |*runtime| {
-            if (self.pane) |*pane| {
+            if (self.activePane()) |pane| {
                 pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
                 pane.setMouseSize(runtime, self.config.window_width, self.config.window_height, self.cell_width_px, self.cell_height_px);
             }
@@ -177,7 +176,7 @@ pub const App = struct {
         self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
 
         if (self.ghostty) |*runtime| {
-            if (self.pane) |*pane| {
+            if (self.activePane()) |pane| {
                 pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
                 pane.recreateRenderHelpers(runtime);
                 pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
@@ -234,17 +233,27 @@ pub const App = struct {
     }
 
     pub fn hasLiveChild(self: *App) bool {
-        if (self.pane) |*pane| return pane.hasLiveChild();
+        if (self.activePane()) |pane| return pane.hasLiveChild();
         return false;
     }
 
+    pub fn activeWorkspace(self: *App) ?*Workspace {
+        if (self.mux) |*mux| return mux.activeWorkspace();
+        return null;
+    }
+
+    pub fn activeTab(self: *App) ?*Tab {
+        if (self.mux) |*mux| return mux.activeTab();
+        return null;
+    }
+
     pub fn activePane(self: *App) ?*Pane {
-        if (self.pane) |*pane| return pane;
+        if (self.mux) |*mux| return mux.activePane();
         return null;
     }
 
     pub fn activeTitle(self: *App) []const u8 {
-        if (self.pane) |*pane| return pane.title;
+        if (self.activePane()) |pane| return pane.title;
         return self.config.windowTitle();
     }
 
@@ -276,6 +285,12 @@ pub const App = struct {
         if (!self.pending_resize) return;
         self.pending_resize = false;
         self.resize(self.pending_width, self.pending_height);
+    }
+
+    fn tickActivePane(self: *App, runtime: *GhosttyRuntime) !void {
+        const pane = self.activePane() orelse return;
+        try pane.pollPty(runtime);
+        try runtime.updateRenderState(pane.render_state, pane.terminal);
     }
 };
 
@@ -329,6 +344,6 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.Device
 fn titleChangedCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const app = title_bridge orelse return;
     if (app.ghostty) |*runtime| {
-        if (app.pane) |*pane| pane.refreshTitle(runtime, app.config.windowTitle());
+        if (app.activePane()) |pane| pane.refreshTitle(runtime, app.config.windowTitle());
     }
 }
