@@ -24,6 +24,7 @@ const Api = struct {
     set_top: *const fn (*State, c_int) callconv(.c) void,
     create_table: *const fn (*State, c_int, c_int) callconv(.c) void,
     set_field: *const fn (*State, c_int, [*:0]const u8) callconv(.c) void,
+    get_field: *const fn (*State, c_int, [*:0]const u8) callconv(.c) void,
     push_string: *const fn (*State, [*:0]const u8) callconv(.c) void,
     push_number: *const fn (*State, f64) callconv(.c) void,
     push_boolean: *const fn (*State, c_int) callconv(.c) void,
@@ -36,14 +37,31 @@ const Api = struct {
     to_userdata: *const fn (*State, c_int) callconv(.c) ?*anyopaque,
     value_type: *const fn (*State, c_int) callconv(.c) c_int,
     next: *const fn (*State, c_int) callconv(.c) c_int,
+    ref: *const fn (*State, c_int) callconv(.c) c_int,
+    rawgeti: *const fn (*State, c_int, c_int) callconv(.c) void,
+    unref: *const fn (*State, c_int, c_int) callconv(.c) void,
+};
+
+/// Callbacks from Lua into the App layer.
+/// Using function pointers keeps luajit.zig free of App imports.
+pub const AppCallbacks = struct {
+    app: *anyopaque,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8) void,
 };
 
 const BridgeContext = struct {
     api: Api,
     cfg: *config.Config,
+    app_callbacks: ?AppCallbacks = null,
+    /// LuaJIT registry ref for the on_key handler function (LUA_NOREF = -1).
+    on_key_ref: c_int = -1,
 };
 
 var active_context: ?*BridgeContext = null;
+
+// LUA_REGISTRYINDEX constant (matches the luajit ABI)
+const LUA_REGISTRYINDEX: c_int = -10000;
+const LUA_NOREF: c_int = -1;
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
@@ -104,6 +122,7 @@ pub const Runtime = struct {
             .set_top = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_settop"),
             .create_table = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "lua_createtable"),
             .set_field = lookup(&lib, *const fn (*State, c_int, [*:0]const u8) callconv(.c) void, "lua_setfield"),
+            .get_field = lookup(&lib, *const fn (*State, c_int, [*:0]const u8) callconv(.c) void, "lua_getfield"),
             .push_string = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) void, "lua_pushstring"),
             .push_number = lookup(&lib, *const fn (*State, f64) callconv(.c) void, "lua_pushnumber"),
             .push_boolean = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_pushboolean"),
@@ -116,6 +135,9 @@ pub const Runtime = struct {
             .to_userdata = lookup(&lib, *const fn (*State, c_int) callconv(.c) ?*anyopaque, "lua_touserdata"),
             .value_type = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_type"),
             .next = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_next"),
+            .ref = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "luaL_ref"),
+            .rawgeti = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "lua_rawgeti"),
+            .unref = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "luaL_unref"),
         };
 
         const state = api.new_state() orelse return error.LuaStateInitFailed;
@@ -160,10 +182,48 @@ pub const Runtime = struct {
         }
     }
 
+    /// Register app-level action callbacks so Lua can call split_pane etc.
+    pub fn registerAppCallbacks(self: *Runtime, callbacks: AppCallbacks) void {
+        self.context.app_callbacks = callbacks;
+    }
+
+    /// Fire the Lua on_key handler (if registered).
+    /// Returns true if the key was consumed by Lua (handler returned true).
+    pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32) bool {
+        const ctx = self.context;
+        const api = ctx.api;
+        const ref = ctx.on_key_ref;
+        if (ref == LUA_NOREF) return false;
+
+        // Push the handler function from the registry.
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (fn_type != .table and fn_type != .lightuserdata) {
+            // It's a function — push args
+            const zkey = std.heap.page_allocator.dupeZ(u8, key) catch {
+                pop(api, self.state, 1);
+                return false;
+            };
+            defer std.heap.page_allocator.free(zkey);
+            api.push_string(self.state, zkey);
+            api.push_number(self.state, @floatFromInt(mods));
+            const rc = api.pcall(self.state, 2, 1, 0);
+            if (rc != 0) {
+                pop(api, self.state, 1);
+                return false;
+            }
+            const consumed = api.to_boolean(self.state, -1) != 0;
+            pop(api, self.state, 1);
+            return consumed;
+        }
+        pop(api, self.state, 1);
+        return false;
+    }
+
     fn exposeHollowTable(self: *Runtime) !void {
         const api = self.context.api;
 
-        api.create_table(self.state, 0, 6);
+        api.create_table(self.state, 0, 8);
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_config, 1);
@@ -172,6 +232,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_log, 1);
         api.set_field(self.state, -2, "log");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_split_pane, 1);
+        api.set_field(self.state, -2, "split_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_on_key, 1);
+        api.set_field(self.state, -2, "on_key");
 
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
@@ -334,4 +402,61 @@ fn asInt(comptime T: type, value: f64) !T {
 
 fn pop(api: Api, state: *State, count: c_int) void {
     api.set_top(state, -count - 1);
+}
+
+/// hollow.split_pane(direction)
+/// direction: "vertical" (left/right) or "horizontal" (top/bottom)
+fn l_split_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    const cbs = ctx.app_callbacks orelse {
+        std.log.warn("lua: split_pane called before app callbacks registered", .{});
+        return 0;
+    };
+
+    var dir_len: usize = 0;
+    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &dir_len)
+    else
+        null;
+
+    const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
+    cbs.split_pane(cbs.app, direction);
+    return 0;
+}
+
+/// hollow.on_key(fn(key, mods) -> bool)
+/// Registers a Lua function that is called for every key event before the
+/// terminal sees it. Return true to consume the key.
+fn l_on_key(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
+        // Expect a function (LuaType has no .function variant — it's not in our enum,
+        // but value_type returns 6 for functions). Accept anything non-nil.
+        if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .nil_type) {
+            // Unregister
+            if (ctx.on_key_ref != LUA_NOREF) {
+                api.unref(state, LUA_REGISTRYINDEX, ctx.on_key_ref);
+                ctx.on_key_ref = LUA_NOREF;
+            }
+            return 0;
+        }
+    }
+
+    // Unregister old handler if any.
+    if (ctx.on_key_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.on_key_ref);
+    }
+
+    // The function is at stack index 1 — duplicate it to the top so luaL_ref
+    // can pop it without disturbing the original argument.
+    // We use lua_pushvalue (which we don't have)... use rawgeti trick instead:
+    // Actually: the function is already on the stack at position 1. luaL_ref
+    // pops the top element. Since arg 1 IS the top (argc=1), just call ref.
+    ctx.on_key_ref = api.ref(state, LUA_REGISTRYINDEX);
+    std.log.info("lua: on_key handler registered", .{});
+    return 0;
 }

@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const c = @import("sokol_c");
 const App = @import("../app.zig").App;
 const ghostty = @import("../term/ghostty.zig");
-const SplitDirection = @import("../mux.zig").SplitDirection;
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
@@ -141,18 +140,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
     c.sg_begin_pass(&pass);
 
-    // Draw cells using the FreeType renderer — one viewport per pane.
+    // Compute layout once for the whole frame.
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&layout_buf);
+
+    // Queue cell geometry for every pane (no sgl_draw yet).
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
-            var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-            const leaves = app.computeActiveLayout(&layout_buf);
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
-                    renderer.drawInViewport(
+                    renderer.queueInViewport(
                         runtime,
                         leaf.pane.render_state,
                         &leaf.pane.row_iterator,
@@ -166,12 +167,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     );
                 }
             } else if (app.activePane()) |pane| {
-                // Fallback: no layout yet
-                renderer.draw(
+                renderer.queueInViewport(
                     runtime,
                     pane.render_state,
                     &pane.row_iterator,
                     &pane.row_cells,
+                    0,
+                    0,
+                    width,
+                    height,
                     width,
                     height,
                 );
@@ -179,35 +183,33 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Draw split borders between panes (1px lines at the shared edges).
-    {
-        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-        const leaves = app.computeActiveLayout(&layout_buf);
-        if (leaves.len > 1) {
-            // Reset to full framebuffer viewport for border drawing.
-            c.sgl_defaults();
-            c.sgl_viewport(0, 0, @as(c_int, @intFromFloat(width)), @as(c_int, @intFromFloat(height)), true);
-            c.sgl_matrix_mode_projection();
-            c.sgl_load_identity();
-            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
-            c.sgl_begin_lines();
-            c.sgl_c4b(80, 80, 80, 255); // mid-grey border
-            for (leaves) |leaf| {
-                const x0: f32 = @floatFromInt(leaf.bounds.x);
-                const y0: f32 = @floatFromInt(leaf.bounds.y);
-                const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
-                const y1: f32 = y0 + @as(f32, @floatFromInt(leaf.bounds.height));
-                // Right edge
-                c.sgl_v2f(x1, y0);
-                c.sgl_v2f(x1, y1);
-                // Bottom edge
-                c.sgl_v2f(x0, y1);
-                c.sgl_v2f(x1, y1);
-            }
-            c.sgl_end();
-            c.sgl_draw();
+    // Queue split-border lines (only when >1 pane).
+    if (leaves.len > 1) {
+        // Reset to full-framebuffer viewport for border lines.
+        c.sgl_defaults();
+        c.sgl_viewport(0, 0, @as(c_int, @intFromFloat(width)), @as(c_int, @intFromFloat(height)), true);
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+        c.sgl_begin_lines();
+        c.sgl_c4b(80, 80, 80, 255);
+        for (leaves) |leaf| {
+            const x0: f32 = @floatFromInt(leaf.bounds.x);
+            const y0: f32 = @floatFromInt(leaf.bounds.y);
+            const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
+            const y1: f32 = y0 + @as(f32, @floatFromInt(leaf.bounds.height));
+            // Right edge
+            c.sgl_v2f(x1, y0);
+            c.sgl_v2f(x1, y1);
+            // Bottom edge
+            c.sgl_v2f(x0, y1);
+            c.sgl_v2f(x1, y1);
         }
+        c.sgl_end();
     }
+
+    // Flush all queued geometry — exactly once per frame.
+    c.sgl_draw();
 
     c.sg_end_pass();
     c.sg_commit();
@@ -274,17 +276,6 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         return;
     }
 
-    // Ctrl+\ → vertical split (left/right)
-    // Ctrl+Shift+\ → horizontal split (top/bottom)
-    if ((event.modifiers & c.SAPP_MODIFIER_CTRL) != 0 and event.key_code == c.SAPP_KEYCODE_BACKSLASH) {
-        if ((event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0) {
-            app.splitPane(.horizontal);
-        } else {
-            app.splitPane(.vertical);
-        }
-        return;
-    }
-
     if (!g_logged_first_key and builtin.os.tag == .windows) {
         g_logged_first_key = true;
         std.log.info("first Windows key event key_code={d}", .{event.key_code});
@@ -292,6 +283,13 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
 
     const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
+
+    // Give Lua a chance to consume this key before the terminal sees it.
+    if (key != .unidentified) {
+        const key_name = @tagName(key);
+        if (app.fireOnKey(key_name, mods)) return;
+    }
+
     if (key != .unidentified) _ = app.sendKey(key, mods, null) catch {};
 }
 

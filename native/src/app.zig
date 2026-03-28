@@ -3,6 +3,7 @@ const Config = @import("config.zig").Config;
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
 const LuaRuntime = @import("lua/luajit.zig").Runtime;
+const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const Mux = @import("mux.zig").Mux;
@@ -100,6 +101,14 @@ pub const App = struct {
         self.ghostty.?.setSizeCallback(active_pane.terminal, sizeCallback);
         self.ghostty.?.setDeviceAttributesCallback(active_pane.terminal, deviceAttributesCallback);
         self.ghostty.?.setTitleChangedCallback(active_pane.terminal, titleChangedCallback);
+
+        // Register app action callbacks so Lua can call split_pane etc.
+        if (self.lua) |*lua| {
+            lua.registerAppCallbacks(.{
+                .app = self,
+                .split_pane = luaSplitPaneCallback,
+            });
+        }
 
         try self.tick();
     }
@@ -335,7 +344,19 @@ pub const App = struct {
             }
         }
     }
+    /// Fire the Lua on_key handler. Returns true if the key was consumed.
+    pub fn fireOnKey(self: *App, key: []const u8, mods: u32) bool {
+        if (self.lua) |*lua| return lua.fireOnKey(key, mods);
+        return false;
+    }
 };
+
+/// AppCallbacks.split_pane implementation — called from Lua.
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
+    app.splitPane(dir);
+}
 
 fn prependLibraryPath(allocator: std.mem.Allocator, path: []const u8) !void {
     _ = allocator;

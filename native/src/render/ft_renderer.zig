@@ -281,10 +281,14 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.drawInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h);
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h);
+        c.sgl_draw();
     }
 
-    pub fn drawInViewport(
+    /// Queue geometry for one pane into its viewport sub-rect.
+    /// Does NOT call sgl_draw() — the caller must call sgl_draw() exactly once
+    /// per frame after all queueInViewport() calls are done.
+    pub fn queueInViewport(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         render_state: ?*anyopaque,
@@ -440,7 +444,6 @@ pub const FtRenderer = struct {
         }
 
         if (!self.logged_first_draw) self.logged_first_draw = true;
-        c.sgl_draw();
     }
 
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
