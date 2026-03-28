@@ -17,6 +17,20 @@ var g_logged_first_mouse = false;
 var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
 
+fn framebufferSize() struct { width: f32, height: f32 } {
+    return .{
+        .width = c.sapp_widthf(),
+        .height = c.sapp_heightf(),
+    };
+}
+
+fn windowSizeToPixels(width: f32, height: f32) struct { width: u32, height: u32 } {
+    return .{
+        .width = @max(1, @as(u32, @intFromFloat(width))),
+        .height = @max(1, @as(u32, @intFromFloat(height))),
+    };
+}
+
 pub fn run(app: *App) !void {
     g_app = app;
     g_renderer_ready = false;
@@ -53,6 +67,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // sokol_gl is required by sokol_fontstash for glyph rendering.
     var sgl_desc = std.mem.zeroes(c.sgl_desc_t);
+    sgl_desc.max_vertices = 1 << 20;
+    sgl_desc.max_commands = 1 << 18;
     c.sgl_setup(&sgl_desc);
 
     // Query DPI scale after sg_setup so the GPU context is ready.
@@ -63,8 +79,12 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
         .font_size = app.config.font_size,
         .dpi_scale = dpi_scale,
-        .padding_x = 4.0,
-        .padding_y = 4.0,
+        .padding_x = app.config.font_padding_x,
+        .padding_y = app.config.font_padding_y,
+        .coverage_boost = app.config.font_coverage_boost,
+        .coverage_add = app.config.font_coverage_add,
+        .lcd = app.config.font_lcd,
+        .embolden = app.config.font_embolden,
     }) catch |err| blk: {
         std.log.err("ft_renderer init failed: {}", .{err});
         break :blk null;
@@ -76,6 +96,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
         const cw: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_w)));
         const ch: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_h)));
         app.setCellSize(cw, ch);
+        const pixel_size = windowSizeToPixels(c.sapp_widthf(), c.sapp_heightf());
+        app.requestResize(pixel_size.width, pixel_size.height);
     }
 
     g_renderer_ready = false;
@@ -92,8 +114,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     app.tick() catch {};
 
-    const width = c.sapp_widthf();
-    const height = c.sapp_heightf();
+    const fb = framebufferSize();
+    const width = fb.width;
+    const height = fb.height;
 
     // Resolve background color for the clear pass.
     var clear_r: f32 = 0.07;
@@ -241,26 +264,8 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
 }
 
 fn handleResize(app: *App, event: c.sapp_event) void {
-    app.resize(@intCast(event.framebuffer_width), @intCast(event.framebuffer_height));
-
-    // Re-init the FT renderer so cell metrics are re-measured at the
-    // same font size but with up-to-date DPI scale.
-    if (g_ft_renderer) |*old| old.deinit();
-    const dpi_scale = c.sapp_dpi_scale();
-    g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
-        .font_size = app.config.font_size,
-        .dpi_scale = dpi_scale,
-        .padding_x = 4.0,
-        .padding_y = 4.0,
-    }) catch |err| blk: {
-        std.log.err("ft_renderer resize reinit failed: {}", .{err});
-        break :blk null;
-    };
-    if (g_ft_renderer) |renderer| {
-        const cw: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_w)));
-        const ch: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_h)));
-        app.setCellSize(cw, ch);
-    }
+    const pixel_size = windowSizeToPixels(@floatFromInt(event.framebuffer_width), @floatFromInt(event.framebuffer_height));
+    app.requestResize(pixel_size.width, pixel_size.height);
 }
 
 fn mapKey(key_code: c.sapp_keycode) ghostty.Key {

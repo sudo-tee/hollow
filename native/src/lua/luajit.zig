@@ -308,6 +308,11 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "font_embolden")) {
+        cfg.font_embolden = @floatCast(value);
+        return;
+    }
+
     if (std.mem.eql(u8, key, "scrollback")) {
         cfg.scrollback = try asInt(u32, value);
         return;

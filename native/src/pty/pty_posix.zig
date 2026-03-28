@@ -69,6 +69,10 @@ pub const PosixPty = struct {
         }
     }
 
+    pub fn hasPendingOutput(_: *PosixPty) bool {
+        return false;
+    }
+
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
         var offset: usize = 0;
         while (offset < bytes.len) {

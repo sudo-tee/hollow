@@ -31,11 +31,20 @@ pub const App = struct {
     mouse_event: ?*anyopaque = null,
     loaded_config_path: ?[]u8 = null,
     title: []u8 = &.{},
-    read_buf: [4096]u8 = [_]u8{0} ** 4096,
+    read_buf: [65536]u8 = [_]u8{0} ** 65536,
     frame_count: usize = 0,
     logged_first_pty_read: bool = false,
     logged_first_render_update: bool = false,
     sent_win32_input_disable: bool = false,
+    saw_win32_input_enable: bool = false,
+    cell_width_px: u32 = 8,
+    cell_height_px: u32 = 16,
+    pending_resize: bool = false,
+    pending_width: u32 = 0,
+    pending_height: u32 = 0,
+    pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
+    pty_pending_len: usize = 0,
+    pty_sanitize_buf: [65544]u8 = [_]u8{0} ** 65544,
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -157,14 +166,14 @@ pub const App = struct {
             .size = @sizeOf(ghostty.MouseEncoderSize),
             .screen_width = self.config.window_width,
             .screen_height = self.config.window_height,
-            .cell_width = 8,
-            .cell_height = 16,
+            .cell_width = self.cell_width_px,
+            .cell_height = self.cell_height_px,
             .padding_top = 0,
             .padding_bottom = 0,
             .padding_left = 0,
             .padding_right = 0,
         });
-        self.ghostty.?.resizeTerminal(self.terminal, self.config.cols, self.config.rows, 8, 16);
+        self.ghostty.?.resizeTerminal(self.terminal, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
         self.pty.?.resize(self.config.cols, self.config.rows);
 
         self.refreshTitle();
@@ -189,23 +198,27 @@ pub const App = struct {
     }
 
     pub fn tick(self: *App) !void {
+        self.flushPendingResize();
         if (self.pty) |*pty| {
-            if (pty.isAlive()) {
+            var total_read: usize = 0;
+            var read_loops: usize = 0;
+            while ((pty.isAlive() or pty.hasPendingOutput()) and read_loops < 64 and total_read < (1024 * 1024)) {
                 const count = try pty.read(&self.read_buf);
+                if (count == 0) break;
+                read_loops += 1;
+                total_read += count;
                 if (count > 0) {
                     if (!self.logged_first_pty_read) {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
-                    self.ghostty.?.terminalWrite(self.terminal, self.read_buf[0..count]);
-                    self.ghostty.?.syncKeyEncoder(self.key_encoder, self.terminal);
-                    self.ghostty.?.syncMouseEncoder(self.mouse_encoder, self.terminal);
+                    self.saw_win32_input_enable = false;
+                    const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
+                    if (pty_bytes.len > 0) {
+                        self.ghostty.?.terminalWrite(self.terminal, pty_bytes);
+                    }
 
-                    // On the first real PTY read, disable Win32 input mode (?9001h).
-                    // wsl.exe / zsh send ESC[?9001h on startup expecting Win32 INPUT_RECORD
-                    // structures.  Since we don't support that, we immediately reply with
-                    // ESC[?9001l (disable) so the shell falls back to raw VT input.
-                    if (!self.sent_win32_input_disable) {
+                    if (platform.isWindows() and self.saw_win32_input_enable and !self.sent_win32_input_disable) {
                         self.sent_win32_input_disable = true;
                         const disable_win32_input = "\x1b[?9001l";
                         pty.writeAll(disable_win32_input) catch |err| {
@@ -215,6 +228,8 @@ pub const App = struct {
                     }
                 }
             }
+            self.ghostty.?.syncKeyEncoder(self.key_encoder, self.terminal);
+            self.ghostty.?.syncMouseEncoder(self.mouse_encoder, self.terminal);
         }
         try self.ghostty.?.updateRenderState(self.render_state, self.terminal);
         if (!self.logged_first_render_update) {
@@ -250,14 +265,16 @@ pub const App = struct {
     }
 
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
+        self.cell_width_px = @max(1, cell_w);
+        self.cell_height_px = @max(1, cell_h);
         if (self.ghostty) |*runtime| {
-            runtime.resizeTerminal(self.terminal, self.config.cols, self.config.rows, cell_w, cell_h);
+            runtime.resizeTerminal(self.terminal, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
             runtime.setMouseEncoderSize(self.mouse_encoder, .{
                 .size = @sizeOf(ghostty.MouseEncoderSize),
                 .screen_width = self.config.window_width,
                 .screen_height = self.config.window_height,
-                .cell_width = cell_w,
-                .cell_height = cell_h,
+                .cell_width = self.cell_width_px,
+                .cell_height = self.cell_height_px,
                 .padding_top = 0,
                 .padding_bottom = 0,
                 .padding_left = 0,
@@ -265,24 +282,25 @@ pub const App = struct {
             });
         }
         if (self.pty) |*pty| pty.resize(self.config.cols, self.config.rows);
-        std.log.info("app: cell_size updated cell={d}x{d}", .{ cell_w, cell_h });
+        std.log.info("app: cell_size updated cell={d}x{d}", .{ self.cell_width_px, self.cell_height_px });
     }
 
     pub fn resize(self: *App, pixel_width: u32, pixel_height: u32) void {
         self.config.window_width = pixel_width;
         self.config.window_height = pixel_height;
 
-        const cell_w: u32 = @max(8, pixel_width / @max(1, self.config.cols));
-        const cell_h: u32 = @max(16, pixel_height / @max(1, self.config.rows));
+        self.config.cols = @max(1, @as(u16, @intCast(pixel_width / @max(@as(u32, 1), self.cell_width_px))));
+        self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
 
         if (self.ghostty) |*runtime| {
-            runtime.resizeTerminal(self.terminal, self.config.cols, self.config.rows, cell_w, cell_h);
+            runtime.resizeTerminal(self.terminal, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
+            self.recreateRenderHelpers(runtime);
             runtime.setMouseEncoderSize(self.mouse_encoder, .{
                 .size = @sizeOf(ghostty.MouseEncoderSize),
                 .screen_width = pixel_width,
                 .screen_height = pixel_height,
-                .cell_width = cell_w,
-                .cell_height = cell_h,
+                .cell_width = self.cell_width_px,
+                .cell_height = self.cell_height_px,
                 .padding_top = 0,
                 .padding_bottom = 0,
                 .padding_left = 0,
@@ -291,6 +309,13 @@ pub const App = struct {
         }
 
         if (self.pty) |*pty| pty.resize(self.config.cols, self.config.rows);
+        std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
+    }
+
+    pub fn requestResize(self: *App, pixel_width: u32, pixel_height: u32) void {
+        self.pending_width = pixel_width;
+        self.pending_height = pixel_height;
+        self.pending_resize = true;
     }
 
     pub fn sendPaste(self: *App, text: []const u8) !void {
@@ -369,6 +394,78 @@ pub const App = struct {
         if (pathExists(fallback)) return try self.allocator.dupe(u8, fallback);
         return null;
     }
+
+    fn flushPendingResize(self: *App) void {
+        if (!self.pending_resize) return;
+        self.pending_resize = false;
+        self.resize(self.pending_width, self.pending_height);
+    }
+
+    fn recreateRenderHelpers(self: *App, runtime: *GhosttyRuntime) void {
+        const new_render_state = runtime.createRenderState() catch |err| {
+            std.log.err("app: recreate render_state failed: {s}", .{@errorName(err)});
+            return;
+        };
+        errdefer runtime.freeRenderState(new_render_state);
+
+        const new_row_iterator = runtime.createRowIterator() catch |err| {
+            std.log.err("app: recreate row_iterator failed: {s}", .{@errorName(err)});
+            return;
+        };
+        errdefer runtime.freeRowIterator(new_row_iterator);
+
+        const new_row_cells = runtime.createRowCells() catch |err| {
+            std.log.err("app: recreate row_cells failed: {s}", .{@errorName(err)});
+            return;
+        };
+
+        runtime.freeRowCells(self.row_cells);
+        runtime.freeRowIterator(self.row_iterator);
+        runtime.freeRenderState(self.render_state);
+        self.render_state = new_render_state;
+        self.row_iterator = new_row_iterator;
+        self.row_cells = new_row_cells;
+    }
+
+    fn sanitizePtyOutput(self: *App, bytes: []u8) []const u8 {
+        if (!platform.isWindows()) return bytes;
+
+        const enable = "\x1b[?9001h";
+        const disable = "\x1b[?9001l";
+        var combined_len: usize = self.pty_pending_len;
+        if (combined_len > 0) {
+            @memcpy(self.pty_sanitize_buf[0..combined_len], self.pty_pending_seq[0..combined_len]);
+        }
+        @memcpy(self.pty_sanitize_buf[combined_len .. combined_len + bytes.len], bytes);
+        combined_len += bytes.len;
+
+        var read_idx: usize = 0;
+        var write_idx: usize = 0;
+        while (read_idx < combined_len) {
+            const remaining = self.pty_sanitize_buf[read_idx..combined_len];
+            if (std.mem.startsWith(u8, remaining, enable)) {
+                self.saw_win32_input_enable = true;
+                read_idx += enable.len;
+                continue;
+            }
+            if (std.mem.startsWith(u8, remaining, disable)) {
+                read_idx += disable.len;
+                continue;
+            }
+            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[read_idx];
+            read_idx += 1;
+            write_idx += 1;
+        }
+
+        const tail_len = trailingWin32ModePrefixLen(self.pty_sanitize_buf[0..write_idx]);
+        self.pty_pending_len = tail_len;
+        if (tail_len > 0) {
+            @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
+            write_idx -= tail_len;
+        }
+
+        return self.pty_sanitize_buf[0..write_idx];
+    }
 };
 
 fn prependLibraryPath(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -391,22 +488,20 @@ fn firstCodepoint(text: []const u8) u32 {
     return text[0];
 }
 
+fn trailingWin32ModePrefixLen(bytes: []const u8) usize {
+    const enable = "\x1b[?9001h";
+    const disable = "\x1b[?9001l";
+    const max_check = @min(bytes.len, enable.len - 1);
+    var prefix_len = max_check;
+    while (prefix_len > 0) : (prefix_len -= 1) {
+        if (std.mem.eql(u8, bytes[bytes.len - prefix_len ..], enable[0..prefix_len])) return prefix_len;
+        if (std.mem.eql(u8, bytes[bytes.len - prefix_len ..], disable[0..prefix_len])) return prefix_len;
+    }
+    return 0;
+}
+
 fn writePtyCallback(_: ?*anyopaque, _: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
     const app = write_bridge orelse return;
-    if (len > 0) {
-        // Log first 32 bytes as hex for debugging
-        const show = @min(len, 32);
-        var hex: [96]u8 = undefined;
-        var hi: usize = 0;
-        for (bytes[0..show]) |b| {
-            const nib = "0123456789abcdef";
-            hex[hi] = nib[b >> 4];
-            hex[hi + 1] = nib[b & 0xf];
-            hex[hi + 2] = ' ';
-            hi += 3;
-        }
-        std.log.info("writePtyCallback: {d} bytes -> {s}", .{ len, hex[0..hi] });
-    }
     if (app.pty) |*pty| _ = pty.writeAll(bytes[0..len]) catch {};
 }
 
@@ -414,8 +509,8 @@ fn sizeCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.SizeReportSize) ca
     const app = size_bridge orelse return false;
     out.rows = app.config.rows;
     out.columns = app.config.cols;
-    out.cell_width = 8;
-    out.cell_height = 16;
+    out.cell_width = app.cell_width_px;
+    out.cell_height = app.cell_height_px;
     return true;
 }
 

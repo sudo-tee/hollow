@@ -4,7 +4,13 @@ g.log("loading native rewrite config")
 
 g.set_config({
 	backend = "sokol",
-	font_size = 16,
+	font_size = 14.5,
+	font_padding_x = 0,
+	font_padding_y = 0,
+	font_coverage_boost = 1.0,
+	font_coverage_add = 0,
+	font_lcd = false,
+	font_embolden = 0.4, -- 0.2 adds a subtle weight without being too thick
 	cols = 120,
 	rows = 34,
 	scrollback = 20000,

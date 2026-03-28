@@ -22,7 +22,6 @@ const fonts = @import("fonts");
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
 const ATLAS_BPP: u32 = 4; // RGBA8
-const glyph_weight_boost: f32 = 1.12;
 
 // ── Glyph cache entry ─────────────────────────────────────────────────────────
 const Glyph = struct {
@@ -44,11 +43,33 @@ const Glyph = struct {
 // Key: (glyph_index, face_index)
 const GlyphKey = struct { glyph_index: u32, face_index: u8 };
 
+// ── Shaping cache ─────────────────────────────────────────────────────────────
+const ShapeKey = struct {
+    text: [16]u8,
+    len: u8,
+    face_idx: u8,
+};
+
+const GlyphInstance = struct {
+    glyph_id: u32,
+    x_advance: f32,
+    x_offset: f32,
+    y_offset: f32,
+};
+
+const ShapeResult = struct {
+    glyphs: []const GlyphInstance,
+};
+
 pub const FtRendererConfig = struct {
     font_size: f32 = 18.0,
     dpi_scale: f32 = 1.0,
-    padding_x: f32 = 4.0,
-    padding_y: f32 = 4.0,
+    padding_x: f32 = 0.0,
+    padding_y: f32 = 0.0,
+    coverage_boost: f32 = 1.12,
+    coverage_add: f32 = 6.0,
+    lcd: bool = true,
+    embolden: f32 = 0.0,
 };
 
 pub const FtRenderer = struct {
@@ -88,6 +109,9 @@ pub const FtRenderer = struct {
     // Glyph cache
     glyph_cache: std.AutoHashMap(GlyphKey, Glyph),
 
+    // Shaping cache
+    shape_cache: std.AutoHashMap(ShapeKey, ShapeResult),
+
     // Metrics (all in physical pixels)
     cell_w: f32,
     cell_h: f32,
@@ -95,6 +119,10 @@ pub const FtRenderer = struct {
     font_size_px: f32, // physical pixels = font_size * dpi_scale
     padding_x: f32,
     padding_y: f32,
+    coverage_boost: f32,
+    coverage_add: f32,
+    lcd: bool,
+    embolden: f32,
 
     glyph_buf: [32]u8 = [_]u8{0} ** 32,
     logged_first_draw: bool = false,
@@ -157,8 +185,8 @@ pub const FtRenderer = struct {
         const atlas_img = c.sg_make_image(&img_desc);
 
         var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
-        smp_desc.min_filter = c.SG_FILTER_NEAREST;
-        smp_desc.mag_filter = c.SG_FILTER_NEAREST;
+        smp_desc.min_filter = c.SG_FILTER_LINEAR;
+        smp_desc.mag_filter = c.SG_FILTER_LINEAR;
         smp_desc.label = "ft-atlas-sampler";
         const atlas_smp = c.sg_make_sampler(&smp_desc);
 
@@ -174,7 +202,7 @@ pub const FtRenderer = struct {
         //   out_alpha = sampled_a               (= coverage)
         var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
         pip_desc.colors[0].blend.enabled = true;
-        pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
+        pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
         pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
         pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
@@ -204,16 +232,26 @@ pub const FtRenderer = struct {
             .atlas_row_h = 0,
             .atlas_dirty = false,
             .glyph_cache = std.AutoHashMap(GlyphKey, Glyph).init(allocator),
+            .shape_cache = std.AutoHashMap(ShapeKey, ShapeResult).init(allocator),
             .cell_w = cell_w,
             .cell_h = cell_h,
             .ascender = ascender,
             .font_size_px = font_size_px,
             .padding_x = cfg.padding_x * cfg.dpi_scale,
             .padding_y = cfg.padding_y * cfg.dpi_scale,
+            .coverage_boost = cfg.coverage_boost,
+            .coverage_add = cfg.coverage_add,
+            .lcd = cfg.lcd,
+            .embolden = cfg.embolden,
         };
     }
 
     pub fn deinit(self: *FtRenderer) void {
+        var it = self.shape_cache.valueIterator();
+        while (it.next()) |val| {
+            self.allocator.free(val.glyphs);
+        }
+        self.shape_cache.deinit();
         self.glyph_cache.deinit();
         self.allocator.free(self.atlas_data);
         c.sg_destroy_view(self.atlas_view);
@@ -252,111 +290,86 @@ pub const FtRenderer = struct {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
 
-        // Count cells with graphemes — log whenever we first see content
         if (!self.logged_first_draw) {
             std.log.info("ft_renderer first draw: screen={d:.0}x{d:.0} cell={d:.1}x{d:.1}", .{
                 screen_w, screen_h, self.cell_w, self.cell_h,
             });
-            std.log.info("ft_renderer colors: bg=#{x:0>2}{x:0>2}{x:0>2} fg=#{x:0>2}{x:0>2}{x:0>2}", .{
-                default_bg.r, default_bg.g, default_bg.b,
-                default_fg.r, default_fg.g, default_fg.b,
-            });
-        }
-        if (!self.logged_first_content) {
-            if (runtime.populateRowIterator(render_state, row_iterator)) {
-                var nc: usize = 0;
-                while (runtime.nextRow(row_iterator.*)) {
-                    if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
-                    while (runtime.nextCell(row_cells.*)) {
-                        if (runtime.cellGraphemeLen(row_cells.*) > 0) nc += 1;
-                    }
-                }
-                if (nc > 0) {
-                    std.log.info("ft_renderer first content: {} cells with graphemes", .{nc});
-                    self.logged_first_content = true;
-                }
-            }
         }
 
-        // ── Background pass ────────────────────────────────────────────────
+        // ── Pass 1: Background & Rasterisation ──────────────────────────────
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
+            var quads_open = false;
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 var col_x: usize = 0;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                    // Background
                     const bg = runtime.cellBackground(row_cells.*) orelse default_bg;
-                    drawRect(px, py, self.cell_w, self.cell_h, bg.r, bg.g, bg.b, 255);
-                }
-            }
-        }
-
-        // ── Glyph rasterisation pass (may dirty the atlas) ─────────────────
-        // We iterate cells, rasterizing any new glyphs into the CPU atlas.
-        // After this loop the atlas GPU texture is updated once if dirty,
-        // then we draw all the quads in a second iteration.
-        if (runtime.populateRowIterator(render_state, row_iterator)) {
-            var row_y: usize = 0;
-            while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
-                if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
-
-                var col_x: usize = 0;
-                while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                    if (grapheme_len == 0) continue;
-
-                    var cps: [16]u32 = [_]u32{0} ** 16;
-                    runtime.cellGraphemes(row_cells.*, &cps);
-
-                    var glyph_len: usize = 0;
-                    for (cps[0..grapheme_len]) |cp| {
-                        if (cp == 0) break;
-                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                    if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
+                        if (!quads_open) {
+                            c.sgl_begin_quads();
+                            quads_open = true;
+                        }
+                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                        c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+                        c.sgl_v2f(px, py);
+                        c.sgl_v2f(px + self.cell_w, py);
+                        c.sgl_v2f(px + self.cell_w, py + self.cell_h);
+                        c.sgl_v2f(px, py + self.cell_h);
                     }
-                    if (glyph_len == 0) continue;
-                    self.glyph_buf[glyph_len] = 0;
 
-                    const style = runtime.cellStyle(row_cells.*);
-                    const face_idx: u8 = if (style) |s| blk: {
-                        if (s.bold and s.italic) break :blk 2;
-                        if (s.bold) break :blk 1;
-                        if (s.italic) break :blk 3;
-                        break :blk 0;
-                    } else 0;
+                    // Rasterisation
+                    const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
+                    if (grapheme_len > 0) {
+                        var cps: [16]u32 = [_]u32{0} ** 16;
+                        runtime.cellGraphemes(row_cells.*, &cps);
 
-                    // Pre-rasterize: shapes glyphs and ensures they're in the atlas.
-                    self.preRasterize(self.glyph_buf[0..glyph_len], face_idx);
+                        var glyph_len: usize = 0;
+                        for (cps[0..grapheme_len]) |cp| {
+                            if (cp == 0) break;
+                            glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                        }
+                        if (glyph_len > 0) {
+                            self.glyph_buf[glyph_len] = 0;
+                            const style = runtime.cellStyle(row_cells.*);
+                            const face_idx: u8 = if (style) |s| blk: {
+                                if (s.bold and s.italic) break :blk 2;
+                                if (s.bold) break :blk 1;
+                                if (s.italic) break :blk 3;
+                                break :blk 0;
+                            } else 0;
+                            self.preRasterize(self.glyph_buf[0..glyph_len], face_idx);
+                        }
+                    }
                 }
             }
+            if (quads_open) c.sgl_end();
         }
 
-        // Flush atlas GPU texture once after all rasterization.
         if (self.atlas_dirty) {
             self.flushAtlas();
             self.atlas_dirty = false;
-            if (!self.logged_first_draw) {
-                std.log.info("ft_renderer atlas flushed: {} glyphs cached", .{self.glyph_cache.count()});
-            }
-        } else if (!self.logged_first_draw) {
-            std.log.info("ft_renderer atlas NOT dirty (0 new glyphs this frame)", .{});
         }
 
-        // ── Glyph draw pass ────────────────────────────────────────────────
+        // ── Pass 2: Glyph draw pass ────────────────────────────────────────
         if (runtime.populateRowIterator(render_state, row_iterator)) {
+            c.sgl_load_pipeline(self.atlas_pip);
+            c.sgl_enable_texture();
+            c.sgl_texture(self.atlas_view, self.atlas_smp);
+            c.sgl_begin_quads();
+
             var row_y: usize = 0;
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
-
                 var col_x: usize = 0;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-
                     const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
                     if (grapheme_len == 0) continue;
 
+                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                     var cps: [16]u32 = [_]u32{0} ** 16;
                     runtime.cellGraphemes(row_cells.*, &cps);
 
@@ -377,9 +390,11 @@ pub const FtRenderer = struct {
                         break :blk 0;
                     } else 0;
 
-                    self.drawGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg);
+                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg);
                 }
             }
+            c.sgl_end();
+            c.sgl_disable_texture();
         }
 
         // ── Cursor overlay ─────────────────────────────────────────────────
@@ -392,37 +407,50 @@ pub const FtRenderer = struct {
         }
 
         if (!self.logged_first_draw) self.logged_first_draw = true;
-
         c.sgl_draw();
     }
 
-    /// Pre-rasterize: shape the UTF-8 string and ensure all glyphs are in the atlas.
+    /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
     fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8) void {
-        const hb_font = switch (face_idx) {
-            1 => self.hb_bold,
-            2 => self.hb_bold_italic,
-            3 => self.hb_italic,
-            else => self.hb_regular,
-        };
-
-        const buf = self.hb_buf orelse return;
-        ft.hb_buffer_clear_contents(buf);
-        ft.hb_buffer_add_utf8(buf, utf8.ptr, @intCast(utf8.len), 0, @intCast(utf8.len));
-        ft.hb_buffer_guess_segment_properties(buf);
-        ft.hb_shape(hb_font, buf, null, 0);
-
-        var info_len: c_uint = 0;
-        const infos = ft.hb_buffer_get_glyph_infos(buf, &info_len);
-        if (infos == null) return;
-
-        var i: usize = 0;
-        while (i < info_len) : (i += 1) {
-            _ = self.getOrRasterize(infos[i].codepoint, face_idx);
+        const result = self.getOrShape(utf8, face_idx) orelse return;
+        for (result.glyphs) |glyph_inst| {
+            _ = self.getOrRasterize(glyph_inst.glyph_id, face_idx);
         }
     }
 
-    /// Shape and render glyphs for one cell at (px, py).
-    fn drawGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb) void {
+    /// Shape and batch glyphs for one cell at (px, py).
+    fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb) void {
+        const result = self.getOrShape(utf8, face_idx) orelse return;
+
+        var x_offset: f32 = 0;
+        for (result.glyphs) |glyph_inst| {
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, face_idx) orelse continue;
+
+            const gx = px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
+            const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
+
+            const w = @as(f32, @floatFromInt(glyph.bw));
+            const h = @as(f32, @floatFromInt(glyph.bh));
+            if (w > 0 and h > 0) {
+                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+                c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+                c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+            }
+
+            x_offset += glyph_inst.x_advance;
+        }
+    }
+
+    fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult {
+        if (utf8.len == 0 or utf8.len > 16) return null;
+
+        var key = ShapeKey{ .text = [_]u8{0} ** 16, .len = @intCast(utf8.len), .face_idx = face_idx };
+        @memcpy(key.text[0..utf8.len], utf8);
+
+        if (self.shape_cache.get(key)) |res| return res;
+
         const hb_font = switch (face_idx) {
             1 => self.hb_bold,
             2 => self.hb_bold_italic,
@@ -430,7 +458,7 @@ pub const FtRenderer = struct {
             else => self.hb_regular,
         };
 
-        const buf = self.hb_buf orelse return;
+        const buf = self.hb_buf orelse return null;
         ft.hb_buffer_clear_contents(buf);
         ft.hb_buffer_add_utf8(buf, utf8.ptr, @intCast(utf8.len), 0, @intCast(utf8.len));
         ft.hb_buffer_guess_segment_properties(buf);
@@ -440,26 +468,25 @@ pub const FtRenderer = struct {
         var pos_len: c_uint = 0;
         const infos = ft.hb_buffer_get_glyph_infos(buf, &info_len);
         const positions = ft.hb_buffer_get_glyph_positions(buf, &pos_len);
-        if (infos == null or positions == null) return;
+        if (infos == null or positions == null) return null;
 
-        var x_offset: f32 = 0;
+        const glyphs = self.allocator.alloc(GlyphInstance, info_len) catch return null;
         var i: usize = 0;
         while (i < info_len) : (i += 1) {
-            const glyph_id = infos[i].codepoint;
-            const glyph = self.getOrRasterize(glyph_id, face_idx) orelse continue;
-
-            const gx = px + x_offset + @as(f32, @floatFromInt(glyph.bear_x));
-            // py is top of cell; ascender is the offset from top to baseline
-            const gy = py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y));
-
-            const w = @as(f32, @floatFromInt(glyph.bw));
-            const h = @as(f32, @floatFromInt(glyph.bh));
-            if (w > 0 and h > 0) {
-                drawGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, self.atlas_view, self.atlas_smp, self.atlas_pip, fg.r, fg.g, fg.b);
-            }
-
-            x_offset += @as(f32, @floatFromInt(positions[i].x_advance)) / 64.0;
+            glyphs[i] = .{
+                .glyph_id = infos[i].codepoint,
+                .x_advance = @as(f32, @floatFromInt(positions[i].x_advance)) / 64.0,
+                .x_offset = @as(f32, @floatFromInt(positions[i].x_offset)) / 64.0,
+                .y_offset = @as(f32, @floatFromInt(positions[i].y_offset)) / 64.0,
+            };
         }
+
+        const res = ShapeResult{ .glyphs = glyphs };
+        self.shape_cache.put(key, res) catch {
+            self.allocator.free(glyphs);
+            return null;
+        };
+        return res;
     }
 
     /// Returns a cached Glyph, rasterizing it into the atlas if needed.
@@ -475,7 +502,8 @@ pub const FtRenderer = struct {
             else => self.face_regular,
         };
 
-        const load_flags = ft.FT_LOAD_DEFAULT | ft.FT_LOAD_FORCE_AUTOHINT | ft.FT_LOAD_TARGET_LCD;
+        const load_flags = ft.FT_LOAD_DEFAULT | ft.FT_LOAD_FORCE_AUTOHINT |
+            if (self.lcd) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
         var err = ft.FT_Load_Glyph(primary_face, glyph_id, load_flags);
         var used_face = primary_face;
 
@@ -491,10 +519,11 @@ pub const FtRenderer = struct {
         }
 
         const slot = used_face.*.glyph;
-        if (slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
-            ft.FT_GlyphSlot_Embolden(slot);
+        if (self.embolden > 0.0 and slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
+            const strength: ft.FT_Pos = @intFromFloat(self.embolden * 64.0);
+            _ = ft.FT_Outline_Embolden(&slot.*.outline, strength);
         }
-        if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_LCD) != 0) {
+        if (ft.FT_Render_Glyph(slot, if (self.lcd) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
             if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
                 self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
                 return null;
@@ -552,15 +581,15 @@ pub const FtRenderer = struct {
             while (col < bw) : (col += 1) {
                 const dst = dst_base + col * ATLAS_BPP;
                 if (is_lcd) {
-                    const r = boostCoverage(src_ptr[col * 3]);
-                    const g = boostCoverage(src_ptr[col * 3 + 1]);
-                    const b = boostCoverage(src_ptr[col * 3 + 2]);
+                    const r = self.boostCoverage(src_ptr[col * 3]);
+                    const g = self.boostCoverage(src_ptr[col * 3 + 1]);
+                    const b = self.boostCoverage(src_ptr[col * 3 + 2]);
                     self.atlas_data[dst + 0] = r;
                     self.atlas_data[dst + 1] = g;
                     self.atlas_data[dst + 2] = b;
                     self.atlas_data[dst + 3] = @max(r, @max(g, b));
                 } else {
-                    const cov = boostCoverage(src_ptr[col]);
+                    const cov = self.boostCoverage(src_ptr[col]);
                     self.atlas_data[dst + 0] = cov;
                     self.atlas_data[dst + 1] = cov;
                     self.atlas_data[dst + 2] = cov;
@@ -598,6 +627,12 @@ pub const FtRenderer = struct {
         upd.mip_levels[0].ptr = self.atlas_data.ptr;
         upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
         c.sg_update_image(self.atlas_img, &upd);
+    }
+
+    fn boostCoverage(self: *const FtRenderer, cov: u8) u8 {
+        if (cov == 0 or cov == 255) return cov;
+        const boosted = @as(f32, @floatFromInt(cov)) * self.coverage_boost + self.coverage_add;
+        return @intFromFloat(@min(255.0, boosted));
     }
 };
 
@@ -706,10 +741,4 @@ fn encodeUtf8(cp: u32, buf: []u8) error{BufferTooSmall}!usize {
     buf[2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
     buf[3] = @intCast(0x80 | (cp & 0x3F));
     return 4;
-}
-
-fn boostCoverage(cov: u8) u8 {
-    if (cov == 0 or cov == 255) return cov;
-    const boosted = @as(f32, @floatFromInt(cov)) * glyph_weight_boost + 6.0;
-    return @intFromFloat(@min(255.0, boosted));
 }

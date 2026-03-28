@@ -231,8 +231,13 @@ pub const WindowsPty = struct {
         return count;
     }
 
+    pub fn hasPendingOutput(self: *WindowsPty) bool {
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.len > 0;
+    }
+
     pub fn writeAll(self: *WindowsPty, bytes: []const u8) !void {
-        std.log.info("conpty writeAll len={d} pipe=0x{x}", .{ bytes.len, @intFromPtr(self.write_pipe) });
         var offset: usize = 0;
         while (offset < bytes.len) {
             var written: windows.DWORD = 0;
@@ -243,7 +248,6 @@ pub const WindowsPty = struct {
                 std.log.err("conpty WriteFile failed err={d} written={d}", .{ err, written });
                 return error.WriteFailed;
             }
-            std.log.info("conpty WriteFile ok written={d} of={d}", .{ written, chunk });
             offset += written;
         }
     }
