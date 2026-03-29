@@ -110,6 +110,9 @@ pub const App = struct {
             lua.registerAppCallbacks(.{
                 .app = self,
                 .split_pane = luaSplitPaneCallback,
+                .new_tab = luaNewTabCallback,
+                .next_tab = luaNextTabCallback,
+                .prev_tab = luaPrevTabCallback,
             });
         }
 
@@ -291,6 +294,33 @@ pub const App = struct {
     pub fn activePane(self: *App) ?*Pane {
         if (self.mux) |*mux| return mux.activePane();
         return null;
+    }
+
+    pub fn newTab(self: *App) void {
+        var mux = if (self.mux) |*value| value else return;
+        var runtime = if (self.ghostty) |*value| value else return;
+        mux.newTab(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
+            std.log.err("app: newTab failed: {s}", .{@errorName(err)});
+            return;
+        };
+        if (mux.activePane()) |new_pane| {
+            runtime.setWritePtyCallback(new_pane.terminal, writePtyCallback);
+            runtime.setSizeCallback(new_pane.terminal, sizeCallback);
+            runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
+            runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
+        }
+        self.pending_layout_resize = true;
+        std.log.info("app: created new tab", .{});
+    }
+
+    pub fn nextTab(self: *App) void {
+        if (self.mux) |*mux| mux.nextTab();
+        self.pending_layout_resize = true;
+    }
+
+    pub fn prevTab(self: *App) void {
+        if (self.mux) |*mux| mux.prevTab();
+        self.pending_layout_resize = true;
     }
 
     pub fn splitPane(self: *App, direction: SplitDirection) void {
@@ -475,4 +505,19 @@ fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
             pane.refreshTitle(runtime, app.config.windowTitle());
         }
     }
+}
+
+fn luaNewTabCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.newTab();
+}
+
+fn luaNextTabCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.nextTab();
+}
+
+fn luaPrevTabCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.prevTab();
 }

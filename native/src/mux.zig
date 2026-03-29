@@ -215,6 +215,27 @@ pub const Tab = struct {
         return LeafIterator.init(self.root_split);
     }
 
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+        const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const tab = try ws.newTab(self.allocId());
+        errdefer {
+            _ = ws.tabs.pop();
+            self.allocator.destroy(tab);
+            ws.active_tab = if (ws.tabs.items.len > 0) ws.tabs.items[ws.tabs.items.len - 1] else null;
+        }
+        const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try tab.appendPane(pane);
+    }
+
+    pub fn nextTab(self: *Mux) void {
+        if (self.activeWorkspace()) |ws| ws.nextTab();
+    }
+
+    pub fn prevTab(self: *Mux) void {
+        if (self.activeWorkspace()) |ws| ws.prevTab();
+    }
+
+
     pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const current_pane = self.active_pane orelse return error.NoActivePane;
         const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
@@ -310,6 +331,34 @@ pub const Workspace = struct {
     pub fn appendTab(self: *Workspace, tab: *Tab) !void {
         try self.tabs.append(self.allocator, tab);
         if (self.active_tab == null) self.active_tab = tab;
+    }
+
+    pub fn newTab(self: *Workspace, id: usize) !*Tab {
+        const tab = try self.allocator.create(Tab);
+        tab.* = Tab.init(self.allocator, id);
+        try self.appendTab(tab);
+        self.active_tab = tab;
+        return tab;
+    }
+
+    pub fn nextTab(self: *Workspace) void {
+        if (self.tabs.items.len < 2) return;
+        var idx: usize = 0;
+        for (self.tabs.items, 0..) |t, i| {
+            if (t == self.active_tab) idx = i;
+        }
+        idx = (idx + 1) % self.tabs.items.len;
+        self.active_tab = self.tabs.items[idx];
+    }
+
+    pub fn prevTab(self: *Workspace) void {
+        if (self.tabs.items.len < 2) return;
+        var idx: usize = 0;
+        for (self.tabs.items, 0..) |t, i| {
+            if (t == self.active_tab) idx = i;
+        }
+        idx = if (idx == 0) self.tabs.items.len - 1 else idx - 1;
+        self.active_tab = self.tabs.items[idx];
     }
 
     pub fn activeTab(self: *Workspace) ?*Tab {
@@ -461,6 +510,27 @@ pub const Mux = struct {
 
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+        const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const tab = try ws.newTab(self.allocId());
+        errdefer {
+            _ = ws.tabs.pop();
+            self.allocator.destroy(tab);
+            ws.active_tab = if (ws.tabs.items.len > 0) ws.tabs.items[ws.tabs.items.len - 1] else null;
+        }
+        const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try tab.appendPane(pane);
+    }
+
+    pub fn nextTab(self: *Mux) void {
+        if (self.activeWorkspace()) |ws| ws.nextTab();
+    }
+
+    pub fn prevTab(self: *Mux) void {
+        if (self.activeWorkspace()) |ws| ws.prevTab();
+    }
+
+
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const new_pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);

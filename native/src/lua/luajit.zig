@@ -52,6 +52,9 @@ const Api = struct {
 pub const AppCallbacks = struct {
     app: *anyopaque,
     split_pane: *const fn (app: *anyopaque, direction: []const u8) void,
+    new_tab: *const fn (app: *anyopaque) void,
+    next_tab: *const fn (app: *anyopaque) void,
+    prev_tab: *const fn (app: *anyopaque) void,
 };
 
 const BridgeContext = struct {
@@ -257,6 +260,18 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "split_pane");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_new_tab, 1);
+        api.set_field(self.state, -2, "new_tab");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_next_tab, 1);
+        api.set_field(self.state, -2, "next_tab");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_prev_tab, 1);
+        api.set_field(self.state, -2, "prev_tab");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_key, 1);
         api.set_field(self.state, -2, "on_key");
 
@@ -435,6 +450,24 @@ fn pop(api: Api, state: *State, count: c_int) void {
 
 /// hollow.split_pane(direction)
 /// direction: "vertical" (left/right) or "horizontal" (top/bottom)
+fn l_new_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app);
+    return 0;
+}
+
+fn l_next_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.next_tab(cbs.app);
+    return 0;
+}
+
+fn l_prev_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.prev_tab(cbs.app);
+    return 0;
+}
+
 fn l_split_pane(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;

@@ -33,6 +33,9 @@ end
 hollow.action = {
     split_vertical = function() hollow.split_pane("vertical") end,
     split_horizontal = function() hollow.split_pane("horizontal") end,
+    new_tab = function() hollow.new_tab() end,
+    next_tab = function() hollow.next_tab() end,
+    prev_tab = function() hollow.prev_tab() end,
 }
 
 hollow.on_key(function(key, mods)
@@ -51,3 +54,6 @@ end)
 -- Default bindings
 hollow.keymap.set("ctrl+backslash", "split_vertical")
 hollow.keymap.set("ctrl+shift+backslash", "split_horizontal")
+hollow.keymap.set("ctrl+t", "new_tab")
+hollow.keymap.set("ctrl+tab", "next_tab")
+hollow.keymap.set("ctrl+shift+tab", "prev_tab")
