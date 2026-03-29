@@ -227,6 +227,11 @@ pub const Tab = struct {
         try tab.appendPane(pane);
     }
 
+    pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) void {
+        if (self.activeWorkspace()) |ws| ws.closeTab(runtime);
+    }
+
+
     pub fn nextTab(self: *Mux) void {
         if (self.activeWorkspace()) |ws| ws.nextTab();
     }
@@ -340,6 +345,20 @@ pub const Workspace = struct {
         self.active_tab = tab;
         return tab;
     }
+
+    pub fn closeTab(self: *Workspace, runtime: *GhosttyRuntime) void {
+        if (self.tabs.items.len <= 1) return;
+        const active = self.active_tab orelse return;
+        var idx: usize = 0;
+        for (self.tabs.items, 0..) |t, i| {
+            if (t == active) idx = i;
+        }
+        _ = self.tabs.orderedRemove(idx);
+        active.deinit(runtime);
+        self.allocator.destroy(active);
+        self.active_tab = self.tabs.items[if (idx >= self.tabs.items.len) self.tabs.items.len - 1 else idx];
+    }
+
 
     pub fn nextTab(self: *Workspace) void {
         if (self.tabs.items.len < 2) return;
@@ -521,6 +540,11 @@ pub const Mux = struct {
         const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
         try tab.appendPane(pane);
     }
+
+    pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) void {
+        if (self.activeWorkspace()) |ws| ws.closeTab(runtime);
+    }
+
 
     pub fn nextTab(self: *Mux) void {
         if (self.activeWorkspace()) |ws| ws.nextTab();

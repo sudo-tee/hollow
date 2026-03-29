@@ -53,6 +53,7 @@ pub const AppCallbacks = struct {
     app: *anyopaque,
     split_pane: *const fn (app: *anyopaque, direction: []const u8) void,
     new_tab: *const fn (app: *anyopaque) void,
+    close_tab: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
 };
@@ -264,6 +265,11 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "new_tab");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_close_tab, 1);
+        api.set_field(self.state, -2, "close_tab");
+
+
         api.push_cclosure(self.state, l_next_tab, 1);
         api.set_field(self.state, -2, "next_tab");
 
@@ -455,6 +461,13 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
     if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app);
     return 0;
 }
+
+fn l_close_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.close_tab(cbs.app);
+    return 0;
+}
+
 
 fn l_next_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
