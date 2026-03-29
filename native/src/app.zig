@@ -35,6 +35,9 @@ pub const App = struct {
     pending_resize: bool = false,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
+    /// Set when a split has just been performed; causes tick() to re-layout
+    /// all panes on the next frame (safe from the frame callback thread).
+    pending_layout_resize: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -132,6 +135,7 @@ pub const App = struct {
 
     pub fn tick(self: *App) !void {
         self.flushPendingResize();
+        self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
         if (!self.logged_first_render_update) {
             self.logged_first_render_update = true;
@@ -254,8 +258,8 @@ pub const App = struct {
     }
 
     pub fn splitPane(self: *App, direction: SplitDirection) void {
-        var mux = &(self.mux orelse return);
-        var runtime = &(self.ghostty orelse return);
+        var mux = if (self.mux) |*value| value else return;
+        var runtime = if (self.ghostty) |*value| value else return;
         mux.splitActivePane(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
@@ -267,8 +271,9 @@ pub const App = struct {
             runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
             runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
         }
-        // Immediately resize all panes to their correct sub-rect sizes.
-        self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
+        // Schedule a layout resize for the next tick() (frame callback thread),
+        // rather than calling ghostty_terminal_resize from the event callback thread.
+        self.pending_layout_resize = true;
         std.log.info("app: pane split direction={s}", .{@tagName(direction)});
     }
 
@@ -310,6 +315,14 @@ pub const App = struct {
         if (!self.pending_resize) return;
         self.pending_resize = false;
         self.resize(self.pending_width, self.pending_height);
+    }
+
+    fn flushPendingLayoutResize(self: *App) void {
+        if (!self.pending_layout_resize) return;
+        self.pending_layout_resize = false;
+        if (self.ghostty) |*runtime| {
+            self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
+        }
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {

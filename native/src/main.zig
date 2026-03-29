@@ -2,7 +2,34 @@ const std = @import("std");
 const App = @import("app.zig").App;
 const sokol_runtime = @import("render/sokol_runtime.zig");
 
+var g_log_file: ?std.fs.File = null;
+
+pub const std_options: std.Options = .{
+    .logFn = fileLogFn,
+};
+
+fn fileLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    _ = scope;
+    const prefix = comptime level.asText();
+    if (g_log_file) |f| {
+        var buf: [512]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buf);
+        fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
+        const written = fbs.getWritten();
+        _ = f.write(written) catch {};
+    }
+}
+
 pub fn main() !void {
+    // Open log file next to the exe (works even without a console).
+    g_log_file = std.fs.cwd().createFile("hollow.log", .{ .truncate = true }) catch null;
+    defer if (g_log_file) |f| f.close();
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
