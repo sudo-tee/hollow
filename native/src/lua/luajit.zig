@@ -23,6 +23,7 @@ const Api = struct {
     close: *const fn (*State) callconv(.c) void,
     open_libs: *const fn (*State) callconv(.c) void,
     load_file: *const fn (*State, [*:0]const u8) callconv(.c) c_int,
+    load_string: *const fn (*State, [*:0]const u8) callconv(.c) c_int,
     pcall: *const fn (*State, c_int, c_int, c_int) callconv(.c) c_int,
     get_top: *const fn (*State) callconv(.c) c_int,
     set_top: *const fn (*State, c_int) callconv(.c) void,
@@ -121,6 +122,7 @@ pub const Runtime = struct {
             .close = lookup(&lib, *const fn (*State) callconv(.c) void, "lua_close"),
             .open_libs = lookup(&lib, *const fn (*State) callconv(.c) void, "luaL_openlibs"),
             .load_file = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) c_int, "luaL_loadfile"),
+            .load_string = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) c_int, "luaL_loadstring"),
             .pcall = lookup(&lib, *const fn (*State, c_int, c_int, c_int) callconv(.c) c_int, "lua_pcall"),
             .get_top = lookup(&lib, *const fn (*State) callconv(.c) c_int, "lua_gettop"),
             .set_top = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_settop"),
@@ -171,6 +173,17 @@ pub const Runtime = struct {
         self.allocator.destroy(self.context);
         self.allocator.free(self.loaded_path);
         self.lib.close();
+    }
+
+    pub fn runString(self: *Runtime, code: [:0]const u8) !void {
+        if (self.context.api.load_string(self.state, code) != 0) {
+            logLuaError(self.context.api, self.state, "load_string");
+            return error.LuaLoadFailed;
+        }
+        if (self.context.api.pcall(self.state, 0, 0, 0) != 0) {
+            logLuaError(self.context.api, self.state, "pcall");
+            return error.LuaRuntimeFailed;
+        }
     }
 
     pub fn runFile(self: *Runtime, path: []const u8) !void {

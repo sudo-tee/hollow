@@ -122,6 +122,11 @@ pub const App = struct {
             return;
         };
 
+        const core_lua = @embedFile("lua/core.lua");
+        lua.runString(core_lua) catch |err| {
+            std.log.warn("failed to bootstrap lua core, scripting may be broken: {s}", .{@errorName(err)});
+        };
+
         if (self.loaded_config_path) |path| {
             lua.runFile(path) catch |err| {
                 std.log.warn("config load failed, continuing with compiled defaults: {s}", .{@errorName(err)});
