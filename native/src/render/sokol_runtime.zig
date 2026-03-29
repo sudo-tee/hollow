@@ -195,8 +195,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
         c.sgl_begin_lines();
-        c.sgl_c4b(80, 80, 80, 255);
+
+        // Draw inactive borders first
         for (leaves) |leaf| {
+            if (leaf.pane == app.activePane()) continue;
+            c.sgl_c4b(80, 80, 80, 255);
             const x0: f32 = @floatFromInt(leaf.bounds.x);
             const y0: f32 = @floatFromInt(leaf.bounds.y);
             const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
@@ -207,6 +210,29 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             // Bottom edge
             c.sgl_v2f(x0, y1);
             c.sgl_v2f(x1, y1);
+        }
+
+        // Draw active borders on top
+        for (leaves) |leaf| {
+            if (leaf.pane != app.activePane()) continue;
+            c.sgl_c4b(180, 180, 255, 255); // Highlight color (light blue)
+            const x0: f32 = @floatFromInt(leaf.bounds.x);
+            const y0: f32 = @floatFromInt(leaf.bounds.y);
+            const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
+            const y1: f32 = y0 + @as(f32, @floatFromInt(leaf.bounds.height));
+
+            // Full outline for active pane
+            c.sgl_v2f(x0, y0);
+            c.sgl_v2f(x1, y0);
+
+            c.sgl_v2f(x1, y0);
+            c.sgl_v2f(x1, y1);
+
+            c.sgl_v2f(x1, y1);
+            c.sgl_v2f(x0, y1);
+
+            c.sgl_v2f(x0, y1);
+            c.sgl_v2f(x0, y0);
         }
         c.sgl_end();
     }
@@ -264,7 +290,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
         c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
         c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
-        c.SAPP_EVENTTYPE_MOUSE_SCROLL => app.scroll(-@as(isize, @intFromFloat(event.scroll_y))),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => app.scroll(event.mouse_x, event.mouse_y, -@as(isize, @intFromFloat(event.scroll_y))),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
         c.SAPP_EVENTTYPE_FOCUSED => app.sendFocus(true) catch {},
         c.SAPP_EVENTTYPE_UNFOCUSED => app.sendFocus(false) catch {},
@@ -331,7 +357,7 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         g_logged_first_scroll = true;
         std.log.info("first Windows scroll event delta={d:.2}", .{event.scroll_y});
     }
-    app.scroll(-@as(isize, @intFromFloat(event.scroll_y)));
+    app.scroll(event.mouse_x, event.mouse_y, -@as(isize, @intFromFloat(event.scroll_y)));
 }
 
 fn handleResize(app: *App, event: c.sapp_event) void {

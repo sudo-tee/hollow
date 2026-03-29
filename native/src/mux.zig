@@ -412,6 +412,12 @@ pub const Mux = struct {
         return workspace.activeTab();
     }
 
+    pub fn setActivePane(self: *Mux, pane: *Pane) void {
+        if (self.activeTab()) |tab| {
+            tab.active_pane = pane;
+        }
+    }
+
     pub fn activePane(self: *Mux) ?*Pane {
         const tab = self.activeTab() orelse return null;
         return tab.activePane();

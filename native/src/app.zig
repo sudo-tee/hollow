@@ -225,16 +225,47 @@ pub const App = struct {
         return true;
     }
 
-    pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !void {
-        const pane = self.activePane() orelse return;
-        var buf: [128]u8 = undefined;
-        const bytes = self.ghostty.?.encodeMouse(pane.mouse_encoder, pane.mouse_event, action, button, mods, .{ .x = x, .y = y }, &buf) orelse return;
-        try self.sendText(bytes);
+    pub const HitTestResult = struct {
+        pane: *Pane,
+        x: f32,
+        y: f32,
+    };
+
+    pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
+        if (self.mux) |*mux| {
+            var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            const leaves = mux.computeActiveLayout(self.config.window_width, self.config.window_height, &layout_buf);
+            const ix = @as(u32, @intFromFloat(@max(0, x)));
+            const iy = @as(u32, @intFromFloat(@max(0, y)));
+            for (leaves) |leaf| {
+                if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
+                    iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
+                {
+                    return .{
+                        .pane = leaf.pane,
+                        .x = x - @as(f32, @floatFromInt(leaf.bounds.x)),
+                        .y = y - @as(f32, @floatFromInt(leaf.bounds.y)),
+                    };
+                }
+            }
+        }
+        if (self.activePane()) |pane| return .{ .pane = pane, .x = x, .y = y };
+        return null;
     }
 
-    pub fn scroll(self: *App, delta: isize) void {
-        const pane = self.activePane() orelse return;
-        self.ghostty.?.terminalScroll(pane.terminal, delta);
+    pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !void {
+        const hit = self.hitTestPane(x, y) orelse return;
+        if (action == .press) {
+            if (self.mux) |*mux| mux.setActivePane(hit.pane);
+        }
+        var buf: [128]u8 = undefined;
+        const bytes = self.ghostty.?.encodeMouse(hit.pane.mouse_encoder, hit.pane.mouse_event, action, button, mods, .{ .x = hit.x, .y = hit.y }, &buf) orelse return;
+        try hit.pane.sendText(bytes);
+    }
+
+    pub fn scroll(self: *App, x: f32, y: f32, delta: isize) void {
+        const hit = self.hitTestPane(x, y) orelse return;
+        self.ghostty.?.terminalScroll(hit.pane.terminal, delta);
     }
 
     pub fn hasLiveChild(self: *App) bool {
