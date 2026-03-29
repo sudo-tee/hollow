@@ -3,6 +3,7 @@ const App = @import("app.zig").App;
 const sokol_runtime = @import("render/sokol_runtime.zig");
 
 var g_log_file: ?std.fs.File = null;
+var g_log_mutex: std.Thread.Mutex = .{};
 
 pub const std_options: std.Options = .{
     .logFn = fileLogFn,
@@ -17,11 +18,13 @@ fn fileLogFn(
     _ = scope;
     const prefix = comptime level.asText();
     if (g_log_file) |f| {
+        g_log_mutex.lock();
+        defer g_log_mutex.unlock();
         var buf: [512]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
         fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
         const written = fbs.getWritten();
-        _ = f.write(written) catch {};
+        _ = f.writeAll(written) catch {};
     }
 }
 

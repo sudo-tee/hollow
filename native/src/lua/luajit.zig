@@ -199,13 +199,11 @@ pub const Runtime = struct {
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.on_key_ref;
-        std.log.info("fireOnKey: key={s} mods=0x{x} on_key_ref={d}", .{ key, mods, ref });
         if (ref == LUA_NOREF) return false;
 
         // Push the handler function from the registry.
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
         const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
-        std.log.info("fireOnKey: rawgeti fn_type={d}", .{@intFromEnum(fn_type)});
         if (fn_type == .function) {
             const zkey = std.heap.page_allocator.dupeZ(u8, key) catch {
                 pop(api, self.state, 1);
@@ -221,7 +219,6 @@ pub const Runtime = struct {
                 return false;
             }
             const consumed = api.to_boolean(self.state, -1) != 0;
-            std.log.info("fireOnKey: consumed={}", .{consumed});
             pop(api, self.state, 1);
             return consumed;
         }
