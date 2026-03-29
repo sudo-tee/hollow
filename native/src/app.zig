@@ -425,9 +425,20 @@ fn firstCodepoint(text: []const u8) u32 {
     return text[0];
 }
 
-fn writePtyCallback(_: ?*anyopaque, _: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
+fn getPaneForTerminal(app: *App, term: ?*anyopaque) ?*Pane {
+    if (app.mux) |*mux| {
+        var panes = mux.paneIterator();
+        while (panes.next()) |pane| {
+            if (pane.terminal == term) return pane;
+        }
+    }
+    return app.activePane();
+}
+
+fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
     const app = write_bridge orelse return;
-    app.sendText(bytes[0..len]) catch {};
+    const pane = getPaneForTerminal(app, term) orelse return;
+    pane.sendText(bytes[0..len]) catch {};
 }
 
 fn sizeCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.SizeReportSize) callconv(.c) bool {
@@ -452,9 +463,11 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.Device
     return true;
 }
 
-fn titleChangedCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const app = title_bridge orelse return;
     if (app.ghostty) |*runtime| {
-        if (app.activePane()) |pane| pane.refreshTitle(runtime, app.config.windowTitle());
+        if (getPaneForTerminal(app, term)) |pane| {
+            pane.refreshTitle(runtime, app.config.windowTitle());
+        }
     }
 }
