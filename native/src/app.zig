@@ -321,7 +321,6 @@ pub const App = struct {
         self.pending_layout_resize = true;
     }
 
-
     pub fn nextTab(self: *App) void {
         if (self.mux) |*mux| mux.nextTab();
         self.pending_layout_resize = true;
@@ -525,7 +524,6 @@ fn luaCloseTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     app.closeTab();
 }
-
 
 fn luaNextTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));

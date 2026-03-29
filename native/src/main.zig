@@ -28,6 +28,16 @@ fn fileLogFn(
     }
 }
 
+pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
+    std.log.err("PANIC: {s}", .{msg});
+    if (g_log_file) |f| {
+        g_log_mutex.lock();
+        f.sync() catch {};
+        g_log_mutex.unlock();
+    }
+    std.process.exit(1);
+}
+
 pub fn main() !void {
     // Open log file next to the exe (works even without a console).
     g_log_file = std.fs.cwd().createFile("hollow.log", .{ .truncate = true }) catch null;
@@ -37,15 +47,24 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const cli = try parseArgs(allocator);
+    const cli = parseArgs(allocator) catch |err| {
+        std.log.err("parseArgs failed: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
     defer if (cli.config_path) |path| allocator.free(path);
 
     var app = App.init(allocator);
     defer app.deinit();
 
-    try app.bootstrap(cli.config_path);
+    app.bootstrap(cli.config_path) catch |err| {
+        std.log.err("bootstrap failed: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
     app.report();
-    try sokol_runtime.run(&app);
+    sokol_runtime.run(&app) catch |err| {
+        std.log.err("sokol_runtime failed: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
 }
 
 const Cli = struct {

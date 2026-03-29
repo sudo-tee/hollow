@@ -23,7 +23,7 @@ const Api = struct {
     close: *const fn (*State) callconv(.c) void,
     open_libs: *const fn (*State) callconv(.c) void,
     load_file: *const fn (*State, [*:0]const u8) callconv(.c) c_int,
-    load_string: *const fn (*State, [*:0]const u8) callconv(.c) c_int,
+    load_buffer: *const fn (*State, [*]const u8, usize, [*:0]const u8) callconv(.c) c_int,
     pcall: *const fn (*State, c_int, c_int, c_int) callconv(.c) c_int,
     get_top: *const fn (*State) callconv(.c) c_int,
     set_top: *const fn (*State, c_int) callconv(.c) void,
@@ -68,8 +68,10 @@ const BridgeContext = struct {
 
 var active_context: ?*BridgeContext = null;
 
-// LUA_REGISTRYINDEX constant (matches the luajit ABI)
+// LUA_REGISTRYINDEX / LUA_GLOBALSINDEX constants (match the LuaJIT 2.1 ABI)
 const LUA_REGISTRYINDEX: c_int = -10000;
+const LUA_ENVIRONINDEX: c_int = -10001;
+const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
 pub const Runtime = struct {
@@ -126,7 +128,7 @@ pub const Runtime = struct {
             .close = lookup(&lib, *const fn (*State) callconv(.c) void, "lua_close"),
             .open_libs = lookup(&lib, *const fn (*State) callconv(.c) void, "luaL_openlibs"),
             .load_file = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) c_int, "luaL_loadfile"),
-            .load_string = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) c_int, "luaL_loadstring"),
+            .load_buffer = lookup(&lib, *const fn (*State, [*]const u8, usize, [*:0]const u8) callconv(.c) c_int, "luaL_loadbuffer"),
             .pcall = lookup(&lib, *const fn (*State, c_int, c_int, c_int) callconv(.c) c_int, "lua_pcall"),
             .get_top = lookup(&lib, *const fn (*State) callconv(.c) c_int, "lua_gettop"),
             .set_top = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_settop"),
@@ -180,7 +182,7 @@ pub const Runtime = struct {
     }
 
     pub fn runString(self: *Runtime, code: [:0]const u8) !void {
-        if (self.context.api.load_string(self.state, code) != 0) {
+        if (self.context.api.load_buffer(self.state, code.ptr, code.len, "core.lua") != 0) {
             logLuaError(self.context.api, self.state, "load_string");
             return error.LuaLoadFailed;
         }
@@ -265,11 +267,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "new_tab");
 
         api.push_light_userdata(self.state, self.context);
-        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_close_tab, 1);
         api.set_field(self.state, -2, "close_tab");
 
-
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_next_tab, 1);
         api.set_field(self.state, -2, "next_tab");
 
@@ -294,7 +295,7 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "default_shell");
         api.set_field(self.state, -2, "platform");
 
-        api.set_field(self.state, -10002, "hollow");
+        api.set_field(self.state, LUA_GLOBALSINDEX, "hollow");
     }
 };
 
@@ -467,7 +468,6 @@ fn l_close_tab(state: *State) callconv(.c) c_int {
     if (ctx.app_callbacks) |cbs| cbs.close_tab(cbs.app);
     return 0;
 }
-
 
 fn l_next_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);

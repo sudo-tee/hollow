@@ -215,32 +215,6 @@ pub const Tab = struct {
         return LeafIterator.init(self.root_split);
     }
 
-    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
-        const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
-        const tab = try ws.newTab(self.allocId());
-        errdefer {
-            _ = ws.tabs.pop();
-            self.allocator.destroy(tab);
-            ws.active_tab = if (ws.tabs.items.len > 0) ws.tabs.items[ws.tabs.items.len - 1] else null;
-        }
-        const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
-        try tab.appendPane(pane);
-    }
-
-    pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) void {
-        if (self.activeWorkspace()) |ws| ws.closeTab(runtime);
-    }
-
-
-    pub fn nextTab(self: *Mux) void {
-        if (self.activeWorkspace()) |ws| ws.nextTab();
-    }
-
-    pub fn prevTab(self: *Mux) void {
-        if (self.activeWorkspace()) |ws| ws.prevTab();
-    }
-
-
     pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const current_pane = self.active_pane orelse return error.NoActivePane;
         const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
@@ -358,7 +332,6 @@ pub const Workspace = struct {
         self.allocator.destroy(active);
         self.active_tab = self.tabs.items[if (idx >= self.tabs.items.len) self.tabs.items.len - 1 else idx];
     }
-
 
     pub fn nextTab(self: *Workspace) void {
         if (self.tabs.items.len < 2) return;
@@ -545,7 +518,6 @@ pub const Mux = struct {
         if (self.activeWorkspace()) |ws| ws.closeTab(runtime);
     }
 
-
     pub fn nextTab(self: *Mux) void {
         if (self.activeWorkspace()) |ws| ws.nextTab();
     }
@@ -553,7 +525,6 @@ pub const Mux = struct {
     pub fn prevTab(self: *Mux) void {
         if (self.activeWorkspace()) |ws| ws.prevTab();
     }
-
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;

@@ -1,5 +1,6 @@
 # Zig build artifacts
 .zig-cache/
+.zig-local-cache/
 zig-out/
 
 # Build outputs
@@ -15,6 +16,12 @@ zig-out/
 err.txt
 error_out.txt
 out.txt
+hollow.log
+
+# Gemini/AI scratch files
+*.sed
+refactor.py
+started.txt
 
 # Scratch Lua test files
 main_test.lua
