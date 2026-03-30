@@ -6,13 +6,16 @@ const LuaRuntime = @import("lua/luajit.zig").Runtime;
 const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
-const Mux = @import("mux.zig").Mux;
-const Workspace = @import("mux.zig").Workspace;
-const Tab = @import("mux.zig").Tab;
-const SplitDirection = @import("mux.zig").SplitDirection;
-const FocusDirection = @import("mux.zig").FocusDirection;
-const LayoutLeaf = @import("mux.zig").LayoutLeaf;
-const MAX_LAYOUT_LEAVES = @import("mux.zig").MAX_LAYOUT_LEAVES;
+const mux_mod = @import("mux.zig");
+const Mux = mux_mod.Mux;
+const Workspace = mux_mod.Workspace;
+const Tab = mux_mod.Tab;
+const SplitDirection = mux_mod.SplitDirection;
+const FocusDirection = mux_mod.FocusDirection;
+const LayoutLeaf = mux_mod.LayoutLeaf;
+const PaneBounds = mux_mod.PaneBounds;
+const layoutSplitTree = mux_mod.layoutSplitTree;
+const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 
@@ -20,6 +23,19 @@ var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
 var attrs_bridge: ?*App = null;
 var title_bridge: ?*App = null;
+
+fn terminalCallbacks() ghostty.TerminalCallbacks {
+    return .{
+        .write_pty = writePtyCallback,
+        .bell = bellCallback,
+        .enquiry = enquiryCallback,
+        .xtversion = xtversionCallback,
+        .size = sizeCallback,
+        .color_scheme = colorSchemeCallback,
+        .device_attributes = deviceAttributesCallback,
+        .title_changed = titleChangedCallback,
+    };
+}
 
 pub const App = struct {
     allocator: std.mem.Allocator,
@@ -92,21 +108,20 @@ pub const App = struct {
 
         var mux = Mux.init(self.allocator);
         errdefer mux.deinit(&runtime);
-        try mux.bootstrapSingle(&runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
-        self.ghostty = runtime;
-        self.mux = mux;
-        self.renderer = Backend.init(self.allocator, self.config);
-
+        // Set bridge globals before bootstrapSingle so the callbacks are valid
+        // the moment ghostty can first invoke them (during resizeTerminal inside
+        // bootstrap).
         write_bridge = self;
         size_bridge = self;
         attrs_bridge = self;
         title_bridge = self;
-        const active_pane = self.activePane().?;
-        self.ghostty.?.setWritePtyCallback(active_pane.terminal, writePtyCallback);
-        self.ghostty.?.setSizeCallback(active_pane.terminal, sizeCallback);
-        self.ghostty.?.setDeviceAttributesCallback(active_pane.terminal, deviceAttributesCallback);
-        self.ghostty.?.setTitleChangedCallback(active_pane.terminal, titleChangedCallback);
+        const cbs = terminalCallbacks();
+        try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
+
+        self.ghostty = runtime;
+        self.mux = mux;
+        self.renderer = Backend.init(self.allocator, self.config);
 
         // Register app action callbacks so Lua can call split_pane etc.
         if (self.lua) |*lua| {
@@ -120,6 +135,10 @@ pub const App = struct {
                 .prev_tab = luaPrevTabCallback,
                 .focus_pane = luaFocusPaneCallback,
                 .resize_pane = luaResizePaneCallback,
+                .switch_tab = luaSwitchTabCallback,
+                .set_tab_title = luaSetTabTitleCallback,
+                .get_tab_count = luaGetTabCountCallback,
+                .get_active_tab_index = luaGetActiveTabIndexCallback,
             });
         }
 
@@ -306,16 +325,11 @@ pub const App = struct {
     pub fn newTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        mux.newTab(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
+        const cbs = terminalCallbacks();
+        mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
             std.log.err("app: newTab failed: {s}", .{@errorName(err)});
             return;
         };
-        if (mux.activePane()) |new_pane| {
-            runtime.setWritePtyCallback(new_pane.terminal, writePtyCallback);
-            runtime.setSizeCallback(new_pane.terminal, sizeCallback);
-            runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
-            runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
-        }
         self.pending_layout_resize = true;
         std.log.info("app: created new tab", .{});
     }
@@ -331,10 +345,7 @@ pub const App = struct {
         }
         // Re-register callbacks for the new active pane after tab switch.
         if (mux.activePane()) |active| {
-            runtime.setWritePtyCallback(active.terminal, writePtyCallback);
-            runtime.setSizeCallback(active.terminal, sizeCallback);
-            runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
-            runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+            runtime.registerCallbacks(active.terminal, terminalCallbacks());
         }
         self.pending_layout_resize = true;
     }
@@ -350,10 +361,7 @@ pub const App = struct {
         }
         // Re-register callbacks for the new active pane.
         if (mux.activePane()) |active| {
-            runtime.setWritePtyCallback(active.terminal, writePtyCallback);
-            runtime.setSizeCallback(active.terminal, sizeCallback);
-            runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
-            runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+            runtime.registerCallbacks(active.terminal, terminalCallbacks());
         }
         self.pending_layout_resize = true;
         std.log.info("app: active pane closed via close_pane", .{});
@@ -372,17 +380,11 @@ pub const App = struct {
     pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        mux.splitActivePane(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio) catch |err| {
+        const cbs = terminalCallbacks();
+        mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
-        // Register callbacks for the new active pane
-        if (mux.activePane()) |new_pane| {
-            runtime.setWritePtyCallback(new_pane.terminal, writePtyCallback);
-            runtime.setSizeCallback(new_pane.terminal, sizeCallback);
-            runtime.setDeviceAttributesCallback(new_pane.terminal, deviceAttributesCallback);
-            runtime.setTitleChangedCallback(new_pane.terminal, titleChangedCallback);
-        }
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.pending_layout_resize = true;
@@ -403,13 +405,82 @@ pub const App = struct {
     }
 
     pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
-        if (self.mux) |*mux| return mux.computeActiveLayout(self.config.window_width, self.config.window_height, out);
+        const tbh = self.tabBarHeight();
+        const h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+        if (self.mux) |*mux| {
+            const tab = mux.activeTab() orelse return out[0..0];
+            var written: usize = 0;
+            const root = tab.root_split orelse return out[0..0];
+            const bounds = PaneBounds{
+                .x = 0,
+                .y = tbh,
+                .width = self.config.window_width,
+                .height = h,
+            };
+            layoutSplitTree(root, bounds, out, &written);
+            return out[0..written];
+        }
         return out[0..0];
     }
 
     pub fn activeTitle(self: *App) []const u8 {
         if (self.activePane()) |pane| return pane.title;
         return self.config.windowTitle();
+    }
+
+    /// Height in pixels of the tab bar. 0 when only one tab exists (hidden).
+    pub fn tabBarHeight(self: *App) u32 {
+        const count = if (self.mux) |*mux| mux.tabCount() else 0;
+        if (count < 2) return 0;
+        // 1.5× cell height, rounded to even pixels.
+        return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
+    }
+
+    pub fn tabCount(self: *App) usize {
+        if (self.mux) |*mux| return mux.tabCount();
+        return 0;
+    }
+
+    /// Return the title of the tab at the given 0-based index (falls back to
+    /// config window title if the tab or its active pane have no title).
+    pub fn tabTitle(self: *App, index: usize) []const u8 {
+        std.log.info("App.tabTitle index={d}", .{index});
+        if (self.mux) |*mux| {
+            if (mux.activeWorkspace()) |ws| {
+                if (index < ws.tabs.items.len) {
+                    const tab = ws.tabs.items[index];
+                    if (tab.activePane()) |pane| {
+                        if (pane.title.len > 0) return pane.title;
+                    }
+                }
+            }
+        }
+        return self.config.windowTitle();
+    }
+
+    pub fn activeTabIndex(self: *App) usize {
+        if (self.mux) |*mux| return mux.activeTabIndex();
+        return 0;
+    }
+
+    pub fn switchTab(self: *App, index: usize) void {
+        if (self.mux) |*mux| {
+            mux.switchTab(index);
+            // Re-register callbacks for the new active pane.
+            if (self.ghostty) |*runtime| {
+                if (mux.activePane()) |active| {
+                    runtime.registerCallbacks(active.terminal, terminalCallbacks());
+                }
+            }
+            self.pending_layout_resize = true;
+        }
+    }
+
+    /// Override the active pane's title (used by Lua hollow.set_tab_title).
+    pub fn setTabTitle(self: *App, title: []const u8) void {
+        const pane = self.activePane() orelse return;
+        if (pane.title.len > 0) pane.allocator.free(pane.title);
+        pane.title = pane.allocator.dupe(u8, title) catch &.{};
     }
 
     fn ensureDynamicLibraryPath(self: *App) !void {
@@ -456,12 +527,16 @@ pub const App = struct {
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
             while (panes.next()) |pane| {
-                try pane.pollPty(runtime);
+                pane.pollPty(runtime) catch |err| {
+                    std.log.err("pane pollPty error: {s}", .{@errorName(err)});
+                };
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
-                try runtime.updateRenderState(pane.render_state, pane.terminal);
+                runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
+                    std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
+                };
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }
@@ -478,10 +553,7 @@ pub const App = struct {
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
-                    runtime.setWritePtyCallback(active.terminal, writePtyCallback);
-                    runtime.setSizeCallback(active.terminal, sizeCallback);
-                    runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
-                    runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+                    runtime.registerCallbacks(active.terminal, terminalCallbacks());
                 }
                 self.pending_layout_resize = true;
             }
@@ -495,12 +567,29 @@ pub const App = struct {
 
         std.log.info("resizeAllPanes tab_count={d} px={d}x{d}", .{ ws.tabs.items.len, pixel_width, pixel_height });
 
+        // How many pixels the tab bar steals from the top.  We compute this
+        // from the current cell size rather than from mux.tabCount() because
+        // the mux hasn't changed yet at this call site (new tab just added).
+        // Use tabBarHeight() which already handles the count guard.
+        const tbh = self.tabBarHeight();
+        const pane_h = if (pixel_height > tbh) pixel_height - tbh else 1;
+
         // Resize panes on every tab so that background tabs get
         // render_state_ready = true even when they are not visible.
         // Without this, tickPanes would call ghostty on uninitialised state
         // the moment a new tab is created and the old tab's panes are iterated.
         for (ws.tabs.items) |tab| {
-            const leaves = tab.computeLayout(pixel_width, pixel_height, &layout_buf);
+            var written: usize = 0;
+            const bounds = PaneBounds{
+                .x = 0,
+                .y = tbh,
+                .width = pixel_width,
+                .height = pane_h,
+            };
+            if (tab.root_split) |root| {
+                layoutSplitTree(root, bounds, &layout_buf, &written);
+            }
+            const leaves = layout_buf[0..written];
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     const cols: u16 = @max(1, @as(u16, @intCast(leaf.bounds.width / @max(1, self.cell_width_px))));
@@ -512,12 +601,14 @@ pub const App = struct {
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
-                // the full window size.
+                // the full window size minus the tab bar.
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
+                    const cols: u16 = @max(1, @as(u16, @intCast(pixel_width / @max(1, self.cell_width_px))));
+                    const rows: u16 = @max(1, @as(u16, @intCast(pane_h / @max(1, self.cell_height_px))));
+                    pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
                     if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
-                    pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
+                    pane.setMouseSize(runtime, pixel_width, pane_h, self.cell_width_px, self.cell_height_px);
                     pane.render_state_ready = true;
                 }
             }
@@ -564,47 +655,71 @@ fn getPaneForTerminal(app: *App, term: ?*anyopaque) ?*Pane {
             if (pane.terminal == term) return pane;
         }
     }
-    return app.activePane();
+    return null;
 }
 
-fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
+fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: ?[*]const u8, len: usize) callconv(.c) void {
+    std.log.info("writePtyCallback called len={d} bytes={*}", .{ len, bytes });
+    if (bytes == null or len == 0) return;
+    const bytes_ptr = bytes.?;
     const app = write_bridge orelse return;
     const pane = getPaneForTerminal(app, term) orelse return;
-    pane.sendText(bytes[0..len]) catch {};
+    pane.sendText(bytes_ptr[0..len]) catch {};
 }
 
-fn sizeCallback(term: ?*anyopaque, _: ?*anyopaque, out: *ghostty.SizeReportSize) callconv(.c) bool {
+fn bellCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}
+
+fn enquiryCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
+    return .{ .ptr = null, .len = 0 };
+}
+
+fn xtversionCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
+    return .{ .ptr = null, .len = 0 };
+}
+
+fn sizeCallback(term: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.SizeReportSize) callconv(.c) bool {
+    std.log.info("sizeCallback called out={*}", .{out});
+    if (out == null) return false;
+    const out_ptr = out.?;
     const app = size_bridge orelse return false;
     // Report the actual per-pane terminal dimensions rather than the global
     // config values, so each split pane reports its own correct size.
     if (getPaneForTerminal(app, term)) |pane| {
-        out.rows = if (pane.rows > 0) pane.rows else app.config.rows;
-        out.columns = if (pane.cols > 0) pane.cols else app.config.cols;
-        out.cell_width = app.cell_width_px;
-        out.cell_height = app.cell_height_px;
+        out_ptr.rows = if (pane.rows > 0) pane.rows else app.config.rows;
+        out_ptr.columns = if (pane.cols > 0) pane.cols else app.config.cols;
+        out_ptr.cell_width = app.cell_width_px;
+        out_ptr.cell_height = app.cell_height_px;
         return true;
     }
-    out.rows = app.config.rows;
-    out.columns = app.config.cols;
-    out.cell_width = app.cell_width_px;
-    out.cell_height = app.cell_height_px;
+    out_ptr.rows = app.config.rows;
+    out_ptr.columns = app.config.cols;
+    out_ptr.cell_width = app.cell_width_px;
+    out_ptr.cell_height = app.cell_height_px;
     return true;
 }
 
-fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.DeviceAttributes) callconv(.c) bool {
+fn colorSchemeCallback(_: ?*anyopaque, _: ?*anyopaque, _: ?*ghostty.ColorScheme) callconv(.c) bool {
+    return false;
+}
+
+fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.DeviceAttributes) callconv(.c) bool {
+    std.log.info("deviceAttributesCallback called out={*}", .{out});
+    if (out == null) return false;
+    const out_ptr = out.?;
     const app = attrs_bridge orelse return false;
     _ = app;
-    out.conformance_level = 1;
-    out.features = [_]u8{ 1, 2, 22, 0, 0, 0, 0, 0 };
-    out.num_features = 3;
-    out.device_type = 1;
-    out.firmware_version = 1;
-    out.rom_cartridge = 0;
-    out.unit_id = 0;
+    out_ptr.primary.conformance_level = 1;
+    out_ptr.primary.features = [_]u16{ 1, 2, 22 } ++ ([_]u16{0} ** 61);
+    out_ptr.primary.num_features = 3;
+    out_ptr.secondary.device_type = 1;
+    out_ptr.secondary.firmware_version = 1;
+    out_ptr.secondary.rom_cartridge = 0;
+    out_ptr.tertiary.unit_id = 0;
     return true;
 }
 
 fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    std.log.info("titleChangedCallback called", .{});
     const app = title_bridge orelse return;
     if (app.ghostty) |*runtime| {
         if (getPaneForTerminal(app, term)) |pane| {
@@ -648,4 +763,24 @@ fn luaResizePaneCallback(app_ptr: *anyopaque, direction: []const u8, delta: f32)
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     app.resizePane(dir, delta);
+}
+
+fn luaSwitchTabCallback(app_ptr: *anyopaque, index: usize) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.switchTab(index);
+}
+
+fn luaSetTabTitleCallback(app_ptr: *anyopaque, title: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.setTabTitle(title);
+}
+
+fn luaGetTabCountCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.tabCount();
+}
+
+fn luaGetActiveTabIndexCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.activeTabIndex();
 }

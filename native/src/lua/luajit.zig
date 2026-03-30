@@ -59,6 +59,10 @@ pub const AppCallbacks = struct {
     prev_tab: *const fn (app: *anyopaque) void,
     focus_pane: *const fn (app: *anyopaque, direction: []const u8) void,
     resize_pane: *const fn (app: *anyopaque, direction: []const u8, delta: f32) void,
+    switch_tab: *const fn (app: *anyopaque, index: usize) void,
+    set_tab_title: *const fn (app: *anyopaque, title: []const u8) void,
+    get_tab_count: *const fn (app: *anyopaque) usize,
+    get_active_tab_index: *const fn (app: *anyopaque) usize,
 };
 
 const BridgeContext = struct {
@@ -296,6 +300,22 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_key, 1);
         api.set_field(self.state, -2, "on_key");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_switch_tab, 1);
+        api.set_field(self.state, -2, "switch_tab");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_tab_title, 1);
+        api.set_field(self.state, -2, "set_tab_title");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_count, 1);
+        api.set_field(self.state, -2, "get_tab_count");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_active_tab_index, 1);
+        api.set_field(self.state, -2, "get_active_tab_index");
 
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
@@ -574,7 +594,62 @@ fn l_resize_pane(state: *State) callconv(.c) c_int {
     return 0;
 }
 
-/// hollow.on_key(fn(key, mods) -> bool)/// Registers a Lua function that is called for every key event before the
+/// hollow.switch_tab(index)  — 0-based index
+fn l_switch_tab(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    cbs.switch_tab(cbs.app, idx);
+    return 0;
+}
+
+/// hollow.set_tab_title(title)  — override the active tab's title string
+fn l_set_tab_title(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &len)
+    else
+        null;
+    const title: []const u8 = if (ptr) |p| p[0..len] else "";
+    cbs.set_tab_title(cbs.app, title);
+    return 0;
+}
+
+/// hollow.get_tab_count() → number  — number of open tabs (0-based count)
+fn l_get_tab_count(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const count = cbs.get_tab_count(cbs.app);
+    api.push_number(state, @floatFromInt(count));
+    return 1;
+}
+
+/// hollow.get_active_tab_index() → number  — 0-based index of active tab
+fn l_get_active_tab_index(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const idx = cbs.get_active_tab_index(cbs.app);
+    api.push_number(state, @floatFromInt(idx));
+    return 1;
+}
+
+/// hollow.on_key(fn(key, mods) -> bool)
+/// Registers a Lua function that is called for every key event before the
 /// terminal sees it. Return true to consume the key.
 fn l_on_key(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);

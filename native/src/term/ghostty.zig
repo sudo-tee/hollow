@@ -70,14 +70,31 @@ pub const SizeReportSize = extern struct {
     cell_height: u32,
 };
 
+pub const ColorScheme = enum(c_int) {
+    light = 0,
+    dark = 1,
+};
+
+pub const DeviceAttributesPrimary = extern struct {
+    conformance_level: u16,
+    features: [64]u16,
+    num_features: usize,
+};
+
+pub const DeviceAttributesSecondary = extern struct {
+    device_type: u16,
+    firmware_version: u16,
+    rom_cartridge: u16,
+};
+
+pub const DeviceAttributesTertiary = extern struct {
+    unit_id: u32,
+};
+
 pub const DeviceAttributes = extern struct {
-    conformance_level: u8,
-    features: [8]u8,
-    num_features: u8,
-    device_type: u8,
-    firmware_version: u32,
-    rom_cartridge: u8,
-    unit_id: u64,
+    primary: DeviceAttributesPrimary,
+    secondary: DeviceAttributesSecondary,
+    tertiary: DeviceAttributesTertiary,
 };
 
 pub const String = extern struct {
@@ -333,9 +350,26 @@ pub const Key = enum(u32) {
 };
 
 const WritePtyCallback = *const fn (?*anyopaque, ?*anyopaque, [*]const u8, usize) callconv(.c) void;
+const BellCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
+const EnquiryCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) String;
+const XtversionCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) String;
 const SizeCallback = *const fn (?*anyopaque, ?*anyopaque, *SizeReportSize) callconv(.c) bool;
+const ColorSchemeCallback = *const fn (?*anyopaque, ?*anyopaque, *ColorScheme) callconv(.c) bool;
 const DeviceAttributesCallback = *const fn (?*anyopaque, ?*anyopaque, *DeviceAttributes) callconv(.c) bool;
 const TitleChangedCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
+
+/// Bundle of callbacks that must be registered on every new terminal before any
+/// ghostty API that might invoke them (resize, updateRenderState, vt_write).
+pub const TerminalCallbacks = struct {
+    write_pty: WritePtyCallback,
+    bell: BellCallback,
+    enquiry: EnquiryCallback,
+    xtversion: XtversionCallback,
+    size: SizeCallback,
+    color_scheme: ColorSchemeCallback,
+    device_attributes: DeviceAttributesCallback,
+    title_changed: TitleChangedCallback,
+};
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
@@ -563,8 +597,24 @@ pub const Runtime = struct {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.write_pty), @ptrCast(callback));
     }
 
+    pub fn setBellCallback(self: *Runtime, handle: ?*anyopaque, callback: BellCallback) void {
+        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.bell), @ptrCast(callback));
+    }
+
+    pub fn setEnquiryCallback(self: *Runtime, handle: ?*anyopaque, callback: EnquiryCallback) void {
+        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.enquiry), @ptrCast(callback));
+    }
+
+    pub fn setXtversionCallback(self: *Runtime, handle: ?*anyopaque, callback: XtversionCallback) void {
+        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.xtversion), @ptrCast(callback));
+    }
+
     pub fn setSizeCallback(self: *Runtime, handle: ?*anyopaque, callback: SizeCallback) void {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.size), @ptrCast(callback));
+    }
+
+    pub fn setColorSchemeCallback(self: *Runtime, handle: ?*anyopaque, callback: ColorSchemeCallback) void {
+        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_scheme), @ptrCast(callback));
     }
 
     pub fn setDeviceAttributesCallback(self: *Runtime, handle: ?*anyopaque, callback: DeviceAttributesCallback) void {
@@ -573,6 +623,19 @@ pub const Runtime = struct {
 
     pub fn setTitleChangedCallback(self: *Runtime, handle: ?*anyopaque, callback: TitleChangedCallback) void {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.title_changed), @ptrCast(callback));
+    }
+
+    /// Register all terminal callbacks on `handle` in one call. Must be called
+    /// before any ghostty API that might invoke them (resize, updateRenderState).
+    pub fn registerCallbacks(self: *Runtime, handle: ?*anyopaque, cbs: TerminalCallbacks) void {
+        self.setWritePtyCallback(handle, cbs.write_pty);
+        self.setBellCallback(handle, cbs.bell);
+        self.setEnquiryCallback(handle, cbs.enquiry);
+        self.setXtversionCallback(handle, cbs.xtversion);
+        self.setSizeCallback(handle, cbs.size);
+        self.setColorSchemeCallback(handle, cbs.color_scheme);
+        self.setDeviceAttributesCallback(handle, cbs.device_attributes);
+        self.setTitleChangedCallback(handle, cbs.title_changed);
     }
 
     pub fn createRenderState(self: *Runtime) !?*anyopaque {

@@ -2,6 +2,7 @@ const std = @import("std");
 const Config = @import("config.zig").Config;
 const Pane = @import("pane.zig").Pane;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
+const TerminalCallbacks = @import("term/ghostty.zig").TerminalCallbacks;
 
 pub const FocusDirection = enum {
     left,
@@ -405,6 +406,18 @@ pub const Workspace = struct {
         self.active_tab = self.tabs.items[idx];
     }
 
+    pub fn switchTab(self: *Workspace, index: usize) void {
+        if (index >= self.tabs.items.len) return;
+        self.active_tab = self.tabs.items[index];
+    }
+
+    pub fn activeTabIndex(self: *Workspace) usize {
+        for (self.tabs.items, 0..) |t, i| {
+            if (t == self.active_tab) return i;
+        }
+        return 0;
+    }
+
     pub fn activeTab(self: *Workspace) ?*Tab {
         return self.active_tab;
     }
@@ -461,7 +474,7 @@ pub const Mux = struct {
         self.* = Mux.init(self.allocator);
     }
 
-    pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+    pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         if (self.workspaces.items.len != 0) return error.MuxAlreadyBootstrapped;
 
         const workspace = try self.createWorkspace();
@@ -478,7 +491,7 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
         };
 
-        const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
         var pane_owned_by_tab = false;
         defer if (!pane_owned_by_tab) {
             pane.deinit(runtime);
@@ -543,18 +556,18 @@ pub const Mux = struct {
         return tab;
     }
 
-    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Pane {
+    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
-        try pane.bootstrap(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
         return pane;
     }
 
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
-    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const tab = try ws.newTab(self.allocId());
         errdefer {
@@ -562,7 +575,7 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
             ws.active_tab = if (ws.tabs.items.len > 0) ws.tabs.items[ws.tabs.items.len - 1] else null;
         }
-        const pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
         try tab.appendPane(pane);
     }
 
@@ -596,9 +609,23 @@ pub const Mux = struct {
         if (self.activeWorkspace()) |ws| ws.prevTab();
     }
 
-    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32) !void {
+    pub fn switchTab(self: *Mux, index: usize) void {
+        if (self.activeWorkspace()) |ws| ws.switchTab(index);
+    }
+
+    pub fn activeTabIndex(self: *Mux) usize {
+        if (self.activeWorkspace()) |ws| return ws.activeTabIndex();
+        return 0;
+    }
+
+    pub fn tabCount(self: *Mux) usize {
+        if (self.activeWorkspace()) |ws| return ws.tabs.items.len;
+        return 0;
+    }
+
+    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
-        const new_pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const new_pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
         errdefer {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);

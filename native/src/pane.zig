@@ -2,6 +2,7 @@ const std = @import("std");
 const Config = @import("config.zig").Config;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
+const TerminalCallbacks = ghostty.TerminalCallbacks;
 const Pty = @import("pty/pty.zig").Pty;
 const platform = @import("platform.zig");
 
@@ -47,13 +48,23 @@ pub const Pane = struct {
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+        _ = cell_width_px;
+        _ = cell_height_px;
+        _ = window_width;
+        _ = window_height;
         const terminal = try runtime.createTerminal(.{
             .cols = cfg.cols,
             .rows = cfg.rows,
             .max_scrollback = cfg.scrollback,
         });
         errdefer runtime.freeTerminal(terminal);
+
+        // Register callbacks immediately — before any ghostty call that might
+        // invoke them (resizeTerminal, updateRenderState).  A freshly created
+        // terminal has null slots for all callbacks; calling into ghostty before
+        // these are set causes a null-function-pointer segfault.
+        runtime.registerCallbacks(terminal, callbacks);
 
         const render_state = try runtime.createRenderState();
         errdefer runtime.freeRenderState(render_state);
@@ -91,24 +102,11 @@ pub const Pane = struct {
         self.mouse_event = mouse_event;
         self.pty = pty;
 
-        runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-        runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
-        self.setMouseSize(runtime, window_width, window_height, cell_width_px, cell_height_px);
-        // Only update the ghostty terminal dimensions here — the PTY was already
-        // created at cfg.cols × cfg.rows by spawn().  Calling pty.resize() a second
-        // time immediately causes ConPTY to fire a SIGWINCH, which makes WSL emit a
-        // resize-response sequence (CSI 8 t) back into the pipe.  On a freshly
-        // created terminal that sequence arriving before the first updateRenderState
-        // can cause ghostty_terminal_vt_write to crash intermittently.
-        runtime.resizeTerminal(self.terminal, cfg.cols, cfg.rows, cell_width_px, cell_height_px);
-        // Initialise render_state immediately so that any ghostty call that
-        // reads render_state (e.g. terminal_resize side-effects, write_pty
-        // callback flush, vt_write) does not dereference a null pointer.
-        // Without this, the second+ terminal created after the first
-        // updateRenderState triggers lazy-init in ghostty that expects a
-        // non-null render_state.
-        runtime.updateRenderState(self.render_state, self.terminal) catch {};
-        self.refreshTitle(runtime, cfg.windowTitle());
+        // Defer terminal resize/render-state initialization until the first
+        // layout pass on the frame thread. `newTab()` is triggered from the sokol
+        // event callback, and calling ghostty resize/update APIs here has been a
+        // recurring source of null-deref crashes during tab creation.
+        self.title = self.allocator.dupe(u8, cfg.windowTitle()) catch &.{};
     }
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
@@ -116,7 +114,10 @@ pub const Pane = struct {
             var total_read: usize = 0;
             var read_loops: usize = 0;
             while ((pty.isAlive() or pty.hasPendingOutput()) and read_loops < 64 and total_read < (1024 * 1024)) {
-                const count = try pty.read(&self.read_buf);
+                const count = pty.read(&self.read_buf) catch |err| {
+                    if (err == error.EndOfStream) break;
+                    return err;
+                };
                 if (count == 0) break;
                 read_loops += 1;
                 total_read += count;
@@ -154,6 +155,9 @@ pub const Pane = struct {
         self.cols = cols;
         self.rows = rows;
         runtime.resizeTerminal(self.terminal, cols, rows, cell_width_px, cell_height_px);
+        runtime.updateRenderState(self.render_state, self.terminal) catch {};
+        runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+        runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
         if (self.pty) |*pty| pty.resize(cols, rows);
     }
 
@@ -200,6 +204,7 @@ pub const Pane = struct {
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8) void {
+        std.log.info("refreshTitle start title.len={d}", .{self.title.len});
         if (self.title.len > 0) {
             self.allocator.free(self.title);
             self.title = &.{};
@@ -251,6 +256,41 @@ pub const Pane = struct {
         if (tail_len > 0) {
             @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
             write_idx -= tail_len;
+        }
+
+        // Second pass: strip XTWINOPS CSI t sequences (e.g. ESC [ 8 ; rows ; cols t).
+        // Ghostty does not implement these and crashes (null fn-ptr call) when it receives them.
+        // They are sent by the shell in response to ConPTY SIGWINCH after a pane resize.
+        const first_pass_len = write_idx;
+        write_idx = 0;
+        var scan_idx: usize = 0;
+        while (scan_idx < first_pass_len) {
+            if (scan_idx + 1 < first_pass_len and
+                self.pty_sanitize_buf[scan_idx] == 0x1b and
+                self.pty_sanitize_buf[scan_idx + 1] == '[')
+            {
+                var j: usize = scan_idx + 2;
+                var is_csi_t = false;
+                while (j < first_pass_len) : (j += 1) {
+                    const b = self.pty_sanitize_buf[j];
+                    if (b >= 0x30 and b <= 0x3f) {
+                        // parameter byte, keep scanning
+                    } else if (b == 't') {
+                        is_csi_t = true;
+                        j += 1; // advance past 't'
+                        break;
+                    } else {
+                        break; // different final byte — not a CSI t, keep the sequence
+                    }
+                }
+                if (is_csi_t) {
+                    scan_idx = j;
+                    continue;
+                }
+            }
+            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[scan_idx];
+            write_idx += 1;
+            scan_idx += 1;
         }
 
         return self.pty_sanitize_buf[0..write_idx];
