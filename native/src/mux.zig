@@ -646,9 +646,9 @@ pub const Mux = struct {
         }
     }
 
-    /// Focus the nearest pane in the given direction from the currently active pane.
-    /// Uses the spatial layout: finds the pane whose center is closest to the active
-    /// pane's center along the requested axis while being strictly on the correct side.
+    /// Focus the adjacent pane in the given direction from the currently active pane.
+    /// Navigation follows the split tree rather than global pane centers, so nested
+    /// layouts move into the sibling subtree of the nearest matching split.
     pub fn focusPaneInDirection(self: *Mux, direction: FocusDirection, window_width: u32, window_height: u32) void {
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
@@ -657,7 +657,8 @@ pub const Mux = struct {
         const leaves = tab.computeLayout(window_width, window_height, &layout_buf);
         if (leaves.len < 2) return;
 
-        // Find the bounds of the current pane.
+        const target_subtree = findFocusTargetSubtree(tab.root_split orelse return, current, direction) orelse return;
+
         var cur_bounds: ?PaneBounds = null;
         for (leaves) |leaf| {
             if (leaf.pane == current) {
@@ -667,46 +668,29 @@ pub const Mux = struct {
         }
         const cb = cur_bounds orelse return;
 
-        // Center of the current pane.
-        const cur_cx = @as(f32, @floatFromInt(cb.x)) + @as(f32, @floatFromInt(cb.width)) * 0.5;
-        const cur_cy = @as(f32, @floatFromInt(cb.y)) + @as(f32, @floatFromInt(cb.height)) * 0.5;
-
         var best_pane: ?*Pane = null;
-        var best_dist: f32 = std.math.floatMax(f32);
+        var best_overlap: u32 = 0;
+        var best_primary_gap: u32 = std.math.maxInt(u32);
+        var best_secondary_gap: u32 = std.math.maxInt(u32);
 
         for (leaves) |leaf| {
-            if (leaf.pane == current) continue;
-            const lx = @as(f32, @floatFromInt(leaf.bounds.x));
-            const ly = @as(f32, @floatFromInt(leaf.bounds.y));
-            const lw = @as(f32, @floatFromInt(leaf.bounds.width));
-            const lh = @as(f32, @floatFromInt(leaf.bounds.height));
-            const lcx = lx + lw * 0.5;
-            const lcy = ly + lh * 0.5;
+            if (!subtreeContainsPane(target_subtree, leaf.pane)) continue;
 
-            // The candidate must be strictly on the correct side.
-            const qualifies = switch (direction) {
-                .left => lcx < cur_cx - 1.0,
-                .right => lcx > cur_cx + 1.0,
-                .up => lcy < cur_cy - 1.0,
-                .down => lcy > cur_cy + 1.0,
+            const overlap = switch (direction) {
+                .left, .right => intervalOverlap(cb.y, cb.height, leaf.bounds.y, leaf.bounds.height),
+                .up, .down => intervalOverlap(cb.x, cb.width, leaf.bounds.x, leaf.bounds.width),
             };
-            if (!qualifies) continue;
+            const primary_gap = primaryAxisGap(cb, leaf.bounds, direction);
+            const secondary_gap = secondaryAxisGap(cb, leaf.bounds, direction);
 
-            // Primary distance: movement axis. Secondary: perpendicular (tiebreak).
-            const primary = switch (direction) {
-                .left => cur_cx - lcx,
-                .right => lcx - cur_cx,
-                .up => cur_cy - lcy,
-                .down => lcy - cur_cy,
-            };
-            const secondary = switch (direction) {
-                .left, .right => @abs(lcy - cur_cy),
-                .up, .down => @abs(lcx - cur_cx),
-            };
-            // Combined metric: primary distance weighted more than perpendicular.
-            const dist = primary + secondary * 0.5;
-            if (dist < best_dist) {
-                best_dist = dist;
+            if (best_pane == null or
+                overlap > best_overlap or
+                (overlap == best_overlap and primary_gap < best_primary_gap) or
+                (overlap == best_overlap and primary_gap == best_primary_gap and secondary_gap < best_secondary_gap))
+            {
+                best_overlap = overlap;
+                best_primary_gap = primary_gap;
+                best_secondary_gap = secondary_gap;
                 best_pane = leaf.pane;
             }
         }
@@ -772,6 +756,121 @@ fn findPaneLeafNode(node: *SplitNode, pane: *Pane) ?*SplitNode {
             return null;
         },
     }
+}
+
+fn subtreeContainsPane(node: *SplitNode, pane: *Pane) bool {
+    return findPaneLeafNode(node, pane) != null;
+}
+
+fn splitDirectionForFocus(direction: FocusDirection) SplitDirection {
+    return switch (direction) {
+        .left, .right => .vertical,
+        .up, .down => .horizontal,
+    };
+}
+
+fn findFocusTargetSubtree(node: *SplitNode, pane: *Pane, direction: FocusDirection) ?*SplitNode {
+    if (node.kind != .split) return null;
+
+    const first = node.first orelse return null;
+    const second = node.second orelse return null;
+    const wants_first = direction == .left or direction == .up;
+    const wants_second = direction == .right or direction == .down;
+    const matching_axis = node.direction == splitDirectionForFocus(direction);
+
+    if (subtreeContainsPane(first, pane)) {
+        if (findFocusTargetSubtree(first, pane, direction)) |target| return target;
+        if (matching_axis and wants_second) return second;
+        return null;
+    }
+
+    if (subtreeContainsPane(second, pane)) {
+        if (findFocusTargetSubtree(second, pane, direction)) |target| return target;
+        if (matching_axis and wants_first) return first;
+        return null;
+    }
+
+    return null;
+}
+
+fn intervalOverlap(a_start: u32, a_len: u32, b_start: u32, b_len: u32) u32 {
+    const a_end = a_start + a_len;
+    const b_end = b_start + b_len;
+    const start = @max(a_start, b_start);
+    const end = @min(a_end, b_end);
+    return if (end > start) end - start else 0;
+}
+
+fn intervalGap(a_start: u32, a_len: u32, b_start: u32, b_len: u32) u32 {
+    const a_end = a_start + a_len;
+    const b_end = b_start + b_len;
+    if (a_end < b_start) return b_start - a_end;
+    if (b_end < a_start) return a_start - b_end;
+    return 0;
+}
+
+fn primaryAxisGap(current: PaneBounds, candidate: PaneBounds, direction: FocusDirection) u32 {
+    return switch (direction) {
+        .left => intervalGap(candidate.x, candidate.width, current.x, current.width),
+        .right => intervalGap(current.x, current.width, candidate.x, candidate.width),
+        .up => intervalGap(candidate.y, candidate.height, current.y, current.height),
+        .down => intervalGap(current.y, current.height, candidate.y, candidate.height),
+    };
+}
+
+fn secondaryAxisGap(current: PaneBounds, candidate: PaneBounds, direction: FocusDirection) u32 {
+    return switch (direction) {
+        .left, .right => intervalGap(current.y, current.height, candidate.y, candidate.height),
+        .up, .down => intervalGap(current.x, current.width, candidate.x, candidate.width),
+    };
+}
+
+test "pane focus follows nearest matching split subtree" {
+    const allocator = std.testing.allocator;
+
+    var mux = Mux.init(allocator);
+    defer mux.workspaces.deinit(allocator);
+
+    const workspace = try allocator.create(Workspace);
+    defer allocator.destroy(workspace);
+    workspace.* = Workspace.init(allocator, 1);
+    defer workspace.tabs.deinit(allocator);
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 2);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    try workspace.appendTab(tab);
+    try mux.workspaces.append(allocator, workspace);
+    mux.active_workspace = workspace;
+
+    const top = try allocator.create(Pane);
+    top.* = Pane.init(allocator);
+    try tab.appendPane(top);
+
+    const bottom_left = try allocator.create(Pane);
+    bottom_left.* = Pane.init(allocator);
+    try tab.splitActivePane(bottom_left, .horizontal, 0.5);
+
+    tab.active_pane = bottom_left;
+
+    const bottom_right = try allocator.create(Pane);
+    bottom_right.* = Pane.init(allocator);
+    try tab.splitActivePane(bottom_right, .vertical, 0.5);
+
+    mux.focusPaneInDirection(.left, 1200, 800);
+    try std.testing.expect(tab.active_pane == bottom_left);
+
+    mux.focusPaneInDirection(.up, 1200, 800);
+    try std.testing.expect(tab.active_pane == top);
 }
 
 /// Returns the innermost split node with the given direction that contains `pane`
