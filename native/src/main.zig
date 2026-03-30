@@ -7,7 +7,44 @@ var g_log_mutex: std.Thread.Mutex = .{};
 
 pub const std_options: std.Options = .{
     .logFn = fileLogFn,
+    .enable_segfault_handler = true,
 };
+
+fn writeLogLine(prefix: []const u8, text: []const u8) void {
+    if (g_log_file) |f| {
+        g_log_mutex.lock();
+        defer g_log_mutex.unlock();
+        var buf: [1024]u8 = undefined;
+        var w = f.writer(&buf);
+        w.interface.print("[{s}] {s}\n", .{ prefix, text }) catch {};
+        w.interface.flush() catch {};
+        f.sync() catch {};
+    }
+}
+
+fn writeCurrentStackToLog(start_addr: ?usize) void {
+    if (g_log_file) |f| {
+        g_log_mutex.lock();
+        defer g_log_mutex.unlock();
+        var buf: [2048]u8 = undefined;
+        var w = f.writer(&buf);
+
+        const debug_info = std.debug.getSelfDebugInfo() catch |err| {
+            w.interface.print("[panic] unable to load debug info: {s}\n", .{@errorName(err)}) catch {};
+            w.interface.flush() catch {};
+            f.sync() catch {};
+            return;
+        };
+
+        w.interface.writeAll("[panic] stack trace:\n") catch {};
+        std.debug.writeCurrentStackTrace(&w.interface, debug_info, .no_color, start_addr) catch |err| {
+            w.interface.print("[panic] unable to write stack trace: {s}\n", .{@errorName(err)}) catch {};
+        };
+        w.interface.writeAll("\n") catch {};
+        w.interface.flush() catch {};
+        f.sync() catch {};
+    }
+}
 
 fn fileLogFn(
     comptime level: std.log.Level,
@@ -29,14 +66,34 @@ fn fileLogFn(
     }
 }
 
-pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
+pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ra: ?usize) noreturn {
     std.log.err("PANIC: {s}", .{msg});
-    if (g_log_file) |f| {
-        g_log_mutex.lock();
-        f.sync() catch {};
-        g_log_mutex.unlock();
+    writeLogLine("panic", msg);
+    if (trace) |t| {
+        if (g_log_file) |f| {
+            g_log_mutex.lock();
+            defer g_log_mutex.unlock();
+            var buf: [2048]u8 = undefined;
+            var w = f.writer(&buf);
+
+            const debug_info = std.debug.getSelfDebugInfo() catch |err| {
+                w.interface.print("[panic] unable to load debug info: {s}\n", .{@errorName(err)}) catch {};
+                w.interface.flush() catch {};
+                f.sync() catch {};
+                std.process.abort();
+            };
+
+            w.interface.writeAll("[panic] error return trace:\n") catch {};
+            std.debug.writeStackTrace(t.*, &w.interface, debug_info, .no_color) catch |err| {
+                w.interface.print("[panic] unable to write error return trace: {s}\n", .{@errorName(err)}) catch {};
+            };
+            w.interface.writeAll("\n") catch {};
+            w.interface.flush() catch {};
+            f.sync() catch {};
+        }
     }
-    std.process.exit(1);
+    writeCurrentStackToLog(ra orelse @returnAddress());
+    std.process.abort();
 }
 
 pub fn main() !void {
