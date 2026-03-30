@@ -4,20 +4,31 @@
 
 - ~There is still a [[?900l in the prompt on launch.~
 - ~Fix startup crash (mux.zig structural corruption, LUA_GLOBALSINDEX wrong value)~
+- ~Fix split segfault (double ResizePseudoConsole on bootstrap triggered SIGWINCH response crash)~
+- ~Fix isAlive() data race on pty_windows reader_state.eof~
+- ~Cursor not visible (wrong sokol pipeline active during cursor draw; also black fallback color when cursor_has_value=false)~
+- ~Per-pane size reporting broken in sizeCallback (now tracks cols/rows on Pane)~
+- ~Pane navigation keybinds: focus_pane_left/right/up/down (ctrl+h/l/k/j)~
+- ~Split border invisible (sgl_begin_lines was clipped by last pane scissor + 1px on HiDPI; replaced with filled 2px rects, full-framebuffer scissor reset)~
 
 ## Annoyances / Polish
 
-- Cursor is not visible / cursor style not respected
-- Thin configurable border between splits
-- Per-pane size reporting is broken in sizeCallback (always reports global config.rows/cols)
+- ~Thin configurable border between splits~
+- ~Pane navigation: ctrl+shift+arrow_left/right/up/down~
+- ~split_pane optional ratio param: hollow.split_pane("vertical", 0.3)~
+- ~resize_pane API: hollow.resize_pane("vertical", 0.05) + ctrl+alt+arrows~
+- ~close_pane Lua API: hollow.close_pane() + ctrl+shift+w keybind~
+- ~Dead pane auto-close: isAlive() now checks WaitForSingleObject as fallback when pipe EOF not yet reported~
+- Navigating between panes is a bit buggy let's say a create an horizontal split and then a vertical split, the navigation gets a bit weird. Being on the bottom right pane and pressing sthift+ctrl+left will move the focus to the toppane instead of the bottom left one. This is because the navigation is currently based on the position of the panes and not on a graph of the panes. This can be fixed by implementing a graph of the panes and navigating based on that graph instead of the position. This will also allow for more complex layouts in the future.
 
 ## Core features
 
 - Add support for workspaces -> tabs -> splits
+  - ~Multi-tab support: Ctrl+T new tab, Ctrl+W close tab, Ctrl+Tab / Ctrl+Shift+Tab switch tabs~
+  - ~close_pane / closeTab: last-tab fix, pending_quit flag, sapp_request_quit()~
+  - ~newTab segfault fixed: pre-init render_state in bootstrap() before callback registration~
   - Tab bar UI (no rendering exists yet)
   - Workspace switching UI + API
-  - Pane navigation keybinds: focus_pane_left / right / up / down
-- Add cursor support
 - Add text selection support
 - Add copy/paste support
 

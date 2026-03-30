@@ -10,6 +10,7 @@ const Mux = @import("mux.zig").Mux;
 const Workspace = @import("mux.zig").Workspace;
 const Tab = @import("mux.zig").Tab;
 const SplitDirection = @import("mux.zig").SplitDirection;
+const FocusDirection = @import("mux.zig").FocusDirection;
 const LayoutLeaf = @import("mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("mux.zig").MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
@@ -38,6 +39,8 @@ pub const App = struct {
     /// Set when a split has just been performed; causes tick() to re-layout
     /// all panes on the next frame (safe from the frame callback thread).
     pending_layout_resize: bool = false,
+    /// Set when all panes/tabs have closed; the runtime should call sapp_request_quit().
+    pending_quit: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -112,8 +115,11 @@ pub const App = struct {
                 .split_pane = luaSplitPaneCallback,
                 .new_tab = luaNewTabCallback,
                 .close_tab = luaCloseTabCallback,
+                .close_pane = luaClosePaneCallback,
                 .next_tab = luaNextTabCallback,
                 .prev_tab = luaPrevTabCallback,
+                .focus_pane = luaFocusPaneCallback,
+                .resize_pane = luaResizePaneCallback,
             });
         }
 
@@ -317,8 +323,40 @@ pub const App = struct {
     pub fn closeTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        mux.closeTab(runtime);
+        const should_quit = mux.closeTab(runtime);
+        if (should_quit) {
+            std.log.info("app: last tab closed, quitting", .{});
+            self.pending_quit = true;
+            return;
+        }
+        // Re-register callbacks for the new active pane after tab switch.
+        if (mux.activePane()) |active| {
+            runtime.setWritePtyCallback(active.terminal, writePtyCallback);
+            runtime.setSizeCallback(active.terminal, sizeCallback);
+            runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
+            runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+        }
         self.pending_layout_resize = true;
+    }
+
+    pub fn closeActivePane(self: *App) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const should_quit = mux.closeActivePane(runtime);
+        if (should_quit) {
+            std.log.info("app: last pane closed via close_pane, quitting", .{});
+            self.pending_quit = true;
+            return;
+        }
+        // Re-register callbacks for the new active pane.
+        if (mux.activePane()) |active| {
+            runtime.setWritePtyCallback(active.terminal, writePtyCallback);
+            runtime.setSizeCallback(active.terminal, sizeCallback);
+            runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
+            runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+        }
+        self.pending_layout_resize = true;
+        std.log.info("app: active pane closed via close_pane", .{});
     }
 
     pub fn nextTab(self: *App) void {
@@ -331,10 +369,10 @@ pub const App = struct {
         self.pending_layout_resize = true;
     }
 
-    pub fn splitPane(self: *App, direction: SplitDirection) void {
+    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        mux.splitActivePane(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction) catch |err| {
+        mux.splitActivePane(runtime, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
@@ -348,7 +386,20 @@ pub const App = struct {
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.pending_layout_resize = true;
-        std.log.info("app: pane split direction={s}", .{@tagName(direction)});
+        std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
+    }
+
+    pub fn resizePane(self: *App, direction: SplitDirection, delta: f32) void {
+        if (self.mux) |*mux| {
+            mux.resizeActivePane(direction, delta);
+            self.pending_layout_resize = true;
+        }
+    }
+
+    pub fn focusPane(self: *App, direction: FocusDirection) void {
+        if (self.mux) |*mux| {
+            mux.focusPaneInDirection(direction, self.config.window_width, self.config.window_height);
+        }
     }
 
     pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
@@ -400,36 +451,74 @@ pub const App = struct {
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
+        var has_dead = false;
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
+            var pane_idx: usize = 0;
             while (panes.next()) |pane| {
                 try pane.pollPty(runtime);
+                if (!pane.render_state_ready) {
+                    pane_idx += 1;
+                    continue;
+                }
                 try runtime.updateRenderState(pane.render_state, pane.terminal);
-                pane.render_state_ready = true;
+                if (!pane.hasLiveChild()) has_dead = true;
+                pane_idx += 1;
+            }
+        }
+
+        if (has_dead) {
+            if (self.mux) |*mux| {
+                const should_quit = mux.closeDeadPanes(runtime);
+                if (should_quit) {
+                    std.log.info("app: last pane closed, quitting", .{});
+                    self.pending_quit = true;
+                    return;
+                }
+                // Re-register callbacks for the (possibly new) active pane so
+                // write/size/title events are routed correctly.
+                if (mux.activePane()) |active| {
+                    runtime.setWritePtyCallback(active.terminal, writePtyCallback);
+                    runtime.setSizeCallback(active.terminal, sizeCallback);
+                    runtime.setDeviceAttributesCallback(active.terminal, deviceAttributesCallback);
+                    runtime.setTitleChangedCallback(active.terminal, titleChangedCallback);
+                }
+                self.pending_layout_resize = true;
             }
         }
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool) void {
-        if (self.mux) |*mux| {
-            var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-            const leaves = mux.computeActiveLayout(pixel_width, pixel_height, &layout_buf);
+        const mux = if (self.mux) |*m| m else return;
+        const ws = mux.activeWorkspace() orelse return;
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+
+        std.log.info("resizeAllPanes tab_count={d} px={d}x{d}", .{ ws.tabs.items.len, pixel_width, pixel_height });
+
+        // Resize panes on every tab so that background tabs get
+        // render_state_ready = true even when they are not visible.
+        // Without this, tickPanes would call ghostty on uninitialised state
+        // the moment a new tab is created and the old tab's panes are iterated.
+        for (ws.tabs.items) |tab| {
+            const leaves = tab.computeLayout(pixel_width, pixel_height, &layout_buf);
             if (leaves.len > 0) {
-                // Resize each pane to its computed sub-rect.
                 for (leaves) |leaf| {
                     const cols: u16 = @max(1, @as(u16, @intCast(leaf.bounds.width / @max(1, self.cell_width_px))));
                     const rows: u16 = @max(1, @as(u16, @intCast(leaf.bounds.height / @max(1, self.cell_height_px))));
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
                     if (recreate_render_helpers) leaf.pane.recreateRenderHelpers(runtime);
                     leaf.pane.setMouseSize(runtime, leaf.bounds.width, leaf.bounds.height, self.cell_width_px, self.cell_height_px);
+                    leaf.pane.render_state_ready = true;
                 }
             } else {
-                // Fallback: no split tree yet, resize all panes to full window.
-                var panes = mux.paneIterator();
+                // Fallback: no split tree yet, resize all panes in this tab to
+                // the full window size.
+                var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
                     pane.resize(runtime, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px);
                     if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
                     pane.setMouseSize(runtime, pixel_width, pixel_height, self.cell_width_px, self.cell_height_px);
+                    pane.render_state_ready = true;
                 }
             }
         }
@@ -442,10 +531,10 @@ pub const App = struct {
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
-fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
-    app.splitPane(dir);
+    app.splitPane(dir, ratio);
 }
 
 fn prependLibraryPath(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -484,8 +573,17 @@ fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: [*]const u8, len: 
     pane.sendText(bytes[0..len]) catch {};
 }
 
-fn sizeCallback(_: ?*anyopaque, _: ?*anyopaque, out: *ghostty.SizeReportSize) callconv(.c) bool {
+fn sizeCallback(term: ?*anyopaque, _: ?*anyopaque, out: *ghostty.SizeReportSize) callconv(.c) bool {
     const app = size_bridge orelse return false;
+    // Report the actual per-pane terminal dimensions rather than the global
+    // config values, so each split pane reports its own correct size.
+    if (getPaneForTerminal(app, term)) |pane| {
+        out.rows = if (pane.rows > 0) pane.rows else app.config.rows;
+        out.columns = if (pane.cols > 0) pane.cols else app.config.cols;
+        out.cell_width = app.cell_width_px;
+        out.cell_height = app.cell_height_px;
+        return true;
+    }
     out.rows = app.config.rows;
     out.columns = app.config.cols;
     out.cell_width = app.cell_width_px;
@@ -525,6 +623,11 @@ fn luaCloseTabCallback(app_ptr: *anyopaque) void {
     app.closeTab();
 }
 
+fn luaClosePaneCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.closeActivePane();
+}
+
 fn luaNextTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     app.nextTab();
@@ -533,4 +636,16 @@ fn luaNextTabCallback(app_ptr: *anyopaque) void {
 fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     app.prevTab();
+}
+
+fn luaFocusPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
+    app.focusPane(dir);
+}
+
+fn luaResizePaneCallback(app_ptr: *anyopaque, direction: []const u8, delta: f32) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
+    app.resizePane(dir, delta);
 }

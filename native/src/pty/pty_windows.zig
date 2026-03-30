@@ -199,18 +199,37 @@ pub const WindowsPty = struct {
 
     pub fn isAlive(self: *WindowsPty) bool {
         if (self.closed) return false;
-        // Use the pipe state as the liveness signal rather than the process handle.
-        // wsl.exe (and similar launcher processes) exit immediately after handing
-        // off to the actual shell, but the ConPTY output pipe stays open as long
-        // as the shell is running.  The reader thread sets reader_state.eof = true
-        // when ReadFile fails (broken pipe / handle closed).
-        if (self.reader_state.eof) {
-            if (self.alive) {
-                self.alive = false;
-                std.log.info("conpty pipe closed (shell exited)", .{});
-            }
+        // Fast path: already known dead.
+        if (!self.alive) return false;
+
+        // Check pipe EOF first — the reader thread sets this when ReadFile fails.
+        self.reader_state.mutex.lock();
+        const eof = self.reader_state.eof;
+        self.reader_state.mutex.unlock();
+        if (eof) {
+            self.alive = false;
+            std.log.info("conpty pipe closed (shell exited)", .{});
             return false;
         }
+
+        // Fallback: check the process handle directly.  wsl.exe hands off to the
+        // real shell inside WSL, so the *launcher* exits quickly — but the ConPTY
+        // output pipe stays open because the real shell still has it.  However
+        // when the user types `exit` in the WSL shell, the real shell exits, which
+        // tears down the ConPTY and eventually closes the output pipe.  In practice
+        // ReadFile then returns error 109 (broken pipe) and the reader thread sets
+        // eof, so the pipe check above catches it.
+        //
+        // As a belt-and-suspenders fallback, we also poll the process handle.
+        // WAIT_OBJECT_0 (0) means the process has exited.
+        if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
+            if (windows.kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
+                self.alive = false;
+                std.log.info("conpty process exited (WaitForSingleObject)", .{});
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -258,7 +277,14 @@ pub const WindowsPty = struct {
 
     pub fn close(self: *WindowsPty) void {
         if (self.closed) return;
+        // Terminate the child process if still alive.
         if (self.isAlive()) _ = windows.kernel32.TerminateProcess(self.process, 0);
+        // ClosePseudoConsole MUST come before closing read_pipe and before
+        // thread.join().  It tears down the ConPTY, which causes the in-flight
+        // ReadFile on read_pipe (in the reader thread) to return immediately with
+        // an error — unblocking the thread.  Closing read_pipe first leaves
+        // ReadFile in an undefined state and can hang the join forever.
+        ClosePseudoConsole(self.hpc);
         closeHandleIfValid(self.input_pipe_pty);
         closeHandleIfValid(self.output_pipe_pty);
         closeHandleIfValid(self.read_pipe);
@@ -266,7 +292,6 @@ pub const WindowsPty = struct {
         if (self.reader_thread) |thread| thread.join();
         closeHandleIfValid(self.process);
         closeHandleIfValid(self.thread);
-        ClosePseudoConsole(self.hpc);
         self.allocator.destroy(self.reader_state);
         self.closed = true;
         self.alive = false;

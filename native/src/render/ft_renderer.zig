@@ -281,13 +281,14 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h);
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true);
         c.sgl_draw();
     }
 
     /// Queue geometry for one pane into its viewport sub-rect.
     /// Does NOT call sgl_draw() — the caller must call sgl_draw() exactly once
     /// per frame after all queueInViewport() calls are done.
+    /// `is_focused` controls whether the cursor is drawn for this pane.
     pub fn queueInViewport(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
@@ -300,6 +301,7 @@ pub const FtRenderer = struct {
         pane_h: f32,
         fb_w: f32,
         fb_h: f32,
+        is_focused: bool,
     ) void {
         _ = fb_w;
         _ = fb_h;
@@ -435,11 +437,20 @@ pub const FtRenderer = struct {
         }
 
         // ── Cursor overlay ─────────────────────────────────────────────────
-        if (runtime.cursorVisible(render_state)) {
+        if (is_focused and runtime.cursorVisible(render_state)) {
             if (runtime.cursorPos(render_state)) |pos| {
                 const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
                 const cy = self.padding_y + @as(f32, @floatFromInt(pos.y)) * self.cell_h;
-                drawCursor(cx, cy, self.cell_w, self.cell_h, colors.cursor, runtime.cursorVisualStyle(render_state));
+                // Reset to default pipeline so cursor quads are not rendered
+                // through the atlas texture-blend pipeline (which would make
+                // them invisible by multiplying vertex colour by the texture).
+                c.sgl_load_default_pipeline();
+                // Fall back to white when no explicit cursor color is configured.
+                const cursor_color: ghostty.ColorRgb = if (colors.cursor_has_value)
+                    colors.cursor
+                else
+                    .{ .r = 220, .g = 220, .b = 220 };
+                drawCursor(cx, cy, self.cell_w, self.cell_h, cursor_color, runtime.cursorVisualStyle(render_state));
             }
         }
 

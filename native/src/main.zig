@@ -25,6 +25,7 @@ fn fileLogFn(
         fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
         const written = fbs.getWritten();
         _ = f.writeAll(written) catch {};
+        f.sync() catch {};
     }
 }
 

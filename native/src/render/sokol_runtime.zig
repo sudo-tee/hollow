@@ -116,6 +116,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     app.tick() catch {};
 
+    if (app.pending_quit) {
+        c.sapp_request_quit();
+        return;
+    }
+
     const fb = framebufferSize();
     const width = fb.width;
     const height = fb.height;
@@ -126,10 +131,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var clear_b: f32 = 0.11;
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
-            if (runtime.renderStateColors(pane.render_state)) |colors| {
-                clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
-                clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
-                clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+            if (pane.render_state_ready) {
+                if (runtime.renderStateColors(pane.render_state)) |colors| {
+                    clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
+                    clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
+                    clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                }
             }
         }
     }
@@ -156,6 +163,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
+                    const is_focused = leaf.pane == app.activePane();
                     renderer.queueInViewport(
                         runtime,
                         leaf.pane.render_state,
@@ -167,6 +175,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         ph,
                         width,
                         height,
+                        is_focused,
                     );
                 }
             } else if (app.activePane()) |pane| {
@@ -181,60 +190,60 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     height,
                     width,
                     height,
+                    true,
                 );
             }
         }
     }
 
-    // Queue split-border lines (only when >1 pane).
+    // Draw split borders as filled 2px quads (only when >1 pane).
+    // We draw only seam edges (right/bottom of each pane that is not the
+    // framebuffer edge) to avoid overdrawing the active pane outline on top
+    // of terminal content from neighbouring panes.
     if (leaves.len > 1) {
-        // Reset to full-framebuffer viewport for border lines.
+        const fw: i32 = @intFromFloat(width);
+        const fh: i32 = @intFromFloat(height);
+        const border_px: f32 = 2.0;
+
+        // Reset viewport + scissor to the full framebuffer so rects are not
+        // clipped to the last pane's sub-rect (sgl_defaults() would leave the
+        // viewport at whatever queueInViewport set last).
         c.sgl_defaults();
-        c.sgl_viewport(0, 0, @as(c_int, @intFromFloat(width)), @as(c_int, @intFromFloat(height)), true);
+        c.sgl_viewport(0, 0, fw, fh, true);
+        c.sgl_scissor_rect(0, 0, fw, fh, true);
+        c.sgl_load_default_pipeline();
         c.sgl_matrix_mode_projection();
         c.sgl_load_identity();
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
-        c.sgl_begin_lines();
 
-        // Draw inactive borders first
+        const active = app.activePane();
         for (leaves) |leaf| {
-            if (leaf.pane == app.activePane()) continue;
-            c.sgl_c4b(80, 80, 80, 255);
+            const is_active = leaf.pane == active;
             const x0: f32 = @floatFromInt(leaf.bounds.x);
             const y0: f32 = @floatFromInt(leaf.bounds.y);
-            const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
-            const y1: f32 = y0 + @as(f32, @floatFromInt(leaf.bounds.height));
-            // Right edge
-            c.sgl_v2f(x1, y0);
-            c.sgl_v2f(x1, y1);
-            // Bottom edge
-            c.sgl_v2f(x0, y1);
-            c.sgl_v2f(x1, y1);
+            const lw: f32 = @floatFromInt(leaf.bounds.width);
+            const lh: f32 = @floatFromInt(leaf.bounds.height);
+            const x1 = x0 + lw;
+            const y1 = y0 + lh;
+
+            // Colour: active pane gets a light-blue accent; others get a
+            // subtle grey.
+            const br: u8 = if (is_active) 120 else 60;
+            const bg: u8 = if (is_active) 150 else 65;
+            const bb: u8 = if (is_active) 220 else 75;
+            const ba: u8 = 255;
+
+            // Right seam — only draw if the right edge does not touch the
+            // framebuffer boundary (i.e. there is a neighbour to the right).
+            if (@as(i32, @intFromFloat(x1)) < fw) {
+                // rect drawn at x1 - border_px/2 so it straddles the seam
+                drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
+            }
+            // Bottom seam — same logic vertically.
+            if (@as(i32, @intFromFloat(y1)) < fh) {
+                drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+            }
         }
-
-        // Draw active borders on top
-        for (leaves) |leaf| {
-            if (leaf.pane != app.activePane()) continue;
-            c.sgl_c4b(180, 180, 255, 255); // Highlight color (light blue)
-            const x0: f32 = @floatFromInt(leaf.bounds.x);
-            const y0: f32 = @floatFromInt(leaf.bounds.y);
-            const x1: f32 = x0 + @as(f32, @floatFromInt(leaf.bounds.width));
-            const y1: f32 = y0 + @as(f32, @floatFromInt(leaf.bounds.height));
-
-            // Full outline for active pane
-            c.sgl_v2f(x0, y0);
-            c.sgl_v2f(x1, y0);
-
-            c.sgl_v2f(x1, y0);
-            c.sgl_v2f(x1, y1);
-
-            c.sgl_v2f(x1, y1);
-            c.sgl_v2f(x0, y1);
-
-            c.sgl_v2f(x0, y1);
-            c.sgl_v2f(x0, y0);
-        }
-        c.sgl_end();
     }
 
     // Flush all queued geometry — exactly once per frame.
@@ -489,4 +498,20 @@ fn encodeCodepoint(codepoint: u32, buf: *[5]u8) ?[]const u8 {
 fn appFromUserData(user_data: ?*anyopaque) ?*App {
     const ptr = user_data orelse return null;
     return @ptrCast(@alignCast(ptr));
+}
+
+/// Draw a filled RGBA rectangle using the current sokol_gl projection.
+/// Assumes the default pipeline (no texture) is active.
+fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+    const af = @as(f32, @floatFromInt(a)) / 255.0;
+    c.sgl_begin_quads();
+    c.sgl_c4f(rf, gf, bf, af);
+    c.sgl_v2f(x, y);
+    c.sgl_v2f(x + w, y);
+    c.sgl_v2f(x + w, y + h);
+    c.sgl_v2f(x, y + h);
+    c.sgl_end();
 }

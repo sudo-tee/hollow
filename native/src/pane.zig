@@ -17,6 +17,9 @@ pub const Pane = struct {
     mouse_encoder: ?*anyopaque = null,
     mouse_event: ?*anyopaque = null,
     title: []u8 = &.{},
+    /// Actual terminal dimensions in characters (updated on every resize).
+    cols: u16 = 0,
+    rows: u16 = 0,
     /// Set to true after the first updateRenderState call so the renderer
     /// can skip rendering panes whose ghostty state is not yet initialized.
     render_state_ready: bool = false,
@@ -91,7 +94,20 @@ pub const Pane = struct {
         runtime.syncKeyEncoder(self.key_encoder, self.terminal);
         runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
         self.setMouseSize(runtime, window_width, window_height, cell_width_px, cell_height_px);
-        self.resize(runtime, cfg.cols, cfg.rows, cell_width_px, cell_height_px);
+        // Only update the ghostty terminal dimensions here — the PTY was already
+        // created at cfg.cols × cfg.rows by spawn().  Calling pty.resize() a second
+        // time immediately causes ConPTY to fire a SIGWINCH, which makes WSL emit a
+        // resize-response sequence (CSI 8 t) back into the pipe.  On a freshly
+        // created terminal that sequence arriving before the first updateRenderState
+        // can cause ghostty_terminal_vt_write to crash intermittently.
+        runtime.resizeTerminal(self.terminal, cfg.cols, cfg.rows, cell_width_px, cell_height_px);
+        // Initialise render_state immediately so that any ghostty call that
+        // reads render_state (e.g. terminal_resize side-effects, write_pty
+        // callback flush, vt_write) does not dereference a null pointer.
+        // Without this, the second+ terminal created after the first
+        // updateRenderState triggers lazy-init in ghostty that expects a
+        // non-null render_state.
+        runtime.updateRenderState(self.render_state, self.terminal) catch {};
         self.refreshTitle(runtime, cfg.windowTitle());
     }
 
@@ -109,12 +125,24 @@ pub const Pane = struct {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
+                    // Don't feed bytes to ghostty until the pane has been through
+                    // at least one resize (render_state_ready). Before that, ghostty
+                    // internal state is uninitialised and vt_write can null-deref.
+                    // We drain the ring buffer (so it doesn't overflow) but discard.
+                    if (!self.render_state_ready) continue;
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
-                    if (pty_bytes.len > 0) runtime.terminalWrite(self.terminal, pty_bytes);
+                    if (pty_bytes.len > 0) {
+                        runtime.terminalWrite(self.terminal, pty_bytes);
+                    }
                 }
             }
-            runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-            runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+            // Only sync encoders once the pane is fully initialised — these
+            // read mode flags from the terminal object and can crash on a
+            // terminal that has never been through updateRenderState.
+            if (self.render_state_ready) {
+                runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+                runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+            }
         }
     }
 
@@ -123,6 +151,8 @@ pub const Pane = struct {
     }
 
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) void {
+        self.cols = cols;
+        self.rows = rows;
         runtime.resizeTerminal(self.terminal, cols, rows, cell_width_px, cell_height_px);
         if (self.pty) |*pty| pty.resize(cols, rows);
     }

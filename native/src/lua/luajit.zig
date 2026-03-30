@@ -51,11 +51,14 @@ const Api = struct {
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32) void,
     new_tab: *const fn (app: *anyopaque) void,
     close_tab: *const fn (app: *anyopaque) void,
+    close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
+    focus_pane: *const fn (app: *anyopaque, direction: []const u8) void,
+    resize_pane: *const fn (app: *anyopaque, direction: []const u8, delta: f32) void,
 };
 
 const BridgeContext = struct {
@@ -271,12 +274,24 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "close_tab");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_close_pane, 1);
+        api.set_field(self.state, -2, "close_pane");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_next_tab, 1);
         api.set_field(self.state, -2, "next_tab");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_prev_tab, 1);
         api.set_field(self.state, -2, "prev_tab");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_focus_pane, 1);
+        api.set_field(self.state, -2, "focus_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_resize_pane, 1);
+        api.set_field(self.state, -2, "resize_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_key, 1);
@@ -469,6 +484,12 @@ fn l_close_tab(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_close_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.close_pane(cbs.app);
+    return 0;
+}
+
 fn l_next_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.next_tab(cbs.app);
@@ -497,12 +518,63 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         null;
 
     const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
-    cbs.split_pane(cbs.app, direction);
+
+    // Optional second argument: ratio in (0, 1). Defaults to 0.5.
+    const ratio: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(f32, @floatCast(api.to_number(state, 2)))
+    else
+        0.5;
+
+    cbs.split_pane(cbs.app, direction, ratio);
     return 0;
 }
 
-/// hollow.on_key(fn(key, mods) -> bool)
-/// Registers a Lua function that is called for every key event before the
+/// hollow.focus_pane(direction)
+/// direction: "left", "right", "up", or "down"
+fn l_focus_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    var dir_len: usize = 0;
+    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &dir_len)
+    else
+        null;
+
+    const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "right";
+    cbs.focus_pane(cbs.app, direction);
+    return 0;
+}
+
+/// hollow.resize_pane(direction, delta)
+/// direction: "vertical" or "horizontal" (which split axis to adjust)
+/// delta: fraction to move divider, e.g. 0.05 grows the first child by 5%
+fn l_resize_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    var dir_len: usize = 0;
+    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &dir_len)
+    else
+        null;
+
+    const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
+
+    const delta: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(f32, @floatCast(api.to_number(state, 2)))
+    else
+        0.05;
+
+    cbs.resize_pane(cbs.app, direction, delta);
+    return 0;
+}
+
+/// hollow.on_key(fn(key, mods) -> bool)/// Registers a Lua function that is called for every key event before the
 /// terminal sees it. Return true to consume the key.
 fn l_on_key(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);

@@ -35,8 +35,19 @@ hollow.action = {
     split_horizontal = function() hollow.split_pane("horizontal") end,
     new_tab = function() hollow.new_tab() end,
     close_tab = function() hollow.close_tab() end,
+    close_pane = function() hollow.close_pane() end,
     next_tab = function() hollow.next_tab() end,
     prev_tab = function() hollow.prev_tab() end,
+    focus_pane_left  = function() hollow.focus_pane("left") end,
+    focus_pane_right = function() hollow.focus_pane("right") end,
+    focus_pane_up    = function() hollow.focus_pane("up") end,
+    focus_pane_down  = function() hollow.focus_pane("down") end,
+    -- Resize: move the divider of the enclosing vertical split
+    resize_pane_left  = function() hollow.resize_pane("vertical", -0.05) end,
+    resize_pane_right = function() hollow.resize_pane("vertical",  0.05) end,
+    -- Resize: move the divider of the enclosing horizontal split
+    resize_pane_up    = function() hollow.resize_pane("horizontal", -0.05) end,
+    resize_pane_down  = function() hollow.resize_pane("horizontal",  0.05) end,
 }
 
 hollow.on_key(function(key, mods)
@@ -57,5 +68,14 @@ hollow.keymap.set("ctrl+backslash", "split_vertical")
 hollow.keymap.set("ctrl+shift+backslash", "split_horizontal")
 hollow.keymap.set("ctrl+t", "new_tab")
 hollow.keymap.set("ctrl+w", "close_tab")
+hollow.keymap.set("ctrl+shift+w", "close_pane")
 hollow.keymap.set("ctrl+tab", "next_tab")
 hollow.keymap.set("ctrl+shift+tab", "prev_tab")
+hollow.keymap.set("ctrl+shift+arrow_left",  "focus_pane_left")
+hollow.keymap.set("ctrl+shift+arrow_right", "focus_pane_right")
+hollow.keymap.set("ctrl+shift+arrow_up",    "focus_pane_up")
+hollow.keymap.set("ctrl+shift+arrow_down",  "focus_pane_down")
+hollow.keymap.set("ctrl+alt+arrow_left",  "resize_pane_left")
+hollow.keymap.set("ctrl+alt+arrow_right", "resize_pane_right")
+hollow.keymap.set("ctrl+alt+arrow_up",    "resize_pane_up")
+hollow.keymap.set("ctrl+alt+arrow_down",  "resize_pane_down")

@@ -3,6 +3,13 @@ const Config = @import("config.zig").Config;
 const Pane = @import("pane.zig").Pane;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 
+pub const FocusDirection = enum {
+    left,
+    right,
+    up,
+    down,
+};
+
 pub const SplitDirection = enum {
     horizontal,
     vertical,
@@ -236,6 +243,48 @@ pub const Tab = struct {
         return self.root_split;
     }
 
+    /// Remove `pane` from this tab's split tree and panes list.
+    /// The sibling of the removed leaf replaces the parent split node (collapsing
+    /// the split). Focus moves to the sibling; if no sibling exists the root is
+    /// cleared. Returns true if the tab is now empty (caller should close it).
+    pub fn closePane(self: *Tab, runtime: *GhosttyRuntime, pane: *Pane) bool {
+        // Collapse the split tree.
+        if (self.root_split) |root| {
+            if (root.kind == .pane and root.pane == pane) {
+                // Last pane — clear root.
+                root.deinit(self.allocator);
+                self.allocator.destroy(root);
+                self.root_split = null;
+            } else {
+                // Find and replace the parent split with the sibling.
+                const sibling = removePaneFromTree(self.allocator, root, pane);
+                // `sibling` is the new focus candidate (may be null if not found).
+                if (sibling) |s| {
+                    if (self.active_pane == pane) {
+                        self.active_pane = s;
+                    }
+                }
+            }
+        }
+
+        // Remove from panes list and free.
+        for (self.panes.items, 0..) |p, i| {
+            if (p == pane) {
+                _ = self.panes.orderedRemove(i);
+                break;
+            }
+        }
+        pane.deinit(runtime);
+        self.allocator.destroy(pane);
+
+        // If active_pane pointed at the dead pane, pick any survivor.
+        if (self.active_pane == pane or self.active_pane == null) {
+            self.active_pane = if (self.panes.items.len > 0) self.panes.items[self.panes.items.len - 1] else null;
+        }
+
+        return self.panes.items.len == 0;
+    }
+
     /// Compute pixel bounds for every leaf pane in this tab's split tree.
     /// Returns a slice into `out` (length = number of panes).
     pub fn computeLayout(self: *Tab, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
@@ -321,7 +370,6 @@ pub const Workspace = struct {
     }
 
     pub fn closeTab(self: *Workspace, runtime: *GhosttyRuntime) void {
-        if (self.tabs.items.len <= 1) return;
         const active = self.active_tab orelse return;
         var idx: usize = 0;
         for (self.tabs.items, 0..) |t, i| {
@@ -330,7 +378,11 @@ pub const Workspace = struct {
         _ = self.tabs.orderedRemove(idx);
         active.deinit(runtime);
         self.allocator.destroy(active);
-        self.active_tab = self.tabs.items[if (idx >= self.tabs.items.len) self.tabs.items.len - 1 else idx];
+        if (self.tabs.items.len == 0) {
+            self.active_tab = null;
+        } else {
+            self.active_tab = self.tabs.items[if (idx >= self.tabs.items.len) self.tabs.items.len - 1 else idx];
+        }
     }
 
     pub fn nextTab(self: *Workspace) void {
@@ -514,8 +566,26 @@ pub const Mux = struct {
         try tab.appendPane(pane);
     }
 
-    pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) void {
-        if (self.activeWorkspace()) |ws| ws.closeTab(runtime);
+    /// Close the active tab. Returns true if no tabs remain (app should quit).
+    pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) bool {
+        const ws = self.activeWorkspace() orelse return true;
+        ws.closeTab(runtime);
+        return ws.tabs.items.len == 0;
+    }
+
+    /// Close the currently active pane. Kills the associated process.
+    /// Returns true if the entire app should quit (no panes remain anywhere).
+    pub fn closeActivePane(self: *Mux, runtime: *GhosttyRuntime) bool {
+        const ws = self.activeWorkspace() orelse return true;
+        const tab = ws.activeTab() orelse return true;
+        const pane = tab.activePane() orelse return true;
+
+        const tab_empty = tab.closePane(runtime, pane);
+        if (tab_empty) {
+            ws.closeTab(runtime);
+            if (ws.tabs.items.len == 0) return true;
+        }
+        return false;
     }
 
     pub fn nextTab(self: *Mux) void {
@@ -526,20 +596,136 @@ pub const Mux = struct {
         if (self.activeWorkspace()) |ws| ws.prevTab();
     }
 
-    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection) !void {
+    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const new_pane = try self.createPane(runtime, cfg, cell_width_px, cell_height_px, window_width, window_height);
         errdefer {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
-        try tab.splitActivePane(new_pane, direction, 0.5);
+        try tab.splitActivePane(new_pane, direction, ratio);
+    }
+
+    /// Resize the active pane by adjusting the ratio of the nearest enclosing
+    /// split node along the given axis. `delta` is a fraction in (-1, 1) —
+    /// positive means "grow the first child" (i.e. push the divider right/down).
+    pub fn resizeActivePane(self: *Mux, direction: SplitDirection, delta: f32) void {
+        const tab = self.activeTab() orelse return;
+        const current = tab.activePane() orelse return;
+        const root = tab.root_split orelse return;
+        // Find the innermost split node along `direction` that contains `current`.
+        if (findSplitContaining(root, current, direction)) |node| {
+            node.ratio = std.math.clamp(node.ratio + delta, 0.1, 0.9);
+        }
+    }
+
+    /// Focus the nearest pane in the given direction from the currently active pane.
+    /// Uses the spatial layout: finds the pane whose center is closest to the active
+    /// pane's center along the requested axis while being strictly on the correct side.
+    pub fn focusPaneInDirection(self: *Mux, direction: FocusDirection, window_width: u32, window_height: u32) void {
+        const tab = self.activeTab() orelse return;
+        const current = tab.activePane() orelse return;
+
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = tab.computeLayout(window_width, window_height, &layout_buf);
+        if (leaves.len < 2) return;
+
+        // Find the bounds of the current pane.
+        var cur_bounds: ?PaneBounds = null;
+        for (leaves) |leaf| {
+            if (leaf.pane == current) {
+                cur_bounds = leaf.bounds;
+                break;
+            }
+        }
+        const cb = cur_bounds orelse return;
+
+        // Center of the current pane.
+        const cur_cx = @as(f32, @floatFromInt(cb.x)) + @as(f32, @floatFromInt(cb.width)) * 0.5;
+        const cur_cy = @as(f32, @floatFromInt(cb.y)) + @as(f32, @floatFromInt(cb.height)) * 0.5;
+
+        var best_pane: ?*Pane = null;
+        var best_dist: f32 = std.math.floatMax(f32);
+
+        for (leaves) |leaf| {
+            if (leaf.pane == current) continue;
+            const lx = @as(f32, @floatFromInt(leaf.bounds.x));
+            const ly = @as(f32, @floatFromInt(leaf.bounds.y));
+            const lw = @as(f32, @floatFromInt(leaf.bounds.width));
+            const lh = @as(f32, @floatFromInt(leaf.bounds.height));
+            const lcx = lx + lw * 0.5;
+            const lcy = ly + lh * 0.5;
+
+            // The candidate must be strictly on the correct side.
+            const qualifies = switch (direction) {
+                .left => lcx < cur_cx - 1.0,
+                .right => lcx > cur_cx + 1.0,
+                .up => lcy < cur_cy - 1.0,
+                .down => lcy > cur_cy + 1.0,
+            };
+            if (!qualifies) continue;
+
+            // Primary distance: movement axis. Secondary: perpendicular (tiebreak).
+            const primary = switch (direction) {
+                .left => cur_cx - lcx,
+                .right => lcx - cur_cx,
+                .up => cur_cy - lcy,
+                .down => lcy - cur_cy,
+            };
+            const secondary = switch (direction) {
+                .left, .right => @abs(lcy - cur_cy),
+                .up, .down => @abs(lcx - cur_cx),
+            };
+            // Combined metric: primary distance weighted more than perpendicular.
+            const dist = primary + secondary * 0.5;
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_pane = leaf.pane;
+            }
+        }
+
+        if (best_pane) |p| tab.active_pane = p;
     }
 
     fn allocId(self: *Mux) usize {
         const id = self.next_id;
         self.next_id += 1;
         return id;
+    }
+
+    /// Close all panes in the active tab whose PTY has exited.
+    /// Returns true if the entire app should quit (no tabs remain anywhere).
+    pub fn closeDeadPanes(self: *Mux, runtime: *GhosttyRuntime) bool {
+        const ws = self.activeWorkspace() orelse return true;
+
+        // Collect dead panes from active tab (we can't remove while iterating).
+        var dead_buf: [64]*Pane = undefined;
+        var dead_count: usize = 0;
+
+        const tab = ws.activeTab() orelse return false;
+        for (tab.panes.items) |pane| {
+            if (!pane.hasLiveChild() and dead_count < dead_buf.len) {
+                dead_buf[dead_count] = pane;
+                dead_count += 1;
+            }
+        }
+
+        if (dead_count == 0) return false;
+
+        for (dead_buf[0..dead_count]) |pane| {
+            const tab_empty = tab.closePane(runtime, pane);
+            if (tab_empty) {
+                // Close the tab itself.
+                ws.closeTab(runtime);
+                // If workspace has no more tabs, and this is the only workspace,
+                // signal quit.
+                if (ws.tabs.items.len == 0) return true;
+                break; // tab is gone, stop iterating dead_buf for this tab
+            }
+        }
+
+        // Re-register callbacks for the new active pane (focus may have moved).
+        return false;
     }
 };
 
@@ -559,4 +745,65 @@ fn findPaneLeafNode(node: *SplitNode, pane: *Pane) ?*SplitNode {
             return null;
         },
     }
+}
+
+/// Returns the innermost split node with the given direction that contains `pane`
+/// somewhere in its subtree.
+fn findSplitContaining(node: *SplitNode, pane: *Pane, direction: SplitDirection) ?*SplitNode {
+    if (node.kind != .split) return null;
+    // Only consider this node if it has `pane` in its subtree.
+    if (findPaneLeafNode(node, pane) == null) return null;
+
+    // Try children first (innermost wins).
+    if (node.first) |first| {
+        if (findSplitContaining(first, pane, direction)) |found| return found;
+    }
+    if (node.second) |second| {
+        if (findSplitContaining(second, pane, direction)) |found| return found;
+    }
+
+    // This node contains `pane` and no child does — use it if direction matches.
+    if (node.direction == direction) return node;
+    return null;
+}
+
+/// Walk the split tree rooted at `node` looking for the split that directly
+/// contains a leaf for `pane`. When found, replace that split node in-place
+/// with the sibling subtree (collapsing the split) and free the dead leaf
+/// and the split node shell.
+///
+/// Returns the *Pane pointer from the sibling leaf if the sibling is a plain
+/// pane leaf, otherwise null (the caller falls back to pane-list iteration).
+fn removePaneFromTree(allocator: std.mem.Allocator, node: *SplitNode, pane: *Pane) ?*Pane {
+    if (node.kind != .split) return null;
+
+    const first = node.first orelse return null;
+    const second = node.second orelse return null;
+
+    // Check if first child is the target leaf.
+    if (first.kind == .pane and first.pane == pane) {
+        // Replace *node in-place with the contents of `second`, then free
+        // the now-detached first leaf and the old second node shell.
+        const sibling_pane: ?*Pane = if (second.kind == .pane) second.pane else null;
+        allocator.destroy(first); // dead leaf (pane itself freed by caller)
+        const second_copy = second.*;
+        allocator.destroy(second); // free the shell; its children live on via copy
+        node.* = second_copy;
+        return sibling_pane;
+    }
+
+    // Check if second child is the target leaf.
+    if (second.kind == .pane and second.pane == pane) {
+        const sibling_pane: ?*Pane = if (first.kind == .pane) first.pane else null;
+        allocator.destroy(second);
+        const first_copy = first.*;
+        allocator.destroy(first);
+        node.* = first_copy;
+        return sibling_pane;
+    }
+
+    // Recurse into children.
+    if (removePaneFromTree(allocator, first, pane)) |p| return p;
+    if (removePaneFromTree(allocator, second, pane)) |p| return p;
+    return null;
 }
