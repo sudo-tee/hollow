@@ -136,16 +136,28 @@ pub const App = struct {
                 .close_pane = luaClosePaneCallback,
                 .next_tab = luaNextTabCallback,
                 .prev_tab = luaPrevTabCallback,
+                .new_workspace = luaNewWorkspaceCallback,
+                .next_workspace = luaNextWorkspaceCallback,
+                .prev_workspace = luaPrevWorkspaceCallback,
+                .switch_workspace = luaSwitchWorkspaceCallback,
                 .focus_pane = luaFocusPaneCallback,
                 .resize_pane = luaResizePaneCallback,
                 .switch_tab = luaSwitchTabCallback,
+                .set_workspace_name = luaSetWorkspaceNameCallback,
                 .set_tab_title = luaSetTabTitleCallback,
                 .get_tab_count = luaGetTabCountCallback,
                 .get_active_tab_index = luaGetActiveTabIndexCallback,
+                .get_workspace_count = luaGetWorkspaceCountCallback,
+                .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
+                .get_workspace_name = luaGetWorkspaceNameCallback,
             });
         }
 
         try self.tick();
+    }
+
+    pub fn fireGuiReady(self: *App) void {
+        if (self.lua) |*lua| lua.fireGuiReady();
     }
 
     fn tryInitLua(self: *App) void {
@@ -388,6 +400,58 @@ pub const App = struct {
         self.pending_layout_resize = true;
     }
 
+    pub fn newWorkspace(self: *App) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const cbs = terminalCallbacks();
+        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
+            std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.pending_layout_resize = true;
+        std.log.info("app: created new workspace", .{});
+    }
+
+    pub fn nextWorkspace(self: *App) void {
+        if (self.mux) |*mux| {
+            mux.nextWorkspace();
+            if (self.ghostty) |*runtime| {
+                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
+            }
+            self.pending_layout_resize = true;
+        }
+    }
+
+    pub fn prevWorkspace(self: *App) void {
+        if (self.mux) |*mux| {
+            mux.prevWorkspace();
+            if (self.ghostty) |*runtime| {
+                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
+            }
+            self.pending_layout_resize = true;
+        }
+    }
+
+    pub fn workspaceCount(self: *App) usize {
+        if (self.mux) |*mux| return mux.workspaceCount();
+        return 0;
+    }
+
+    pub fn activeWorkspaceIndex(self: *App) usize {
+        if (self.mux) |*mux| return mux.activeWorkspaceIndex();
+        return 0;
+    }
+
+    pub fn switchWorkspace(self: *App, index: usize) void {
+        if (self.mux) |*mux| {
+            mux.switchWorkspace(index);
+            if (self.ghostty) |*runtime| {
+                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
+            }
+            self.pending_layout_resize = true;
+        }
+    }
+
     pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
@@ -452,6 +516,10 @@ pub const App = struct {
         return self.config.top_bar_draw_tabs and self.tabCount() > 0;
     }
 
+    pub fn shouldDrawWorkspaceSwitcher(self: *App) bool {
+        return self.workspaceCount() > 0;
+    }
+
     pub fn shouldDrawTopBarStatus(self: *App) bool {
         return self.config.top_bar_draw_status;
     }
@@ -481,13 +549,60 @@ pub const App = struct {
     pub fn topBarTitle(self: *App, index: usize, hover_close: bool, out_buf: []u8) []const u8 {
         const fallback = self.tabTitle(index);
         if (self.lua) |*lua| {
-            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf);
+            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf).text;
         }
         return fallback;
     }
 
+    pub fn topBarTitleSegment(self: *App, index: usize, hover_close: bool, out_buf: []u8) bar.Segment {
+        const fallback = self.tabTitle(index);
+        if (self.lua) |*lua| {
+            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf);
+        }
+        return .{ .text = fallback };
+    }
+
+    pub fn workspaceTitle(self: *App, index: usize, out_buf: []u8) []const u8 {
+        const fallback = if (self.mux) |*mux| blk: {
+            if (index < mux.workspaces.items.len) break :blk mux.workspaces.items[index].title(out_buf);
+            break :blk std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch return "ws";
+        } else std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch return "ws";
+        if (self.lua) |*lua| {
+            return lua.resolveWorkspaceTitle(index, index == self.activeWorkspaceIndex(), self.activeWorkspaceIndex(), self.workspaceCount(), fallback, out_buf).text;
+        }
+        return fallback;
+    }
+
+    pub fn workspaceTitleSegment(self: *App, index: usize, out_buf: []u8) bar.Segment {
+        const fallback = self.workspaceName(index, out_buf);
+        if (self.lua) |*lua| {
+            return lua.resolveWorkspaceTitle(index, index == self.activeWorkspaceIndex(), self.activeWorkspaceIndex(), self.workspaceCount(), fallback, out_buf);
+        }
+        const default_text = std.fmt.bufPrint(out_buf, "{s} {d}/{d}", .{ fallback, self.activeWorkspaceIndex() + 1, self.workspaceCount() }) catch fallback;
+        return .{ .text = default_text };
+    }
+
+    pub fn setWorkspaceName(self: *App, name: []const u8) void {
+        const ws = self.activeWorkspace() orelse return;
+        ws.setName(name) catch |err| {
+            std.log.err("app: setWorkspaceName failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn workspaceName(self: *App, index: usize, out_buf: []u8) []const u8 {
+        if (self.mux) |*mux| {
+            if (index < mux.workspaces.items.len) return mux.workspaces.items[index].title(out_buf);
+        }
+        return std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch "ws";
+    }
+
     pub fn hasCustomTopBarTabs(self: *App) bool {
         if (self.lua) |*lua| return lua.hasTopBarFormatter();
+        return false;
+    }
+
+    pub fn hasCustomWorkspaceTitle(self: *App) bool {
+        if (self.lua) |*lua| return lua.hasWorkspaceTitleFormatter();
         return false;
     }
 
@@ -833,6 +948,31 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     app.prevTab();
 }
 
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.newWorkspace();
+}
+
+fn luaNextWorkspaceCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.nextWorkspace();
+}
+
+fn luaPrevWorkspaceCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.prevWorkspace();
+}
+
+fn luaSwitchWorkspaceCallback(app_ptr: *anyopaque, index: usize) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.switchWorkspace(index);
+}
+
+fn luaSetWorkspaceNameCallback(app_ptr: *anyopaque, name: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.setWorkspaceName(name);
+}
+
 fn luaFocusPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
@@ -863,4 +1003,19 @@ fn luaGetTabCountCallback(app_ptr: *anyopaque) usize {
 fn luaGetActiveTabIndexCallback(app_ptr: *anyopaque) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.activeTabIndex();
+}
+
+fn luaGetWorkspaceCountCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.workspaceCount();
+}
+
+fn luaGetActiveWorkspaceIndexCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.activeWorkspaceIndex();
+}
+
+fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.workspaceName(index, out_buf);
 }

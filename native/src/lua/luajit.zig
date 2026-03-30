@@ -61,23 +61,35 @@ pub const AppCallbacks = struct {
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
+    new_workspace: *const fn (app: *anyopaque) void,
+    next_workspace: *const fn (app: *anyopaque) void,
+    prev_workspace: *const fn (app: *anyopaque) void,
+    switch_workspace: *const fn (app: *anyopaque, index: usize) void,
     focus_pane: *const fn (app: *anyopaque, direction: []const u8) void,
     resize_pane: *const fn (app: *anyopaque, direction: []const u8, delta: f32) void,
     switch_tab: *const fn (app: *anyopaque, index: usize) void,
+    set_workspace_name: *const fn (app: *anyopaque, title: []const u8) void,
     set_tab_title: *const fn (app: *anyopaque, title: []const u8) void,
     get_tab_count: *const fn (app: *anyopaque) usize,
     get_active_tab_index: *const fn (app: *anyopaque) usize,
+    get_workspace_count: *const fn (app: *anyopaque) usize,
+    get_active_workspace_index: *const fn (app: *anyopaque) usize,
+    get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
 };
 
 const BridgeContext = struct {
     api: Api,
     cfg: *config.Config,
     app_callbacks: ?AppCallbacks = null,
+    pending_workspace_name: ?[]u8 = null,
     /// LuaJIT registry ref for the on_key handler function (LUA_NOREF = -1).
     on_key_ref: c_int = -1,
     /// Lua callback for top bar title override.
     top_bar_ref: c_int = -1,
+    workspace_title_ref: c_int = -1,
     status_ref: c_int = -1,
+    gui_ready_ref: c_int = -1,
+    gui_ready_fired: bool = false,
 };
 
 var active_context: ?*BridgeContext = null;
@@ -190,6 +202,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        if (self.context.pending_workspace_name) |name| self.allocator.free(name);
         self.context.api.close(self.state);
         active_context = null;
         self.allocator.destroy(self.context);
@@ -226,6 +239,31 @@ pub const Runtime = struct {
     /// Register app-level action callbacks so Lua can call split_pane etc.
     pub fn registerAppCallbacks(self: *Runtime, callbacks: AppCallbacks) void {
         self.context.app_callbacks = callbacks;
+        if (self.context.pending_workspace_name) |name| {
+            callbacks.set_workspace_name(callbacks.app, name);
+            self.allocator.free(name);
+            self.context.pending_workspace_name = null;
+        }
+    }
+
+    pub fn fireGuiReady(self: *Runtime) void {
+        const ctx = self.context;
+        if (ctx.gui_ready_fired) return;
+        ctx.gui_ready_fired = true;
+
+        const ref = ctx.gui_ready_ref;
+        if (ref == LUA_NOREF) return;
+
+        const api = ctx.api;
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 1);
+            return;
+        }
+
+        if (api.pcall(self.state, 0, 0, 0) != 0) {
+            logLuaError(api, self.state, "on_gui_ready");
+        }
     }
 
     /// Fire the Lua on_key handler (if registered).
@@ -261,17 +299,18 @@ pub const Runtime = struct {
         return false;
     }
 
-    pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) []const u8 {
+    pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.top_bar_ref;
-        if (ref == LUA_NOREF) return fallback;
+        var segment = bar.Segment{ .text = fallback };
+        if (ref == LUA_NOREF) return segment;
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
         const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
         if (fn_type != .function) {
             pop(api, self.state, 1);
-            return fallback;
+            return segment;
         }
 
         api.push_number(self.state, @floatFromInt(index));
@@ -280,7 +319,7 @@ pub const Runtime = struct {
 
         const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
             pop(api, self.state, 1);
-            return fallback;
+            return segment;
         };
         defer std.heap.page_allocator.free(zfallback);
         api.push_string(self.state, zfallback);
@@ -289,25 +328,58 @@ pub const Runtime = struct {
         if (rc != 0) {
             std.log.err("resolveTopBarTitle: pcall failed rc={d}", .{rc});
             pop(api, self.state, 1);
-            return fallback;
+            return segment;
         }
 
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
-            var len: usize = 0;
-            if (api.to_lstring(self.state, -1, &len)) |ptr| {
-                const n = @min(len, out_buf.len);
-                @memcpy(out_buf[0..n], ptr[0..n]);
-                pop(api, self.state, 1);
-                return out_buf[0..n];
-            }
-        }
-
+        segment = parseLabelResult(api, self.state, out_buf, fallback);
         pop(api, self.state, 1);
-        return fallback;
+        return segment;
+    }
+
+    pub fn resolveWorkspaceTitle(self: *Runtime, index: usize, is_active: bool, active_workspace_index: usize, workspace_count: usize, fallback: []const u8, out_buf: []u8) bar.Segment {
+        const ctx = self.context;
+        const api = ctx.api;
+        const ref = ctx.workspace_title_ref;
+        var segment = bar.Segment{ .text = fallback };
+        if (ref == LUA_NOREF) return segment;
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (fn_type != .function) {
+            pop(api, self.state, 1);
+            return segment;
+        }
+
+        api.push_number(self.state, @floatFromInt(index));
+        api.push_boolean(self.state, if (is_active) 1 else 0);
+        api.push_number(self.state, @floatFromInt(active_workspace_index));
+        api.push_number(self.state, @floatFromInt(workspace_count));
+
+        const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
+            pop(api, self.state, 1);
+            return segment;
+        };
+        defer std.heap.page_allocator.free(zfallback);
+        api.push_string(self.state, zfallback);
+
+        const rc = api.pcall(self.state, 5, 1, 0);
+        if (rc != 0) {
+            std.log.err("resolveWorkspaceTitle: pcall failed rc={d}", .{rc});
+            pop(api, self.state, 1);
+            return segment;
+        }
+
+        segment = parseLabelResult(api, self.state, out_buf, fallback);
+        pop(api, self.state, 1);
+        return segment;
     }
 
     pub fn hasTopBarFormatter(self: *Runtime) bool {
         return self.context.top_bar_ref != LUA_NOREF;
+    }
+
+    pub fn hasWorkspaceTitleFormatter(self: *Runtime) bool {
+        return self.context.workspace_title_ref != LUA_NOREF;
     }
 
     pub fn resolveTopBarStatus(self: *Runtime, side: bar.Side, seg_buf: []bar.Segment, text_buf: []u8, active_tab_index: usize, tab_count: usize) []bar.Segment {
@@ -428,6 +500,18 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "prev_tab");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_new_workspace, 1);
+        api.set_field(self.state, -2, "new_workspace");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_next_workspace, 1);
+        api.set_field(self.state, -2, "next_workspace");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_prev_workspace, 1);
+        api.set_field(self.state, -2, "prev_workspace");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_focus_pane, 1);
         api.set_field(self.state, -2, "focus_pane");
 
@@ -444,12 +528,32 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "on_top_bar");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_on_workspace_title, 1);
+        api.set_field(self.state, -2, "on_workspace_title");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_status, 1);
         api.set_field(self.state, -2, "on_status");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_on_gui_ready, 1);
+        api.set_field(self.state, -2, "on_gui_ready");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
         api.set_field(self.state, -2, "switch_tab");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_switch_workspace, 1);
+        api.set_field(self.state, -2, "switch_workspace");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_workspace_name, 1);
+        api.set_field(self.state, -2, "set_workspace_name");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_name, 1);
+        api.set_field(self.state, -2, "get_workspace_name");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_tab_title, 1);
@@ -462,6 +566,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_active_tab_index, 1);
         api.set_field(self.state, -2, "get_active_tab_index");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_count, 1);
+        api.set_field(self.state, -2, "get_workspace_count");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_active_workspace_index, 1);
+        api.set_field(self.state, -2, "get_active_workspace_index");
 
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
@@ -883,6 +995,42 @@ fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const 
     return parseHexColor(ptr[0..len]);
 }
 
+fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8) bar.Segment {
+    const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+    if (value_type == .string) {
+        var len: usize = 0;
+        if (api.to_lstring(state, -1, &len)) |ptr| {
+            const n = @min(len, out_buf.len);
+            @memcpy(out_buf[0..n], ptr[0..n]);
+            return .{ .text = out_buf[0..n] };
+        }
+        return .{ .text = fallback };
+    }
+
+    if (value_type != .table) return .{ .text = fallback };
+
+    var seg = bar.Segment{ .text = fallback };
+
+    api.get_field(state, -1, "text");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+        var len: usize = 0;
+        if (api.to_lstring(state, -1, &len)) |ptr| {
+            const n = @min(len, out_buf.len);
+            @memcpy(out_buf[0..n], ptr[0..n]);
+            seg.text = out_buf[0..n];
+        }
+    }
+    pop(api, state, 1);
+
+    api.get_field(state, -1, "bold");
+    seg.bold = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+
+    seg.fg = parseColorField(api, state, -1, "fg");
+    seg.bg = parseColorField(api, state, -1, "bg");
+    return seg;
+}
+
 fn pop(api: Api, state: *State, count: c_int) void {
     api.set_top(state, -count - 1);
 }
@@ -921,6 +1069,24 @@ fn l_next_tab(state: *State) callconv(.c) c_int {
 fn l_prev_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.prev_tab(cbs.app);
+    return 0;
+}
+
+fn l_new_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app);
+    return 0;
+}
+
+fn l_next_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.next_workspace(cbs.app);
+    return 0;
+}
+
+fn l_prev_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.prev_workspace(cbs.app);
     return 0;
 }
 
@@ -1025,6 +1191,63 @@ fn l_on_top_bar(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+/// hollow.on_workspace_title(fn(index, is_active, fallback_title) -> string|nil)
+fn l_on_workspace_title(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    if (arg_type == .nil_type) {
+        if (ctx.workspace_title_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.workspace_title_ref);
+            ctx.workspace_title_ref = LUA_NOREF;
+        }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_workspace_title expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        return 0;
+    }
+
+    if (ctx.workspace_title_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.workspace_title_ref);
+    }
+
+    api.push_value(state, 1);
+    ctx.workspace_title_ref = api.ref(state, LUA_REGISTRYINDEX);
+    std.log.info("lua: workspace title handler registered", .{});
+    return 0;
+}
+
+/// hollow.on_gui_ready(fn())
+fn l_on_gui_ready(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    if (arg_type == .nil_type) {
+        if (ctx.gui_ready_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.gui_ready_ref);
+            ctx.gui_ready_ref = LUA_NOREF;
+        }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_gui_ready expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        return 0;
+    }
+
+    if (ctx.gui_ready_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.gui_ready_ref);
+    }
+
+    api.push_value(state, 1);
+    ctx.gui_ready_ref = api.ref(state, LUA_REGISTRYINDEX);
+    return 0;
+}
+
 /// hollow.on_status(fn(side, active_tab_index, tab_count) -> { segments... } | nil)
 fn l_on_status(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
@@ -1067,6 +1290,19 @@ fn l_switch_tab(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+/// hollow.switch_workspace(index)  — 0-based index
+fn l_switch_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    cbs.switch_workspace(cbs.app, idx);
+    return 0;
+}
+
 /// hollow.set_tab_title(title)  — override the active tab's title string
 fn l_set_tab_title(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
@@ -1080,6 +1316,52 @@ fn l_set_tab_title(state: *State) callconv(.c) c_int {
     const title: []const u8 = if (ptr) |p| p[0..len] else "";
     cbs.set_tab_title(cbs.app, title);
     return 0;
+}
+
+/// hollow.set_workspace_name(title)  — override the active workspace name
+fn l_set_workspace_name(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &len)
+    else
+        null;
+    const title: []const u8 = if (ptr) |p| p[0..len] else "";
+
+    if (ctx.app_callbacks) |cbs| {
+        cbs.set_workspace_name(cbs.app, title);
+        return 0;
+    }
+
+    if (ctx.pending_workspace_name) |existing| ctx.cfg.allocator.free(existing);
+    ctx.pending_workspace_name = if (title.len > 0) ctx.cfg.allocator.dupe(u8, title) catch null else null;
+    return 0;
+}
+
+/// hollow.get_workspace_name(index) → string
+fn l_get_workspace_name(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    var out_buf: [128]u8 = undefined;
+    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+
+    const title = cbs.get_workspace_name(cbs.app, idx, &out_buf);
+
+    const ztitle = std.heap.page_allocator.dupeZ(u8, title) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(ztitle);
+    api.push_string(state, ztitle);
+    return 1;
 }
 
 /// hollow.get_tab_count() → number  — number of open tabs (0-based count)
@@ -1104,6 +1386,30 @@ fn l_get_active_tab_index(state: *State) callconv(.c) c_int {
         return 1;
     };
     const idx = cbs.get_active_tab_index(cbs.app);
+    api.push_number(state, @floatFromInt(idx));
+    return 1;
+}
+
+fn l_get_workspace_count(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const count = cbs.get_workspace_count(cbs.app);
+    api.push_number(state, @floatFromInt(count));
+    return 1;
+}
+
+fn l_get_active_workspace_index(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const idx = cbs.get_active_workspace_index(cbs.app);
     api.push_number(state, @floatFromInt(idx));
     return 1;
 }

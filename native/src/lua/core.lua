@@ -66,8 +66,28 @@ function hollow.top_bar.format_tab_title(renderer)
 	hollow.on_top_bar(renderer)
 end
 
+function hollow.top_bar.format_workspace_title(renderer)
+	hollow.on_workspace_title(renderer)
+end
+
+hollow.workspace = hollow.workspace or {}
+
+function hollow.workspace.set_name(name)
+	hollow.set_workspace_name(name)
+end
+
+function hollow.workspace.get_name(index)
+	return hollow.get_workspace_name(index)
+end
+
 function hollow.status.set(renderer)
 	hollow.on_status(renderer)
+end
+
+hollow.gui = hollow.gui or {}
+
+function hollow.gui.on_ready(fn)
+	hollow.on_gui_ready(fn)
 end
 
 hollow.action = {
@@ -91,6 +111,15 @@ hollow.action = {
 	end,
 	prev_tab = function()
 		hollow.prev_tab()
+	end,
+	new_workspace = function()
+		hollow.new_workspace()
+	end,
+	next_workspace = function()
+		hollow.next_workspace()
+	end,
+	prev_workspace = function()
+		hollow.prev_workspace()
 	end,
 	focus_pane_left = function()
 		hollow.focus_pane("left")
@@ -141,11 +170,14 @@ hollow.keymap.set("ctrl+w", "close_tab")
 hollow.keymap.set("ctrl+shift+w", "close_pane")
 hollow.keymap.set("ctrl+tab", "next_tab")
 hollow.keymap.set("ctrl+shift+tab", "prev_tab")
+hollow.keymap.set("ctrl+alt+n", "new_workspace")
+hollow.keymap.set("ctrl+alt+arrow_right", "next_workspace")
+hollow.keymap.set("ctrl+alt+arrow_left", "prev_workspace")
 hollow.keymap.set("ctrl+shift+arrow_left", "focus_pane_left")
 hollow.keymap.set("ctrl+shift+arrow_right", "focus_pane_right")
 hollow.keymap.set("ctrl+shift+arrow_up", "focus_pane_up")
 hollow.keymap.set("ctrl+shift+arrow_down", "focus_pane_down")
-hollow.keymap.set("ctrl+alt+arrow_left", "resize_pane_left")
-hollow.keymap.set("ctrl+alt+arrow_right", "resize_pane_right")
+hollow.keymap.set("ctrl+alt+shift+arrow_left", "resize_pane_left")
+hollow.keymap.set("ctrl+alt+shift+arrow_right", "resize_pane_right")
 hollow.keymap.set("ctrl+alt+arrow_up", "resize_pane_up")
 hollow.keymap.set("ctrl+alt+arrow_down", "resize_pane_down")

@@ -19,11 +19,15 @@ var g_logged_first_char = false;
 var g_logged_first_mouse = false;
 var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
+var g_gui_ready_fired = false;
 
 const CustomTabLayout = struct {
     x: f32,
     width: f32,
     title: []const u8,
+    fg: ?ghostty.ColorRgb = null,
+    bg: ?ghostty.ColorRgb = null,
+    bold: bool = false,
 };
 
 fn utf8CodepointLen(first_byte: u8) usize {
@@ -43,6 +47,18 @@ fn takeCodepoints(text: []const u8, count: usize) []const u8 {
         used_codepoints += 1;
     }
     return text[0..used_bytes];
+}
+
+fn countCodepoints(text: []const u8) usize {
+    var used_bytes: usize = 0;
+    var used_codepoints: usize = 0;
+    while (used_bytes < text.len) {
+        const cp_len = utf8CodepointLen(text[used_bytes]);
+        if (used_bytes + cp_len > text.len) break;
+        used_bytes += cp_len;
+        used_codepoints += 1;
+    }
+    return used_codepoints;
 }
 
 fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
@@ -71,51 +87,71 @@ fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
 
 fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
     const tab_count = @min(app.tabCount(), layouts.len);
-    _ = renderer;
     if (tab_count == 0 or max_right <= start_x or title_storage.len == 0) return layouts[0..0];
 
     var temp_title_buf: [256]u8 = undefined;
     const available_width = max_right - start_x;
     if (available_width <= 0) return layouts[0..0];
 
-    const tab_w = available_width / @as(f32, @floatFromInt(tab_count));
     var text_used: usize = 0;
+    var cursor_x = start_x;
+    var layout_count: usize = 0;
     for (0..tab_count) |ti| {
-        const x = start_x + @as(f32, @floatFromInt(ti)) * tab_w;
-        const width = if (ti + 1 == tab_count) max_right - x else tab_w;
+        if (cursor_x >= max_right) break;
+        const seg = app.topBarTitleSegment(ti, false, &temp_title_buf);
+        const title = seg.text;
+        const x = cursor_x;
+        const desired_width = @max(renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(title))) * renderer.cell_w);
+        const width = @min(desired_width, max_right - x);
         if (width <= 0) break;
-        const title = app.topBarTitle(ti, false, &temp_title_buf);
         const remaining_storage = title_storage.len - text_used;
         if (remaining_storage == 0) break;
         const copy_len = @min(title.len, remaining_storage);
         @memcpy(title_storage[text_used .. text_used + copy_len], title[0..copy_len]);
         const stored_title = title_storage[text_used .. text_used + copy_len];
 
-        layouts[ti] = .{
+        layouts[layout_count] = .{
             .x = x,
             .width = width,
             .title = stored_title,
+            .fg = seg.fg,
+            .bg = seg.bg,
+            .bold = seg.bold,
         };
         text_used += copy_len;
+        cursor_x += width;
+        layout_count += 1;
     }
 
-    return layouts[0..tab_count];
+    return layouts[0..layout_count];
 }
 
 fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
     var cursor_x = x;
     for (segments) |seg| {
         if (seg.text.len == 0) continue;
-        const seg_w = @as(f32, @floatFromInt(seg.text.len)) * renderer.cell_w + renderer.cell_w;
+        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
         if (seg.bg) |bg| {
             drawBorderRect(cursor_x, 0.0, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-        renderer.drawLabelFace(cursor_x + renderer.cell_w * 0.5, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
     }
     return cursor_x;
+}
+
+fn drawSingleSegment(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segment: bar.Segment, default_fg: ghostty.ColorRgb, default_bg: ?ghostty.ColorRgb) f32 {
+    if (segment.text.len == 0) return x;
+    const seg_w = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
+    if (segment.bg orelse default_bg) |bg| {
+        drawBorderRect(x, 0.0, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
+    }
+    const fg = segment.fg orelse default_fg;
+    renderer.drawLabelFace(x, y, segment.text, fg.r, fg.g, fg.b, if (segment.bold) 1 else 0);
+    c.sgl_load_default_pipeline();
+    return x + seg_w;
 }
 
 fn framebufferSize() struct { width: f32, height: f32 } {
@@ -142,6 +178,7 @@ pub fn run(app: *App) !void {
     g_logged_first_mouse = false;
     g_logged_first_scroll = false;
     g_ft_renderer = null;
+    g_gui_ready_fired = false;
 
     var desc = std.mem.zeroes(c.sapp_desc);
     desc.user_data = app;
@@ -275,7 +312,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const close_sym = "\xc3\x97"; // U+00D7 ×
             for (0..tc) |ti| {
                 var title_buf: [256]u8 = undefined;
-                const title = app.topBarTitle(ti, false, &title_buf);
+                const title = app.topBarTitleSegment(ti, false, &title_buf).text;
                 std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
                 std.log.info("preRasterizeLabel", .{});
                 renderer.preRasterizeLabel(title);
@@ -424,10 +461,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
                 left_end = drawStatusSegments(renderer, 0.0, status_y, tbh, left_segments);
                 for (right_segments) |seg| {
-                    right_width += (@as(f32, @floatFromInt(seg.text.len)) * renderer.cell_w) + renderer.cell_w;
+                    right_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
                 }
                 right_start = @max(left_end, width - right_width);
                 _ = drawStatusSegments(renderer, right_start, status_y, tbh, right_segments);
+            }
+
+            if (app.shouldDrawWorkspaceSwitcher()) {
+                var ws_buf: [128]u8 = undefined;
+                const ws_seg = app.workspaceTitleSegment(app.activeWorkspaceIndex(), &ws_buf);
+                const ws_default_bg = if (app.hasCustomWorkspaceTitle()) null else ghostty.ColorRgb{ .r = 36, .g = 39, .b = 48 };
+                left_end = drawSingleSegment(renderer, left_end, status_y, tbh, ws_seg, ghostty.ColorRgb{ .r = 205, .g = 210, .b = 225 }, ws_default_bg);
+                if (!app.hasCustomWorkspaceTitle()) left_end += renderer.cell_w * 0.5;
             }
 
             if (app.shouldDrawTopBarTabs()) {
@@ -438,7 +483,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     for (layouts, 0..) |layout, ti| {
                         const is_active = ti == active_idx;
                         const hover_tab = app.hovered_tab_index != null and app.hovered_tab_index.? == ti;
-                        const bg = if (is_active)
+                        const bg = layout.bg orelse if (is_active)
                             ghostty.ColorRgb{ .r = 64, .g = 68, .b = 86 }
                         else if (hover_tab)
                             ghostty.ColorRgb{ .r = 52, .g = 55, .b = 70 }
@@ -446,7 +491,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             ghostty.ColorRgb{ .r = 43, .g = 45, .b = 55 };
                         drawBorderRect(layout.x, 0.0, layout.width, tbh, bg.r, bg.g, bg.b, 255);
 
-                        const label_space = layout.width - renderer.cell_w;
+                        const label_space = layout.width;
                         const max_label_chars: usize = if (label_space > 0)
                             @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
                         else
@@ -454,10 +499,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         var display_buf: [256]u8 = undefined;
                         const display_title = fitTabLabel(layout.title, max_label_chars, &display_buf);
                         if (display_title.len > 0) {
-                            const fg_r: u8 = if (is_active) 255 else 190;
-                            const fg_g: u8 = if (is_active) 255 else 190;
-                            const fg_b: u8 = if (is_active) 255 else 190;
-                            renderer.drawLabel(layout.x + renderer.cell_w * 0.5, status_y, display_title, fg_r, fg_g, fg_b);
+                            const fg = layout.fg orelse ghostty.ColorRgb{
+                                .r = if (is_active) 255 else 190,
+                                .g = if (is_active) 255 else 190,
+                                .b = if (is_active) 255 else 190,
+                            };
+                            renderer.drawLabelFace(@floor(layout.x), status_y, display_title, fg.r, fg.g, fg.b, if (layout.bold) 1 else 0);
                             c.sgl_load_default_pipeline();
                         }
                     }
@@ -479,7 +526,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
                         // Tab title text — leave room for the close button on the right.
                         const hover_close = app.hovered_close_tab_index != null and app.hovered_close_tab_index.? == ti;
-                        const title = app.topBarTitle(ti, hover_close, &title_buf);
+                        const title_seg = app.topBarTitleSegment(ti, hover_close, &title_buf);
+                        const title = title_seg.text;
                         std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
                         const label_space = tab_w - close_w - renderer.cell_w;
                         const max_label_chars: usize = if (label_space > 0)
@@ -491,11 +539,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         var display_buf: [256]u8 = undefined;
                         const display_title = fitTabLabel(title, max_label_chars, &display_buf);
                         if (display_title.len > 0) {
-                            const fg_r: u8 = if (is_active) 255 else 185;
-                            const fg_g: u8 = if (is_active) 255 else 185;
-                            const fg_b: u8 = if (is_active) 255 else 185;
+                            const fg = title_seg.fg orelse ghostty.ColorRgb{
+                                .r = if (is_active) 255 else 185,
+                                .g = if (is_active) 255 else 185,
+                                .b = if (is_active) 255 else 185,
+                            };
+                            if (title_seg.bg) |bg| {
+                                drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, bg.r, bg.g, bg.b, 255);
+                            } else if (!app.hasCustomTopBarTabs()) {
+                                const fallback_bg_r: u8 = if (is_active) 55 else 35;
+                                const fallback_bg_g: u8 = if (is_active) 58 else 37;
+                                const fallback_bg_b: u8 = if (is_active) 72 else 46;
+                                drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, fallback_bg_r, fallback_bg_g, fallback_bg_b, 255);
+                            }
                             std.log.info("drawLabel len={d}", .{display_title.len});
-                            renderer.drawLabel(label_x, label_y, display_title, fg_r, fg_g, fg_b);
+                            const draw_x = if (app.hasCustomTopBarTabs()) tx + 1.0 else label_x;
+                            renderer.drawLabelFace(draw_x, label_y, display_title, fg.r, fg.g, fg.b, if (title_seg.bold) 1 else 0);
                             // After drawLabel the pipeline changed; restore defaults for rects.
                             c.sgl_load_default_pipeline();
                         }
@@ -526,6 +585,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     c.sg_commit();
 
     g_renderer_ready = true;
+
+    if (!g_gui_ready_fired) {
+        g_gui_ready_fired = true;
+        app.fireGuiReady();
+    }
 
     c.sapp_set_window_title(titleCString(app.activeTitle()));
 }

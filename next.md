@@ -29,6 +29,12 @@
 - ~The font glyph fallback for nerd icons seems to not be working. I see some missing you should bundle a good nerd font with all the symbols. Provide a good fallback configuration for the fonts.~
 - ~Add support for ligatures~
 
+## Performance
+
+- Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.
+- Scrolling performance is not great at least in nvim.
+- Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.
+
 ## Core features
 
 - Add support for workspaces -> tabs -> splits
@@ -36,7 +42,7 @@
   - ~close_pane / closeTab: last-tab fix, pending_quit flag, sapp_request_quit()~
   - ~newTab segfault fixed: pre-init render_state in bootstrap() before callback registration~
   - ~Tab bar UI (no rendering exists yet)~
-  - Workspace switching UI + API
+  - ~Workspace switching UI + API~
 - Add text selection support
 - Add copy/paste support
 

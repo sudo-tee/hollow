@@ -317,6 +317,7 @@ pub const Tab = struct {
 pub const Workspace = struct {
     allocator: std.mem.Allocator,
     id: usize,
+    name: ?[]u8 = null,
     tabs: std.ArrayList(*Tab),
     active_tab: ?*Tab = null,
 
@@ -349,6 +350,7 @@ pub const Workspace = struct {
     }
 
     pub fn deinit(self: *Workspace, runtime: *GhosttyRuntime) void {
+        if (self.name) |name| self.allocator.free(name);
         for (self.tabs.items) |tab| {
             tab.deinit(runtime);
             self.allocator.destroy(tab);
@@ -430,6 +432,16 @@ pub const Workspace = struct {
         const tab = self.activeTab() orelse return null;
         return tab.activeSplitRoot();
     }
+
+    pub fn title(self: *Workspace, out_buf: []u8) []const u8 {
+        if (self.name) |name| return name;
+        return std.fmt.bufPrint(out_buf, "ws {d}", .{self.id}) catch "ws";
+    }
+
+    pub fn setName(self: *Workspace, value: []const u8) !void {
+        if (self.name) |name| self.allocator.free(name);
+        self.name = if (value.len > 0) try self.allocator.dupe(u8, value) else null;
+    }
 };
 
 pub const Mux = struct {
@@ -477,6 +489,18 @@ pub const Mux = struct {
     pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         if (self.workspaces.items.len != 0) return error.MuxAlreadyBootstrapped;
 
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try self.workspaces.append(self.allocator, workspace);
+        self.active_workspace = workspace;
+    }
+
+    pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try self.workspaces.append(self.allocator, workspace);
+        self.active_workspace = workspace;
+    }
+
+    fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Workspace {
         const workspace = try self.createWorkspace();
         var workspace_owned_by_mux = false;
         defer if (!workspace_owned_by_mux) {
@@ -504,9 +528,8 @@ pub const Mux = struct {
         try workspace.appendTab(tab);
         tab_owned_by_workspace = true;
 
-        try self.workspaces.append(self.allocator, workspace);
         workspace_owned_by_mux = true;
-        self.active_workspace = workspace;
+        return workspace;
     }
 
     pub fn activeWorkspace(self: *Mux) ?*Workspace {
@@ -583,7 +606,8 @@ pub const Mux = struct {
     pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) bool {
         const ws = self.activeWorkspace() orelse return true;
         ws.closeTab(runtime);
-        return ws.tabs.items.len == 0;
+        if (ws.tabs.items.len > 0) return false;
+        return self.removeWorkspace(runtime, ws);
     }
 
     /// Close the currently active pane. Kills the associated process.
@@ -596,7 +620,7 @@ pub const Mux = struct {
         const tab_empty = tab.closePane(runtime, pane);
         if (tab_empty) {
             ws.closeTab(runtime);
-            if (ws.tabs.items.len == 0) return true;
+            if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
         }
         return false;
     }
@@ -607,6 +631,34 @@ pub const Mux = struct {
 
     pub fn prevTab(self: *Mux) void {
         if (self.activeWorkspace()) |ws| ws.prevTab();
+    }
+
+    pub fn nextWorkspace(self: *Mux) void {
+        if (self.workspaces.items.len < 2) return;
+        const idx = self.activeWorkspaceIndex();
+        self.active_workspace = self.workspaces.items[(idx + 1) % self.workspaces.items.len];
+    }
+
+    pub fn prevWorkspace(self: *Mux) void {
+        if (self.workspaces.items.len < 2) return;
+        const idx = self.activeWorkspaceIndex();
+        self.active_workspace = self.workspaces.items[if (idx == 0) self.workspaces.items.len - 1 else idx - 1];
+    }
+
+    pub fn switchWorkspace(self: *Mux, index: usize) void {
+        if (index >= self.workspaces.items.len) return;
+        self.active_workspace = self.workspaces.items[index];
+    }
+
+    pub fn activeWorkspaceIndex(self: *Mux) usize {
+        for (self.workspaces.items, 0..) |ws, i| {
+            if (ws == self.active_workspace) return i;
+        }
+        return 0;
+    }
+
+    pub fn workspaceCount(self: *Mux) usize {
+        return self.workspaces.items.len;
     }
 
     pub fn switchTab(self: *Mux, index: usize) void {
@@ -730,12 +782,36 @@ pub const Mux = struct {
                 ws.closeTab(runtime);
                 // If workspace has no more tabs, and this is the only workspace,
                 // signal quit.
-                if (ws.tabs.items.len == 0) return true;
+                if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
                 break; // tab is gone, stop iterating dead_buf for this tab
             }
         }
 
         // Re-register callbacks for the new active pane (focus may have moved).
+        return false;
+    }
+
+    fn removeWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace: *Workspace) bool {
+        var idx: ?usize = null;
+        for (self.workspaces.items, 0..) |ws, i| {
+            if (ws == workspace) {
+                idx = i;
+                break;
+            }
+        }
+        const remove_idx = idx orelse return self.workspaces.items.len == 0;
+
+        _ = self.workspaces.orderedRemove(remove_idx);
+        workspace.deinit(runtime);
+        self.allocator.destroy(workspace);
+
+        if (self.workspaces.items.len == 0) {
+            self.active_workspace = null;
+            return true;
+        }
+
+        const next_idx = if (remove_idx >= self.workspaces.items.len) self.workspaces.items.len - 1 else remove_idx;
+        self.active_workspace = self.workspaces.items[next_idx];
         return false;
     }
 };
