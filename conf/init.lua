@@ -17,6 +17,12 @@ g.set_config({
 	window_title = "hollow",
 	window_width = 1440,
 	window_height = 900,
+	top_bar_show = true,
+	top_bar_show_when_single_tab = true,
+	top_bar_height = 32,
+	top_bar_bg = "#2b2d37",
+	top_bar_draw_tabs = true,
+	top_bar_draw_status = true,
 })
 
 if g.platform.is_windows then
@@ -32,9 +38,31 @@ else
 	})
 end
 
+hollow.status.set(function(side, active_tab_index, tab_count)
+	if side == "left" then
+		return {
+			{ text = " default ", fg = "#1f2335", bg = "#7aa2f7", bold = true },
+			{ text = " | " .. tostring(tab_count) .. " ", fg = "#c0caf5", bg = "#3b4261" },
+		}
+	end
+
+	if side == "right" then
+		return {
+			{ text = hollow.strftime("%B %e, %H:%M"), fg = "#7aa2f7", bg = "#1f2335" },
+		}
+	end
+
+	return nil
+end)
+hollow.top_bar.format_tab_title(function(index, is_active, hover_close, fallback_title)
+	if is_active then
+		return "  nvim  " .. fallback_title
+	end
+	return fallback_title
+end)
+
 -- Example of user overriding or adding keys:
 -- g.keymap.set("ctrl+t", "new_tab")
 -- g.keymap.set("ctrl+w", "close_tab")
 -- g.keymap.set("ctrl+tab", "next_tab")
 -- g.keymap.set("ctrl+shift+tab", "prev_tab")
-

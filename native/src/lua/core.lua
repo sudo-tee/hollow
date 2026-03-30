@@ -1,4 +1,6 @@
 hollow.keymap = {}
+hollow.top_bar = {}
+hollow.status = {}
 local bindings = {}
 
 local MODS_SHIFT = 0x01
@@ -54,6 +56,18 @@ function hollow.keymap.del(chord)
 	end
 
 	return true
+end
+
+function hollow.top_bar.set(renderer)
+	hollow.on_top_bar(renderer)
+end
+
+function hollow.top_bar.format_tab_title(renderer)
+	hollow.on_top_bar(renderer)
+end
+
+function hollow.status.set(renderer)
+	hollow.on_status(renderer)
 end
 
 hollow.action = {

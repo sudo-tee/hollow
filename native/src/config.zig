@@ -1,5 +1,6 @@
 const std = @import("std");
 const platform = @import("platform.zig");
+const ghostty = @import("term/ghostty.zig");
 
 pub const RendererBackend = enum {
     null,
@@ -35,6 +36,12 @@ pub const Config = struct {
     rows: u16 = 34,
     scrollback: u32 = 10000,
     lib_dir: ?[]u8 = null,
+    top_bar_show: bool = true,
+    top_bar_show_when_single_tab: bool = false,
+    top_bar_height: u32 = 0,
+    top_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
+    top_bar_draw_tabs: bool = true,
+    top_bar_draw_status: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

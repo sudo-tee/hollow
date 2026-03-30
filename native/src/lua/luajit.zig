@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("../config.zig");
 const platform = @import("../platform.zig");
+const ghostty = @import("../term/ghostty.zig");
+const bar = @import("../ui/bar.zig");
 
 pub const State = opaque {};
 
@@ -35,7 +37,9 @@ const Api = struct {
     push_boolean: *const fn (*State, c_int) callconv(.c) void,
     push_nil: *const fn (*State) callconv(.c) void,
     push_light_userdata: *const fn (*State, ?*anyopaque) callconv(.c) void,
+    push_value: *const fn (*State, c_int) callconv(.c) void,
     push_cclosure: *const fn (*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void,
+    push_integer: *const fn (*State, isize) callconv(.c) void,
     to_lstring: *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8,
     to_number: *const fn (*State, c_int) callconv(.c) f64,
     to_boolean: *const fn (*State, c_int) callconv(.c) c_int,
@@ -71,6 +75,9 @@ const BridgeContext = struct {
     app_callbacks: ?AppCallbacks = null,
     /// LuaJIT registry ref for the on_key handler function (LUA_NOREF = -1).
     on_key_ref: c_int = -1,
+    /// Lua callback for top bar title override.
+    top_bar_ref: c_int = -1,
+    status_ref: c_int = -1,
 };
 
 var active_context: ?*BridgeContext = null;
@@ -147,7 +154,9 @@ pub const Runtime = struct {
             .push_boolean = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_pushboolean"),
             .push_nil = lookup(&lib, *const fn (*State) callconv(.c) void, "lua_pushnil"),
             .push_light_userdata = lookup(&lib, *const fn (*State, ?*anyopaque) callconv(.c) void, "lua_pushlightuserdata"),
+            .push_value = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_pushvalue"),
             .push_cclosure = lookup(&lib, *const fn (*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void, "lua_pushcclosure"),
+            .push_integer = lookup(&lib, *const fn (*State, isize) callconv(.c) void, "lua_pushinteger"),
             .to_lstring = lookup(&lib, *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8, "lua_tolstring"),
             .to_number = lookup(&lib, *const fn (*State, c_int) callconv(.c) f64, "lua_tonumber"),
             .to_boolean = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_toboolean"),
@@ -252,6 +261,131 @@ pub const Runtime = struct {
         return false;
     }
 
+    pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) []const u8 {
+        const ctx = self.context;
+        const api = ctx.api;
+        const ref = ctx.top_bar_ref;
+        if (ref == LUA_NOREF) return fallback;
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (fn_type != .function) {
+            pop(api, self.state, 1);
+            return fallback;
+        }
+
+        api.push_number(self.state, @floatFromInt(index));
+        api.push_boolean(self.state, if (is_active) 1 else 0);
+        api.push_boolean(self.state, if (hover_close) 1 else 0);
+
+        const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
+            pop(api, self.state, 1);
+            return fallback;
+        };
+        defer std.heap.page_allocator.free(zfallback);
+        api.push_string(self.state, zfallback);
+
+        const rc = api.pcall(self.state, 4, 1, 0);
+        if (rc != 0) {
+            std.log.err("resolveTopBarTitle: pcall failed rc={d}", .{rc});
+            pop(api, self.state, 1);
+            return fallback;
+        }
+
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
+            var len: usize = 0;
+            if (api.to_lstring(self.state, -1, &len)) |ptr| {
+                const n = @min(len, out_buf.len);
+                @memcpy(out_buf[0..n], ptr[0..n]);
+                pop(api, self.state, 1);
+                return out_buf[0..n];
+            }
+        }
+
+        pop(api, self.state, 1);
+        return fallback;
+    }
+
+    pub fn hasTopBarFormatter(self: *Runtime) bool {
+        return self.context.top_bar_ref != LUA_NOREF;
+    }
+
+    pub fn resolveTopBarStatus(self: *Runtime, side: bar.Side, seg_buf: []bar.Segment, text_buf: []u8, active_tab_index: usize, tab_count: usize) []bar.Segment {
+        const ctx = self.context;
+        const api = ctx.api;
+        const ref = ctx.status_ref;
+        if (ref == LUA_NOREF or seg_buf.len == 0 or text_buf.len == 0) return seg_buf[0..0];
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 1);
+            return seg_buf[0..0];
+        }
+
+        const side_text = switch (side) {
+            .left => "left",
+            .right => "right",
+        };
+        const zside = std.heap.page_allocator.dupeZ(u8, side_text) catch {
+            pop(api, self.state, 1);
+            return seg_buf[0..0];
+        };
+        defer std.heap.page_allocator.free(zside);
+
+        api.push_string(self.state, zside);
+        api.push_integer(self.state, @intCast(active_tab_index));
+        api.push_integer(self.state, @intCast(tab_count));
+
+        if (api.pcall(self.state, 3, 1, 0) != 0) {
+            logLuaError(api, self.state, "on_status");
+            return seg_buf[0..0];
+        }
+
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return seg_buf[0..0];
+        }
+
+        var seg_count: usize = 0;
+        var text_used: usize = 0;
+        api.push_nil(self.state);
+        while (api.next(self.state, -2) != 0) {
+            defer pop(api, self.state, 1);
+            if (seg_count >= seg_buf.len) break;
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) continue;
+
+            var seg = bar.Segment{ .text = "" };
+
+            api.get_field(self.state, -1, "text");
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
+                var len: usize = 0;
+                if (api.to_lstring(self.state, -1, &len)) |ptr| {
+                    if (text_used + len <= text_buf.len) {
+                        @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                        seg.text = text_buf[text_used .. text_used + len];
+                        text_used += len;
+                    }
+                }
+            }
+            pop(api, self.state, 1);
+
+            api.get_field(self.state, -1, "bold");
+            seg.bold = api.to_boolean(self.state, -1) != 0;
+            pop(api, self.state, 1);
+
+            seg.fg = parseColorField(api, self.state, -1, "fg");
+            seg.bg = parseColorField(api, self.state, -1, "bg");
+
+            if (seg.text.len > 0) {
+                seg_buf[seg_count] = seg;
+                seg_count += 1;
+            }
+        }
+
+        pop(api, self.state, 1);
+        return seg_buf[0..seg_count];
+    }
+
     fn exposeHollowTable(self: *Runtime) !void {
         const api = self.context.api;
 
@@ -264,6 +398,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_log, 1);
         api.set_field(self.state, -2, "log");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_strftime, 1);
+        api.set_field(self.state, -2, "strftime");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_split_pane, 1);
@@ -300,6 +438,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_key, 1);
         api.set_field(self.state, -2, "on_key");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_on_top_bar, 1);
+        api.set_field(self.state, -2, "on_top_bar");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_on_status, 1);
+        api.set_field(self.state, -2, "on_status");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
@@ -377,6 +523,73 @@ fn l_log(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_strftime(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    var fmt_len: usize = 0;
+    const fmt_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &fmt_len)
+    else
+        null;
+    const fmt = if (fmt_ptr) |p| p[0..fmt_len] else "%B %e, %H:%M";
+
+    const now = std.time.timestamp();
+    const secs: i64 = @intCast(now);
+    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
+    const day = epoch.getEpochDay();
+    const day_secs = epoch.getDaySeconds();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+
+    var out: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out);
+    const w = fbs.writer();
+
+    var i: usize = 0;
+    while (i < fmt.len) : (i += 1) {
+        if (fmt[i] != '%' or i + 1 >= fmt.len) {
+            w.writeByte(fmt[i]) catch break;
+            continue;
+        }
+        i += 1;
+        switch (fmt[i]) {
+            '%' => w.writeByte('%') catch break,
+            'H' => w.print("{d:0>2}", .{day_secs.getHoursIntoDay()}) catch break,
+            'M' => w.print("{d:0>2}", .{day_secs.getMinutesIntoHour()}) catch break,
+            'e' => w.print("{d}", .{month_day.day_index + 1}) catch break,
+            'B' => w.writeAll(monthName(month_day.month.numeric())) catch break,
+            else => {
+                w.writeByte('%') catch break;
+                w.writeByte(fmt[i]) catch break;
+            },
+        }
+    }
+
+    const zvalue = std.heap.page_allocator.dupeZ(u8, fbs.getWritten()) catch return 0;
+    defer std.heap.page_allocator.free(zvalue);
+    api.push_string(state, zvalue);
+    return 1;
+}
+
+fn monthName(month: u4) []const u8 {
+    return switch (month) {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        else => "",
+    };
+}
+
 fn l_set_config(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -418,6 +631,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
 }
 
 fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
+    if (applyHexColor(cfg, key, value)) return;
     if (std.mem.eql(u8, key, "backend")) return cfg.setBackend(value);
     if (std.mem.eql(u8, key, "shell")) return cfg.setShell(value);
     if (std.mem.eql(u8, key, "ghostty_library")) return cfg.setGhosttyLibrary(value);
@@ -461,12 +675,30 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         cfg.scrollback = try asInt(u32, value);
         return;
     }
+
+    if (std.mem.eql(u8, key, "top_bar_height")) {
+        cfg.top_bar_height = try asInt(u32, value);
+        return;
+    }
 }
 
 fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
-    _ = cfg;
-    _ = key;
-    _ = value;
+    if (std.mem.eql(u8, key, "top_bar_show")) {
+        cfg.top_bar_show = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "top_bar_show_when_single_tab")) {
+        cfg.top_bar_show_when_single_tab = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "top_bar_draw_tabs")) {
+        cfg.top_bar_draw_tabs = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "top_bar_draw_status")) {
+        cfg.top_bar_draw_status = value;
+        return;
+    }
 }
 
 fn asInt(comptime T: type, value: f64) !T {
@@ -484,6 +716,32 @@ fn logLuaError(api: Api, state: *State, ctx_label: []const u8) void {
         std.log.err("lua {s} error: (no message)", .{ctx_label});
     }
     pop(api, state, 1);
+}
+
+fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {
+    if (text.len != 7 or text[0] != '#') return null;
+    const r = std.fmt.parseInt(u8, text[1..3], 16) catch return null;
+    const g = std.fmt.parseInt(u8, text[3..5], 16) catch return null;
+    const b = std.fmt.parseInt(u8, text[5..7], 16) catch return null;
+    return .{ .r = r, .g = g, .b = b };
+}
+
+fn applyHexColor(cfg: *config.Config, key: []const u8, value: []const u8) bool {
+    const color = parseHexColor(value) orelse return false;
+    if (std.mem.eql(u8, key, "top_bar_bg")) {
+        cfg.top_bar_bg = color;
+        return true;
+    }
+    return false;
+}
+
+fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
+    api.get_field(state, table_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, -1, &len) orelse return null;
+    return parseHexColor(ptr[0..len]);
 }
 
 fn pop(api: Api, state: *State, count: c_int) void {
@@ -591,6 +849,64 @@ fn l_resize_pane(state: *State) callconv(.c) c_int {
         0.05;
 
     cbs.resize_pane(cbs.app, direction, delta);
+    return 0;
+}
+
+/// hollow.on_top_bar(fn(index, is_active, hover_close, fallback_title) -> string|nil)
+fn l_on_top_bar(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    if (arg_type == .nil_type) {
+        if (ctx.top_bar_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.top_bar_ref);
+            ctx.top_bar_ref = LUA_NOREF;
+        }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_top_bar expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        return 0;
+    }
+
+    if (ctx.top_bar_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.top_bar_ref);
+    }
+
+    api.push_value(state, 1);
+    ctx.top_bar_ref = api.ref(state, LUA_REGISTRYINDEX);
+    std.log.info("lua: top bar handler registered", .{});
+    return 0;
+}
+
+/// hollow.on_status(fn(side, active_tab_index, tab_count) -> { segments... } | nil)
+fn l_on_status(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    if (arg_type == .nil_type) {
+        if (ctx.status_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.status_ref);
+            ctx.status_ref = LUA_NOREF;
+        }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_status expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        return 0;
+    }
+
+    if (ctx.status_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.status_ref);
+    }
+
+    api.push_value(state, 1);
+    ctx.status_ref = api.ref(state, LUA_REGISTRYINDEX);
+    std.log.info("lua: status handler registered", .{});
     return 0;
 }
 

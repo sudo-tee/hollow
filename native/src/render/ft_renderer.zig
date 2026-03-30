@@ -40,8 +40,17 @@ const Glyph = struct {
     advance_x: f32,
 };
 
-// Key: (glyph_index, face_index)
-const GlyphKey = struct { glyph_index: u32, face_index: u8 };
+const RasterMode = enum {
+    terminal,
+    ui,
+};
+
+// Key: (glyph_index, face_index, raster mode)
+const GlyphKey = struct {
+    glyph_index: u32,
+    face_index: u8,
+    raster_mode: RasterMode,
+};
 
 // ── Shaping cache ─────────────────────────────────────────────────────────────
 const ShapeKey = struct {
@@ -97,6 +106,7 @@ pub const FtRenderer = struct {
     atlas_img: c.sg_image,
     atlas_view: c.sg_view,
     atlas_smp: c.sg_sampler,
+    atlas_ui_smp: c.sg_sampler,
     atlas_pip: c.sgl_pipeline,
     atlas_data: []u8, // CPU-side atlas, ATLAS_W * ATLAS_H * 4 bytes
 
@@ -105,6 +115,9 @@ pub const FtRenderer = struct {
     atlas_y: u32,
     atlas_row_h: u32,
     atlas_dirty: bool,
+    /// Guards against calling sg_update_image more than once per frame.
+    /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
+    atlas_uploaded_this_frame: bool,
 
     // Glyph cache
     glyph_cache: std.AutoHashMap(GlyphKey, Glyph),
@@ -190,6 +203,12 @@ pub const FtRenderer = struct {
         smp_desc.label = "ft-atlas-sampler";
         const atlas_smp = c.sg_make_sampler(&smp_desc);
 
+        var ui_smp_desc = std.mem.zeroes(c.sg_sampler_desc);
+        ui_smp_desc.min_filter = c.SG_FILTER_NEAREST;
+        ui_smp_desc.mag_filter = c.SG_FILTER_NEAREST;
+        ui_smp_desc.label = "ft-atlas-ui-sampler";
+        const atlas_ui_smp = c.sg_make_sampler(&ui_smp_desc);
+
         // Create a view over the atlas image (required by sgl_texture in this sokol version).
         var view_desc = std.mem.zeroes(c.sg_view_desc);
         view_desc.texture.image = atlas_img;
@@ -225,12 +244,14 @@ pub const FtRenderer = struct {
             .atlas_img = atlas_img,
             .atlas_view = atlas_view,
             .atlas_smp = atlas_smp,
+            .atlas_ui_smp = atlas_ui_smp,
             .atlas_pip = atlas_pip,
             .atlas_data = atlas_data,
             .atlas_x = 1, // leave 1px gutter
             .atlas_y = 1,
             .atlas_row_h = 0,
             .atlas_dirty = false,
+            .atlas_uploaded_this_frame = false,
             .glyph_cache = std.AutoHashMap(GlyphKey, Glyph).init(allocator),
             .shape_cache = std.AutoHashMap(ShapeKey, ShapeResult).init(allocator),
             .cell_w = cell_w,
@@ -246,6 +267,54 @@ pub const FtRenderer = struct {
         };
     }
 
+    /// Pre-rasterize all glyphs in a UTF-8 string into the atlas without drawing.
+    /// Call this before the sg_begin_pass / flushAtlas cycle so the atlas upload
+    /// is not duplicated later when drawLabel is called.
+    pub fn preRasterizeLabel(self: *FtRenderer, text: []const u8) void {
+        var i: usize = 0;
+        while (i < text.len) {
+            const cp_len = utf8CodepointLen(text[i]);
+            const end = @min(i + cp_len, text.len);
+            self.preRasterize(text[i..end], 0, .ui);
+            i = end;
+        }
+    }
+
+    /// Draw a UTF-8 string at absolute pixel position (x, y) using the atlas pipeline.
+    /// Must be called with the full-framebuffer projection already set up by the caller
+    /// (sgl_defaults + sgl_viewport full-fb + sgl_ortho(0, w, h, 0, -1, 1)).
+    /// The atlas must already be flushed before calling this (call preRasterizeLabel
+    /// before the frame's flushAtlas, then drawLabel during the draw phase).
+    /// Advances x by cell_w per UTF-8 codepoint.
+    pub fn drawLabel(self: *FtRenderer, x: f32, y: f32, text: []const u8, r: u8, g: u8, b: u8) void {
+        self.drawLabelFace(x, y, text, r, g, b, 0);
+    }
+
+    pub fn drawLabelFace(self: *FtRenderer, x: f32, y: f32, text: []const u8, r: u8, g: u8, b: u8, face_idx: u8) void {
+        if (text.len == 0) return;
+
+        // Draw quads using the atlas pipeline (atlas must already be flushed).
+        c.sgl_load_pipeline(self.atlas_pip);
+        c.sgl_enable_texture();
+        c.sgl_texture(self.atlas_view, self.atlas_ui_smp);
+        c.sgl_begin_quads();
+
+        const fg = @import("../term/ghostty.zig").ColorRgb{ .r = r, .g = g, .b = b };
+        var px = @round(x);
+        const py = @round(y);
+        var i: usize = 0;
+        while (i < text.len) {
+            const cp_len = utf8CodepointLen(text[i]);
+            const end = @min(i + cp_len, text.len);
+            self.batchGlyphs(px, py, text[i..end], face_idx, fg, .ui);
+            px += self.cell_w;
+            i = end;
+        }
+
+        c.sgl_end();
+        c.sgl_disable_texture();
+    }
+
     pub fn deinit(self: *FtRenderer) void {
         var it = self.shape_cache.valueIterator();
         while (it.next()) |val| {
@@ -257,6 +326,7 @@ pub const FtRenderer = struct {
         c.sg_destroy_view(self.atlas_view);
         c.sg_destroy_image(self.atlas_img);
         c.sg_destroy_sampler(self.atlas_smp);
+        c.sg_destroy_sampler(self.atlas_ui_smp);
         if (self.hb_buf) |buf| ft.hb_buffer_destroy(buf);
         if (self.hb_nerd) |f| ft.hb_font_destroy(f);
         if (self.hb_bold_italic) |f| ft.hb_font_destroy(f);
@@ -379,7 +449,7 @@ pub const FtRenderer = struct {
                                 if (s.italic) break :blk 3;
                                 break :blk 0;
                             } else 0;
-                            self.preRasterize(self.glyph_buf[0..glyph_len], face_idx);
+                            self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
                         }
                     }
                 }
@@ -429,7 +499,7 @@ pub const FtRenderer = struct {
                         break :blk 0;
                     } else 0;
 
-                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg);
+                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
                 }
             }
             c.sgl_end();
@@ -458,20 +528,20 @@ pub const FtRenderer = struct {
     }
 
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
-    fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8) void {
+    fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
         for (result.glyphs) |glyph_inst| {
-            _ = self.getOrRasterize(glyph_inst.glyph_id, face_idx);
+            _ = self.getOrRasterize(glyph_inst.glyph_id, face_idx, raster_mode);
         }
     }
 
     /// Shape and batch glyphs for one cell at (px, py).
-    fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb) void {
+    fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
 
         var x_offset: f32 = 0;
         for (result.glyphs) |glyph_inst| {
-            const glyph = self.getOrRasterize(glyph_inst.glyph_id, face_idx) orelse continue;
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, face_idx, raster_mode) orelse continue;
 
             const gx = px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
             const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
@@ -537,8 +607,8 @@ pub const FtRenderer = struct {
     }
 
     /// Returns a cached Glyph, rasterizing it into the atlas if needed.
-    fn getOrRasterize(self: *FtRenderer, glyph_id: u32, face_idx: u8) ?Glyph {
-        const key = GlyphKey{ .glyph_index = glyph_id, .face_index = face_idx };
+    fn getOrRasterize(self: *FtRenderer, glyph_id: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph {
+        const key = GlyphKey{ .glyph_index = glyph_id, .face_index = face_idx, .raster_mode = raster_mode };
         if (self.glyph_cache.get(key)) |g| return g;
 
         // Pick the right FT face
@@ -549,8 +619,9 @@ pub const FtRenderer = struct {
             else => self.face_regular,
         };
 
+        const use_lcd = self.lcd and raster_mode == .terminal;
         const load_flags = ft.FT_LOAD_DEFAULT | ft.FT_LOAD_FORCE_AUTOHINT |
-            if (self.lcd) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
+            if (use_lcd) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
         var err = ft.FT_Load_Glyph(primary_face, glyph_id, load_flags);
         var used_face = primary_face;
 
@@ -570,7 +641,7 @@ pub const FtRenderer = struct {
             const strength: ft.FT_Pos = @intFromFloat(self.embolden * 64.0);
             _ = ft.FT_Outline_Embolden(&slot.*.outline, strength);
         }
-        if (ft.FT_Render_Glyph(slot, if (self.lcd) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
+        if (ft.FT_Render_Glyph(slot, if (use_lcd) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
             if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
                 self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
                 return null;
@@ -669,11 +740,27 @@ pub const FtRenderer = struct {
         return g;
     }
 
+    /// Call once at the start of each frame to allow atlas upload for that frame.
+    pub fn beginFrame(self: *FtRenderer) void {
+        self.atlas_uploaded_this_frame = false;
+    }
+
+    /// Upload atlas to GPU if it has been modified and not yet uploaded this frame.
+    /// Safe to call multiple times per frame — only the first call uploads.
+    pub fn flushAtlasIfDirty(self: *FtRenderer) void {
+        if (self.atlas_dirty) {
+            self.flushAtlas();
+            self.atlas_dirty = false;
+        }
+    }
+
     fn flushAtlas(self: *FtRenderer) void {
+        if (self.atlas_uploaded_this_frame) return;
         var upd = std.mem.zeroes(c.sg_image_data);
         upd.mip_levels[0].ptr = self.atlas_data.ptr;
         upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
         c.sg_update_image(self.atlas_img, &upd);
+        self.atlas_uploaded_this_frame = true;
     }
 
     fn boostCoverage(self: *const FtRenderer, cov: u8) u8 {
@@ -787,5 +874,13 @@ fn encodeUtf8(cp: u32, buf: []u8) error{BufferTooSmall}!usize {
     buf[1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
     buf[2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
     buf[3] = @intCast(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/// Return the byte length of the UTF-8 sequence starting with `first_byte`.
+fn utf8CodepointLen(first_byte: u8) usize {
+    if (first_byte < 0x80) return 1;
+    if (first_byte < 0xE0) return 2;
+    if (first_byte < 0xF0) return 3;
     return 4;
 }

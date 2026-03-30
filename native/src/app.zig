@@ -18,6 +18,7 @@ const layoutSplitTree = mux_mod.layoutSplitTree;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
+const bar = @import("ui/bar.zig");
 
 var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
@@ -57,6 +58,8 @@ pub const App = struct {
     pending_layout_resize: bool = false,
     /// Set when all panes/tabs have closed; the runtime should call sapp_request_quit().
     pending_quit: bool = false,
+    hovered_tab_index: ?usize = null,
+    hovered_close_tab_index: ?usize = null,
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -428,12 +431,21 @@ pub const App = struct {
         return self.config.windowTitle();
     }
 
-    /// Height in pixels of the tab bar. 0 when only one tab exists (hidden).
+    /// Height in pixels of the shared top bar. 0 when hidden.
     pub fn tabBarHeight(self: *App) u32 {
+        if (!self.config.top_bar_show) return 0;
         const count = if (self.mux) |*mux| mux.tabCount() else 0;
-        if (count < 2) return 0;
-        // 1.5× cell height, rounded to even pixels.
+        if (count < 2 and !self.config.top_bar_show_when_single_tab) return 0;
+        if (self.config.top_bar_height > 0) return self.config.top_bar_height;
         return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
+    }
+
+    pub fn shouldDrawTopBarTabs(self: *App) bool {
+        return self.config.top_bar_draw_tabs and self.tabCount() > 0;
+    }
+
+    pub fn shouldDrawTopBarStatus(self: *App) bool {
+        return self.config.top_bar_draw_status;
     }
 
     pub fn tabCount(self: *App) usize {
@@ -458,6 +470,26 @@ pub const App = struct {
         return self.config.windowTitle();
     }
 
+    pub fn topBarTitle(self: *App, index: usize, hover_close: bool, out_buf: []u8) []const u8 {
+        const fallback = self.tabTitle(index);
+        if (self.lua) |*lua| {
+            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf);
+        }
+        return fallback;
+    }
+
+    pub fn hasCustomTopBarTabs(self: *App) bool {
+        if (self.lua) |*lua| return lua.hasTopBarFormatter();
+        return false;
+    }
+
+    pub fn topBarStatus(self: *App, side: bar.Side, segments: []bar.Segment, text_buf: []u8) []bar.Segment {
+        if (self.lua) |*lua| {
+            return lua.resolveTopBarStatus(side, segments, text_buf, self.activeTabIndex(), self.tabCount());
+        }
+        return segments[0..0];
+    }
+
     pub fn activeTabIndex(self: *App) usize {
         if (self.mux) |*mux| return mux.activeTabIndex();
         return 0;
@@ -473,6 +505,46 @@ pub const App = struct {
                 }
             }
             self.pending_layout_resize = true;
+        }
+    }
+
+    pub fn updateTopBarHover(self: *App, mouse_x: f32, mouse_y: f32, window_width: f32, close_w: f32) void {
+        self.hovered_tab_index = null;
+        self.hovered_close_tab_index = null;
+
+        const tbh: f32 = @floatFromInt(self.tabBarHeight());
+        const tab_count = self.tabCount();
+        if (tbh <= 0 or mouse_y < 0 or mouse_y >= tbh or mouse_x < 0 or window_width <= 0 or tab_count == 0) return;
+
+        if (self.hasCustomTopBarTabs()) {
+            var title_buf: [256]u8 = undefined;
+            const left_reserved: f32 = @as(f32, @floatFromInt(self.cell_width_px)) * 4.0;
+            const right_reserved: f32 = @as(f32, @floatFromInt(self.cell_width_px)) * 4.0;
+            const available = @max(@as(f32, 1.0), window_width - left_reserved - right_reserved);
+            const tab_w = available / @as(f32, @floatFromInt(tab_count));
+            var cursor_x: f32 = left_reserved;
+            for (0..tab_count) |ti| {
+                _ = self.topBarTitle(ti, false, &title_buf);
+                if (mouse_x >= cursor_x and mouse_x < cursor_x + tab_w and mouse_y >= 0 and mouse_y < tbh) {
+                    self.hovered_tab_index = ti;
+                    return;
+                }
+                cursor_x += tab_w;
+            }
+            return;
+        }
+
+        const tab_w = window_width / @as(f32, @floatFromInt(tab_count));
+        if (tab_w <= 0) return;
+
+        const raw = mouse_x / tab_w;
+        const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
+        const ti: usize = @intFromFloat(clamped);
+        self.hovered_tab_index = ti;
+
+        const tab_right = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
+        if (mouse_x >= tab_right - close_w) {
+            self.hovered_close_tab_index = ti;
         }
     }
 

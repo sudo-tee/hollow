@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const c = @import("sokol_c");
 const App = @import("../app.zig").App;
 const ghostty = @import("../term/ghostty.zig");
+const bar = @import("../ui/bar.zig");
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
@@ -18,6 +19,61 @@ var g_logged_first_char = false;
 var g_logged_first_mouse = false;
 var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
+
+const CustomTabLayout = struct {
+    x: f32,
+    width: f32,
+    title: []const u8,
+};
+
+fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
+    const tab_count = @min(app.tabCount(), layouts.len);
+    _ = renderer;
+    if (tab_count == 0 or max_right <= start_x or title_storage.len == 0) return layouts[0..0];
+
+    var temp_title_buf: [256]u8 = undefined;
+    const available_width = max_right - start_x;
+    if (available_width <= 0) return layouts[0..0];
+
+    const tab_w = available_width / @as(f32, @floatFromInt(tab_count));
+    var text_used: usize = 0;
+    for (0..tab_count) |ti| {
+        const x = start_x + @as(f32, @floatFromInt(ti)) * tab_w;
+        const width = if (ti + 1 == tab_count) max_right - x else tab_w;
+        if (width <= 0) break;
+        const title = app.topBarTitle(ti, false, &temp_title_buf);
+        const remaining_storage = title_storage.len - text_used;
+        if (remaining_storage == 0) break;
+        const copy_len = @min(title.len, remaining_storage);
+        @memcpy(title_storage[text_used .. text_used + copy_len], title[0..copy_len]);
+        const stored_title = title_storage[text_used .. text_used + copy_len];
+
+        layouts[ti] = .{
+            .x = x,
+            .width = width,
+            .title = stored_title,
+        };
+        text_used += copy_len;
+    }
+
+    return layouts[0..tab_count];
+}
+
+fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
+    var cursor_x = x;
+    for (segments) |seg| {
+        if (seg.text.len == 0) continue;
+        const seg_w = @as(f32, @floatFromInt(seg.text.len)) * renderer.cell_w + renderer.cell_w;
+        if (seg.bg) |bg| {
+            drawBorderRect(cursor_x, 0.0, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
+        }
+        const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+        renderer.drawLabelFace(cursor_x + renderer.cell_w * 0.5, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        c.sgl_load_default_pipeline();
+        cursor_x += seg_w;
+    }
+    return cursor_x;
+}
 
 fn framebufferSize() struct { width: f32, height: f32 } {
     return .{
@@ -153,6 +209,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // Queue cell geometry for every pane (no sgl_draw yet).
     if (g_ft_renderer) |*renderer| {
+        // Reset the per-frame atlas-upload guard so flushAtlas may upload once
+        // this frame.  Pre-rasterize tab bar labels here so their glyphs are
+        // included in the same atlas flush as the pane content.
+        renderer.beginFrame();
+        if (app.tabBarHeight() > 0 and app.shouldDrawTopBarTabs()) {
+            const tc = app.tabCount();
+            const close_sym = "\xc3\x97"; // U+00D7 ×
+            for (0..tc) |ti| {
+                var title_buf: [256]u8 = undefined;
+                const title = app.topBarTitle(ti, false, &title_buf);
+                std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
+                std.log.info("preRasterizeLabel", .{});
+                renderer.preRasterizeLabel(title);
+                renderer.preRasterizeLabel(close_sym);
+            }
+        }
         if (app.ghostty) |*runtime| {
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
@@ -194,6 +266,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 );
             }
         }
+    }
+
+    // Ensure atlas is uploaded before drawing tab bar labels.
+    // queueInViewport already calls flushAtlas internally, but if no panes were
+    // ready this frame (or the tab bar added new glyphs not seen in pane content),
+    // we flush here.  The guard in flushAtlas prevents a double upload.
+    if (g_ft_renderer) |*renderer| {
+        renderer.flushAtlasIfDirty();
     }
 
     // Draw split borders as filled 2px quads (only when >1 pane).
@@ -242,6 +322,137 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             // Bottom seam — same logic vertically.
             if (@as(i32, @intFromFloat(y1)) < fh) {
                 drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+            }
+        }
+    }
+
+    // Draw tab bar when ≥2 tabs exist.
+    const tbh_u = app.tabBarHeight();
+    if (tbh_u > 0) {
+        if (g_ft_renderer) |*renderer| {
+            const tbh: f32 = @floatFromInt(tbh_u);
+            const fw: i32 = @intFromFloat(width);
+            const fh: i32 = @intFromFloat(height);
+
+            // Full-framebuffer projection (Y-down, origin top-left).
+            c.sgl_defaults();
+            c.sgl_viewport(0, 0, fw, fh, true);
+            c.sgl_scissor_rect(0, 0, fw, fh, true);
+            c.sgl_load_default_pipeline();
+            c.sgl_matrix_mode_projection();
+            c.sgl_load_identity();
+            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+
+            const bar_bg = app.config.top_bar_bg;
+            drawBorderRect(0.0, 0.0, width, tbh, bar_bg.r, bar_bg.g, bar_bg.b, 255);
+
+            const tab_count = app.tabCount();
+            const active_idx = app.activeTabIndex();
+            const tab_w: f32 = if (tab_count > 0) width / @as(f32, @floatFromInt(tab_count)) else width;
+            const close_w: f32 = renderer.cell_w + 10.0;
+            var title_buf: [256]u8 = undefined;
+            var left_text_buf: [512]u8 = undefined;
+            var right_text_buf: [512]u8 = undefined;
+            var left_segments_buf: [16]bar.Segment = undefined;
+            var right_segments_buf: [16]bar.Segment = undefined;
+            var custom_tab_layouts: [32]CustomTabLayout = undefined;
+            var custom_tab_title_storage: [1024]u8 = undefined;
+
+            const status_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
+            var left_end: f32 = 4.0;
+            var right_width: f32 = 0.0;
+            if (app.shouldDrawTopBarStatus()) {
+                const left_segments = app.topBarStatus(.left, &left_segments_buf, &left_text_buf);
+                const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
+                left_end = drawStatusSegments(renderer, 0.0, status_y, tbh, left_segments);
+                for (right_segments) |seg| {
+                    right_width += (@as(f32, @floatFromInt(seg.text.len)) * renderer.cell_w) + renderer.cell_w;
+                }
+                _ = drawStatusSegments(renderer, @max(left_end, width - right_width), status_y, tbh, right_segments);
+            }
+
+            if (app.shouldDrawTopBarTabs()) {
+                if (app.hasCustomTopBarTabs()) {
+                    const max_right = width - right_width;
+                    const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
+                    for (layouts, 0..) |layout, ti| {
+                        const is_active = ti == active_idx;
+                        const hover_tab = app.hovered_tab_index != null and app.hovered_tab_index.? == ti;
+                        const bg = if (is_active)
+                            ghostty.ColorRgb{ .r = 64, .g = 68, .b = 86 }
+                        else if (hover_tab)
+                            ghostty.ColorRgb{ .r = 52, .g = 55, .b = 70 }
+                        else
+                            ghostty.ColorRgb{ .r = 43, .g = 45, .b = 55 };
+                        drawBorderRect(layout.x, 0.0, layout.width, tbh, bg.r, bg.g, bg.b, 255);
+
+                        const label_space = layout.width - renderer.cell_w;
+                        const max_label_chars: usize = if (label_space > 0)
+                            @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
+                        else
+                            0;
+                        const label_len = @min(layout.title.len, max_label_chars);
+                        if (label_len > 0) {
+                            const fg_r: u8 = if (is_active) 255 else 190;
+                            const fg_g: u8 = if (is_active) 255 else 190;
+                            const fg_b: u8 = if (is_active) 255 else 190;
+                            renderer.drawLabel(layout.x + renderer.cell_w * 0.5, status_y, layout.title[0..label_len], fg_r, fg_g, fg_b);
+                            c.sgl_load_default_pipeline();
+                        }
+                    }
+                } else {
+                    for (0..tab_count) |ti| {
+                        const tx: f32 = @as(f32, @floatFromInt(ti)) * tab_w;
+
+                        // Tab background.
+                        const is_active = ti == active_idx;
+                        const bg_r: u8 = if (is_active) 55 else 35;
+                        const bg_g: u8 = if (is_active) 58 else 37;
+                        const bg_b: u8 = if (is_active) 72 else 46;
+                        drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, bg_r, bg_g, bg_b, 255);
+
+                        // Active tab: top accent line.
+                        if (is_active) {
+                            drawBorderRect(tx + 1.0, 0.0, tab_w - 2.0, 2.0, 120, 150, 220, 255);
+                        }
+
+                        // Tab title text — leave room for the close button on the right.
+                        const hover_close = app.hovered_close_tab_index != null and app.hovered_close_tab_index.? == ti;
+                        const title = app.topBarTitle(ti, hover_close, &title_buf);
+                        std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
+                        const label_space = tab_w - close_w - renderer.cell_w;
+                        const max_label_chars: usize = if (label_space > 0)
+                            @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
+                        else
+                            0;
+                        const label_len = @min(title.len, max_label_chars);
+                        const label_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
+                        const label_x: f32 = @floor(tx + renderer.cell_w * 0.5);
+                        if (label_len > 0) {
+                            const fg_r: u8 = if (is_active) 255 else 185;
+                            const fg_g: u8 = if (is_active) 255 else 185;
+                            const fg_b: u8 = if (is_active) 255 else 185;
+                            std.log.info("drawLabel len={d}", .{label_len});
+                            renderer.drawLabel(label_x, label_y, title[0..label_len], fg_r, fg_g, fg_b);
+                            // After drawLabel the pipeline changed; restore defaults for rects.
+                            c.sgl_load_default_pipeline();
+                        }
+
+                        // Close button "×".
+                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
+                        const close_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
+                        if (hover_close) {
+                            drawBorderRect(close_x - 4.0, 3.0, close_w - 2.0, tbh - 6.0, 92, 44, 44, 255);
+                        }
+                        renderer.drawLabelFace(close_x, close_y - 1.0, "\xc3\x97", if (hover_close) 255 else 215, if (hover_close) 220 else 140, if (hover_close) 220 else 140, 1); // U+00D7 ×
+                        c.sgl_load_default_pipeline();
+
+                        // Separator line between tabs.
+                        if (ti + 1 < tab_count) {
+                            drawBorderRect(tx + tab_w - 1.0, 1.0, 1.0, tbh - 2.0, 50, 52, 65, 255);
+                        }
+                    }
+                }
             }
         }
     }
@@ -348,6 +559,40 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         std.log.info("first Windows mouse event button={d} x={d:.2} y={d:.2}", .{ event.mouse_button, event.mouse_x, event.mouse_y });
     }
 
+    // Intercept clicks in the tab bar (only on press; release falls through).
+    if (action == .press) {
+        const tbh: f32 = @floatFromInt(app.tabBarHeight());
+        if (tbh > 0 and event.mouse_y < tbh) {
+            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+                const tab_count = app.tabCount();
+                const win_w = c.sapp_widthf();
+                if (tab_count > 0 and win_w > 0) {
+                    if (app.hasCustomTopBarTabs()) {
+                        if (app.hovered_tab_index) |ti| app.switchTab(ti);
+                        return;
+                    }
+                    const tab_w: f32 = win_w / @as(f32, @floatFromInt(tab_count));
+                    // Guard: tab_w must be positive and finite to avoid @intFromFloat panic.
+                    const raw = event.mouse_x / tab_w;
+                    const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
+                    const ti: usize = @intFromFloat(clamped);
+                    // Determine if the close button was hit.
+                    // close region: last cell_w + 4 px of the tab slot.
+                    const close_w: f32 = if (g_ft_renderer) |r| r.cell_w + 10.0 else 26.0;
+                    const tab_right: f32 = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
+                    if (event.mouse_x >= tab_right - close_w) {
+                        // Close button: switch to that tab first, then close.
+                        app.switchTab(ti);
+                        app.closeTab();
+                    } else {
+                        app.switchTab(ti);
+                    }
+                }
+            }
+            return; // do not forward to pane
+        }
+    }
+
     const button = switch (event.mouse_button) {
         c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
         c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
@@ -358,6 +603,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    const close_w: f32 = if (g_ft_renderer) |r| r.cell_w + 10.0 else 26.0;
+    app.updateTopBarHover(event.mouse_x, event.mouse_y, c.sapp_widthf(), close_w);
     app.sendMouse(.motion, null, event.mouse_x, event.mouse_y, ghosttyMods(event.modifiers)) catch {};
 }
 
