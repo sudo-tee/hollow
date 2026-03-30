@@ -26,6 +26,49 @@ const CustomTabLayout = struct {
     title: []const u8,
 };
 
+fn utf8CodepointLen(first_byte: u8) usize {
+    if (first_byte < 0x80) return 1;
+    if (first_byte < 0xE0) return 2;
+    if (first_byte < 0xF0) return 3;
+    return 4;
+}
+
+fn takeCodepoints(text: []const u8, count: usize) []const u8 {
+    var used_bytes: usize = 0;
+    var used_codepoints: usize = 0;
+    while (used_bytes < text.len and used_codepoints < count) {
+        const cp_len = utf8CodepointLen(text[used_bytes]);
+        if (used_bytes + cp_len > text.len) break;
+        used_bytes += cp_len;
+        used_codepoints += 1;
+    }
+    return text[0..used_bytes];
+}
+
+fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
+    const ellipsis = "...";
+    if (max_chars == 0) return "";
+
+    const full = takeCodepoints(text, max_chars);
+    if (full.len == text.len) return full;
+
+    if (max_chars <= ellipsis.len) {
+        const n = @min(max_chars, out_buf.len);
+        @memcpy(out_buf[0..n], ellipsis[0..n]);
+        return out_buf[0..n];
+    }
+
+    const prefix = takeCodepoints(text, max_chars - ellipsis.len);
+    const total = prefix.len + ellipsis.len;
+    if (total > out_buf.len) {
+        return takeCodepoints(text, max_chars);
+    }
+
+    @memcpy(out_buf[0..prefix.len], prefix);
+    @memcpy(out_buf[prefix.len..total], ellipsis);
+    return out_buf[0..total];
+}
+
 fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
     const tab_count = @min(app.tabCount(), layouts.len);
     _ = renderer;
@@ -361,6 +404,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const status_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
             var left_end: f32 = 4.0;
             var right_width: f32 = 0.0;
+            var right_start: f32 = width;
             if (app.shouldDrawTopBarStatus()) {
                 const left_segments = app.topBarStatus(.left, &left_segments_buf, &left_text_buf);
                 const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
@@ -368,12 +412,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 for (right_segments) |seg| {
                     right_width += (@as(f32, @floatFromInt(seg.text.len)) * renderer.cell_w) + renderer.cell_w;
                 }
-                _ = drawStatusSegments(renderer, @max(left_end, width - right_width), status_y, tbh, right_segments);
+                right_start = @max(left_end, width - right_width);
+                _ = drawStatusSegments(renderer, right_start, status_y, tbh, right_segments);
             }
 
             if (app.shouldDrawTopBarTabs()) {
                 if (app.hasCustomTopBarTabs()) {
-                    const max_right = width - right_width;
+                    const tab_gap: f32 = if (right_width > 0) renderer.cell_w else 0.0;
+                    const max_right = if (right_width > 0) right_start - tab_gap else width;
                     const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
                     for (layouts, 0..) |layout, ti| {
                         const is_active = ti == active_idx;
@@ -391,12 +437,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
                         else
                             0;
-                        const label_len = @min(layout.title.len, max_label_chars);
-                        if (label_len > 0) {
+                        var display_buf: [256]u8 = undefined;
+                        const display_title = fitTabLabel(layout.title, max_label_chars, &display_buf);
+                        if (display_title.len > 0) {
                             const fg_r: u8 = if (is_active) 255 else 190;
                             const fg_g: u8 = if (is_active) 255 else 190;
                             const fg_b: u8 = if (is_active) 255 else 190;
-                            renderer.drawLabel(layout.x + renderer.cell_w * 0.5, status_y, layout.title[0..label_len], fg_r, fg_g, fg_b);
+                            renderer.drawLabel(layout.x + renderer.cell_w * 0.5, status_y, display_title, fg_r, fg_g, fg_b);
                             c.sgl_load_default_pipeline();
                         }
                     }
@@ -425,15 +472,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
                         else
                             0;
-                        const label_len = @min(title.len, max_label_chars);
                         const label_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
                         const label_x: f32 = @floor(tx + renderer.cell_w * 0.5);
-                        if (label_len > 0) {
+                        var display_buf: [256]u8 = undefined;
+                        const display_title = fitTabLabel(title, max_label_chars, &display_buf);
+                        if (display_title.len > 0) {
                             const fg_r: u8 = if (is_active) 255 else 185;
                             const fg_g: u8 = if (is_active) 255 else 185;
                             const fg_b: u8 = if (is_active) 255 else 185;
-                            std.log.info("drawLabel len={d}", .{label_len});
-                            renderer.drawLabel(label_x, label_y, title[0..label_len], fg_r, fg_g, fg_b);
+                            std.log.info("drawLabel len={d}", .{display_title.len});
+                            renderer.drawLabel(label_x, label_y, display_title, fg_r, fg_g, fg_b);
                             // After drawLabel the pipeline changed; restore defaults for rects.
                             c.sgl_load_default_pipeline();
                         }
