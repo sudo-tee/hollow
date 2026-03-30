@@ -255,11 +255,19 @@ pub const App = struct {
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, text: ?[]const u8) !bool {
         const pane = self.activePane() orelse return false;
+        if (key == .escape and mods == ghostty.Mods.none and text == null) {
+            try self.sendText("\x1b");
+            return true;
+        }
+
         var buf: [128]u8 = undefined;
         const consumed: u32 = if (text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
-        const bytes = self.ghostty.?.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (text) |t| firstCodepoint(t) else 0, text, &buf) orelse return false;
-        try self.sendText(bytes);
-        return true;
+        if (self.ghostty.?.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (text) |t| firstCodepoint(t) else 0, text, &buf)) |bytes| {
+            try self.sendText(bytes);
+            return true;
+        }
+
+        return false;
     }
 
     pub const HitTestResult = struct {
