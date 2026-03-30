@@ -175,17 +175,31 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // Query DPI scale after sg_setup so the GPU context is ready.
     // On a 2× HiDPI display this returns 2.0; on a 1× display it returns 1.0.
     const dpi_scale = c.sapp_dpi_scale();
-    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1}", .{ dpi_scale, app.config.font_size });
+    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1}", .{ dpi_scale, app.config.fonts.size });
 
     g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
-        .font_size = app.config.font_size,
+        .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
-        .padding_x = app.config.font_padding_x,
-        .padding_y = app.config.font_padding_y,
-        .coverage_boost = app.config.font_coverage_boost,
-        .coverage_add = app.config.font_coverage_add,
-        .lcd = app.config.font_lcd,
-        .embolden = app.config.font_embolden,
+        .padding_x = app.config.fonts.padding_x,
+        .padding_y = app.config.fonts.padding_y,
+        .coverage_boost = app.config.fonts.coverage_boost,
+        .coverage_add = app.config.fonts.coverage_add,
+        .smoothing = switch (app.config.fonts.smoothing) {
+            .grayscale => .grayscale,
+            .subpixel => .subpixel,
+        },
+        .hinting = switch (app.config.fonts.hinting) {
+            .none => .none,
+            .light => .light,
+            .normal => .normal,
+        },
+        .ligatures = app.config.fonts.ligatures,
+        .embolden = app.config.fonts.embolden,
+        .regular_path = app.config.fonts.regular,
+        .bold_path = app.config.fonts.bold,
+        .italic_path = app.config.fonts.italic,
+        .bold_italic_path = app.config.fonts.bold_italic,
+        .fallback_paths = app.config.fonts.fallback_paths.items,
     }) catch |err| blk: {
         std.log.err("ft_renderer init failed: {}", .{err});
         break :blk null;
@@ -568,11 +582,6 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
-    if (event.key_code == c.SAPP_KEYCODE_ESCAPE) {
-        c.sapp_request_quit();
-        return;
-    }
-
     if (!g_logged_first_key and builtin.os.tag == .windows) {
         g_logged_first_key = true;
         std.log.info("first Windows key event key_code={d}", .{event.key_code});

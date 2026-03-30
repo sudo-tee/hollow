@@ -607,6 +607,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         const key = key_ptr[0..key_len];
         const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
 
+        if (std.mem.eql(u8, key, "fonts") and value_type == .table) {
+            const fonts_idx = absoluteIndex(api, state, -1);
+            applyFontsTable(ctx.cfg, api, state, fonts_idx) catch |err| std.log.err("config fonts field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -638,11 +644,17 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "luajit_library")) return cfg.setLuajitLibrary(value);
     if (std.mem.eql(u8, key, "window_title")) return cfg.setWindowTitle(value);
     if (std.mem.eql(u8, key, "lib_dir")) return cfg.setLibDir(value);
+    if (std.mem.eql(u8, key, "font_path")) return cfg.setFontRegular(value);
+    if (std.mem.eql(u8, key, "font_bold_path")) return cfg.setFontBold(value);
+    if (std.mem.eql(u8, key, "font_italic_path")) return cfg.setFontItalic(value);
+    if (std.mem.eql(u8, key, "font_bold_italic_path")) return cfg.setFontBoldItalic(value);
+    if (std.mem.eql(u8, key, "font_smoothing")) return cfg.setFontSmoothing(value);
+    if (std.mem.eql(u8, key, "font_hinting")) return cfg.setFontHinting(value);
 }
 
 fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
     if (std.mem.eql(u8, key, "font_size")) {
-        cfg.font_size = @floatCast(value);
+        cfg.fonts.size = @floatCast(value);
         return;
     }
 
@@ -667,7 +679,27 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
     }
 
     if (std.mem.eql(u8, key, "font_embolden")) {
-        cfg.font_embolden = @floatCast(value);
+        cfg.fonts.embolden = @floatCast(value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_padding_x")) {
+        cfg.fonts.padding_x = @floatCast(value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_padding_y")) {
+        cfg.fonts.padding_y = @floatCast(value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_coverage_boost")) {
+        cfg.fonts.coverage_boost = @floatCast(value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_coverage_add")) {
+        cfg.fonts.coverage_add = @floatCast(value);
         return;
     }
 
@@ -683,6 +715,10 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
 }
 
 fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
+    if (std.mem.eql(u8, key, "font_lcd")) {
+        cfg.fonts.smoothing = if (value) .subpixel else .grayscale;
+        return;
+    }
     if (std.mem.eql(u8, key, "top_bar_show")) {
         cfg.top_bar_show = value;
         return;
@@ -698,6 +734,109 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     if (std.mem.eql(u8, key, "top_bar_draw_status")) {
         cfg.top_bar_draw_status = value;
         return;
+    }
+}
+
+fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    cfg.clearFontFallbacks();
+
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (std.mem.eql(u8, key, "fallbacks") and value_type == .table) {
+            const fallbacks_idx = absoluteIndex(api, state, -1);
+            try applyFontFallbacksTable(cfg, api, state, fallbacks_idx);
+            continue;
+        }
+
+        if (value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            const value = value_ptr[0..value_len];
+
+            if (std.mem.eql(u8, key, "regular")) {
+                try cfg.setFontRegular(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "bold")) {
+                try cfg.setFontBold(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "italic")) {
+                try cfg.setFontItalic(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "bold_italic")) {
+                try cfg.setFontBoldItalic(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "smoothing")) {
+                try cfg.setFontSmoothing(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "hinting")) {
+                try cfg.setFontHinting(value);
+                continue;
+            }
+        }
+
+        if (value_type == .number) {
+            const value = api.to_number(state, -1);
+            if (std.mem.eql(u8, key, "size")) {
+                cfg.fonts.size = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "padding_x")) {
+                cfg.fonts.padding_x = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "padding_y")) {
+                cfg.fonts.padding_y = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "coverage_boost")) {
+                cfg.fonts.coverage_boost = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "coverage_add")) {
+                cfg.fonts.coverage_add = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "embolden")) {
+                cfg.fonts.embolden = @floatCast(value);
+                continue;
+            }
+        }
+
+        if (value_type == .boolean) {
+            const value = api.to_boolean(state, -1) != 0;
+            if (std.mem.eql(u8, key, "lcd")) {
+                cfg.fonts.smoothing = if (value) .subpixel else .grayscale;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "ligatures")) {
+                cfg.fonts.ligatures = value;
+                continue;
+            }
+        }
+    }
+}
+
+fn applyFontFallbacksTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        try cfg.addFontFallback(value_ptr[0..value_len]);
     }
 }
 
@@ -746,6 +885,11 @@ fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const 
 
 fn pop(api: Api, state: *State, count: c_int) void {
     api.set_top(state, -count - 1);
+}
+
+fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
+    if (idx > 0 or idx <= LUA_REGISTRYINDEX) return idx;
+    return api.get_top(state) + idx + 1;
 }
 
 /// hollow.split_pane(direction)

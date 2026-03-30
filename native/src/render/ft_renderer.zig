@@ -54,9 +54,10 @@ const GlyphKey = struct {
 
 // ── Shaping cache ─────────────────────────────────────────────────────────────
 const ShapeKey = struct {
-    text: [16]u8,
+    text: [128]u8,
     len: u8,
     face_idx: u8,
+    ligatures: bool,
 };
 
 const GlyphInstance = struct {
@@ -68,17 +69,36 @@ const GlyphInstance = struct {
 
 const ShapeResult = struct {
     glyphs: []const GlyphInstance,
+    raster_face_index: u8,
 };
 
 pub const FtRendererConfig = struct {
+    pub const Smoothing = enum {
+        grayscale,
+        subpixel,
+    };
+
+    pub const Hinting = enum {
+        none,
+        light,
+        normal,
+    };
+
     font_size: f32 = 18.0,
     dpi_scale: f32 = 1.0,
     padding_x: f32 = 0.0,
     padding_y: f32 = 0.0,
     coverage_boost: f32 = 1.12,
     coverage_add: f32 = 6.0,
-    lcd: bool = true,
+    smoothing: Smoothing = .grayscale,
+    hinting: Hinting = .normal,
+    ligatures: bool = true,
     embolden: f32 = 0.0,
+    regular_path: ?[]const u8 = null,
+    bold_path: ?[]const u8 = null,
+    italic_path: ?[]const u8 = null,
+    bold_italic_path: ?[]const u8 = null,
+    fallback_paths: []const []const u8 = &.{},
 };
 
 pub const FtRenderer = struct {
@@ -91,6 +111,9 @@ pub const FtRenderer = struct {
     face_italic: ft.FT_Face,
     face_bold_italic: ft.FT_Face,
     face_nerd: ft.FT_Face,
+    face_symbols_nerd: ft.FT_Face,
+    face_symbols: ft.FT_Face,
+    fallback_faces: []ft.FT_Face,
 
     // HarfBuzz fonts (one per face)
     hb_regular: ?*ft.hb_font_t,
@@ -98,6 +121,9 @@ pub const FtRenderer = struct {
     hb_italic: ?*ft.hb_font_t,
     hb_bold_italic: ?*ft.hb_font_t,
     hb_nerd: ?*ft.hb_font_t,
+    hb_symbols_nerd: ?*ft.hb_font_t,
+    hb_symbols: ?*ft.hb_font_t,
+    fallback_hb_fonts: []?*ft.hb_font_t,
 
     // HarfBuzz buffer (reused each cell)
     hb_buf: ?*ft.hb_buffer_t,
@@ -134,7 +160,9 @@ pub const FtRenderer = struct {
     padding_y: f32,
     coverage_boost: f32,
     coverage_add: f32,
-    lcd: bool,
+    smoothing: FtRendererConfig.Smoothing,
+    hinting: FtRendererConfig.Hinting,
+    ligatures: bool,
     embolden: f32,
 
     glyph_buf: [32]u8 = [_]u8{0} ** 32,
@@ -148,18 +176,36 @@ pub const FtRenderer = struct {
         var ft_lib: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&ft_lib) != 0) return error.FtInitFailed;
         errdefer _ = ft.FT_Done_FreeType(ft_lib);
-        _ = ft.FT_Library_SetLcdFilter(ft_lib, ft.FT_LCD_FILTER_LIGHT);
+        if (cfg.smoothing == .subpixel) {
+            _ = ft.FT_Library_SetLcdFilter(ft_lib, ft.FT_LCD_FILTER_LIGHT);
+        }
 
-        const face_regular = try loadFace(ft_lib, fonts.regular, font_size_px);
+        const face_regular = try loadConfiguredFace(allocator, ft_lib, cfg.regular_path, fonts.regular, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_regular);
-        const face_bold = try loadFace(ft_lib, fonts.bold, font_size_px);
+        const face_bold = try loadConfiguredFace(allocator, ft_lib, cfg.bold_path, fonts.bold, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_bold);
-        const face_italic = try loadFace(ft_lib, fonts.italic, font_size_px);
+        const face_italic = try loadConfiguredFace(allocator, ft_lib, cfg.italic_path, fonts.italic, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_italic);
-        const face_bold_italic = try loadFace(ft_lib, fonts.bold_italic, font_size_px);
+        const face_bold_italic = try loadConfiguredFace(allocator, ft_lib, cfg.bold_italic_path, fonts.bold_italic, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_bold_italic);
         const face_nerd = try loadFace(ft_lib, fonts.nerd, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_nerd);
+        const face_symbols_nerd = try loadFace(ft_lib, fonts.symbols_nerd, font_size_px);
+        errdefer _ = ft.FT_Done_Face(face_symbols_nerd);
+        const face_symbols = try loadFace(ft_lib, fonts.symbols, font_size_px);
+        errdefer _ = ft.FT_Done_Face(face_symbols);
+
+        const fallback_faces = try allocator.alloc(ft.FT_Face, cfg.fallback_paths.len);
+        errdefer allocator.free(fallback_faces);
+        var loaded_fallback_faces: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < loaded_fallback_faces) : (i += 1) _ = ft.FT_Done_Face(fallback_faces[i]);
+        }
+        for (cfg.fallback_paths, 0..) |path, i| {
+            fallback_faces[i] = try loadFaceFromPath(allocator, ft_lib, path, font_size_px);
+            loaded_fallback_faces += 1;
+        }
 
         // ── HarfBuzz fonts ─────────────────────────────────────────────────
         const hb_regular = ft.hb_ft_font_create_referenced(face_regular);
@@ -167,6 +213,21 @@ pub const FtRenderer = struct {
         const hb_italic = ft.hb_ft_font_create_referenced(face_italic);
         const hb_bold_italic = ft.hb_ft_font_create_referenced(face_bold_italic);
         const hb_nerd = ft.hb_ft_font_create_referenced(face_nerd);
+        const hb_symbols_nerd = ft.hb_ft_font_create_referenced(face_symbols_nerd);
+        const hb_symbols = ft.hb_ft_font_create_referenced(face_symbols);
+        const fallback_hb_fonts = try allocator.alloc(?*ft.hb_font_t, fallback_faces.len);
+        errdefer allocator.free(fallback_hb_fonts);
+        var loaded_fallback_hb: usize = 0;
+        errdefer {
+            var i: usize = 0;
+            while (i < loaded_fallback_hb) : (i += 1) {
+                if (fallback_hb_fonts[i]) |font| ft.hb_font_destroy(font);
+            }
+        }
+        for (fallback_faces, 0..) |face, i| {
+            fallback_hb_fonts[i] = ft.hb_ft_font_create_referenced(face);
+            loaded_fallback_hb += 1;
+        }
         const hb_buf = ft.hb_buffer_create();
 
         // ── Cell metrics (from regular face) ──────────────────────────────
@@ -235,11 +296,17 @@ pub const FtRenderer = struct {
             .face_italic = face_italic,
             .face_bold_italic = face_bold_italic,
             .face_nerd = face_nerd,
+            .face_symbols_nerd = face_symbols_nerd,
+            .face_symbols = face_symbols,
+            .fallback_faces = fallback_faces,
             .hb_regular = hb_regular,
             .hb_bold = hb_bold,
             .hb_italic = hb_italic,
             .hb_bold_italic = hb_bold_italic,
             .hb_nerd = hb_nerd,
+            .hb_symbols_nerd = hb_symbols_nerd,
+            .hb_symbols = hb_symbols,
+            .fallback_hb_fonts = fallback_hb_fonts,
             .hb_buf = hb_buf,
             .atlas_img = atlas_img,
             .atlas_view = atlas_view,
@@ -262,7 +329,9 @@ pub const FtRenderer = struct {
             .padding_y = cfg.padding_y * cfg.dpi_scale,
             .coverage_boost = cfg.coverage_boost,
             .coverage_add = cfg.coverage_add,
-            .lcd = cfg.lcd,
+            .smoothing = cfg.smoothing,
+            .hinting = cfg.hinting,
+            .ligatures = cfg.ligatures,
             .embolden = cfg.embolden,
         };
     }
@@ -328,12 +397,22 @@ pub const FtRenderer = struct {
         c.sg_destroy_sampler(self.atlas_smp);
         c.sg_destroy_sampler(self.atlas_ui_smp);
         if (self.hb_buf) |buf| ft.hb_buffer_destroy(buf);
+        for (self.fallback_hb_fonts) |maybe_font| {
+            if (maybe_font) |font| ft.hb_font_destroy(font);
+        }
+        self.allocator.free(self.fallback_hb_fonts);
+        if (self.hb_symbols) |f| ft.hb_font_destroy(f);
+        if (self.hb_symbols_nerd) |f| ft.hb_font_destroy(f);
         if (self.hb_nerd) |f| ft.hb_font_destroy(f);
         if (self.hb_bold_italic) |f| ft.hb_font_destroy(f);
         if (self.hb_italic) |f| ft.hb_font_destroy(f);
         if (self.hb_bold) |f| ft.hb_font_destroy(f);
         if (self.hb_regular) |f| ft.hb_font_destroy(f);
+        _ = ft.FT_Done_Face(self.face_symbols);
+        _ = ft.FT_Done_Face(self.face_symbols_nerd);
         _ = ft.FT_Done_Face(self.face_nerd);
+        for (self.fallback_faces) |face| _ = ft.FT_Done_Face(face);
+        self.allocator.free(self.fallback_faces);
         _ = ft.FT_Done_Face(self.face_bold_italic);
         _ = ft.FT_Done_Face(self.face_italic);
         _ = ft.FT_Done_Face(self.face_bold);
@@ -405,6 +484,12 @@ pub const FtRenderer = struct {
             });
         }
 
+        const row_count = runtime.renderStateRows(render_state) orelse 0;
+        const col_count = runtime.renderStateCols(render_state) orelse 0;
+        const run_buf_len = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
+        const run_buf = self.allocator.alloc(u8, run_buf_len) catch return;
+        defer self.allocator.free(run_buf);
+
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
@@ -413,6 +498,10 @@ pub const FtRenderer = struct {
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 var col_x: usize = 0;
+                var run_start_col: usize = 0;
+                var run_len: usize = 0;
+                var run_face_idx: u8 = 0;
+                var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
                     // Background
                     const bg = runtime.cellBackground(row_cells.*) orelse default_bg;
@@ -431,27 +520,62 @@ pub const FtRenderer = struct {
 
                     // Rasterisation
                     const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                    if (grapheme_len > 0) {
-                        var cps: [16]u32 = [_]u32{0} ** 16;
-                        runtime.cellGraphemes(row_cells.*, &cps);
+                    const fg = runtime.cellForeground(row_cells.*) orelse default_fg;
+                    const style = runtime.cellStyle(row_cells.*);
+                    const face_idx: u8 = if (style) |s| blk: {
+                        if (s.bold and s.italic) break :blk 2;
+                        if (s.bold) break :blk 1;
+                        if (s.italic) break :blk 3;
+                        break :blk 0;
+                    } else 0;
 
-                        var glyph_len: usize = 0;
-                        for (cps[0..grapheme_len]) |cp| {
-                            if (cp == 0) break;
-                            glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                        }
-                        if (glyph_len > 0) {
-                            self.glyph_buf[glyph_len] = 0;
-                            const style = runtime.cellStyle(row_cells.*);
-                            const face_idx: u8 = if (style) |s| blk: {
-                                if (s.bold and s.italic) break :blk 2;
-                                if (s.bold) break :blk 1;
-                                if (s.italic) break :blk 3;
-                                break :blk 0;
-                            } else 0;
-                            self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
-                        }
+                    if (grapheme_len == 0) {
+                        flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                        continue;
                     }
+
+                    var cps: [16]u32 = [_]u32{0} ** 16;
+                    runtime.cellGraphemes(row_cells.*, &cps);
+
+                    var glyph_len: usize = 0;
+                    for (cps[0..grapheme_len]) |cp| {
+                        if (cp == 0) break;
+                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                    }
+
+                    if (glyph_len == 0) {
+                        flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                        continue;
+                    }
+
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
+                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                        continue;
+                    }
+
+                    if (run_len + glyph_len > run_buf.len) {
+                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                    }
+
+                    if (run_len == 0) {
+                        run_start_col = col_x;
+                        run_face_idx = face_idx;
+                        run_fg = fg;
+                    }
+
+                    if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        run_start_col = col_x;
+                        run_face_idx = face_idx;
+                        run_fg = fg;
+                    }
+
+                    @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                    run_len += glyph_len;
+                }
+                if (run_len > 0) {
+                    flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
             }
             if (quads_open) c.sgl_end();
@@ -474,22 +598,12 @@ pub const FtRenderer = struct {
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 var col_x: usize = 0;
+                var run_start_col: usize = 0;
+                var run_len: usize = 0;
+                var run_face_idx: u8 = 0;
+                var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
                     const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                    if (grapheme_len == 0) continue;
-
-                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                    var cps: [16]u32 = [_]u32{0} ** 16;
-                    runtime.cellGraphemes(row_cells.*, &cps);
-
-                    var glyph_len: usize = 0;
-                    for (cps[0..grapheme_len]) |cp| {
-                        if (cp == 0) break;
-                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                    }
-                    if (glyph_len == 0) continue;
-                    self.glyph_buf[glyph_len] = 0;
-
                     const fg = runtime.cellForeground(row_cells.*) orelse default_fg;
                     const style = runtime.cellStyle(row_cells.*);
                     const face_idx: u8 = if (style) |s| blk: {
@@ -499,7 +613,53 @@ pub const FtRenderer = struct {
                         break :blk 0;
                     } else 0;
 
-                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                    if (grapheme_len == 0) {
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        continue;
+                    }
+
+                    var cps: [16]u32 = [_]u32{0} ** 16;
+                    runtime.cellGraphemes(row_cells.*, &cps);
+
+                    var glyph_len: usize = 0;
+                    for (cps[0..grapheme_len]) |cp| {
+                        if (cp == 0) break;
+                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                    }
+                    if (glyph_len == 0) {
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        continue;
+                    }
+
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                        continue;
+                    }
+
+                    if (run_len + glyph_len > run_buf.len) {
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                    }
+
+                    if (run_len == 0) {
+                        run_start_col = col_x;
+                        run_face_idx = face_idx;
+                        run_fg = fg;
+                    }
+
+                    if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        run_start_col = col_x;
+                        run_face_idx = face_idx;
+                        run_fg = fg;
+                    }
+
+                    @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                    run_len += glyph_len;
+                }
+                if (run_len > 0) {
+                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
             }
             c.sgl_end();
@@ -531,7 +691,7 @@ pub const FtRenderer = struct {
     fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
         for (result.glyphs) |glyph_inst| {
-            _ = self.getOrRasterize(glyph_inst.glyph_id, face_idx, raster_mode);
+            _ = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode);
         }
     }
 
@@ -541,7 +701,7 @@ pub const FtRenderer = struct {
 
         var x_offset: f32 = 0;
         for (result.glyphs) |glyph_inst| {
-            const glyph = self.getOrRasterize(glyph_inst.glyph_id, face_idx, raster_mode) orelse continue;
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
 
             const gx = px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
             const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
@@ -560,26 +720,82 @@ pub const FtRenderer = struct {
         }
     }
 
-    fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult {
-        if (utf8.len == 0 or utf8.len > 16) return null;
+    fn preRasterizeRun(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
+        const result = self.getOrShape(utf8, face_idx) orelse return;
+        for (result.glyphs) |glyph_inst| {
+            _ = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode);
+        }
+    }
 
-        var key = ShapeKey{ .text = [_]u8{0} ** 16, .len = @intCast(utf8.len), .face_idx = face_idx };
+    fn batchGlyphRun(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
+        const result = self.getOrShape(utf8, face_idx) orelse return;
+
+        var pen_x: f32 = 0;
+        for (result.glyphs) |glyph_inst| {
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
+            const gx = px + pen_x + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
+            const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
+
+            const w = @as(f32, @floatFromInt(glyph.bw));
+            const h = @as(f32, @floatFromInt(glyph.bh));
+            if (w > 0 and h > 0) {
+                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+                c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+                c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+            }
+
+            pen_x += glyph_inst.x_advance;
+        }
+    }
+
+    fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+        _ = fg;
+        _ = py;
+        if (run_len.* == 0) return;
+        self.preRasterizeRun(run_buf[0..run_len.*], face_idx, .terminal);
+        run_start_col.* = 0;
+        run_len.* = 0;
+    }
+
+    fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+        if (run_len.* == 0) return;
+        const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
+        self.batchGlyphRun(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal);
+        run_start_col.* = 0;
+        run_len.* = 0;
+    }
+
+    fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult {
+        if (utf8.len == 0 or utf8.len > 128) return null;
+
+        var key = ShapeKey{ .text = [_]u8{0} ** 128, .len = @intCast(utf8.len), .face_idx = face_idx, .ligatures = self.ligatures };
         @memcpy(key.text[0..utf8.len], utf8);
 
         if (self.shape_cache.get(key)) |res| return res;
 
-        const hb_font = switch (face_idx) {
-            1 => self.hb_bold,
-            2 => self.hb_bold_italic,
-            3 => self.hb_italic,
-            else => self.hb_regular,
-        };
+        const selected = self.selectShapeFont(utf8, face_idx);
+        const hb_font = selected.hb_font;
 
         const buf = self.hb_buf orelse return null;
         ft.hb_buffer_clear_contents(buf);
         ft.hb_buffer_add_utf8(buf, utf8.ptr, @intCast(utf8.len), 0, @intCast(utf8.len));
         ft.hb_buffer_guess_segment_properties(buf);
-        ft.hb_shape(hb_font, buf, null, 0);
+        const liga_feature = ft.hb_feature_t{
+            .tag = featureTag(.{ 'l', 'i', 'g', 'a' }),
+            .value = if (self.ligatures) 1 else 0,
+            .start = 0,
+            .end = std.math.maxInt(c_uint),
+        };
+        const clig_feature = ft.hb_feature_t{
+            .tag = featureTag(.{ 'c', 'l', 'i', 'g' }),
+            .value = if (self.ligatures) 1 else 0,
+            .start = 0,
+            .end = std.math.maxInt(c_uint),
+        };
+        const features = [_]ft.hb_feature_t{ liga_feature, clig_feature };
+        ft.hb_shape(hb_font, buf, &features, features.len);
 
         var info_len: c_uint = 0;
         var pos_len: c_uint = 0;
@@ -598,7 +814,7 @@ pub const FtRenderer = struct {
             };
         }
 
-        const res = ShapeResult{ .glyphs = glyphs };
+        const res = ShapeResult{ .glyphs = glyphs, .raster_face_index = selected.raster_face_index };
         self.shape_cache.put(key, res) catch {
             self.allocator.free(glyphs);
             return null;
@@ -607,41 +823,25 @@ pub const FtRenderer = struct {
     }
 
     /// Returns a cached Glyph, rasterizing it into the atlas if needed.
-    fn getOrRasterize(self: *FtRenderer, glyph_id: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph {
-        const key = GlyphKey{ .glyph_index = glyph_id, .face_index = face_idx, .raster_mode = raster_mode };
+    fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, raster_mode: RasterMode) ?Glyph {
+        const key = GlyphKey{ .glyph_index = glyph_id, .face_index = raster_face_index, .raster_mode = raster_mode };
         if (self.glyph_cache.get(key)) |g| return g;
 
-        // Pick the right FT face
-        const primary_face = switch (face_idx) {
-            1 => self.face_bold,
-            2 => self.face_bold_italic,
-            3 => self.face_italic,
-            else => self.face_regular,
-        };
+        const primary_face = self.faceForRasterIndex(raster_face_index) orelse return null;
 
-        const use_lcd = self.lcd and raster_mode == .terminal;
-        const load_flags = ft.FT_LOAD_DEFAULT | ft.FT_LOAD_FORCE_AUTOHINT |
-            if (use_lcd) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
-        var err = ft.FT_Load_Glyph(primary_face, glyph_id, load_flags);
-        var used_face = primary_face;
-
-        if (err != 0 or glyph_id == 0) {
-            // Try nerd font as fallback
-            err = ft.FT_Load_Glyph(self.face_nerd, glyph_id, load_flags);
-            if (err != 0) {
-                // Cache a null entry so we don't retry
-                self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
-                return null;
-            }
-            used_face = self.face_nerd;
+        const use_subpixel = self.smoothing == .subpixel and raster_mode == .terminal;
+        const load_flags = self.loadFlagsForRasterMode(use_subpixel);
+        if (ft.FT_Load_Glyph(primary_face, glyph_id, load_flags) != 0 or glyph_id == 0) {
+            self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
+            return null;
         }
 
-        const slot = used_face.*.glyph;
+        const slot = primary_face.*.glyph;
         if (self.embolden > 0.0 and slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
             const strength: ft.FT_Pos = @intFromFloat(self.embolden * 64.0);
             _ = ft.FT_Outline_Embolden(&slot.*.outline, strength);
         }
-        if (ft.FT_Render_Glyph(slot, if (use_lcd) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
+        if (ft.FT_Render_Glyph(slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
             if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
                 self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
                 return null;
@@ -768,7 +968,119 @@ pub const FtRenderer = struct {
         const boosted = @as(f32, @floatFromInt(cov)) * self.coverage_boost + self.coverage_add;
         return @intFromFloat(@min(255.0, boosted));
     }
+
+    fn loadFlagsForRasterMode(self: *const FtRenderer, use_subpixel: bool) c_int {
+        var flags: c_int = ft.FT_LOAD_DEFAULT;
+        switch (self.hinting) {
+            .none => {
+                flags |= ft.FT_LOAD_NO_HINTING;
+                flags |= ft.FT_LOAD_NO_AUTOHINT;
+            },
+            .light => {
+                flags |= ft.FT_LOAD_FORCE_AUTOHINT;
+                flags |= if (use_subpixel) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
+            },
+            .normal => {
+                flags |= if (use_subpixel) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_NORMAL;
+            },
+        }
+        return flags;
+    }
+
+    const SelectedShapeFont = struct {
+        hb_font: ?*ft.hb_font_t,
+        raster_face_index: u8,
+    };
+
+    fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) SelectedShapeFont {
+        const primary_face = self.faceForRasterIndex(face_idx) orelse self.face_regular;
+        const primary_hb = self.hbFontForRasterIndex(face_idx) orelse self.hb_regular;
+        if (fontLikelySupportsText(primary_face, utf8)) {
+            return .{ .hb_font = primary_hb, .raster_face_index = face_idx };
+        }
+
+        var i: usize = 0;
+        while (i < self.fallback_faces.len) : (i += 1) {
+            if (fontLikelySupportsText(self.fallback_faces[i], utf8)) {
+                return .{ .hb_font = self.fallback_hb_fonts[i], .raster_face_index = @intCast(4 + i) };
+            }
+        }
+
+        const bundled_base = 4 + self.fallback_faces.len;
+        if (fontLikelySupportsText(self.face_symbols_nerd, utf8)) {
+            return .{ .hb_font = self.hb_symbols_nerd, .raster_face_index = @intCast(bundled_base) };
+        }
+        if (fontLikelySupportsText(self.face_symbols, utf8)) {
+            return .{ .hb_font = self.hb_symbols, .raster_face_index = @intCast(bundled_base + 1) };
+        }
+        if (fontLikelySupportsText(self.face_nerd, utf8)) {
+            return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 2) };
+        }
+
+        return .{ .hb_font = primary_hb, .raster_face_index = face_idx };
+    }
+
+    fn faceForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?ft.FT_Face {
+        return switch (raster_face_index) {
+            0 => self.face_regular,
+            1 => self.face_bold,
+            2 => self.face_bold_italic,
+            3 => self.face_italic,
+            else => blk: {
+                const fallback_index = raster_face_index - 4;
+                if (fallback_index < self.fallback_faces.len) break :blk self.fallback_faces[fallback_index];
+                if (fallback_index == self.fallback_faces.len) break :blk self.face_symbols_nerd;
+                if (fallback_index == self.fallback_faces.len + 1) break :blk self.face_symbols;
+                if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_nerd;
+                break :blk null;
+            },
+        };
+    }
+
+    fn hbFontForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?*ft.hb_font_t {
+        return switch (raster_face_index) {
+            0 => self.hb_regular,
+            1 => self.hb_bold,
+            2 => self.hb_bold_italic,
+            3 => self.hb_italic,
+            else => blk: {
+                const fallback_index = raster_face_index - 4;
+                if (fallback_index < self.fallback_hb_fonts.len) break :blk self.fallback_hb_fonts[fallback_index];
+                if (fallback_index == self.fallback_hb_fonts.len) break :blk self.hb_symbols_nerd;
+                if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk self.hb_symbols;
+                if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_nerd;
+                break :blk null;
+            },
+        };
+    }
 };
+
+fn featureTag(tag: [4]u8) u32 {
+    return (@as(u32, tag[0]) << 24) |
+        (@as(u32, tag[1]) << 16) |
+        (@as(u32, tag[2]) << 8) |
+        @as(u32, tag[3]);
+}
+
+fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+fn isLigatureCandidate(cps: []const u32) bool {
+    if (cps.len == 0) return false;
+    for (cps) |cp| {
+        if (cp == 0) break;
+        if (!isLigatureCodepoint(cp)) return false;
+    }
+    return true;
+}
+
+fn isLigatureCodepoint(cp: u32) bool {
+    return switch (cp) {
+        '!', '#', '$', '%', '&', '*', '+', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '\\', '^', '|', '~' => true,
+        else => false,
+    };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -786,6 +1098,50 @@ fn loadFace(lib: ft.FT_Library, data: []const u8, size_px: f32) !ft.FT_Face {
     const px: c_uint = @intFromFloat(@round(size_px));
     if (ft.FT_Set_Pixel_Sizes(face, 0, px) != 0) return error.FtSetSizeFailed;
     return face;
+}
+
+fn loadConfiguredFace(allocator: std.mem.Allocator, lib: ft.FT_Library, path: ?[]const u8, embedded: []const u8, size_px: f32) !ft.FT_Face {
+    if (path) |p| {
+        return loadFaceFromPath(allocator, lib, p, size_px) catch loadFace(lib, embedded, size_px);
+    }
+    return loadFace(lib, embedded, size_px);
+}
+
+fn loadFaceFromPath(allocator: std.mem.Allocator, lib: ft.FT_Library, path: []const u8, size_px: f32) !ft.FT_Face {
+    const zpath = try allocator.dupeZ(u8, path);
+    defer allocator.free(zpath);
+
+    var face: ft.FT_Face = null;
+    const err = ft.FT_New_Face(lib, zpath.ptr, 0, &face);
+    if (err != 0 or face == null) return error.FtLoadFaceFailed;
+    errdefer _ = ft.FT_Done_Face(face);
+
+    const px: c_uint = @intFromFloat(@round(size_px));
+    if (ft.FT_Set_Pixel_Sizes(face, 0, px) != 0) return error.FtSetSizeFailed;
+    return face;
+}
+
+fn fontLikelySupportsText(face: ft.FT_Face, utf8: []const u8) bool {
+    const cp = firstRenderableCodepoint(utf8) orelse return true;
+    return ft.FT_Get_Char_Index(face, cp) != 0;
+}
+
+fn firstRenderableCodepoint(utf8: []const u8) ?u32 {
+    var view = std.unicode.Utf8View.init(utf8) catch return null;
+    var iter = view.iterator();
+    while (iter.nextCodepoint()) |cp| {
+        if (isIgnorableCodepoint(cp)) continue;
+        return cp;
+    }
+    return null;
+}
+
+fn isIgnorableCodepoint(cp: u32) bool {
+    return switch (cp) {
+        0x200C, 0x200D, 0xFE0E, 0xFE0F => true,
+        0x0300...0x036F => true,
+        else => false,
+    };
 }
 
 fn drawRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {

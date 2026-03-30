@@ -678,6 +678,22 @@ pub const Runtime = struct {
         return null;
     }
 
+    pub fn renderStateCols(self: *Runtime, render_state: ?*anyopaque) ?u16 {
+        if (render_state) |state| {
+            var cols: u16 = 0;
+            if (self.render_state_get(state, @intFromEnum(RenderStateData.cols), &cols) == success) return cols;
+        }
+        return null;
+    }
+
+    pub fn renderStateRows(self: *Runtime, render_state: ?*anyopaque) ?u16 {
+        if (render_state) |state| {
+            var rows: u16 = 0;
+            if (self.render_state_get(state, @intFromEnum(RenderStateData.rows), &rows) == success) return rows;
+        }
+        return null;
+    }
+
     pub fn createRowIterator(self: *Runtime) !?*anyopaque {
         var handle: ?*anyopaque = null;
         if (self.row_iterator_new(null, &handle) != success or handle == null) return error.RowIteratorCreateFailed;

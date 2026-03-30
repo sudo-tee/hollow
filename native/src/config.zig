@@ -17,18 +17,50 @@ pub const RendererBackend = enum {
 };
 
 pub const Config = struct {
+    pub const Fonts = struct {
+        pub const Smoothing = enum {
+            grayscale,
+            subpixel,
+        };
+
+        pub const Hinting = enum {
+            none,
+            light,
+            normal,
+        };
+
+        size: f32 = 15,
+        padding_x: f32 = 0,
+        padding_y: f32 = 0,
+        coverage_boost: f32 = 1.12,
+        coverage_add: f32 = 6.0,
+        smoothing: Smoothing = .grayscale,
+        hinting: Hinting = .normal,
+        ligatures: bool = true,
+        embolden: f32 = 0.0,
+        regular: ?[]u8 = null,
+        bold: ?[]u8 = null,
+        italic: ?[]u8 = null,
+        bold_italic: ?[]u8 = null,
+        fallback_paths: std.ArrayListUnmanaged([]u8) = .{},
+
+        pub fn deinit(self: *Fonts, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.regular);
+            freeOwned(allocator, &self.bold);
+            freeOwned(allocator, &self.italic);
+            freeOwned(allocator, &self.bold_italic);
+            for (self.fallback_paths.items) |path| allocator.free(path);
+            self.fallback_paths.deinit(allocator);
+            self.* = .{};
+        }
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
     ghostty_library: ?[]u8 = null,
     luajit_library: ?[]u8 = null,
-    font_size: f32 = 15,
-    font_padding_x: f32 = 0,
-    font_padding_y: f32 = 0,
-    font_coverage_boost: f32 = 1.12,
-    font_coverage_add: f32 = 6.0,
-    font_lcd: bool = true,
-    font_embolden: f32 = 0.0,
+    fonts: Fonts = .{},
     window_title: ?[]u8 = null,
     window_width: u32 = 1280,
     window_height: u32 = 800,
@@ -51,6 +83,7 @@ pub const Config = struct {
         freeOwned(self.allocator, &self.shell);
         freeOwned(self.allocator, &self.ghostty_library);
         freeOwned(self.allocator, &self.luajit_library);
+        self.fonts.deinit(self.allocator);
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
     }
@@ -108,6 +141,59 @@ pub const Config = struct {
 
     pub fn setLibDir(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.lib_dir, value);
+    }
+
+    pub fn setFontRegular(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.fonts.regular, value);
+    }
+
+    pub fn setFontBold(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.fonts.bold, value);
+    }
+
+    pub fn setFontItalic(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.fonts.italic, value);
+    }
+
+    pub fn setFontBoldItalic(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.fonts.bold_italic, value);
+    }
+
+    pub fn clearFontFallbacks(self: *Config) void {
+        for (self.fonts.fallback_paths.items) |path| self.allocator.free(path);
+        self.fonts.fallback_paths.clearRetainingCapacity();
+    }
+
+    pub fn addFontFallback(self: *Config, value: []const u8) !void {
+        try self.fonts.fallback_paths.append(self.allocator, try self.allocator.dupe(u8, value));
+    }
+
+    pub fn setFontSmoothing(self: *Config, value: []const u8) !void {
+        if (std.ascii.eqlIgnoreCase(value, "grayscale")) {
+            self.fonts.smoothing = .grayscale;
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(value, "subpixel") or std.ascii.eqlIgnoreCase(value, "lcd")) {
+            self.fonts.smoothing = .subpixel;
+            return;
+        }
+        return error.InvalidFontSmoothing;
+    }
+
+    pub fn setFontHinting(self: *Config, value: []const u8) !void {
+        if (std.ascii.eqlIgnoreCase(value, "none")) {
+            self.fonts.hinting = .none;
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(value, "light")) {
+            self.fonts.hinting = .light;
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(value, "normal")) {
+            self.fonts.hinting = .normal;
+            return;
+        }
+        return error.InvalidFontHinting;
     }
 };
 
