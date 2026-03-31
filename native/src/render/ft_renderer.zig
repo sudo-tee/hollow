@@ -771,318 +771,15 @@ pub const FtRenderer = struct {
         }
         const run_buf = self.run_buf;
 
-        // ── Fast path: single merged pass when atlas is fully populated ────
-        // When need_raster=false (warm cache, steady state), skip the separate
-        // rasterisation sub-pass and merge background quads + glyph draw into
-        // a single cell iteration.  This halves the number of nextRow/nextCell/
-        // cellStyle/cellRaw C-ABI calls vs the two-pass approach.
-        const need_raster = self.atlas_dirty;
-        const t_pass1_start = std.time.nanoTimestamp();
-        if (!need_raster) {
-            // Single merged pass: bg quads + glyph draw in one row/cell loop.
-            if (runtime.populateRowIterator(render_state, row_iterator)) {
-                // BG quad batch (no texture).
-                var bg_quads_open = false;
-                // Glyph batch (atlas texture).
-                c.sgl_load_pipeline(self.atlas_pip);
-                c.sgl_enable_texture();
-                c.sgl_texture(self.atlas_view, self.atlas_smp);
-                c.sgl_begin_quads();
-                var glyph_quads_open = true;
-
-                var row_y: usize = 0;
-                while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
-                    const row_is_dirty = force_full or runtime.rowDirty(row_iterator.*);
-                    if (!row_is_dirty) {
-                        self.last_rows_skipped += 1;
-                        continue;
-                    }
-                    self.last_rows_rendered += 1;
-
-                    if (!runtime.populateRowCells(row_iterator.*, row_cells)) {
-                        if (!force_full) runtime.clearRowDirty(row_iterator.*);
-                        continue;
-                    }
-                    const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
-
-                    // In partial mode, erase old row pixels with a bg-color rect.
-                    if (!force_full) {
-                        // Must switch to no-texture for bg quads.
-                        if (glyph_quads_open) {
-                            c.sgl_end();
-                            glyph_quads_open = false;
-                        }
-                        c.sgl_load_default_pipeline();
-                        if (!bg_quads_open) {
-                            c.sgl_begin_quads();
-                            bg_quads_open = true;
-                        }
-                        c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
-                        c.sgl_v2f(self.padding_x, py);
-                        c.sgl_v2f(self.padding_x + pane_w, py);
-                        c.sgl_v2f(self.padding_x + pane_w, py + self.cell_h);
-                        c.sgl_v2f(self.padding_x, py + self.cell_h);
-                    }
-
-                    var col_x: usize = 0;
-                    var run_start_col: usize = 0;
-                    var run_len: usize = 0;
-                    var run_face_idx: u8 = 0;
-                    var run_fg = default_fg;
-                    while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                        const style = runtime.cellStyle(row_cells.*);
-                        const face_idx: u8 = if (style) |s| blk: {
-                            if (s.bold and s.italic) break :blk 2;
-                            if (s.bold) break :blk 1;
-                            if (s.italic) break :blk 3;
-                            break :blk 0;
-                        } else 0;
-                        const fg: ghostty.ColorRgb = if (style) |s|
-                            ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
-                        else
-                            default_fg;
-
-                        // Background colour.
-                        const bg: ghostty.ColorRgb = if (style) |s|
-                            ghostty.resolveStyleColor(s.bg_color, default_bg, &colors.palette)
-                        else
-                            default_bg;
-
-                        if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
-                            // Need to flush glyph batch, draw bg quad, then reopen glyph batch.
-                            if (glyph_quads_open) {
-                                c.sgl_end();
-                                glyph_quads_open = false;
-                            }
-                            c.sgl_load_default_pipeline();
-                            if (!bg_quads_open) {
-                                c.sgl_begin_quads();
-                                bg_quads_open = true;
-                            }
-                            const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                            c.sgl_c4b(bg.r, bg.g, bg.b, 255);
-                            c.sgl_v2f(px, py);
-                            c.sgl_v2f(px + self.cell_w, py);
-                            c.sgl_v2f(px + self.cell_w, py + self.cell_h);
-                            c.sgl_v2f(px, py + self.cell_h);
-                        }
-
-                        // Glyph draw.
-                        const raw_cell = runtime.cellRaw(row_cells.*);
-                        const content_tag = runtime.cellContentTag(raw_cell);
-
-                        switch (content_tag) {
-                            .codepoint => {
-                                const cp = runtime.cellCodepoint(raw_cell);
-                                if (cp == 0) {
-                                    if (bg_quads_open) {
-                                        c.sgl_end();
-                                        bg_quads_open = false;
-                                    }
-                                    if (!glyph_quads_open) {
-                                        c.sgl_load_pipeline(self.atlas_pip);
-                                        c.sgl_enable_texture();
-                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                        c.sgl_begin_quads();
-                                        glyph_quads_open = true;
-                                    }
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    continue;
-                                }
-                                const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                                if (glyph_len == 0) {
-                                    if (bg_quads_open) {
-                                        c.sgl_end();
-                                        bg_quads_open = false;
-                                    }
-                                    if (!glyph_quads_open) {
-                                        c.sgl_load_pipeline(self.atlas_pip);
-                                        c.sgl_enable_texture();
-                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                        c.sgl_begin_quads();
-                                        glyph_quads_open = true;
-                                    }
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    continue;
-                                }
-                                if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
-                                    // Ensure bg batch is closed and glyph batch is open.
-                                    if (bg_quads_open) {
-                                        c.sgl_end();
-                                        bg_quads_open = false;
-                                    }
-                                    if (!glyph_quads_open) {
-                                        c.sgl_load_pipeline(self.atlas_pip);
-                                        c.sgl_enable_texture();
-                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                        c.sgl_begin_quads();
-                                        glyph_quads_open = true;
-                                    }
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                                    if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
-                                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
-                                    }
-                                    continue;
-                                }
-                                // Ligature run accumulation — needs glyph batch open.
-                                if (bg_quads_open) {
-                                    c.sgl_end();
-                                    bg_quads_open = false;
-                                }
-                                if (!glyph_quads_open) {
-                                    c.sgl_load_pipeline(self.atlas_pip);
-                                    c.sgl_enable_texture();
-                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                    c.sgl_begin_quads();
-                                    glyph_quads_open = true;
-                                }
-                                if (run_len + glyph_len > run_buf.len) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                }
-                                if (run_len == 0) {
-                                    run_start_col = col_x;
-                                    run_face_idx = face_idx;
-                                    run_fg = fg;
-                                }
-                                if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    run_start_col = col_x;
-                                    run_face_idx = face_idx;
-                                    run_fg = fg;
-                                }
-                                @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                                run_len += glyph_len;
-                            },
-                            .codepoint_grapheme => {
-                                if (bg_quads_open) {
-                                    c.sgl_end();
-                                    bg_quads_open = false;
-                                }
-                                if (!glyph_quads_open) {
-                                    c.sgl_load_pipeline(self.atlas_pip);
-                                    c.sgl_enable_texture();
-                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                    c.sgl_begin_quads();
-                                    glyph_quads_open = true;
-                                }
-                                const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                                if (grapheme_len == 0) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    continue;
-                                }
-                                var cps: [16]u32 = [_]u32{0} ** 16;
-                                runtime.cellGraphemes(row_cells.*, &cps);
-                                var glyph_len: usize = 0;
-                                for (cps[0..grapheme_len]) |cp| {
-                                    if (cp == 0) break;
-                                    glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                                }
-                                if (glyph_len == 0) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    continue;
-                                }
-                                if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
-                                    continue;
-                                }
-                                if (run_len + glyph_len > run_buf.len) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                }
-                                if (run_len == 0) {
-                                    run_start_col = col_x;
-                                    run_face_idx = face_idx;
-                                    run_fg = fg;
-                                }
-                                if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                    run_start_col = col_x;
-                                    run_face_idx = face_idx;
-                                    run_fg = fg;
-                                }
-                                @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                                run_len += glyph_len;
-                            },
-                            else => {
-                                if (bg_quads_open) {
-                                    c.sgl_end();
-                                    bg_quads_open = false;
-                                }
-                                if (!glyph_quads_open) {
-                                    c.sgl_load_pipeline(self.atlas_pip);
-                                    c.sgl_enable_texture();
-                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
-                                    c.sgl_begin_quads();
-                                    glyph_quads_open = true;
-                                }
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                            },
-                        }
-                    }
-                    if (run_len > 0) {
-                        if (bg_quads_open) {
-                            c.sgl_end();
-                            bg_quads_open = false;
-                        }
-                        if (!glyph_quads_open) {
-                            c.sgl_load_pipeline(self.atlas_pip);
-                            c.sgl_enable_texture();
-                            c.sgl_texture(self.atlas_view, self.atlas_smp);
-                            c.sgl_begin_quads();
-                            glyph_quads_open = true;
-                        }
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                    }
-
-                    if (!force_full) runtime.clearRowDirty(row_iterator.*);
-                }
-
-                if (bg_quads_open) c.sgl_end();
-                if (glyph_quads_open) {
-                    c.sgl_end();
-                    c.sgl_disable_texture();
-                }
-            }
-
-            // No atlas dirty in this path (need_raster=false).
-            const t_pass2_start = std.time.nanoTimestamp();
-            self.last_pass1_ns = t_pass2_start - t_pass1_start;
-            self.last_pass2_ns = 0; // merged into pass1
-
-            // ── Cursor overlay ─────────────────────────────────────────────
-            if (is_focused and runtime.cursorVisible(render_state)) {
-                if (runtime.cursorPos(render_state)) |pos| {
-                    const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
-                    const cy = self.padding_y + @as(f32, @floatFromInt(pos.y)) * self.cell_h;
-                    c.sgl_load_default_pipeline();
-                    const cursor_color: ghostty.ColorRgb = if (colors.cursor_has_value)
-                        colors.cursor
-                    else
-                        .{ .r = 220, .g = 220, .b = 220 };
-                    drawCursor(cx, cy, self.cell_w, self.cell_h, cursor_color, runtime.cursorVisualStyle(render_state));
-                }
-            }
-
-            if (!self.logged_first_draw) self.logged_first_draw = true;
-            return;
-        }
-
-        // ── Slow path: two passes when atlas may need rasterisation ──────────
-
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
         // When the atlas is already fully populated (no new glyphs since last
         // upload), we skip the rasterisation sub-pass — all shape/raster cache
         // lookups would be no-ops and only add overhead.  We still iterate rows
         // for non-default background colour quads.
         //
-        // If atlas_dirty is false going into this pass, every glyph we might
-        // encounter is already in the atlas, so preRasterize is a guaranteed
-        // no-op.  Skipping it halves the per-cell C-ABI call count in steady
-        // state (warm cache), which is the common case during nvim editing.
-        //
         // In partial mode (!force_full), skip rows that are not dirty.
+        const need_raster = self.atlas_dirty;
+        const t_pass1_start = std.time.nanoTimestamp();
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
             var quads_open = false;
@@ -1114,13 +811,10 @@ pub const FtRenderer = struct {
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    // Fetch style once — gives us bg/fg colors + bold/italic.
-                    const style = runtime.cellStyle(row_cells.*);
-
-                    // Background: resolve from style, fall back to default.
-                    const bg: ghostty.ColorRgb = if (style) |s| blk: {
-                        break :blk ghostty.resolveStyleColor(s.bg_color, default_bg, &colors.palette);
-                    } else default_bg;
+                    // Background: use the dedicated BG_COLOR query which flattens
+                    // all three sources (style bg, content-tag palette, content-tag RGB).
+                    // Returns null when the cell has no explicit bg (use default).
+                    const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
 
                     if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
                         if (!quads_open) {
@@ -1141,6 +835,7 @@ pub const FtRenderer = struct {
                     // Use raw cell value to distinguish single-codepoint vs grapheme cluster.
                     const raw_cell = runtime.cellRaw(row_cells.*);
                     const content_tag = runtime.cellContentTag(raw_cell);
+                    const style = runtime.cellStyle(row_cells.*);
                     const face_idx: u8 = if (style) |s| blk: {
                         if (s.bold and s.italic) break :blk 2;
                         if (s.bold) break :blk 1;
