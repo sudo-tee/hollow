@@ -12,7 +12,6 @@ zig-out/
 
 # Scratch / debug images and logs
 *.png
-*.patch
 err.txt
 error_out.txt
 out.txt

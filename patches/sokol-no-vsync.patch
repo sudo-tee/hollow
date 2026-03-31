@@ -1,0 +1,35 @@
+From: ghostty-love patch
+Subject: [PATCH] add no_vsync field to sapp_desc to allow disabling vsync
+
+sokol_app has used _sapp_def(swap_interval, 1) since its inception, which
+treats swap_interval=0 as "unset, use default=1". This makes it impossible
+to pass SyncInterval=0 to DXGI Present (D3D11) or call glSwapInterval(0)
+on GL backends, permanently locking the frame rate to the display refresh.
+
+The upstream issue has been open since ~2019 with no resolution:
+  https://github.com/floooh/sokol/issues/284
+
+This patch adds a bool no_vsync to sapp_desc. When true, swap_interval is
+forced to 0 before the defaults pass runs, bypassing the _sapp_def clamp.
+
+diff --git a/sokol_app.h b/sokol_app.h
+index 111acdd..6329bf5 100644
+--- a/sokol_app.h
++++ b/sokol_app.h
+@@ -2042,6 +2042,7 @@ typedef struct sapp_desc {
+     int height;                         // the preferred height of the window / canvas
+     int sample_count;                   // MSAA sample count
+     int swap_interval;                  // the preferred swap interval (ignored on some platforms)
++    bool no_vsync;                      // set true to disable vsync (forces swap_interval=0, bypasses _sapp_def defaulting)
+     bool high_dpi;                      // whether the rendering canvas is full-resolution on HighDPI displays
+     bool fullscreen;                    // whether the window should be created in fullscreen mode
+     bool alpha;                         // whether the framebuffer should have an alpha channel (ignored on some platforms)
+@@ -3570,7 +3571,7 @@ _SOKOL_PRIVATE sapp_desc _sapp_desc_defaults(const sapp_desc* desc) {
+     SOKOL_ASSERT((desc->allocator.alloc_fn && desc->allocator.free_fn) || (!desc->allocator.alloc_fn && !desc->allocator.free_fn));
+     sapp_desc res = *desc;
+     res.sample_count = _sapp_def(res.sample_count, 1);
+-    res.swap_interval = _sapp_def(res.swap_interval, 1);
++    res.swap_interval = res.no_vsync ? 0 : _sapp_def(res.swap_interval, 1);
+     if (0 == res.gl.major_version) {
+         #if defined(SOKOL_GLCORE)
+             res.gl.major_version = 4;
