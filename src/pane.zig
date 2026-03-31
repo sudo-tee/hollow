@@ -24,7 +24,8 @@ pub const Pane = struct {
     /// Set to true after the first updateRenderState call so the renderer
     /// can skip rendering panes whose ghostty state is not yet initialized.
     render_state_ready: bool = false,
-    /// Dirty level set by tickPanes (sampled before updateRenderState clears it).
+    /// Dirty level set by tickPanes after updateRenderState computes the latest
+    /// render-state dirty result for the pane.
     ///   .false_value  → nothing changed, skip re-render entirely
     ///   .true_value   → partial update; use LOAD action and skip clean rows
     ///   .full         → full redraw needed (resize, scroll, color change);
@@ -36,12 +37,14 @@ pub const Pane = struct {
     pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
     pty_pending_len: usize = 0,
     pty_sanitize_buf: [65544]u8 = [_]u8{0} ** 65544,
+    boot_output: std.ArrayListUnmanaged(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
+        self.boot_output.deinit(self.allocator);
         runtime.freeMouseEvent(self.mouse_event);
         runtime.freeMouseEncoder(self.mouse_encoder);
         runtime.freeKeyEvent(self.key_event);
@@ -118,6 +121,10 @@ pub const Pane = struct {
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
         if (self.pty) |*pty| {
+            if (self.render_state_ready and self.boot_output.items.len > 0) {
+                runtime.terminalWrite(self.terminal, self.boot_output.items);
+                self.boot_output.clearRetainingCapacity();
+            }
             var total_read: usize = 0;
             var read_loops: usize = 0;
             while ((pty.isAlive() or pty.hasPendingOutput()) and read_loops < 64 and total_read < (1024 * 1024)) {
@@ -133,12 +140,11 @@ pub const Pane = struct {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
-                    // Don't feed bytes to ghostty until the pane has been through
-                    // at least one resize (render_state_ready). Before that, ghostty
-                    // internal state is uninitialised and vt_write can null-deref.
-                    // We drain the ring buffer (so it doesn't overflow) but discard.
-                    if (!self.render_state_ready) continue;
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
+                    if (!self.render_state_ready) {
+                        if (pty_bytes.len > 0) try self.boot_output.appendSlice(self.allocator, pty_bytes);
+                        continue;
+                    }
                     if (pty_bytes.len > 0) {
                         runtime.terminalWrite(self.terminal, pty_bytes);
                     }

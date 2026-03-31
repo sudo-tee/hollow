@@ -808,13 +808,13 @@ pub const FtRenderer = struct {
         const run_buf = self.run_buf;
 
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
-        // When the atlas is already fully populated (no new glyphs since last
-        // upload), we skip the rasterisation sub-pass — all shape/raster cache
-        // lookups would be no-ops and only add overhead.  We still iterate rows
-        // for non-default background colour quads.
+        // We must always probe/rasterize text for rows we are about to draw.
+        // Even when the atlas is currently clean, a newly-seen glyph (for
+        // example a Nerd Font prompt icon) needs to be added and uploaded
+        // before pass 2 queues textured quads, otherwise it won't appear until
+        // the next frame.
         //
         // In partial mode (!force_full), skip rows that are not dirty.
-        const need_raster = self.atlas_dirty;
         const t_pass1_start = std.time.nanoTimestamp();
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
@@ -874,10 +874,9 @@ pub const FtRenderer = struct {
                         }
                     }
 
-                    if (!need_raster) continue;
-
-                    // Rasterisation (only when new glyphs may need atlas space).
-                    // raw_cell and content_tag already fetched above.
+                    // Rasterisation / atlas population for any glyphs needed by
+                    // rows we will draw this frame. raw_cell and content_tag
+                    // were already fetched above.
                     // Skip the 72-byte cellStyle() call for cells with no text or
                     // no non-default styling — both are cheap pure bit-tests on raw_cell.
                     var face_idx: u8 = 0;

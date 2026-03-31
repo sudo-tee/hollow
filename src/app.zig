@@ -743,20 +743,19 @@ pub const App = struct {
                     pane_idx += 1;
                     continue;
                 }
-                // Sample the dirty flag BEFORE calling updateRenderState.
-                // updateRenderState snapshots terminal state into render_state and
-                // internally clears the dirty flag, so by the time the renderer
-                // calls getRenderStateDirty it would always read false_value.
-                // We capture it here and store it on the pane so the renderer can
-                // use pane.render_dirty as its "needs re-render" signal instead.
-                const pre_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                // Ghostty's render_state.dirty is sticky: updateRenderState()
+                // consumes terminal/screen dirties, but it does not clear the
+                // render-state dirty flag for us. Reset it first so the update
+                // call computes a fresh dirty level for this frame.
+                runtime.clearRenderStateDirty(pane.render_state);
                 runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                     std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                 };
+                const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                 // OR-accumulate: promote dirty level but never demote.
                 // .false_value < .true_value < .full
-                if (@intFromEnum(pre_dirty) > @intFromEnum(pane.render_dirty)) {
-                    pane.render_dirty = pre_dirty;
+                if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
+                    pane.render_dirty = post_dirty;
                 }
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;

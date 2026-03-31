@@ -470,9 +470,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const cache = getOrCreatePaneCache(pane, pw_u, ph_u) orelse return false;
 
                     // Check dirty flag.
-                    // We use pane.render_dirty (set by tickPanes before updateRenderState
-                    // clears the ghostty-internal flag) rather than getRenderStateDirty
-                    // which always returns false by the time we reach here.
+                    // We use pane.render_dirty, which tickPanes refreshes from
+                    // Ghostty after updateRenderState() computes this frame's
+                    // dirty level.
                     _ = ox; // suppress unused warning
                     const dirty_level = pane.render_dirty;
                     if (dirty_level == .false_value and !rend.atlas_dirty) {
