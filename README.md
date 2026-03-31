@@ -1,8 +1,8 @@
 # Hollow
 
-This branch is the start of the native rewrite.
+This branch is the native rewrite of Hollow.
 
-The old Love2D/Lua code is still in the repo as reference material, but the new work now starts in `native/` with a Zig-first core that still keeps `libghostty-vt` and LuaJIT in the loop.
+The old Love2D/Lua code has been removed; the new work lives in the repo root with a Zig-first core that still keeps `libghostty-vt` and LuaJIT in the loop.
 
 ## Direction
 
@@ -17,17 +17,14 @@ The old Love2D/Lua code is still in the repo as reference material, but the new 
 ```text
 build.zig
 conf/init.lua
-native/
-  src/
-    app.zig
-    config.zig
-    main.zig
-    platform.zig
-    lua/luajit.zig
-    term/ghostty.zig
-    render/
-      backend.zig
-      null_backend.zig
+src/
+  app.zig
+  config.zig
+  main.zig
+  platform.zig
+  lua/luajit.zig
+  term/ghostty.zig
+  render/
 docs/rewrite-architecture.md
 ```
 
@@ -64,9 +61,9 @@ The runtime now also searches relative to the executable directory, not just the
 
 ## Windows-first runtime
 
-- `native/src/render/sokol_runtime.zig` runs the app through `sokol_app`
+- `src/render/sokol_runtime.zig` runs the app through `sokol_app`
 - Windows uses `D3D11` via Sokol; Linux keeps a fallback GL path for now
-- `native/src/pty/pty_windows.zig` uses ConPTY for the shell bridge
+- `src/pty/pty_windows.zig` uses ConPTY for the shell bridge
 - terminal content comes from `libghostty-vt` row/cell iteration, then gets painted into the Sokol window
 
 Current renderer status:

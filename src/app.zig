@@ -332,7 +332,8 @@ pub const App = struct {
     /// wheel).  Fractional amounts are accumulated and fired as whole-line
     /// steps so no scroll motion is silently dropped.
     pub fn scrollFloat(self: *App, x: f32, y: f32, raw_delta: f32) void {
-        self.scroll_accum += raw_delta;
+        // Increase sensitivity for smoother scrolling
+        self.scroll_accum += raw_delta * 2.0;
         const steps = @as(isize, @intFromFloat(self.scroll_accum));
         if (steps != 0) {
             self.scroll_accum -= @as(f32, @floatFromInt(steps));

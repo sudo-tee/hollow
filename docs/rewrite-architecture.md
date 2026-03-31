@@ -13,17 +13,16 @@ This branch pivots `hollow` away from Love2D and toward a small Zig-native core.
 ## New shape
 
 ```text
-native/
-  src/
-    main.zig              CLI/bootstrap entry point
-    app.zig               top-level composition and startup order
-    config.zig            owned runtime config state
-    platform.zig          host detection and library path policy
-    lua/luajit.zig        dynamic LuaJIT loader + tiny host API
-    term/ghostty.zig      dynamic libghostty-vt loader + bootstrap ABI
-    render/
-      backend.zig         renderer selection seam
-      null_backend.zig    current bootstrap backend
+src/
+  main.zig CLI/bootstrap entry point
+  app.zig top-level composition and startup order
+  config.zig owned runtime config state
+  platform.zig host detection and library path policy
+  lua/luajit.zig dynamic LuaJIT loader + tiny host API
+  term/ghostty.zig dynamic libghostty-vt loader + bootstrap ABI
+  render/
+    backend.zig renderer selection seam
+    null_backend.zig current bootstrap backend
 ```
 
 ## Startup order

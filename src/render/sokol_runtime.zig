@@ -413,6 +413,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             }
         }
 
+        // Track if we'll use direct rendering for single pane (skip offscreen RT)
+        const use_direct_render = leaves.len == 0 and app.tabBarHeight() == 0;
+
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
             const single_pane: ?*anyopaque = if (!do_leaves) blk: {
@@ -515,17 +518,37 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             } else if (single_pane) |sp| {
                 const pane: *Pane = @ptrCast(@alignCast(sp));
-                if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true)) {
-                    g_phase_accum_dirty_frames += 1;
+                if (use_direct_render) {
+                    // For single pane without tab bar, skip offscreen RT entirely.
+                    // We'll render directly in the swapchain pass for lower latency.
+                    // Still need to flush atlas if dirty so glyphs are available.
+                    if (renderer.atlas_dirty) {
+                        renderer.flushAtlas();
+                        renderer.atlas_dirty = false;
+                    }
+                    // Track if we're rendering this frame
+                    if (pane.render_dirty != .false_value or renderer.atlas_dirty) {
+                        g_phase_accum_dirty_frames += 1;
+                    } else {
+                        g_phase_accum_clean_frames += 1;
+                    }
                 } else {
-                    g_phase_accum_clean_frames += 1;
+                    // Use cached RT (with tab bar)
+                    if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true)) {
+                        g_phase_accum_dirty_frames += 1;
+                    } else {
+                        g_phase_accum_clean_frames += 1;
+                    }
                 }
             }
         }
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
         // pass(es) — needed before the swapchain pass uses the atlas.
-        renderer.flushAtlasIfDirty();
+        // Skip for direct render mode (already flushed above).
+        if (!use_direct_render) {
+            renderer.flushAtlasIfDirty();
+        }
     }
     const after_offscreen_ns = std.time.nanoTimestamp();
 
@@ -537,10 +560,17 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
     c.sg_begin_pass(&pass);
 
+    // Track if we should use direct rendering for single pane
+    var use_direct_render = false;
+    if (leaves.len == 0 and app.tabBarHeight() == 0) {
+        // Single pane with no tab bar - use direct rendering to avoid RT overhead
+        use_direct_render = true;
+    }
+
     // Blit each pane's cached RT into the swapchain pass.
+    // For single pane without tab bar, render directly instead.
     if (g_ft_renderer) |*renderer| {
-        if (app.ghostty) |*_runtime| {
-            _ = _runtime;
+        if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
             if (do_leaves) {
                 for (leaves) |leaf| {
@@ -557,10 +587,24 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             } else if (app.activePane()) |pane| {
                 if (pane.render_state_ready) {
-                    const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
-                    const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
-                    if (getOrCreatePaneCache(pane, pw_u, ph_u)) |cache| {
-                        renderer.blitCache(cache, 0, 0, width, height, width, height);
+                    if (use_direct_render) {
+                        // Direct render: skip the offscreen RT and render straight to swapchain
+                        renderer.drawDirect(
+                            runtime,
+                            pane.render_state,
+                            &pane.row_iterator,
+                            &pane.row_cells,
+                            width,
+                            height,
+                            pane.render_dirty == .full or renderer.atlas_dirty,
+                        );
+                    } else {
+                        // Use cached RT
+                        const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
+                        const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
+                        if (getOrCreatePaneCache(pane, pw_u, ph_u)) |cache| {
+                            renderer.blitCache(cache, 0, 0, width, height, width, height);
+                        }
                     }
                 }
             }

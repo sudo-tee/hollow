@@ -589,6 +589,24 @@ pub const FtRenderer = struct {
         c.sgl_draw();
     }
 
+    /// Direct draw for single-pane mode — skips the offscreen render target
+    /// and renders straight to the current swapchain pass.
+    /// Must be called inside an active sg_pass (swapchain pass).
+    pub fn drawDirect(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        render_state: ?*anyopaque,
+        row_iterator: *?*anyopaque,
+        row_cells: *?*anyopaque,
+        screen_w: f32,
+        screen_h: f32,
+        force_full: bool,
+    ) void {
+        // Queue to default context and draw immediately
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full);
+        c.sgl_draw();
+    }
+
     /// Render terminal content for one pane into its `PaneCache` render target.
     /// Must be called OUTSIDE any active sg_pass (before the swapchain pass begins).
     /// After this call the RT texture is up-to-date and can be blitted.
@@ -1442,7 +1460,7 @@ pub const FtRenderer = struct {
         }
     }
 
-    fn flushAtlas(self: *FtRenderer) void {
+    pub fn flushAtlas(self: *FtRenderer) void {
         if (self.atlas_uploaded_this_frame) return;
         var upd = std.mem.zeroes(c.sg_image_data);
         upd.mip_levels[0].ptr = self.atlas_data.ptr;

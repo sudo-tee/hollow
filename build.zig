@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const root_module = b.createModule(.{
-        .root_source_file = b.path("native/src/main.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("fonts", fonts_module);
 
     const translate = b.addTranslateC(.{
-        .root_source_file = b.path("native/src/render/sokol_bindings.h"),
+        .root_source_file = b.path("src/render/sokol_bindings.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
 
     // Separate translate-c for freetype + harfbuzz C headers → Zig bindings.
     const ft_translate = b.addTranslateC(.{
-        .root_source_file = b.path("native/src/render/ft_bindings.h"),
+        .root_source_file = b.path("src/render/ft_bindings.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibC();
     exe.root_module.addCSourceFile(.{
-        .file = b.path("native/src/render/sokol_app.c"),
+        .file = b.path("src/render/sokol_app.c"),
         .flags = &.{
             "-Ithird_party/sokol",
             "-Ithird_party/sokol/util",
