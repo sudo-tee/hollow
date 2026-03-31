@@ -824,6 +824,11 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         cfg.top_bar_height = try asInt(u32, value);
         return;
     }
+
+    if (std.mem.eql(u8, key, "scroll_multiplier")) {
+        cfg.scroll_multiplier = @floatCast(value);
+        return;
+    }
 }
 
 fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
@@ -853,6 +858,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "vsync")) {
         cfg.vsync = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "renderer_single_pane_direct")) {
+        cfg.renderer_single_pane_direct = value;
         return;
     }
 }
