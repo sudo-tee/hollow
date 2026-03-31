@@ -60,6 +60,9 @@ pub const App = struct {
     pending_quit: bool = false,
     hovered_tab_index: ?usize = null,
     hovered_close_tab_index: ?usize = null,
+    /// Fractional scroll accumulator — prevents sub-pixel scroll events from
+    /// being silently dropped by integer truncation on smooth / touchpad input.
+    scroll_accum: f32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -325,6 +328,18 @@ pub const App = struct {
         self.ghostty.?.terminalScroll(hit.pane.terminal, delta);
     }
 
+    /// Scroll with a raw float delta (e.g. from a touchpad or smooth mouse
+    /// wheel).  Fractional amounts are accumulated and fired as whole-line
+    /// steps so no scroll motion is silently dropped.
+    pub fn scrollFloat(self: *App, x: f32, y: f32, raw_delta: f32) void {
+        self.scroll_accum += raw_delta;
+        const steps = @as(isize, @intFromFloat(self.scroll_accum));
+        if (steps != 0) {
+            self.scroll_accum -= @as(f32, @floatFromInt(steps));
+            self.scroll(x, y, steps);
+        }
+    }
+
     pub fn hasLiveChild(self: *App) bool {
         if (self.activePane()) |pane| return pane.hasLiveChild();
         return false;
@@ -532,7 +547,6 @@ pub const App = struct {
     /// Return the title of the tab at the given 0-based index (falls back to
     /// config window title if the tab or its active pane have no title).
     pub fn tabTitle(self: *App, index: usize) []const u8 {
-        std.log.info("App.tabTitle index={d}", .{index});
         if (self.mux) |*mux| {
             if (mux.activeWorkspace()) |ws| {
                 if (index < ws.tabs.items.len) {
@@ -729,9 +743,21 @@ pub const App = struct {
                     pane_idx += 1;
                     continue;
                 }
+                // Sample the dirty flag BEFORE calling updateRenderState.
+                // updateRenderState snapshots terminal state into render_state and
+                // internally clears the dirty flag, so by the time the renderer
+                // calls getRenderStateDirty it would always read false_value.
+                // We capture it here and store it on the pane so the renderer can
+                // use pane.render_dirty as its "needs re-render" signal instead.
+                const pre_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                 runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                     std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                 };
+                // OR-accumulate: promote dirty level but never demote.
+                // .false_value < .true_value < .full
+                if (@intFromEnum(pre_dirty) > @intFromEnum(pane.render_dirty)) {
+                    pane.render_dirty = pre_dirty;
+                }
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }

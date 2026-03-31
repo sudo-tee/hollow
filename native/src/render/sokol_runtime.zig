@@ -8,6 +8,8 @@ const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 const FtRendererConfig = @import("ft_renderer.zig").FtRendererConfig;
+const PaneCache = @import("ft_renderer.zig").PaneCache;
+const Pane = @import("../pane.zig").Pane;
 
 var g_app: ?*App = null;
 var g_title_buf: [256]u8 = [_]u8{0} ** 256;
@@ -20,6 +22,84 @@ var g_logged_first_mouse = false;
 var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
 var g_gui_ready_fired = false;
+var g_last_frame_time_ns: i128 = 0;
+var g_last_perf_sample_ns: i128 = 0;
+var g_perf_accum_frame_ns: i128 = 0;
+var g_perf_accum_frames: usize = 0;
+var g_perf_fps: f32 = 0;
+var g_perf_frame_ms: f32 = 0;
+
+// Per-phase timing accumulators (logged every 2 seconds).
+var g_phase_accum_tick_ns: i128 = 0;
+var g_phase_accum_offscreen_ns: i128 = 0;
+var g_phase_accum_swapchain_ns: i128 = 0;
+var g_phase_accum_dirty_frames: usize = 0;
+var g_phase_accum_clean_frames: usize = 0;
+var g_phase_sample_frames: usize = 0;
+var g_phase_last_log_ns: i128 = 0;
+// Row-level dirty counters (reset every log interval).
+var g_phase_accum_rows_rendered: usize = 0;
+var g_phase_accum_rows_skipped: usize = 0;
+// Sub-offscreen split: CPU cell-iteration vs GPU flush.
+var g_phase_accum_queue_ns: i128 = 0;
+var g_phase_accum_gpu_ns: i128 = 0;
+// Sub-queue split: pass1 (bg quads) vs pass2 (glyph draw).
+var g_phase_accum_pass1_ns: i128 = 0;
+var g_phase_accum_pass2_ns: i128 = 0;
+
+// Per-pane render-to-texture caches.
+// Keyed by pane pointer (stable for the lifetime of the pane).
+// MAX_LAYOUT_LEAVES is the max concurrent panes we ever render.
+const MAX_PANE_CACHES = 32;
+const PaneCacheEntry = struct {
+    pane: *const Pane,
+    cache: PaneCache,
+};
+var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = [_]?PaneCacheEntry{null} ** MAX_PANE_CACHES;
+
+/// Find or create a PaneCache for the given pane at the given pixel dimensions.
+/// If the existing cache is the wrong size it is destroyed and recreated.
+fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
+    if (w == 0 or h == 0) return null;
+    // Search for an existing entry.
+    var free_slot: usize = MAX_PANE_CACHES;
+    for (&g_pane_caches, 0..) |*slot, i| {
+        if (slot.*) |*entry| {
+            if (entry.pane == pane) {
+                if (entry.cache.needsResize(w, h)) {
+                    entry.cache.deinit();
+                    entry.cache = PaneCache.init(w, h);
+                }
+                return &entry.cache;
+            }
+        } else {
+            if (free_slot == MAX_PANE_CACHES) free_slot = i;
+        }
+    }
+    // Not found — allocate a new slot.
+    if (free_slot == MAX_PANE_CACHES) {
+        std.log.warn("sokol_runtime: pane cache table full ({d} entries)", .{MAX_PANE_CACHES});
+        return null;
+    }
+    g_pane_caches[free_slot] = .{
+        .pane = pane,
+        .cache = PaneCache.init(w, h),
+    };
+    return &g_pane_caches[free_slot].?.cache;
+}
+
+/// Release the cache entry for a pane that has been destroyed.
+fn releasePaneCache(pane: *const Pane) void {
+    for (&g_pane_caches) |*slot| {
+        if (slot.*) |*entry| {
+            if (entry.pane == pane) {
+                entry.cache.deinit();
+                slot.* = null;
+                return;
+            }
+        }
+    }
+}
 
 const CustomTabLayout = struct {
     x: f32,
@@ -179,6 +259,12 @@ pub fn run(app: *App) !void {
     g_logged_first_scroll = false;
     g_ft_renderer = null;
     g_gui_ready_fired = false;
+    g_last_frame_time_ns = 0;
+    g_last_perf_sample_ns = 0;
+    g_perf_accum_frame_ns = 0;
+    g_perf_accum_frames = 0;
+    g_perf_fps = 0;
+    g_perf_frame_ms = 0;
 
     var desc = std.mem.zeroes(c.sapp_desc);
     desc.user_data = app;
@@ -244,7 +330,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // Feed measured cell dimensions back to the terminal so ghostty and the
     // mouse encoder use the correct physical pixel sizes.
-    if (g_ft_renderer) |renderer| {
+    if (g_ft_renderer) |*renderer| {
+        renderer.warmupAtlas();
         const cw: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_w)));
         const ch: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_h)));
         app.setCellSize(cw, ch);
@@ -259,12 +346,15 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    const frame_start_ns = std.time.nanoTimestamp();
+    updatePerfCounters(frame_start_ns);
     g_frame_index += 1;
     if (!g_logged_first_frame) {
         g_logged_first_frame = true;
         std.log.info("sokol first frame (ft renderer)", .{});
     }
     app.tick() catch {};
+    const after_tick_ns = std.time.nanoTimestamp();
 
     if (app.pending_quit) {
         c.sapp_request_quit();
@@ -291,83 +381,188 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    var pass = std.mem.zeroes(c.sg_pass);
-    pass.swapchain = c.sglue_swapchain();
-    pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-    pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
-    c.sg_begin_pass(&pass);
+    // ── Phase 1: Offscreen passes (render each pane to its cached RT) ────────
+    //
+    // Must happen BEFORE sg_begin_pass for the swapchain because sokol does not
+    // allow nested passes.  For each pane we check the ghostty dirty flag:
+    //   - dirty (or cache doesn't exist / wrong size): re-render to RT.
+    //   - clean: skip queueInViewport entirely — just blit the cached texture.
+    //
+    // The atlas is flushed once per frame (inside the first dirty pane's
+    // renderToCache call via queueInViewport → flushAtlas).
 
-    // Compute layout once for the whole frame.
+    // Compute layout once (used in both phases).
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.computeActiveLayout(&layout_buf);
 
-    // Queue cell geometry for every pane (no sgl_draw yet).
     if (g_ft_renderer) |*renderer| {
-        // Reset the per-frame atlas-upload guard so flushAtlas may upload once
-        // this frame.  Pre-rasterize tab bar labels here so their glyphs are
-        // included in the same atlas flush as the pane content.
         renderer.beginFrame();
+
+        // Pre-rasterize tab bar glyphs so they land in the atlas before any
+        // pane offscreen pass flushes it (avoids a double sg_update_image).
         if (app.tabBarHeight() > 0 and app.shouldDrawTopBarTabs()) {
             const tc = app.tabCount();
             const close_sym = "\xc3\x97"; // U+00D7 ×
             for (0..tc) |ti| {
                 var title_buf: [256]u8 = undefined;
                 const title = app.topBarTitleSegment(ti, false, &title_buf).text;
-                std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
-                std.log.info("preRasterizeLabel", .{});
                 renderer.preRasterizeLabel(title);
                 renderer.preRasterizeLabel(close_sym);
             }
         }
+
         if (app.ghostty) |*runtime| {
-            if (leaves.len > 0) {
+            const do_leaves = leaves.len > 0;
+            const single_pane: ?*anyopaque = if (!do_leaves) blk: {
+                if (app.activePane()) |p| {
+                    if (p.render_state_ready) break :blk p else break :blk null;
+                }
+                break :blk null;
+            } else null;
+
+            // Helper closure: render one pane to its RT if dirty.
+            // Returns true if the pane was re-rendered (dirty), false if skipped (clean).
+            const renderPane = struct {
+                fn call(
+                    rend: *FtRenderer,
+                    rt: *ghostty.Runtime,
+                    pane: *Pane,
+                    ox: f32,
+                    oy: f32,
+                    pw: f32,
+                    ph: f32,
+                    fb_w: f32,
+                    fb_h: f32,
+                    focused: bool,
+                ) bool {
+                    _ = oy;
+                    _ = fb_w;
+                    _ = fb_h;
+                    const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
+                    const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
+                    const cache = getOrCreatePaneCache(pane, pw_u, ph_u) orelse return false;
+
+                    // Check dirty flag.
+                    // We use pane.render_dirty (set by tickPanes before updateRenderState
+                    // clears the ghostty-internal flag) rather than getRenderStateDirty
+                    // which always returns false by the time we reach here.
+                    _ = ox; // suppress unused warning
+                    const dirty_level = pane.render_dirty;
+                    if (dirty_level == .false_value and !rend.atlas_dirty) {
+                        // Nothing changed — skip re-render, RT still valid.
+                        return false;
+                    }
+
+                    // Resolve background colour for the clear.
+                    var cr: f32 = 0.0;
+                    var cg: f32 = 0.0;
+                    var cb: f32 = 0.0;
+                    if (rt.renderStateColors(pane.render_state)) |colors| {
+                        cr = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
+                        cg = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
+                        cb = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                    }
+
+                    // .full → clear the whole RT and redraw every row.
+                    // .true_value → keep existing RT pixels (LOAD), only redraw dirty rows.
+                    // atlas_dirty without a pane dirty → also needs a full redraw since
+                    // atlas changed under existing quads; do a full pass in that case too.
+                    const force_full = dirty_level == .full or rend.atlas_dirty;
+
+                    rend.renderToCache(
+                        cache,
+                        rt,
+                        pane.render_state,
+                        &pane.row_iterator,
+                        &pane.row_cells,
+                        pw,
+                        ph,
+                        focused,
+                        cr,
+                        cg,
+                        cb,
+                        force_full,
+                    );
+                    g_phase_accum_rows_rendered += rend.last_rows_rendered;
+                    g_phase_accum_rows_skipped += rend.last_rows_skipped;
+                    g_phase_accum_queue_ns += rend.last_queue_ns;
+                    g_phase_accum_gpu_ns += rend.last_gpu_ns;
+                    g_phase_accum_pass1_ns += rend.last_pass1_ns;
+                    g_phase_accum_pass2_ns += rend.last_pass2_ns;
+
+                    // Clear the pane-level dirty flag so subsequent clean frames
+                    // are skipped.
+                    pane.render_dirty = .false_value;
+                    return true;
+                }
+            }.call;
+
+            if (do_leaves) {
                 for (leaves) |leaf| {
-                    // Skip panes whose render_state has not been initialized yet
-                    // (avoids crashing ghostty on the first frame after a split).
                     if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
-                    const is_focused = leaf.pane == app.activePane();
-                    renderer.queueInViewport(
-                        runtime,
-                        leaf.pane.render_state,
-                        &leaf.pane.row_iterator,
-                        &leaf.pane.row_cells,
-                        ox,
-                        oy,
-                        pw,
-                        ph,
-                        width,
-                        height,
-                        is_focused,
-                    );
+                    const focused = leaf.pane == app.activePane();
+                    if (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused)) {
+                        g_phase_accum_dirty_frames += 1;
+                    } else {
+                        g_phase_accum_clean_frames += 1;
+                    }
                 }
-            } else if (app.activePane()) |pane| {
-                if (pane.render_state_ready) renderer.queueInViewport(
-                    runtime,
-                    pane.render_state,
-                    &pane.row_iterator,
-                    &pane.row_cells,
-                    0,
-                    0,
-                    width,
-                    height,
-                    width,
-                    height,
-                    true,
-                );
+            } else if (single_pane) |sp| {
+                const pane: *Pane = @ptrCast(@alignCast(sp));
+                if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true)) {
+                    g_phase_accum_dirty_frames += 1;
+                } else {
+                    g_phase_accum_clean_frames += 1;
+                }
             }
         }
-    }
 
-    // Ensure atlas is uploaded before drawing tab bar labels.
-    // queueInViewport already calls flushAtlas internally, but if no panes were
-    // ready this frame (or the tab bar added new glyphs not seen in pane content),
-    // we flush here.  The guard in flushAtlas prevents a double upload.
-    if (g_ft_renderer) |*renderer| {
+        // Flush atlas if any new glyphs were rasterized during the offscreen
+        // pass(es) — needed before the swapchain pass uses the atlas.
         renderer.flushAtlasIfDirty();
+    }
+    const after_offscreen_ns = std.time.nanoTimestamp();
+
+    // ── Phase 2: Swapchain pass ────────────────────────────────────────────
+
+    var pass = std.mem.zeroes(c.sg_pass);
+    pass.swapchain = c.sglue_swapchain();
+    pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+    pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+    c.sg_begin_pass(&pass);
+
+    // Blit each pane's cached RT into the swapchain pass.
+    if (g_ft_renderer) |*renderer| {
+        if (app.ghostty) |*_runtime| {
+            _ = _runtime;
+            const do_leaves = leaves.len > 0;
+            if (do_leaves) {
+                for (leaves) |leaf| {
+                    if (!leaf.pane.render_state_ready) continue;
+                    const ox: f32 = @floatFromInt(leaf.bounds.x);
+                    const oy: f32 = @floatFromInt(leaf.bounds.y);
+                    const pw: f32 = @floatFromInt(leaf.bounds.width);
+                    const ph: f32 = @floatFromInt(leaf.bounds.height);
+                    const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
+                    const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
+                    if (getOrCreatePaneCache(leaf.pane, pw_u, ph_u)) |cache| {
+                        renderer.blitCache(cache, ox, oy, pw, ph, width, height);
+                    }
+                }
+            } else if (app.activePane()) |pane| {
+                if (pane.render_state_ready) {
+                    const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
+                    const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
+                    if (getOrCreatePaneCache(pane, pw_u, ph_u)) |cache| {
+                        renderer.blitCache(cache, 0, 0, width, height, width, height);
+                    }
+                }
+            }
+        }
     }
 
     // Draw split borders as filled 2px quads (only when >1 pane).
@@ -528,7 +723,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const hover_close = app.hovered_close_tab_index != null and app.hovered_close_tab_index.? == ti;
                         const title_seg = app.topBarTitleSegment(ti, hover_close, &title_buf);
                         const title = title_seg.text;
-                        std.log.info("rendering tab title={s} len={d}", .{ title, title.len });
                         const label_space = tab_w - close_w - renderer.cell_w;
                         const max_label_chars: usize = if (label_space > 0)
                             @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
@@ -552,7 +746,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                                 const fallback_bg_b: u8 = if (is_active) 72 else 46;
                                 drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, fallback_bg_r, fallback_bg_g, fallback_bg_b, 255);
                             }
-                            std.log.info("drawLabel len={d}", .{display_title.len});
                             const draw_x = if (app.hasCustomTopBarTabs()) tx + 1.0 else label_x;
                             renderer.drawLabelFace(draw_x, label_y, display_title, fg.r, fg.g, fg.b, if (title_seg.bold) 1 else 0);
                             // After drawLabel the pipeline changed; restore defaults for rects.
@@ -575,6 +768,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                 }
             }
+
+            if (app.config.debug_overlay) {
+                drawDebugOverlay(app, renderer, width, height);
+            }
         }
     }
 
@@ -583,6 +780,46 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     c.sg_end_pass();
     c.sg_commit();
+    const after_commit_ns = std.time.nanoTimestamp();
+
+    // ── Phase timing accumulation (logged every ~2 s) ─────────────────────
+    g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
+    g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
+    g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
+    g_phase_sample_frames += 1;
+
+    if (g_phase_last_log_ns == 0) g_phase_last_log_ns = frame_start_ns;
+    if (frame_start_ns - g_phase_last_log_ns >= 2_000_000_000) {
+        const n: f32 = @floatFromInt(@max(1, g_phase_sample_frames));
+        const tick_ms = @as(f32, @floatFromInt(g_phase_accum_tick_ns)) / n / 1_000_000.0;
+        const off_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_ns)) / n / 1_000_000.0;
+        const swap_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_ns)) / n / 1_000_000.0;
+        const queue_ms = @as(f32, @floatFromInt(g_phase_accum_queue_ns)) / n / 1_000_000.0;
+        const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
+        const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
+        const pass2_ms = @as(f32, @floatFromInt(g_phase_accum_pass2_ns)) / n / 1_000_000.0;
+        const dirty = g_phase_accum_dirty_frames;
+        const clean = g_phase_accum_clean_frames;
+        const rows_rendered = g_phase_accum_rows_rendered;
+        const rows_skipped = g_phase_accum_rows_skipped;
+        std.log.info(
+            "frame phases (avg/{d:.0}f): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  rows_rendered={d} rows_skipped={d}",
+            .{ n, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, rows_rendered, rows_skipped },
+        );
+        g_phase_accum_tick_ns = 0;
+        g_phase_accum_offscreen_ns = 0;
+        g_phase_accum_swapchain_ns = 0;
+        g_phase_accum_queue_ns = 0;
+        g_phase_accum_gpu_ns = 0;
+        g_phase_accum_pass1_ns = 0;
+        g_phase_accum_pass2_ns = 0;
+        g_phase_accum_dirty_frames = 0;
+        g_phase_accum_clean_frames = 0;
+        g_phase_accum_rows_rendered = 0;
+        g_phase_accum_rows_skipped = 0;
+        g_phase_sample_frames = 0;
+        g_phase_last_log_ns = frame_start_ns;
+    }
 
     g_renderer_ready = true;
 
@@ -592,6 +829,77 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     c.sapp_set_window_title(titleCString(app.activeTitle()));
+}
+
+fn updatePerfCounters(frame_start_ns: i128) void {
+    if (g_last_frame_time_ns != 0) {
+        const frame_delta = frame_start_ns - g_last_frame_time_ns;
+        g_perf_accum_frame_ns += frame_delta;
+        g_perf_accum_frames += 1;
+    }
+
+    if (g_last_perf_sample_ns == 0) g_last_perf_sample_ns = frame_start_ns;
+    const sample_delta = frame_start_ns - g_last_perf_sample_ns;
+    if (sample_delta >= std.time.ns_per_s / 4 and g_perf_accum_frames > 0) {
+        const sample_seconds = @as(f32, @floatFromInt(sample_delta)) / @as(f32, @floatFromInt(std.time.ns_per_s));
+        g_perf_fps = @as(f32, @floatFromInt(g_perf_accum_frames)) / sample_seconds;
+        g_perf_frame_ms = (@as(f32, @floatFromInt(g_perf_accum_frame_ns)) / @as(f32, @floatFromInt(g_perf_accum_frames))) / @as(f32, @floatFromInt(std.time.ns_per_ms));
+        g_last_perf_sample_ns = frame_start_ns;
+        g_perf_accum_frame_ns = 0;
+        g_perf_accum_frames = 0;
+    }
+
+    g_last_frame_time_ns = frame_start_ns;
+}
+
+fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) void {
+    var runtime = app.ghostty;
+    const pane = app.activePane();
+
+    var rows: u16 = 0;
+    var cols: u16 = 0;
+    var scroll_total: u64 = 0;
+    var scroll_offset: u64 = 0;
+    var scroll_len: u64 = 0;
+    if (runtime) |*rt| {
+        if (pane) |p| {
+            cols = rt.renderStateCols(p.render_state) orelse 0;
+            rows = rt.renderStateRows(p.render_state) orelse 0;
+            if (rt.terminalScrollbar(p.terminal)) |scrollbar| {
+                scroll_total = scrollbar.total;
+                scroll_offset = scrollbar.offset;
+                scroll_len = scrollbar.len;
+            }
+        }
+    }
+
+    var lines: [6][96]u8 = undefined;
+    const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}", .{g_perf_fps}) catch "fps ?";
+    const text1 = std.fmt.bufPrint(&lines[1], "frame {d:.2} ms", .{g_perf_frame_ms}) catch "frame ?";
+    const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
+    const text3 = std.fmt.bufPrint(&lines[3], "tabs {d} ws {d}", .{ app.tabCount(), app.workspaceCount() }) catch "tabs ?";
+    const text4 = std.fmt.bufPrint(&lines[4], "scroll {d}/{d} vis {d}", .{ scroll_offset, scroll_total, scroll_len }) catch "scroll ?";
+    const text5 = std.fmt.bufPrint(&lines[5], "frame #{d}", .{g_frame_index}) catch "frame #?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5 };
+
+    var max_chars: usize = 0;
+    for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));
+
+    const pad_x = renderer.cell_w * 0.75;
+    const pad_y = renderer.cell_h * 0.5;
+    const panel_w = @as(f32, @floatFromInt(max_chars)) * renderer.cell_w + pad_x * 2.0;
+    const panel_h = @as(f32, @floatFromInt(overlay_lines.len)) * renderer.cell_h + pad_y * 2.0;
+    const panel_x = width - panel_w - renderer.cell_w;
+    const panel_y = height - panel_h - renderer.cell_h;
+
+    drawBorderRect(panel_x, panel_y, panel_w, panel_h, 20, 22, 29, 230);
+    drawBorderRect(panel_x, panel_y, panel_w, 1.0, 122, 162, 247, 255);
+
+    for (overlay_lines, 0..) |line, i| {
+        const text_y = panel_y + pad_y + @as(f32, @floatFromInt(i)) * renderer.cell_h;
+        renderer.drawLabelFace(panel_x + pad_x, text_y, line, 220, 225, 238, if (i < 2) 1 else 0);
+        c.sgl_load_default_pipeline();
+    }
 }
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
@@ -636,7 +944,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
         c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
         c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
-        c.SAPP_EVENTTYPE_MOUSE_SCROLL => app.scroll(event.mouse_x, event.mouse_y, -@as(isize, @intFromFloat(event.scroll_y))),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => app.scrollFloat(event.mouse_x, event.mouse_y, -event.scroll_y),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
         c.SAPP_EVENTTYPE_FOCUSED => app.sendFocus(true) catch {},
         c.SAPP_EVENTTYPE_UNFOCUSED => app.sendFocus(false) catch {},
@@ -734,7 +1042,7 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         g_logged_first_scroll = true;
         std.log.info("first Windows scroll event delta={d:.2}", .{event.scroll_y});
     }
-    app.scroll(event.mouse_x, event.mouse_y, -@as(isize, @intFromFloat(event.scroll_y)));
+    app.scrollFloat(event.mouse_x, event.mouse_y, -event.scroll_y);
 }
 
 fn handleResize(app: *App, event: c.sapp_event) void {

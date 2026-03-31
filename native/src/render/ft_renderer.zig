@@ -67,6 +67,121 @@ const GlyphInstance = struct {
     y_offset: f32,
 };
 
+// ── Per-pane render-to-texture cache ─────────────────────────────────────────
+//
+// Each pane gets one `PaneCache` that holds:
+//   - An offscreen RGBA8 render-target image (same pixel size as the pane).
+//   - Two views: one color-attachment view (used as the pass attachment) and
+//     one texture view (used to sample the result in the blit pass).
+//   - A dedicated sgl_context so that pane draw commands are isolated from the
+//     main context (tab bar, borders, etc.).
+//   - A context-specific atlas pipeline that matches the offscreen color format.
+//
+// Workflow per frame:
+//   1. If dirty (or first frame / size changed): begin offscreen pass on this
+//      pane's RT, set sgl context, call queueInViewport, sgl_context_draw,
+//      end offscreen pass.
+//   2. Regardless: in the main swapchain pass, blit the RT texture as a
+//      textured quad at the pane's viewport position (one quad per pane).
+//
+// This means clean frames (no terminal changes, no cursor movement) skip all
+// cell iteration entirely and just submit 2 triangles per pane.
+pub const PaneCache = struct {
+    rt_img: c.sg_image,
+    rt_att_view: c.sg_view, // color-attachment view (for offscreen pass)
+    rt_tex_view: c.sg_view, // texture view (for blit in swapchain pass)
+    rt_smp: c.sg_sampler,
+    sgl_ctx: c.sgl_context,
+    atlas_pip: c.sgl_pipeline, // context-specific atlas pipeline
+    blit_smp: c.sg_sampler, // nearest-neighbour sampler for blit
+    width: u32,
+    height: u32,
+
+    /// Allocate GPU resources for a `w × h` pane render target.
+    pub fn init(w: u32, h: u32) PaneCache {
+        // Offscreen render-target image (color attachment).
+        var img_desc = std.mem.zeroes(c.sg_image_desc);
+        img_desc.width = @intCast(w);
+        img_desc.height = @intCast(h);
+        img_desc.pixel_format = c.SG_PIXELFORMAT_RGBA8;
+        img_desc.usage.color_attachment = true;
+        img_desc.label = "pane-rt";
+        const rt_img = c.sg_make_image(&img_desc);
+
+        // Color-attachment view (write target for the offscreen pass).
+        var att_desc = std.mem.zeroes(c.sg_view_desc);
+        att_desc.color_attachment.image = rt_img;
+        const rt_att_view = c.sg_make_view(&att_desc);
+
+        // Texture view (read source for the blit pass).
+        var tex_desc = std.mem.zeroes(c.sg_view_desc);
+        tex_desc.texture.image = rt_img;
+        const rt_tex_view = c.sg_make_view(&tex_desc);
+
+        // Sampler for sampling the RT as a texture (linear → smooth blit on HiDPI).
+        var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
+        smp_desc.min_filter = c.SG_FILTER_LINEAR;
+        smp_desc.mag_filter = c.SG_FILTER_LINEAR;
+        smp_desc.label = "pane-rt-smp";
+        const rt_smp = c.sg_make_sampler(&smp_desc);
+
+        // Nearest-neighbour sampler for the blit quad (avoids blur on 1:1).
+        var blit_smp_desc = std.mem.zeroes(c.sg_sampler_desc);
+        blit_smp_desc.min_filter = c.SG_FILTER_NEAREST;
+        blit_smp_desc.mag_filter = c.SG_FILTER_NEAREST;
+        blit_smp_desc.label = "pane-blit-smp";
+        const blit_smp = c.sg_make_sampler(&blit_smp_desc);
+
+        // Dedicated sgl_context for this pane (isolated vertex/command buffers).
+        // Must match the RT's pixel format.
+        var ctx_desc = std.mem.zeroes(c.sgl_context_desc_t);
+        ctx_desc.max_vertices = 1 << 18;
+        ctx_desc.max_commands = 1 << 16;
+        ctx_desc.color_format = c.SG_PIXELFORMAT_RGBA8;
+        ctx_desc.depth_format = c.SG_PIXELFORMAT_NONE;
+        ctx_desc.sample_count = 1;
+        const sgl_ctx = c.sgl_make_context(&ctx_desc);
+
+        // Context-specific atlas pipeline (must be created on the active context).
+        c.sgl_set_context(sgl_ctx);
+        var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
+        pip_desc.colors[0].blend.enabled = true;
+        pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
+        pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
+        pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        const atlas_pip = c.sgl_context_make_pipeline(sgl_ctx, &pip_desc);
+        c.sgl_set_context(c.sgl_default_context());
+
+        return .{
+            .rt_img = rt_img,
+            .rt_att_view = rt_att_view,
+            .rt_tex_view = rt_tex_view,
+            .rt_smp = rt_smp,
+            .blit_smp = blit_smp,
+            .sgl_ctx = sgl_ctx,
+            .atlas_pip = atlas_pip,
+            .width = w,
+            .height = h,
+        };
+    }
+
+    /// Destroy all GPU resources held by this cache.
+    pub fn deinit(self: *PaneCache) void {
+        c.sgl_destroy_context(self.sgl_ctx);
+        c.sg_destroy_sampler(self.blit_smp);
+        c.sg_destroy_sampler(self.rt_smp);
+        c.sg_destroy_view(self.rt_tex_view);
+        c.sg_destroy_view(self.rt_att_view);
+        c.sg_destroy_image(self.rt_img);
+    }
+
+    /// Returns true if the cached RT is the wrong size and must be recreated.
+    pub fn needsResize(self: *const PaneCache, w: u32, h: u32) bool {
+        return self.width != w or self.height != h;
+    }
+};
+
 const ShapeResult = struct {
     glyphs: []const GlyphInstance,
     raster_face_index: u8,
@@ -168,6 +283,26 @@ pub const FtRenderer = struct {
     glyph_buf: [32]u8 = [_]u8{0} ** 32,
     logged_first_draw: bool = false,
     logged_first_content: bool = false,
+
+    /// Fast ASCII glyph-ID lookup table: ascii_glyph_ids[face_idx][codepoint]
+    /// Avoids HarfBuzz shaping and shape-cache hash lookup for printable ASCII.
+    /// face_idx 0-3 = regular/bold/bold-italic/italic; populated lazily via
+    /// FT_Get_Char_Index on first use.  Entry == 0 means "not yet fetched".
+    ascii_glyph_ids: [4][128]u32 = [_][128]u32{[_]u32{0} ** 128} ** 4,
+
+    /// Reusable ligature run buffer — avoids a heap alloc+free every frame.
+    /// Grown on demand via realloc; never shrunk.
+    run_buf: []u8 = &.{},
+
+    /// Diagnostic counters — set by the last renderToCache call, readable by caller.
+    last_rows_rendered: usize = 0,
+    last_rows_skipped: usize = 0,
+    /// Sub-timing within renderToCache (nanoseconds).
+    last_queue_ns: i128 = 0,
+    last_gpu_ns: i128 = 0,
+    /// Sub-timing within queueInViewport: pass1 (bg), pass2 (glyphs).
+    last_pass1_ns: i128 = 0,
+    last_pass2_ns: i128 = 0,
 
     pub fn init(allocator: std.mem.Allocator, cfg: FtRendererConfig) !FtRenderer {
         const font_size_px = cfg.font_size * cfg.dpi_scale;
@@ -336,6 +471,24 @@ pub const FtRenderer = struct {
         };
     }
 
+    /// Rasterize all printable ASCII characters across all four base faces so
+    /// that the atlas is fully populated before any frame is rendered.  This
+    /// prevents mid-session atlas uploads (which transfer the full 16 MB
+    /// texture) from spiking frame times during normal editing.
+    pub fn warmupAtlas(self: *FtRenderer) void {
+        var utf8: [4]u8 = undefined;
+        var cp: u32 = 0x20; // first printable ASCII
+        while (cp <= 0x7E) : (cp += 1) {
+            const len = encodeUtf8(cp, &utf8) catch continue;
+            // Rasterize in regular, bold, italic, bold-italic faces.
+            var fi: u8 = 0;
+            while (fi < 4) : (fi += 1) {
+                self.preRasterize(utf8[0..len], fi, .terminal);
+            }
+        }
+        std.log.info("ft_renderer: atlas warmup done ({d} glyphs cached)", .{self.glyph_cache.count()});
+    }
+
     /// Pre-rasterize all glyphs in a UTF-8 string into the atlas without drawing.
     /// Call this before the sg_begin_pass / flushAtlas cycle so the atlas upload
     /// is not duplicated later when drawLabel is called.
@@ -385,6 +538,7 @@ pub const FtRenderer = struct {
     }
 
     pub fn deinit(self: *FtRenderer) void {
+        if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
         var it = self.shape_cache.valueIterator();
         while (it.next()) |val| {
             self.allocator.free(val.glyphs);
@@ -430,14 +584,137 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true);
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true);
         c.sgl_draw();
+    }
+
+    /// Render terminal content for one pane into its `PaneCache` render target.
+    /// Must be called OUTSIDE any active sg_pass (before the swapchain pass begins).
+    /// After this call the RT texture is up-to-date and can be blitted.
+    ///
+    /// `clear_rgb` is the terminal background colour so the offscreen clear
+    /// matches the terminal theme rather than black.
+    pub fn renderToCache(
+        self: *FtRenderer,
+        cache: *PaneCache,
+        runtime: *ghostty.Runtime,
+        render_state: ?*anyopaque,
+        row_iterator: *?*anyopaque,
+        row_cells: *?*anyopaque,
+        pane_w: f32,
+        pane_h: f32,
+        is_focused: bool,
+        clear_r: f32,
+        clear_g: f32,
+        clear_b: f32,
+        force_full: bool,
+    ) void {
+        // Reset per-call diagnostic counters.
+        self.last_rows_rendered = 0;
+        self.last_rows_skipped = 0;
+
+        // Switch to this pane's sgl_context so draw commands go into its
+        // own vertex / command buffers (isolated from the main context).
+        c.sgl_set_context(cache.sgl_ctx);
+
+        // Temporarily swap in the context-specific atlas pipeline so that
+        // queueInViewport uses the right one.
+        const saved_pip = self.atlas_pip;
+        self.atlas_pip = cache.atlas_pip;
+
+        // Queue all terminal geometry into the pane context.
+        // offset_x/y = 0 because the RT origin is the pane's top-left.
+        const t_queue_start = std.time.nanoTimestamp();
+        self.queueInViewport(
+            runtime,
+            render_state,
+            row_iterator,
+            row_cells,
+            0.0,
+            0.0,
+            pane_w,
+            pane_h,
+            pane_w,
+            pane_h,
+            is_focused,
+            force_full,
+        );
+        const t_queue_end = std.time.nanoTimestamp();
+
+        // Restore atlas pipeline and default context.
+        self.atlas_pip = saved_pip;
+
+        // Begin the offscreen pass targeting this pane's RT.
+        // - force_full → CLEAR: need a fresh background (resize, scroll, etc.)
+        // - partial     → LOAD: keep existing pixel content; only dirty rows were redrawn.
+        var pass = std.mem.zeroes(c.sg_pass);
+        pass.attachments.colors[0] = cache.rt_att_view;
+        if (force_full) {
+            pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+            pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+        } else {
+            pass.action.colors[0].load_action = c.SG_LOADACTION_LOAD;
+        }
+        c.sg_begin_pass(&pass);
+
+        // Flush the pane's sgl context into the offscreen pass.
+        c.sgl_context_draw(cache.sgl_ctx);
+
+        c.sg_end_pass();
+        const t_gpu_end = std.time.nanoTimestamp();
+
+        self.last_queue_ns = t_queue_end - t_queue_start;
+        self.last_gpu_ns = t_gpu_end - t_queue_end;
+
+        // Restore default context for subsequent draw calls (tab bar, etc.).
+        c.sgl_set_context(c.sgl_default_context());
+    }
+
+    /// Blit a pane's cached RT texture as a textured quad into the current
+    /// (swapchain) pass.  Must be called inside an active sg_pass.
+    /// Uses the default sgl_context.
+    ///
+    /// `fb_w` / `fb_h` are the full framebuffer dimensions (for the ortho
+    /// projection); `ox`/`oy`/`pw`/`ph` are the pane's pixel rect.
+    pub fn blitCache(
+        self: *FtRenderer,
+        cache: *PaneCache,
+        ox: f32,
+        oy: f32,
+        pw: f32,
+        ph: f32,
+        fb_w: f32,
+        fb_h: f32,
+    ) void {
+        c.sgl_defaults();
+        c.sgl_viewport(0, 0, @intFromFloat(fb_w), @intFromFloat(fb_h), true);
+        c.sgl_scissor_rect(0, 0, @intFromFloat(fb_w), @intFromFloat(fb_h), true);
+        c.sgl_load_pipeline(self.atlas_pip);
+        c.sgl_enable_texture();
+        c.sgl_texture(cache.rt_tex_view, cache.rt_smp);
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, fb_w, fb_h, 0.0, -1.0, 1.0);
+
+        // Draw a quad covering [ox, oy] → [ox+pw, oy+ph] with UV [0,0]→[1,1].
+        // Vertex colour white (1,1,1,1) so the texture is sampled as-is.
+        c.sgl_begin_quads();
+        c.sgl_c4b(255, 255, 255, 255);
+        c.sgl_v2f_t2f(ox, oy, 0.0, 0.0);
+        c.sgl_v2f_t2f(ox + pw, oy, 1.0, 0.0);
+        c.sgl_v2f_t2f(ox + pw, oy + ph, 1.0, 1.0);
+        c.sgl_v2f_t2f(ox, oy + ph, 0.0, 1.0);
+        c.sgl_end();
+        c.sgl_disable_texture();
     }
 
     /// Queue geometry for one pane into its viewport sub-rect.
     /// Does NOT call sgl_draw() — the caller must call sgl_draw() exactly once
     /// per frame after all queueInViewport() calls are done.
     /// `is_focused` controls whether the cursor is drawn for this pane.
+    /// `force_full` = true → draw every row (used on full-dirty / resize / atlas change).
+    /// `force_full` = false → skip rows whose ghostty row-dirty flag is clear,
+    ///   and clear the row-dirty flag after rendering each dirty row.
     pub fn queueInViewport(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
@@ -451,6 +728,7 @@ pub const FtRenderer = struct {
         fb_w: f32,
         fb_h: f32,
         is_focused: bool,
+        force_full: bool,
     ) void {
         _ = fb_w;
         _ = fb_h;
@@ -486,25 +764,364 @@ pub const FtRenderer = struct {
 
         const row_count = runtime.renderStateRows(render_state) orelse 0;
         const col_count = runtime.renderStateCols(render_state) orelse 0;
-        const run_buf_len = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
-        const run_buf = self.allocator.alloc(u8, run_buf_len) catch return;
-        defer self.allocator.free(run_buf);
+        const run_buf_needed = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
+        if (run_buf_needed > self.run_buf.len) {
+            if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
+            self.run_buf = self.allocator.alloc(u8, run_buf_needed) catch return;
+        }
+        const run_buf = self.run_buf;
+
+        // ── Fast path: single merged pass when atlas is fully populated ────
+        // When need_raster=false (warm cache, steady state), skip the separate
+        // rasterisation sub-pass and merge background quads + glyph draw into
+        // a single cell iteration.  This halves the number of nextRow/nextCell/
+        // cellStyle/cellRaw C-ABI calls vs the two-pass approach.
+        const need_raster = self.atlas_dirty;
+        const t_pass1_start = std.time.nanoTimestamp();
+        if (!need_raster) {
+            // Single merged pass: bg quads + glyph draw in one row/cell loop.
+            if (runtime.populateRowIterator(render_state, row_iterator)) {
+                // BG quad batch (no texture).
+                var bg_quads_open = false;
+                // Glyph batch (atlas texture).
+                c.sgl_load_pipeline(self.atlas_pip);
+                c.sgl_enable_texture();
+                c.sgl_texture(self.atlas_view, self.atlas_smp);
+                c.sgl_begin_quads();
+                var glyph_quads_open = true;
+
+                var row_y: usize = 0;
+                while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
+                    const row_is_dirty = force_full or runtime.rowDirty(row_iterator.*);
+                    if (!row_is_dirty) {
+                        self.last_rows_skipped += 1;
+                        continue;
+                    }
+                    self.last_rows_rendered += 1;
+
+                    if (!runtime.populateRowCells(row_iterator.*, row_cells)) {
+                        if (!force_full) runtime.clearRowDirty(row_iterator.*);
+                        continue;
+                    }
+                    const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+
+                    // In partial mode, erase old row pixels with a bg-color rect.
+                    if (!force_full) {
+                        // Must switch to no-texture for bg quads.
+                        if (glyph_quads_open) {
+                            c.sgl_end();
+                            glyph_quads_open = false;
+                        }
+                        c.sgl_load_default_pipeline();
+                        if (!bg_quads_open) {
+                            c.sgl_begin_quads();
+                            bg_quads_open = true;
+                        }
+                        c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
+                        c.sgl_v2f(self.padding_x, py);
+                        c.sgl_v2f(self.padding_x + pane_w, py);
+                        c.sgl_v2f(self.padding_x + pane_w, py + self.cell_h);
+                        c.sgl_v2f(self.padding_x, py + self.cell_h);
+                    }
+
+                    var col_x: usize = 0;
+                    var run_start_col: usize = 0;
+                    var run_len: usize = 0;
+                    var run_face_idx: u8 = 0;
+                    var run_fg = default_fg;
+                    while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
+                        const style = runtime.cellStyle(row_cells.*);
+                        const face_idx: u8 = if (style) |s| blk: {
+                            if (s.bold and s.italic) break :blk 2;
+                            if (s.bold) break :blk 1;
+                            if (s.italic) break :blk 3;
+                            break :blk 0;
+                        } else 0;
+                        const fg: ghostty.ColorRgb = if (style) |s|
+                            ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
+                        else
+                            default_fg;
+
+                        // Background colour.
+                        const bg: ghostty.ColorRgb = if (style) |s|
+                            ghostty.resolveStyleColor(s.bg_color, default_bg, &colors.palette)
+                        else
+                            default_bg;
+
+                        if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
+                            // Need to flush glyph batch, draw bg quad, then reopen glyph batch.
+                            if (glyph_quads_open) {
+                                c.sgl_end();
+                                glyph_quads_open = false;
+                            }
+                            c.sgl_load_default_pipeline();
+                            if (!bg_quads_open) {
+                                c.sgl_begin_quads();
+                                bg_quads_open = true;
+                            }
+                            const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                            c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+                            c.sgl_v2f(px, py);
+                            c.sgl_v2f(px + self.cell_w, py);
+                            c.sgl_v2f(px + self.cell_w, py + self.cell_h);
+                            c.sgl_v2f(px, py + self.cell_h);
+                        }
+
+                        // Glyph draw.
+                        const raw_cell = runtime.cellRaw(row_cells.*);
+                        const content_tag = runtime.cellContentTag(raw_cell);
+
+                        switch (content_tag) {
+                            .codepoint => {
+                                const cp = runtime.cellCodepoint(raw_cell);
+                                if (cp == 0) {
+                                    if (bg_quads_open) {
+                                        c.sgl_end();
+                                        bg_quads_open = false;
+                                    }
+                                    if (!glyph_quads_open) {
+                                        c.sgl_load_pipeline(self.atlas_pip);
+                                        c.sgl_enable_texture();
+                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                        c.sgl_begin_quads();
+                                        glyph_quads_open = true;
+                                    }
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    continue;
+                                }
+                                const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                                if (glyph_len == 0) {
+                                    if (bg_quads_open) {
+                                        c.sgl_end();
+                                        bg_quads_open = false;
+                                    }
+                                    if (!glyph_quads_open) {
+                                        c.sgl_load_pipeline(self.atlas_pip);
+                                        c.sgl_enable_texture();
+                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                        c.sgl_begin_quads();
+                                        glyph_quads_open = true;
+                                    }
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    continue;
+                                }
+                                if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
+                                    // Ensure bg batch is closed and glyph batch is open.
+                                    if (bg_quads_open) {
+                                        c.sgl_end();
+                                        bg_quads_open = false;
+                                    }
+                                    if (!glyph_quads_open) {
+                                        c.sgl_load_pipeline(self.atlas_pip);
+                                        c.sgl_enable_texture();
+                                        c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                        c.sgl_begin_quads();
+                                        glyph_quads_open = true;
+                                    }
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                    if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
+                                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                    }
+                                    continue;
+                                }
+                                // Ligature run accumulation — needs glyph batch open.
+                                if (bg_quads_open) {
+                                    c.sgl_end();
+                                    bg_quads_open = false;
+                                }
+                                if (!glyph_quads_open) {
+                                    c.sgl_load_pipeline(self.atlas_pip);
+                                    c.sgl_enable_texture();
+                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                    c.sgl_begin_quads();
+                                    glyph_quads_open = true;
+                                }
+                                if (run_len + glyph_len > run_buf.len) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                }
+                                if (run_len == 0) {
+                                    run_start_col = col_x;
+                                    run_face_idx = face_idx;
+                                    run_fg = fg;
+                                }
+                                if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    run_start_col = col_x;
+                                    run_face_idx = face_idx;
+                                    run_fg = fg;
+                                }
+                                @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                                run_len += glyph_len;
+                            },
+                            .codepoint_grapheme => {
+                                if (bg_quads_open) {
+                                    c.sgl_end();
+                                    bg_quads_open = false;
+                                }
+                                if (!glyph_quads_open) {
+                                    c.sgl_load_pipeline(self.atlas_pip);
+                                    c.sgl_enable_texture();
+                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                    c.sgl_begin_quads();
+                                    glyph_quads_open = true;
+                                }
+                                const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
+                                if (grapheme_len == 0) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    continue;
+                                }
+                                var cps: [16]u32 = [_]u32{0} ** 16;
+                                runtime.cellGraphemes(row_cells.*, &cps);
+                                var glyph_len: usize = 0;
+                                for (cps[0..grapheme_len]) |cp| {
+                                    if (cp == 0) break;
+                                    glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                                }
+                                if (glyph_len == 0) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    continue;
+                                }
+                                if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                    continue;
+                                }
+                                if (run_len + glyph_len > run_buf.len) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                }
+                                if (run_len == 0) {
+                                    run_start_col = col_x;
+                                    run_face_idx = face_idx;
+                                    run_fg = fg;
+                                }
+                                if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                    run_start_col = col_x;
+                                    run_face_idx = face_idx;
+                                    run_fg = fg;
+                                }
+                                @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                                run_len += glyph_len;
+                            },
+                            else => {
+                                if (bg_quads_open) {
+                                    c.sgl_end();
+                                    bg_quads_open = false;
+                                }
+                                if (!glyph_quads_open) {
+                                    c.sgl_load_pipeline(self.atlas_pip);
+                                    c.sgl_enable_texture();
+                                    c.sgl_texture(self.atlas_view, self.atlas_smp);
+                                    c.sgl_begin_quads();
+                                    glyph_quads_open = true;
+                                }
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                            },
+                        }
+                    }
+                    if (run_len > 0) {
+                        if (bg_quads_open) {
+                            c.sgl_end();
+                            bg_quads_open = false;
+                        }
+                        if (!glyph_quads_open) {
+                            c.sgl_load_pipeline(self.atlas_pip);
+                            c.sgl_enable_texture();
+                            c.sgl_texture(self.atlas_view, self.atlas_smp);
+                            c.sgl_begin_quads();
+                            glyph_quads_open = true;
+                        }
+                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                    }
+
+                    if (!force_full) runtime.clearRowDirty(row_iterator.*);
+                }
+
+                if (bg_quads_open) c.sgl_end();
+                if (glyph_quads_open) {
+                    c.sgl_end();
+                    c.sgl_disable_texture();
+                }
+            }
+
+            // No atlas dirty in this path (need_raster=false).
+            const t_pass2_start = std.time.nanoTimestamp();
+            self.last_pass1_ns = t_pass2_start - t_pass1_start;
+            self.last_pass2_ns = 0; // merged into pass1
+
+            // ── Cursor overlay ─────────────────────────────────────────────
+            if (is_focused and runtime.cursorVisible(render_state)) {
+                if (runtime.cursorPos(render_state)) |pos| {
+                    const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
+                    const cy = self.padding_y + @as(f32, @floatFromInt(pos.y)) * self.cell_h;
+                    c.sgl_load_default_pipeline();
+                    const cursor_color: ghostty.ColorRgb = if (colors.cursor_has_value)
+                        colors.cursor
+                    else
+                        .{ .r = 220, .g = 220, .b = 220 };
+                    drawCursor(cx, cy, self.cell_w, self.cell_h, cursor_color, runtime.cursorVisualStyle(render_state));
+                }
+            }
+
+            if (!self.logged_first_draw) self.logged_first_draw = true;
+            return;
+        }
+
+        // ── Slow path: two passes when atlas may need rasterisation ──────────
 
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
+        // When the atlas is already fully populated (no new glyphs since last
+        // upload), we skip the rasterisation sub-pass — all shape/raster cache
+        // lookups would be no-ops and only add overhead.  We still iterate rows
+        // for non-default background colour quads.
+        //
+        // If atlas_dirty is false going into this pass, every glyph we might
+        // encounter is already in the atlas, so preRasterize is a guaranteed
+        // no-op.  Skipping it halves the per-cell C-ABI call count in steady
+        // state (warm cache), which is the common case during nvim editing.
+        //
+        // In partial mode (!force_full), skip rows that are not dirty.
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
             var quads_open = false;
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
+                // Per-row dirty skip (partial updates only).
+                if (!force_full and !runtime.rowDirty(row_iterator.*)) continue;
+
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+
+                // In partial mode we must first erase the old row pixels by
+                // drawing a full-width background rectangle in the default bg
+                // color, then overlay any per-cell custom backgrounds below.
+                if (!force_full) {
+                    if (!quads_open) {
+                        c.sgl_begin_quads();
+                        quads_open = true;
+                    }
+                    c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
+                    c.sgl_v2f(self.padding_x, py);
+                    c.sgl_v2f(self.padding_x + pane_w, py);
+                    c.sgl_v2f(self.padding_x + pane_w, py + self.cell_h);
+                    c.sgl_v2f(self.padding_x, py + self.cell_h);
+                }
+
                 var col_x: usize = 0;
                 var run_start_col: usize = 0;
                 var run_len: usize = 0;
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    // Background
-                    const bg = runtime.cellBackground(row_cells.*) orelse default_bg;
+                    // Fetch style once — gives us bg/fg colors + bold/italic.
+                    const style = runtime.cellStyle(row_cells.*);
+
+                    // Background: resolve from style, fall back to default.
+                    const bg: ghostty.ColorRgb = if (style) |s| blk: {
+                        break :blk ghostty.resolveStyleColor(s.bg_color, default_bg, &colors.palette);
+                    } else default_bg;
+
                     if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
                         if (!quads_open) {
                             c.sgl_begin_quads();
@@ -518,61 +1135,102 @@ pub const FtRenderer = struct {
                         c.sgl_v2f(px, py + self.cell_h);
                     }
 
-                    // Rasterisation
-                    const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                    const fg = runtime.cellForeground(row_cells.*) orelse default_fg;
-                    const style = runtime.cellStyle(row_cells.*);
+                    if (!need_raster) continue;
+
+                    // Rasterisation (only when new glyphs may need atlas space).
+                    // Use raw cell value to distinguish single-codepoint vs grapheme cluster.
+                    const raw_cell = runtime.cellRaw(row_cells.*);
+                    const content_tag = runtime.cellContentTag(raw_cell);
                     const face_idx: u8 = if (style) |s| blk: {
                         if (s.bold and s.italic) break :blk 2;
                         if (s.bold) break :blk 1;
                         if (s.italic) break :blk 3;
                         break :blk 0;
                     } else 0;
+                    const fg: ghostty.ColorRgb = if (style) |s|
+                        ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
+                    else
+                        default_fg;
 
-                    if (grapheme_len == 0) {
-                        flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                        continue;
+                    switch (content_tag) {
+                        .codepoint => {
+                            const cp = runtime.cellCodepoint(raw_cell);
+                            if (cp == 0) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                                continue;
+                            }
+                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                            if (glyph_len == 0) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                                continue;
+                            }
+                            if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                                continue;
+                            }
+                            if (run_len + glyph_len > run_buf.len) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                            }
+                            if (run_len == 0) {
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                            run_len += glyph_len;
+                        },
+                        .codepoint_grapheme => {
+                            // Multi-codepoint grapheme cluster — must use the graphemes buf API.
+                            const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
+                            if (grapheme_len == 0) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                                continue;
+                            }
+                            var cps: [16]u32 = [_]u32{0} ** 16;
+                            runtime.cellGraphemes(row_cells.*, &cps);
+                            var glyph_len: usize = 0;
+                            for (cps[0..grapheme_len]) |cp| {
+                                if (cp == 0) break;
+                                glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                            }
+                            if (glyph_len == 0) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                                continue;
+                            }
+                            if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                                continue;
+                            }
+                            if (run_len + glyph_len > run_buf.len) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                            }
+                            if (run_len == 0) {
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                            run_len += glyph_len;
+                        },
+                        else => {
+                            // BG_COLOR_PALETTE / BG_COLOR_RGB: no text to rasterize.
+                            flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
+                        },
                     }
-
-                    var cps: [16]u32 = [_]u32{0} ** 16;
-                    runtime.cellGraphemes(row_cells.*, &cps);
-
-                    var glyph_len: usize = 0;
-                    for (cps[0..grapheme_len]) |cp| {
-                        if (cp == 0) break;
-                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                    }
-
-                    if (glyph_len == 0) {
-                        flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                        continue;
-                    }
-
-                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
-                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
-                        continue;
-                    }
-
-                    if (run_len + glyph_len > run_buf.len) {
-                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                    }
-
-                    if (run_len == 0) {
-                        run_start_col = col_x;
-                        run_face_idx = face_idx;
-                        run_fg = fg;
-                    }
-
-                    if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                        flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        run_start_col = col_x;
-                        run_face_idx = face_idx;
-                        run_fg = fg;
-                    }
-
-                    @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                    run_len += glyph_len;
                 }
                 if (run_len > 0) {
                     flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
@@ -585,8 +1243,11 @@ pub const FtRenderer = struct {
             self.flushAtlas();
             self.atlas_dirty = false;
         }
+        const t_pass2_start = std.time.nanoTimestamp();
 
         // ── Pass 2: Glyph draw pass ────────────────────────────────────────
+        // In partial mode, skip clean rows; clear rowDirty on each dirty row
+        // after rendering so the flag is reset for the next updateRenderState.
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             c.sgl_load_pipeline(self.atlas_pip);
             c.sgl_enable_texture();
@@ -595,7 +1256,19 @@ pub const FtRenderer = struct {
 
             var row_y: usize = 0;
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
-                if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
+                // Per-row dirty skip (partial updates only).
+                const row_is_dirty = force_full or runtime.rowDirty(row_iterator.*);
+                if (!row_is_dirty) {
+                    self.last_rows_skipped += 1;
+                    continue;
+                }
+                self.last_rows_rendered += 1;
+
+                if (!runtime.populateRowCells(row_iterator.*, row_cells)) {
+                    // Still clear rowDirty even if cells couldn't be populated.
+                    if (!force_full) runtime.clearRowDirty(row_iterator.*);
+                    continue;
+                }
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 var col_x: usize = 0;
                 var run_start_col: usize = 0;
@@ -603,8 +1276,7 @@ pub const FtRenderer = struct {
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                    const fg = runtime.cellForeground(row_cells.*) orelse default_fg;
+                    // Fetch style once — gives us fg/bg colors + bold/italic.
                     const style = runtime.cellStyle(row_cells.*);
                     const face_idx: u8 = if (style) |s| blk: {
                         if (s.bold and s.italic) break :blk 2;
@@ -612,55 +1284,106 @@ pub const FtRenderer = struct {
                         if (s.italic) break :blk 3;
                         break :blk 0;
                     } else 0;
+                    const fg: ghostty.ColorRgb = if (style) |s|
+                        ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
+                    else
+                        default_fg;
 
-                    if (grapheme_len == 0) {
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        continue;
+                    // Use raw cell value to avoid extra iterator calls for codepoint/graphemes.
+                    const raw_cell = runtime.cellRaw(row_cells.*);
+                    const content_tag = runtime.cellContentTag(raw_cell);
+
+                    switch (content_tag) {
+                        .codepoint => {
+                            const cp = runtime.cellCodepoint(raw_cell);
+                            if (cp == 0) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                continue;
+                            }
+                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                            if (glyph_len == 0) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                continue;
+                            }
+                            if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                // Fast ASCII path: skip HarfBuzz shaping for printable ASCII.
+                                if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
+                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                }
+                                continue;
+                            }
+                            if (run_len + glyph_len > run_buf.len) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                            }
+                            if (run_len == 0) {
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                            run_len += glyph_len;
+                        },
+                        .codepoint_grapheme => {
+                            // Multi-codepoint grapheme cluster.
+                            const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
+                            if (grapheme_len == 0) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                continue;
+                            }
+                            var cps: [16]u32 = [_]u32{0} ** 16;
+                            runtime.cellGraphemes(row_cells.*, &cps);
+                            var glyph_len: usize = 0;
+                            for (cps[0..grapheme_len]) |cp| {
+                                if (cp == 0) break;
+                                glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+                            }
+                            if (glyph_len == 0) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                continue;
+                            }
+                            if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                continue;
+                            }
+                            if (run_len + glyph_len > run_buf.len) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                            }
+                            if (run_len == 0) {
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                                run_start_col = col_x;
+                                run_face_idx = face_idx;
+                                run_fg = fg;
+                            }
+                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
+                            run_len += glyph_len;
+                        },
+                        else => {
+                            // BG_COLOR_PALETTE / BG_COLOR_RGB: no text.
+                            flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
+                        },
                     }
-
-                    var cps: [16]u32 = [_]u32{0} ** 16;
-                    runtime.cellGraphemes(row_cells.*, &cps);
-
-                    var glyph_len: usize = 0;
-                    for (cps[0..grapheme_len]) |cp| {
-                        if (cp == 0) break;
-                        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                    }
-                    if (glyph_len == 0) {
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        continue;
-                    }
-
-                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
-                        continue;
-                    }
-
-                    if (run_len + glyph_len > run_buf.len) {
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                    }
-
-                    if (run_len == 0) {
-                        run_start_col = col_x;
-                        run_face_idx = face_idx;
-                        run_fg = fg;
-                    }
-
-                    if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                        flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        run_start_col = col_x;
-                        run_face_idx = face_idx;
-                        run_fg = fg;
-                    }
-
-                    @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                    run_len += glyph_len;
                 }
                 if (run_len > 0) {
                     flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
+
+                // Clear per-row dirty flag after rendering this row.
+                if (!force_full) runtime.clearRowDirty(row_iterator.*);
             }
             c.sgl_end();
             c.sgl_disable_texture();
@@ -685,6 +1408,9 @@ pub const FtRenderer = struct {
         }
 
         if (!self.logged_first_draw) self.logged_first_draw = true;
+        const t_pass2_end = std.time.nanoTimestamp();
+        self.last_pass1_ns = t_pass2_start - t_pass1_start;
+        self.last_pass2_ns = t_pass2_end - t_pass2_start;
     }
 
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
@@ -748,6 +1474,46 @@ pub const FtRenderer = struct {
 
             pen_x += glyph_inst.x_advance;
         }
+    }
+
+    /// Fast path for printable ASCII (0x21–0x7E): skip HarfBuzz shaping entirely.
+    /// Resolves the glyph index via FT_Get_Char_Index (cached in ascii_glyph_ids),
+    /// then delegates to getOrRasterize + quad emit.  Returns true if the glyph
+    /// was drawn (or the cell is empty/space); false if the caller should fall back
+    /// to the slow batchGlyphs path.
+    inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb) bool {
+        if (cp < 0x21 or cp > 0x7E or face_idx > 3) return false;
+
+        const fi: usize = @intCast(face_idx);
+        var glyph_id = self.ascii_glyph_ids[fi][cp];
+        if (glyph_id == 0) {
+            // Lazy populate via FT_Get_Char_Index.
+            const face = switch (face_idx) {
+                0 => self.face_regular,
+                1 => self.face_bold,
+                2 => self.face_bold_italic,
+                3 => self.face_italic,
+                else => return false,
+            };
+            glyph_id = ft.FT_Get_Char_Index(face, cp);
+            self.ascii_glyph_ids[fi][cp] = if (glyph_id != 0) glyph_id else std.math.maxInt(u32);
+        }
+        // maxInt(u32) sentinel = face does not have this glyph; fall back.
+        if (glyph_id == std.math.maxInt(u32)) return false;
+
+        const glyph = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse return true; // rasterize failed, treat as drawn (blank)
+        const w = @as(f32, @floatFromInt(glyph.bw));
+        const h = @as(f32, @floatFromInt(glyph.bh));
+        if (w > 0 and h > 0) {
+            const gx = px + @as(f32, @floatFromInt(glyph.bear_x));
+            const gy = py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y));
+            c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+            c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+            c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+            c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+            c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+        }
+        return true;
     }
 
     fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {

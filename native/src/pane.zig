@@ -24,6 +24,13 @@ pub const Pane = struct {
     /// Set to true after the first updateRenderState call so the renderer
     /// can skip rendering panes whose ghostty state is not yet initialized.
     render_state_ready: bool = false,
+    /// Dirty level set by tickPanes (sampled before updateRenderState clears it).
+    ///   .false_value  → nothing changed, skip re-render entirely
+    ///   .true_value   → partial update; use LOAD action and skip clean rows
+    ///   .full         → full redraw needed (resize, scroll, color change);
+    ///                   clear RT and re-render all rows
+    /// Cleared (set back to .false_value) by the renderer after re-rendering.
+    render_dirty: ghostty.RenderStateDirty = .false_value,
     read_buf: [65536]u8 = [_]u8{0} ** 65536,
     logged_first_pty_read: bool = false,
     pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
@@ -156,6 +163,8 @@ pub const Pane = struct {
         self.rows = rows;
         runtime.resizeTerminal(self.terminal, cols, rows, cell_width_px, cell_height_px);
         runtime.updateRenderState(self.render_state, self.terminal) catch {};
+        // A resize always requires a full redraw (all rows change).
+        self.render_dirty = .full;
         runtime.syncKeyEncoder(self.key_encoder, self.terminal);
         runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
         if (self.pty) |*pty| pty.resize(cols, rows);

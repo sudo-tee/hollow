@@ -208,6 +208,30 @@ pub const CellData = enum(u32) {
     fg_color = 6,
 };
 
+/// Data kinds for the pure ghostty_cell_get() function (operates on a u64 cell value).
+pub const CellDataV = enum(u32) {
+    invalid = 0,
+    codepoint = 1,
+    content_tag = 2,
+    wide = 3,
+    has_text = 4,
+    has_styling = 5,
+    style_id = 6,
+    has_hyperlink = 7,
+    protected = 8,
+    semantic_content = 9,
+    color_palette = 10,
+    color_rgb = 11,
+};
+
+/// Content tag values returned by CellDataV.content_tag
+pub const CellContentTag = enum(u32) {
+    codepoint = 0,
+    codepoint_grapheme = 1,
+    bg_color_palette = 2,
+    bg_color_rgb = 3,
+};
+
 pub const MouseEncOpt = enum(u32) {
     size = 0,
     any_button_pressed = 1,
@@ -403,6 +427,10 @@ pub const Runtime = struct {
     row_cells_next: *const fn (?*anyopaque) callconv(.c) bool,
     row_cells_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
 
+    /// Pure value function: extracts typed data from a raw GhosttyCell u64.
+    /// Does not go through the iterator — safe to call with just the cell value.
+    cell_get: *const fn (u64, u32, ?*anyopaque) callconv(.c) i32,
+
     key_encoder_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     key_encoder_free: *const fn (?*anyopaque) callconv(.c) void,
     key_encoder_setopt_from_terminal: *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void,
@@ -504,6 +532,7 @@ pub const Runtime = struct {
             .row_cells_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_render_state_row_cells_free"),
             .row_cells_next = lookup(&lib, *const fn (?*anyopaque) callconv(.c) bool, "ghostty_render_state_row_cells_next"),
             .row_cells_get = lookup(&lib, *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32, "ghostty_render_state_row_cells_get"),
+            .cell_get = lookup(&lib, *const fn (u64, u32, ?*anyopaque) callconv(.c) i32, "ghostty_cell_get"),
             .key_encoder_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_key_encoder_new"),
             .key_encoder_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_key_encoder_free"),
             .key_encoder_setopt_from_terminal = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, "ghostty_key_encoder_setopt_from_terminal"),
@@ -791,6 +820,32 @@ pub const Runtime = struct {
         return null;
     }
 
+    /// Fetch the raw GhosttyCell u64 value for the current cell position.
+    /// Returns 0 on failure.
+    pub fn cellRaw(self: *Runtime, row_cells: ?*anyopaque) u64 {
+        if (row_cells) |cells| {
+            var raw: u64 = 0;
+            _ = self.row_cells_get(cells, @intFromEnum(CellData.raw), &raw);
+            return raw;
+        }
+        return 0;
+    }
+
+    /// Pure function: get the content tag from a raw cell u64.
+    pub fn cellContentTag(self: *Runtime, cell: u64) CellContentTag {
+        var tag: u32 = 0;
+        _ = self.cell_get(cell, @intFromEnum(CellDataV.content_tag), &tag);
+        return @enumFromInt(tag);
+    }
+
+    /// Pure function: get the codepoint from a raw cell u64.
+    /// Returns 0 for empty/bg-only cells.
+    pub fn cellCodepoint(self: *Runtime, cell: u64) u32 {
+        var cp: u32 = 0;
+        _ = self.cell_get(cell, @intFromEnum(CellDataV.codepoint), &cp);
+        return cp;
+    }
+
     pub fn cursorPos(self: *Runtime, render_state: ?*anyopaque) ?struct { x: u16, y: u16 } {
         if (render_state) |state| {
             var has_value = false;
@@ -918,4 +973,14 @@ pub const Runtime = struct {
 
 fn lookup(lib: *std.DynLib, comptime T: type, symbol: [:0]const u8) T {
     return lib.lookup(T, symbol) orelse @panic("missing required ghostty symbol");
+}
+
+/// Resolve a StyleColor tagged union to an RGB value, falling back to `default` when NONE.
+/// When PALETTE, looks up the color in the provided 256-entry palette.
+pub fn resolveStyleColor(sc: StyleColor, default: ColorRgb, palette: *const [256]ColorRgb) ColorRgb {
+    return switch (sc.tag) {
+        .none => default,
+        .palette => palette[sc.value.palette],
+        .rgb => sc.value.rgb,
+    };
 }
