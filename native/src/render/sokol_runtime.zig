@@ -277,6 +277,8 @@ pub fn run(app: *App) !void {
     desc.high_dpi = true;
     desc.enable_clipboard = true;
     desc.window_title = titleCString(app.config.windowTitle());
+    desc.no_vsync = !app.config.vsync;
+    std.log.info("sokol: vsync={s}", .{if (app.config.vsync) "on" else "off"});
 
     c.sapp_run(&desc);
 }

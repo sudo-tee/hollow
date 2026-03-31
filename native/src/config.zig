@@ -75,6 +75,7 @@ pub const Config = struct {
     top_bar_draw_tabs: bool = true,
     top_bar_draw_status: bool = true,
     debug_overlay: bool = false,
+    vsync: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

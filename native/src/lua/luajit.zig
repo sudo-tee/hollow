@@ -851,6 +851,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.debug_overlay = value;
         return;
     }
+    if (std.mem.eql(u8, key, "vsync")) {
+        cfg.vsync = value;
+        return;
+    }
 }
 
 fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {

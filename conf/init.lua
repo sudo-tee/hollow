@@ -17,6 +17,7 @@ g.log("loading native rewrite config")
 g.set_config({
 	debug_overlay = true,
 	backend = "sokol",
+	vsync = false,
 	fonts = {
 		size = 14.5,
 		padding_x = 0,
