@@ -284,11 +284,12 @@ pub const FtRenderer = struct {
     logged_first_draw: bool = false,
     logged_first_content: bool = false,
 
-    /// Fast ASCII glyph-ID lookup table: ascii_glyph_ids[face_idx][codepoint]
-    /// Avoids HarfBuzz shaping and shape-cache hash lookup for printable ASCII.
-    /// face_idx 0-3 = regular/bold/bold-italic/italic; populated lazily via
-    /// FT_Get_Char_Index on first use.  Entry == 0 means "not yet fetched".
-    ascii_glyph_ids: [4][128]u32 = [_][128]u32{[_]u32{0} ** 128} ** 4,
+    /// Fast ASCII glyph cache: ascii_glyphs[face_idx][codepoint]
+    /// Stores the final Glyph (atlas UVs + bearing) for printable ASCII U+0021–U+007E
+    /// on faces 0-3, bypassing both HarfBuzz shaping and the glyph_cache hashmap on
+    /// warm frames.  null = not yet populated.  Atlas UVs are stable once placed, so
+    /// entries never need invalidation.
+    ascii_glyphs: [4][128]?Glyph = [_][128]?Glyph{[_]?Glyph{null} ** 128} ** 4,
 
     /// Reusable ligature run buffer — avoids a heap alloc+free every frame.
     /// Grown on demand via realloc; never shrunk.
@@ -811,41 +812,51 @@ pub const FtRenderer = struct {
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    // Background: use the dedicated BG_COLOR query which flattens
-                    // all three sources (style bg, content-tag palette, content-tag RGB).
-                    // Returns null when the cell has no explicit bg (use default).
-                    const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
+                    // Fetch the raw cell first: cheap pure read, enables fast-path checks.
+                    const raw_cell = runtime.cellRaw(row_cells.*);
+                    const content_tag = runtime.cellContentTag(raw_cell);
 
-                    if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
-                        if (!quads_open) {
-                            c.sgl_begin_quads();
-                            quads_open = true;
+                    // Background: skip the cellBackground() C-ABI call for cells with
+                    // no styling (default bg) and no bg-color content tag.
+                    // bg_color_palette/rgb cells always need the call; styled cells may have
+                    // a style-based bg; unstyled codepoint/grapheme cells always use default bg.
+                    const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
+                    if (is_bg_tag or runtime.cellHasStyling(raw_cell)) {
+                        const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
+                        if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
+                            if (!quads_open) {
+                                c.sgl_begin_quads();
+                                quads_open = true;
+                            }
+                            const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                            c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+                            c.sgl_v2f(px, py);
+                            c.sgl_v2f(px + self.cell_w, py);
+                            c.sgl_v2f(px + self.cell_w, py + self.cell_h);
+                            c.sgl_v2f(px, py + self.cell_h);
                         }
-                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                        c.sgl_c4b(bg.r, bg.g, bg.b, 255);
-                        c.sgl_v2f(px, py);
-                        c.sgl_v2f(px + self.cell_w, py);
-                        c.sgl_v2f(px + self.cell_w, py + self.cell_h);
-                        c.sgl_v2f(px, py + self.cell_h);
                     }
 
                     if (!need_raster) continue;
 
                     // Rasterisation (only when new glyphs may need atlas space).
-                    // Use raw cell value to distinguish single-codepoint vs grapheme cluster.
-                    const raw_cell = runtime.cellRaw(row_cells.*);
-                    const content_tag = runtime.cellContentTag(raw_cell);
-                    const style = runtime.cellStyle(row_cells.*);
-                    const face_idx: u8 = if (style) |s| blk: {
-                        if (s.bold and s.italic) break :blk 2;
-                        if (s.bold) break :blk 1;
-                        if (s.italic) break :blk 3;
-                        break :blk 0;
-                    } else 0;
-                    const fg: ghostty.ColorRgb = if (style) |s|
-                        ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
-                    else
-                        default_fg;
+                    // raw_cell and content_tag already fetched above.
+                    // Skip the 72-byte cellStyle() call for cells with no text or
+                    // no non-default styling — both are cheap pure bit-tests on raw_cell.
+                    var face_idx: u8 = 0;
+                    var fg = default_fg;
+                    if (runtime.cellHasText(raw_cell) and runtime.cellHasStyling(raw_cell)) {
+                        if (runtime.cellStyle(row_cells.*)) |s| {
+                            if (s.bold and s.italic) {
+                                face_idx = 2;
+                            } else if (s.bold) {
+                                face_idx = 1;
+                            } else if (s.italic) {
+                                face_idx = 3;
+                            }
+                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette);
+                        }
+                    }
 
                     switch (content_tag) {
                         .codepoint => {
@@ -971,22 +982,29 @@ pub const FtRenderer = struct {
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
-                    // Fetch style once — gives us fg/bg colors + bold/italic.
-                    const style = runtime.cellStyle(row_cells.*);
-                    const face_idx: u8 = if (style) |s| blk: {
-                        if (s.bold and s.italic) break :blk 2;
-                        if (s.bold) break :blk 1;
-                        if (s.italic) break :blk 3;
-                        break :blk 0;
-                    } else 0;
-                    const fg: ghostty.ColorRgb = if (style) |s|
-                        ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette)
-                    else
-                        default_fg;
-
-                    // Use raw cell value to avoid extra iterator calls for codepoint/graphemes.
+                    // Fetch the raw cell first — pure u64 read, enables cheap
+                    // has_text / has_styling checks before heavier calls.
                     const raw_cell = runtime.cellRaw(row_cells.*);
                     const content_tag = runtime.cellContentTag(raw_cell);
+
+                    // Skip cellStyle() for cells with no text (blank/space cells
+                    // can't be bold/italic and their fg color doesn't matter for
+                    // rendering). For cells with text, only fetch style when the
+                    // cell actually has non-default styling.
+                    var face_idx: u8 = 0;
+                    var fg = default_fg;
+                    if (runtime.cellHasText(raw_cell) and runtime.cellHasStyling(raw_cell)) {
+                        if (runtime.cellStyle(row_cells.*)) |s| {
+                            if (s.bold and s.italic) {
+                                face_idx = 2;
+                            } else if (s.bold) {
+                                face_idx = 1;
+                            } else if (s.italic) {
+                                face_idx = 3;
+                            }
+                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette);
+                        }
+                    }
 
                     switch (content_tag) {
                         .codepoint => {
@@ -1172,17 +1190,17 @@ pub const FtRenderer = struct {
     }
 
     /// Fast path for printable ASCII (0x21–0x7E): skip HarfBuzz shaping entirely.
-    /// Resolves the glyph index via FT_Get_Char_Index (cached in ascii_glyph_ids),
-    /// then delegates to getOrRasterize + quad emit.  Returns true if the glyph
-    /// was drawn (or the cell is empty/space); false if the caller should fall back
-    /// to the slow batchGlyphs path.
+    /// On the first call per (cp, face_idx), resolves the glyph via FT_Get_Char_Index
+    /// and getOrRasterize, then caches the full Glyph struct in ascii_glyphs.
+    /// On subsequent calls (the steady-state hot path) it is a single array lookup —
+    /// no hashmap, no C-ABI call.  Returns true if the glyph was drawn (or is
+    /// blank/invisible); false if the caller should fall back to batchGlyphs.
     inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb) bool {
         if (cp < 0x21 or cp > 0x7E or face_idx > 3) return false;
 
         const fi: usize = @intCast(face_idx);
-        var glyph_id = self.ascii_glyph_ids[fi][cp];
-        if (glyph_id == 0) {
-            // Lazy populate via FT_Get_Char_Index.
+        const glyph: Glyph = self.ascii_glyphs[fi][cp] orelse blk: {
+            // Not yet cached — resolve glyph_id via FT_Get_Char_Index then rasterize.
             const face = switch (face_idx) {
                 0 => self.face_regular,
                 1 => self.face_bold,
@@ -1190,13 +1208,22 @@ pub const FtRenderer = struct {
                 3 => self.face_italic,
                 else => return false,
             };
-            glyph_id = ft.FT_Get_Char_Index(face, cp);
-            self.ascii_glyph_ids[fi][cp] = if (glyph_id != 0) glyph_id else std.math.maxInt(u32);
-        }
-        // maxInt(u32) sentinel = face does not have this glyph; fall back.
-        if (glyph_id == std.math.maxInt(u32)) return false;
+            const glyph_id = ft.FT_Get_Char_Index(face, cp);
+            if (glyph_id == 0) {
+                // Face has no glyph for this codepoint; cache a zero sentinel and fall back.
+                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                return false;
+            }
+            const g = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse {
+                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                break :blk self.ascii_glyphs[fi][cp].?;
+            };
+            self.ascii_glyphs[fi][cp] = g;
+            break :blk g;
+        };
+        // bw == -1 sentinel means the face has no glyph for this codepoint.
+        if (glyph.bw == -1) return false;
 
-        const glyph = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse return true; // rasterize failed, treat as drawn (blank)
         const w = @as(f32, @floatFromInt(glyph.bw));
         const h = @as(f32, @floatFromInt(glyph.bh));
         if (w > 0 and h > 0) {

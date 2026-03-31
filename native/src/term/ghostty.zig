@@ -831,6 +831,23 @@ pub const Runtime = struct {
         return 0;
     }
 
+    /// Pure function: returns true if the cell has text content (codepoint != 0).
+    /// Cheap bit-test on the raw u64 — no iterator, no struct allocation.
+    pub fn cellHasText(self: *Runtime, cell: u64) bool {
+        var result: bool = false;
+        _ = self.cell_get(cell, @intFromEnum(CellDataV.has_text), &result);
+        return result;
+    }
+
+    /// Pure function: returns true if the cell has non-default styling
+    /// (bold, italic, custom fg/bg color, etc.). Cheap bool query on the
+    /// raw u64 — no iterator, no struct allocation.
+    pub fn cellHasStyling(self: *Runtime, cell: u64) bool {
+        var result: bool = false;
+        _ = self.cell_get(cell, @intFromEnum(CellDataV.has_styling), &result);
+        return result;
+    }
+
     /// Pure function: get the content tag from a raw cell u64.
     pub fn cellContentTag(self: *Runtime, cell: u64) CellContentTag {
         var tag: u32 = 0;
