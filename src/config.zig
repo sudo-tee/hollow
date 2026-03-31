@@ -76,6 +76,15 @@ pub const Config = struct {
     top_bar_draw_status: bool = true,
     debug_overlay: bool = false,
     vsync: bool = true,
+    /// Allow single-pane mode to skip the offscreen render-target cache and
+    /// render directly into the swapchain.  Defaulting to false preserves the
+    /// cached-RT path which gives smoother frame pacing.  Set to true to
+    /// opt back into the lower-latency but burstier direct-render path.
+    renderer_single_pane_direct: bool = false,
+    /// Multiplier applied to raw wheel/touchpad scroll delta before
+    /// accumulation into whole-line steps.  1.0 is the neutral value; the
+    /// old hard-coded value was 2.0.
+    scroll_multiplier: f32 = 1.0,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

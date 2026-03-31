@@ -28,6 +28,10 @@ var g_perf_accum_frame_ns: i128 = 0;
 var g_perf_accum_frames: usize = 0;
 var g_perf_fps: f32 = 0;
 var g_perf_frame_ms: f32 = 0;
+// Rolling max frame time: max delta seen across the current perf sample window.
+var g_perf_window_max_frame_ns: i128 = 0;
+// Worst-case frame time (ms) over the last completed sample window.
+var g_perf_max_frame_ms: f32 = 0;
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -46,6 +50,14 @@ var g_phase_accum_gpu_ns: i128 = 0;
 // Sub-queue split: pass1 (bg quads) vs pass2 (glyph draw).
 var g_phase_accum_pass1_ns: i128 = 0;
 var g_phase_accum_pass2_ns: i128 = 0;
+// Cell/glyph/bg-rect diagnostic counters (reset every log interval).
+var g_phase_accum_cells_visited: usize = 0;
+var g_phase_accum_glyph_runs: usize = 0;
+var g_phase_accum_bg_rects: usize = 0;
+var g_phase_accum_atlas_flushes: usize = 0;
+// Render-mode counter: how many frames used direct render vs cache/blit this window.
+var g_phase_accum_direct_frames: usize = 0;
+var g_phase_accum_cached_frames: usize = 0;
 
 // Per-pane render-to-texture caches.
 // Keyed by pane pointer (stable for the lifetime of the pane).
@@ -265,6 +277,8 @@ pub fn run(app: *App) !void {
     g_perf_accum_frames = 0;
     g_perf_fps = 0;
     g_perf_frame_ms = 0;
+    g_perf_window_max_frame_ns = 0;
+    g_perf_max_frame_ms = 0;
 
     var desc = std.mem.zeroes(c.sapp_desc);
     desc.user_data = app;
@@ -279,6 +293,10 @@ pub fn run(app: *App) !void {
     desc.window_title = titleCString(app.config.windowTitle());
     desc.no_vsync = !app.config.vsync;
     std.log.info("sokol: vsync={s}", .{if (app.config.vsync) "on" else "off"});
+    std.log.info("sokol: renderer_single_pane_direct={s} (default=false, false=cached RT path)", .{
+        if (app.config.renderer_single_pane_direct) "true" else "false",
+    });
+    std.log.info("sokol: scroll_multiplier={d:.2}", .{app.config.scroll_multiplier});
 
     c.sapp_run(&desc);
 }
@@ -397,6 +415,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.computeActiveLayout(&layout_buf);
 
+    // Decide once whether to use direct rendering for single-pane mode.
+    // Controlled by config.renderer_single_pane_direct (default false).
+    // Prefer the cached RT path for smoother frame pacing; set to true to
+    // opt into the lower-latency but burstier direct-render path.
+    const use_direct_render = app.config.renderer_single_pane_direct and
+        leaves.len == 0 and app.tabBarHeight() == 0;
+
     if (g_ft_renderer) |*renderer| {
         renderer.beginFrame();
 
@@ -412,9 +437,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 renderer.preRasterizeLabel(close_sym);
             }
         }
-
-        // Track if we'll use direct rendering for single pane (skip offscreen RT)
-        const use_direct_render = leaves.len == 0 and app.tabBarHeight() == 0;
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -474,6 +496,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // atlas changed under existing quads; do a full pass in that case too.
                     const force_full = dirty_level == .full or rend.atlas_dirty;
 
+                    // TODO(scroll-fast-path): For terminal scroll updates, if the dirty
+                    // pattern is a contiguous block of rows shifted by N lines, we could
+                    // use sg_copy_image / blit to shift the existing RT content and only
+                    // redraw the newly exposed rows.  This would reduce per-frame CPU work
+                    // significantly during nvim scrolling.  Requires the ghostty runtime
+                    // to expose a stable scroll-delta value or scroll-event type so we can
+                    // distinguish "scroll shift" dirty bursts from arbitrary repaint dirty.
+                    // Instrument: if rows_rendered approaches total rows and rows_skipped
+                    // is near 0, that is a strong signal the dirty burst is scroll-like.
+
                     rend.renderToCache(
                         cache,
                         rt,
@@ -494,6 +526,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_gpu_ns += rend.last_gpu_ns;
                     g_phase_accum_pass1_ns += rend.last_pass1_ns;
                     g_phase_accum_pass2_ns += rend.last_pass2_ns;
+                    g_phase_accum_cells_visited += rend.last_cells_visited;
+                    g_phase_accum_glyph_runs += rend.last_glyph_runs;
+                    g_phase_accum_bg_rects += rend.last_bg_rects;
+                    if (rend.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
 
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
@@ -512,6 +548,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const focused = leaf.pane == app.activePane();
                     if (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused)) {
                         g_phase_accum_dirty_frames += 1;
+                        g_phase_accum_cached_frames += 1;
                     } else {
                         g_phase_accum_clean_frames += 1;
                     }
@@ -525,6 +562,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (renderer.atlas_dirty) {
                         renderer.flushAtlas();
                         renderer.atlas_dirty = false;
+                        g_phase_accum_atlas_flushes += 1;
                     }
                     // Track if we're rendering this frame
                     if (pane.render_dirty != .false_value or renderer.atlas_dirty) {
@@ -532,13 +570,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     } else {
                         g_phase_accum_clean_frames += 1;
                     }
+                    g_phase_accum_direct_frames += 1;
                 } else {
-                    // Use cached RT (with tab bar)
+                    // Use cached RT path
                     if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true)) {
                         g_phase_accum_dirty_frames += 1;
                     } else {
                         g_phase_accum_clean_frames += 1;
                     }
+                    g_phase_accum_cached_frames += 1;
                 }
             }
         }
@@ -560,15 +600,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
     c.sg_begin_pass(&pass);
 
-    // Track if we should use direct rendering for single pane
-    var use_direct_render = false;
-    if (leaves.len == 0 and app.tabBarHeight() == 0) {
-        // Single pane with no tab bar - use direct rendering to avoid RT overhead
-        use_direct_render = true;
-    }
-
     // Blit each pane's cached RT into the swapchain pass.
-    // For single pane without tab bar, render directly instead.
+    // For single pane without tab bar with direct render enabled, render directly instead.
+    // use_direct_render was computed once above before both phases.
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -598,6 +632,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             height,
                             pane.render_dirty == .full or renderer.atlas_dirty,
                         );
+                        // Accumulate direct-render diagnostics.
+                        g_phase_accum_rows_rendered += renderer.last_rows_rendered;
+                        g_phase_accum_rows_skipped += renderer.last_rows_skipped;
+                        g_phase_accum_cells_visited += renderer.last_cells_visited;
+                        g_phase_accum_glyph_runs += renderer.last_glyph_runs;
+                        g_phase_accum_bg_rects += renderer.last_bg_rects;
+                        if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
+                        // Mark pane clean after direct render.
+                        pane.render_dirty = .false_value;
                     } else {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
@@ -848,9 +891,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const clean = g_phase_accum_clean_frames;
         const rows_rendered = g_phase_accum_rows_rendered;
         const rows_skipped = g_phase_accum_rows_skipped;
+        const cells = g_phase_accum_cells_visited;
+        const gruns = g_phase_accum_glyph_runs;
+        const bgrects = g_phase_accum_bg_rects;
+        const atlas_fl = g_phase_accum_atlas_flushes;
+        const direct_f = g_phase_accum_direct_frames;
+        const cached_f = g_phase_accum_cached_frames;
         std.log.info(
-            "frame phases (avg/{d:.0}f): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  rows_rendered={d} rows_skipped={d}",
-            .{ n, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, rows_rendered, rows_skipped },
+            "frame phases (avg/{d:.0}f): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  rows={d}/{d}  cells={d} gruns={d} bgrects={d} atlas_fl={d}  mode direct={d} cached={d}",
+            .{ n, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, rows_rendered, rows_skipped, cells, gruns, bgrects, atlas_fl, direct_f, cached_f },
         );
         g_phase_accum_tick_ns = 0;
         g_phase_accum_offscreen_ns = 0;
@@ -863,6 +912,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_phase_accum_clean_frames = 0;
         g_phase_accum_rows_rendered = 0;
         g_phase_accum_rows_skipped = 0;
+        g_phase_accum_cells_visited = 0;
+        g_phase_accum_glyph_runs = 0;
+        g_phase_accum_bg_rects = 0;
+        g_phase_accum_atlas_flushes = 0;
+        g_phase_accum_direct_frames = 0;
+        g_phase_accum_cached_frames = 0;
         g_phase_sample_frames = 0;
         g_phase_last_log_ns = frame_start_ns;
     }
@@ -882,6 +937,9 @@ fn updatePerfCounters(frame_start_ns: i128) void {
         const frame_delta = frame_start_ns - g_last_frame_time_ns;
         g_perf_accum_frame_ns += frame_delta;
         g_perf_accum_frames += 1;
+        if (frame_delta > g_perf_window_max_frame_ns) {
+            g_perf_window_max_frame_ns = frame_delta;
+        }
     }
 
     if (g_last_perf_sample_ns == 0) g_last_perf_sample_ns = frame_start_ns;
@@ -890,9 +948,11 @@ fn updatePerfCounters(frame_start_ns: i128) void {
         const sample_seconds = @as(f32, @floatFromInt(sample_delta)) / @as(f32, @floatFromInt(std.time.ns_per_s));
         g_perf_fps = @as(f32, @floatFromInt(g_perf_accum_frames)) / sample_seconds;
         g_perf_frame_ms = (@as(f32, @floatFromInt(g_perf_accum_frame_ns)) / @as(f32, @floatFromInt(g_perf_accum_frames))) / @as(f32, @floatFromInt(std.time.ns_per_ms));
+        g_perf_max_frame_ms = @as(f32, @floatFromInt(g_perf_window_max_frame_ns)) / @as(f32, @floatFromInt(std.time.ns_per_ms));
         g_last_perf_sample_ns = frame_start_ns;
         g_perf_accum_frame_ns = 0;
         g_perf_accum_frames = 0;
+        g_perf_window_max_frame_ns = 0;
     }
 
     g_last_frame_time_ns = frame_start_ns;
@@ -919,14 +979,23 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
         }
     }
 
-    var lines: [6][96]u8 = undefined;
-    const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}", .{g_perf_fps}) catch "fps ?";
-    const text1 = std.fmt.bufPrint(&lines[1], "frame {d:.2} ms", .{g_perf_frame_ms}) catch "frame ?";
+    const render_mode: []const u8 = if (app.config.renderer_single_pane_direct and
+        app.activePane() != null and app.tabBarHeight() == 0) "direct" else "cached";
+    const dirty_count = g_phase_accum_dirty_frames;
+    const clean_count = g_phase_accum_clean_frames;
+
+    var lines: [10][96]u8 = undefined;
+    const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
+    const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
     const text3 = std.fmt.bufPrint(&lines[3], "tabs {d} ws {d}", .{ app.tabCount(), app.workspaceCount() }) catch "tabs ?";
     const text4 = std.fmt.bufPrint(&lines[4], "scroll {d}/{d} vis {d}", .{ scroll_offset, scroll_total, scroll_len }) catch "scroll ?";
     const text5 = std.fmt.bufPrint(&lines[5], "frame #{d}", .{g_frame_index}) catch "frame #?";
-    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5 };
+    const text6 = std.fmt.bufPrint(&lines[6], "mode {s}", .{render_mode}) catch "mode ?";
+    const text7 = std.fmt.bufPrint(&lines[7], "dirty {d} clean {d}", .{ dirty_count, clean_count }) catch "dirty ?";
+    const text8 = std.fmt.bufPrint(&lines[8], "rows r={d} s={d}", .{ g_phase_accum_rows_rendered, g_phase_accum_rows_skipped }) catch "rows ?";
+    const text9 = std.fmt.bufPrint(&lines[9], "cells={d} gruns={d} bgrects={d}", .{ g_phase_accum_cells_visited, g_phase_accum_glyph_runs, g_phase_accum_bg_rects }) catch "cells ?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9 };
 
     var max_chars: usize = 0;
     for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));

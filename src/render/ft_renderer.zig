@@ -304,6 +304,12 @@ pub const FtRenderer = struct {
     /// Sub-timing within queueInViewport: pass1 (bg), pass2 (glyphs).
     last_pass1_ns: i128 = 0,
     last_pass2_ns: i128 = 0,
+    /// Per-call cell/glyph/bg-rect diagnostic counters (set by queueInViewport).
+    last_cells_visited: usize = 0,
+    last_glyph_runs: usize = 0,
+    last_bg_rects: usize = 0,
+    /// Set to true when an atlas upload happened during this renderToCache call.
+    last_atlas_flushed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, cfg: FtRendererConfig) !FtRenderer {
         const font_size_px = cfg.font_size * cfg.dpi_scale;
@@ -602,6 +608,13 @@ pub const FtRenderer = struct {
         screen_h: f32,
         force_full: bool,
     ) void {
+        // Reset per-call diagnostic counters.
+        self.last_rows_rendered = 0;
+        self.last_rows_skipped = 0;
+        self.last_cells_visited = 0;
+        self.last_glyph_runs = 0;
+        self.last_bg_rects = 0;
+        self.last_atlas_flushed = false;
         // Queue to default context and draw immediately
         self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full);
         c.sgl_draw();
@@ -631,6 +644,10 @@ pub const FtRenderer = struct {
         // Reset per-call diagnostic counters.
         self.last_rows_rendered = 0;
         self.last_rows_skipped = 0;
+        self.last_cells_visited = 0;
+        self.last_glyph_runs = 0;
+        self.last_bg_rects = 0;
+        self.last_atlas_flushed = false;
 
         // Switch to this pane's sgl_context so draw commands go into its
         // own vertex / command buffers (isolated from the main context).
@@ -830,6 +847,7 @@ pub const FtRenderer = struct {
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
+                    self.last_cells_visited += 1;
                     // Fetch the raw cell first: cheap pure read, enables fast-path checks.
                     const raw_cell = runtime.cellRaw(row_cells.*);
                     const content_tag = runtime.cellContentTag(raw_cell);
@@ -842,6 +860,7 @@ pub const FtRenderer = struct {
                     if (is_bg_tag or runtime.cellHasStyling(raw_cell)) {
                         const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
                         if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
+                            self.last_bg_rects += 1;
                             if (!quads_open) {
                                 c.sgl_begin_quads();
                                 quads_open = true;
@@ -966,6 +985,7 @@ pub const FtRenderer = struct {
         if (self.atlas_dirty) {
             self.flushAtlas();
             self.atlas_dirty = false;
+            self.last_atlas_flushed = true;
         }
         const t_pass2_start = std.time.nanoTimestamp();
 
@@ -1040,6 +1060,7 @@ pub const FtRenderer = struct {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                                 // Fast ASCII path: skip HarfBuzz shaping for printable ASCII.
+                                self.last_glyph_runs += 1;
                                 if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
                                     self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
                                 }
@@ -1083,6 +1104,7 @@ pub const FtRenderer = struct {
                             if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                self.last_glyph_runs += 1;
                                 self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
                                 continue;
                             }
@@ -1267,6 +1289,7 @@ pub const FtRenderer = struct {
 
     fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
         if (run_len.* == 0) return;
+        self.last_glyph_runs += 1;
         const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
         self.batchGlyphRun(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal);
         run_start_col.* = 0;
