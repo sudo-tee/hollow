@@ -31,7 +31,7 @@
 
 ## Performance
 
-- Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.
+- ~Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.~
 - Scrolling performance is not great at least in nvim.
 - Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.
 

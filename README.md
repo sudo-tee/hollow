@@ -33,21 +33,21 @@ docs/rewrite-architecture.md
 
 ## What works today
 
-- native Zig build entry point via `zig build`
+- native Zig build entry point via `./launch.sh`
 - dynamic LuaJIT loading and a tiny `hollow` Lua API
 - config bootstrap from `conf/init.lua` or `~/.config/hollow/init.lua`
 - dynamic `libghostty-vt` loading and terminal/render-state bootstrap
 - Windows-first `sokol_app` frontend path with a native event loop
 - ConPTY backend for Windows and `forkpty` backend for Unix
-- first-pass terminal rendering from Ghostty row/cell state into a native window
+- full-grid terminal rendering from Ghostty row/cell state into a native window
+- split panes, tabs, tab bar, and status bar rendering
+- configurable native font rendering with custom faces, fallback fonts, smoothing, and ligatures
 
 ## Build
 
 ```bash
-zig build
-zig build test
-zig build run
-zig build -Dtarget=x86_64-windows-gnu
+./launch.sh
+./launch.sh --build-only
 ```
 
 The Windows executable is emitted at `zig-out/bin/hollow-native.exe`.
@@ -71,9 +71,10 @@ The runtime now also searches relative to the executable directory, not just the
 
 Current renderer status:
 
-- background, frame chrome, and first visible row are rendered natively
+- full terminal grid is rendered through the native FreeType/HarfBuzz atlas path
 - keyboard, mouse, focus, resize, and scroll events are wired into Ghostty + PTY
-- text rendering is still an early pass using `sokol_debugtext`, not a full glyph atlas yet
+- split borders, panes, tabs, and top-bar/status content are rendered natively
+- font config supports custom regular/bold/italic faces, fallback stacks, smoothing, and ligatures
 
 ## Config model
 
@@ -84,6 +85,19 @@ hollow.set_config({
     backend = "sokol",
     shell = "pwsh.exe",
     ghostty_library = "ghostty-vt.dll",
+    fonts = {
+        size = 14.5,
+        smoothing = "grayscale",
+        hinting = "light",
+        ligatures = true,
+        regular = "fonts/YourMono-Regular.ttf",
+        bold = "fonts/YourMono-Bold.ttf",
+        italic = "fonts/YourMono-Italic.ttf",
+        bold_italic = "fonts/YourMono-BoldItalic.ttf",
+        fallbacks = {
+            "fonts/YourSymbols.ttf",
+        },
+    },
     cols = 120,
     rows = 34,
     scrollback = 20000,
@@ -102,7 +116,7 @@ Available helpers:
 
 ## Next steps
 
-- expand the Sokol renderer from first-row proof to full-grid rendering
-- replace `sokol_debugtext` with a real glyph atlas / font pipeline
 - harden ConPTY process lifecycle and Windows packaging of LuaJIT + `libghostty-vt`
+- add text selection and copy/paste
+- add workspaces on top of the existing tabs + splits model
 - expand Lua from config-only into events, actions, and layout control

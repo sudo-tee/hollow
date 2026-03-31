@@ -74,6 +74,7 @@ pub const Config = struct {
     top_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
     top_bar_draw_tabs: bool = true,
     top_bar_draw_status: bool = true,
+    debug_overlay: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

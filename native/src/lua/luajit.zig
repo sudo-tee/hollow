@@ -847,6 +847,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.top_bar_draw_status = value;
         return;
     }
+    if (std.mem.eql(u8, key, "debug_overlay")) {
+        cfg.debug_overlay = value;
+        return;
+    }
 }
 
 fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
