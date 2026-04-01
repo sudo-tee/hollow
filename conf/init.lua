@@ -25,9 +25,9 @@ g.set_config({
 		smoothing = "grayscale",
 		hinting = "light",
 		ligatures = true,
-		coverage_boost = 1.0,
-		coverage_add = 0,
-		embolden = 0.31,
+		-- coverage_boost = 1.0,
+		-- coverage_add = 0,
+		embolden = 0.3,
 		regular = "fonts/RecMonoDuotone-Regular-1.085.ttf",
 		bold = "fonts/RecMonoLinear-Bold-1.085.ttf",
 		italic = "fonts/RecMonoDuotone-Italic-1.085.ttf",
@@ -115,7 +115,6 @@ hollow.top_bar.format_workspace_title(
 			text = label,
 			fg = is_active and c.panel or c.text,
 			bg = is_active and c.accent or c.panel_alt,
-			bold = is_active,
 		}
 	end
 )

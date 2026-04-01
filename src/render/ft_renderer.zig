@@ -13,15 +13,65 @@
 /// which multiplies vertex colour by sampled RGBA, produces the correct tinted
 /// result: vertex_rgb × coverage, alpha = coverage.
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
 const ghostty = @import("../term/ghostty.zig");
 const fonts = @import("fonts");
+const glyph_shader = @import("shaders/glyph_shader.zig");
 
 // ── Atlas constants ───────────────────────────────────────────────────────────
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
 const ATLAS_BPP: u32 = 4; // RGBA8
+
+// ── Custom glyph shader types ─────────────────────────────────────────────────
+//
+// Vertex layout (interleaved, stride = 20 bytes):
+//   offset  0 — f32x2 position (screen-space pixels, Y-down)
+//   offset  8 — f32x2 texcoord (normalised 0..1 atlas UVs)
+//   offset 16 — u8x4  fg_rgba  (sRGB, non-premultiplied, normalised → [0,1])
+//
+// We emit 4 vertices per glyph quad (triangle-list: 6 indices via an index buffer).
+//
+// NOTE: must be `extern struct` (not `packed struct`) — packed structs in Zig
+// do not guarantee C-ABI field ordering/padding for non-integer types like f32,
+// which results in @sizeOf = 32 instead of the required 20. extern struct gives
+// the correct stride-20 layout: 4×f32 (16 bytes) + 4×u8 (4 bytes) = 20 bytes.
+const GlyphVertex = extern struct {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+    // sRGB u8 colour channels (non-premultiplied). The vertex shader linearises.
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8, // always 255 for opaque glyphs
+};
+
+// Vertex-shader uniform block (binding 0, std140).
+// mat4 is 64 bytes, float2 is 8 bytes, uint is 4 bytes + 4 pad = 80 bytes total.
+const VsParams = extern struct {
+    mvp: [16]f32 align(16), // column-major orthographic projection
+    atlas_size: [2]f32 align(8), // ATLAS_W, ATLAS_H (for potential future use)
+    use_linear_correction: u32 align(4),
+    _pad: u32 = 0,
+};
+
+// Fragment-shader uniform block (binding 1, std140).
+const FsParams = extern struct {
+    bg_linear: [4]f32 align(16), // linear-premultiplied background colour
+    use_linear_correction: u32 align(4),
+    _pad0: u32 = 0,
+    _pad1: u32 = 0,
+    _pad2: u32 = 0,
+};
+
+// Maximum glyph quads we buffer per draw pass.
+// At 300 cols × 100 rows that's 30 000 glyphs × 4 verts = 120 000 vertices.
+// A typical 80×24 terminal is ~1 920 glyphs.  256k gives comfortable headroom.
+const MAX_GLYPH_VERTS: usize = 256 * 1024;
 
 // ── Glyph cache entry ─────────────────────────────────────────────────────────
 const Glyph = struct {
@@ -118,14 +168,17 @@ pub const PaneCache = struct {
         tex_desc.texture.image = rt_img;
         const rt_tex_view = c.sg_make_view(&tex_desc);
 
-        // Sampler for sampling the RT as a texture (linear → smooth blit on HiDPI).
+        // Sampler for sampling the RT as a texture — kept for possible future
+        // use (e.g. scaled HiDPI blit). Not used in the standard blit path.
         var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
         smp_desc.min_filter = c.SG_FILTER_LINEAR;
         smp_desc.mag_filter = c.SG_FILTER_LINEAR;
         smp_desc.label = "pane-rt-smp";
         const rt_smp = c.sg_make_sampler(&smp_desc);
 
-        // Nearest-neighbour sampler for the blit quad (avoids blur on 1:1).
+        // Nearest-neighbour sampler for the blit quad (pixel-exact 1:1 copy).
+        // Pane RTs are sized in physical pixels and are always blitted at 1:1
+        // to the swapchain, so NEAREST is always correct here.
         var blit_smp_desc = std.mem.zeroes(c.sg_sampler_desc);
         blit_smp_desc.min_filter = c.SG_FILTER_NEAREST;
         blit_smp_desc.mag_filter = c.SG_FILTER_NEAREST;
@@ -203,12 +256,16 @@ pub const FtRendererConfig = struct {
     dpi_scale: f32 = 1.0,
     padding_x: f32 = 0.0,
     padding_y: f32 = 0.0,
-    coverage_boost: f32 = 1.12,
-    coverage_add: f32 = 6.0,
+    coverage_boost: f32 = 1.0,
+    coverage_add: f32 = 0.0,
     smoothing: Smoothing = .grayscale,
     hinting: Hinting = .normal,
     ligatures: bool = true,
     embolden: f32 = 0.0,
+    /// Enable perceptual luminance-based alpha correction (Ghostty-style).
+    /// Produces gamma-correct text blending without requiring an sRGB framebuffer.
+    /// Disabled by default — simple fg*coverage matches WezTerm on dark backgrounds.
+    use_linear_correction: bool = false,
     regular_path: ?[]const u8 = null,
     bold_path: ?[]const u8 = null,
     italic_path: ?[]const u8 = null,
@@ -251,16 +308,26 @@ pub const FtRenderer = struct {
     atlas_pip: c.sgl_pipeline,
     atlas_data: []u8, // CPU-side atlas, ATLAS_W * ATLAS_H * 4 bytes
 
+    // Custom glyph pipeline (raw sg_pipeline, gamma-correct shader).
+    glyph_shd: c.sg_shader,
+    glyph_pip: c.sg_pipeline, // swapchain color format (default)
+    glyph_pip_offscreen: c.sg_pipeline, // RGBA8 offscreen format
+    // Stream vertex buffer for glyph quads.
+    // Uploaded once per pass from glyph_verts_cpu.
+    glyph_vbuf: c.sg_buffer,
+    // Stream index buffer: pre-built quad indices (0,1,2, 0,2,3, 6,7,8, ...).
+    glyph_ibuf: c.sg_buffer,
+    // CPU-side glyph vertex staging array.
+    glyph_verts_cpu: []GlyphVertex,
+    glyph_verts_count: usize,
+    // Linear correction feature flag (true = on by default).
+    use_linear_correction: bool,
+
     // Atlas packing state
     atlas_x: u32,
     atlas_y: u32,
     atlas_row_h: u32,
     atlas_dirty: bool,
-    /// The highest atlas row (exclusive) that has been written since the last
-    /// sg_update_image call.  flushAtlas uploads only rows 0..atlas_dirty_y1
-    /// instead of the full 2048-row texture, saving bandwidth on frames where
-    /// only a few glyphs were added near the top of the atlas.
-    atlas_dirty_y1: u32,
     /// Guards against calling sg_update_image more than once per frame.
     /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
     atlas_uploaded_this_frame: bool,
@@ -414,8 +481,8 @@ pub const FtRenderer = struct {
         const atlas_img = c.sg_make_image(&img_desc);
 
         var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
-        smp_desc.min_filter = c.SG_FILTER_LINEAR;
-        smp_desc.mag_filter = c.SG_FILTER_LINEAR;
+        smp_desc.min_filter = c.SG_FILTER_NEAREST;
+        smp_desc.mag_filter = c.SG_FILTER_NEAREST;
         smp_desc.label = "ft-atlas-sampler";
         const atlas_smp = c.sg_make_sampler(&smp_desc);
 
@@ -442,6 +509,157 @@ pub const FtRenderer = struct {
         pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
         pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         const atlas_pip = c.sgl_make_pipeline(&pip_desc);
+
+        // ── Custom glyph shader pipeline ──────────────────────────────────
+        // Uses a gamma-correct (perceptual luminance) fragment shader.
+        // Vertex layout: f32x2 pos, f32x2 uv, u8x4 fg_rgba (stride=20).
+        const shader_src = comptime glyph_shader.backendSources(glyph_shader.native_backend);
+
+        var shd_desc = std.mem.zeroes(c.sg_shader_desc);
+        shd_desc.vertex_func.source = shader_src.vs.ptr;
+        shd_desc.fragment_func.source = shader_src.fs.ptr;
+
+        // HLSL D3D11: semantic names for vertex attributes.
+        // GLSL: location indices match layout(location=N) in the shader.
+        shd_desc.attrs[0].glsl_name = "in_pos";
+        shd_desc.attrs[0].hlsl_sem_name = "TEXCOORD";
+        shd_desc.attrs[0].hlsl_sem_index = 0;
+        shd_desc.attrs[1].glsl_name = "in_uv";
+        shd_desc.attrs[1].hlsl_sem_name = "TEXCOORD";
+        shd_desc.attrs[1].hlsl_sem_index = 1;
+        shd_desc.attrs[2].glsl_name = "in_fg_rgba";
+        shd_desc.attrs[2].hlsl_sem_name = "TEXCOORD";
+        shd_desc.attrs[2].hlsl_sem_index = 2;
+
+        // Vertex-shader uniform block (binding 0): mvp + atlas_size + flag.
+        shd_desc.uniform_blocks[0].stage = c.SG_SHADERSTAGE_VERTEX;
+        shd_desc.uniform_blocks[0].size = @sizeOf(VsParams);
+        shd_desc.uniform_blocks[0].layout = c.SG_UNIFORMLAYOUT_STD140;
+        shd_desc.uniform_blocks[0].hlsl_register_b_n = 0;
+        shd_desc.uniform_blocks[0].glsl_uniforms[0].type = c.SG_UNIFORMTYPE_MAT4;
+        shd_desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "vs_params.mvp";
+        shd_desc.uniform_blocks[0].glsl_uniforms[1].type = c.SG_UNIFORMTYPE_FLOAT2;
+        shd_desc.uniform_blocks[0].glsl_uniforms[1].glsl_name = "vs_params.atlas_size";
+        shd_desc.uniform_blocks[0].glsl_uniforms[2].type = c.SG_UNIFORMTYPE_INT;
+        shd_desc.uniform_blocks[0].glsl_uniforms[2].glsl_name = "vs_params.use_linear_correction";
+
+        // Fragment-shader uniform block (binding 1): bg colour + flag.
+        shd_desc.uniform_blocks[1].stage = c.SG_SHADERSTAGE_FRAGMENT;
+        shd_desc.uniform_blocks[1].size = @sizeOf(FsParams);
+        shd_desc.uniform_blocks[1].layout = c.SG_UNIFORMLAYOUT_STD140;
+        shd_desc.uniform_blocks[1].hlsl_register_b_n = 1;
+        shd_desc.uniform_blocks[1].glsl_uniforms[0].type = c.SG_UNIFORMTYPE_FLOAT4;
+        shd_desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = "fs_params.bg_linear";
+        shd_desc.uniform_blocks[1].glsl_uniforms[1].type = c.SG_UNIFORMTYPE_INT;
+        shd_desc.uniform_blocks[1].glsl_uniforms[1].glsl_name = "fs_params.use_linear_correction";
+
+        // Atlas texture (view slot 0, fragment stage).
+        shd_desc.views[0].texture.stage = c.SG_SHADERSTAGE_FRAGMENT;
+        shd_desc.views[0].texture.image_type = c.SG_IMAGETYPE_2D;
+        shd_desc.views[0].texture.sample_type = c.SG_IMAGESAMPLETYPE_FLOAT;
+        shd_desc.views[0].texture.hlsl_register_t_n = 0;
+
+        // Sampler (slot 0, fragment stage).
+        shd_desc.samplers[0].stage = c.SG_SHADERSTAGE_FRAGMENT;
+        shd_desc.samplers[0].sampler_type = c.SG_SAMPLERTYPE_NONFILTERING;
+        shd_desc.samplers[0].hlsl_register_s_n = 0;
+
+        // Texture-sampler pair (tells sokol the GLSL sampler name).
+        shd_desc.texture_sampler_pairs[0].stage = c.SG_SHADERSTAGE_FRAGMENT;
+        shd_desc.texture_sampler_pairs[0].view_slot = 0;
+        shd_desc.texture_sampler_pairs[0].sampler_slot = 0;
+        shd_desc.texture_sampler_pairs[0].glsl_name = "atlas";
+
+        shd_desc.label = "glyph-shader";
+        const glyph_shd = c.sg_make_shader(&shd_desc);
+        {
+            const shd_state = c.sg_query_shader_state(glyph_shd);
+            if (shd_state != c.SG_RESOURCESTATE_VALID) {
+                std.log.err("ft_renderer: glyph shader creation FAILED (state={d}) — check HLSL/GLSL syntax and uniform block layout", .{shd_state});
+            } else {
+                std.log.info("ft_renderer: glyph shader OK (state={d})", .{shd_state});
+            }
+        }
+
+        // Glyph render pipeline — swapchain pass (color format = 0 → default).
+        var gpip_desc = std.mem.zeroes(c.sg_pipeline_desc);
+        gpip_desc.shader = glyph_shd;
+        // Vertex layout: stride 20 bytes.
+        gpip_desc.layout.buffers[0].stride = @sizeOf(GlyphVertex);
+        gpip_desc.layout.attrs[0].format = c.SG_VERTEXFORMAT_FLOAT2; // pos
+        gpip_desc.layout.attrs[1].format = c.SG_VERTEXFORMAT_FLOAT2; // uv
+        gpip_desc.layout.attrs[1].offset = 8;
+        gpip_desc.layout.attrs[2].format = c.SG_VERTEXFORMAT_UBYTE4N; // fg_rgba (normalised)
+        gpip_desc.layout.attrs[2].offset = 16;
+        gpip_desc.primitive_type = c.SG_PRIMITIVETYPE_TRIANGLES;
+        gpip_desc.index_type = c.SG_INDEXTYPE_UINT32;
+        gpip_desc.colors[0].blend.enabled = true;
+        gpip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
+        gpip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        gpip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
+        gpip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        gpip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
+        gpip_desc.label = "glyph-pipeline";
+        const glyph_pip = c.sg_make_pipeline(&gpip_desc);
+        {
+            const pip_state = c.sg_query_pipeline_state(glyph_pip);
+            if (pip_state != c.SG_RESOURCESTATE_VALID) {
+                std.log.err("ft_renderer: glyph_pip (swapchain) creation FAILED (state={d})", .{pip_state});
+            } else {
+                std.log.info("ft_renderer: glyph_pip (swapchain) OK", .{});
+            }
+        }
+
+        // Offscreen variant: same as above but with explicit RGBA8 color format
+        // to match the per-pane RT (prevents sokol validation error when the
+        // swapchain uses a different pixel format, e.g. BGRA8 on D3D11).
+        gpip_desc.colors[0].pixel_format = c.SG_PIXELFORMAT_RGBA8;
+        gpip_desc.label = "glyph-pipeline-offscreen";
+        const glyph_pip_offscreen = c.sg_make_pipeline(&gpip_desc);
+        {
+            const pip_state = c.sg_query_pipeline_state(glyph_pip_offscreen);
+            if (pip_state != c.SG_RESOURCESTATE_VALID) {
+                std.log.err("ft_renderer: glyph_pip_offscreen creation FAILED (state={d})", .{pip_state});
+            } else {
+                std.log.info("ft_renderer: glyph_pip_offscreen OK", .{});
+            }
+        }
+
+        // Stream vertex buffer (capacity MAX_GLYPH_VERTS vertices).
+        var vbuf_desc = std.mem.zeroes(c.sg_buffer_desc);
+        vbuf_desc.size = MAX_GLYPH_VERTS * @sizeOf(GlyphVertex);
+        vbuf_desc.usage.vertex_buffer = true;
+        vbuf_desc.usage.stream_update = true;
+        vbuf_desc.label = "glyph-verts";
+        const glyph_vbuf = c.sg_make_buffer(&vbuf_desc);
+
+        // Static index buffer: 6 indices per quad (0,1,2, 0,2,3), pre-built
+        // for the maximum number of quads we ever draw in one call.
+        const max_quads = MAX_GLYPH_VERTS / 4;
+        const ibuf_data = try allocator.alloc(u32, max_quads * 6);
+        defer allocator.free(ibuf_data);
+        {
+            var qi: usize = 0;
+            while (qi < max_quads) : (qi += 1) {
+                const base: u32 = @intCast(qi * 4);
+                ibuf_data[qi * 6 + 0] = base + 0;
+                ibuf_data[qi * 6 + 1] = base + 1;
+                ibuf_data[qi * 6 + 2] = base + 2;
+                ibuf_data[qi * 6 + 3] = base + 0;
+                ibuf_data[qi * 6 + 4] = base + 2;
+                ibuf_data[qi * 6 + 5] = base + 3;
+            }
+        }
+        var ibuf_desc = std.mem.zeroes(c.sg_buffer_desc);
+        ibuf_desc.data.ptr = ibuf_data.ptr;
+        ibuf_desc.data.size = ibuf_data.len * @sizeOf(u32);
+        ibuf_desc.usage.index_buffer = true;
+        ibuf_desc.label = "glyph-indices";
+        const glyph_ibuf = c.sg_make_buffer(&ibuf_desc);
+
+        // CPU vertex staging array.
+        const glyph_verts_cpu = try allocator.alloc(GlyphVertex, MAX_GLYPH_VERTS);
+        errdefer allocator.free(glyph_verts_cpu);
 
         return .{
             .allocator = allocator,
@@ -473,7 +691,6 @@ pub const FtRenderer = struct {
             .atlas_y = 1,
             .atlas_row_h = 0,
             .atlas_dirty = false,
-            .atlas_dirty_y1 = 0,
             .atlas_uploaded_this_frame = false,
             .glyph_cache = std.AutoHashMap(GlyphKey, Glyph).init(allocator),
             .shape_cache = std.AutoHashMap(ShapeKey, ShapeResult).init(allocator),
@@ -489,6 +706,14 @@ pub const FtRenderer = struct {
             .hinting = cfg.hinting,
             .ligatures = cfg.ligatures,
             .embolden = cfg.embolden,
+            .glyph_shd = glyph_shd,
+            .glyph_pip = glyph_pip,
+            .glyph_pip_offscreen = glyph_pip_offscreen,
+            .glyph_vbuf = glyph_vbuf,
+            .glyph_ibuf = glyph_ibuf,
+            .glyph_verts_cpu = glyph_verts_cpu,
+            .glyph_verts_count = 0,
+            .use_linear_correction = cfg.use_linear_correction,
         };
     }
 
@@ -548,25 +773,61 @@ pub const FtRenderer = struct {
         if (text.len == 0) return;
 
         // Draw quads using the atlas pipeline (atlas must already be flushed).
+        // IMPORTANT: must use the sgl path (sgl_v2f_t2f), NOT emitGlyphQuad.
+        // drawLabelFace is called during the swapchain pass AFTER uploadGlyphVerts()
+        // has already run — any verts written to glyph_verts_cpu here would not be
+        // uploaded and would corrupt the next frame's glyph draw.
         c.sgl_load_pipeline(self.atlas_pip);
         c.sgl_enable_texture();
         c.sgl_texture(self.atlas_view, self.atlas_ui_smp);
         c.sgl_begin_quads();
 
-        const fg = @import("../term/ghostty.zig").ColorRgb{ .r = r, .g = g, .b = b };
+        const fg = ghostty.ColorRgb{ .r = r, .g = g, .b = b };
         var px = @round(x);
         const py = @round(y);
         var i: usize = 0;
         while (i < text.len) {
             const cp_len = utf8CodepointLen(text[i]);
             const end = @min(i + cp_len, text.len);
-            self.batchGlyphs(px, py, text[i..end], face_idx, fg, .ui);
+            self.batchGlyphsSgl(px, py, text[i..end], face_idx, fg, .ui);
             px += self.cell_w;
             i = end;
         }
 
         c.sgl_end();
         c.sgl_disable_texture();
+    }
+
+    /// Shape and batch glyphs for one cell at (px, py) using sokol_gl vertex
+    /// emission (sgl_v2f_t2f).  Must be called between sgl_begin_quads /
+    /// sgl_end.  Used exclusively by drawLabelFace for the tab bar / UI text
+    /// so that it does NOT touch glyph_verts_cpu (which is for the custom
+    /// gamma-correct pipeline only).
+    fn batchGlyphsSgl(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
+        const result = self.getOrShape(utf8, face_idx) orelse return;
+
+        c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+
+        var x_offset: f32 = 0;
+        for (result.glyphs) |glyph_inst| {
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
+
+            // Snap to integer pixels to prevent subpixel sampling artifacts.
+            const gx = @round(px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
+            const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
+
+            const w = @as(f32, @floatFromInt(glyph.bw));
+            const h = @as(f32, @floatFromInt(glyph.bh));
+            if (w > 0 and h > 0) {
+                // Emit quad as two triangles via sokol_gl.
+                c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+                c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+                c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+            }
+
+            x_offset += glyph_inst.x_advance;
+        }
     }
 
     pub fn deinit(self: *FtRenderer) void {
@@ -582,6 +843,13 @@ pub const FtRenderer = struct {
         c.sg_destroy_image(self.atlas_img);
         c.sg_destroy_sampler(self.atlas_smp);
         c.sg_destroy_sampler(self.atlas_ui_smp);
+        // Custom glyph pipeline resources.
+        self.allocator.free(self.glyph_verts_cpu);
+        c.sg_destroy_buffer(self.glyph_ibuf);
+        c.sg_destroy_buffer(self.glyph_vbuf);
+        c.sg_destroy_pipeline(self.glyph_pip_offscreen);
+        c.sg_destroy_pipeline(self.glyph_pip);
+        c.sg_destroy_shader(self.glyph_shd);
         if (self.hb_buf) |buf| ft.hb_buffer_destroy(buf);
         for (self.fallback_hb_fonts) |maybe_font| {
             if (maybe_font) |font| ft.hb_font_destroy(font);
@@ -617,7 +885,8 @@ pub const FtRenderer = struct {
         screen_h: f32,
     ) void {
         self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true);
-        c.sgl_draw();
+        // Note: sgl_draw() and flushGlyphQuads() are called by the caller
+        // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
 
     /// Direct draw for single-pane mode — skips the offscreen render target
@@ -642,7 +911,8 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately
         self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full);
-        c.sgl_draw();
+        // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
+        // after this returns, still inside the active swapchain sg_pass.
     }
 
     /// Render terminal content for one pane into its `PaneCache` render target.
@@ -709,6 +979,15 @@ pub const FtRenderer = struct {
         // Restore atlas pipeline and default context.
         self.atlas_pip = saved_pip;
 
+        // Upload glyph vertices to GPU BEFORE beginning the pass.
+        // sg_update_buffer must not be called inside an active sg_pass on D3D11.
+        const n_uploaded = self.uploadGlyphVerts();
+        if (self.frame_count <= 3) {
+            std.log.info("ft_renderer renderToCache: frame={d} clear=({d:.3},{d:.3},{d:.3}) force_full={} n_uploaded={d}", .{
+                self.frame_count, clear_r, clear_g, clear_b, force_full, n_uploaded,
+            });
+        }
+
         // Begin the offscreen pass targeting this pane's RT.
         // - force_full → CLEAR: need a fresh background (resize, scroll, etc.)
         // - partial     → LOAD: keep existing pixel content; only dirty rows were redrawn.
@@ -724,6 +1003,11 @@ pub const FtRenderer = struct {
 
         // Flush the pane's sgl context into the offscreen pass.
         c.sgl_context_draw(cache.sgl_ctx);
+
+        // Draw glyph quads through the custom gamma-correct pipeline.
+        // Must happen after sgl_context_draw (avoids interleaving sgl and raw sg_*).
+        // Vertices were already uploaded above via uploadGlyphVerts().
+        self.drawGlyphQuads(pane_w, pane_h, true, srgbToLinearBg(clear_r, clear_g, clear_b));
 
         c.sg_end_pass();
         const t_gpu_end = std.time.nanoTimestamp();
@@ -756,7 +1040,7 @@ pub const FtRenderer = struct {
         c.sgl_scissor_rect(0, 0, @intFromFloat(fb_w), @intFromFloat(fb_h), true);
         c.sgl_load_pipeline(self.atlas_pip);
         c.sgl_enable_texture();
-        c.sgl_texture(cache.rt_tex_view, cache.rt_smp);
+        c.sgl_texture(cache.rt_tex_view, cache.blit_smp);
         c.sgl_matrix_mode_projection();
         c.sgl_load_identity();
         c.sgl_ortho(0.0, fb_w, fb_h, 0.0, -1.0, 1.0);
@@ -1026,11 +1310,6 @@ pub const FtRenderer = struct {
         // In partial mode, skip clean rows; clear rowDirty on each dirty row
         // after rendering so the flag is reset for the next updateRenderState.
         if (runtime.populateRowIterator(render_state, row_iterator)) {
-            c.sgl_load_pipeline(self.atlas_pip);
-            c.sgl_enable_texture();
-            c.sgl_texture(self.atlas_view, self.atlas_smp);
-            c.sgl_begin_quads();
-
             var row_y: usize = 0;
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
                 // Per-row dirty skip (partial updates only).
@@ -1168,11 +1447,102 @@ pub const FtRenderer = struct {
                     flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
 
+                // ── Decorations (underline / undercurl / strikethrough / overline) ──
+                // Drawn after glyphs so they appear on top.
+                // We batch all decoration rects for this row into one sgl quad batch.
+                if (runtime.populateRowCells(row_iterator.*, row_cells)) {
+                    var dec_col_x: usize = 0;
+                    var dec_quads_open = false;
+                    while (runtime.nextCell(row_cells.*)) : (dec_col_x += 1) {
+                        const raw_cell2 = runtime.cellRaw(row_cells.*);
+                        if (!runtime.cellHasStyling(raw_cell2)) continue;
+                        const s = runtime.cellStyle(row_cells.*) orelse continue;
+
+                        const has_decoration = s.underline != 0 or s.strikethrough or s.overline;
+                        if (!has_decoration) continue;
+
+                        if (!dec_quads_open) {
+                            c.sgl_load_default_pipeline();
+                            c.sgl_begin_quads();
+                            dec_quads_open = true;
+                        }
+
+                        const dec_px = self.padding_x + @as(f32, @floatFromInt(dec_col_x)) * self.cell_w;
+                        const dec_fg = ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette);
+                        const dec_color = ghostty.resolveStyleColor(s.underline_color, dec_fg, &colors.palette);
+                        // Use underline_color if set, otherwise fall back to fg.
+                        const ul_r = dec_color.r;
+                        const ul_g = dec_color.g;
+                        const ul_b = dec_color.b;
+
+                        // Underline position: 1px above cell bottom, thickness 1px.
+                        const ul_thickness: f32 = 1.0;
+                        const ul_y = py + self.cell_h - ul_thickness - 1.0;
+
+                        switch (s.underline) {
+                            0 => {}, // GHOSTTY_SGR_UNDERLINE_NONE
+                            1 => { // SINGLE
+                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                            },
+                            2 => { // DOUBLE
+                                emitRect(dec_px, ul_y - 2.0, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                            },
+                            3 => { // CURLY (undercurl)
+                                // Approximate a sine wave with 8 segments per cell.
+                                const n_segs: usize = 8;
+                                const seg_w = self.cell_w / @as(f32, @floatFromInt(n_segs));
+                                const amp: f32 = 1.0; // amplitude in pixels
+                                const base_y = ul_y + amp; // center of wave
+                                var seg: usize = 0;
+                                while (seg < n_segs) : (seg += 1) {
+                                    const t = @as(f32, @floatFromInt(seg)) / @as(f32, @floatFromInt(n_segs));
+                                    const t1 = @as(f32, @floatFromInt(seg + 1)) / @as(f32, @floatFromInt(n_segs));
+                                    const sx0 = dec_px + t * self.cell_w;
+                                    const sy0 = base_y - amp * @sin(t * std.math.tau);
+                                    const sy1 = base_y - amp * @sin(t1 * std.math.tau);
+                                    const seg_h = @abs(sy1 - sy0) + ul_thickness;
+                                    const seg_y = @min(sy0, sy1);
+                                    emitRect(sx0, seg_y, seg_w, seg_h, ul_r, ul_g, ul_b, 255);
+                                }
+                            },
+                            4 => { // DOTTED
+                                var dot_x = dec_px;
+                                const dot_w: f32 = 1.0;
+                                const gap: f32 = 2.0;
+                                while (dot_x + dot_w <= dec_px + self.cell_w) : (dot_x += dot_w + gap) {
+                                    emitRect(dot_x, ul_y, dot_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                                }
+                            },
+                            5 => { // DASHED
+                                var dash_x = dec_px;
+                                const dash_w: f32 = 4.0;
+                                const dash_gap: f32 = 2.0;
+                                while (dash_x + dash_w <= dec_px + self.cell_w) : (dash_x += dash_w + dash_gap) {
+                                    emitRect(dash_x, ul_y, dash_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                                }
+                            },
+                            else => {
+                                // Unknown underline style — fall back to single.
+                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
+                            },
+                        }
+
+                        if (s.strikethrough) {
+                            const st_y = py + self.cell_h * 0.5 - 0.5;
+                            emitRect(dec_px, st_y, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
+                        }
+
+                        if (s.overline) {
+                            emitRect(dec_px, py, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
+                        }
+                    }
+                    if (dec_quads_open) c.sgl_end();
+                }
+
                 // Clear per-row dirty flag after rendering this row.
                 if (!force_full) runtime.clearRowDirty(row_iterator.*);
             }
-            c.sgl_end();
-            c.sgl_disable_texture();
         }
 
         // ── Cursor overlay ─────────────────────────────────────────────────
@@ -1194,6 +1564,11 @@ pub const FtRenderer = struct {
         }
 
         if (!self.logged_first_draw) self.logged_first_draw = true;
+        if (self.frame_count <= 3) {
+            std.log.info("ft_renderer queueInViewport done: frame={d} glyph_verts={d} rows_rendered={d} bg_rects={d}", .{
+                self.frame_count, self.glyph_verts_count, self.last_rows_rendered, self.last_bg_rects,
+            });
+        }
         const t_pass2_end = std.time.nanoTimestamp();
         self.last_pass1_ns = t_pass2_start - t_pass1_start;
         self.last_pass2_ns = t_pass2_end - t_pass2_start;
@@ -1215,17 +1590,14 @@ pub const FtRenderer = struct {
         for (result.glyphs) |glyph_inst| {
             const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
 
-            const gx = px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
-            const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
+            // Snap to integer pixels to prevent subpixel sampling artifacts.
+            const gx = @round(px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
+            const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
 
             const w = @as(f32, @floatFromInt(glyph.bw));
             const h = @as(f32, @floatFromInt(glyph.bh));
             if (w > 0 and h > 0) {
-                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
-                c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
-                c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
-                c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
-                c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+                self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg);
             }
 
             x_offset += glyph_inst.x_advance;
@@ -1273,15 +1645,141 @@ pub const FtRenderer = struct {
         const w = @as(f32, @floatFromInt(glyph.bw));
         const h = @as(f32, @floatFromInt(glyph.bh));
         if (w > 0 and h > 0) {
-            const gx = px + @as(f32, @floatFromInt(glyph.bear_x));
-            const gy = py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y));
-            c.sgl_c4b(fg.r, fg.g, fg.b, 255);
-            c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
-            c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
-            c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
-            c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+            // Snap to integer pixels to prevent subpixel sampling artifacts.
+            const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
+            const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
+            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg);
         }
         return true;
+    }
+
+    /// Append one glyph quad (4 vertices) to the CPU staging buffer.
+    /// Called from batchGlyphs() and drawAsciiGlyph().  Does nothing when the
+    /// staging buffer is full (glyph is silently dropped rather than crashing).
+    inline fn emitGlyphQuad(
+        self: *FtRenderer,
+        gx: f32,
+        gy: f32,
+        w: f32,
+        h: f32,
+        s0: f32,
+        t0: f32,
+        s1: f32,
+        t1: f32,
+        fg: ghostty.ColorRgb,
+    ) void {
+        if (self.glyph_verts_count + 4 > MAX_GLYPH_VERTS) return;
+        const base = self.glyph_verts_count;
+        const verts = self.glyph_verts_cpu;
+        verts[base + 0] = .{ .x = gx, .y = gy, .u = s0, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        self.glyph_verts_count += 4;
+    }
+
+    /// Upload accumulated glyph vertices to the GPU vertex buffer.
+    ///
+    /// MUST be called OUTSIDE any active sg_pass (before sg_begin_pass).
+    /// sg_update_buffer is not allowed inside a pass on D3D11.
+    ///
+    /// Returns the number of vertices that were uploaded (0 = nothing to draw).
+    /// The CPU staging buffer is NOT cleared here — call drawGlyphQuads() inside
+    /// the subsequent pass to issue the actual draw, which clears the count.
+    pub fn uploadGlyphVerts(self: *FtRenderer) usize {
+        const n_verts = self.glyph_verts_count;
+        if (n_verts == 0) return 0;
+        var upd = std.mem.zeroes(c.sg_range);
+        upd.ptr = self.glyph_verts_cpu.ptr;
+        upd.size = n_verts * @sizeOf(GlyphVertex);
+        c.sg_update_buffer(self.glyph_vbuf, &upd);
+        return n_verts;
+    }
+
+    /// Issue the glyph draw call for vertices previously uploaded by uploadGlyphVerts().
+    ///
+    /// MUST be called INSIDE an active sg_pass, after sgl_context_draw (or sgl_draw).
+    /// Resets glyph_verts_count to 0.
+    ///
+    /// `pane_w` / `pane_h` are the render target dimensions (for the ortho MVP).
+    /// `offscreen` = true when rendering into a pane's RGBA8 offscreen RT;
+    ///              = false when rendering into the swapchain pass.
+    pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void {
+        const n_verts = self.glyph_verts_count;
+        defer self.glyph_verts_count = 0;
+        if (n_verts == 0) return;
+
+        if (self.frame_count <= 3) {
+            std.log.info("ft_renderer drawGlyphQuads: frame={d} n_verts={d} offscreen={} pane={d:.0}x{d:.0}", .{
+                self.frame_count, n_verts, offscreen, pane_w, pane_h,
+            });
+            if (n_verts >= 4) {
+                const v0 = self.glyph_verts_cpu[0];
+                std.log.info("  v[0]: x={d:.1} y={d:.1} u={d:.4} v={d:.4} rgba=({d},{d},{d},{d})", .{
+                    v0.x, v0.y, v0.u, v0.v, v0.r, v0.g, v0.b, v0.a,
+                });
+            }
+        }
+
+        const n_quads = n_verts / 4;
+        const n_indices = n_quads * 6;
+
+        // Column-major orthographic projection (pixel coords, Y-down):
+        //   x: [0, pane_w]  →  [-1, +1]
+        //   y: [0, pane_h]  →  [+1, -1]  (Y flipped for Y-down pixel space)
+        const sx = 2.0 / pane_w;
+        const sy = -2.0 / pane_h;
+        const mvp = [16]f32{
+            sx,   0.0, 0.0, 0.0,
+            0.0,  sy,  0.0, 0.0,
+            0.0,  0.0, 1.0, 0.0,
+            -1.0, 1.0, 0.0, 1.0,
+        };
+
+        const vs_params = VsParams{
+            .mvp = mvp,
+            .atlas_size = .{ @as(f32, ATLAS_W), @as(f32, ATLAS_H) },
+            .use_linear_correction = if (self.use_linear_correction) 1 else 0,
+            ._pad = 0,
+        };
+
+        c.sg_apply_pipeline(if (offscreen) self.glyph_pip_offscreen else self.glyph_pip);
+
+        var bindings = std.mem.zeroes(c.sg_bindings);
+        bindings.vertex_buffers[0] = self.glyph_vbuf;
+        bindings.index_buffer = self.glyph_ibuf;
+        bindings.views[0] = self.atlas_view;
+        bindings.samplers[0] = self.atlas_smp;
+        c.sg_apply_bindings(&bindings);
+
+        var vs_range = std.mem.zeroes(c.sg_range);
+        vs_range.ptr = &vs_params;
+        vs_range.size = @sizeOf(VsParams);
+        c.sg_apply_uniforms(0, &vs_range);
+
+        // FsParams: bg_linear is the terminal background colour in linear space.
+        // Callers convert from sRGB before passing.  Zero alpha falls back gracefully.
+        const fs_params = FsParams{
+            .bg_linear = bg_linear,
+            .use_linear_correction = if (self.use_linear_correction) 1 else 0,
+            ._pad0 = 0,
+            ._pad1 = 0,
+            ._pad2 = 0,
+        };
+        var fs_range = std.mem.zeroes(c.sg_range);
+        fs_range.ptr = &fs_params;
+        fs_range.size = @sizeOf(FsParams);
+        c.sg_apply_uniforms(1, &fs_range);
+
+        c.sg_draw(0, @intCast(n_indices), 1);
+    }
+
+    /// Convenience wrapper: upload + draw in one call.
+    /// Use ONLY when you can guarantee the upload happens before the pass begins.
+    /// In cached-RT mode, use uploadGlyphVerts()/drawGlyphQuads() separately.
+    pub fn flushGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void {
+        _ = self.uploadGlyphVerts();
+        self.drawGlyphQuads(pane_w, pane_h, offscreen, bg_linear);
     }
 
     fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
@@ -1451,8 +1949,6 @@ pub const FtRenderer = struct {
             }
         }
         self.atlas_dirty = true;
-        const new_y1 = self.atlas_y + bh;
-        if (new_y1 > self.atlas_dirty_y1) self.atlas_dirty_y1 = new_y1;
         if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
         const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
@@ -1493,13 +1989,11 @@ pub const FtRenderer = struct {
 
     pub fn flushAtlas(self: *FtRenderer) void {
         if (self.atlas_uploaded_this_frame) return;
-        // Upload only rows 0..atlas_dirty_y1 instead of the full 2048-row
-        // texture.  On the first frame after startup all rows may be needed,
-        // but on subsequent frames only a small slab at the top is dirty.
-        const upload_rows = @min(self.atlas_dirty_y1 + self.atlas_row_h + 1, ATLAS_H);
+        // sg_update_image requires the size to cover the entire image — partial
+        // uploads are not supported by Sokol and cause a validation crash.
         var upd = std.mem.zeroes(c.sg_image_data);
         upd.mip_levels[0].ptr = self.atlas_data.ptr;
-        upd.mip_levels[0].size = upload_rows * ATLAS_W * ATLAS_BPP;
+        upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
         c.sg_update_image(self.atlas_img, &upd);
         self.atlas_uploaded_this_frame = true;
     }
@@ -1520,7 +2014,6 @@ pub const FtRenderer = struct {
         self.atlas_y = 1;
         self.atlas_row_h = 0;
         self.atlas_dirty = true;
-        self.atlas_dirty_y1 = 0;
         self.atlas_uploaded_this_frame = false;
         // Evict glyph and shape caches so entries pointing to old atlas UVs
         // are not used.
@@ -1544,7 +2037,6 @@ pub const FtRenderer = struct {
                 flags |= ft.FT_LOAD_NO_AUTOHINT;
             },
             .light => {
-                flags |= ft.FT_LOAD_FORCE_AUTOHINT;
                 flags |= if (use_subpixel) ft.FT_LOAD_TARGET_LCD else ft.FT_LOAD_TARGET_LIGHT;
             },
             .normal => {
@@ -1627,6 +2119,18 @@ fn featureTag(tag: [4]u8) u32 {
         (@as(u32, tag[1]) << 16) |
         (@as(u32, tag[2]) << 8) |
         @as(u32, tag[3]);
+}
+
+/// Convert a single sRGB channel value [0,1] to linear light.
+/// IEC 61966-2-1 piecewise formula (same as the shader).
+inline fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+/// Convert an sRGB colour (channels in [0,1]) to a linear-premultiplied [4]f32
+/// suitable for FsParams.bg_linear.  Alpha is always 1.0 (opaque).
+inline fn srgbToLinearBg(r: f32, g: f32, b: f32) [4]f32 {
+    return .{ srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), 1.0 };
 }
 
 fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
