@@ -256,6 +256,11 @@ pub const FtRenderer = struct {
     atlas_y: u32,
     atlas_row_h: u32,
     atlas_dirty: bool,
+    /// The highest atlas row (exclusive) that has been written since the last
+    /// sg_update_image call.  flushAtlas uploads only rows 0..atlas_dirty_y1
+    /// instead of the full 2048-row texture, saving bandwidth on frames where
+    /// only a few glyphs were added near the top of the atlas.
+    atlas_dirty_y1: u32,
     /// Guards against calling sg_update_image more than once per frame.
     /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
     atlas_uploaded_this_frame: bool,
@@ -284,16 +289,21 @@ pub const FtRenderer = struct {
     logged_first_draw: bool = false,
     logged_first_content: bool = false,
 
-    /// Fast ASCII glyph cache: ascii_glyphs[face_idx][codepoint]
+    /// Fast ASCII/Latin-1 glyph cache: ascii_glyphs[face_idx][codepoint]
     /// Stores the final Glyph (atlas UVs + bearing) for printable ASCII U+0021–U+007E
-    /// on faces 0-3, bypassing both HarfBuzz shaping and the glyph_cache hashmap on
-    /// warm frames.  null = not yet populated.  Atlas UVs are stable once placed, so
-    /// entries never need invalidation.
-    ascii_glyphs: [4][128]?Glyph = [_][128]?Glyph{[_]?Glyph{null} ** 128} ** 4,
+    /// and Latin-1 supplement U+00A0–U+00FF on faces 0-3, bypassing both HarfBuzz
+    /// shaping and the glyph_cache hashmap on warm frames.
+    /// null = not yet populated.  Atlas UVs are stable once placed, so entries
+    /// never need invalidation (except on atlas eviction via resetAtlasIfNeeded).
+    ascii_glyphs: [4][256]?Glyph = [_][256]?Glyph{[_]?Glyph{null} ** 256} ** 4,
 
     /// Reusable ligature run buffer — avoids a heap alloc+free every frame.
     /// Grown on demand via realloc; never shrunk.
     run_buf: []u8 = &.{},
+    /// Grid dimensions for which run_buf was last sized.
+    /// When rows/cols are unchanged we skip the recompute entirely.
+    run_buf_rows: usize = 0,
+    run_buf_cols: usize = 0,
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
     last_rows_rendered: usize = 0,
@@ -310,6 +320,9 @@ pub const FtRenderer = struct {
     last_bg_rects: usize = 0,
     /// Set to true when an atlas upload happened during this renderToCache call.
     last_atlas_flushed: bool = false,
+    /// Incremented every renderToCache call.  Used to trigger periodic atlas
+    /// eviction when the atlas becomes ≥90% full (see resetAtlasIfNeeded).
+    frame_count: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, cfg: FtRendererConfig) !FtRenderer {
         const font_size_px = cfg.font_size * cfg.dpi_scale;
@@ -460,6 +473,7 @@ pub const FtRenderer = struct {
             .atlas_y = 1,
             .atlas_row_h = 0,
             .atlas_dirty = false,
+            .atlas_dirty_y1 = 0,
             .atlas_uploaded_this_frame = false,
             .glyph_cache = std.AutoHashMap(GlyphKey, Glyph).init(allocator),
             .shape_cache = std.AutoHashMap(ShapeKey, ShapeResult).init(allocator),
@@ -484,10 +498,21 @@ pub const FtRenderer = struct {
     /// texture) from spiking frame times during normal editing.
     pub fn warmupAtlas(self: *FtRenderer) void {
         var utf8: [4]u8 = undefined;
-        var cp: u32 = 0x20; // first printable ASCII
+        // Printable ASCII (U+0020–U+007E)
+        var cp: u32 = 0x20;
         while (cp <= 0x7E) : (cp += 1) {
             const len = encodeUtf8(cp, &utf8) catch continue;
             // Rasterize in regular, bold, italic, bold-italic faces.
+            var fi: u8 = 0;
+            while (fi < 4) : (fi += 1) {
+                self.preRasterize(utf8[0..len], fi, .terminal);
+            }
+        }
+        // Latin-1 supplement (U+00A0–U+00FF): accented chars, symbols, common
+        // non-ASCII used in shells and terminals (arrows, degrees, etc.).
+        cp = 0xA0;
+        while (cp <= 0xFF) : (cp += 1) {
+            const len = encodeUtf8(cp, &utf8) catch continue;
             var fi: u8 = 0;
             while (fi < 4) : (fi += 1) {
                 self.preRasterize(utf8[0..len], fi, .terminal);
@@ -648,6 +673,10 @@ pub const FtRenderer = struct {
         self.last_glyph_runs = 0;
         self.last_bg_rects = 0;
         self.last_atlas_flushed = false;
+        self.frame_count += 1;
+
+        // Evict atlas if it is ≥90% full to prevent the "atlas full" hard stop.
+        self.resetAtlasIfNeeded();
 
         // Switch to this pane's sgl_context so draw commands go into its
         // own vertex / command buffers (isolated from the main context).
@@ -800,10 +829,15 @@ pub const FtRenderer = struct {
 
         const row_count = runtime.renderStateRows(render_state) orelse 0;
         const col_count = runtime.renderStateCols(render_state) orelse 0;
-        const run_buf_needed = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
-        if (run_buf_needed > self.run_buf.len) {
-            if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
-            self.run_buf = self.allocator.alloc(u8, run_buf_needed) catch return;
+        // Only reallocate run_buf when the grid dimensions actually change.
+        if (row_count != self.run_buf_rows or col_count != self.run_buf_cols) {
+            const run_buf_needed = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
+            if (run_buf_needed > self.run_buf.len) {
+                if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
+                self.run_buf = self.allocator.alloc(u8, run_buf_needed) catch return;
+            }
+            self.run_buf_rows = row_count;
+            self.run_buf_cols = col_count;
         }
         const run_buf = self.run_buf;
 
@@ -1198,44 +1232,17 @@ pub const FtRenderer = struct {
         }
     }
 
-    fn preRasterizeRun(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
-        const result = self.getOrShape(utf8, face_idx) orelse return;
-        for (result.glyphs) |glyph_inst| {
-            _ = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode);
-        }
-    }
-
-    fn batchGlyphRun(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
-        const result = self.getOrShape(utf8, face_idx) orelse return;
-
-        var pen_x: f32 = 0;
-        for (result.glyphs) |glyph_inst| {
-            const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
-            const gx = px + pen_x + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x));
-            const gy = py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y));
-
-            const w = @as(f32, @floatFromInt(glyph.bw));
-            const h = @as(f32, @floatFromInt(glyph.bh));
-            if (w > 0 and h > 0) {
-                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
-                c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
-                c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
-                c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
-                c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
-            }
-
-            pen_x += glyph_inst.x_advance;
-        }
-    }
-
-    /// Fast path for printable ASCII (0x21–0x7E): skip HarfBuzz shaping entirely.
+    /// Fast path for printable ASCII (0x21–0x7E) and Latin-1 supplement (0xA0–0xFF):
+    /// skip HarfBuzz shaping entirely.
     /// On the first call per (cp, face_idx), resolves the glyph via FT_Get_Char_Index
     /// and getOrRasterize, then caches the full Glyph struct in ascii_glyphs.
     /// On subsequent calls (the steady-state hot path) it is a single array lookup —
     /// no hashmap, no C-ABI call.  Returns true if the glyph was drawn (or is
     /// blank/invisible); false if the caller should fall back to batchGlyphs.
     inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb) bool {
-        if (cp < 0x21 or cp > 0x7E or face_idx > 3) return false;
+        if (cp < 0x21 or cp > 0xFF or face_idx > 3) return false;
+        // Skip C1 control range (0x7F–0x9F) — these are never printable.
+        if (cp > 0x7E and cp < 0xA0) return false;
 
         const fi: usize = @intCast(face_idx);
         const glyph: Glyph = self.ascii_glyphs[fi][cp] orelse blk: {
@@ -1281,7 +1288,7 @@ pub const FtRenderer = struct {
         _ = fg;
         _ = py;
         if (run_len.* == 0) return;
-        self.preRasterizeRun(run_buf[0..run_len.*], face_idx, .terminal);
+        self.preRasterize(run_buf[0..run_len.*], face_idx, .terminal);
         run_start_col.* = 0;
         run_len.* = 0;
     }
@@ -1290,7 +1297,7 @@ pub const FtRenderer = struct {
         if (run_len.* == 0) return;
         self.last_glyph_runs += 1;
         const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
-        self.batchGlyphRun(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal);
+        self.batchGlyphs(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal);
         run_start_col.* = 0;
         run_len.* = 0;
     }
@@ -1444,6 +1451,8 @@ pub const FtRenderer = struct {
             }
         }
         self.atlas_dirty = true;
+        const new_y1 = self.atlas_y + bh;
+        if (new_y1 > self.atlas_dirty_y1) self.atlas_dirty_y1 = new_y1;
         if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
         const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
@@ -1484,11 +1493,41 @@ pub const FtRenderer = struct {
 
     pub fn flushAtlas(self: *FtRenderer) void {
         if (self.atlas_uploaded_this_frame) return;
+        // Upload only rows 0..atlas_dirty_y1 instead of the full 2048-row
+        // texture.  On the first frame after startup all rows may be needed,
+        // but on subsequent frames only a small slab at the top is dirty.
+        const upload_rows = @min(self.atlas_dirty_y1 + self.atlas_row_h + 1, ATLAS_H);
         var upd = std.mem.zeroes(c.sg_image_data);
         upd.mip_levels[0].ptr = self.atlas_data.ptr;
-        upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
+        upd.mip_levels[0].size = upload_rows * ATLAS_W * ATLAS_BPP;
         c.sg_update_image(self.atlas_img, &upd);
         self.atlas_uploaded_this_frame = true;
+    }
+
+    /// Evict the glyph atlas and all caches when the atlas is ≥90% full.
+    /// This prevents the "atlas full" hard stop and keeps memory bounded.
+    /// All glyphs will be re-rasterized on demand over the next few frames.
+    fn resetAtlasIfNeeded(self: *FtRenderer) void {
+        // 90% of atlas rows filled.
+        if (self.atlas_y < (ATLAS_H * 9) / 10) return;
+        std.log.info("ft_renderer: atlas ≥90% full at row {d}/{d}, evicting (frame {d})", .{
+            self.atlas_y, ATLAS_H, self.frame_count,
+        });
+        // Clear CPU atlas buffer.
+        @memset(self.atlas_data, 0);
+        // Reset packing cursor.
+        self.atlas_x = 1;
+        self.atlas_y = 1;
+        self.atlas_row_h = 0;
+        self.atlas_dirty = true;
+        self.atlas_dirty_y1 = 0;
+        self.atlas_uploaded_this_frame = false;
+        // Evict glyph and shape caches so entries pointing to old atlas UVs
+        // are not used.
+        self.glyph_cache.clearRetainingCapacity();
+        self.shape_cache.clearRetainingCapacity();
+        // Clear ASCII/Latin-1 fast-path cache (UVs are now stale).
+        self.ascii_glyphs = [_][256]?Glyph{[_]?Glyph{null} ** 256} ** 4;
     }
 
     fn boostCoverage(self: *const FtRenderer, cov: u8) u8 {
@@ -1672,66 +1711,38 @@ fn isIgnorableCodepoint(cp: u32) bool {
     };
 }
 
-fn drawRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {
+/// Emit a single filled rectangle quad into an already-open sgl_begin_quads batch.
+/// Caller must have called sgl_begin_quads() before and sgl_end() after.
+inline fn emitRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) void {
     const rf = @as(f32, @floatFromInt(r)) / 255.0;
     const gf = @as(f32, @floatFromInt(g)) / 255.0;
     const bf = @as(f32, @floatFromInt(b)) / 255.0;
     const af = @as(f32, @floatFromInt(a)) / 255.0;
-    c.sgl_begin_quads();
     c.sgl_c4f(rf, gf, bf, af);
     c.sgl_v2f(x, y);
     c.sgl_v2f(x + w, y);
     c.sgl_v2f(x + w, y + h);
     c.sgl_v2f(x, y + h);
-    c.sgl_end();
 }
 
-fn drawGlyphQuad(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    s0: f32,
-    t0: f32,
-    s1: f32,
-    t1: f32,
-    view: c.sg_view,
-    smp: c.sg_sampler,
-    pip: c.sgl_pipeline,
-    r: u8,
-    g: u8,
-    b: u8,
-) void {
-    const rf = @as(f32, @floatFromInt(r)) / 255.0;
-    const gf = @as(f32, @floatFromInt(g)) / 255.0;
-    const bf = @as(f32, @floatFromInt(b)) / 255.0;
-
-    c.sgl_load_pipeline(pip);
-    c.sgl_enable_texture();
-    c.sgl_texture(view, smp);
-    c.sgl_begin_quads();
-    c.sgl_c4f(rf, gf, bf, 1.0);
-    c.sgl_v2f_t2f(x, y, s0, t0);
-    c.sgl_v2f_t2f(x + w, y, s1, t0);
-    c.sgl_v2f_t2f(x + w, y + h, s1, t1);
-    c.sgl_v2f_t2f(x, y + h, s0, t1);
-    c.sgl_end();
-    c.sgl_disable_texture();
-}
-
+/// Draw the cursor shape using a single sgl_begin_quads/sgl_end batch.
+/// All cursor styles (block, hollow, bar, underline) emit between 1 and 4
+/// quads — batched into one draw call instead of one call per rect.
 fn drawCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, style: ghostty.CursorVisualStyle) void {
+    c.sgl_begin_quads();
     switch (style) {
-        .block => drawRect(x, y, w, h, color.r, color.g, color.b, 180),
+        .block => emitRect(x, y, w, h, color.r, color.g, color.b, 180),
         .block_hollow => {
             const t: f32 = 1.5;
-            drawRect(x, y, w, t, color.r, color.g, color.b, 220);
-            drawRect(x, y + h - t, w, t, color.r, color.g, color.b, 220);
-            drawRect(x, y, t, h, color.r, color.g, color.b, 220);
-            drawRect(x + w - t, y, t, h, color.r, color.g, color.b, 220);
+            emitRect(x, y, w, t, color.r, color.g, color.b, 220);
+            emitRect(x, y + h - t, w, t, color.r, color.g, color.b, 220);
+            emitRect(x, y, t, h, color.r, color.g, color.b, 220);
+            emitRect(x + w - t, y, t, h, color.r, color.g, color.b, 220);
         },
-        .bar => drawRect(x, y, 2.0, h, color.r, color.g, color.b, 220),
-        .underline => drawRect(x, y + h - 2.0, w, 2.0, color.r, color.g, color.b, 220),
+        .bar => emitRect(x, y, 2.0, h, color.r, color.g, color.b, 220),
+        .underline => emitRect(x, y + h - 2.0, w, 2.0, color.r, color.g, color.b, 220),
     }
+    c.sgl_end();
 }
 
 fn encodeUtf8(cp: u32, buf: []u8) error{BufferTooSmall}!usize {

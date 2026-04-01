@@ -559,13 +559,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // For single pane without tab bar, skip offscreen RT entirely.
                     // We'll render directly in the swapchain pass for lower latency.
                     // Still need to flush atlas if dirty so glyphs are available.
-                    if (renderer.atlas_dirty) {
+                    const atlas_was_dirty = renderer.atlas_dirty;
+                    if (atlas_was_dirty) {
                         renderer.flushAtlas();
                         renderer.atlas_dirty = false;
                         g_phase_accum_atlas_flushes += 1;
                     }
-                    // Track if we're rendering this frame
-                    if (pane.render_dirty != .false_value or renderer.atlas_dirty) {
+                    // Track if we're rendering this frame (capture atlas state before clear).
+                    if (pane.render_dirty != .false_value or atlas_was_dirty) {
                         g_phase_accum_dirty_frames += 1;
                     } else {
                         g_phase_accum_clean_frames += 1;
