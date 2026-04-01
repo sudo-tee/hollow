@@ -59,19 +59,52 @@ var g_phase_accum_atlas_flushes: usize = 0;
 var g_phase_accum_direct_frames: usize = 0;
 var g_phase_accum_cached_frames: usize = 0;
 
+// Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
+var g_last_frame_tick_ms: f32 = 0;
+var g_last_frame_offscreen_ms: f32 = 0;
+var g_last_frame_queue_ms: f32 = 0;
+var g_last_frame_gpu_ms: f32 = 0;
+var g_last_frame_swap_ms: f32 = 0;
+// Frame-local queue/gpu accumulators, reset at frame start, captured at offscreen end.
+var g_frame_queue_ns: i128 = 0;
+var g_frame_gpu_ns: i128 = 0;
+
 // Per-pane render-to-texture caches.
 // Keyed by pane pointer (stable for the lifetime of the pane).
 // MAX_LAYOUT_LEAVES is the max concurrent panes we ever render.
 const MAX_PANE_CACHES = 32;
+/// Open-addressing hash map capacity for per-row content caching.
+/// Keys are GhosttyRow raw values (u64); values are cell-content hashes (u64).
+/// Must be a power of 2.  2048 slots at 2×8 bytes = 32 KB per pane — fine.
+const ROW_MAP_CAP = 2048;
+const ROW_MAP_MASK = ROW_MAP_CAP - 1;
+const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
     cache: PaneCache,
+    /// The atlas_epoch value at the time this pane was last rendered to its RT.
+    /// When renderer.atlas_epoch > last_atlas_epoch, the atlas changed since the
+    /// last render and the pane must do a full redraw (force_full = true) to pick
+    /// up the new glyph bitmaps even if the pane's own content is unchanged.
+    last_atlas_epoch: u64 = 0,
+    /// Open-addressing hash map: GhosttyRow raw value → cell-content hash.
+    /// Scroll-stable: the same row's raw value is invariant across screen shifts,
+    /// so hashes survive scrolling and only rows with genuinely changed content
+    /// are re-rendered.
+    /// Slot is empty when key == ROW_MAP_EMPTY (0).
+    row_map_keys: [ROW_MAP_CAP]u64 = [_]u64{ROW_MAP_EMPTY} ** ROW_MAP_CAP,
+    row_map_vals: [ROW_MAP_CAP]u64 = [_]u64{0} ** ROW_MAP_CAP,
+    /// Cursor row from the *previous* rendered frame (0-based).
+    /// Used to force-clear old cursor pixels when the cursor moves to a new row
+    /// and ghostty does not mark the old cursor row as dirty (content unchanged).
+    /// Initialised to maxInt(usize) so it matches no row on the first frame.
+    prev_cursor_row: usize = std.math.maxInt(usize),
 };
 var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = [_]?PaneCacheEntry{null} ** MAX_PANE_CACHES;
 
-/// Find or create a PaneCache for the given pane at the given pixel dimensions.
+/// Find or create a PaneCacheEntry for the given pane at the given pixel dimensions.
 /// If the existing cache is the wrong size it is destroyed and recreated.
-fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
+fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry {
     if (w == 0 or h == 0) return null;
     // Search for an existing entry.
     var free_slot: usize = MAX_PANE_CACHES;
@@ -81,8 +114,9 @@ fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
                 if (entry.cache.needsResize(w, h)) {
                     entry.cache.deinit();
                     entry.cache = PaneCache.init(w, h);
+                    entry.last_atlas_epoch = 0; // size changed — force full redraw next frame
                 }
-                return &entry.cache;
+                return entry;
             }
         } else {
             if (free_slot == MAX_PANE_CACHES) free_slot = i;
@@ -96,8 +130,15 @@ fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
     g_pane_caches[free_slot] = .{
         .pane = pane,
         .cache = PaneCache.init(w, h),
+        .last_atlas_epoch = 0,
     };
-    return &g_pane_caches[free_slot].?.cache;
+    return &g_pane_caches[free_slot].?;
+}
+
+/// Convenience wrapper returning only the PaneCache (for blit-only callers).
+fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
+    const entry = getOrCreatePaneCacheEntry(pane, w, h) orelse return null;
+    return &entry.cache;
 }
 
 /// Release the cache entry for a pane that has been destroyed.
@@ -424,6 +465,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     if (g_ft_renderer) |*renderer| {
         renderer.beginFrame();
+        // Reset frame-local queue/gpu accumulators for the debug overlay.
+        g_frame_queue_ns = 0;
+        g_frame_gpu_ns = 0;
 
         // Pre-rasterize tab bar glyphs so they land in the atlas before any
         // pane offscreen pass flushes it (avoids a double sg_update_image).
@@ -467,7 +511,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     _ = fb_h;
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
-                    const cache = getOrCreatePaneCache(pane, pw_u, ph_u) orelse return false;
+                    const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return false;
 
                     // Check dirty flag.
                     // We use pane.render_dirty, which tickPanes refreshes from
@@ -475,7 +519,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // dirty level.
                     _ = ox; // suppress unused warning
                     const dirty_level = pane.render_dirty;
-                    if (dirty_level == .false_value and !rend.atlas_dirty) {
+                    // Atlas-epoch check: if the atlas was flushed since this pane's
+                    // last render, its existing RT content has stale glyph UVs and
+                    // must be fully redrawn. Crucially we use the epoch (not the
+                    // atlas_dirty bool) so that panes rendered AFTER the atlas flush
+                    // in the same frame don't cause unnecessary full redraws.
+                    const atlas_stale = cache_entry.last_atlas_epoch != rend.atlas_epoch;
+                    if (dirty_level == .false_value and !atlas_stale) {
                         // Nothing changed — skip re-render, RT still valid.
                         return false;
                     }
@@ -490,24 +540,37 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cb = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
                     }
 
-                    // .full → clear the whole RT and redraw every row.
-                    // .true_value → keep existing RT pixels (LOAD), only redraw dirty rows.
-                    // atlas_dirty without a pane dirty → also needs a full redraw since
-                    // atlas changed under existing quads; do a full pass in that case too.
-                    const force_full = dirty_level == .full or rend.atlas_dirty;
+                    // atlas stale → full redraw needed (glyph UVs changed under existing pixels).
+                    // resize → handled by cache recreation (pw/ph mismatch), so we never see
+                    //   a stale RT from a resize here.
+                    // .full dirty_level → ghostty uses this for screen switches (alt-screen
+                    //   enter/exit), resize, color-change events, and any other event that
+                    //   invalidates the whole viewport.  All rows are marked dirty by ghostty,
+                    //   but the row map may hold entries from the previous screen (different
+                    //   rowRaw keys pointing at now-reused page slots, or same rowRaw key but
+                    //   the slot now holds different content on the new screen).  We must
+                    //   invalidate the row map so the hash skip does not fire for stale entries.
+                    // .true_value dirty_level → normal content update; per-row dirty gives us the
+                    //   minimal set of rows to re-render.
+                    //
+                    // For scrolling: ghostty marks dirty_level=.full and (empirically) marks ALL
+                    // rows dirty in rowDirty() after a CSI S, so force_full here doesn't save work
+                    // but does force a slow CLEAR action.  Use atlas_stale as the only trigger for
+                    // force_full so that scroll frames stay as fast as partial updates.
+                    const force_full = atlas_stale;
 
-                    // TODO(scroll-fast-path): For terminal scroll updates, if the dirty
-                    // pattern is a contiguous block of rows shifted by N lines, we could
-                    // use sg_copy_image / blit to shift the existing RT content and only
-                    // redraw the newly exposed rows.  This would reduce per-frame CPU work
-                    // significantly during nvim scrolling.  Requires the ghostty runtime
-                    // to expose a stable scroll-delta value or scroll-event type so we can
-                    // distinguish "scroll shift" dirty bursts from arbitrary repaint dirty.
-                    // Instrument: if rows_rendered approaches total rows and rows_skipped
-                    // is near 0, that is a strong signal the dirty burst is scroll-like.
+                    // Invalidate the row map whenever the screen contents cannot be trusted:
+                    //   1. atlas_stale: glyph UVs changed, all rows must redraw with correct UVs.
+                    //   2. dirty_level == .full: screen switched (alt/normal), resized, or global
+                    //      color changed.  Row map entries from the previous screen are stale —
+                    //      the hash skip must not fire because page slots may now hold new content
+                    //      with the same rowRaw key.
+                    if (force_full or dirty_level == .full) {
+                        @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
+                    }
 
                     rend.renderToCache(
-                        cache,
+                        &cache_entry.cache,
                         rt,
                         pane.render_state,
                         &pane.row_iterator,
@@ -519,6 +582,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cg,
                         cb,
                         force_full,
+                        &cache_entry.row_map_keys,
+                        &cache_entry.row_map_vals,
+                        cache_entry.prev_cursor_row,
                     );
                     g_phase_accum_rows_rendered += rend.last_rows_rendered;
                     g_phase_accum_rows_skipped += rend.last_rows_skipped;
@@ -530,6 +596,24 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_glyph_runs += rend.last_glyph_runs;
                     g_phase_accum_bg_rects += rend.last_bg_rects;
                     if (rend.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
+                    // Frame-local accumulators for the debug overlay.
+                    g_frame_queue_ns += rend.last_queue_ns;
+                    g_frame_gpu_ns += rend.last_gpu_ns;
+
+                    // Record the atlas epoch at the time this pane was rendered.
+                    // After renderToCache the atlas may have been flushed (epoch advanced)
+                    // if this pane introduced new glyphs — record the post-render epoch so
+                    // the pane is not forced into another full redraw next frame unless the
+                    // atlas changes again.
+                    cache_entry.last_atlas_epoch = rend.atlas_epoch;
+
+                    // Update prev_cursor_row for the next frame: the current cursor
+                    // row becomes the "previous" cursor row so we can erase ghost
+                    // pixels if the cursor moves away next frame.
+                    cache_entry.prev_cursor_row = if (rt.cursorPos(pane.render_state)) |cp|
+                        @as(usize, cp.y)
+                    else
+                        std.math.maxInt(usize);
 
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
@@ -594,6 +678,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const after_offscreen_ns = std.time.nanoTimestamp();
 
     // ── Phase 2: Swapchain pass ────────────────────────────────────────────
+
+    // Upload any pending glyph vertices BEFORE beginning the swapchain pass.
+    // sg_update_buffer must NOT be called inside an active sg_pass on D3D11.
+    // In cached-RT mode this is a no-op (count == 0 after per-pane offscreen flushes).
+    // In direct-render mode this uploads the vertices accumulated by drawDirect().
+    if (g_ft_renderer) |*renderer| {
+        _ = renderer.uploadGlyphVerts();
+    }
 
     var pass = std.mem.zeroes(c.sg_pass);
     pass.swapchain = c.sglue_swapchain();
@@ -868,6 +960,24 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Flush all queued geometry — exactly once per frame.
     c.sgl_draw();
 
+    // Draw glyph quads through the custom gamma-correct pipeline.
+    // In direct-render mode these are the glyphs accumulated by drawDirect().
+    // In cached-RT mode this is a no-op (glyph_verts_count == 0 after per-pane offscreen draws).
+    //
+    // NOTE: sg_update_buffer is normally illegal inside an active pass on D3D11.
+    // The pre-pass uploadGlyphVerts() handles the normal path.  The second call
+    // here is only needed when verts are added *during* the swapchain pass (e.g.
+    // direct-render mode).  In cached-RT mode count is 0 so it's a no-op.
+    // In direct-render mode, drawDirect() adds verts but uploadGlyphVerts() was
+    // called before sg_begin_pass when count was still 0, so we need another
+    // upload here.  sg_update_buffer inside a pass is technically invalid on
+    // D3D11 debug; the real fix is to call drawDirect() before sg_begin_pass too.
+    // For now we keep this as a safety net — it will be hit only in direct-render
+    // mode which is disabled by default.
+    if (g_ft_renderer) |*renderer| {
+        renderer.drawGlyphQuads(width, height, false, .{ 0.0, 0.0, 0.0, 1.0 });
+    }
+
     c.sg_end_pass();
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
@@ -877,6 +987,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
     g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
     g_phase_sample_frames += 1;
+
+    // Update per-frame last values for the debug overlay (no division needed).
+    g_last_frame_tick_ms = @as(f32, @floatFromInt(after_tick_ns - frame_start_ns)) / 1_000_000.0;
+    g_last_frame_offscreen_ms = @as(f32, @floatFromInt(after_offscreen_ns - after_tick_ns)) / 1_000_000.0;
+    g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
+    g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
+    g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
 
     if (g_phase_last_log_ns == 0) g_phase_last_log_ns = frame_start_ns;
     if (frame_start_ns - g_phase_last_log_ns >= 2_000_000_000) {
@@ -985,7 +1102,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
 
-    var lines: [10][96]u8 = undefined;
+    var lines: [11][96]u8 = undefined;
     const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
     const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
@@ -996,7 +1113,13 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const text7 = std.fmt.bufPrint(&lines[7], "dirty {d} clean {d}", .{ dirty_count, clean_count }) catch "dirty ?";
     const text8 = std.fmt.bufPrint(&lines[8], "rows r={d} s={d}", .{ g_phase_accum_rows_rendered, g_phase_accum_rows_skipped }) catch "rows ?";
     const text9 = std.fmt.bufPrint(&lines[9], "cells={d} gruns={d} bgrects={d}", .{ g_phase_accum_cells_visited, g_phase_accum_glyph_runs, g_phase_accum_bg_rects }) catch "cells ?";
-    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9 };
+    // Per-frame breakdown: tick / offscreen (= queue + gpu) / swap
+    const text10 = std.fmt.bufPrint(&lines[10], "t={d:.2} off={d:.2}(q={d:.2} g={d:.2}) sw={d:.2}", .{
+        g_last_frame_tick_ms,  g_last_frame_offscreen_ms,
+        g_last_frame_queue_ms, g_last_frame_gpu_ms,
+        g_last_frame_swap_ms,
+    }) catch "timing ?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10 };
 
     var max_chars: usize = 0;
     for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));

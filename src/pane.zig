@@ -38,6 +38,18 @@ pub const Pane = struct {
     pty_pending_len: usize = 0,
     pty_sanitize_buf: [65544]u8 = [_]u8{0} ** 65544,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
+    /// Set to true by pollPty when actual PTY bytes were written to the terminal
+    /// this tick.  Cleared by tickPanes after updateRenderState is called.
+    /// Used to avoid calling updateRenderState on idle panes — ghostty marks
+    /// the render_state dirty on every updateRenderState call (cursor blink,
+    /// etc.), so calling it unconditionally causes every pane to re-render
+    /// every frame even when nothing changed.
+    pty_received_data: bool = false,
+    /// Monotonic nanosecond timestamp of the last updateRenderState call on this
+    /// pane.  Used to throttle the cursor-blink / idle poll: even with no PTY
+    /// data we call updateRenderState at most once per ~16 ms so that cursor
+    /// blink (managed by ghostty's internal timer) still fires.
+    last_render_state_update_ns: i128 = 0,
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };
@@ -147,6 +159,7 @@ pub const Pane = struct {
                     }
                     if (pty_bytes.len > 0) {
                         runtime.terminalWrite(self.terminal, pty_bytes);
+                        self.pty_received_data = true;
                     }
                 }
             }

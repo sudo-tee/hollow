@@ -27,7 +27,7 @@ g.set_config({
 		ligatures = true,
 		-- coverage_boost = 1.0,
 		-- coverage_add = 0,
-		embolden = 0.3,
+		embolden = 0.33,
 		regular = "fonts/RecMonoDuotone-Regular-1.085.ttf",
 		bold = "fonts/RecMonoLinear-Bold-1.085.ttf",
 		italic = "fonts/RecMonoDuotone-Italic-1.085.ttf",

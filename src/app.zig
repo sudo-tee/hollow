@@ -743,19 +743,35 @@ pub const App = struct {
                     pane_idx += 1;
                     continue;
                 }
-                // Ghostty's render_state.dirty is sticky: updateRenderState()
-                // consumes terminal/screen dirties, but it does not clear the
-                // render-state dirty flag for us. Reset it first so the update
-                // call computes a fresh dirty level for this frame.
-                runtime.clearRenderStateDirty(pane.render_state);
-                runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
-                    std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
-                };
-                const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
-                // OR-accumulate: promote dirty level but never demote.
-                // .false_value < .true_value < .full
-                if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
-                    pane.render_dirty = post_dirty;
+                // Only call updateRenderState when this pane actually received
+                // PTY bytes this tick, or when it already has a pending dirty
+                // level (e.g. set by a resize), or when the cursor-blink poll
+                // interval has elapsed (~16 ms).  Calling updateRenderState
+                // unconditionally causes ghostty to mark the render_state dirty
+                // every frame (cursor blink snapshot, etc.), forcing all panes
+                // to redraw even when nothing changed.
+                const now_ns = std.time.nanoTimestamp();
+                const idle_poll_ns: i128 = 16_000_000; // 16 ms ≈ 60 fps cursor blink
+                const needs_update = pane.pty_received_data or
+                    pane.render_dirty != .false_value or
+                    (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
+                if (needs_update) {
+                    pane.pty_received_data = false;
+                    pane.last_render_state_update_ns = now_ns;
+                    // Ghostty's render_state.dirty is sticky: updateRenderState()
+                    // consumes terminal/screen dirties, but it does not clear the
+                    // render-state dirty flag for us. Reset it first so the update
+                    // call computes a fresh dirty level for this frame.
+                    runtime.clearRenderStateDirty(pane.render_state);
+                    runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
+                        std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
+                    };
+                    const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                    // OR-accumulate: promote dirty level but never demote.
+                    // .false_value < .true_value < .full
+                    if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
+                        pane.render_dirty = post_dirty;
+                    }
                 }
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;

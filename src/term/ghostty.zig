@@ -820,6 +820,41 @@ pub const Runtime = struct {
         return null;
     }
 
+    /// Pure function: extract the style_id from a raw cell u64.
+    /// Cell packed struct(u64) layout:
+    ///   bits  0- 1: content_tag (u2)
+    ///   bits  2-22: content union (u21 codepoint / u8 palette / u24 rgb)
+    ///   bits 23-38: style_id (u16)
+    /// No C call — direct bit extraction.
+    /// Returns 0 (default style) when the cell has no non-default styling.
+    pub inline fn cellStyleIdRaw(_: *Runtime, cell: u64) u16 {
+        return @truncate((cell >> 23) & 0xFFFF);
+    }
+
+    /// Pure function: extract the content_tag from a raw cell u64 (bits 0-1).
+    /// No C call — direct bit extraction.
+    pub inline fn cellContentTagRaw(_: *Runtime, cell: u64) CellContentTag {
+        return @enumFromInt(cell & 0x3);
+    }
+
+    /// Pure function: extract the codepoint from a raw cell u64 (bits 2-22).
+    /// Returns 0 for bg-color-only cells or empty cells.
+    /// No C call — direct bit extraction.
+    pub inline fn cellCodepointRaw(_: *Runtime, cell: u64) u32 {
+        const tag = cell & 0x3;
+        // Only codepoint (0) and codepoint_grapheme (1) tags have a codepoint.
+        if (tag > 1) return 0;
+        return @truncate((cell >> 2) & 0x1FFFFF);
+    }
+
+    /// Pure function: returns true if the cell has text to render.
+    /// No C call — direct bit extraction.
+    pub inline fn cellHasTextRaw(_: *Runtime, cell: u64) bool {
+        const tag = cell & 0x3;
+        if (tag > 1) return false; // bg_color_palette or bg_color_rgb: no text
+        return ((cell >> 2) & 0x1FFFFF) != 0; // codepoint != 0
+    }
+
     /// Fetch the raw GhosttyCell u64 value for the current cell position.
     /// Returns 0 on failure.
     pub fn cellRaw(self: *Runtime, row_cells: ?*anyopaque) u64 {
@@ -985,6 +1020,51 @@ pub const Runtime = struct {
         var written: usize = 0;
         if (self.focus_encode(@intFromEnum(event), out.ptr, out.len, &written) == success and written > 0) return out[0..written];
         return null;
+    }
+
+    /// Get the raw GhosttyRow value for the current row in the render-state iterator,
+    /// with the dirty bit (bit 40 of the packed Row struct) masked out.
+    ///
+    /// The GhosttyRow value is a bitcast of the packed Row struct.  The dirty bit
+    /// changes each frame (set by ghostty, cleared by the renderer) so we must strip
+    /// it to get a frame-stable key for the content-hash map.
+    ///
+    /// The resulting u64 uniquely identifies a physical row's cell-data slot in
+    /// ghostty's page allocator, surviving scrolling where screen Y changes but the
+    /// underlying memory is the same.
+    ///
+    /// Returns 0 on failure (used as the map's empty-slot sentinel, so 0 means
+    /// "skip hashing for this row").
+    pub fn rowRaw(self: *Runtime, row_iterator: ?*anyopaque) u64 {
+        if (row_iterator) |iterator| {
+            var raw: u64 = 0;
+            if (self.row_get(iterator, @intFromEnum(RowData.raw), &raw) != success) return 0;
+            // Dirty bit is bit 40 in the Row packed struct (after the 32-bit cells offset
+            // and 8 boolean/enum flags).  Mask it out so the key is stable across frames.
+            const dirty_bit: u64 = @as(u64, 1) << 40;
+            return raw & ~dirty_bit;
+        }
+        return 0;
+    }
+
+    /// Compute a fast hash of all raw cell u64 values in the current row.
+    /// Uses the row_cells iterator: populates it from the row_iterator, then
+    /// iterates all cells collecting cellRaw() values into a wyhash-style mix.
+    /// Returns null if the row cells cannot be populated.
+    ///
+    /// NOTE: This consumes the row_cells iterator position — callers must call
+    /// populateRowCells() again before iterating cells for rendering.
+    pub fn rowHashCells(self: *Runtime, row_iterator: ?*anyopaque, row_cells: *?*anyopaque) ?u64 {
+        if (!self.populateRowCells(row_iterator, row_cells)) return null;
+        var h: u64 = 0x517CC1B727220A95; // FNV-like seed
+        while (self.nextCell(row_cells.*)) {
+            const raw = self.cellRaw(row_cells.*);
+            // Wyhash-inspired mixing: fast and avalanche well
+            h ^= raw;
+            h = h *% 0x9E3779B97F4A7C15;
+            h ^= h >> 30;
+        }
+        return h;
     }
 };
 
