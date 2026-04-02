@@ -11,6 +11,63 @@ const FtRendererConfig = @import("ft_renderer.zig").FtRendererConfig;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
 
+const win32 = if (builtin.os.tag == .windows) struct {
+    const HWND = *anyopaque;
+    const LONG_PTR = isize;
+    const LRESULT = isize;
+    const WNDPROC = *const fn (hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.winapi) LRESULT;
+    const RECT = extern struct {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    };
+
+    const GWL_STYLE: c_int = -16;
+    const GWLP_WNDPROC: c_int = -4;
+    const WS_CAPTION: u32 = 0x00C00000;
+    const WS_THICKFRAME: u32 = 0x00040000;
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCHITTEST: u32 = 0x0084;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+    const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+    const HTCLIENT: usize = 1;
+    const HTCAPTION: usize = 2;
+    const HTLEFT: usize = 10;
+    const HTRIGHT: usize = 11;
+    const HTTOP: usize = 12;
+    const HTTOPLEFT: usize = 13;
+    const HTTOPRIGHT: usize = 14;
+    const HTBOTTOM: usize = 15;
+    const HTBOTTOMLEFT: usize = 16;
+    const HTBOTTOMRIGHT: usize = 17;
+    const SM_CXSIZEFRAME: c_int = 32;
+    const SM_CYSIZEFRAME: c_int = 33;
+    const SM_CXPADDEDBORDER: c_int = 92;
+
+    extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.c) LONG_PTR;
+    extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: LONG_PTR) callconv(.c) LONG_PTR;
+    extern "user32" fn SetWindowPos(
+        hWnd: HWND,
+        hWndInsertAfter: ?HWND,
+        X: c_int,
+        Y: c_int,
+        cx: c_int,
+        cy: c_int,
+        uFlags: u32,
+    ) callconv(.c) i32;
+    extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
+    extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
+    extern "user32" fn ReleaseCapture() callconv(.c) i32;
+    extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
+    extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+    extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+} else struct {};
+
 var g_app: ?*App = null;
 var g_title_buf: [256]u8 = [_]u8{0} ** 256;
 var g_renderer_ready = false;
@@ -22,6 +79,9 @@ var g_logged_first_mouse = false;
 var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
 var g_gui_ready_fired = false;
+var g_window_chrome_applied = false;
+var g_prev_wnd_proc: win32.LONG_PTR = 0;
+var g_subclassed_hwnd: ?win32.HWND = null;
 var g_last_frame_time_ns: i128 = 0;
 var g_last_perf_sample_ns: i128 = 0;
 var g_perf_accum_frame_ns: i128 = 0;
@@ -163,6 +223,12 @@ const CustomTabLayout = struct {
     bold: bool = false,
 };
 
+const TopBarHit = struct {
+    in_top_bar: bool = false,
+    tab_index: ?usize = null,
+    close_tab_index: ?usize = null,
+};
+
 fn utf8CodepointLen(first_byte: u8) usize {
     if (first_byte < 0x80) return 1;
     if (first_byte < 0xE0) return 2;
@@ -259,6 +325,81 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
     return layouts[0..layout_count];
 }
 
+fn topBarHitTest(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
+    var hit = TopBarHit{};
+    const tbh: f32 = @floatFromInt(app.tabBarHeight());
+    if (tbh <= 0 or mouse_y < 0 or mouse_y >= tbh or mouse_x < 0 or mouse_x >= window_width or window_width <= 0) return hit;
+
+    hit.in_top_bar = true;
+
+    const tab_count = app.tabCount();
+    if (!app.shouldDrawTopBarTabs() or tab_count == 0) return hit;
+
+    const renderer = if (g_ft_renderer) |*r| r else return hit;
+    const close_w: f32 = renderer.cell_w + 10.0;
+
+    if (app.hasCustomTopBarTabs()) {
+        var left_text_buf: [512]u8 = undefined;
+        var right_text_buf: [512]u8 = undefined;
+        var left_segments_buf: [16]bar.Segment = undefined;
+        var right_segments_buf: [16]bar.Segment = undefined;
+        var custom_tab_layouts: [32]CustomTabLayout = undefined;
+        var custom_tab_title_storage: [1024]u8 = undefined;
+
+        var left_end: f32 = 4.0;
+        var right_width: f32 = 0.0;
+        var right_start: f32 = window_width;
+        if (app.shouldDrawTopBarStatus()) {
+            const left_segments = app.topBarStatus(.left, &left_segments_buf, &left_text_buf);
+            const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
+            for (left_segments) |seg| {
+                left_end += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+            }
+            for (right_segments) |seg| {
+                right_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+            }
+            right_start = @max(left_end, window_width - right_width);
+        }
+
+        if (app.shouldDrawWorkspaceSwitcher()) {
+            var ws_buf: [128]u8 = undefined;
+            const ws_seg = app.workspaceTitleSegment(app.activeWorkspaceIndex(), &ws_buf);
+            left_end += @as(f32, @floatFromInt(countCodepoints(ws_seg.text))) * renderer.cell_w;
+            if (!app.hasCustomWorkspaceTitle()) left_end += renderer.cell_w * 0.5;
+        }
+
+        const tab_gap: f32 = if (right_width > 0) renderer.cell_w else 0.0;
+        const max_right = if (right_width > 0) right_start - tab_gap else window_width;
+        const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
+        for (layouts, 0..) |layout, ti| {
+            if (mouse_x >= layout.x and mouse_x < layout.x + layout.width) {
+                hit.tab_index = ti;
+                return hit;
+            }
+        }
+        return hit;
+    }
+
+    const tab_w: f32 = if (tab_count > 0) window_width / @as(f32, @floatFromInt(tab_count)) else window_width;
+    if (tab_w <= 0) return hit;
+
+    const raw = mouse_x / tab_w;
+    const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
+    const ti: usize = @intFromFloat(clamped);
+    hit.tab_index = ti;
+
+    const tab_right = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
+    if (mouse_x >= tab_right - close_w) hit.close_tab_index = ti;
+    return hit;
+}
+
+fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
+    const hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
+    app.hovered_tab_index = hit.tab_index;
+    app.hovered_close_tab_index = hit.close_tab_index;
+    return hit;
+}
+
 fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
     var cursor_x = x;
     for (segments) |seg| {
@@ -312,6 +453,9 @@ pub fn run(app: *App) !void {
     g_logged_first_scroll = false;
     g_ft_renderer = null;
     g_gui_ready_fired = false;
+    g_window_chrome_applied = false;
+    g_prev_wnd_proc = 0;
+    g_subclassed_hwnd = null;
     g_last_frame_time_ns = 0;
     g_last_perf_sample_ns = 0;
     g_perf_accum_frame_ns = 0;
@@ -361,6 +505,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     const dpi_scale = c.sapp_dpi_scale();
     std.log.info("sokol dpi_scale={d:.2} font_size={d:.1}", .{ dpi_scale, app.config.fonts.size });
 
+    _ = applyWindowChrome(app);
+
     g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
         .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
@@ -409,6 +555,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const frame_start_ns = std.time.nanoTimestamp();
     updatePerfCounters(frame_start_ns);
+    if (builtin.os.tag == .windows and !g_window_chrome_applied) {
+        g_window_chrome_applied = applyWindowChrome(app);
+    }
     g_frame_index += 1;
     if (!g_logged_first_frame) {
         g_logged_first_frame = true;
@@ -1144,12 +1293,117 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     _ = user_data;
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
+    if (builtin.os.tag == .windows) {
+        if (g_subclassed_hwnd) |hwnd| {
+            if (g_prev_wnd_proc != 0) _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_WNDPROC, g_prev_wnd_proc);
+        }
+        g_prev_wnd_proc = 0;
+        g_subclassed_hwnd = null;
+    }
     if (g_ft_renderer) |*renderer| {
         renderer.deinit();
         g_ft_renderer = null;
     }
     c.sgl_shutdown();
     c.sg_shutdown();
+}
+
+fn applyWindowChrome(app: *App) bool {
+    if (builtin.os.tag != .windows) return false;
+
+    if (app.config.window_titlebar_show) return true;
+
+    const hwnd_raw = c.sapp_win32_get_hwnd() orelse return false;
+    const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
+    if (g_subclassed_hwnd == null) {
+        const new_proc: win32.WNDPROC = &windowProc;
+        const new_proc_raw: win32.LONG_PTR = @bitCast(@intFromPtr(new_proc));
+        const prev_proc_raw = win32.SetWindowLongPtrW(hwnd, win32.GWLP_WNDPROC, new_proc_raw);
+        if (prev_proc_raw == 0) return false;
+        g_prev_wnd_proc = prev_proc_raw;
+        g_subclassed_hwnd = hwnd;
+    }
+    var style = win32.GetWindowLongPtrW(hwnd, win32.GWL_STYLE);
+    style &= ~@as(win32.LONG_PTR, @intCast(win32.WS_CAPTION));
+    style |= @as(win32.LONG_PTR, @intCast(win32.WS_THICKFRAME));
+    _ = win32.SetWindowLongPtrW(hwnd, win32.GWL_STYLE, style);
+    _ = win32.SetWindowPos(
+        hwnd,
+        null,
+        0,
+        0,
+        0,
+        0,
+        win32.SWP_NOSIZE | win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE | win32.SWP_FRAMECHANGED,
+    );
+    return true;
+}
+
+fn borderHitTest(local_x: i32, local_y: i32, width: i32, height: i32) usize {
+    if (builtin.os.tag != .windows) return win32.HTCLIENT;
+
+    const border_x = @max(1, win32.GetSystemMetrics(win32.SM_CXSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER));
+    const border_y = @max(1, win32.GetSystemMetrics(win32.SM_CYSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER));
+    const on_left = local_x >= 0 and local_x < border_x;
+    const on_right = local_x < width and local_x >= width - border_x;
+    const on_top = local_y >= 0 and local_y < border_y;
+    const on_bottom = local_y < height and local_y >= height - border_y;
+
+    if (on_top and on_left) return win32.HTTOPLEFT;
+    if (on_top and on_right) return win32.HTTOPRIGHT;
+    if (on_bottom and on_left) return win32.HTBOTTOMLEFT;
+    if (on_bottom and on_right) return win32.HTBOTTOMRIGHT;
+    if (on_top) return win32.HTTOP;
+    if (on_bottom) return win32.HTBOTTOM;
+    if (on_left) return win32.HTLEFT;
+    if (on_right) return win32.HTRIGHT;
+    return win32.HTCLIENT;
+}
+
+fn getXLParam(lparam: isize) i32 {
+    const bits: usize = @bitCast(lparam);
+    const value: u16 = @truncate(bits & 0xFFFF);
+    return @as(i32, @as(i16, @bitCast(value)));
+}
+
+fn getYLParam(lparam: isize) i32 {
+    const bits: usize = @bitCast(lparam);
+    const value: u16 = @truncate((bits >> 16) & 0xFFFF);
+    return @as(i32, @as(i16, @bitCast(value)));
+}
+
+fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.winapi) win32.LRESULT {
+    switch (Msg) {
+        win32.WM_NCCALCSIZE => {
+            if (wParam != 0) return 0;
+        },
+        win32.WM_NCHITTEST => {
+            var rect: win32.RECT = undefined;
+            if (win32.GetWindowRect(hWnd, &rect) != 0) {
+                const local_x = getXLParam(lParam) - rect.left;
+                const local_y = getYLParam(lParam) - rect.top;
+                const width = rect.right - rect.left;
+                const height = rect.bottom - rect.top;
+                const hit = borderHitTest(local_x, local_y, width, height);
+                if (hit != win32.HTCLIENT) return @as(win32.LRESULT, @intCast(hit));
+            }
+        },
+        else => {},
+    }
+
+    if (g_prev_wnd_proc != 0) {
+        const prev: win32.WNDPROC = @ptrFromInt(@as(usize, @intCast(g_prev_wnd_proc)));
+        return win32.CallWindowProcW(prev, hWnd, Msg, wParam, lParam);
+    }
+    return win32.DefWindowProcW(hWnd, Msg, wParam, lParam);
+}
+
+fn beginWindowDrag() void {
+    if (builtin.os.tag != .windows) return;
+    const hwnd_raw = c.sapp_win32_get_hwnd() orelse return;
+    const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
+    _ = win32.ReleaseCapture();
+    _ = win32.SendMessageW(hwnd, win32.WM_NCLBUTTONDOWN, win32.HTCAPTION, 0);
 }
 
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
@@ -1227,38 +1481,25 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         std.log.info("first Windows mouse event button={d} x={d:.2} y={d:.2}", .{ event.mouse_button, event.mouse_x, event.mouse_y });
     }
 
-    // Intercept clicks in the tab bar (only on press; release falls through).
-    if (action == .press) {
-        const tbh: f32 = @floatFromInt(app.tabBarHeight());
-        if (tbh > 0 and event.mouse_y < tbh) {
-            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-                const tab_count = app.tabCount();
-                const win_w = c.sapp_widthf();
-                if (tab_count > 0 and win_w > 0) {
-                    if (app.hasCustomTopBarTabs()) {
-                        if (app.hovered_tab_index) |ti| app.switchTab(ti);
-                        return;
-                    }
-                    const tab_w: f32 = win_w / @as(f32, @floatFromInt(tab_count));
-                    // Guard: tab_w must be positive and finite to avoid @intFromFloat panic.
-                    const raw = event.mouse_x / tab_w;
-                    const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
-                    const ti: usize = @intFromFloat(clamped);
-                    // Determine if the close button was hit.
-                    // close region: last cell_w + 4 px of the tab slot.
-                    const close_w: f32 = if (g_ft_renderer) |r| r.cell_w + 10.0 else 26.0;
-                    const tab_right: f32 = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
-                    if (event.mouse_x >= tab_right - close_w) {
-                        // Close button: switch to that tab first, then close.
-                        app.switchTab(ti);
-                        app.closeTab();
-                    } else {
-                        app.switchTab(ti);
-                    }
+    const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    if (top_bar_hit.in_top_bar) {
+        if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            if (top_bar_hit.tab_index) |ti| {
+                if (app.hasCustomTopBarTabs()) {
+                    app.switchTab(ti);
+                } else if (top_bar_hit.close_tab_index != null and top_bar_hit.close_tab_index.? == ti) {
+                    app.switchTab(ti);
+                    app.closeTab();
+                } else {
+                    app.switchTab(ti);
                 }
+                return;
             }
-            return; // do not forward to pane
+            if (builtin.os.tag == .windows and !app.config.window_titlebar_show) {
+                beginWindowDrag();
+            }
         }
+        return;
     }
 
     const button = switch (event.mouse_button) {
@@ -1271,8 +1512,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
-    const close_w: f32 = if (g_ft_renderer) |r| r.cell_w + 10.0 else 26.0;
-    app.updateTopBarHover(event.mouse_x, event.mouse_y, c.sapp_widthf(), close_w);
+    const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    if (top_bar_hit.in_top_bar) return;
     app.sendMouse(.motion, null, event.mouse_x, event.mouse_y, ghosttyMods(event.modifiers)) catch {};
 }
 
@@ -1281,6 +1522,7 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         g_logged_first_scroll = true;
         std.log.info("first Windows scroll event delta={d:.2}", .{event.scroll_y});
     }
+    if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
     app.scrollFloat(event.mouse_x, event.mouse_y, -event.scroll_y);
 }
 

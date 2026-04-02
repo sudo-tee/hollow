@@ -69,6 +69,7 @@ pub const Config = struct {
     scrollback: u32 = 10000,
     lib_dir: ?[]u8 = null,
     top_bar_show: bool = true,
+    window_titlebar_show: bool = true,
     top_bar_show_when_single_tab: bool = false,
     top_bar_height: u32 = 0,
     top_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },

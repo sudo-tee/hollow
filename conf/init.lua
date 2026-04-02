@@ -43,6 +43,7 @@ g.set_config({
 	window_title = "hollow",
 	window_width = 1440,
 	window_height = 900,
+	window_titlebar_show = false,
 	top_bar_show = true,
 	top_bar_show_when_single_tab = true,
 	top_bar_height = 20,

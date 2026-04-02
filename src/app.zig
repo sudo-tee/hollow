@@ -20,6 +20,19 @@ const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 const bar = @import("ui/bar.zig");
 
+fn countUtf8Codepoints(text: []const u8) usize {
+    var i: usize = 0;
+    var count: usize = 0;
+    while (i < text.len) {
+        const b = text[i];
+        const step: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+        if (i + step > text.len) break;
+        i += step;
+        count += 1;
+    }
+    return count;
+}
+
 var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
 var attrs_bridge: ?*App = null;
@@ -653,6 +666,29 @@ pub const App = struct {
         const tab_count = self.tabCount();
         if (tbh <= 0 or mouse_y < 0 or mouse_y >= tbh or mouse_x < 0 or window_width <= 0 or tab_count == 0) return;
 
+        var left_end: f32 = 0.0;
+        if (self.shouldDrawTopBarStatus()) {
+            var left_text_buf: [512]u8 = undefined;
+            var right_text_buf: [512]u8 = undefined;
+            var left_segments_buf: [16]bar.Segment = undefined;
+            var right_segments_buf: [16]bar.Segment = undefined;
+            const left_segments = self.topBarStatus(.left, &left_segments_buf, &left_text_buf);
+            const right_segments = self.topBarStatus(.right, &right_segments_buf, &right_text_buf);
+
+            left_end = 4.0;
+            for (left_segments) |seg| {
+                left_end += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
+            }
+
+            if (self.shouldDrawWorkspaceSwitcher()) {
+                var ws_buf: [128]u8 = undefined;
+                const ws_seg = self.workspaceTitleSegment(self.activeWorkspaceIndex(), &ws_buf);
+                left_end += @as(f32, @floatFromInt(countUtf8Codepoints(ws_seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
+            }
+
+            _ = right_segments;
+        }
+
         if (self.hasCustomTopBarTabs()) {
             var title_buf: [256]u8 = undefined;
             const left_reserved: f32 = @as(f32, @floatFromInt(self.cell_width_px)) * 4.0;
@@ -671,15 +707,45 @@ pub const App = struct {
             return;
         }
 
-        const tab_w = window_width / @as(f32, @floatFromInt(tab_count));
+        var left_reserved: f32 = 4.0;
+        var right_reserved: f32 = 0.0;
+        if (self.shouldDrawTopBarStatus()) {
+            var left_text_buf: [512]u8 = undefined;
+            var right_text_buf: [512]u8 = undefined;
+            var left_segments_buf: [16]bar.Segment = undefined;
+            var right_segments_buf: [16]bar.Segment = undefined;
+            const left_segments = self.topBarStatus(.left, &left_segments_buf, &left_text_buf);
+            const right_segments = self.topBarStatus(.right, &right_segments_buf, &right_text_buf);
+
+            for (left_segments) |seg| {
+                left_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
+            }
+
+            if (self.shouldDrawWorkspaceSwitcher()) {
+                var ws_buf: [128]u8 = undefined;
+                const ws_seg = self.workspaceTitleSegment(self.activeWorkspaceIndex(), &ws_buf);
+                left_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(ws_seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
+            }
+
+            for (right_segments) |seg| {
+                right_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
+            }
+        }
+
+        const tab_start = left_reserved;
+        const tab_end = @max(tab_start + 1.0, window_width - right_reserved);
+        if (mouse_x < tab_start or mouse_x >= tab_end) return;
+
+        const usable_width = @max(@as(f32, 1.0), tab_end - tab_start);
+        const tab_w = usable_width / @as(f32, @floatFromInt(tab_count));
         if (tab_w <= 0) return;
 
-        const raw = mouse_x / tab_w;
+        const raw = (mouse_x - tab_start) / tab_w;
         const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
         const ti: usize = @intFromFloat(clamped);
         self.hovered_tab_index = ti;
 
-        const tab_right = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
+        const tab_right = tab_start + (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
         if (mouse_x >= tab_right - close_w) {
             self.hovered_close_tab_index = ti;
         }

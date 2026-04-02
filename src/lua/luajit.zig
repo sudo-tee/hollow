@@ -840,6 +840,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.top_bar_show = value;
         return;
     }
+    if (std.mem.eql(u8, key, "window_titlebar_show")) {
+        cfg.window_titlebar_show = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "top_bar_show_when_single_tab")) {
         cfg.top_bar_show_when_single_tab = value;
         return;
