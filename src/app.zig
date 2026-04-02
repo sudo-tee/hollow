@@ -14,7 +14,10 @@ const SplitDirection = mux_mod.SplitDirection;
 const FocusDirection = mux_mod.FocusDirection;
 const LayoutLeaf = mux_mod.LayoutLeaf;
 const PaneBounds = mux_mod.PaneBounds;
+const SplitNode = mux_mod.SplitNode;
+const DividerHit = mux_mod.DividerHit;
 const layoutSplitTree = mux_mod.layoutSplitTree;
+const hitTestDivider = mux_mod.hitTestDivider;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
@@ -32,6 +35,53 @@ fn countUtf8Codepoints(text: []const u8) usize {
     }
     return count;
 }
+
+/// An event captured on the sokol event thread, to be dispatched
+/// on the frame thread inside tick() to avoid data races into the ghostty DLL.
+/// Covers both mouse/focus events and key/char events so ALL DLL calls are
+/// serialised through tick() on the frame thread.
+pub const PendingMouseEvent = union(enum) {
+    none,
+    /// A button press or release.
+    button: struct {
+        action: ghostty.MouseAction,
+        button: ghostty.MouseButton,
+        x: f32,
+        y: f32,
+        mods: u32,
+    },
+    /// A mouse-motion event (button may be null for hover).
+    motion: struct {
+        held_button: ?ghostty.MouseButton,
+        x: f32,
+        y: f32,
+        mods: u32,
+    },
+    /// A scroll delta (raw float, accumulated in scrollFloat on frame thread).
+    scroll: struct {
+        x: f32,
+        y: f32,
+        raw_delta: f32,
+        mods: u32,
+    },
+    /// Switch to a specific tab index (calls runtime.registerCallbacks on frame thread).
+    switch_tab: usize,
+    /// Switch to a tab index and then close it (close_tab button click).
+    switch_and_close_tab: usize,
+    /// Focus gained (true) or lost (false) — calls runtime.encodeFocus on frame thread.
+    focus: bool,
+    /// A key-down event (calls app.sendKey on frame thread).
+    key: struct {
+        key: ghostty.Key,
+        mods: u32,
+    },
+    /// A printable character from a CHAR event (calls app.sendText on frame thread).
+    /// Stored as a small UTF-8 byte array; len==0 means empty/invalid.
+    char: struct {
+        bytes: [5]u8,
+        len: u8,
+    },
+};
 
 var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
@@ -69,6 +119,8 @@ pub const App = struct {
     /// Set when a split has just been performed; causes tick() to re-layout
     /// all panes on the next frame (safe from the frame callback thread).
     pending_layout_resize: bool = false,
+    pending_split_ratio_node: ?*SplitNode = null,
+    pending_split_ratio: f32 = 0.5,
     /// Set when all panes/tabs have closed; the runtime should call sapp_request_quit().
     pending_quit: bool = false,
     hovered_tab_index: ?usize = null,
@@ -76,6 +128,96 @@ pub const App = struct {
     /// Fractional scroll accumulator — prevents sub-pixel scroll events from
     /// being silently dropped by integer truncation on smooth / touchpad input.
     scroll_accum: f32 = 0,
+
+    // ── Pending mouse event queue ─────────────────────────────────────────────
+    // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
+    // thread-safe.  We must never call encodeMouse / terminalScroll from the
+    // event thread while the frame thread may be inside updateRenderState /
+    // resizeTerminal for the same terminal objects.
+    //
+    // Instead, event callbacks write into this fixed-size ring buffer and
+    // tick() drains it on the frame thread before any DLL calls.
+    //
+    // Capacity: 64 slots.  At 120 fps we get one tick() per ~8 ms.  Between
+    // two frames the OS can fire at most a handful of mouse events (scroll,
+    // move, click), so 64 is more than enough.  If the queue is full, new
+    // events are silently dropped (better than a crash or a data race).
+    mouse_queue: [64]PendingMouseEvent = [_]PendingMouseEvent{.none} ** 64,
+    mouse_queue_head: usize = 0, // next slot to read  (frame thread)
+    mouse_queue_tail: usize = 0, // next slot to write (event thread)
+
+    /// Push any pending event onto the shared ring buffer.  Called from the
+    /// event thread.  Returns true on success, false if the queue is full
+    /// (event is dropped — better than a crash or a data race).
+    pub fn enqueueMouse(self: *App, ev: PendingMouseEvent) bool {
+        const cap = self.mouse_queue.len;
+        const next_tail = (self.mouse_queue_tail + 1) % cap;
+        if (next_tail == @atomicLoad(usize, &self.mouse_queue_head, .acquire)) {
+            // Queue full — drop event.
+            return false;
+        }
+        self.mouse_queue[self.mouse_queue_tail] = ev;
+        @atomicStore(usize, &self.mouse_queue_tail, next_tail, .release);
+        return true;
+    }
+
+    /// Convenience wrapper for key-down events: enqueues a .key variant.
+    /// Called from the event thread.
+    pub fn enqueueKey(self: *App, key: ghostty.Key, mods: u32) bool {
+        return self.enqueueMouse(.{ .key = .{ .key = key, .mods = mods } });
+    }
+
+    /// Convenience wrapper for char events: enqueues a .char variant.
+    /// `bytes` must be a valid UTF-8 slice of at most 4 bytes.
+    /// Called from the event thread.
+    pub fn enqueueChar(self: *App, bytes: []const u8) bool {
+        if (bytes.len == 0 or bytes.len > 4) return false;
+        var ev: PendingMouseEvent = .{ .char = .{ .bytes = [_]u8{0} ** 5, .len = @intCast(bytes.len) } };
+        @memcpy(ev.char.bytes[0..bytes.len], bytes);
+        return self.enqueueMouse(ev);
+    }
+
+    /// Drain all pending events and dispatch them.  Called from tick()
+    /// on the frame thread, where it is safe to call into the ghostty DLL.
+    fn drainMouseQueue(self: *App) void {
+        const cap = self.mouse_queue.len;
+        while (true) {
+            const tail = @atomicLoad(usize, &self.mouse_queue_tail, .acquire);
+            if (self.mouse_queue_head == tail) break; // queue empty
+
+            const ev = self.mouse_queue[self.mouse_queue_head];
+            @atomicStore(usize, &self.mouse_queue_head, (self.mouse_queue_head + 1) % cap, .release);
+
+            switch (ev) {
+                .none => {},
+                .button => |b| {
+                    _ = self.sendMouse(b.action, b.button, b.x, b.y, b.mods) catch false;
+                },
+                .motion => |m| {
+                    _ = self.sendMouse(.motion, m.held_button, m.x, m.y, m.mods) catch false;
+                },
+                .scroll => |s| {
+                    self.scrollFloat(s.x, s.y, s.raw_delta, s.mods);
+                },
+                .switch_tab => |idx| {
+                    self.switchTab(idx);
+                },
+                .switch_and_close_tab => |idx| {
+                    self.switchTab(idx);
+                    self.closeTab();
+                },
+                .focus => |gained| {
+                    self.sendFocus(gained) catch {};
+                },
+                .key => |k| {
+                    _ = self.sendKey(k.key, k.mods, null) catch {};
+                },
+                .char => |ch| {
+                    if (ch.len > 0) self.sendText(ch.bytes[0..ch.len]);
+                },
+            }
+        }
+    }
 
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
@@ -199,6 +341,7 @@ pub const App = struct {
     }
 
     pub fn tick(self: *App) !void {
+        self.drainMouseQueue();
         self.flushPendingResize();
         self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
@@ -232,9 +375,9 @@ pub const App = struct {
         if (self.lua) |lua| std.log.info("luajit={s}", .{lua.loaded_path});
     }
 
-    pub fn sendText(self: *App, text: []const u8) !void {
+    pub fn sendText(self: *App, text: []const u8) void {
         const pane = self.activePane() orelse return;
-        try pane.sendText(text);
+        pane.sendText(text);
     }
 
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
@@ -265,12 +408,12 @@ pub const App = struct {
     pub fn sendPaste(self: *App, text: []const u8) !void {
         const pane = self.activePane() orelse return;
         if (self.ghostty.?.terminalMode(pane.terminal, .bracketed_paste)) {
-            try self.sendText("\x1b[200~");
-            try self.sendText(text);
-            try self.sendText("\x1b[201~");
+            self.sendText("\x1b[200~");
+            self.sendText(text);
+            self.sendText("\x1b[201~");
             return;
         }
-        try self.sendText(text);
+        self.sendText(text);
     }
 
     pub fn sendFocus(self: *App, gained: bool) !void {
@@ -278,20 +421,20 @@ pub const App = struct {
         if (!self.ghostty.?.terminalMode(pane.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
         const bytes = self.ghostty.?.encodeFocus(if (gained) .gained else .lost, &buf) orelse return;
-        try self.sendText(bytes);
+        self.sendText(bytes);
     }
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, text: ?[]const u8) !bool {
         const pane = self.activePane() orelse return false;
         if (key == .escape and mods == ghostty.Mods.none and text == null) {
-            try self.sendText("\x1b");
+            self.sendText("\x1b");
             return true;
         }
 
         var buf: [128]u8 = undefined;
         const consumed: u32 = if (text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
         if (self.ghostty.?.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (text) |t| firstCodepoint(t) else 0, text, &buf)) |bytes| {
-            try self.sendText(bytes);
+            self.sendText(bytes);
             return true;
         }
 
@@ -305,51 +448,153 @@ pub const App = struct {
     };
 
     pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
-        if (self.mux) |*mux| {
-            var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-            const leaves = mux.computeActiveLayout(self.config.window_width, self.config.window_height, &layout_buf);
-            const ix = @as(u32, @intFromFloat(@max(0, x)));
-            const iy = @as(u32, @intFromFloat(@max(0, y)));
-            for (leaves) |leaf| {
-                if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
-                    iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
-                {
-                    return .{
-                        .pane = leaf.pane,
-                        .x = x - @as(f32, @floatFromInt(leaf.bounds.x)),
-                        .y = y - @as(f32, @floatFromInt(leaf.bounds.y)),
-                    };
-                }
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeActiveLayout(&layout_buf);
+        const ix = @as(u32, @intFromFloat(@max(0, x)));
+        const iy = @as(u32, @intFromFloat(@max(0, y)));
+        for (leaves) |leaf| {
+            if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
+                iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
+            {
+                return .{
+                    .pane = leaf.pane,
+                    .x = x - @as(f32, @floatFromInt(leaf.bounds.x)),
+                    .y = y - @as(f32, @floatFromInt(leaf.bounds.y)),
+                };
             }
         }
         if (self.activePane()) |pane| return .{ .pane = pane, .x = x, .y = y };
         return null;
     }
 
-    pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !void {
-        const hit = self.hitTestPane(x, y) orelse return;
-        if (action == .press) {
-            if (self.mux) |*mux| mux.setActivePane(hit.pane);
-        }
-        var buf: [128]u8 = undefined;
-        const bytes = self.ghostty.?.encodeMouse(hit.pane.mouse_encoder, hit.pane.mouse_event, action, button, mods, .{ .x = hit.x, .y = hit.y }, &buf) orelse return;
-        try hit.pane.sendText(bytes);
+    /// Hit-test the divider seams of the active tab's split tree.
+    /// `radius` is the pixel slop on each side of the 2px seam line.
+    /// Returns the matching DividerHit (node + its bounds) or null.
+    pub fn hitTestDividerAt(self: *App, x: f32, y: f32, radius: f32) ?DividerHit {
+        const mux = if (self.mux) |*m| m else return null;
+        const tab = mux.activeTab() orelse return null;
+        const root = tab.root_split orelse return null;
+        const tbh = self.tabBarHeight();
+        const h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+        const bounds = PaneBounds{
+            .x = 0,
+            .y = tbh,
+            .width = self.config.window_width,
+            .height = h,
+        };
+        return hitTestDivider(root, bounds, x, y, radius);
     }
 
-    pub fn scroll(self: *App, x: f32, y: f32, delta: isize) void {
+    /// Directly set the ratio of a split node and schedule a layout re-flow.
+    pub fn setSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
+        std.log.info("setSplitNodeRatio queued node={x} ratio={d:.4}", .{ @intFromPtr(node), ratio });
+        self.pending_split_ratio_node = node;
+        self.pending_split_ratio = std.math.clamp(ratio, 0.1, 0.9);
+        self.pending_layout_resize = true;
+    }
+
+    fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
+        std.log.info("encodeMouseForPane: action={s} x={d:.1} y={d:.1} render_state_ready={} mouse_tracking={d}", .{ @tagName(action), x, y, pane.render_state_ready, pane.last_mouse_tracking });
+
+        // The DLL's mouse_encoder_encode crashes in several cases we have observed:
+        //   - action=press when mouse_tracking == 0
+        //   - action=release when mouse_tracking != 0 (internal state inconsistency)
+        // Rather than trying to enumerate all safe vs. unsafe combinations, we bypass
+        // the DLL encoder entirely and use our own SGR 1006 encoding, which is the
+        // standard protocol used by modern terminals and supported by nvim, vim, etc.
+        // The DLL encoder is only needed for exotic encoding modes (X10, UTF-8 coords,
+        // URXVT); those are not required here, and falling back to SGR is safe for all
+        // common use-cases.
+        //
+        // The DLL objects (mouse_encoder, mouse_event) are still created so that
+        // syncMouseEncoder can keep the encoder state in sync with the terminal
+        // (required for correctness if we ever re-enable the DLL path).
+        // SGR 1006 mouse encoding.
+        // Only encode when mouse tracking is enabled AND there's something to report.
+        // - Hover motion (no button held) is suppressed — apps only care about
+        //   button events and drag (button held during motion).
+        if (pane.last_mouse_tracking == 0) return false;
+        if (action == .motion and button == null) return false; // suppress hover motion
+        if (button == null) return false; // no button info for non-motion events
+        const cell_w: f32 = @floatFromInt(self.cell_width_px);
+        const cell_h: f32 = @floatFromInt(self.cell_height_px);
+        if (cell_w <= 0 or cell_h <= 0) return false;
+        const col: u32 = @max(1, @as(u32, @intFromFloat(x / cell_w)) + 1);
+        const row: u32 = @max(1, @as(u32, @intFromFloat(y / cell_h)) + 1);
+        // SGR 1006 button codes: 0=left, 1=middle, 2=right, 64=scroll-up, 65=scroll-down.
+        // For motion with button held, add 32 (drag modifier).
+        // For release, use the same button code but final char 'm' instead of 'M'.
+        // Modifier bits: shift=4, alt=8, ctrl=16.
+        var sgr_button: u32 = switch (button.?) {
+            .left => 0,
+            .middle => 1,
+            .right => 2,
+            .four => 64, // scroll up
+            .five => 65, // scroll down
+            else => return false,
+        };
+        if (action == .motion) sgr_button |= 32; // drag modifier
+        if ((mods & ghostty.Mods.shift) != 0) sgr_button |= 4;
+        if ((mods & ghostty.Mods.alt) != 0) sgr_button |= 8;
+        if ((mods & ghostty.Mods.ctrl) != 0) sgr_button |= 16;
+        const final_char: u8 = if (action == .release) 'm' else 'M';
+        var sgr_buf: [64]u8 = undefined;
+        const sgr = std.fmt.bufPrint(&sgr_buf, "\x1b[<{d};{d};{d}{c}", .{ sgr_button, col, row, final_char }) catch return false;
+        std.log.info("encodeMouseForPane: SGR encoded action={s} btn={d} col={d} row={d}", .{ @tagName(action), sgr_button, col, row });
+        pane.sendText(sgr);
+        return true;
+    }
+
+    pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
+        const hit = self.hitTestPane(x, y) orelse return false;
+        if (action == .press) {
+            if (self.mux) |*mux| {
+                const was_active = mux.activePane();
+                mux.setActivePane(hit.pane);
+                // Only trigger layout resize when focus actually changed (different pane clicked).
+                if (was_active != null and was_active.? != hit.pane) self.pending_layout_resize = true;
+            }
+        }
+        return try self.encodeMouseForPane(hit.pane, action, button, hit.x, hit.y, mods);
+    }
+
+    pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
         const hit = self.hitTestPane(x, y) orelse return;
-        self.ghostty.?.terminalScroll(hit.pane.terminal, delta);
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const count: usize = @intCast(if (delta < 0) -delta else delta);
+        if (count > 0) {
+            const button: ghostty.MouseButton = if (delta < 0) .four else .five;
+            // Try to encode scroll as mouse button 4/5 (for programs that support
+            // mouse reporting, like nvim).  If the encoder returns sequences, the
+            // scroll reaches the application via the PTY.
+            if (self.encodeMouseForPane(hit.pane, .press, button, hit.x, hit.y, mods) catch false) {
+                var i: usize = 1;
+                while (i < count) : (i += 1) {
+                    _ = self.encodeMouseForPane(hit.pane, .press, button, hit.x, hit.y, mods) catch false;
+                }
+                return;
+            }
+        }
+        // Fallback: adjust ghostty's viewport directly.  This is correct when the
+        // application does NOT use mouse reporting (plain shell scrollback).
+        // When an app like nvim IS using mouse reporting but the encoder failed,
+        // this only moves the viewport without notifying the app — the visual
+        // result depends on the app re-rendering on its own.
+        if (hit.pane.terminal) |term| {
+            runtime.terminalScroll(term, delta);
+        }
     }
 
     /// Scroll with a raw float delta (e.g. from a touchpad or smooth mouse
     /// wheel).  Fractional amounts are accumulated and fired as whole-line
     /// steps so no scroll motion is silently dropped.
-    pub fn scrollFloat(self: *App, x: f32, y: f32, raw_delta: f32) void {
+    pub fn scrollFloat(self: *App, x: f32, y: f32, raw_delta: f32, mods: u32) void {
         self.scroll_accum += raw_delta * self.config.scroll_multiplier;
         const steps = @as(isize, @intFromFloat(self.scroll_accum));
         if (steps != 0) {
             self.scroll_accum -= @as(f32, @floatFromInt(steps));
-            self.scroll(x, y, steps);
+            std.log.info("scroll: raw_delta={d:.3} accum_after={d:.3} steps={d}", .{ raw_delta, self.scroll_accum, steps });
+            self.scroll(x, y, steps, mods);
         }
     }
 
@@ -785,13 +1030,21 @@ pub const App = struct {
     fn flushPendingResize(self: *App) void {
         if (!self.pending_resize) return;
         self.pending_resize = false;
+        std.log.info("flushPendingResize: {d}x{d}", .{ self.pending_width, self.pending_height });
         self.resize(self.pending_width, self.pending_height);
+        std.log.info("flushPendingResize: done", .{});
     }
 
     fn flushPendingLayoutResize(self: *App) void {
         if (!self.pending_layout_resize) return;
         self.pending_layout_resize = false;
+        if (self.pending_split_ratio_node) |node| {
+            std.log.info("flushPendingLayoutResize apply node={x} ratio={d:.4}", .{ @intFromPtr(node), self.pending_split_ratio });
+            node.ratio = self.pending_split_ratio;
+            self.pending_split_ratio_node = null;
+        }
         if (self.ghostty) |*runtime| {
+            std.log.info("flushPendingLayoutResize resizeAllPanes window={d}x{d}", .{ self.config.window_width, self.config.window_height });
             self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
         }
     }
@@ -802,27 +1055,15 @@ pub const App = struct {
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
             while (panes.next()) |pane| {
+                std.log.info("tickPanes[{d}]: pollPty start pane={x} ready={}", .{ pane_idx, @intFromPtr(pane), pane.render_state_ready });
                 pane.pollPty(runtime) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
+                std.log.info("tickPanes[{d}]: pollPty done", .{pane_idx});
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
-                // Only call updateRenderState when this pane actually received
-                // PTY bytes this tick, or when it already has a pending dirty
-                // level (e.g. set by a resize), or when the cursor-blink poll
-                // interval has elapsed.
-                //
-                // Interval policy:
-                //   - Active (focused) pane: 16 ms (~60 fps) so cursor blink
-                //     managed by ghostty's internal timer fires promptly.
-                //   - Inactive panes: 500 ms.  Unfocused panes don't blink their
-                //     cursor and receive no user input, so frequent polls only
-                //     waste CPU and force unnecessary re-renders of static panes.
-                //     This is the main source of the ~40 FPS drop during split-
-                //     scroll: the static left pane was being redrawn every 16 ms
-                //     even though nothing was changing.
                 const now_ns = std.time.nanoTimestamp();
                 const is_active = (self.activePane() == pane);
                 const idle_poll_ns: i128 = if (is_active) 16_000_000 else 500_000_000;
@@ -832,17 +1073,14 @@ pub const App = struct {
                 if (needs_update) {
                     pane.pty_received_data = false;
                     pane.last_render_state_update_ns = now_ns;
-                    // Ghostty's render_state.dirty is sticky: updateRenderState()
-                    // consumes terminal/screen dirties, but it does not clear the
-                    // render-state dirty flag for us. Reset it first so the update
-                    // call computes a fresh dirty level for this frame.
+                    std.log.info("tickPanes[{d}]: clearRenderStateDirty", .{pane_idx});
                     runtime.clearRenderStateDirty(pane.render_state);
+                    std.log.info("tickPanes[{d}]: updateRenderState", .{pane_idx});
                     runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                         std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                     };
+                    std.log.info("tickPanes[{d}]: updateRenderState done", .{pane_idx});
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
-                    // OR-accumulate: promote dirty level but never demote.
-                    // .false_value < .true_value < .full
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
                     }
@@ -900,24 +1138,69 @@ pub const App = struct {
             const leaves = layout_buf[0..written];
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
-                    const cols: u16 = @max(1, @as(u16, @intCast(leaf.bounds.width / @max(1, self.cell_width_px))));
-                    const rows: u16 = @max(1, @as(u16, @intCast(leaf.bounds.height / @max(1, self.cell_height_px))));
+                    // Skip panes with zero-size bounds — can happen when the window
+                    // is very small or during layout transitions.
+                    if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
+                    const raw_cols: u32 = leaf.bounds.width / @max(1, self.cell_width_px);
+                    const raw_rows: u32 = leaf.bounds.height / @max(1, self.cell_height_px);
+                    // Cap at sane max to prevent DLL crashes on extreme values.
+                    const cols: u16 = @intCast(@min(1000, @max(1, raw_cols)));
+                    const rows: u16 = @intCast(@min(500, @max(1, raw_rows)));
+                    std.log.info("resizeAllPanes leaf pane={x} bounds=({d},{d} {d}x{d}) grid={d}x{d}", .{
+                        @intFromPtr(leaf.pane), leaf.bounds.x, leaf.bounds.y, leaf.bounds.width, leaf.bounds.height, cols, rows,
+                    });
+                    std.log.info("resizeAllPanes: calling pane.resize pane={x}", .{@intFromPtr(leaf.pane)});
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
-                    if (recreate_render_helpers) leaf.pane.recreateRenderHelpers(runtime);
-                    leaf.pane.setMouseSize(runtime, leaf.bounds.width, leaf.bounds.height, self.cell_width_px, self.cell_height_px);
+                    std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
+                    if (recreate_render_helpers) {
+                        std.log.info("resizeAllPanes: recreateRenderHelpers pane={x}", .{@intFromPtr(leaf.pane)});
+                        leaf.pane.recreateRenderHelpers(runtime);
+                        std.log.info("resizeAllPanes: recreateRenderHelpers done pane={x}", .{@intFromPtr(leaf.pane)});
+                    }
+                    // The encoder maps absolute surface pixels into pane-local cells
+                    // using the full surface size plus the pane's outer padding.
+                    leaf.pane.setMouseSize(
+                        runtime,
+                        leaf.bounds.width,
+                        leaf.bounds.height,
+                        self.cell_width_px,
+                        self.cell_height_px,
+                        0,
+                        0,
+                        0,
+                        0,
+                    );
                     leaf.pane.render_state_ready = true;
+                    std.log.info("resizeAllPanes: leaf done pane={x} render_state_ready=true", .{@intFromPtr(leaf.pane)});
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
                 // the full window size minus the tab bar.
+                if (pixel_width == 0 or pane_h == 0) continue;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    const cols: u16 = @max(1, @as(u16, @intCast(pixel_width / @max(1, self.cell_width_px))));
-                    const rows: u16 = @max(1, @as(u16, @intCast(pane_h / @max(1, self.cell_height_px))));
+                    const cols: u16 = @intCast(@min(1000, @max(1, pixel_width / @max(1, self.cell_width_px))));
+                    const rows: u16 = @intCast(@min(500, @max(1, pane_h / @max(1, self.cell_height_px))));
+                    std.log.info("resizeAllPanes (fallback): pane={x} grid={d}x{d}", .{ @intFromPtr(pane), cols, rows });
                     pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
-                    if (recreate_render_helpers) pane.recreateRenderHelpers(runtime);
-                    pane.setMouseSize(runtime, pixel_width, pane_h, self.cell_width_px, self.cell_height_px);
+                    if (recreate_render_helpers) {
+                        std.log.info("resizeAllPanes (fallback): recreateRenderHelpers pane={x}", .{@intFromPtr(pane)});
+                        pane.recreateRenderHelpers(runtime);
+                        std.log.info("resizeAllPanes (fallback): recreateRenderHelpers done pane={x}", .{@intFromPtr(pane)});
+                    }
+                    pane.setMouseSize(
+                        runtime,
+                        pixel_width,
+                        pane_h,
+                        self.cell_width_px,
+                        self.cell_height_px,
+                        0,
+                        0,
+                        0,
+                        0,
+                    );
                     pane.render_state_ready = true;
+                    std.log.info("resizeAllPanes (fallback): pane done pane={x}", .{@intFromPtr(pane)});
                 }
             }
         }
@@ -971,7 +1254,7 @@ fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: ?[*]const u8, len:
     const bytes_ptr = bytes.?;
     const app = write_bridge orelse return;
     const pane = getPaneForTerminal(app, term) orelse return;
-    pane.sendText(bytes_ptr[0..len]) catch {};
+    pane.sendText(bytes_ptr[0..len]);
 }
 
 fn bellCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}

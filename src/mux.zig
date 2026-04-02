@@ -33,6 +33,68 @@ pub const LayoutLeaf = struct {
 /// Maximum number of panes that layout supports in one pass.
 pub const MAX_LAYOUT_LEAVES = 64;
 
+/// Result of a divider hit-test: the split node whose seam was hit, plus the
+/// total bounds of that split node (needed to convert mouse position → ratio).
+pub const DividerHit = struct {
+    node: *SplitNode,
+    /// Pixel rect that the split node occupies.
+    bounds: PaneBounds,
+};
+
+/// Walk the split tree rooted at `node` with the given pixel `bounds` and
+/// return the first split seam within `radius` pixels of (`mx`, `my`).
+/// Returns null when the cursor is not near any divider.
+pub fn hitTestDivider(
+    node: *SplitNode,
+    bounds: PaneBounds,
+    mx: f32,
+    my: f32,
+    radius: f32,
+) ?DividerHit {
+    if (node.kind != .split) return null;
+
+    const first = node.first orelse return null;
+    const second = node.second orelse return null;
+    const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
+
+    var first_bounds: PaneBounds = undefined;
+    var second_bounds: PaneBounds = undefined;
+
+    switch (node.direction) {
+        .vertical => {
+            const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.width)) * ratio));
+            const second_w = if (bounds.width > first_w) bounds.width - first_w else 0;
+            first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+            second_bounds = .{ .x = bounds.x + first_w, .y = bounds.y, .width = second_w, .height = bounds.height };
+            // Divider is the vertical seam at x = bounds.x + first_w.
+            const seam_x: f32 = @floatFromInt(bounds.x + first_w);
+            const in_y = my >= @as(f32, @floatFromInt(bounds.y)) and
+                my < @as(f32, @floatFromInt(bounds.y + bounds.height));
+            if (in_y and @abs(mx - seam_x) <= radius) {
+                return .{ .node = node, .bounds = bounds };
+            }
+        },
+        .horizontal => {
+            const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.height)) * ratio));
+            const second_h = if (bounds.height > first_h) bounds.height - first_h else 0;
+            first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+            second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h, .width = bounds.width, .height = second_h };
+            // Divider is the horizontal seam at y = bounds.y + first_h.
+            const seam_y: f32 = @floatFromInt(bounds.y + first_h);
+            const in_x = mx >= @as(f32, @floatFromInt(bounds.x)) and
+                mx < @as(f32, @floatFromInt(bounds.x + bounds.width));
+            if (in_x and @abs(my - seam_y) <= radius) {
+                return .{ .node = node, .bounds = bounds };
+            }
+        },
+    }
+
+    // Recurse into children (innermost split wins).
+    if (hitTestDivider(first, first_bounds, mx, my, radius)) |hit| return hit;
+    if (hitTestDivider(second, second_bounds, mx, my, radius)) |hit| return hit;
+    return null;
+}
+
 /// Walk a SplitNode tree and fill `out` with one LayoutLeaf per pane leaf.
 /// Returns the number of entries written.
 /// `bounds` is the pixel rectangle available to `node`.

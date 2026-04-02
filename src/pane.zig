@@ -45,6 +45,9 @@ pub const Pane = struct {
     /// etc.), so calling it unconditionally causes every pane to re-render
     /// every frame even when nothing changed.
     pty_received_data: bool = false,
+    /// Last known mouse tracking mode (from terminal_get).  Logged on change.
+    last_mouse_tracking: u32 = 0,
+    mouse_tracking_logged_initial: bool = false,
     /// Monotonic nanosecond timestamp of the last updateRenderState call on this
     /// pane.  Used to throttle the cursor-blink / idle poll: even with no PTY
     /// data we call updateRenderState at most once per ~16 ms so that cursor
@@ -124,6 +127,19 @@ pub const Pane = struct {
         self.mouse_event = mouse_event;
         self.pty = pty;
 
+        // If anything below fails, null out fields so deinit() doesn't double-free.
+        errdefer {
+            self.terminal = null;
+            self.render_state = null;
+            self.row_iterator = null;
+            self.row_cells = null;
+            self.key_encoder = null;
+            self.key_event = null;
+            self.mouse_encoder = null;
+            self.mouse_event = null;
+            self.pty = null;
+        }
+
         // Defer terminal resize/render-state initialization until the first
         // layout pass on the frame thread. `newTab()` is triggered from the sokol
         // event callback, and calling ghostty resize/update APIs here has been a
@@ -134,6 +150,7 @@ pub const Pane = struct {
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
         if (self.pty) |*pty| {
             if (self.render_state_ready and self.boot_output.items.len > 0) {
+                std.log.info("pollPty: flushing boot_output len={d}", .{self.boot_output.items.len});
                 runtime.terminalWrite(self.terminal, self.boot_output.items);
                 self.boot_output.clearRetainingCapacity();
             }
@@ -158,7 +175,9 @@ pub const Pane = struct {
                         continue;
                     }
                     if (pty_bytes.len > 0) {
+                        std.log.info("pollPty: terminalWrite len={d}", .{pty_bytes.len});
                         runtime.terminalWrite(self.terminal, pty_bytes);
+                        std.log.info("pollPty: terminalWrite done", .{});
                         self.pty_received_data = true;
                     }
                 }
@@ -167,40 +186,87 @@ pub const Pane = struct {
             // read mode flags from the terminal object and can crash on a
             // terminal that has never been through updateRenderState.
             if (self.render_state_ready) {
+                std.log.info("pollPty: syncKeyEncoder", .{});
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+                std.log.info("pollPty: syncMouseEncoder", .{});
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+                std.log.info("pollPty: sync done", .{});
+                // Log mouse tracking state changes for diagnostics.
+                var mouse_tracking: u32 = 0;
+                const mt_result = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
+                if (mouse_tracking != self.last_mouse_tracking) {
+                    std.log.info("pane mouse_tracking changed {d} -> {d} (get_result={d})", .{ self.last_mouse_tracking, mouse_tracking, mt_result });
+                    self.last_mouse_tracking = mouse_tracking;
+                }
+                if (!self.mouse_tracking_logged_initial) {
+                    self.mouse_tracking_logged_initial = true;
+                    std.log.info("pane initial mouse_tracking={d} (get_result={d})", .{ mouse_tracking, mt_result });
+                }
             }
         }
     }
 
-    pub fn sendText(self: *Pane, text: []const u8) !void {
-        if (self.pty) |*pty| try pty.writeAll(text);
+    pub fn sendText(self: *Pane, text: []const u8) void {
+        if (self.pty) |*pty| {
+            if (!pty.isAlive()) return;
+            pty.writeAll(text) catch |err| {
+                std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) void {
         self.cols = cols;
         self.rows = rows;
-        runtime.resizeTerminal(self.terminal, cols, rows, cell_width_px, cell_height_px);
+        // Guard against null terminal — can happen if bootstrap partially failed
+        // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
+        if (self.terminal) |terminal| {
+            std.log.info("pane.resize: resizeTerminal pane={x} cols={d} rows={d}", .{ @intFromPtr(self), cols, rows });
+            runtime.resizeTerminal(terminal, cols, rows, cell_width_px, cell_height_px);
+            std.log.info("pane.resize: resizeTerminal done", .{});
+        }
+        std.log.info("pane.resize: updateRenderState pane={x}", .{@intFromPtr(self)});
         runtime.updateRenderState(self.render_state, self.terminal) catch {};
+        std.log.info("pane.resize: updateRenderState done", .{});
         // A resize always requires a full redraw (all rows change).
         self.render_dirty = .full;
+        std.log.info("pane.resize: syncKeyEncoder pane={x}", .{@intFromPtr(self)});
         runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+        std.log.info("pane.resize: syncMouseEncoder pane={x}", .{@intFromPtr(self)});
         runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
-        if (self.pty) |*pty| pty.resize(cols, rows);
+        std.log.info("pane.resize: done pane={x}", .{@intFromPtr(self)});
+        if (self.pty) |*pty| {
+            if (pty.isAlive()) pty.resize(cols, rows);
+        }
     }
 
-    pub fn setMouseSize(self: *Pane, runtime: *GhosttyRuntime, screen_width: u32, screen_height: u32, cell_width_px: u32, cell_height_px: u32) void {
+    pub fn setMouseSize(
+        self: *Pane,
+        runtime: *GhosttyRuntime,
+        screen_width: u32,
+        screen_height: u32,
+        cell_width_px: u32,
+        cell_height_px: u32,
+        padding_top: u32,
+        padding_bottom: u32,
+        padding_left: u32,
+        padding_right: u32,
+    ) void {
+        std.log.info("pane.setMouseSize: pane={x} screen={d}x{d} cell={d}x{d}", .{ @intFromPtr(self), screen_width, screen_height, cell_width_px, cell_height_px });
         runtime.setMouseEncoderSize(self.mouse_encoder, .{
             .size = @sizeOf(ghostty.MouseEncoderSize),
             .screen_width = screen_width,
             .screen_height = screen_height,
             .cell_width = cell_width_px,
             .cell_height = cell_height_px,
-            .padding_top = 0,
-            .padding_bottom = 0,
-            .padding_left = 0,
-            .padding_right = 0,
+            .padding_top = padding_top,
+            .padding_bottom = padding_bottom,
+            .padding_left = padding_left,
+            .padding_right = padding_right,
         });
+        std.log.info("pane.setMouseSize: setMouseEncoderSize done", .{});
+        runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, false);
+        std.log.info("pane.setMouseSize: done", .{});
     }
 
     pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
@@ -221,9 +287,15 @@ pub const Pane = struct {
             return;
         };
 
+        // Free OLD objects, then immediately null out fields before assigning new ones.
+        // If anything goes wrong between free and assign, fields are null (safe for deinit).
         runtime.freeRowCells(self.row_cells);
+        self.row_cells = null;
         runtime.freeRowIterator(self.row_iterator);
+        self.row_iterator = null;
         runtime.freeRenderState(self.render_state);
+        self.render_state = null;
+
         self.render_state = new_render_state;
         self.row_iterator = new_row_iterator;
         self.row_cells = new_row_cells;

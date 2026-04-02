@@ -6,6 +6,9 @@ const ghostty = @import("../term/ghostty.zig");
 const bar = @import("../ui/bar.zig");
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
+const SplitNode = @import("../mux.zig").SplitNode;
+const SplitDirection = @import("../mux.zig").SplitDirection;
+const PaneBounds = @import("../mux.zig").PaneBounds;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 const FtRendererConfig = @import("ft_renderer.zig").FtRendererConfig;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
@@ -62,10 +65,17 @@ const win32 = if (builtin.os.tag == .windows) struct {
     ) callconv(.c) i32;
     extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
     extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
+    extern "user32" fn SetCapture(hWnd: HWND) callconv(.c) ?HWND;
     extern "user32" fn ReleaseCapture() callconv(.c) i32;
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
     extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+    extern "user32" fn LoadCursorW(hInstance: ?*anyopaque, lpCursorName: usize) callconv(.c) ?*anyopaque;
+    extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.c) ?*anyopaque;
+    // Standard cursor IDs (as usize for use with LoadCursorW's lpCursorName param)
+    const IDC_ARROW: usize = 32512;
+    const IDC_SIZEWE: usize = 32644;
+    const IDC_SIZENS: usize = 32645;
     // winmm — multimedia timer resolution
     extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.c) c_uint;
     extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.c) c_uint;
@@ -95,6 +105,24 @@ var g_perf_frame_ms: f32 = 0;
 var g_perf_window_max_frame_ns: i128 = 0;
 // Worst-case frame time (ms) over the last completed sample window.
 var g_perf_max_frame_ms: f32 = 0;
+
+// ── Pane-divider drag state ───────────────────────────────────────────────────
+// When the user presses the left mouse button on a split seam we record the
+// node being dragged plus enough context to compute a new ratio from the raw
+// mouse position during MOUSE_MOVE events.
+//
+// `g_drag_node`        — the SplitNode whose ratio we are adjusting (null = not dragging)
+// `g_drag_direction`   — .vertical (left/right seam) or .horizontal (top/bottom seam)
+// `g_drag_bounds`      — pixel rect of the node (needed to map cursor → ratio)
+//
+// The ratio formula for a vertical split:
+//   new_ratio = (mouse_x - bounds.x) / bounds.width
+// For horizontal:
+//   new_ratio = (mouse_y - bounds.y) / bounds.height
+var g_drag_node: ?*SplitNode = null;
+var g_drag_direction: SplitDirection = .vertical;
+var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
+var g_mouse_button_down: ?ghostty.MouseButton = null;
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -497,6 +525,8 @@ pub fn run(app: *App) !void {
     g_perf_frame_ms = 0;
     g_perf_window_max_frame_ns = 0;
     g_perf_max_frame_ms = 0;
+    g_drag_node = null;
+    g_mouse_button_down = null;
 
     var desc = std.mem.zeroes(c.sapp_desc);
     desc.user_data = app;
@@ -590,7 +620,30 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     g_renderer_ready = false;
 
-    app.sendFocus(true) catch {};
+    _ = app.enqueueMouse(.{ .focus = true });
+}
+
+/// Release cache entries for panes that no longer exist in the mux.
+/// Called once per frame after tick() has already cleaned up dead panes.
+/// O(MAX_PANE_CACHES × live_pane_count) — negligible cost.
+fn evictStalePaneCaches(app: *App) void {
+    for (&g_pane_caches) |*slot| {
+        const entry = slot.* orelse continue;
+        // Check if this pane pointer is still alive in the mux.
+        var found = false;
+        var iter = app.mux.?.paneIterator();
+        while (iter.next()) |live_pane| {
+            if (live_pane == entry.pane) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.log.info("evictStalePaneCaches: releasing cache for dead pane={x}", .{@intFromPtr(entry.pane)});
+            slot.*.?.cache.deinit();
+            slot.* = null;
+        }
+    }
 }
 
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
@@ -606,6 +659,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         std.log.info("sokol first frame (ft renderer)", .{});
     }
     app.tick() catch {};
+    // Release cached render textures for panes destroyed during tick()
+    // (closed tab, closed split, dead PTY). Must happen after tick() so the
+    // mux has already removed dead panes from its lists.
+    if (app.mux != null) evictStalePaneCaches(app);
     const after_tick_ns = std.time.nanoTimestamp();
 
     if (app.pending_quit) {
@@ -1498,8 +1555,8 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
             c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
             c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-            c.SAPP_EVENTTYPE_FOCUSED => app.sendFocus(true) catch {},
-            c.SAPP_EVENTTYPE_UNFOCUSED => app.sendFocus(false) catch {},
+            c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
+            c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
             c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
             else => {},
         }
@@ -1512,10 +1569,15 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
         c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
         c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
-        c.SAPP_EVENTTYPE_MOUSE_SCROLL => app.scrollFloat(event.mouse_x, event.mouse_y, -event.scroll_y),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => _ = app.enqueueMouse(.{ .scroll = .{
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .raw_delta = -event.scroll_y,
+            .mods = ghosttyMods(event.modifiers),
+        } }),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-        c.SAPP_EVENTTYPE_FOCUSED => app.sendFocus(true) catch {},
-        c.SAPP_EVENTTYPE_UNFOCUSED => app.sendFocus(false) catch {},
+        c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
+        c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
         else => {},
     }
@@ -1531,12 +1593,17 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     const key = mapKey(event.key_code);
 
     // Give Lua a chance to consume this key before the terminal sees it.
+    // fireOnKey calls LuaJIT (not the ghostty DLL) so it is safe on the
+    // event thread.  If Lua consumes the key we stop here — no DLL call needed.
     if (key != .unidentified) {
         const key_name = @tagName(key);
         if (app.fireOnKey(key_name, mods)) return;
     }
 
-    if (key != .unidentified) _ = app.sendKey(key, mods, null) catch {};
+    // Defer the actual DLL call (encodeKey) to the frame thread via the queue.
+    // This prevents a data race with syncKeyEncoder / syncMouseEncoder which
+    // run on the frame thread inside tickPanes / resizeAllPanes.
+    if (key != .unidentified) _ = app.enqueueKey(key, mods);
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
@@ -1547,7 +1614,8 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
-    app.sendText(utf8) catch {};
+    // Defer sendText to the frame thread — avoids racing with DLL calls in tick().
+    _ = app.enqueueChar(utf8);
 }
 
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {
@@ -1556,17 +1624,33 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         std.log.info("first Windows mouse event button={d} x={d:.2} y={d:.2}", .{ event.mouse_button, event.mouse_x, event.mouse_y });
     }
 
+    const button = switch (event.mouse_button) {
+        c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
+        c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
+        c.SAPP_MOUSEBUTTON_MIDDLE => ghostty.MouseButton.middle,
+        else => null,
+    };
+
+    if (action == .press) {
+        g_mouse_button_down = button;
+    }
+
+    // On left-button release always end any active drag.
+    if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        g_drag_node = null;
+        if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+    }
+
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
     if (top_bar_hit.in_top_bar) {
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
             if (top_bar_hit.tab_index) |ti| {
                 if (app.hasCustomTopBarTabs()) {
-                    app.switchTab(ti);
+                    _ = app.enqueueMouse(.{ .switch_tab = ti });
                 } else if (top_bar_hit.close_tab_index != null and top_bar_hit.close_tab_index.? == ti) {
-                    app.switchTab(ti);
-                    app.closeTab();
+                    _ = app.enqueueMouse(.{ .switch_and_close_tab = ti });
                 } else {
-                    app.switchTab(ti);
+                    _ = app.enqueueMouse(.{ .switch_tab = ti });
                 }
                 return;
             }
@@ -1577,28 +1661,110 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
-    const button = switch (event.mouse_button) {
-        c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
-        c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
-        c.SAPP_MOUSEBUTTON_MIDDLE => ghostty.MouseButton.middle,
-        else => return,
-    };
-    app.sendMouse(action, button, event.mouse_x, event.mouse_y, ghosttyMods(event.modifiers)) catch {};
+    // On left-button press, check for a divider hit before forwarding to the terminal.
+    if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        // 6-pixel hit radius on each side of the 2px seam.
+        if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
+            std.log.info("divider hit node={x} dir={s} mouse=({d:.1},{d:.1}) bounds=({d},{d} {d}x{d})", .{
+                @intFromPtr(hit.node), @tagName(hit.node.direction), event.mouse_x,    event.mouse_y,
+                hit.bounds.x,          hit.bounds.y,                 hit.bounds.width, hit.bounds.height,
+            });
+            g_drag_node = hit.node;
+            g_drag_direction = hit.node.direction;
+            g_drag_bounds = hit.bounds;
+            if (builtin.os.tag == .windows) {
+                const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
+                if (hwnd_raw) |raw| {
+                    const hwnd: win32.HWND = @ptrCast(@constCast(raw));
+                    _ = win32.SetCapture(hwnd);
+                }
+            }
+            // Don't forward the click to the terminal — it's a resize gesture.
+            return;
+        }
+    }
+
+    if (button) |b| {
+        _ = app.enqueueMouse(.{ .button = .{
+            .action = action,
+            .button = b,
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .mods = ghosttyMods(event.modifiers),
+        } });
+    }
+
+    if (action == .release) {
+        g_mouse_button_down = null;
+    }
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    // If we are currently dragging a divider, update the split ratio and skip
+    // forwarding the event to the terminal (the cursor is a resize cursor, not
+    // a text cursor).
+    if (g_drag_node) |node| {
+        const bw: f32 = @floatFromInt(@max(1, g_drag_bounds.width));
+        const bh: f32 = @floatFromInt(@max(1, g_drag_bounds.height));
+        const bx: f32 = @floatFromInt(g_drag_bounds.x);
+        const by: f32 = @floatFromInt(g_drag_bounds.y);
+        const new_ratio = switch (g_drag_direction) {
+            .vertical => (event.mouse_x - bx) / bw,
+            .horizontal => (event.mouse_y - by) / bh,
+        };
+        std.log.info("divider drag node={x} mouse=({d:.1},{d:.1}) new_ratio={d:.4}", .{ @intFromPtr(node), event.mouse_x, event.mouse_y, new_ratio });
+        app.setSplitNodeRatio(node, new_ratio);
+        // Keep the resize cursor active while dragging.
+        if (builtin.os.tag == .windows) {
+            const cursor_id: usize = switch (g_drag_direction) {
+                .vertical => win32.IDC_SIZEWE,
+                .horizontal => win32.IDC_SIZENS,
+            };
+            _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+        }
+        return;
+    }
+
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
-    if (top_bar_hit.in_top_bar) return;
-    app.sendMouse(.motion, null, event.mouse_x, event.mouse_y, ghosttyMods(event.modifiers)) catch {};
+    if (top_bar_hit.in_top_bar) {
+        // Restore default cursor when in tab bar.
+        if (builtin.os.tag == .windows) _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
+        return;
+    }
+
+    // Check if hovering over a split divider to show resize cursor.
+    if (builtin.os.tag == .windows) {
+        if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
+            const cursor_id: usize = switch (hit.node.direction) {
+                .vertical => win32.IDC_SIZEWE,
+                .horizontal => win32.IDC_SIZENS,
+            };
+            _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+        } else {
+            _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
+        }
+    }
+
+    _ = app.enqueueMouse(.{ .motion = .{
+        .held_button = g_mouse_button_down,
+        .x = event.mouse_x,
+        .y = event.mouse_y,
+        .mods = ghosttyMods(event.modifiers),
+    } });
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
-    if (!g_logged_first_scroll and builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) {
+        std.log.info("scroll event scroll_y={d:.3} scroll_x={d:.3} mouse=({d:.1},{d:.1})", .{ event.scroll_y, event.scroll_x, event.mouse_x, event.mouse_y });
         g_logged_first_scroll = true;
-        std.log.info("first Windows scroll event delta={d:.2}", .{event.scroll_y});
     }
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
-    app.scrollFloat(event.mouse_x, event.mouse_y, -event.scroll_y);
+    _ = app.enqueueMouse(.{ .scroll = .{
+        .x = event.mouse_x,
+        .y = event.mouse_y,
+        .raw_delta = -event.scroll_y,
+        .mods = ghosttyMods(event.modifiers),
+    } });
 }
 
 fn handleResize(app: *App, event: c.sapp_event) void {

@@ -983,6 +983,20 @@ pub const Runtime = struct {
         }
     }
 
+    pub fn setMouseEncoderAnyButtonPressed(self: *Runtime, encoder: ?*anyopaque, pressed: bool) void {
+        if (encoder) |mouse_encoder| {
+            var copy = pressed;
+            self.mouse_encoder_setopt(mouse_encoder, @intFromEnum(MouseEncOpt.any_button_pressed), &copy);
+        }
+    }
+
+    pub fn setMouseEncoderTrackLastCell(self: *Runtime, encoder: ?*anyopaque, track: bool) void {
+        if (encoder) |mouse_encoder| {
+            var copy = track;
+            self.mouse_encoder_setopt(mouse_encoder, @intFromEnum(MouseEncOpt.track_last_cell), &copy);
+        }
+    }
+
     pub fn createMouseEncoder(self: *Runtime) !?*anyopaque {
         var handle: ?*anyopaque = null;
         if (self.mouse_encoder_new(null, &handle) != success or handle == null) return error.MouseEncoderCreateFailed;
