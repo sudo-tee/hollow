@@ -367,7 +367,8 @@ pub const Workspace = struct {
     pub fn newTab(self: *Workspace, id: usize) !*Tab {
         const tab = try self.allocator.create(Tab);
         tab.* = Tab.init(self.allocator, id);
-        try self.appendTab(tab);
+        const insert_at = if (self.active_tab) |_| self.activeTabIndex() + 1 else self.tabs.items.len;
+        try self.tabs.insert(self.allocator, insert_at, tab);
         self.active_tab = tab;
         return tab;
     }
@@ -592,11 +593,19 @@ pub const Mux = struct {
     /// The new pane becomes the active pane.
     pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const previous_active = ws.active_tab;
         const tab = try ws.newTab(self.allocId());
         errdefer {
-            _ = ws.tabs.pop();
+            var remove_idx: ?usize = null;
+            for (ws.tabs.items, 0..) |t, i| {
+                if (t == tab) {
+                    remove_idx = i;
+                    break;
+                }
+            }
+            if (remove_idx) |idx| _ = ws.tabs.orderedRemove(idx);
             self.allocator.destroy(tab);
-            ws.active_tab = if (ws.tabs.items.len > 0) ws.tabs.items[ws.tabs.items.len - 1] else null;
+            ws.active_tab = previous_active;
         }
         const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
         try tab.appendPane(pane);
