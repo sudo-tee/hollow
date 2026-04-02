@@ -57,12 +57,11 @@ fn fileLogFn(
     if (g_log_file) |f| {
         g_log_mutex.lock();
         defer g_log_mutex.unlock();
-        var buf: [512]u8 = undefined;
+        var buf: [1024]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
         fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
         const written = fbs.getWritten();
         _ = f.writeAll(written) catch {};
-        f.sync() catch {};
     }
 }
 

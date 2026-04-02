@@ -20,6 +20,7 @@
 - ~close_pane Lua API: hollow.close_pane() + ctrl+shift+w keybind~
 - ~Dead pane auto-close: isAlive() now checks WaitForSingleObject as fallback when pipe EOF not yet reported~
 - ~Navigating between panes is a bit buggy let's say a create an horizontal split and then a vertical split, the navigation gets a bit weird. Being on the bottom right pane and pressing sthift+ctrl+left will move the focus to the toppane instead of the bottom left one. This is because the navigation is currently based on the position of the panes and not on a graph of the panes. This can be fixed by implementing a graph of the panes and navigating based on that graph instead of the position. This will also allow for more complex layouts in the future.~
+- Some keybords shortcuts don't work example in nvim all keymaps with alt+ don't work
 
 ## Fonts
 
@@ -32,7 +33,9 @@
 ## Performance
 
 - ~Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.~
-- Scrolling performance is not great at least in nvim.
+- App consumes around 5% cpu on idl
+- Add a framerate cap to prevent the terminal from consuming too much resources when idle.
+- Scrolling performance is not great at least in nvim. Espacially when there are spit windows. Half of the screen is static in this case but most likely we are still rendering full rows
 - Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.
 
 ## Core features
@@ -41,8 +44,13 @@
   - ~Multi-tab support: Ctrl+T new tab, Ctrl+W close tab, Ctrl+Tab / Ctrl+Shift+Tab switch tabs~
   - ~close_pane / closeTab: last-tab fix, pending_quit flag, sapp_request_quit()~
   - ~newTab segfault fixed: pre-init render_state in bootstrap() before callback registration~
-  - ~Tab bar UI (no rendering exists yet)~
+  - ~Tab bar UI (ano rendering exists yeta)~
   - ~Workspace switching UI + API~
+- Add mouse support for:
+  - Click to focus pane
+  - Click to set cursor position
+  - Click and drag to resize panes
+  - scroll wheel support for scrolling through output
 - Add text selection support
 - Add copy/paste support
 

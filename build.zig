@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("d3d11", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
+        exe.root_module.linkSystemLibrary("winmm", .{});
         // FreeType and HarfBuzz prebuilt Windows DLLs (mingw64).
         // Link directly against the GNU import libs (.dll.a).
         exe.addObjectFile(b.path("third_party/freetype-prebuilt/lib/libfreetype.dll.a"));

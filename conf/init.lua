@@ -18,6 +18,7 @@ g.set_config({
 	debug_overlay = true,
 	backend = "sokol",
 	vsync = false,
+	max_fps = 120,
 	fonts = {
 		size = 14.5,
 		padding_x = 0,
@@ -67,19 +68,38 @@ else
 	})
 end
 
+local _metrics_cache = nil
+local _metrics_last_t = 0
+
 hollow.status.set(function(side, active_tab_index, tab_count)
 	local workspace_count = hollow.get_workspace_count()
 	local workspace_name = hollow.workspace.get_name(hollow.get_active_workspace_index())
 
 	if side == "left" then
 		return {
-			{ text = " ", fg = c.accent, bg = c.panel_alt, bold = true },
+			{ text = "  ", fg = c.accent, bg = c.panel_alt, bold = true },
 		}
 	end
 
 	if side == "right" then
+		local now = os.time()
+		-- if now ~= _metrics_last_t then
+		-- 	_metrics_cache = hollow.get_system_metrics()
+		-- 	_metrics_last_t = now
+		-- end
+		--
+		-- local cpu_text = ""
+		-- local mem_text = ""
+		-- local m = _metrics_cache
+		-- if m and m.error ~= "error" then
+		-- 	cpu_text = string.format("CPU: %.0f%% ", m.cpu_usage)
+		-- 	mem_text = string.format("RAM: %d/%dMB ", m.memory_used_mb, m.memory_total_mb)
+		-- end
+
+		local time_text = hollow.strftime("%H:%M:%S")
+
 		return {
-			{ text = "  " .. hollow.strftime("%m %D %H:%M") .. "  ", fg = c.accent, bg = c.panel },
+			{ text = time_text, fg = c.accent, bg = c.panel },
 		}
 	end
 

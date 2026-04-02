@@ -891,7 +891,7 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, std.math.maxInt(usize));
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -918,7 +918,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full, null, null, std.math.maxInt(usize));
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full, null, null, false, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -932,7 +932,7 @@ pub const FtRenderer = struct {
     ///
     /// `row_hashes` is an optional per-row hash array (length ≥ row_count) used
     /// to skip re-rendering rows whose content is unchanged from the previous frame.
-    /// When non-null and `force_full` is false, each row is pre-scanned cheaply
+    /// When non-null and `row_map_skip` is true, each row is pre-scanned cheaply
     /// before full cell iteration; unchanged rows are skipped in both passes.
     /// The array is updated in-place after rendering (new hashes stored).
     /// Pass null to disable row-hash optimisation (equivalent to old behaviour).
@@ -955,6 +955,7 @@ pub const FtRenderer = struct {
         force_full: bool,
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
+        row_map_skip: bool,
         /// Cursor row from the previous rendered frame; used to erase ghost
         /// cursor pixels when the cursor moves and ghostty doesn't mark the old
         /// row dirty.  Pass std.math.maxInt(usize) on first frame or force_full.
@@ -999,6 +1000,7 @@ pub const FtRenderer = struct {
             force_full,
             row_map_keys,
             row_map_vals,
+            row_map_skip,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
         const t_queue_end = std.time.nanoTimestamp();
@@ -1092,7 +1094,7 @@ pub const FtRenderer = struct {
     /// `force_full` = false → skip rows whose ghostty row-dirty flag is clear,
     ///   and clear the row-dirty flag after rendering each dirty row.
     /// `row_hashes` — optional per-row content hash array (see renderToCache for details).
-    ///   When non-null and force_full=false, rows with matching hashes are skipped.
+    ///   When non-null and `row_map_skip` is true, rows with matching hashes are skipped.
     /// `cursor_row` — row index of the cursor; always rendered even if hash matches.
     pub fn queueInViewport(
         self: *FtRenderer,
@@ -1110,6 +1112,7 @@ pub const FtRenderer = struct {
         force_full: bool,
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
+        row_map_skip: bool,
         /// Row index of the cursor in the *previous* frame.  When the cursor has
         /// moved away from this row ghostty may not mark it dirty (the text
         /// content is unchanged) so old block-cursor pixels linger.  Passing the
@@ -1168,7 +1171,7 @@ pub const FtRenderer = struct {
         // Stack-allocated: 512 bits = 64 bytes — negligible stack cost.
         const MAX_SKIP_ROWS = 512;
         var hash_skip_bits = [_]u64{0} ** (MAX_SKIP_ROWS / 64);
-        const use_row_map = !force_full and row_map_keys != null and row_map_vals != null;
+        const use_row_map = row_map_keys != null and row_map_vals != null;
 
         // Inline helpers for the skip bitset.
         const SkipSet = struct {
@@ -1231,6 +1234,11 @@ pub const FtRenderer = struct {
                 // — skip both passes.  The cursor row is always rendered because the
                 // cursor overlay is not reflected in cell content hashes.  The previous
                 // cursor row is always rendered to clear any lingering cursor pixels.
+                //
+                // When force_full is true (atlas stale / resize) we must redraw the row
+                // regardless of hash match (the RT was cleared and glyph UVs changed), but
+                // we still WRITE the fresh hash into the map so the very next cursor-blink
+                // frame (.true_value dirty) can skip rows that didn't change.
                 if (use_row_map and row_y != cursor_row and row_y != prev_cursor_row) {
                     const row_raw = runtime.rowRaw(row_iterator.*);
                     if (row_raw != 0) {
@@ -1238,12 +1246,12 @@ pub const FtRenderer = struct {
                         const vals = row_map_vals.?;
                         const slot = MapLookup.probe(keys, row_raw);
                         if (runtime.rowHashCells(row_iterator.*, row_cells)) |new_hash| {
-                            if (new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
+                            if (row_map_skip and new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
                                 // Unchanged row — skip render, mark for Pass 2 skip too.
                                 SkipSet.set(&hash_skip_bits, row_y);
                                 continue;
                             }
-                            // Hash changed (or new entry): update map and render.
+                            // Hash changed (or new entry, or skip disabled): update map and render.
                             keys[slot] = row_raw;
                             vals[slot] = new_hash;
                         }
@@ -1312,8 +1320,8 @@ pub const FtRenderer = struct {
                     // instead of cellHasStyling() to fast-check for non-default style.
                     // Also: fg is UNUSED in Pass 1 (flushRasterRun ignores it), so skip
                     // resolveStyleColor() entirely — only face_idx is needed for rasterization.
-                    var face_idx: u8 = 0;
                     const p1_sid = runtime.cellStyleIdRaw(raw_cell);
+                    var face_idx: u8 = 0;
                     if (p1_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
                         if (runtime.cellStyle(row_cells.*)) |s| {
                             if (s.bold and s.italic) {
@@ -1338,12 +1346,9 @@ pub const FtRenderer = struct {
                                 flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
                                 continue;
                             }
-                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                            if (glyph_len == 0) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                                continue;
-                            }
-                            if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
+                            // Fast non-ligature path: avoid UTF-8 encoding for the common
+                            // printable-ASCII case when the glyph is already cached.
+                            if (!self.ligatures or !isLigatureCodepoint(cp)) {
                                 flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 // Fast-path: if the glyph is already in the ascii cache it is
                                 // guaranteed to be in the atlas — skip preRasterize entirely.
@@ -1352,8 +1357,15 @@ pub const FtRenderer = struct {
                                     face_idx <= 3 and
                                     self.ascii_glyphs[@intCast(face_idx)][cp] != null);
                                 if (!ascii_cached) {
+                                    const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                                    if (glyph_len == 0) continue;
                                     self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
                                 }
+                                continue;
+                            }
+                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                            if (glyph_len == 0) {
+                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
                                 continue;
                             }
                             if (run_len + glyph_len > run_buf.len) {
@@ -1484,9 +1496,9 @@ pub const FtRenderer = struct {
                     //
                     // Optimisation: use cellStyleIdRaw() + cellHasTextRaw() (direct bit extraction,
                     // no C calls) instead of cellHasStyling() + cellHasText() C ABI calls.
+                    const p2_sid = runtime.cellStyleIdRaw(raw_cell);
                     var face_idx: u8 = 0;
                     var fg = default_fg;
-                    const p2_sid = runtime.cellStyleIdRaw(raw_cell);
                     if (p2_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
                         if (runtime.cellStyle(row_cells.*)) |s| {
                             if (s.bold and s.italic) {
@@ -1507,19 +1519,24 @@ pub const FtRenderer = struct {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 continue;
                             }
-                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                            if (glyph_len == 0) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                continue;
-                            }
-                            if (!self.ligatures or !isLigatureCandidate((&[_]u32{cp})[0..1])) {
+                            // Fast non-ligature path: avoid UTF-8 encoding before the ASCII
+                            // glyph fast-path. In the steady-state benchmark this removes one
+                            // encode call from almost every visible cell.
+                            if (!self.ligatures or !isLigatureCodepoint(cp)) {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                                 // Fast ASCII path: skip HarfBuzz shaping for printable ASCII.
                                 self.last_glyph_runs += 1;
                                 if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
+                                    const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                                    if (glyph_len == 0) continue;
                                     self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
                                 }
+                                continue;
+                            }
+                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+                            if (glyph_len == 0) {
+                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 continue;
                             }
                             if (run_len + glyph_len > run_buf.len) {

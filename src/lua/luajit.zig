@@ -575,6 +575,10 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_get_active_workspace_index, 1);
         api.set_field(self.state, -2, "get_active_workspace_index");
 
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_system_metrics, 1);
+        api.set_field(self.state, -2, "get_system_metrics");
+
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
         api.set_field(self.state, -2, "os");
@@ -644,15 +648,9 @@ fn l_strftime(state: *State) callconv(.c) c_int {
         api.to_lstring(state, 1, &fmt_len)
     else
         null;
-    const fmt = if (fmt_ptr) |p| p[0..fmt_len] else "%B %e, %H:%M";
+    const fmt = if (fmt_ptr) |p| p[0..fmt_len] else "%B %e, %H:%M:%S";
 
-    const now = std.time.timestamp();
-    const secs: i64 = @intCast(now);
-    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(secs) };
-    const day = epoch.getEpochDay();
-    const day_secs = epoch.getDaySeconds();
-    const year_day = day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
+    const lt = platform.getLocalTime();
 
     var out: [128]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out);
@@ -667,10 +665,12 @@ fn l_strftime(state: *State) callconv(.c) c_int {
         i += 1;
         switch (fmt[i]) {
             '%' => w.writeByte('%') catch break,
-            'H' => w.print("{d:0>2}", .{day_secs.getHoursIntoDay()}) catch break,
-            'M' => w.print("{d:0>2}", .{day_secs.getMinutesIntoHour()}) catch break,
-            'e' => w.print("{d}", .{month_day.day_index + 1}) catch break,
-            'B' => w.writeAll(monthName(month_day.month.numeric())) catch break,
+            'H' => w.print("{d:0>2}", .{lt.hour}) catch break,
+            'M' => w.print("{d:0>2}", .{lt.minute}) catch break,
+            'S' => w.print("{d:0>2}", .{lt.second}) catch break,
+            'e' => w.print("{d}", .{lt.day}) catch break,
+            'Y' => w.print("{d}", .{lt.year}) catch break,
+            'B' => w.writeAll(monthName(@intCast(lt.month))) catch break,
             else => {
                 w.writeByte('%') catch break;
                 w.writeByte(fmt[i]) catch break;
@@ -684,7 +684,7 @@ fn l_strftime(state: *State) callconv(.c) c_int {
     return 1;
 }
 
-fn monthName(month: u4) []const u8 {
+fn monthName(month: u8) []const u8 {
     return switch (month) {
         1 => "January",
         2 => "February",
@@ -827,6 +827,11 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
 
     if (std.mem.eql(u8, key, "scroll_multiplier")) {
         cfg.scroll_multiplier = @floatCast(value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "max_fps")) {
+        cfg.max_fps = try asInt(u32, value);
         return;
     }
 }
@@ -1467,4 +1472,38 @@ fn l_on_key(state: *State) callconv(.c) c_int {
     ctx.on_key_ref = api.ref(state, LUA_REGISTRYINDEX);
     std.log.info("lua: on_key handler registered", .{});
     return 0;
+}
+
+/// hollow.get_system_metrics() → table with CPU/GPU/memory stats
+fn l_get_system_metrics(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    api.create_table(state, 0, 12);
+
+    const metrics = platform.getSystemMetrics(ctx.cfg.allocator) catch {
+        api.push_string(state, "error");
+        api.set_field(state, -2, "error");
+        return 1;
+    };
+
+    api.push_number(state, metrics.cpu_usage);
+    api.set_field(state, -2, "cpu_usage");
+
+    api.push_number(state, @floatFromInt(metrics.memory_used_mb));
+    api.set_field(state, -2, "memory_used_mb");
+
+    api.push_number(state, @floatFromInt(metrics.memory_total_mb));
+    api.set_field(state, -2, "memory_total_mb");
+
+    api.push_number(state, metrics.gpu_usage);
+    api.set_field(state, -2, "gpu_usage");
+
+    api.push_number(state, @floatFromInt(metrics.gpu_memory_used_mb));
+    api.set_field(state, -2, "gpu_memory_used_mb");
+
+    api.push_number(state, @floatFromInt(metrics.gpu_memory_total_mb));
+    api.set_field(state, -2, "gpu_memory_total_mb");
+
+    return 1;
 }

@@ -812,12 +812,20 @@ pub const App = struct {
                 // Only call updateRenderState when this pane actually received
                 // PTY bytes this tick, or when it already has a pending dirty
                 // level (e.g. set by a resize), or when the cursor-blink poll
-                // interval has elapsed (~16 ms).  Calling updateRenderState
-                // unconditionally causes ghostty to mark the render_state dirty
-                // every frame (cursor blink snapshot, etc.), forcing all panes
-                // to redraw even when nothing changed.
+                // interval has elapsed.
+                //
+                // Interval policy:
+                //   - Active (focused) pane: 16 ms (~60 fps) so cursor blink
+                //     managed by ghostty's internal timer fires promptly.
+                //   - Inactive panes: 500 ms.  Unfocused panes don't blink their
+                //     cursor and receive no user input, so frequent polls only
+                //     waste CPU and force unnecessary re-renders of static panes.
+                //     This is the main source of the ~40 FPS drop during split-
+                //     scroll: the static left pane was being redrawn every 16 ms
+                //     even though nothing was changing.
                 const now_ns = std.time.nanoTimestamp();
-                const idle_poll_ns: i128 = 16_000_000; // 16 ms ≈ 60 fps cursor blink
+                const is_active = (self.activePane() == pane);
+                const idle_poll_ns: i128 = if (is_active) 16_000_000 else 500_000_000;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
@@ -866,8 +874,6 @@ pub const App = struct {
         const mux = if (self.mux) |*m| m else return;
         const ws = mux.activeWorkspace() orelse return;
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-
-        std.log.info("resizeAllPanes tab_count={d} px={d}x{d}", .{ ws.tabs.items.len, pixel_width, pixel_height });
 
         // How many pixels the tab bar steals from the top.  We compute this
         // from the current cell size rather than from mux.tabCount() because
@@ -961,7 +967,6 @@ fn getPaneForTerminal(app: *App, term: ?*anyopaque) ?*Pane {
 }
 
 fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: ?[*]const u8, len: usize) callconv(.c) void {
-    std.log.info("writePtyCallback called len={d} bytes={*}", .{ len, bytes });
     if (bytes == null or len == 0) return;
     const bytes_ptr = bytes.?;
     const app = write_bridge orelse return;
@@ -980,7 +985,6 @@ fn xtversionCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String
 }
 
 fn sizeCallback(term: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.SizeReportSize) callconv(.c) bool {
-    std.log.info("sizeCallback called out={*}", .{out});
     if (out == null) return false;
     const out_ptr = out.?;
     const app = size_bridge orelse return false;
@@ -1005,7 +1009,6 @@ fn colorSchemeCallback(_: ?*anyopaque, _: ?*anyopaque, _: ?*ghostty.ColorScheme)
 }
 
 fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.DeviceAttributes) callconv(.c) bool {
-    std.log.info("deviceAttributesCallback called out={*}", .{out});
     if (out == null) return false;
     const out_ptr = out.?;
     const app = attrs_bridge orelse return false;
@@ -1021,7 +1024,6 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.Devic
 }
 
 fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
-    std.log.info("titleChangedCallback called", .{});
     const app = title_bridge orelse return;
     if (app.ghostty) |*runtime| {
         if (getPaneForTerminal(app, term)) |pane| {

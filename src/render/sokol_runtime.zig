@@ -66,6 +66,9 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
     extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+    // winmm — multimedia timer resolution
+    extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.c) c_uint;
+    extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.c) c_uint;
 } else struct {};
 
 var g_app: ?*App = null;
@@ -118,6 +121,13 @@ var g_phase_accum_atlas_flushes: usize = 0;
 // Render-mode counter: how many frames used direct render vs cache/blit this window.
 var g_phase_accum_direct_frames: usize = 0;
 var g_phase_accum_cached_frames: usize = 0;
+// Dirty-level distribution: how many frames had ghostty dirty_level==.full vs .true_value.
+// Useful for split-scroll: every scroll frame should be .full; cursor-blink frames .true_value.
+var g_phase_accum_full_dl_frames: usize = 0;
+var g_phase_accum_true_dl_frames: usize = 0;
+// Atlas-stale frames: how many frames triggered a force_full due to atlas_epoch mismatch.
+// If this is high during split-scroll, the atlas is being re-uploaded every frame (glyph churn).
+var g_phase_accum_atlas_stale_frames: usize = 0;
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -442,6 +452,29 @@ fn windowSizeToPixels(width: f32, height: f32) struct { width: u32, height: u32 
     };
 }
 
+fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128) void {
+    if (app.config.vsync or app.config.max_fps == 0) return;
+
+    const target_frame_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(app.config.max_fps)));
+    const deadline_ns = frame_start_ns + target_frame_ns;
+    if (frame_end_ns >= deadline_ns) return;
+
+    // Windows scheduler granularity commonly overshoots sub-10ms sleeps enough
+    // to turn a 120 FPS cap into ~60 FPS. Sleep most of the gap, then use a
+    // short yield/spin tail so higher caps remain reachable.
+    const spin_tail_ns: i128 = 1_000_000;
+    var now_ns = frame_end_ns;
+    while (now_ns < deadline_ns) {
+        const remaining_ns = deadline_ns - now_ns;
+        if (remaining_ns > spin_tail_ns) {
+            std.Thread.sleep(@as(u64, @intCast(remaining_ns - spin_tail_ns)));
+        } else if (remaining_ns > 100_000) {
+            std.Thread.yield() catch {};
+        }
+        now_ns = std.time.nanoTimestamp();
+    }
+}
+
 pub fn run(app: *App) !void {
     g_app = app;
     g_renderer_ready = false;
@@ -478,10 +511,19 @@ pub fn run(app: *App) !void {
     desc.window_title = titleCString(app.config.windowTitle());
     desc.no_vsync = !app.config.vsync;
     std.log.info("sokol: vsync={s}", .{if (app.config.vsync) "on" else "off"});
+    std.log.info("sokol: max_fps={d}", .{app.config.max_fps});
     std.log.info("sokol: renderer_single_pane_direct={s} (default=false, false=cached RT path)", .{
         if (app.config.renderer_single_pane_direct) "true" else "false",
     });
     std.log.info("sokol: scroll_multiplier={d:.2}", .{app.config.scroll_multiplier});
+
+    // Raise the Windows multimedia timer resolution to 1 ms so that
+    // std.Thread.sleep() can hit sub-10ms targets accurately.
+    // Without this the default 15.6 ms scheduler tick causes a 120 fps cap
+    // to collapse to ~60 fps.  timeEndPeriod(1) is called in cleanupCb.
+    if (builtin.os.tag == .windows and !app.config.vsync and app.config.max_fps > 0) {
+        _ = win32.timeBeginPeriod(1);
+    }
 
     c.sapp_run(&desc);
 }
@@ -708,13 +750,35 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // force_full so that scroll frames stay as fast as partial updates.
                     const force_full = atlas_stale;
 
-                    // Invalidate the row map whenever the screen contents cannot be trusted:
-                    //   1. atlas_stale: glyph UVs changed, all rows must redraw with correct UVs.
-                    //   2. dirty_level == .full: screen switched (alt/normal), resized, or global
-                    //      color changed.  Row map entries from the previous screen are stale —
-                    //      the hash skip must not fire because page slots may now hold new content
-                    //      with the same rowRaw key.
-                    if (force_full or dirty_level == .full) {
+                    // Diagnostic counters for log output.
+                    if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
+                    if (dirty_level == .true_value) g_phase_accum_true_dl_frames += 1;
+                    if (atlas_stale) g_phase_accum_atlas_stale_frames += 1;
+
+                    // Row-hash map strategy: the map lets renderToCache skip rows whose
+                    // content hasn't changed by comparing a per-row cell hash against the
+                    // stored value from the previous frame.  This is the key optimisation
+                    // for cursor-blink frames (dirty_level == .true_value) where ghostty
+                    // marks only the cursor row dirty but may re-scan all rows.
+                    //
+                    // dirty_level == .full means every row is dirty (content update, scroll,
+                    // resize, alt-screen switch, etc.).  In this case the hash check cannot
+                    // skip ANY row (all are dirty and all will have changed hashes) — but
+                    // we still WANT to write fresh hashes into the map during the .full pass
+                    // so that the very next .true_value frame (cursor blink) can skip all
+                    // unchanged rows.  renderToCache therefore uses force_full to decide
+                    // whether to SKIP rows (never on force_full) vs WRITE hashes (always).
+                    //
+                    // force_full (atlas stale or resize) invalidates existing RT pixels, so
+                    // any stored hash entry from before the atlas change is stale (the glyph
+                    // UVs changed) → zero the map so no false-positive skips happen.
+                    // dirty_level == .full from content updates can also invalidate the map
+                    // because alt-screen switches / resize-like events may reuse rowRaw keys
+                    // for different content. Clear the map, then let renderToCache write the
+                    // fresh hashes during this frame so the next .true_value frame can skip.
+                    const row_map_skip = dirty_level != .full and !force_full;
+                    if (!row_map_skip) {
+                        // Stored hashes are invalid for this frame; rebuild them as we render.
                         @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
                     }
 
@@ -733,6 +797,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         force_full,
                         &cache_entry.row_map_keys,
                         &cache_entry.row_map_vals,
+                        row_map_skip,
                         cache_entry.prev_cursor_row,
                     );
                     g_phase_accum_rows_rendered += rend.last_rows_rendered;
@@ -1130,6 +1195,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     c.sg_end_pass();
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
+    sleepForFrameCap(app, frame_start_ns, after_commit_ns);
 
     // ── Phase timing accumulation (logged every ~2 s) ─────────────────────
     g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
@@ -1154,6 +1220,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
         const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
         const pass2_ms = @as(f32, @floatFromInt(g_phase_accum_pass2_ns)) / n / 1_000_000.0;
+        const fps = n / 2.0; // 2-second window → fps = frames/2
         const dirty = g_phase_accum_dirty_frames;
         const clean = g_phase_accum_clean_frames;
         const rows_rendered = g_phase_accum_rows_rendered;
@@ -1164,9 +1231,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const atlas_fl = g_phase_accum_atlas_flushes;
         const direct_f = g_phase_accum_direct_frames;
         const cached_f = g_phase_accum_cached_frames;
+        const full_dl = g_phase_accum_full_dl_frames;
+        const true_dl = g_phase_accum_true_dl_frames;
+        const stale_f = g_phase_accum_atlas_stale_frames;
         std.log.info(
-            "frame phases (avg/{d:.0}f): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  rows={d}/{d}  cells={d} gruns={d} bgrects={d} atlas_fl={d}  mode direct={d} cached={d}",
-            .{ n, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, rows_rendered, rows_skipped, cells, gruns, bgrects, atlas_fl, direct_f, cached_f },
+            "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
+            .{ n, fps, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
         );
         g_phase_accum_tick_ns = 0;
         g_phase_accum_offscreen_ns = 0;
@@ -1185,6 +1255,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_phase_accum_atlas_flushes = 0;
         g_phase_accum_direct_frames = 0;
         g_phase_accum_cached_frames = 0;
+        g_phase_accum_full_dl_frames = 0;
+        g_phase_accum_true_dl_frames = 0;
+        g_phase_accum_atlas_stale_frames = 0;
         g_phase_sample_frames = 0;
         g_phase_last_log_ns = frame_start_ns;
     }
@@ -1299,6 +1372,8 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
         }
         g_prev_wnd_proc = 0;
         g_subclassed_hwnd = null;
+        // Restore default timer resolution.
+        _ = win32.timeEndPeriod(1);
     }
     if (g_ft_renderer) |*renderer| {
         renderer.deinit();

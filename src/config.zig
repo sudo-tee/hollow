@@ -77,6 +77,9 @@ pub const Config = struct {
     top_bar_draw_status: bool = true,
     debug_overlay: bool = false,
     vsync: bool = true,
+    /// Frame cap used when vsync is disabled. Set to 0 to leave the render
+    /// loop uncapped.
+    max_fps: u32 = 120,
     /// Allow single-pane mode to skip the offscreen render-target cache and
     /// render directly into the swapchain.  Defaulting to false preserves the
     /// cached-RT path which gives smoother frame pacing.  Set to true to
