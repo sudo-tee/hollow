@@ -117,6 +117,12 @@ pub fn main() !void {
         std.log.err("bootstrap failed: {s}", .{@errorName(err)});
         std.process.exit(1);
     };
+    if (cli.renderer_safe_mode) {
+        app.config.renderer_safe_mode = true;
+        app.config.renderer_disable_swapchain_glyphs = true;
+    }
+    if (cli.renderer_disable_swapchain_glyphs) app.config.renderer_disable_swapchain_glyphs = true;
+    if (cli.renderer_disable_multi_pane_cache) app.config.renderer_disable_multi_pane_cache = true;
     app.report();
     sokol_runtime.run(&app) catch |err| {
         std.log.err("sokol_runtime failed: {s}", .{@errorName(err)});
@@ -126,6 +132,9 @@ pub fn main() !void {
 
 const Cli = struct {
     config_path: ?[]u8 = null,
+    renderer_safe_mode: bool = false,
+    renderer_disable_swapchain_glyphs: bool = false,
+    renderer_disable_multi_pane_cache: bool = false,
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !Cli {
@@ -143,8 +152,23 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
             continue;
         }
 
+        if (std.mem.eql(u8, arg, "--renderer-safe-mode")) {
+            cli.renderer_safe_mode = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--renderer-disable-swapchain-glyphs")) {
+            cli.renderer_disable_swapchain_glyphs = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--renderer-disable-multi-pane-cache")) {
+            cli.renderer_disable_multi_pane_cache = true;
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("usage: hollow-native [--config path]\n", .{});
+            std.debug.print("usage: hollow-native [--config path] [--renderer-safe-mode] [--renderer-disable-swapchain-glyphs] [--renderer-disable-multi-pane-cache]\n", .{});
             std.process.exit(0);
         }
     }

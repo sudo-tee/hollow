@@ -120,17 +120,21 @@ pub fn layoutSplitTree(
             switch (node.direction) {
                 .vertical => {
                     // Split left/right
-                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.width)) * ratio));
-                    const second_w = if (bounds.width > first_w) bounds.width - first_w else 0;
+                    const divider: u32 = if (bounds.width > 1) 1 else 0;
+                    const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
+                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                    const second_w = if (usable_w > first_w) usable_w - first_w else 0;
                     first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                    second_bounds = .{ .x = bounds.x + first_w, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
                 },
                 .horizontal => {
                     // Split top/bottom
-                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(bounds.height)) * ratio));
-                    const second_h = if (bounds.height > first_h) bounds.height - first_h else 0;
+                    const divider: u32 = if (bounds.height > 1) 1 else 0;
+                    const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
+                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                    const second_h = if (usable_h > first_h) usable_h - first_h else 0;
                     first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h, .width = bounds.width, .height = second_h };
+                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
                 },
             }
             layoutSplitTree(first, first_bounds, out, written);
@@ -907,6 +911,22 @@ fn findPaneLeafNode(node: *SplitNode, pane: *Pane) ?*SplitNode {
 
 fn subtreeContainsPane(node: *SplitNode, pane: *Pane) bool {
     return findPaneLeafNode(node, pane) != null;
+}
+
+/// Returns true if `target` is reachable from `root` (i.e. `target` is a node
+/// in the split tree rooted at `root`).  Used to validate cached node pointers
+/// (`g_drag_node`, `pending_split_ratio_node`) that may become dangling after
+/// tree mutations like `removePaneFromTree`.
+pub fn nodeIsInTree(root: *SplitNode, target: *const SplitNode) bool {
+    if (root == target) return true;
+    if (root.kind != .split) return false;
+    if (root.first) |first| {
+        if (nodeIsInTree(first, target)) return true;
+    }
+    if (root.second) |second| {
+        if (nodeIsInTree(second, target)) return true;
+    }
+    return false;
 }
 
 fn splitDirectionForFocus(direction: FocusDirection) SplitDirection {

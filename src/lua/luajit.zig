@@ -106,6 +106,7 @@ pub const Runtime = struct {
     state: *State,
     loaded_path: []u8,
     context: *BridgeContext,
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
         if (cfg.luajitLibrary()) |preferred| {
@@ -238,6 +239,8 @@ pub const Runtime = struct {
 
     /// Register app-level action callbacks so Lua can call split_pane etc.
     pub fn registerAppCallbacks(self: *Runtime, callbacks: AppCallbacks) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         self.context.app_callbacks = callbacks;
         if (self.context.pending_workspace_name) |name| {
             callbacks.set_workspace_name(callbacks.app, name);
@@ -247,6 +250,8 @@ pub const Runtime = struct {
     }
 
     pub fn fireGuiReady(self: *Runtime) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ctx = self.context;
         if (ctx.gui_ready_fired) return;
         ctx.gui_ready_fired = true;
@@ -269,6 +274,8 @@ pub const Runtime = struct {
     /// Fire the Lua on_key handler (if registered).
     /// Returns true if the key was consumed by Lua (handler returned true).
     pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.on_key_ref;
@@ -300,6 +307,8 @@ pub const Runtime = struct {
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.top_bar_ref;
@@ -337,6 +346,8 @@ pub const Runtime = struct {
     }
 
     pub fn resolveWorkspaceTitle(self: *Runtime, index: usize, is_active: bool, active_workspace_index: usize, workspace_count: usize, fallback: []const u8, out_buf: []u8) bar.Segment {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.workspace_title_ref;
@@ -375,14 +386,20 @@ pub const Runtime = struct {
     }
 
     pub fn hasTopBarFormatter(self: *Runtime) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         return self.context.top_bar_ref != LUA_NOREF;
     }
 
     pub fn hasWorkspaceTitleFormatter(self: *Runtime) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         return self.context.workspace_title_ref != LUA_NOREF;
     }
 
     pub fn resolveTopBarStatus(self: *Runtime, side: bar.Side, seg_buf: []bar.Segment, text_buf: []u8, active_tab_index: usize, tab_count: usize) []bar.Segment {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const ctx = self.context;
         const api = ctx.api;
         const ref = ctx.status_ref;
@@ -871,6 +888,18 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "renderer_single_pane_direct")) {
         cfg.renderer_single_pane_direct = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "renderer_safe_mode")) {
+        cfg.renderer_safe_mode = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "renderer_disable_swapchain_glyphs")) {
+        cfg.renderer_disable_swapchain_glyphs = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "renderer_disable_multi_pane_cache")) {
+        cfg.renderer_disable_multi_pane_cache = value;
         return;
     }
 }

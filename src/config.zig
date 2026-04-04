@@ -85,6 +85,9 @@ pub const Config = struct {
     /// cached-RT path which gives smoother frame pacing.  Set to true to
     /// opt back into the lower-latency but burstier direct-render path.
     renderer_single_pane_direct: bool = false,
+    renderer_safe_mode: bool = false,
+    renderer_disable_swapchain_glyphs: bool = false,
+    renderer_disable_multi_pane_cache: bool = false,
     /// Multiplier applied to raw wheel/touchpad scroll delta before
     /// accumulation into whole-line steps.  1.0 is the neutral value; the
     /// old hard-coded value was 2.0.

@@ -86,10 +86,6 @@ var g_title_buf: [256]u8 = [_]u8{0} ** 256;
 var g_renderer_ready = false;
 var g_logged_first_frame = false;
 var g_frame_index: usize = 0;
-var g_logged_first_key = false;
-var g_logged_first_char = false;
-var g_logged_first_mouse = false;
-var g_logged_first_scroll = false;
 var g_ft_renderer: ?FtRenderer = null;
 var g_gui_ready_fired = false;
 var g_window_chrome_applied = false;
@@ -123,6 +119,7 @@ var g_drag_node: ?*SplitNode = null;
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
+var g_top_bar_cache: TopBarCache = .{};
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -180,6 +177,14 @@ const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
     cache: PaneCache,
+    /// Newly created or resized render targets must be cleared on their next
+    /// render pass; LOAD on an uninitialized RT leaves visible garbage.
+    needs_clear: bool = true,
+    /// After a geometry change, keep forcing full redraws for a couple of
+    /// frames so terminal reflow/resize fallout cannot leave stale glyphs in
+    /// the cache.
+    force_full_frames: u8 = 2,
+    layout_generation: u32 = 0,
     /// The atlas_epoch value at the time this pane was last rendered to its RT.
     /// When renderer.atlas_epoch > last_atlas_epoch, the atlas changed since the
     /// last render and the pane must do a full redraw (force_full = true) to pick
@@ -212,6 +217,13 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                 if (entry.cache.needsResize(w, h)) {
                     entry.cache.deinit();
                     entry.cache = PaneCache.init(w, h);
+                    entry.cache.clear();
+                    entry.needs_clear = true;
+                    entry.force_full_frames = 2;
+                    entry.layout_generation = 0;
+                    @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
+                    @memset(&entry.row_map_vals, 0);
+                    entry.prev_cursor_row = std.math.maxInt(usize);
                     entry.last_atlas_epoch = 0; // size changed — force full redraw next frame
                 }
                 return entry;
@@ -225,11 +237,16 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
         std.log.warn("sokol_runtime: pane cache table full ({d} entries)", .{MAX_PANE_CACHES});
         return null;
     }
-    g_pane_caches[free_slot] = .{
+    var new_entry = PaneCacheEntry{
         .pane = pane,
         .cache = PaneCache.init(w, h),
+        .needs_clear = true,
+        .force_full_frames = 2,
+        .layout_generation = 0,
         .last_atlas_epoch = 0,
     };
+    new_entry.cache.clear();
+    g_pane_caches[free_slot] = new_entry;
     return &g_pane_caches[free_slot].?;
 }
 
@@ -265,6 +282,24 @@ const TopBarHit = struct {
     in_top_bar: bool = false,
     tab_index: ?usize = null,
     close_tab_index: ?usize = null,
+};
+
+const MAX_TOP_BAR_TABS = 64;
+
+const CachedTopBarTab = struct {
+    x: f32 = 0,
+    width: f32 = 0,
+    close_x: f32 = 0,
+    close_w: f32 = 0,
+    has_close: bool = false,
+};
+
+const TopBarCache = struct {
+    enabled: bool = false,
+    width: f32 = 0,
+    height: f32 = 0,
+    tab_count: usize = 0,
+    tabs: [MAX_TOP_BAR_TABS]CachedTopBarTab = [_]CachedTopBarTab{.{}} ** MAX_TOP_BAR_TABS,
 };
 
 fn utf8CodepointLen(first_byte: u8) usize {
@@ -363,78 +398,51 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
     return layouts[0..layout_count];
 }
 
-fn topBarHitTest(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
+fn resetTopBarCache(window_width: f32, tbh: f32) void {
+    g_top_bar_cache = .{
+        .enabled = tbh > 0,
+        .width = window_width,
+        .height = tbh,
+    };
+}
+
+fn cacheTopBarTab(index: usize, x: f32, width: f32, close_x: ?f32, close_w: f32) void {
+    if (index >= g_top_bar_cache.tabs.len) return;
+    g_top_bar_cache.tab_count = @max(g_top_bar_cache.tab_count, index + 1);
+    g_top_bar_cache.tabs[index] = .{
+        .x = x,
+        .width = width,
+        .close_x = close_x orelse 0,
+        .close_w = close_w,
+        .has_close = close_x != null,
+    };
+}
+
+fn topBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
     var hit = TopBarHit{};
-    const tbh: f32 = @floatFromInt(app.tabBarHeight());
-    if (tbh <= 0 or mouse_y < 0 or mouse_y >= tbh or mouse_x < 0 or mouse_x >= window_width or window_width <= 0) return hit;
+    if (!g_top_bar_cache.enabled or mouse_y < 0 or mouse_y >= g_top_bar_cache.height or mouse_x < 0 or mouse_x >= window_width) return hit;
 
     hit.in_top_bar = true;
-
-    const tab_count = app.tabCount();
-    if (!app.shouldDrawTopBarTabs() or tab_count == 0) return hit;
-
-    const renderer = if (g_ft_renderer) |*r| r else return hit;
-    const close_w: f32 = renderer.cell_w + 10.0;
-
-    if (app.hasCustomTopBarTabs()) {
-        var left_text_buf: [512]u8 = undefined;
-        var right_text_buf: [512]u8 = undefined;
-        var left_segments_buf: [16]bar.Segment = undefined;
-        var right_segments_buf: [16]bar.Segment = undefined;
-        var custom_tab_layouts: [32]CustomTabLayout = undefined;
-        var custom_tab_title_storage: [1024]u8 = undefined;
-
-        var left_end: f32 = 4.0;
-        var right_width: f32 = 0.0;
-        var right_start: f32 = window_width;
-        if (app.shouldDrawTopBarStatus()) {
-            const left_segments = app.topBarStatus(.left, &left_segments_buf, &left_text_buf);
-            const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
-            for (left_segments) |seg| {
-                left_end += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+    const tab_count = @min(g_top_bar_cache.tab_count, g_top_bar_cache.tabs.len);
+    for (g_top_bar_cache.tabs[0..tab_count], 0..) |tab, ti| {
+        if (tab.width <= 0) continue;
+        if (mouse_x >= tab.x and mouse_x < tab.x + tab.width) {
+            hit.tab_index = ti;
+            if (tab.has_close and mouse_x >= tab.close_x and mouse_x < tab.close_x + tab.close_w) {
+                hit.close_tab_index = ti;
             }
-            for (right_segments) |seg| {
-                right_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
-            }
-            right_start = @max(left_end, window_width - right_width);
+            return hit;
         }
-
-        if (app.shouldDrawWorkspaceSwitcher()) {
-            var ws_buf: [128]u8 = undefined;
-            const ws_seg = app.workspaceTitleSegment(app.activeWorkspaceIndex(), &ws_buf);
-            left_end += @as(f32, @floatFromInt(countCodepoints(ws_seg.text))) * renderer.cell_w;
-            if (!app.hasCustomWorkspaceTitle()) left_end += renderer.cell_w * 0.5;
-        }
-
-        const tab_gap: f32 = if (right_width > 0) renderer.cell_w else 0.0;
-        const max_right = if (right_width > 0) right_start - tab_gap else window_width;
-        const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
-        for (layouts, 0..) |layout, ti| {
-            if (mouse_x >= layout.x and mouse_x < layout.x + layout.width) {
-                hit.tab_index = ti;
-                return hit;
-            }
-        }
-        return hit;
     }
-
-    const tab_w: f32 = if (tab_count > 0) window_width / @as(f32, @floatFromInt(tab_count)) else window_width;
-    if (tab_w <= 0) return hit;
-
-    const raw = mouse_x / tab_w;
-    const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
-    const ti: usize = @intFromFloat(clamped);
-    hit.tab_index = ti;
-
-    const tab_right = (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
-    if (mouse_x >= tab_right - close_w) hit.close_tab_index = ti;
     return hit;
 }
 
 fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
     const hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
-    app.hovered_tab_index = hit.tab_index;
-    app.hovered_close_tab_index = hit.close_tab_index;
+    _ = app.enqueueMouse(.{ .hover = .{
+        .tab_index = hit.tab_index,
+        .close_tab_index = hit.close_tab_index,
+    } });
     return hit;
 }
 
@@ -508,10 +516,6 @@ pub fn run(app: *App) !void {
     g_renderer_ready = false;
     g_logged_first_frame = false;
     g_frame_index = 0;
-    g_logged_first_key = false;
-    g_logged_first_char = false;
-    g_logged_first_mouse = false;
-    g_logged_first_scroll = false;
     g_ft_renderer = null;
     g_gui_ready_fired = false;
     g_window_chrome_applied = false;
@@ -545,6 +549,15 @@ pub fn run(app: *App) !void {
     std.log.info("sokol: renderer_single_pane_direct={s} (default=false, false=cached RT path)", .{
         if (app.config.renderer_single_pane_direct) "true" else "false",
     });
+    std.log.info("sokol: renderer_safe_mode={s} (true=direct draw for all panes)", .{
+        if (app.config.renderer_safe_mode) "true" else "false",
+    });
+    std.log.info("sokol: renderer_disable_swapchain_glyphs={s}", .{
+        if (app.config.renderer_disable_swapchain_glyphs) "true" else "false",
+    });
+    std.log.info("sokol: renderer_disable_multi_pane_cache={s}", .{
+        if (app.config.renderer_disable_multi_pane_cache) "true" else "false",
+    });
     std.log.info("sokol: scroll_multiplier={d:.2}", .{app.config.scroll_multiplier});
 
     // Raise the Windows multimedia timer resolution to 1 ms so that
@@ -565,6 +578,11 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     var sg_desc = std.mem.zeroes(c.sg_desc);
     sg_desc.environment = c.sglue_environment();
     c.sg_setup(&sg_desc);
+    {
+        const sc = c.sglue_swapchain();
+        std.log.info("sokol: swapchain color_format={d} depth_format={d} samples={d}", .{ sc.color_format, sc.depth_format, sc.sample_count });
+        std.log.info("sokol: environment color_format={d} depth_format={d} samples={d}", .{ sg_desc.environment.defaults.color_format, sg_desc.environment.defaults.depth_format, sg_desc.environment.defaults.sample_count });
+    }
 
     // sokol_gl is required by sokol_fontstash for glyph rendering.
     var sgl_desc = std.mem.zeroes(c.sgl_desc_t);
@@ -704,13 +722,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.computeActiveLayout(&layout_buf);
 
-    // Decide once whether to use direct rendering for single-pane mode.
-    // Controlled by config.renderer_single_pane_direct (default false).
-    // Prefer the cached RT path for smoother frame pacing; set to true to
-    // opt into the lower-latency but burstier direct-render path.
+    // Decide once whether to use direct rendering.
+    // renderer_safe_mode forces the simpler direct path for all panes as a
+    // diagnostic escape hatch from the cached RT pipeline.
     const use_direct_render = app.config.renderer_single_pane_direct and
         leaves.len == 0 and app.tabBarHeight() == 0;
-
+    const use_safe_render = app.config.renderer_safe_mode;
+    const use_direct_multi_pane = app.config.renderer_disable_multi_pane_cache and leaves.len > 1;
     if (g_ft_renderer) |*renderer| {
         renderer.beginFrame();
         // Reset frame-local queue/gpu accumulators for the debug overlay.
@@ -753,6 +771,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     fb_w: f32,
                     fb_h: f32,
                     focused: bool,
+                    layout_generation: u32,
+                    cell_width_px: u32,
+                    cell_height_px: u32,
                 ) bool {
                     _ = oy;
                     _ = fb_w;
@@ -767,13 +788,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // dirty level.
                     _ = ox; // suppress unused warning
                     const dirty_level = pane.render_dirty;
+                    const geometry_stale = cache_entry.force_full_frames > 0 or g_drag_node != null or cache_entry.layout_generation != layout_generation;
                     // Atlas-epoch check: if the atlas was flushed since this pane's
                     // last render, its existing RT content has stale glyph UVs and
                     // must be fully redrawn. Crucially we use the epoch (not the
                     // atlas_dirty bool) so that panes rendered AFTER the atlas flush
                     // in the same frame don't cause unnecessary full redraws.
                     const atlas_stale = cache_entry.last_atlas_epoch != rend.atlas_epoch;
-                    if (dirty_level == .false_value and !atlas_stale) {
+                    if (dirty_level == .false_value and !atlas_stale and !cache_entry.needs_clear and !geometry_stale) {
                         // Nothing changed — skip re-render, RT still valid.
                         return false;
                     }
@@ -805,7 +827,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // rows dirty in rowDirty() after a CSI S, so force_full here doesn't save work
                     // but does force a slow CLEAR action.  Use atlas_stale as the only trigger for
                     // force_full so that scroll frames stay as fast as partial updates.
-                    const force_full = atlas_stale;
+                    const expected_cols: u16 = @intCast(@min(1000, @max(1, pw_u / @max(@as(u32, 1), cell_width_px))));
+                    const expected_rows: u16 = @intCast(@min(500, @max(1, ph_u / @max(@as(u32, 1), cell_height_px))));
+                    const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
+                    const force_full = g_drag_node != null or dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or size_mismatch;
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
@@ -833,7 +858,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // because alt-screen switches / resize-like events may reuse rowRaw keys
                     // for different content. Clear the map, then let renderToCache write the
                     // fresh hashes during this frame so the next .true_value frame can skip.
-                    const row_map_skip = dirty_level != .full and !force_full;
+                    const row_map_skip = g_drag_node == null and dirty_level != .full and !force_full;
                     if (!row_map_skip) {
                         // Stored hashes are invalid for this frame; rebuild them as we render.
                         @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
@@ -877,6 +902,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // the pane is not forced into another full redraw next frame unless the
                     // atlas changes again.
                     cache_entry.last_atlas_epoch = rend.atlas_epoch;
+                    cache_entry.needs_clear = false;
+                    cache_entry.layout_generation = layout_generation;
+                    if (cache_entry.force_full_frames > 0) cache_entry.force_full_frames -= 1;
+                    if (dirty_level == .full) {
+                        @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
+                        @memset(&cache_entry.row_map_vals, 0);
+                    }
 
                     // Update prev_cursor_row for the next frame: the current cursor
                     // row becomes the "previous" cursor row so we can erase ghost
@@ -893,7 +925,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             }.call;
 
-            if (do_leaves) {
+            if (use_safe_render or use_direct_multi_pane) {
+                g_phase_accum_direct_frames += 1;
+            } else if (do_leaves) {
                 for (leaves) |leaf| {
                     if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
@@ -901,7 +935,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    if (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused)) {
+                    if (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
                         g_phase_accum_dirty_frames += 1;
                         g_phase_accum_cached_frames += 1;
                     } else {
@@ -929,12 +963,82 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true)) {
+                    if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
                         g_phase_accum_dirty_frames += 1;
                     } else {
                         g_phase_accum_clean_frames += 1;
                     }
                     g_phase_accum_cached_frames += 1;
+                }
+            }
+        }
+
+        if (use_safe_render or use_direct_multi_pane) {
+            if (app.ghostty) |*runtime| {
+                if (leaves.len > 0) {
+                    const active = app.activePane();
+                    for (leaves) |leaf| {
+                        if (!leaf.pane.render_state_ready) continue;
+                        const ox: f32 = @floatFromInt(leaf.bounds.x);
+                        const oy: f32 = @floatFromInt(leaf.bounds.y);
+                        const pw: f32 = @floatFromInt(leaf.bounds.width);
+                        const ph: f32 = @floatFromInt(leaf.bounds.height);
+                        renderer.queueInViewport(
+                            runtime,
+                            leaf.pane.render_state,
+                            &leaf.pane.row_iterator,
+                            &leaf.pane.row_cells,
+                            ox,
+                            oy,
+                            pw,
+                            ph,
+                            width,
+                            height,
+                            leaf.pane == active,
+                            true,
+                            null,
+                            null,
+                            false,
+                            std.math.maxInt(usize),
+                        );
+                        g_phase_accum_rows_rendered += renderer.last_rows_rendered;
+                        g_phase_accum_rows_skipped += renderer.last_rows_skipped;
+                        g_phase_accum_cells_visited += renderer.last_cells_visited;
+                        g_phase_accum_glyph_runs += renderer.last_glyph_runs;
+                        g_phase_accum_bg_rects += renderer.last_bg_rects;
+                        if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
+                        leaf.pane.render_dirty = .false_value;
+                    }
+                } else if (app.activePane()) |pane| {
+                    if (!pane.render_state_ready) {
+                        // nothing to queue
+                    } else {
+                        renderer.queueInViewport(
+                            runtime,
+                            pane.render_state,
+                            &pane.row_iterator,
+                            &pane.row_cells,
+                            0,
+                            0,
+                            width,
+                            height,
+                            width,
+                            height,
+                            true,
+                            true,
+                            null,
+                            null,
+                            false,
+                            std.math.maxInt(usize),
+                        );
+                        g_phase_accum_rows_rendered += renderer.last_rows_rendered;
+                        g_phase_accum_rows_skipped += renderer.last_rows_skipped;
+                        g_phase_accum_cells_visited += renderer.last_cells_visited;
+                        g_phase_accum_glyph_runs += renderer.last_glyph_runs;
+                        g_phase_accum_bg_rects += renderer.last_bg_rects;
+                        if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
+                        pane.render_dirty = .false_value;
+                    }
                 }
             }
         }
@@ -970,7 +1074,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
-            if (do_leaves) {
+            if (use_safe_render or use_direct_multi_pane) {
+                // Visible panes were already queued on the default sgl context
+                // before the swapchain pass so we can upload glyph verts outside
+                // the pass. Nothing to blit here.
+            } else if (do_leaves) {
                 for (leaves) |leaf| {
                     if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
@@ -992,9 +1100,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             pane.render_state,
                             &pane.row_iterator,
                             &pane.row_cells,
+                            0,
+                            0,
                             width,
                             height,
+                            width,
+                            height,
+                            true,
                             pane.render_dirty == .full or renderer.atlas_dirty,
+                            std.math.maxInt(usize),
                         );
                         // Accumulate direct-render diagnostics.
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
@@ -1070,6 +1184,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // Draw tab bar when ≥2 tabs exist.
     const tbh_u = app.tabBarHeight();
+    resetTopBarCache(width, @floatFromInt(tbh_u));
     if (tbh_u > 0) {
         if (g_ft_renderer) |*renderer| {
             const tbh: f32 = @floatFromInt(tbh_u);
@@ -1129,6 +1244,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const max_right = if (right_width > 0) right_start - tab_gap else width;
                     const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
                     for (layouts, 0..) |layout, ti| {
+                        cacheTopBarTab(ti, layout.x, layout.width, null, 0.0);
                         const is_active = ti == active_idx;
                         const hover_tab = app.hovered_tab_index != null and app.hovered_tab_index.? == ti;
                         const bg = layout.bg orelse if (is_active)
@@ -1159,6 +1275,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 } else {
                     for (0..tab_count) |ti| {
                         const tx: f32 = @as(f32, @floatFromInt(ti)) * tab_w;
+                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
+                        cacheTopBarTab(ti, tx, tab_w, close_x - 4.0, close_w);
 
                         // Tab background.
                         const is_active = ti == active_idx;
@@ -1206,7 +1324,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         }
 
                         // Close button "×".
-                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
                         const close_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
                         if (hover_close) {
                             drawBorderRect(close_x - 4.0, 3.0, close_w - 2.0, tbh - 6.0, 92, 44, 44, 255);
@@ -1246,7 +1363,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // For now we keep this as a safety net — it will be hit only in direct-render
     // mode which is disabled by default.
     if (g_ft_renderer) |*renderer| {
-        renderer.drawGlyphQuads(width, height, false, .{ 0.0, 0.0, 0.0, 1.0 });
+        if (app.config.renderer_disable_swapchain_glyphs) {
+            renderer.discardGlyphQuads();
+        } else {
+            renderer.drawGlyphQuads(width, height, false, .{ 0.0, 0.0, 0.0, 1.0 });
+        }
     }
 
     c.sg_end_pass();
@@ -1376,7 +1497,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
         }
     }
 
-    const render_mode: []const u8 = if (app.config.renderer_single_pane_direct and
+    const render_mode: []const u8 = if (app.config.renderer_safe_mode) "safe-direct" else if (app.config.renderer_single_pane_direct and
         app.activePane() != null and app.tabBarHeight() == 0) "direct" else "cached";
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
@@ -1584,11 +1705,6 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
-    if (!g_logged_first_key and builtin.os.tag == .windows) {
-        g_logged_first_key = true;
-        std.log.info("first Windows key event key_code={d}", .{event.key_code});
-    }
-
     const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
 
@@ -1607,11 +1723,6 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
-    if (!g_logged_first_char and builtin.os.tag == .windows) {
-        g_logged_first_char = true;
-        std.log.info("first Windows char event char_code={d}", .{event.char_code});
-    }
-
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
     // Defer sendText to the frame thread — avoids racing with DLL calls in tick().
@@ -1619,11 +1730,6 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 }
 
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {
-    if (!g_logged_first_mouse and builtin.os.tag == .windows) {
-        g_logged_first_mouse = true;
-        std.log.info("first Windows mouse event button={d} x={d:.2} y={d:.2}", .{ event.mouse_button, event.mouse_x, event.mouse_y });
-    }
-
     const button = switch (event.mouse_button) {
         c.SAPP_MOUSEBUTTON_LEFT => ghostty.MouseButton.left,
         c.SAPP_MOUSEBUTTON_RIGHT => ghostty.MouseButton.right,
@@ -1637,6 +1743,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (g_drag_node != null) _ = app.enqueueMouse(.divider_commit);
         g_drag_node = null;
         if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
     }
@@ -1665,10 +1772,6 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
         // 6-pixel hit radius on each side of the 2px seam.
         if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
-            std.log.info("divider hit node={x} dir={s} mouse=({d:.1},{d:.1}) bounds=({d},{d} {d}x{d})", .{
-                @intFromPtr(hit.node), @tagName(hit.node.direction), event.mouse_x,    event.mouse_y,
-                hit.bounds.x,          hit.bounds.y,                 hit.bounds.width, hit.bounds.height,
-            });
             g_drag_node = hit.node;
             g_drag_direction = hit.node.direction;
             g_drag_bounds = hit.bounds;
@@ -1704,25 +1807,35 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     // forwarding the event to the terminal (the cursor is a resize cursor, not
     // a text cursor).
     if (g_drag_node) |node| {
-        const bw: f32 = @floatFromInt(@max(1, g_drag_bounds.width));
-        const bh: f32 = @floatFromInt(@max(1, g_drag_bounds.height));
-        const bx: f32 = @floatFromInt(g_drag_bounds.x);
-        const by: f32 = @floatFromInt(g_drag_bounds.y);
-        const new_ratio = switch (g_drag_direction) {
-            .vertical => (event.mouse_x - bx) / bw,
-            .horizontal => (event.mouse_y - by) / bh,
-        };
-        std.log.info("divider drag node={x} mouse=({d:.1},{d:.1}) new_ratio={d:.4}", .{ @intFromPtr(node), event.mouse_x, event.mouse_y, new_ratio });
-        app.setSplitNodeRatio(node, new_ratio);
-        // Keep the resize cursor active while dragging.
-        if (builtin.os.tag == .windows) {
-            const cursor_id: usize = switch (g_drag_direction) {
-                .vertical => win32.IDC_SIZEWE,
-                .horizontal => win32.IDC_SIZENS,
+        // Validate that the cached node pointer is still part of the active
+        // split tree.  Tree mutations (pane close, tab switch) can free the
+        // node, leaving g_drag_node dangling.
+        if (!app.isSplitNodeValid(node)) {
+            std.log.info("divider drag cancelled: node={x} no longer in tree", .{@intFromPtr(node)});
+            g_drag_node = null;
+        } else {
+            const bw: f32 = @floatFromInt(@max(1, g_drag_bounds.width));
+            const bh: f32 = @floatFromInt(@max(1, g_drag_bounds.height));
+            const bx: f32 = @floatFromInt(g_drag_bounds.x);
+            const by: f32 = @floatFromInt(g_drag_bounds.y);
+            const new_ratio = switch (g_drag_direction) {
+                .vertical => (event.mouse_x - bx) / bw,
+                .horizontal => (event.mouse_y - by) / bh,
             };
-            _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+            _ = app.enqueueMouse(.{ .divider_ratio = .{
+                .node = node,
+                .ratio = new_ratio,
+            } });
+            // Keep the resize cursor active while dragging.
+            if (builtin.os.tag == .windows) {
+                const cursor_id: usize = switch (g_drag_direction) {
+                    .vertical => win32.IDC_SIZEWE,
+                    .horizontal => win32.IDC_SIZENS,
+                };
+                _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+            }
+            return;
         }
-        return;
     }
 
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
@@ -1754,10 +1867,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
-    if (builtin.os.tag == .windows) {
-        std.log.info("scroll event scroll_y={d:.3} scroll_x={d:.3} mouse=({d:.1},{d:.1})", .{ event.scroll_y, event.scroll_x, event.mouse_x, event.mouse_y });
-        g_logged_first_scroll = true;
-    }
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
     _ = app.enqueueMouse(.{ .scroll = .{
         .x = event.mouse_x,

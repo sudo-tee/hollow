@@ -9,13 +9,21 @@ EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
 TARGET="x86_64-windows-gnu"
 BUILD=1
 RUN=1
+OPTIMIZE=""
+SAFE_RENDER=0
+DISABLE_SWAPCHAIN_GLYPHS=0
+DISABLE_MULTI_PANE_CACHE=0
 
 for arg in "$@"; do
 	case "$arg" in
 	--no-build) BUILD=0 ;;
 	--build-only) RUN=0 ;;
+	--debug) OPTIMIZE="Debug" ;;
+	--safe-render) SAFE_RENDER=1 ;;
+	--no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
+	--no-multi-pane-cache) DISABLE_MULTI_PANE_CACHE=1 ;;
 	--help | -h)
-		echo "Usage: $0 [--no-build] [--build-only]"
+		echo "Usage: $0 [--no-build] [--build-only] [--debug] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache]"
 		exit 0
 		;;
 	esac
@@ -23,12 +31,19 @@ done
 
 if [[ $BUILD -eq 1 ]]; then
 	echo "[launch] building Windows target"
+	if [[ -n "$OPTIMIZE" ]]; then
+		echo "[launch] optimize mode: $OPTIMIZE"
+	fi
 	# Default to temp caches to avoid WSL-on-/mnt/c rename failures.
 	# Allow the user to override by setting ZIG_LOCAL_CACHE_DIR or ZIG_GLOBAL_CACHE_DIR.
 	ZIG_LOCAL_CACHE_DIR=${ZIG_LOCAL_CACHE_DIR:-/tmp/hollow-zig-cache}
 	ZIG_GLOBAL_CACHE_DIR=${ZIG_GLOBAL_CACHE_DIR:-/tmp/hollow-zig-global}
 	echo "[launch] using ZIG_LOCAL_CACHE_DIR=$ZIG_LOCAL_CACHE_DIR ZIG_GLOBAL_CACHE_DIR=$ZIG_GLOBAL_CACHE_DIR"
-	zig build -Dtarget="$TARGET" \
+	BUILD_ARGS=("-Dtarget=$TARGET")
+	if [[ -n "$OPTIMIZE" ]]; then
+		BUILD_ARGS+=("-Doptimize=$OPTIMIZE")
+	fi
+	zig build "${BUILD_ARGS[@]}" \
 		--cache-dir "$ZIG_LOCAL_CACHE_DIR" \
 		--global-cache-dir "$ZIG_GLOBAL_CACHE_DIR"
 fi
@@ -58,11 +73,11 @@ copy_if_exists "$BIN_DIR/lua51.dll" "$SCRIPT_DIR/lua51.dll"
 copy_if_exists "$SCRIPT_DIR/lua51.dll" "$BIN_DIR/lua51.dll"
 
 for _dll in libfreetype-6.dll libharfbuzz-0.dll libgcc_s_seh-1.dll libstdc++-6.dll \
-            libwinpthread-1.dll \
-            libglib-2.0-0.dll libbrotlidec.dll libbrotlicommon.dll \
-            libbz2-1.dll libpng16-16.dll zlib1.dll libpcre2-8-0.dll \
-            libiconv-2.dll libintl-8.dll; do
-    copy_if_exists "$BIN_DIR/$_dll" "$SCRIPT_DIR/$_dll"
+	libwinpthread-1.dll \
+	libglib-2.0-0.dll libbrotlidec.dll libbrotlicommon.dll \
+	libbz2-1.dll libpng16-16.dll zlib1.dll libpcre2-8-0.dll \
+	libiconv-2.dll libintl-8.dll; do
+	copy_if_exists "$BIN_DIR/$_dll" "$SCRIPT_DIR/$_dll"
 done
 
 if [[ ! -f "$SCRIPT_DIR/lua51.dll" ]]; then
@@ -70,6 +85,22 @@ if [[ ! -f "$SCRIPT_DIR/lua51.dll" ]]; then
 fi
 
 if [[ $RUN -eq 1 ]]; then
+	RUN_ARGS=()
+	if [[ $SAFE_RENDER -eq 1 ]]; then
+		echo "[launch] renderer safe mode enabled"
+		RUN_ARGS+=("--renderer-safe-mode")
+		if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 0 ]]; then
+			DISABLE_SWAPCHAIN_GLYPHS=1
+		fi
+	fi
+	if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 1 ]]; then
+		echo "[launch] swapchain glyph draw disabled"
+		RUN_ARGS+=("--renderer-disable-swapchain-glyphs")
+	fi
+	if [[ $DISABLE_MULTI_PANE_CACHE -eq 1 ]]; then
+		echo "[launch] multi-pane cache disabled"
+		RUN_ARGS+=("--renderer-disable-multi-pane-cache")
+	fi
 	echo "[launch] running $EXE_PATH"
-	exec "$EXE_PATH"
+	exec "$EXE_PATH" "${RUN_ARGS[@]}"
 fi

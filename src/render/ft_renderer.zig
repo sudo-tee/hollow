@@ -72,6 +72,7 @@ const FsParams = extern struct {
 // At 300 cols × 100 rows that's 30 000 glyphs × 4 verts = 120 000 vertices.
 // A typical 80×24 terminal is ~1 920 glyphs.  256k gives comfortable headroom.
 const MAX_GLYPH_VERTS: usize = 256 * 1024;
+const GLYPH_VBUF_RING_LEN: usize = 8;
 
 // ── Glyph cache entry ─────────────────────────────────────────────────────────
 const Glyph = struct {
@@ -219,6 +220,15 @@ pub const PaneCache = struct {
         };
     }
 
+    pub fn clear(self: *PaneCache) void {
+        var pass = std.mem.zeroes(c.sg_pass);
+        pass.attachments.colors[0] = self.rt_att_view;
+        pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+        pass.action.colors[0].clear_value = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+        c.sg_begin_pass(&pass);
+        c.sg_end_pass();
+    }
+
     /// Destroy all GPU resources held by this cache.
     pub fn deinit(self: *PaneCache) void {
         c.sgl_destroy_context(self.sgl_ctx);
@@ -310,11 +320,15 @@ pub const FtRenderer = struct {
 
     // Custom glyph pipeline (raw sg_pipeline, gamma-correct shader).
     glyph_shd: c.sg_shader,
-    glyph_pip: c.sg_pipeline, // swapchain color format (default)
+    glyph_pip: c.sg_pipeline, // swapchain color format
     glyph_pip_offscreen: c.sg_pipeline, // RGBA8 offscreen format
+    swapchain_color_format: c.sg_pixel_format,
     // Stream vertex buffer for glyph quads.
     // Uploaded once per pass from glyph_verts_cpu.
-    glyph_vbuf: c.sg_buffer,
+    glyph_vbufs: [GLYPH_VBUF_RING_LEN]c.sg_buffer,
+    glyph_vbuf_index: usize,
+    uploaded_glyph_vbuf: c.sg_buffer,
+    uploaded_glyph_verts: usize,
     // Stream index buffer: pre-built quad indices (0,1,2, 0,2,3, 6,7,8, ...).
     glyph_ibuf: c.sg_buffer,
     // CPU-side glyph vertex staging array.
@@ -587,7 +601,10 @@ pub const FtRenderer = struct {
             }
         }
 
-        // Glyph render pipeline — swapchain pass (color format = 0 → default).
+        const swapchain = c.sglue_swapchain();
+        const swapchain_color_format = if (swapchain.color_format != c.SG_PIXELFORMAT_NONE) swapchain.color_format else c.sglue_environment().defaults.color_format;
+
+        // Glyph render pipeline — swapchain pass.
         var gpip_desc = std.mem.zeroes(c.sg_pipeline_desc);
         gpip_desc.shader = glyph_shd;
         // Vertex layout: stride 20 bytes.
@@ -604,6 +621,7 @@ pub const FtRenderer = struct {
         gpip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
         gpip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
         gpip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        gpip_desc.colors[0].pixel_format = swapchain_color_format;
         gpip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
         gpip_desc.label = "glyph-pipeline";
         const glyph_pip = c.sg_make_pipeline(&gpip_desc);
@@ -637,7 +655,20 @@ pub const FtRenderer = struct {
         vbuf_desc.usage.vertex_buffer = true;
         vbuf_desc.usage.stream_update = true;
         vbuf_desc.label = "glyph-verts";
-        const glyph_vbuf = c.sg_make_buffer(&vbuf_desc);
+        var glyph_vbufs: [GLYPH_VBUF_RING_LEN]c.sg_buffer = undefined;
+        for (0..GLYPH_VBUF_RING_LEN) |i| {
+            vbuf_desc.label = switch (i) {
+                0 => "glyph-verts-0",
+                1 => "glyph-verts-1",
+                2 => "glyph-verts-2",
+                3 => "glyph-verts-3",
+                4 => "glyph-verts-4",
+                5 => "glyph-verts-5",
+                6 => "glyph-verts-6",
+                else => "glyph-verts-7",
+            };
+            glyph_vbufs[i] = c.sg_make_buffer(&vbuf_desc);
+        }
 
         // Static index buffer: 6 indices per quad (0,1,2, 0,2,3), pre-built
         // for the maximum number of quads we ever draw in one call.
@@ -716,7 +747,11 @@ pub const FtRenderer = struct {
             .glyph_shd = glyph_shd,
             .glyph_pip = glyph_pip,
             .glyph_pip_offscreen = glyph_pip_offscreen,
-            .glyph_vbuf = glyph_vbuf,
+            .swapchain_color_format = swapchain_color_format,
+            .glyph_vbufs = glyph_vbufs,
+            .glyph_vbuf_index = 0,
+            .uploaded_glyph_vbuf = glyph_vbufs[0],
+            .uploaded_glyph_verts = 0,
             .glyph_ibuf = glyph_ibuf,
             .glyph_verts_cpu = glyph_verts_cpu,
             .glyph_verts_count = 0,
@@ -853,7 +888,7 @@ pub const FtRenderer = struct {
         // Custom glyph pipeline resources.
         self.allocator.free(self.glyph_verts_cpu);
         c.sg_destroy_buffer(self.glyph_ibuf);
-        c.sg_destroy_buffer(self.glyph_vbuf);
+        for (self.glyph_vbufs) |buf| c.sg_destroy_buffer(buf);
         c.sg_destroy_pipeline(self.glyph_pip_offscreen);
         c.sg_destroy_pipeline(self.glyph_pip);
         c.sg_destroy_shader(self.glyph_shd);
@@ -905,9 +940,15 @@ pub const FtRenderer = struct {
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
+        offset_x: f32,
+        offset_y: f32,
         screen_w: f32,
         screen_h: f32,
+        fb_w: f32,
+        fb_h: f32,
+        is_focused: bool,
         force_full: bool,
+        prev_cursor_row: usize,
     ) void {
         // Reset per-call diagnostic counters.
         self.last_rows_rendered = 0;
@@ -918,7 +959,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, force_full, null, null, false, std.math.maxInt(usize));
+        self.queueInViewport(runtime, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -1220,6 +1261,15 @@ pub const FtRenderer = struct {
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
             var quads_open = false;
+            if (force_full) {
+                c.sgl_begin_quads();
+                quads_open = true;
+                c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
+                c.sgl_v2f(0.0, 0.0);
+                c.sgl_v2f(pane_w, 0.0);
+                c.sgl_v2f(pane_w, pane_h);
+                c.sgl_v2f(0.0, pane_h);
+            }
             while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
                 // Per-row dirty skip (partial updates only).
                 // Exception: prev_cursor_row must always be re-rendered to erase
@@ -1849,11 +1899,15 @@ pub const FtRenderer = struct {
     /// the subsequent pass to issue the actual draw, which clears the count.
     pub fn uploadGlyphVerts(self: *FtRenderer) usize {
         const n_verts = self.glyph_verts_count;
+        self.uploaded_glyph_verts = n_verts;
         if (n_verts == 0) return 0;
         var upd = std.mem.zeroes(c.sg_range);
         upd.ptr = self.glyph_verts_cpu.ptr;
         upd.size = n_verts * @sizeOf(GlyphVertex);
-        c.sg_update_buffer(self.glyph_vbuf, &upd);
+        const buf = self.glyph_vbufs[self.glyph_vbuf_index];
+        self.glyph_vbuf_index = (self.glyph_vbuf_index + 1) % GLYPH_VBUF_RING_LEN;
+        self.uploaded_glyph_vbuf = buf;
+        c.sg_update_buffer(buf, &upd);
         return n_verts;
     }
 
@@ -1866,8 +1920,11 @@ pub const FtRenderer = struct {
     /// `offscreen` = true when rendering into a pane's RGBA8 offscreen RT;
     ///              = false when rendering into the swapchain pass.
     pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void {
-        const n_verts = self.glyph_verts_count;
-        defer self.glyph_verts_count = 0;
+        const n_verts = self.uploaded_glyph_verts;
+        defer {
+            self.glyph_verts_count = 0;
+            self.uploaded_glyph_verts = 0;
+        }
         if (n_verts == 0) return;
 
         if (self.frame_count <= 3) {
@@ -1907,7 +1964,7 @@ pub const FtRenderer = struct {
         c.sg_apply_pipeline(if (offscreen) self.glyph_pip_offscreen else self.glyph_pip);
 
         var bindings = std.mem.zeroes(c.sg_bindings);
-        bindings.vertex_buffers[0] = self.glyph_vbuf;
+        bindings.vertex_buffers[0] = self.uploaded_glyph_vbuf;
         bindings.index_buffer = self.glyph_ibuf;
         bindings.views[0] = self.atlas_view;
         bindings.samplers[0] = self.atlas_smp;
@@ -1933,6 +1990,11 @@ pub const FtRenderer = struct {
         c.sg_apply_uniforms(1, &fs_range);
 
         c.sg_draw(0, @intCast(n_indices), 1);
+    }
+
+    pub fn discardGlyphQuads(self: *FtRenderer) void {
+        self.glyph_verts_count = 0;
+        self.uploaded_glyph_verts = 0;
     }
 
     /// Convenience wrapper: upload + draw in one call.
@@ -2137,6 +2199,7 @@ pub const FtRenderer = struct {
     /// Call once at the start of each frame to allow atlas upload for that frame.
     pub fn beginFrame(self: *FtRenderer) void {
         self.atlas_uploaded_this_frame = false;
+        self.uploaded_glyph_verts = 0;
     }
 
     /// Upload atlas to GPU if it has been modified and not yet uploaded this frame.
