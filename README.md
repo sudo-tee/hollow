@@ -84,6 +84,7 @@ hollow.set_config({
     ghostty_library = "ghostty-vt.dll",
     fonts = {
         size = 14.5,
+        line_height = 1.0,
         smoothing = "grayscale",
         hinting = "light",
         ligatures = true,

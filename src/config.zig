@@ -61,6 +61,7 @@ pub const Config = struct {
         };
 
         size: f32 = 15,
+        line_height: f32 = 1.0,
         padding_x: f32 = 0,
         padding_y: f32 = 0,
         coverage_boost: f32 = 1.0,

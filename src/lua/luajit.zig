@@ -811,6 +811,11 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "font_line_height")) {
+        cfg.fonts.line_height = @floatCast(value);
+        return;
+    }
+
     if (std.mem.eql(u8, key, "window_width")) {
         cfg.window_width = try asInt(u32, value);
         return;
@@ -981,6 +986,10 @@ fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
             const value = api.to_number(state, -1);
             if (std.mem.eql(u8, key, "size")) {
                 cfg.fonts.size = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "line_height")) {
+                cfg.fonts.line_height = @floatCast(value);
                 continue;
             }
             if (std.mem.eql(u8, key, "padding_x")) {

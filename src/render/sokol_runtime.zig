@@ -609,13 +609,14 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // Query DPI scale after sg_setup so the GPU context is ready.
     // On a 2× HiDPI display this returns 2.0; on a 1× display it returns 1.0.
     const dpi_scale = c.sapp_dpi_scale();
-    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1}", .{ dpi_scale, app.config.fonts.size });
+    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height });
 
     _ = applyWindowChrome(app);
 
     g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
         .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
+        .line_height = app.config.fonts.line_height,
         .padding_x = app.config.fonts.padding_x,
         .padding_y = app.config.fonts.padding_y,
         .coverage_boost = app.config.fonts.coverage_boost,

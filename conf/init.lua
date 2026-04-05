@@ -70,6 +70,7 @@ g.set_config({
 	theme = theme,
 	fonts = {
 		size = 14.5,
+		line_height = 0.9,
 		padding_x = 0,
 		padding_y = 0,
 		smoothing = "grayscale",
