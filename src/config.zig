@@ -44,7 +44,39 @@ pub const Config = struct {
             palette[13] = .{ .r = 214, .g = 112, .b = 214 };
             palette[14] = .{ .r = 41, .g = 184, .b = 219 };
             palette[15] = .{ .r = 229, .g = 229, .b = 229 };
+
+            var cube_index: usize = 16;
+            while (cube_index < 232) : (cube_index += 1) {
+                const offset = cube_index - 16;
+                const r = offset / 36;
+                const g = (offset / 6) % 6;
+                const b = offset % 6;
+                palette[cube_index] = .{
+                    .r = xtermCubeLevel(r),
+                    .g = xtermCubeLevel(g),
+                    .b = xtermCubeLevel(b),
+                };
+            }
+
+            var gray_index: usize = 232;
+            while (gray_index < 256) : (gray_index += 1) {
+                const value: u8 = @intCast(8 + (gray_index - 232) * 10);
+                palette[gray_index] = .{ .r = value, .g = value, .b = value };
+            }
+
             return palette;
+        }
+
+        fn xtermCubeLevel(step: usize) u8 {
+            return switch (step) {
+                0 => 0,
+                1 => 95,
+                2 => 135,
+                3 => 175,
+                4 => 215,
+                5 => 255,
+                else => 0,
+            };
         }
     };
 
@@ -269,4 +301,14 @@ test "backend parsing covers planned renderers" {
 
     try cfg.setBackend("sokol");
     try std.testing.expectEqual(RendererBackend.sokol, cfg.backend);
+}
+
+test "terminal theme default palette fills xterm 256 colors" {
+    const palette = Config.TerminalTheme.defaultPalette();
+
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 0, .g = 0, .b = 0 }, palette[16]);
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 0, .g = 0, .b = 255 }, palette[21]);
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 255, .g = 255, .b = 255 }, palette[231]);
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 8, .g = 8, .b = 8 }, palette[232]);
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 238, .g = 238, .b = 238 }, palette[255]);
 }
