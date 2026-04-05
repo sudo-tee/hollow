@@ -153,6 +153,9 @@ var g_phase_accum_true_dl_frames: usize = 0;
 // Atlas-stale frames: how many frames triggered a force_full due to atlas_epoch mismatch.
 // If this is high during split-scroll, the atlas is being re-uploaded every frame (glyph churn).
 var g_phase_accum_atlas_stale_frames: usize = 0;
+// Frames since last drag release — used for post-release diagnostics.
+// Set to 0 on release, incremented each frame until > 20.
+var g_frames_since_drag_release: usize = std.math.maxInt(usize);
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -173,6 +176,12 @@ const MAX_PANE_CACHES = 32;
 /// Must be a power of 2.  2048 slots at 2×8 bytes = 32 KB per pane — fine.
 const ROW_MAP_CAP = 2048;
 const ROW_MAP_MASK = ROW_MAP_CAP - 1;
+
+const CacheValidity = enum {
+    invalid,
+    priming,
+    valid,
+};
 const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
@@ -185,6 +194,10 @@ const PaneCacheEntry = struct {
     /// the cache.
     force_full_frames: u8 = 2,
     layout_generation: u32 = 0,
+    stable_after_resize: bool = false,
+    last_cols: u16 = 0,
+    last_rows: u16 = 0,
+    validity: CacheValidity = .invalid,
     /// The atlas_epoch value at the time this pane was last rendered to its RT.
     /// When renderer.atlas_epoch > last_atlas_epoch, the atlas changed since the
     /// last render and the pane must do a full redraw (force_full = true) to pick
@@ -221,6 +234,10 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     entry.needs_clear = true;
                     entry.force_full_frames = 2;
                     entry.layout_generation = 0;
+                    entry.stable_after_resize = false;
+                    entry.last_cols = 0;
+                    entry.last_rows = 0;
+                    entry.validity = .invalid;
                     @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
                     @memset(&entry.row_map_vals, 0);
                     entry.prev_cursor_row = std.math.maxInt(usize);
@@ -243,17 +260,15 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
         .needs_clear = true,
         .force_full_frames = 2,
         .layout_generation = 0,
+        .stable_after_resize = false,
+        .last_cols = 0,
+        .last_rows = 0,
+        .validity = .invalid,
         .last_atlas_epoch = 0,
     };
     new_entry.cache.clear();
     g_pane_caches[free_slot] = new_entry;
     return &g_pane_caches[free_slot].?;
-}
-
-/// Convenience wrapper returning only the PaneCache (for blit-only callers).
-fn getOrCreatePaneCache(pane: *const Pane, w: u32, h: u32) ?*PaneCache {
-    const entry = getOrCreatePaneCacheEntry(pane, w, h) orelse return null;
-    return &entry.cache;
 }
 
 /// Release the cache entry for a pane that has been destroyed.
@@ -672,6 +687,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_window_chrome_applied = applyWindowChrome(app);
     }
     g_frame_index += 1;
+    if (g_frames_since_drag_release < std.math.maxInt(usize)) g_frames_since_drag_release += 1;
     if (!g_logged_first_frame) {
         g_logged_first_frame = true;
         std.log.info("sokol first frame (ft renderer)", .{});
@@ -756,9 +772,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
                 break :blk null;
             } else null;
-
             // Helper closure: render one pane to its RT if dirty.
-            // Returns true if the pane was re-rendered (dirty), false if skipped (clean).
+            const PaneRenderPath = enum {
+                cached_clean,
+                cached_dirty,
+            };
+
+            // Returns how this pane should be presented this frame.
             const renderPane = struct {
                 fn call(
                     rend: *FtRenderer,
@@ -774,13 +794,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     layout_generation: u32,
                     cell_width_px: u32,
                     cell_height_px: u32,
-                ) bool {
+                ) PaneRenderPath {
                     _ = oy;
                     _ = fb_w;
                     _ = fb_h;
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
-                    const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return false;
+                    const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return .cached_clean;
 
                     // Check dirty flag.
                     // We use pane.render_dirty, which tickPanes refreshes from
@@ -795,10 +815,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // atlas_dirty bool) so that panes rendered AFTER the atlas flush
                     // in the same frame don't cause unnecessary full redraws.
                     const atlas_stale = cache_entry.last_atlas_epoch != rend.atlas_epoch;
-                    if (dirty_level == .false_value and !atlas_stale and !cache_entry.needs_clear and !geometry_stale) {
-                        // Nothing changed — skip re-render, RT still valid.
-                        return false;
-                    }
 
                     // Resolve background colour for the clear.
                     var cr: f32 = 0.0;
@@ -830,12 +846,51 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const expected_cols: u16 = @intCast(@min(1000, @max(1, pw_u / @max(@as(u32, 1), cell_width_px))));
                     const expected_rows: u16 = @intCast(@min(500, @max(1, ph_u / @max(@as(u32, 1), cell_height_px))));
                     const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
-                    const force_full = g_drag_node != null or dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or size_mismatch;
+                    const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
+                    if (grid_changed) {
+                        cache_entry.stable_after_resize = false;
+                    }
+                    const settled_clean = dirty_level == .false_value and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed;
+                    if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
+                        // Nothing changed and the pane has already survived a clean
+                        // post-reflow frame, so the cached RT is safe to reuse.
+                        if (g_frames_since_drag_release < 10) {
+                            std.log.info("post_release[{d}] pane={x} cached_clean (skipped render entirely)", .{ g_frames_since_drag_release, @intFromPtr(pane) });
+                        }
+                        return .cached_clean;
+                    }
+                    const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
+                    const force_full = g_drag_node != null or dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled;
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
                     if (dirty_level == .true_value) g_phase_accum_true_dl_frames += 1;
                     if (atlas_stale) g_phase_accum_atlas_stale_frames += 1;
+
+                    // Post-release diagnostics: log every render for the first 10 frames
+                    // after a drag release so we can see exactly when partial renders fire.
+                    if (g_frames_since_drag_release < 10) {
+                        std.log.info(
+                            "post_release[{d}] pane={x} dirty={s} force_full={} ff_frames={d} geom_stale={} atlas_stale={} needs_clear={} stable={} unsettled={} size_mm={} grid_chg={} pty_active={} rows_rendered={d} rows_skipped={d}",
+                            .{
+                                g_frames_since_drag_release,
+                                @intFromPtr(pane),
+                                @tagName(dirty_level),
+                                force_full,
+                                cache_entry.force_full_frames,
+                                geometry_stale,
+                                atlas_stale,
+                                cache_entry.needs_clear,
+                                cache_entry.stable_after_resize,
+                                unsettled,
+                                size_mismatch,
+                                grid_changed,
+                                pane.pty_wrote_this_frame,
+                                rend.last_rows_rendered,
+                                rend.last_rows_skipped,
+                            },
+                        );
+                    }
 
                     // Row-hash map strategy: the map lets renderToCache skip rows whose
                     // content hasn't changed by comparing a per-row cell hash against the
@@ -902,9 +957,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // the pane is not forced into another full redraw next frame unless the
                     // atlas changes again.
                     cache_entry.last_atlas_epoch = rend.atlas_epoch;
-                    cache_entry.needs_clear = false;
                     cache_entry.layout_generation = layout_generation;
-                    if (cache_entry.force_full_frames > 0) cache_entry.force_full_frames -= 1;
+                    cache_entry.last_cols = pane.cols;
+                    cache_entry.last_rows = pane.rows;
+                    // If PTY data arrived this frame (shell is still writing its
+                    // redraw response to the resize), ghostty's snapshot may be
+                    // a partially-updated screen.  Keep force_full alive and
+                    // needs_clear set so we keep doing CLEAR renders until the
+                    // shell output settles.  Only mark stable / clear needs_clear
+                    // on a quiet frame with no new PTY data.
+                    const pty_active = pane.pty_wrote_this_frame;
+                    pane.pty_wrote_this_frame = false; // consumed by renderer
+                    cache_entry.needs_clear = pty_active;
+                    const now_stable = !pty_active and dirty_level == .false_value and !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
+                    cache_entry.stable_after_resize = now_stable;
+                    cache_entry.validity = if (cache_entry.stable_after_resize) .valid else .priming;
+                    if (cache_entry.force_full_frames > 0 and !pty_active) cache_entry.force_full_frames -= 1;
                     if (dirty_level == .full) {
                         @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
                         @memset(&cache_entry.row_map_vals, 0);
@@ -921,7 +989,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
                     pane.render_dirty = .false_value;
-                    return true;
+                    return .cached_dirty;
                 }
             }.call;
 
@@ -935,11 +1003,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    if (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
-                        g_phase_accum_dirty_frames += 1;
-                        g_phase_accum_cached_frames += 1;
-                    } else {
-                        g_phase_accum_clean_frames += 1;
+                    switch (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                        .cached_dirty => {
+                            g_phase_accum_dirty_frames += 1;
+                            g_phase_accum_cached_frames += 1;
+                        },
+                        .cached_clean => {
+                            g_phase_accum_clean_frames += 1;
+                        },
                     }
                 }
             } else if (single_pane) |sp| {
@@ -963,10 +1034,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    if (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
-                        g_phase_accum_dirty_frames += 1;
-                    } else {
-                        g_phase_accum_clean_frames += 1;
+                    switch (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                        .cached_dirty => {
+                            g_phase_accum_dirty_frames += 1;
+                        },
+                        .cached_clean => {
+                            g_phase_accum_clean_frames += 1;
+                        },
                     }
                     g_phase_accum_cached_frames += 1;
                 }
@@ -1087,8 +1161,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
-                    if (getOrCreatePaneCache(leaf.pane, pw_u, ph_u)) |cache| {
-                        renderer.blitCache(cache, ox, oy, pw, ph, width, height);
+                    if (getOrCreatePaneCacheEntry(leaf.pane, pw_u, ph_u)) |entry| {
+                        renderer.blitCache(&entry.cache, ox, oy, pw, ph, width, height);
                     }
                 }
             } else if (app.activePane()) |pane| {
@@ -1123,8 +1197,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
                         const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
-                        if (getOrCreatePaneCache(pane, pw_u, ph_u)) |cache| {
-                            renderer.blitCache(cache, 0, 0, width, height, width, height);
+                        if (getOrCreatePaneCacheEntry(pane, pw_u, ph_u)) |entry| {
+                            renderer.blitCache(&entry.cache, 0, 0, width, height, width, height);
                         }
                     }
                 }
@@ -1743,7 +1817,29 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-        if (g_drag_node != null) _ = app.enqueueMouse(.divider_commit);
+        if (g_drag_node != null) {
+            _ = app.enqueueMouse(.divider_commit);
+            // Reset all pane cache entries so they do force-full CLEAR renders
+            // for the next few frames after the drag ends.  During the drag,
+            // force_full_frames may have been decremented to 0 and
+            // stable_after_resize may be true — leaving the first post-release
+            // partial render to fire with a hash map built during the drag.
+            // That map can contain stale entries if the terminal reflowed
+            // content between the last drag frame and the release frame.
+            // Resetting here guarantees every pane gets at least
+            // force_full_frames CLEAR renders before any hash-skip logic runs.
+            for (&g_pane_caches) |*slot| {
+                if (slot.*) |*entry| {
+                    entry.force_full_frames = 3;
+                    entry.stable_after_resize = false;
+                    entry.needs_clear = true;
+                    @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
+                    @memset(&entry.row_map_vals, 0);
+                }
+            }
+            g_frames_since_drag_release = 0;
+            std.log.info("drag_release: reset all pane caches, g_frames_since_drag_release=0", .{});
+        }
         g_drag_node = null;
         if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
     }

@@ -139,18 +139,17 @@ const GlyphInstance = struct {
 // cell iteration entirely and just submit 2 triangles per pane.
 pub const PaneCache = struct {
     rt_img: c.sg_image,
-    rt_att_view: c.sg_view, // color-attachment view (for offscreen pass)
-    rt_tex_view: c.sg_view, // texture view (for blit in swapchain pass)
+    rt_att_view: c.sg_view,
+    rt_tex_view: c.sg_view,
     rt_smp: c.sg_sampler,
     sgl_ctx: c.sgl_context,
-    atlas_pip: c.sgl_pipeline, // context-specific atlas pipeline
+    atlas_pip: c.sgl_pipeline,
     blit_smp: c.sg_sampler, // nearest-neighbour sampler for blit
     width: u32,
     height: u32,
 
     /// Allocate GPU resources for a `w × h` pane render target.
     pub fn init(w: u32, h: u32) PaneCache {
-        // Offscreen render-target image (color attachment).
         var img_desc = std.mem.zeroes(c.sg_image_desc);
         img_desc.width = @intCast(w);
         img_desc.height = @intCast(h);
@@ -159,12 +158,10 @@ pub const PaneCache = struct {
         img_desc.label = "pane-rt";
         const rt_img = c.sg_make_image(&img_desc);
 
-        // Color-attachment view (write target for the offscreen pass).
         var att_desc = std.mem.zeroes(c.sg_view_desc);
         att_desc.color_attachment.image = rt_img;
         const rt_att_view = c.sg_make_view(&att_desc);
 
-        // Texture view (read source for the blit pass).
         var tex_desc = std.mem.zeroes(c.sg_view_desc);
         tex_desc.texture.image = rt_img;
         const rt_tex_view = c.sg_make_view(&tex_desc);
@@ -186,8 +183,6 @@ pub const PaneCache = struct {
         blit_smp_desc.label = "pane-blit-smp";
         const blit_smp = c.sg_make_sampler(&blit_smp_desc);
 
-        // Dedicated sgl_context for this pane (isolated vertex/command buffers).
-        // Must match the RT's pixel format.
         var ctx_desc = std.mem.zeroes(c.sgl_context_desc_t);
         ctx_desc.max_vertices = 1 << 18;
         ctx_desc.max_commands = 1 << 16;
@@ -196,7 +191,6 @@ pub const PaneCache = struct {
         ctx_desc.sample_count = 1;
         const sgl_ctx = c.sgl_make_context(&ctx_desc);
 
-        // Context-specific atlas pipeline (must be created on the active context).
         c.sgl_set_context(sgl_ctx);
         var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
         pip_desc.colors[0].blend.enabled = true;
@@ -231,6 +225,7 @@ pub const PaneCache = struct {
 
     /// Destroy all GPU resources held by this cache.
     pub fn deinit(self: *PaneCache) void {
+        c.sgl_destroy_pipeline(self.atlas_pip);
         c.sgl_destroy_context(self.sgl_ctx);
         c.sg_destroy_sampler(self.blit_smp);
         c.sg_destroy_sampler(self.rt_smp);
@@ -1315,16 +1310,22 @@ pub const FtRenderer = struct {
                 // In partial mode we must first erase the old row pixels by
                 // drawing a full-width background rectangle in the default bg
                 // color, then overlay any per-cell custom backgrounds below.
+                //
+                // Start from x=0 (not padding_x) so that glyphs at column 0
+                // with a negative bear_x that draw left of the text margin are
+                // fully covered.  Without this, each partial re-render blends
+                // new glyph coverage onto un-erased pixels from a prior frame,
+                // causing anti-aliased edges to accumulate ("ghost glyphs").
                 if (!force_full) {
                     if (!quads_open) {
                         c.sgl_begin_quads();
                         quads_open = true;
                     }
                     c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
-                    c.sgl_v2f(self.padding_x, py);
-                    c.sgl_v2f(self.padding_x + pane_w, py);
-                    c.sgl_v2f(self.padding_x + pane_w, py + self.cell_h);
-                    c.sgl_v2f(self.padding_x, py + self.cell_h);
+                    c.sgl_v2f(0.0, py);
+                    c.sgl_v2f(pane_w, py);
+                    c.sgl_v2f(pane_w, py + self.cell_h);
+                    c.sgl_v2f(0.0, py + self.cell_h);
                 }
 
                 var col_x: usize = 0;
@@ -1577,10 +1578,10 @@ pub const FtRenderer = struct {
                                 const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                                 // Fast ASCII path: skip HarfBuzz shaping for printable ASCII.
                                 self.last_glyph_runs += 1;
-                                if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg)) {
+                                if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg, py, py + self.cell_h)) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
-                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                 }
                                 continue;
                             }
@@ -1628,7 +1629,7 @@ pub const FtRenderer = struct {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                                 self.last_glyph_runs += 1;
-                                self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal);
+                                self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                 continue;
                             }
                             if (run_len + glyph_len > run_buf.len) {
@@ -1794,7 +1795,7 @@ pub const FtRenderer = struct {
     }
 
     /// Shape and batch glyphs for one cell at (px, py).
-    fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
+    fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
 
         var x_offset: f32 = 0;
@@ -1808,7 +1809,7 @@ pub const FtRenderer = struct {
             const w = @as(f32, @floatFromInt(glyph.bw));
             const h = @as(f32, @floatFromInt(glyph.bh));
             if (w > 0 and h > 0) {
-                self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg);
+                self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
             }
 
             x_offset += glyph_inst.x_advance;
@@ -1822,7 +1823,7 @@ pub const FtRenderer = struct {
     /// On subsequent calls (the steady-state hot path) it is a single array lookup —
     /// no hashmap, no C-ABI call.  Returns true if the glyph was drawn (or is
     /// blank/invisible); false if the caller should fall back to batchGlyphs.
-    inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb) bool {
+    inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) bool {
         if (cp < 0x21 or cp > 0xFF or face_idx > 3) return false;
         // Skip C1 control range (0x7F–0x9F) — these are never printable.
         if (cp > 0x7E and cp < 0xA0) return false;
@@ -1859,7 +1860,7 @@ pub const FtRenderer = struct {
             // Snap to integer pixels to prevent subpixel sampling artifacts.
             const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
             const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
-            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg);
+            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
         }
         return true;
     }
@@ -1867,6 +1868,12 @@ pub const FtRenderer = struct {
     /// Append one glyph quad (4 vertices) to the CPU staging buffer.
     /// Called from batchGlyphs() and drawAsciiGlyph().  Does nothing when the
     /// staging buffer is full (glyph is silently dropped rather than crashing).
+    ///
+    /// clip_y0 / clip_y1: vertical row bounds [py, py+cell_h].  The quad is
+    /// clipped to this range and UV coordinates are adjusted proportionally.
+    /// This prevents glyph pixels from bleeding into adjacent rows' pixel space
+    /// in the offscreen render target, which would cause ghost accumulation on
+    /// partial (LOAD) re-renders when the adjacent row is hash-skipped.
     inline fn emitGlyphQuad(
         self: *FtRenderer,
         gx: f32,
@@ -1878,14 +1885,29 @@ pub const FtRenderer = struct {
         s1: f32,
         t1: f32,
         fg: ghostty.ColorRgb,
+        clip_y0: f32,
+        clip_y1: f32,
     ) void {
         if (self.glyph_verts_count + 4 > MAX_GLYPH_VERTS) return;
+
+        // Clip the quad vertically to [clip_y0, clip_y1] and adjust UVs.
+        const bottom = gy + h;
+        const clipped_top = @max(gy, clip_y0);
+        const clipped_bot = @min(bottom, clip_y1);
+        if (clipped_top >= clipped_bot) return; // fully outside, skip
+
+        // Map clipped pixel positions back to UV space.
+        // t spans [t0, t1] over [gy, gy+h]; interpolate linearly.
+        const inv_h = if (h > 0.0) 1.0 / h else 0.0;
+        const tc_top = t0 + (clipped_top - gy) * inv_h * (t1 - t0);
+        const tc_bot = t0 + (clipped_bot - gy) * inv_h * (t1 - t0);
+
         const base = self.glyph_verts_count;
         const verts = self.glyph_verts_cpu;
-        verts[base + 0] = .{ .x = gx, .y = gy, .u = s0, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 3] = .{ .x = gx, .y = clipped_bot, .u = s0, .v = tc_bot, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         self.glyph_verts_count += 4;
     }
 
@@ -2018,7 +2040,7 @@ pub const FtRenderer = struct {
         if (run_len.* == 0) return;
         self.last_glyph_runs += 1;
         const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
-        self.batchGlyphs(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal);
+        self.batchGlyphs(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal, py, py + self.cell_h);
         run_start_col.* = 0;
         run_len.* = 0;
     }

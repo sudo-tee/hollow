@@ -474,7 +474,7 @@ pub const App = struct {
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
         self.cell_width_px = @max(1, cell_w);
         self.cell_height_px = @max(1, cell_h);
-        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, true);
+        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, true, false);
         std.log.info("app: cell_size updated cell={d}x{d}", .{ self.cell_width_px, self.cell_height_px });
     }
 
@@ -485,7 +485,7 @@ pub const App = struct {
         self.config.cols = @max(1, @as(u16, @intCast(pixel_width / @max(@as(u32, 1), self.cell_width_px))));
         self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
 
-        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, pixel_width, pixel_height, true);
+        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, pixel_width, pixel_height, true, false);
 
         std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
     }
@@ -1168,7 +1168,7 @@ pub const App = struct {
         if (self.pending_drag_layout_resize) {
             self.pending_drag_layout_resize = false;
             if (self.ghostty) |*runtime| {
-                self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false);
+                self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false, true);
             }
         }
         if (!self.pending_layout_resize) return;
@@ -1188,7 +1188,7 @@ pub const App = struct {
         }
         if (self.ghostty) |*runtime| {
             std.log.info("flushPendingLayoutResize resizeAllPanes window={d}x{d}", .{ self.config.window_width, self.config.window_height });
-            self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers);
+            self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers, false);
         }
     }
 
@@ -1281,7 +1281,7 @@ pub const App = struct {
         }
     }
 
-    fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool) void {
+    fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool) void {
         const mux = if (self.mux) |*m| m else return;
         const ws = mux.activeWorkspace() orelse return;
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
@@ -1328,7 +1328,7 @@ pub const App = struct {
                         leaf.pane.recreateRenderHelpers(runtime);
                         std.log.info("resizeAllPanes: recreateRenderHelpers done pane={x}", .{@intFromPtr(leaf.pane)});
                     }
-                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
+                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
                     // using the full surface size plus the pane's outer padding.
@@ -1360,7 +1360,7 @@ pub const App = struct {
                         pane.recreateRenderHelpers(runtime);
                         std.log.info("resizeAllPanes (fallback): recreateRenderHelpers done pane={x}", .{@intFromPtr(pane)});
                     }
-                    pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px);
+                    pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     pane.setMouseSize(
                         runtime,
                         pixel_width,

@@ -45,6 +45,12 @@ pub const Pane = struct {
     /// etc.), so calling it unconditionally causes every pane to re-render
     /// every frame even when nothing changed.
     pty_received_data: bool = false,
+    /// Set to true by pollPty when actual PTY bytes were written this tick.
+    /// Unlike pty_received_data, this is cleared by the RENDERER (not by
+    /// tickPanes) so that the render phase can see whether the shell was
+    /// actively writing this frame.  Used to hold force-full CLEAR renders
+    /// until the shell's post-resize redraw has fully settled.
+    pty_wrote_this_frame: bool = false,
     /// Last known mouse tracking mode (from terminal_get).  Logged on change.
     last_mouse_tracking: u32 = 0,
     mouse_tracking_logged_initial: bool = false,
@@ -179,6 +185,7 @@ pub const Pane = struct {
                         runtime.terminalWrite(self.terminal, pty_bytes);
                         std.log.info("pollPty: terminalWrite done", .{});
                         self.pty_received_data = true;
+                        self.pty_wrote_this_frame = true;
                     }
                 }
             }
@@ -215,13 +222,45 @@ pub const Pane = struct {
         }
     }
 
-    pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) void {
+    /// Resize the pane.
+    ///
+    /// When `skip_pty` is true (drag-preview mode) only the pixel geometry and
+    /// render-dirty flag are updated — ghostty's terminal buffer and the ConPTY
+    /// are left at their current size.  This avoids the rapid SIGWINCH storm
+    /// that causes PSReadLine to leave ghost/duplicate prompt rows in the buffer
+    /// (see https://github.com/microsoft/terminal/issues/15976).
+    /// Pass `skip_pty = false` for the single authoritative resize that fires on
+    /// divider_commit (mouse release), which sends exactly one SIGWINCH.
+    pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
+        const prev_cols = self.cols;
+        const prev_rows = self.rows;
         self.cols = cols;
         self.rows = rows;
+
+        if (skip_pty) {
+            // Drag-preview: just mark dirty so the renderer redraws in the new
+            // pixel bounds.  No ghostty reflow, no SIGWINCH.
+            self.render_dirty = .full;
+            std.log.info("pane.resize (drag-preview): pane={x} cols={d} rows={d} — PTY/ghostty frozen", .{ @intFromPtr(self), cols, rows });
+            return;
+        }
+
         // Guard against null terminal — can happen if bootstrap partially failed
         // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
         if (self.terminal) |terminal| {
             std.log.info("pane.resize: resizeTerminal pane={x} cols={d} rows={d}", .{ @intFromPtr(self), cols, rows });
+            // If the dimensions haven't changed from ghostty's perspective
+            // (e.g. divider_commit after a drag that ended on the same grid
+            // boundary as the last drag-frame resize), ghostty treats
+            // terminal_resize as a no-op and does NOT reflow.  This leaves
+            // its terminal state corrupted from the rapid resize churn during
+            // the drag.  Force a real reflow by briefly resizing to a
+            // neighbouring size first.
+            if (cols == prev_cols and rows == prev_rows and (cols > 1 or rows > 1)) {
+                const bump_cols: u16 = if (cols > 1) cols - 1 else cols + 1;
+                std.log.info("pane.resize: forcing reflow via bump resize pane={x} bump_cols={d}", .{ @intFromPtr(self), bump_cols });
+                runtime.resizeTerminal(terminal, bump_cols, rows, cell_width_px, cell_height_px);
+            }
             runtime.resizeTerminal(terminal, cols, rows, cell_width_px, cell_height_px);
             std.log.info("pane.resize: resizeTerminal done", .{});
         }
@@ -236,7 +275,24 @@ pub const Pane = struct {
         runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
         std.log.info("pane.resize: done pane={x}", .{@intFromPtr(self)});
         if (self.pty) |*pty| {
-            if (pty.isAlive()) pty.resize(cols, rows);
+            if (pty.isAlive()) {
+                pty.resize(cols, rows);
+            }
+        }
+    }
+
+    /// Force a full ConPTY screen repaint by briefly sending a row-bump SIGWINCH.
+    /// Called after a post-settle VT clear so the shell repaints into the blank buffer.
+    /// We only resize the PTY (not ghostty's terminal buffer) because the VT sequences
+    /// the shell emits are absolute and render correctly inside ghostty's rows×cols grid.
+    pub fn nudgePty(self: *Pane) void {
+        if (self.pty) |*pty| {
+            if (pty.isAlive()) {
+                const bump_rows: u16 = if (self.rows > 1) self.rows - 1 else self.rows + 1;
+                std.log.info("pane.nudgePty: row-bump cols={d} rows={d}→{d}→{d}", .{ self.cols, self.rows, bump_rows, self.rows });
+                pty.resize(self.cols, bump_rows);
+                pty.resize(self.cols, self.rows);
+            }
         }
     }
 
