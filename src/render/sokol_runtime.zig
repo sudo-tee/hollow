@@ -11,6 +11,7 @@ const SplitDirection = @import("../mux.zig").SplitDirection;
 const PaneBounds = @import("../mux.zig").PaneBounds;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 const FtRendererConfig = @import("ft_renderer.zig").FtRendererConfig;
+const Config = @import("../config.zig").Config;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
 
@@ -712,13 +713,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var clear_r: f32 = 0.07;
     var clear_g: f32 = 0.08;
     var clear_b: f32 = 0.11;
+    if (app.config.terminal_theme.enabled) {
+        clear_r = @as(f32, @floatFromInt(app.config.terminal_theme.background.r)) / 255.0;
+        clear_g = @as(f32, @floatFromInt(app.config.terminal_theme.background.g)) / 255.0;
+        clear_b = @as(f32, @floatFromInt(app.config.terminal_theme.background.b)) / 255.0;
+    }
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
             if (pane.render_state_ready) {
-                if (runtime.renderStateColors(pane.render_state)) |colors| {
-                    clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
-                    clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
-                    clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                if (!app.config.terminal_theme.enabled) {
+                    if (runtime.renderStateColors(pane.render_state)) |colors| {
+                        clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
+                        clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
+                        clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                    }
                 }
             }
         }
@@ -783,6 +791,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 fn call(
                     rend: *FtRenderer,
                     rt: *ghostty.Runtime,
+                    cfg: *const Config,
                     pane: *Pane,
                     ox: f32,
                     oy: f32,
@@ -820,7 +829,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     var cr: f32 = 0.0;
                     var cg: f32 = 0.0;
                     var cb: f32 = 0.0;
-                    if (rt.renderStateColors(pane.render_state)) |colors| {
+                    if (cfg.terminal_theme.enabled) {
+                        cr = @as(f32, @floatFromInt(cfg.terminal_theme.background.r)) / 255.0;
+                        cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
+                        cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
+                    } else if (rt.renderStateColors(pane.render_state)) |colors| {
                         cr = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
                         cg = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
@@ -922,6 +935,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     rend.renderToCache(
                         &cache_entry.cache,
                         rt,
+                        cfg,
                         pane.render_state,
                         &pane.row_iterator,
                         &pane.row_cells,
@@ -1003,7 +1017,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                    switch (renderPane(renderer, runtime, &app.config, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -1034,7 +1048,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                    switch (renderPane(renderer, runtime, &app.config, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -1059,6 +1073,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const ph: f32 = @floatFromInt(leaf.bounds.height);
                         renderer.queueInViewport(
                             runtime,
+                            &app.config,
                             leaf.pane.render_state,
                             &leaf.pane.row_iterator,
                             &leaf.pane.row_cells,
@@ -1089,6 +1104,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     } else {
                         renderer.queueInViewport(
                             runtime,
+                            &app.config,
                             pane.render_state,
                             &pane.row_iterator,
                             &pane.row_cells,
@@ -1171,6 +1187,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         // Direct render: skip the offscreen RT and render straight to swapchain
                         renderer.drawDirect(
                             runtime,
+                            &app.config,
                             pane.render_state,
                             &pane.row_iterator,
                             &pane.row_cells,

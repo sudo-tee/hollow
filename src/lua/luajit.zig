@@ -742,6 +742,30 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "theme") and value_type == .table) {
+            const theme_idx = absoluteIndex(api, state, -1);
+            applyThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config theme field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
+            const ansi_idx = absoluteIndex(api, state, -1);
+            applyPaletteArray(ctx.cfg, api, state, ansi_idx, 0, 8) catch |err| std.log.err("config ansi field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "brights") and value_type == .table) {
+            const brights_idx = absoluteIndex(api, state, -1);
+            applyPaletteArray(ctx.cfg, api, state, brights_idx, 8, 8) catch |err| std.log.err("config brights field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "indexed") and value_type == .table) {
+            const indexed_idx = absoluteIndex(api, state, -1);
+            applyIndexedPalette(ctx.cfg, api, state, indexed_idx) catch |err| std.log.err("config indexed field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -1038,7 +1062,103 @@ fn applyHexColor(cfg: *config.Config, key: []const u8, value: []const u8) bool {
         cfg.top_bar_bg = color;
         return true;
     }
+    if (std.mem.eql(u8, key, "foreground")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.foreground = color;
+        return true;
+    }
+    if (std.mem.eql(u8, key, "background")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.background = color;
+        return true;
+    }
+    if (std.mem.eql(u8, key, "cursor_bg")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.cursor = color;
+        return true;
+    }
+    if (std.mem.eql(u8, key, "selection_fg")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.selection_fg = color;
+        return true;
+    }
+    if (std.mem.eql(u8, key, "selection_bg")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.selection_bg = color;
+        return true;
+    }
     return false;
+}
+
+fn applyPaletteArray(cfg: *config.Config, api: Api, state: *State, table_idx: c_int, start: usize, count: usize) !void {
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        api.rawgeti(state, table_idx, @intCast(i + 1));
+        defer pop(api, state, 1);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const color = parseHexColor(value_ptr[0..value_len]) orelse continue;
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.palette[start + i] = color;
+    }
+}
+
+fn applyIndexedPalette(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        if (key_type != .number or value_type != .string) continue;
+
+        const key_num = api.to_number(state, -2);
+        const palette_index = asInt(u8, key_num) catch continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const color = parseHexColor(value_ptr[0..value_len]) orelse continue;
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.palette[palette_index] = color;
+    }
+}
+
+fn applyThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
+            const ansi_idx = absoluteIndex(api, state, -1);
+            try applyPaletteArray(cfg, api, state, ansi_idx, 0, 8);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "brights") and value_type == .table) {
+            const brights_idx = absoluteIndex(api, state, -1);
+            try applyPaletteArray(cfg, api, state, brights_idx, 8, 8);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "indexed") and value_type == .table) {
+            const indexed_idx = absoluteIndex(api, state, -1);
+            try applyIndexedPalette(cfg, api, state, indexed_idx);
+            continue;
+        }
+
+        if (value_type != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        _ = applyHexColor(cfg, key, value_ptr[0..value_len]);
+    }
 }
 
 fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {

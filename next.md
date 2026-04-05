@@ -33,10 +33,10 @@
 ## Performance
 
 - ~Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.~
-- App consumes around 5% cpu on idl
-- Add a framerate cap to prevent the terminal from consuming too much resources when idle.
-- Scrolling performance is not great at least in nvim. Espacially when there are spit windows. Half of the screen is static in this case but most likely we are still rendering full rows
-- Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.
+- App consumes around 5% cpu on idle
+- ~Add a framerate cap to prevent the terminal from consuming too much resources when idle.~
+- ~Scrolling performance is not great at least in nvim. Espacially when there are spit windows. Half of the screen is static in this case but most likely we are still rendering full rows~
+- ~Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.~
 
 ## Core features
 
@@ -46,11 +46,11 @@
   - ~newTab segfault fixed: pre-init render_state in bootstrap() before callback registration~
   - ~Tab bar UI (ano rendering exists yeta)~
   - ~Workspace switching UI + API~
-- Add mouse support for:
-  - Click to focus pane
-  - Click to set cursor position
-  - Click and drag to resize panes
-  - scroll wheel support for scrolling through output
+- ~Add mouse support for:~
+  - ~Click to focus pane~
+  - ~Click to set cursor position~
+  - ~Click and drag to resize panes~
+  - ~scroll wheel support for scrolling through output~
 - Add text selection support
 - Add copy/paste support
 
@@ -61,6 +61,6 @@
 
 ## Lua API
 
-- Add api to draw custom widgets like status bar, tab bar, etc. This would allow users to create their own custom interfaces and enhance the functionality of the terminal.
+- ~Add api to draw custom widgets like status bar, tab bar, etc. This would allow users to create their own custom interfaces and enhance the functionality of the terminal.~
 - Add support for a Lua API that allows users to customize the terminal's behavior and appearance. This could include features such as custom keybindings, themes, and plugins.
 - Add support for a Lua API that allows users to create custom commands, layouts, and to call split, tab, workspace management functions. This would provide users with a powerful way to automate and customize their terminal experience.

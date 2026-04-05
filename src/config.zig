@@ -17,6 +17,37 @@ pub const RendererBackend = enum {
 };
 
 pub const Config = struct {
+    pub const TerminalTheme = struct {
+        enabled: bool = false,
+        foreground: ghostty.ColorRgb = .{ .r = 220, .g = 220, .b = 220 },
+        background: ghostty.ColorRgb = .{ .r = 18, .g = 20, .b = 28 },
+        cursor: ?ghostty.ColorRgb = null,
+        selection_fg: ?ghostty.ColorRgb = null,
+        selection_bg: ?ghostty.ColorRgb = null,
+        palette: [256]ghostty.ColorRgb = defaultPalette(),
+
+        fn defaultPalette() [256]ghostty.ColorRgb {
+            var palette = [_]ghostty.ColorRgb{.{ .r = 0, .g = 0, .b = 0 }} ** 256;
+            palette[0] = .{ .r = 0, .g = 0, .b = 0 };
+            palette[1] = .{ .r = 205, .g = 49, .b = 49 };
+            palette[2] = .{ .r = 13, .g = 188, .b = 121 };
+            palette[3] = .{ .r = 229, .g = 229, .b = 16 };
+            palette[4] = .{ .r = 36, .g = 114, .b = 200 };
+            palette[5] = .{ .r = 188, .g = 63, .b = 188 };
+            palette[6] = .{ .r = 17, .g = 168, .b = 205 };
+            palette[7] = .{ .r = 229, .g = 229, .b = 229 };
+            palette[8] = .{ .r = 102, .g = 102, .b = 102 };
+            palette[9] = .{ .r = 241, .g = 76, .b = 76 };
+            palette[10] = .{ .r = 35, .g = 209, .b = 139 };
+            palette[11] = .{ .r = 245, .g = 245, .b = 67 };
+            palette[12] = .{ .r = 59, .g = 142, .b = 234 };
+            palette[13] = .{ .r = 214, .g = 112, .b = 214 };
+            palette[14] = .{ .r = 41, .g = 184, .b = 219 };
+            palette[15] = .{ .r = 229, .g = 229, .b = 229 };
+            return palette;
+        }
+    };
+
     pub const Fonts = struct {
         pub const Smoothing = enum {
             grayscale,
@@ -92,6 +123,7 @@ pub const Config = struct {
     /// accumulation into whole-line steps.  1.0 is the neutral value; the
     /// old hard-coded value was 2.0.
     scroll_multiplier: f32 = 1.0,
+    terminal_theme: TerminalTheme = .{},
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

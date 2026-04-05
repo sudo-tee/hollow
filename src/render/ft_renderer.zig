@@ -16,6 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
+const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
 const fonts = @import("fonts");
 const glyph_shader = @import("shaders/glyph_shader.zig");
@@ -915,13 +916,14 @@ pub const FtRenderer = struct {
     pub fn draw(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
+        cfg: *const Config,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, std.math.maxInt(usize));
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -932,6 +934,7 @@ pub const FtRenderer = struct {
     pub fn drawDirect(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
+        cfg: *const Config,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
@@ -954,7 +957,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, prev_cursor_row);
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -979,6 +982,7 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         cache: *PaneCache,
         runtime: *ghostty.Runtime,
+        cfg: *const Config,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
@@ -1023,6 +1027,7 @@ pub const FtRenderer = struct {
         const t_queue_start = std.time.nanoTimestamp();
         self.queueInViewport(
             runtime,
+            cfg,
             render_state,
             row_iterator,
             row_cells,
@@ -1135,6 +1140,7 @@ pub const FtRenderer = struct {
     pub fn queueInViewport(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
+        cfg: *const Config,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
@@ -1158,9 +1164,10 @@ pub const FtRenderer = struct {
     ) void {
         _ = fb_w;
         _ = fb_h;
-        const colors = runtime.renderStateColors(render_state) orelse return;
-        const default_bg = colors.background;
-        const default_fg = colors.foreground;
+        const render_colors = runtime.renderStateColors(render_state) orelse return;
+        const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.background;
+        const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.foreground;
+        const palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.palette;
 
         c.sgl_defaults();
         // Set viewport and scissor to this pane's sub-rect.
@@ -1559,7 +1566,7 @@ pub const FtRenderer = struct {
                             } else if (s.italic) {
                                 face_idx = 3;
                             }
-                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette);
+                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
                         }
                     }
 
@@ -1680,8 +1687,8 @@ pub const FtRenderer = struct {
                         }
 
                         const dec_px = self.padding_x + @as(f32, @floatFromInt(dec_col_x)) * self.cell_w;
-                        const dec_fg = ghostty.resolveStyleColor(s.fg_color, default_fg, &colors.palette);
-                        const dec_color = ghostty.resolveStyleColor(s.underline_color, dec_fg, &colors.palette);
+                        const dec_fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
+                        const dec_color = ghostty.resolveStyleColor(s.underline_color, dec_fg, palette);
                         // Use underline_color if set, otherwise fall back to fg.
                         const ul_r = dec_color.r;
                         const ul_g = dec_color.g;
@@ -1767,8 +1774,10 @@ pub const FtRenderer = struct {
                 // them invisible by multiplying vertex colour by the texture).
                 c.sgl_load_default_pipeline();
                 // Fall back to white when no explicit cursor color is configured.
-                const cursor_color: ghostty.ColorRgb = if (colors.cursor_has_value)
-                    colors.cursor
+                const cursor_color: ghostty.ColorRgb = if (cfg.terminal_theme.enabled)
+                    (cfg.terminal_theme.cursor orelse .{ .r = 220, .g = 220, .b = 220 })
+                else if (render_colors.cursor_has_value)
+                    render_colors.cursor
                 else
                     .{ .r = 220, .g = 220, .b = 220 };
                 drawCursor(cx, cy, self.cell_w, self.cell_h, cursor_color, runtime.cursorVisualStyle(render_state));

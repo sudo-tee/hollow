@@ -1,15 +1,63 @@
 local g = hollow
-local c = {
-	bg = "#2b2d37",
-	panel = "#1f2335",
-	panel_alt = "#24283b",
-	muted = "#3b4261",
-	text = "#c0caf5",
-	subtle = "#9aa5ce",
-	accent = "#7aa2f7",
-	active = "#89b4fa",
+local theme = {
+	tab_bar = {
+		background = "#2A2A37",
+		active_tab = {
+			bg = "#1F1F28",
+			fg = "#e0af68",
+		},
+		inactive_tab = {
+			bg = "#2A2A37",
+			fg = "#dcd7ba",
+		},
+		hover_close_bg = "#5a2d35",
+	},
+	foreground = "#dcd7ba",
+	background = "#1F1F28",
+
+	cursor_bg = "#c8c093",
+	cursor_fg = "#0d0c0c",
+	cursor_border = "#c8c093",
+
+	selection_fg = "#c8c093",
+	selection_bg = "#0d0c0c",
+
+	scrollbar_thumb = "#16161d",
+	split = "#766b90",
+	accent = "#7e9cd8",
 	warm = "#e0af68",
-	green = "#9ece6a",
+	status = {
+		bg = "#2A2A37",
+		fg = "#7e9cd8",
+	},
+	workspace = {
+		active_bg = "#7e9cd8",
+		active_fg = "#1F1F28",
+		inactive_bg = "#2A2A37",
+		inactive_fg = "#dcd7ba",
+	},
+
+	ansi = {
+		"#090618", -- Black
+		"#c34043", -- Maroon
+		"#76946a", -- Green
+		"#c0a36e", -- Olive
+		"#7e9cd8", -- Navy
+		"#957fb8", -- Purple
+		"#6a9589", -- Teal
+		"#c8c093", -- Silver
+	},
+	brights = {
+		"#727169", -- Grey
+		"#e82424", -- Red
+		"#98bb6c", -- Lime
+		"#e6c384", -- Yellow
+		"#7fb4ca", -- Blue
+		"#938aa9", -- Fuchsia
+		"#7aa89f", -- Aqua
+		"#dcd7ba", -- White
+	},
+	indexed = { [16] = "#ffa066", [17] = "#ff5d62" },
 }
 
 g.log("loading native rewrite config")
@@ -19,6 +67,7 @@ g.set_config({
 	backend = "sokol",
 	vsync = false,
 	max_fps = 120,
+	theme = theme,
 	fonts = {
 		size = 14.5,
 		padding_x = 0,
@@ -48,7 +97,7 @@ g.set_config({
 	top_bar_show = true,
 	top_bar_show_when_single_tab = true,
 	top_bar_height = 20,
-	top_bar_bg = "#2b2d37",
+	top_bar_bg = theme.tab_bar.background,
 	top_bar_draw_tabs = true,
 	top_bar_draw_status = true,
 })
@@ -77,7 +126,7 @@ hollow.status.set(function(side, active_tab_index, tab_count)
 
 	if side == "left" then
 		return {
-			{ text = "  ", fg = c.accent, bg = c.panel_alt, bold = true },
+			{ text = "  ", fg = theme.warm, bg = theme.tab_bar.background, bold = true },
 		}
 	end
 
@@ -99,7 +148,7 @@ hollow.status.set(function(side, active_tab_index, tab_count)
 		local time_text = hollow.strftime("%H:%M:%S")
 
 		return {
-			{ text = time_text, fg = c.accent, bg = c.panel },
+			{ text = time_text, fg = theme.status.fg, bg = theme.status.bg },
 		}
 	end
 
@@ -116,8 +165,9 @@ hollow.top_bar.format_tab_title(function(index, is_active, hover_close, fallback
 
 	return {
 		text = " " .. icon .. " " .. title .. " ",
-		fg = is_active and c.panel or c.text,
-		bg = hover_close and "#5a2d35" or (is_active and c.active or c.panel_alt),
+		fg = is_active and theme.tab_bar.active_tab.fg or theme.tab_bar.inactive_tab.fg,
+		bg = hover_close and theme.tab_bar.hover_close_bg
+			or (is_active and theme.tab_bar.active_tab.bg or theme.tab_bar.inactive_tab.bg),
 		bold = is_active,
 	}
 end)
@@ -134,8 +184,8 @@ hollow.top_bar.format_workspace_title(
 
 		return {
 			text = label,
-			fg = is_active and c.panel or c.text,
-			bg = is_active and c.accent or c.panel_alt,
+			fg = is_active and theme.workspace.active_fg or theme.workspace.inactive_fg,
+			bg = is_active and theme.workspace.active_bg or theme.workspace.inactive_bg,
 		}
 	end
 )
