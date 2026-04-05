@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
+const icon_data = @import("icon_data");
 const App = @import("../app.zig").App;
 const ghostty = @import("../term/ghostty.zig");
 const bar = @import("../ui/bar.zig");
@@ -583,6 +584,23 @@ pub fn run(app: *App) !void {
     if (builtin.os.tag == .windows and !app.config.vsync and app.config.max_fps > 0) {
         _ = win32.timeBeginPeriod(1);
     }
+
+    // Set the window icon from pre-resized RGBA pixel data.
+    desc.icon.images[0] = .{
+        .width = 16,
+        .height = 16,
+        .pixels = .{ .ptr = &icon_data.icon_16x16_rgba, .size = icon_data.icon_16x16_rgba.len },
+    };
+    desc.icon.images[1] = .{
+        .width = 32,
+        .height = 32,
+        .pixels = .{ .ptr = &icon_data.icon_32x32_rgba, .size = icon_data.icon_32x32_rgba.len },
+    };
+    desc.icon.images[2] = .{
+        .width = 64,
+        .height = 64,
+        .pixels = .{ .ptr = &icon_data.icon_64x64_rgba, .size = icon_data.icon_64x64_rgba.len },
+    };
 
     c.sapp_run(&desc);
 }
@@ -1435,6 +1453,28 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 drawDebugOverlay(app, renderer, width, height);
             }
         }
+    }
+
+    // Draw 1px window frame border when the OS title bar is hidden.
+    if (!app.config.window_titlebar_show) {
+        const fw: i32 = @intFromFloat(width);
+        const fh: i32 = @intFromFloat(height);
+        c.sgl_defaults();
+        c.sgl_viewport(0, 0, fw, fh, true);
+        c.sgl_scissor_rect(0, 0, fw, fh, true);
+        c.sgl_load_default_pipeline();
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+        // Subtle border colour — matches the inactive split-pane seam tone.
+        const br: u8 = 60;
+        const bg_: u8 = 65;
+        const bb: u8 = 75;
+        const ba: u8 = 255;
+        drawBorderRect(0.0, 0.0, width, 1.0, br, bg_, bb, ba); // top
+        drawBorderRect(0.0, height - 1.0, width, 1.0, br, bg_, bb, ba); // bottom
+        drawBorderRect(0.0, 0.0, 1.0, height, br, bg_, bb, ba); // left
+        drawBorderRect(width - 1.0, 0.0, 1.0, height, br, bg_, bb, ba); // right
     }
 
     // Flush all queued geometry — exactly once per frame.

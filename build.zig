@@ -12,6 +12,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Icon data module: pre-resized RGBA pixel arrays for the app icon.
+    const icon_module = b.createModule(.{
+        .root_source_file = b.path("assets/icon_data.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -19,6 +26,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     root_module.addImport("fonts", fonts_module);
+    root_module.addImport("icon_data", icon_module);
 
     const translate = b.addTranslateC(.{
         .root_source_file = b.path("src/render/sokol_bindings.h"),
