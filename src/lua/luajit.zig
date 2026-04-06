@@ -75,6 +75,7 @@ pub const AppCallbacks = struct {
     get_workspace_count: *const fn (app: *anyopaque) usize,
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
+    is_leader_active: *const fn (app: *anyopaque) bool,
 };
 
 const BridgeContext = struct {
@@ -304,6 +305,41 @@ pub const Runtime = struct {
         }
         pop(api, self.state, 1);
         return false;
+    }
+
+    pub fn isLeaderActive(self: *Runtime) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const ctx = self.context;
+        const api = ctx.api;
+
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return false;
+        }
+
+        api.get_field(self.state, -1, "keymap");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return false;
+        }
+
+        api.get_field(self.state, -1, "is_leader_active");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return false;
+        }
+
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "keymap.is_leader_active");
+            pop(api, self.state, 2);
+            return false;
+        }
+
+        const active = api.to_boolean(self.state, -1) != 0;
+        pop(api, self.state, 3);
+        return active;
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
@@ -555,6 +591,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_gui_ready, 1);
         api.set_field(self.state, -2, "on_gui_ready");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_is_leader_active, 1);
+        api.set_field(self.state, -2, "is_leader_active");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
@@ -1500,6 +1540,14 @@ fn l_set_tab_title(state: *State) callconv(.c) c_int {
     const title: []const u8 = if (ptr) |p| p[0..len] else "";
     cbs.set_tab_title(cbs.app, title);
     return 0;
+}
+
+fn l_is_leader_active(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    api.push_boolean(state, if (cbs.is_leader_active(cbs.app)) 1 else 0);
+    return 1;
 }
 
 /// hollow.set_workspace_name(title)  — override the active workspace name

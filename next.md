@@ -21,6 +21,8 @@
 - ~Dead pane auto-close: isAlive() now checks WaitForSingleObject as fallback when pipe EOF not yet reported~
 - ~Navigating between panes is a bit buggy let's say a create an horizontal split and then a vertical split, the navigation gets a bit weird. Being on the bottom right pane and pressing sthift+ctrl+left will move the focus to the toppane instead of the bottom left one. This is because the navigation is currently based on the position of the panes and not on a graph of the panes. This can be fixed by implementing a graph of the panes and navigating based on that graph instead of the position. This will also allow for more complex layouts in the future.~
 - Some keybords shortcuts don't work example in nvim all keymaps with alt+ don't work
+- Minimizing and restoring the windows clears the shell output. It should be possible to minimize and restore the window without losing the shell output. This can be fixed by implementing a proper handling of the WM_SIZE message and not clearing the buffer when the window is minimized
+- Sometimes when an application is closed the terminal gets into a weird and won't display new output until I resize the window or hit a key
 
 ## Fonts
 
@@ -33,7 +35,7 @@
 ## Performance
 
 - ~Add a debug overlay that shows the current FPS, frame time, and other relevant performance metrics.~
-- App consumes around 5% cpu on idle
+- ~App consumes around 5% cpu on idle~
 - ~Add a framerate cap to prevent the terminal from consuming too much resources when idle.~
 - ~Scrolling performance is not great at least in nvim. Espacially when there are spit windows. Half of the screen is static in this case but most likely we are still rendering full rows~
 - ~Add more performace tests and benchmarks to identify bottlenecks and optimize the rendering pipeline.~
@@ -51,13 +53,18 @@
   - ~Click to set cursor position~
   - ~Click and drag to resize panes~
   - ~scroll wheel support for scrolling through output~
+- Add support for kitty keyboard protocol (https://sw.kovidgoyal.net/kitty/keyboard-protocol/) to enable features like:
+  - Support for advanced key combinations and modifiers (e.g., Ctrl+Shift+Arrow keys, Alt+Tab, etc.)
+  - Support for custom keybindings and macros
 - Add text selection support
 - Add copy/paste support
+- Add scrollback buffer support (kitty scrollback)
+-
 
 ## Windowing
 
-- Add support for removing the title bar but keep the "RESIZE" handle. This is a common feature in terminal emulators that allows for a cleaner look while still maintaining the ability to resize the window.
-- Add support for moving the terminal window by dragging anywhere on the terminal surface with a modifier key (e.g., Alt + Drag). This is a convenient feature that allows users to easily reposition the terminal without needing to click on the title bar.
+- ~Add support for removing the title bar but keep the "RESIZE" handle. This is a common feature in terminal emulators that allows for a cleaner look while still maintaining the ability to resize the window.~
+- ~Add support for moving the terminal window by dragging anywhere on the terminal surface with a modifier key (e.g., Alt + Drag). This is a convenient feature that allows users to easily reposition the terminal without needing to click on the title bar.~
 
 ## Lua API
 

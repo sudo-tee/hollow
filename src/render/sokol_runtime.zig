@@ -158,6 +158,8 @@ var g_phase_accum_atlas_stale_frames: usize = 0;
 // Frames since last drag release — used for post-release diagnostics.
 // Set to 0 on release, incremented each frame until > 20.
 var g_frames_since_drag_release: usize = std.math.maxInt(usize);
+var g_swallow_char_pending: u8 = 0;
+var g_swallow_char_until_frame: u64 = 0;
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -1802,6 +1804,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     if (builtin.os.tag == .windows) {
         switch (event.type) {
             c.SAPP_EVENTTYPE_KEY_DOWN => handleKeyDown(app, event),
+            c.SAPP_EVENTTYPE_KEY_UP => handleKeyUp(app, event),
             c.SAPP_EVENTTYPE_CHAR => handleChar(app, event),
             c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
             c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
@@ -1818,6 +1821,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
 
     switch (event.type) {
         c.SAPP_EVENTTYPE_KEY_DOWN => handleKeyDown(app, event),
+        c.SAPP_EVENTTYPE_KEY_UP => handleKeyUp(app, event),
         c.SAPP_EVENTTYPE_CHAR => handleChar(app, event),
         c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
         c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
@@ -1845,16 +1849,34 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     // event thread.  If Lua consumes the key we stop here — no DLL call needed.
     if (key != .unidentified) {
         const key_name = @tagName(key);
-        if (app.fireOnKey(key_name, mods)) return;
+        if (app.fireOnKey(key_name, mods)) {
+            g_swallow_char_pending = 4;
+            g_swallow_char_until_frame = event.frame_count + 1;
+            return;
+        }
     }
 
     // Defer the actual DLL call (encodeKey) to the frame thread via the queue.
     // This prevents a data race with syncKeyEncoder / syncMouseEncoder which
     // run on the frame thread inside tickPanes / resizeAllPanes.
-    if (key != .unidentified) _ = app.enqueueKey(key, mods);
+    if (key != .unidentified) _ = app.enqueueKey(key, mods, if (event.key_repeat) .repeat else .press);
+}
+
+fn handleKeyUp(app: *App, event: c.sapp_event) void {
+    const mods = ghosttyMods(event.modifiers);
+    const key = mapKey(event.key_code);
+    if (key != .unidentified) _ = app.enqueueKey(key, mods, .release);
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
+    if (g_swallow_char_pending > 0) {
+        if (event.frame_count <= g_swallow_char_until_frame) {
+            g_swallow_char_pending -= 1;
+            return;
+        }
+        g_swallow_char_pending = 0;
+    }
+
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
     // Defer sendText to the frame thread — avoids racing with DLL calls in tick().
@@ -2099,6 +2121,14 @@ fn mapKey(key_code: c.sapp_keycode) ghostty.Key {
         c.SAPP_KEYCODE_PERIOD => .period,
         c.SAPP_KEYCODE_SLASH => .slash,
         c.SAPP_KEYCODE_ESCAPE => .escape,
+        c.SAPP_KEYCODE_LEFT_SHIFT => .shift_left,
+        c.SAPP_KEYCODE_RIGHT_SHIFT => .shift_right,
+        c.SAPP_KEYCODE_LEFT_CONTROL => .control_left,
+        c.SAPP_KEYCODE_RIGHT_CONTROL => .control_right,
+        c.SAPP_KEYCODE_LEFT_ALT => .alt_left,
+        c.SAPP_KEYCODE_RIGHT_ALT => .alt_right,
+        c.SAPP_KEYCODE_LEFT_SUPER => .meta_left,
+        c.SAPP_KEYCODE_RIGHT_SUPER => .meta_right,
         c.SAPP_KEYCODE_F1 => .f1,
         c.SAPP_KEYCODE_F2 => .f2,
         c.SAPP_KEYCODE_F3 => .f3,

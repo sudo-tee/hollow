@@ -99,10 +99,11 @@ pub const PendingMouseEvent = union(enum) {
     divider_commit,
     /// Focus gained (true) or lost (false) — calls runtime.encodeFocus on frame thread.
     focus: bool,
-    /// A key-down event (calls app.sendKey on frame thread).
+    /// A key event (calls app.sendKey on frame thread).
     key: struct {
         key: ghostty.Key,
         mods: u32,
+        action: ghostty.KeyAction,
     },
     /// A printable character from a CHAR event (calls app.sendText on frame thread).
     /// Stored as a small UTF-8 byte array; len==0 means empty/invalid.
@@ -195,8 +196,8 @@ pub const App = struct {
 
     /// Convenience wrapper for key-down events: enqueues a .key variant.
     /// Called from the event thread.
-    pub fn enqueueKey(self: *App, key: ghostty.Key, mods: u32) bool {
-        return self.enqueueMouse(.{ .key = .{ .key = key, .mods = mods } });
+    pub fn enqueueKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction) bool {
+        return self.enqueueMouse(.{ .key = .{ .key = key, .mods = mods, .action = action } });
     }
 
     /// Convenience wrapper for char events: enqueues a .char variant.
@@ -217,8 +218,9 @@ pub const App = struct {
             const tail = @atomicLoad(usize, &self.mouse_queue_tail, .acquire);
             if (self.mouse_queue_head == tail) break; // queue empty
 
-            const ev = self.mouse_queue[self.mouse_queue_head];
-            @atomicStore(usize, &self.mouse_queue_head, (self.mouse_queue_head + 1) % cap, .release);
+            const head = self.mouse_queue_head;
+            const ev = self.mouse_queue[head];
+            var advance: usize = 1;
 
             switch (ev) {
                 .none => {},
@@ -287,12 +289,32 @@ pub const App = struct {
                     self.sendFocus(gained) catch {};
                 },
                 .key => |k| {
-                    _ = self.sendKey(k.key, k.mods, null) catch {};
+                    var text: ?[]const u8 = null;
+                    if (k.action != .release) {
+                        const next = (head + 1) % cap;
+                        if (next != tail) {
+                            switch (self.mouse_queue[next]) {
+                                .char => |ch| {
+                                    if (ch.len > 0) {
+                                        text = ch.bytes[0..ch.len];
+                                        advance = 2;
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    }
+
+                    if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
+                        if (text) |bytes| self.sendText(bytes);
+                    }
                 },
                 .char => |ch| {
                     if (ch.len > 0) self.sendText(ch.bytes[0..ch.len]);
                 },
             }
+
+            @atomicStore(usize, &self.mouse_queue_head, (head + advance) % cap, .release);
         }
     }
 
@@ -385,6 +407,7 @@ pub const App = struct {
                 .get_workspace_count = luaGetWorkspaceCountCallback,
                 .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
                 .get_workspace_name = luaGetWorkspaceNameCallback,
+                .is_leader_active = luaIsLeaderActiveCallback,
             });
         }
 
@@ -535,18 +558,26 @@ pub const App = struct {
         self.sendText(bytes);
     }
 
-    pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, text: ?[]const u8) !bool {
+    pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8) !bool {
         const pane = self.activePane() orelse return false;
-        if (key == .escape and mods == ghostty.Mods.none and text == null) {
+        if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             self.sendText("\x1b");
             return true;
         }
 
         const rt = if (self.ghostty) |*r| r else return false;
         var buf: [128]u8 = undefined;
-        const consumed: u32 = if (text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
-        if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (text) |t| firstCodepoint(t) else 0, text, &buf)) |bytes| {
+        var derived_text_buf: [4]u8 = undefined;
+        const effective_text = text orelse legacyPrintableKeyText(key, mods, &derived_text_buf);
+        const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
+        if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, action, consumed, if (effective_text) |t| firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
             self.sendText(bytes);
+            return true;
+        }
+
+        if (action != .release and effective_text != null and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0) {
+            self.sendText("\x1b");
+            self.sendText(effective_text.?);
             return true;
         }
 
@@ -1383,6 +1414,11 @@ pub const App = struct {
         if (self.lua) |*lua| return lua.fireOnKey(key, mods);
         return false;
     }
+
+    pub fn isLeaderActive(self: *App) bool {
+        if (self.lua) |*lua| return lua.isLeaderActive();
+        return false;
+    }
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
@@ -1409,7 +1445,69 @@ fn pathExists(path: []const u8) bool {
 
 fn firstCodepoint(text: []const u8) u32 {
     if (text.len == 0) return 0;
-    return text[0];
+    const len = std.unicode.utf8ByteSequenceLength(text[0]) catch return text[0];
+    if (len > text.len) return text[0];
+    return std.unicode.utf8Decode(text[0..len]) catch text[0];
+}
+
+fn legacyPrintableKeyText(key: ghostty.Key, mods: u32, out: *[4]u8) ?[]const u8 {
+    const shift = (mods & ghostty.Mods.shift) != 0;
+    const ch: u8 = switch (key) {
+        .a => if (shift) 'A' else 'a',
+        .b => if (shift) 'B' else 'b',
+        .c => if (shift) 'C' else 'c',
+        .d => if (shift) 'D' else 'd',
+        .e => if (shift) 'E' else 'e',
+        .f => if (shift) 'F' else 'f',
+        .g => if (shift) 'G' else 'g',
+        .h => if (shift) 'H' else 'h',
+        .i => if (shift) 'I' else 'i',
+        .j => if (shift) 'J' else 'j',
+        .k => if (shift) 'K' else 'k',
+        .l => if (shift) 'L' else 'l',
+        .m => if (shift) 'M' else 'm',
+        .n => if (shift) 'N' else 'n',
+        .o => if (shift) 'O' else 'o',
+        .p => if (shift) 'P' else 'p',
+        .q => if (shift) 'Q' else 'q',
+        .r => if (shift) 'R' else 'r',
+        .s => if (shift) 'S' else 's',
+        .t => if (shift) 'T' else 't',
+        .u => if (shift) 'U' else 'u',
+        .v => if (shift) 'V' else 'v',
+        .w => if (shift) 'W' else 'w',
+        .x => if (shift) 'X' else 'x',
+        .y => if (shift) 'Y' else 'y',
+        .z => if (shift) 'Z' else 'z',
+        .digit_0 => if (shift) ')' else '0',
+        .digit_1 => if (shift) '!' else '1',
+        .digit_2 => if (shift) '@' else '2',
+        .digit_3 => if (shift) '#' else '3',
+        .digit_4 => if (shift) '$' else '4',
+        .digit_5 => if (shift) '%' else '5',
+        .digit_6 => if (shift) '^' else '6',
+        .digit_7 => if (shift) '&' else '7',
+        .digit_8 => if (shift) '*' else '8',
+        .digit_9 => if (shift) '(' else '9',
+        .space => ' ',
+        .tab => if (shift) return null else '\t',
+        .enter => '\r',
+        .backspace => 0x7f,
+        .minus => if (shift) '_' else '-',
+        .equal => if (shift) '+' else '=',
+        .bracket_left => if (shift) '{' else '[',
+        .bracket_right => if (shift) '}' else ']',
+        .backslash => if (shift) '|' else '\\',
+        .semicolon => if (shift) ':' else ';',
+        .quote => if (shift) '"' else '\'',
+        .backquote => if (shift) '~' else '`',
+        .comma => if (shift) '<' else ',',
+        .period => if (shift) '>' else '.',
+        .slash => if (shift) '?' else '/',
+        else => return null,
+    };
+    out[0] = ch;
+    return out[0..1];
 }
 
 fn getPaneForTerminal(app: *App, term: ?*anyopaque) ?*Pane {
@@ -1583,4 +1681,9 @@ fn luaGetActiveWorkspaceIndexCallback(app_ptr: *anyopaque) usize {
 fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.workspaceName(index, out_buf);
+}
+
+fn luaIsLeaderActiveCallback(app_ptr: *anyopaque) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.isLeaderActive();
 }
