@@ -13,6 +13,7 @@ OPTIMIZE=""
 SAFE_RENDER=0
 DISABLE_SWAPCHAIN_GLYPHS=0
 DISABLE_MULTI_PANE_CACHE=0
+FORWARD_ARGS=()
 
 for arg in "$@"; do
 	case "$arg" in
@@ -22,8 +23,9 @@ for arg in "$@"; do
 	--safe-render) SAFE_RENDER=1 ;;
 	--no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
 	--no-multi-pane-cache) DISABLE_MULTI_PANE_CACHE=1 ;;
+	--app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
 	--help | -h)
-		echo "Usage: $0 [--no-build] [--build-only] [--debug] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache]"
+		echo "Usage: $0 [--no-build] [--build-only] [--debug] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--app-arg=ARG]"
 		exit 0
 		;;
 	esac
@@ -100,6 +102,9 @@ if [[ $RUN -eq 1 ]]; then
 	if [[ $DISABLE_MULTI_PANE_CACHE -eq 1 ]]; then
 		echo "[launch] multi-pane cache disabled"
 		RUN_ARGS+=("--renderer-disable-multi-pane-cache")
+	fi
+	if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then
+		RUN_ARGS+=("${FORWARD_ARGS[@]}")
 	fi
 	echo "[launch] running $EXE_PATH"
 	exec "$EXE_PATH" "${RUN_ARGS[@]}"

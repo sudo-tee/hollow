@@ -109,9 +109,12 @@ pub fn main() !void {
         std.process.exit(1);
     };
     defer if (cli.config_path) |path| allocator.free(path);
+    defer if (cli.startup_command) |cmd| allocator.free(cmd);
+    defer if (cli.snapshot_dump_path) |path| allocator.free(path);
 
     var app = App.init(allocator);
     defer app.deinit();
+    try app.configureAutomation(cli.startup_command, cli.startup_command_delay_frames, cli.snapshot_dump_path);
 
     app.bootstrap(cli.config_path) catch |err| {
         std.log.err("bootstrap failed: {s}", .{@errorName(err)});
@@ -135,6 +138,9 @@ const Cli = struct {
     renderer_safe_mode: bool = false,
     renderer_disable_swapchain_glyphs: bool = false,
     renderer_disable_multi_pane_cache: bool = false,
+    startup_command: ?[]u8 = null,
+    startup_command_delay_frames: usize = 20,
+    snapshot_dump_path: ?[]u8 = null,
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !Cli {
@@ -167,8 +173,29 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
             continue;
         }
 
+        if (std.mem.eql(u8, arg, "--startup-command")) {
+            i += 1;
+            if (i >= args.len) return error.MissingStartupCommand;
+            cli.startup_command = try allocator.dupe(u8, args[i]);
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--startup-command-delay-frames")) {
+            i += 1;
+            if (i >= args.len) return error.MissingStartupCommandDelay;
+            cli.startup_command_delay_frames = try std.fmt.parseInt(usize, args[i], 10);
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--snapshot-dump")) {
+            i += 1;
+            if (i >= args.len) return error.MissingSnapshotDumpPath;
+            cli.snapshot_dump_path = try allocator.dupe(u8, args[i]);
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("usage: hollow-native [--config path] [--renderer-safe-mode] [--renderer-disable-swapchain-glyphs] [--renderer-disable-multi-pane-cache]\n", .{});
+            std.debug.print("usage: hollow-native [--config path] [--renderer-safe-mode] [--renderer-disable-swapchain-glyphs] [--renderer-disable-multi-pane-cache] [--startup-command text] [--startup-command-delay-frames n] [--snapshot-dump path]\n", .{});
             std.process.exit(0);
         }
     }

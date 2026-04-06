@@ -37,6 +37,22 @@ fn countUtf8Codepoints(text: []const u8) usize {
     return count;
 }
 
+fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(render_mode);
+    hasher.update(std.mem.asBytes(&snapshot.rows));
+    hasher.update(std.mem.asBytes(&snapshot.cols));
+    const dirty = @intFromEnum(snapshot.dirty);
+    hasher.update(std.mem.asBytes(&dirty));
+    hasher.update(snapshot.title);
+    var line_idx: usize = 0;
+    while (line_idx < snapshot.visible_line_count and line_idx < snapshot.lines.len) : (line_idx += 1) {
+        hasher.update(snapshot.lines[line_idx][0..snapshot.line_lens[line_idx]]);
+        hasher.update("\n");
+    }
+    return hasher.final();
+}
+
 /// An event captured on the sokol event thread, to be dispatched
 /// on the frame thread inside tick() to avoid data races into the ghostty DLL.
 /// Covers both mouse/focus events and key/char events so ALL DLL calls are
@@ -158,6 +174,13 @@ pub const App = struct {
     pending_quit: bool = false,
     hovered_tab_index: ?usize = null,
     hovered_close_tab_index: ?usize = null,
+    startup_command: ?[]u8 = null,
+    startup_command_delay_frames: usize = 0,
+    startup_command_sent: bool = false,
+    snapshot_dump_path: ?[]u8 = null,
+    snapshot_dump_file: ?std.fs.File = null,
+    snapshot_dump_last_hash: u64 = 0,
+    snapshot_dump_has_last_hash: bool = false,
     /// Fractional scroll accumulator — prevents sub-pixel scroll events from
     /// being silently dropped by integer truncation on smooth / touchpad input.
     scroll_accum: f32 = 0,
@@ -354,7 +377,38 @@ pub const App = struct {
             self.allocator.free(path);
             self.loaded_config_path = null;
         }
+        if (self.snapshot_dump_file) |file| {
+            file.close();
+            self.snapshot_dump_file = null;
+        }
+        if (self.snapshot_dump_path) |path| {
+            self.allocator.free(path);
+            self.snapshot_dump_path = null;
+        }
+        if (self.startup_command) |cmd| {
+            self.allocator.free(cmd);
+            self.startup_command = null;
+        }
         self.config.deinit();
+    }
+
+    pub fn configureAutomation(self: *App, startup_command: ?[]const u8, startup_command_delay_frames: usize, snapshot_dump_path: ?[]const u8) !void {
+        if (startup_command) |cmd| {
+            if (self.startup_command) |owned| self.allocator.free(owned);
+            self.startup_command = try self.allocator.dupe(u8, cmd);
+            self.startup_command_delay_frames = startup_command_delay_frames;
+            self.startup_command_sent = false;
+        }
+
+        if (snapshot_dump_path) |path| {
+            if (self.snapshot_dump_file) |file| file.close();
+            self.snapshot_dump_file = null;
+            if (self.snapshot_dump_path) |owned| self.allocator.free(owned);
+            self.snapshot_dump_path = try self.allocator.dupe(u8, path);
+            self.snapshot_dump_file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+            self.snapshot_dump_last_hash = 0;
+            self.snapshot_dump_has_last_hash = false;
+        }
     }
 
     pub fn bootstrap(self: *App, config_override: ?[]const u8) !void {
@@ -452,6 +506,7 @@ pub const App = struct {
         self.flushPendingResize();
         self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
+        self.maybeRunStartupCommand();
         if (!self.logged_first_render_update) {
             self.logged_first_render_update = true;
             std.log.info("first render-state update complete", .{});
@@ -468,6 +523,30 @@ pub const App = struct {
             }
         }
         return null;
+    }
+
+    pub fn dumpSnapshot(self: *App, frame_index: usize, render_mode: []const u8) void {
+        const file = if (self.snapshot_dump_file) |*f| f else return;
+        const snapshot = self.captureSnapshot() orelse return;
+        const hash = snapshotHash(&snapshot, render_mode);
+        if (self.snapshot_dump_has_last_hash and self.snapshot_dump_last_hash == hash) return;
+        self.snapshot_dump_last_hash = hash;
+        self.snapshot_dump_has_last_hash = true;
+
+        var buf: [4096]u8 = undefined;
+        var writer = file.writer(&buf);
+        writer.interface.print(
+            "=== frame={d} mode={s} dirty={s} rows={d} cols={d} visible={d} title={s} hash={x} ===\n",
+            .{ frame_index, render_mode, @tagName(snapshot.dirty), snapshot.rows, snapshot.cols, snapshot.visible_line_count, snapshot.title, hash },
+        ) catch return;
+
+        var line_idx: usize = 0;
+        while (line_idx < snapshot.visible_line_count and line_idx < snapshot.lines.len) : (line_idx += 1) {
+            const line = snapshot.lines[line_idx][0..snapshot.line_lens[line_idx]];
+            writer.interface.print("{d:0>3}: {s}\n", .{ line_idx, line }) catch return;
+        }
+        writer.interface.writeAll("\n") catch return;
+        writer.interface.flush() catch {};
     }
 
     pub fn currentLayoutGeneration(self: *const App) u32 {
@@ -502,15 +581,32 @@ pub const App = struct {
     }
 
     pub fn resize(self: *App, pixel_width: u32, pixel_height: u32) void {
+        const prev_window_width = self.config.window_width;
+        const prev_window_height = self.config.window_height;
+        const prev_cols = self.config.cols;
+        const prev_rows = self.config.rows;
+
         self.config.window_width = pixel_width;
         self.config.window_height = pixel_height;
 
         self.config.cols = @max(1, @as(u16, @intCast(pixel_width / @max(@as(u32, 1), self.cell_width_px))));
         self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
 
-        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, pixel_width, pixel_height, true, false);
+        const grid_unchanged = self.config.cols == prev_cols and self.config.rows == prev_rows;
+        const size_unchanged = pixel_width == prev_window_width and pixel_height == prev_window_height;
 
-        std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
+        if (self.ghostty) |*runtime| {
+            // A same-grid resize should stay a pure layout/cache refresh.
+            // Forcing a PTY/ghostty resize in this case sends an unnecessary
+            // SIGWINCH/reflow, which is what causes shell-mode content to come
+            // back looking as if `clear` had run after minimize/restore.
+            self.resizeAllPanes(runtime, pixel_width, pixel_height, !grid_unchanged, grid_unchanged);
+        }
+
+        std.log.info(
+            "app: resized window={d}x{d} grid={d}x{d} cell={d}x{d} grid_unchanged={} size_unchanged={}",
+            .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px, grid_unchanged, size_unchanged },
+        );
     }
 
     pub fn requestResize(self: *App, pixel_width: u32, pixel_height: u32) void {
@@ -531,6 +627,26 @@ pub const App = struct {
         if (previous == current) return;
         if (previous) |pane| pane.render_dirty = .full;
         if (current) |pane| pane.render_dirty = .full;
+    }
+
+    fn maybeRunStartupCommand(self: *App) void {
+        if (self.startup_command_sent) return;
+        const command = self.startup_command orelse return;
+        if (self.frame_count < self.startup_command_delay_frames) return;
+        self.sendText(command);
+        if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
+            self.sendText("\r");
+        }
+        self.startup_command_sent = true;
+    }
+
+    pub fn invalidateAllPanes(self: *App) void {
+        const mux = if (self.mux) |*m| m else return;
+        var panes = mux.paneIterator();
+        while (panes.next()) |pane| {
+            pane.render_dirty = .full;
+            pane.last_render_state_update_ns = 0;
+        }
     }
 
     pub fn sendPaste(self: *App, text: []const u8) !void {

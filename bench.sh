@@ -10,6 +10,40 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 RATE="${3:-100}"
+
+run_minimize_restore_regression() {
+	local out_path="${1:-bench_minimize_restore_snapshot.txt}"
+	local pre_minimize_delay_ms="${2:-2000}"
+	local minimized_delay_ms="${3:-1000}"
+	local post_restore_delay_ms="${4:-1200}"
+	local script_dir
+	local ps_script
+
+	script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+	ps_script="$(wslpath -w "$script_dir/scripts/minimize-restore.ps1")"
+
+	echo "[bench] manual minimize-restore workflow"
+	echo "[bench] 1) launch hollow with: ./launch.sh --app-arg=\"--snapshot-dump\" --app-arg=\"$out_path\""
+	echo "[bench] 2) create visible shell output in the window"
+	echo "[bench] 3) run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$ps_script\" -ProcessName \"hollow-native\" -PreMinimizeDelayMs $pre_minimize_delay_ms -MinimizedDelayMs $minimized_delay_ms -PostRestoreDelayMs $post_restore_delay_ms"
+	echo "[bench] 4) inspect $out_path for lost shell content after restore"
+}
+
+if [[ "$MODE" == "minimize-restore" ]]; then
+	run_minimize_restore_regression "${2:-bench_minimize_restore_snapshot.txt}" "${3:-2000}" "${4:-1000}" "${5:-1200}"
+	exit 0
+fi
+
+if [[ "$MODE" == "nvim-restart" ]]; then
+	OUT_PATH="${2:-bench_nvim_restart_snapshot.txt}"
+	DELAY_FRAMES="${3:-45}"
+	SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+	echo "[bench] nvim-restart snapshot dump -> $OUT_PATH"
+	echo "[bench] close the app when the capture is done"
+	rm -f "$OUT_PATH"
+	exec "$SCRIPT_DIR/launch.sh" --app-arg="--startup-command" --app-arg=":restart" --app-arg="--startup-command-delay-frames" --app-arg="$DELAY_FRAMES" --app-arg="--snapshot-dump" --app-arg="$OUT_PATH"
+fi
+
 python3 - "$MODE" "$COUNT" "$RATE" <<'PY'
 import os
 import shutil
@@ -431,6 +465,6 @@ elif mode == "split-scroll":
     rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
     run_split_scroll(count, rate_hz=rate)
 else:
-    sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll] [count] [rate_hz]\n")
-    sys.exit(2)
+		sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|nvim-restart|minimize-restore] ...\n")
+		sys.exit(2)
 PY

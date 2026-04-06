@@ -66,7 +66,9 @@ const win32 = if (builtin.os.tag == .windows) struct {
         uFlags: u32,
     ) callconv(.c) i32;
     extern "user32" fn GetWindowRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
+    extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
     extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
+    extern "user32" fn IsIconic(hWnd: HWND) callconv(.c) i32;
     extern "user32" fn SetCapture(hWnd: HWND) callconv(.c) ?HWND;
     extern "user32" fn ReleaseCapture() callconv(.c) i32;
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
@@ -93,6 +95,9 @@ var g_gui_ready_fired = false;
 var g_window_chrome_applied = false;
 var g_prev_wnd_proc: win32.LONG_PTR = 0;
 var g_subclassed_hwnd: ?win32.HWND = null;
+var g_window_iconified = false;
+var g_restore_pending = false;
+var g_ignore_resize_frames: usize = 0;
 var g_last_frame_time_ns: i128 = 0;
 var g_last_perf_sample_ns: i128 = 0;
 var g_perf_accum_frame_ns: i128 = 0;
@@ -540,6 +545,9 @@ pub fn run(app: *App) !void {
     g_window_chrome_applied = false;
     g_prev_wnd_proc = 0;
     g_subclassed_hwnd = null;
+    g_window_iconified = false;
+    g_restore_pending = false;
+    g_ignore_resize_frames = 0;
     g_last_frame_time_ns = 0;
     g_last_perf_sample_ns = 0;
     g_perf_accum_frame_ns = 0;
@@ -701,6 +709,24 @@ fn evictStalePaneCaches(app: *App) void {
     }
 }
 
+fn invalidateAllPaneCaches() void {
+    for (&g_pane_caches) |*slot| {
+        if (slot.*) |*entry| {
+            entry.needs_clear = true;
+            entry.force_full_frames = 2;
+            entry.layout_generation = 0;
+            entry.stable_after_resize = false;
+            entry.last_cols = 0;
+            entry.last_rows = 0;
+            entry.validity = .invalid;
+            entry.last_atlas_epoch = 0;
+            @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
+            @memset(&entry.row_map_vals, 0);
+            entry.prev_cursor_row = std.math.maxInt(usize);
+        }
+    }
+}
+
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const frame_start_ns = std.time.nanoTimestamp();
@@ -710,6 +736,17 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     g_frame_index += 1;
     if (g_frames_since_drag_release < std.math.maxInt(usize)) g_frames_since_drag_release += 1;
+    if (g_ignore_resize_frames > 0) g_ignore_resize_frames -= 1;
+    if (@atomicLoad(bool, &g_restore_pending, .acquire)) {
+        @atomicStore(bool, &g_restore_pending, false, .release);
+        invalidateAllPaneCaches();
+        app.invalidateAllPanes();
+        // Do not trust sapp_widthf()/heightf() here on Windows restore.
+        // Sokol can still report the transient minimized size (e.g. 160x28)
+        // for one frame, which collapses the shell grid to 17x1 and makes the
+        // restored terminal look as if `clear` ran.  The real resize is handled
+        // by the restore/resize events themselves.
+    }
     if (!g_logged_first_frame) {
         g_logged_first_frame = true;
         std.log.info("sokol first frame (ft renderer)", .{});
@@ -726,9 +763,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
+
+    app.dumpSnapshot(g_frame_index, "pre-render");
+
     const fb = framebufferSize();
     const width = fb.width;
     const height = fb.height;
+    if (width <= 0 or height <= 0) return;
 
     // Resolve background color for the clear pass.
     var clear_r: f32 = 0.07;
@@ -881,10 +923,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const expected_rows: u16 = @intCast(@min(500, @max(1, ph_u / @max(@as(u32, 1), cell_height_px))));
                     const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
+                    const pty_active = pane.pty_wrote_this_frame;
+                    const ghostty_dirty = dirty_level != .false_value;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
-                    const settled_clean = dirty_level == .false_value and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed;
+                    const settled_clean = dirty_level == .false_value and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed;
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         // Nothing changed and the pane has already survived a clean
                         // post-reflow frame, so the cached RT is safe to reuse.
@@ -894,7 +938,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         return .cached_clean;
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
-                    const force_full = g_drag_node != null or dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled;
+                    const force_full = g_drag_node != null or dirty_level == .full or pty_active or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled;
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
@@ -919,7 +963,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                                 unsettled,
                                 size_mismatch,
                                 grid_changed,
-                                pane.pty_wrote_this_frame,
+                                pty_active,
                                 rend.last_rows_rendered,
                                 rend.last_rows_skipped,
                             },
@@ -1001,9 +1045,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // needs_clear set so we keep doing CLEAR renders until the
                     // shell output settles.  Only mark stable / clear needs_clear
                     // on a quiet frame with no new PTY data.
-                    const pty_active = pane.pty_wrote_this_frame;
                     pane.pty_wrote_this_frame = false; // consumed by renderer
-                    cache_entry.needs_clear = pty_active;
+                    cache_entry.needs_clear = pty_active or ghostty_dirty;
                     const now_stable = !pty_active and dirty_level == .false_value and !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
                     cache_entry.validity = if (cache_entry.stable_after_resize) .valid else .priming;
@@ -1118,6 +1161,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         leaf.pane.render_dirty = .false_value;
+                        leaf.pane.pty_wrote_this_frame = false;
                     }
                 } else if (app.activePane()) |pane| {
                     if (!pane.render_state_ready) {
@@ -1149,6 +1193,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         g_phase_accum_bg_rects += renderer.last_bg_rects;
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         pane.render_dirty = .false_value;
+                        pane.pty_wrote_this_frame = false;
                     }
                 }
             }
@@ -1219,7 +1264,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             width,
                             height,
                             true,
-                            pane.render_dirty == .full or renderer.atlas_dirty,
+                            pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
                             std.math.maxInt(usize),
                         );
                         // Accumulate direct-render diagnostics.
@@ -1231,6 +1276,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         if (renderer.last_atlas_flushed) g_phase_accum_atlas_flushes += 1;
                         // Mark pane clean after direct render.
                         pane.render_dirty = .false_value;
+                        pane.pty_wrote_this_frame = false;
                     } else {
                         // Use cached RT
                         const pw_u: u32 = @max(1, @as(u32, @intFromFloat(width)));
@@ -1507,6 +1553,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     c.sg_end_pass();
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
+    app.dumpSnapshot(g_frame_index, "post-render");
     sleepForFrameCap(app, frame_start_ns, after_commit_ns);
 
     // ── Phase timing accumulation (logged every ~2 s) ─────────────────────
@@ -1811,6 +1858,15 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
             c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
             c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
+            c.SAPP_EVENTTYPE_ICONIFIED => {
+                std.log.info("sokol iconified", .{});
+                @atomicStore(bool, &g_window_iconified, true, .release);
+            },
+            c.SAPP_EVENTTYPE_RESTORED => {
+                @atomicStore(bool, &g_window_iconified, false, .release);
+                @atomicStore(bool, &g_restore_pending, true, .release);
+                g_ignore_resize_frames = 2;
+            },
             c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
             c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
             c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
@@ -1833,6 +1889,15 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             .mods = ghosttyMods(event.modifiers),
         } }),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
+        c.SAPP_EVENTTYPE_ICONIFIED => {
+            std.log.info("sokol iconified", .{});
+            @atomicStore(bool, &g_window_iconified, true, .release);
+        },
+        c.SAPP_EVENTTYPE_RESTORED => {
+            @atomicStore(bool, &g_window_iconified, false, .release);
+            @atomicStore(bool, &g_restore_pending, true, .release);
+            g_ignore_resize_frames = 2;
+        },
         c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
         c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
@@ -2053,7 +2118,43 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
 }
 
 fn handleResize(app: *App, event: c.sapp_event) void {
-    const pixel_size = windowSizeToPixels(@floatFromInt(event.framebuffer_width), @floatFromInt(event.framebuffer_height));
+    if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
+    if (g_ignore_resize_frames > 0 and (event.framebuffer_width < 256 or event.framebuffer_height < 128)) {
+        std.log.info(
+            "handleResize: ignoring transient restore resize fb={d}x{d} win={d:.1}x{d:.1} frames_left={d}",
+            .{ event.framebuffer_width, event.framebuffer_height, event.window_width, event.window_height, g_ignore_resize_frames },
+        );
+        return;
+    }
+    var fb_width = event.framebuffer_width;
+    var fb_height = event.framebuffer_height;
+    var used_client_rect = false;
+
+    if (builtin.os.tag == .windows) {
+        const hwnd_raw = c.sapp_win32_get_hwnd() orelse return;
+        const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
+        if (win32.IsIconic(hwnd) != 0) return;
+
+        if (fb_width <= 0 or fb_height <= 0 or fb_width < 64 or fb_height < 64) {
+            var client_rect: win32.RECT = undefined;
+            if (win32.GetClientRect(hwnd, &client_rect) != 0) {
+                const client_w = client_rect.right - client_rect.left;
+                const client_h = client_rect.bottom - client_rect.top;
+                if (client_w > 0 and client_h > 0) {
+                    fb_width = client_w;
+                    fb_height = client_h;
+                    used_client_rect = true;
+                }
+            }
+        }
+    }
+
+    if (fb_width <= 0 or fb_height <= 0) return;
+    std.log.info(
+        "handleResize: event_fb={d}x{d} event_win={d:.1}x{d:.1} chosen_fb={d}x{d} used_client_rect={}",
+        .{ event.framebuffer_width, event.framebuffer_height, event.window_width, event.window_height, fb_width, fb_height, used_client_rect },
+    );
+    const pixel_size = windowSizeToPixels(@floatFromInt(fb_width), @floatFromInt(fb_height));
     app.requestResize(pixel_size.width, pixel_size.height);
 }
 
