@@ -140,8 +140,9 @@ hollow.status.set(function(side, active_tab_index, tab_count)
 			}
 
 			if leader_state.next and #leader_state.next > 0 then
+				local next_items = leader_state.next_display or {}
 				table.insert(leader, {
-					text = " " .. table.concat(leader_state.next, " ") .. " ",
+					text = " " .. table.concat(next_items, "  ") .. " ",
 					fg = theme.status.fg,
 					bg = theme.status.bg,
 				})
@@ -218,17 +219,17 @@ hollow.top_bar.format_workspace_title(
 )
 
 g.keymap.set_leader("ctrl+space", { timeout_ms = 1200 })
-g.keymap.set("<leader>v", "split_vertical")
-g.keymap.set("<leader>sd", "split_horizontal")
+g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
+g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- Example of user overriding or adding keys:
 -- g.keymap.set("ctrl+t", "new_tab")
 -- g.keymap.set("ctrl+w", "close_tab")
 -- g.keymap.set("ctrl+tab", "next_tab")
 -- g.keymap.set("ctrl+shift+tab", "prev_tab")
 -- g.keymap.set_leader("ctrl+a", { timeout_ms = 1200 })
--- g.keymap.set("<leader>c", "close_pane")
--- g.keymap.set("<leader>v", "split_vertical")
--- g.keymap.set("<leader>sd", "split_horizontal")
+-- g.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
+-- g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
+-- g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- g.keymap.del("ctrl+shift+arrow_left")
 g.keymap.del("ctrl+shift+arrow_left")
 g.keymap.del("ctrl+shift+arrow_right")

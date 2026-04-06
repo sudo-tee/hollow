@@ -163,10 +163,26 @@ local function parse_leader_sequence(chord, style)
 	return steps
 end
 
-local function set_binding(store, chord, action)
+local function normalize_binding(action_or_opts, maybe_opts)
+	local binding = {
+		action = action_or_opts,
+		desc = nil,
+	}
+
+	if type(action_or_opts) == "table" and maybe_opts == nil then
+		binding.action = action_or_opts.action
+		binding.desc = action_or_opts.desc
+	elseif type(maybe_opts) == "table" then
+		binding.desc = maybe_opts.desc
+	end
+
+	return binding
+end
+
+local function set_binding(store, chord, action, opts)
 	local key, mods = parse_chord(chord)
 	store[key] = store[key] or {}
-	store[key][mods] = action
+	store[key][mods] = normalize_binding(action, opts)
 end
 
 local function del_binding(store, chord)
@@ -257,6 +273,10 @@ local function copy_list(items)
 	return out
 end
 
+local function has_sequence_children(node)
+	return node ~= nil and node.children ~= nil and next(node.children) ~= nil
+end
+
 local function get_leader_next_keys(node)
 	local items = {}
 	if node == nil or node.children == nil then
@@ -264,17 +284,32 @@ local function get_leader_next_keys(node)
 	end
 
 	for key, modmap in pairs(node.children) do
-		for mods, _ in pairs(modmap) do
-			table.insert(items, format_chord(key, mods))
+		for mods, child in pairs(modmap) do
+			table.insert(items, {
+				key = format_chord(key, mods),
+				desc = child.desc,
+				complete = child.action ~= nil,
+				has_children = has_sequence_children(child),
+			})
 		end
 	end
 
-	table.sort(items)
+	table.sort(items, function(a, b)
+		return a.key < b.key
+	end)
 	return items
 end
 
-local function has_sequence_children(node)
-	return node ~= nil and node.children ~= nil and next(node.children) ~= nil
+local function format_next_items(items)
+	local out = {}
+	for _, item in ipairs(items) do
+		local text = item.key
+		if item.desc and item.desc ~= "" then
+			text = text .. ":" .. item.desc
+		end
+		table.insert(out, text)
+	end
+	return out
 end
 
 local function ensure_sequence_child(node, chord)
@@ -282,6 +317,7 @@ local function ensure_sequence_child(node, chord)
 	node.children[key] = node.children[key] or {}
 	node.children[key][mods] = node.children[key][mods] or {
 		action = nil,
+		desc = nil,
 		children = {},
 	}
 	return node.children[key][mods]
@@ -300,17 +336,19 @@ local function get_sequence_child(node, key, mods)
 	return key_bindings[mods]
 end
 
-local function set_leader_binding(chord, style, action)
+local function set_leader_binding(chord, style, action, opts)
 	local steps = parse_leader_sequence(chord, style)
 	if not steps then
 		error("invalid leader sequence: " .. tostring(chord))
 	end
+	local binding = normalize_binding(action, opts)
 
 	local node = leader_bindings
 	for _, step in ipairs(steps) do
 		node = ensure_sequence_child(node, step)
 	end
-	node.action = action
+	node.action = binding.action
+	node.desc = binding.desc
 end
 
 local function del_leader_binding(chord, style)
@@ -336,6 +374,7 @@ local function del_leader_binding(chord, style)
 	end
 
 	node.action = nil
+	node.desc = nil
 
 	for i = #path, 1, -1 do
 		local item = path[i]
@@ -352,7 +391,12 @@ local function del_leader_binding(chord, style)
 	return true
 end
 
-local function run_action(action)
+local function run_action(binding)
+	if binding == nil then
+		return false
+	end
+
+	local action = binding.action
 	if type(action) == "function" then
 		action()
 		return true
@@ -379,12 +423,12 @@ local function is_leader_active()
 	return true
 end
 
-function hollow.keymap.set(chord, action)
+function hollow.keymap.set(chord, action, opts)
 	local use_leader, resolved, style = split_leader_chord(chord)
 	if use_leader then
-		set_leader_binding(resolved, style, action)
+		set_leader_binding(resolved, style, action, opts)
 	else
-		set_binding(bindings, resolved, action)
+		set_binding(bindings, resolved, action, opts)
 	end
 end
 
@@ -435,6 +479,8 @@ function hollow.keymap.get_leader_state()
 			and ("<leader> " .. table.concat(leader_sequence_steps, " "))
 			or "<leader>",
 		next = get_leader_next_keys(node),
+		next_display = format_next_items(get_leader_next_keys(node)),
+		desc = node.desc,
 		remaining_ms = math.max(0, leader_pending_until - now_ms()),
 		timeout_ms = leader_timeout_ms,
 		complete = node.action ~= nil,
@@ -544,7 +590,7 @@ hollow.on_key(function(key, mods)
 			leader_pending_until = now_ms() + leader_timeout_ms
 			if node.action ~= nil and not has_sequence_children(node) then
 				reset_leader_state()
-				return run_action(node.action)
+				return run_action(node)
 			end
 			return true
 		end
