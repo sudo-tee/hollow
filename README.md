@@ -1,8 +1,16 @@
 # Hollow
 
-This branch is the native rewrite of Hollow.
+<div align="center">
+    <img src="assets/banner.png" alt="Hollow demo" width="600"/>
+</div>
 
-The old Love2D/Lua code has been removed; the new work lives in the repo root with a Zig-first core that still keeps `libghostty-vt` and LuaJIT in the loop.
+Hollow is a terminal emulator built in Zig with a LuaJIT scripting layer and `libghostty-vt` for VT parsing and rendering. The project is currently in early development, but the goal is to create a fast, hackable, and cross-platform terminal with a Windows-first approach.
+
+This project is built out of self interest and a desire to create a wezterm-like terminal emulator that is hackable and extensible through Lua scripting.
+
+## Disclaimer
+
+This project was heavily prototyped with the help of AI. The current state of the codebase is a mix of human-written and AI-generated code, and there may be some rough edges and inconsistencies as a result. However, the core architecture and design decisions were made by me.
 
 ## Direction
 
@@ -11,6 +19,12 @@ The old Love2D/Lua code has been removed; the new work lives in the repo root wi
 - `libghostty-vt` as the VT/parser/render-state engine
 - renderer seam shaped for `sokol` now and a future `webgpu` backend later
 - Windows treated as a first-class target instead of a fallback port
+
+## Why the name Hollow?
+
+- The terminal is like a hollow shell that you can fill with whatever you want. It's a place where you can run your commands, scripts, and applications. It's also a nod to the idea of a "hollow" project that is meant to be filled in and built upon by the community.
+- The the concept of "hollowness" is deeply connected to spirits, ghosts, and the supernatural, often appearing as a physical or spiritual trait of restless entities. This ties into the use of `libghostty-vt` as the VT parsing and rendering engine, which is a key component of the terminal's architecture.
+- In the theme of spirits, you can also see Hollow as a spiritual successor to popular "WezTerm".
 
 ## Current layout
 
@@ -114,9 +128,21 @@ hollow.set_config({
         thumb_active = "#9fb8e8",
         border = "#2d3140",
     },
+    hyperlinks = {
+        enabled = true,
+        shift_click_only = true,
+        prefixes = "https:// http:// file:// ftp:// mailto:",
+        delimiters = " \t\r\n\"'<>[]{}|\\^`",
+        trim_trailing = ".,;:!?)]}",
+    },
     window_title = "hollow",
 })
 ```
+
+Shift-click hyperlink opening:
+
+- Hollow detects URLs in visible terminal rows using the configurable `hyperlinks.prefixes`, `hyperlinks.delimiters`, and `hyperlinks.trim_trailing` rules.
+- With `hyperlinks.shift_click_only = true`, hold `Shift` and left-click a URL to open it in the system browser.
 
 Available helpers:
 
