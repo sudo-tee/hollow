@@ -1,10 +1,15 @@
 const std = @import("std");
+const c = @import("sokol_c");
 const Config = @import("config.zig").Config;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const TerminalCallbacks = ghostty.TerminalCallbacks;
 const Pty = @import("pty/pty.zig").Pty;
 const platform = @import("platform.zig");
+
+const OSC52_PREFIX = "\x1b]52;";
+const OSC52_SEQUENCE_MAX = 65536;
+const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
 
 pub const Pane = struct {
     allocator: std.mem.Allocator,
@@ -37,6 +42,12 @@ pub const Pane = struct {
     pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
     pty_pending_len: usize = 0,
     pty_sanitize_buf: [65544]u8 = [_]u8{0} ** 65544,
+    osc52_prefix_len: usize = 0,
+    osc52_active: bool = false,
+    osc52_st_pending: bool = false,
+    osc52_overflow: bool = false,
+    osc52_buf: [OSC52_SEQUENCE_MAX]u8 = [_]u8{0} ** OSC52_SEQUENCE_MAX,
+    osc52_len: usize = 0,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
     /// this tick.  Cleared by tickPanes after updateRenderState is called.
@@ -379,7 +390,8 @@ pub const Pane = struct {
     }
 
     fn sanitizePtyOutput(self: *Pane, bytes: []u8) []const u8 {
-        if (!platform.isWindows()) return bytes;
+        const filtered_len = self.filterOsc52(bytes);
+        if (!platform.isWindows()) return self.pty_sanitize_buf[0..filtered_len];
 
         const enable = "\x1b[?9001h";
         const disable = "\x1b[?9001l";
@@ -387,8 +399,8 @@ pub const Pane = struct {
         if (combined_len > 0) {
             @memcpy(self.pty_sanitize_buf[0..combined_len], self.pty_pending_seq[0..combined_len]);
         }
-        @memcpy(self.pty_sanitize_buf[combined_len .. combined_len + bytes.len], bytes);
-        combined_len += bytes.len;
+        @memmove(self.pty_sanitize_buf[combined_len .. combined_len + filtered_len], self.pty_sanitize_buf[0..filtered_len]);
+        combined_len += filtered_len;
 
         var read_idx: usize = 0;
         var write_idx: usize = 0;
@@ -451,7 +463,118 @@ pub const Pane = struct {
 
         return self.pty_sanitize_buf[0..write_idx];
     }
+
+    fn filterOsc52(self: *Pane, bytes: []const u8) usize {
+        var read_idx: usize = 0;
+        var write_idx: usize = 0;
+
+        while (read_idx < bytes.len) {
+            const byte = bytes[read_idx];
+
+            if (self.osc52_active) {
+                if (self.osc52_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc52Sequence();
+                    } else {
+                        self.appendOsc52Byte(0x1b);
+                        self.appendOsc52Byte(byte);
+                    }
+                    self.osc52_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc52Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc52_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc52Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc52_prefix_len > 0 or byte == OSC52_PREFIX[0]) {
+                if (byte == OSC52_PREFIX[self.osc52_prefix_len]) {
+                    self.osc52_prefix_len += 1;
+                    read_idx += 1;
+                    if (self.osc52_prefix_len == OSC52_PREFIX.len) {
+                        self.osc52_prefix_len = 0;
+                        self.osc52_active = true;
+                        self.osc52_st_pending = false;
+                        self.osc52_overflow = false;
+                        self.osc52_len = 0;
+                    }
+                    continue;
+                }
+
+                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc52_prefix_len], OSC52_PREFIX[0..self.osc52_prefix_len]);
+                write_idx += self.osc52_prefix_len;
+                self.osc52_prefix_len = 0;
+                continue;
+            }
+
+            self.pty_sanitize_buf[write_idx] = byte;
+            write_idx += 1;
+            read_idx += 1;
+        }
+
+        return write_idx;
+    }
+
+    fn appendOsc52Byte(self: *Pane, byte: u8) void {
+        if (self.osc52_len >= self.osc52_buf.len) {
+            self.osc52_overflow = true;
+            return;
+        }
+        self.osc52_buf[self.osc52_len] = byte;
+        self.osc52_len += 1;
+    }
+
+    fn finishOsc52Sequence(self: *Pane) void {
+        if (!self.osc52_overflow and self.osc52_len > 0) {
+            self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
+        }
+        self.osc52_active = false;
+        self.osc52_st_pending = false;
+        self.osc52_overflow = false;
+        self.osc52_len = 0;
+    }
+
+    fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
+        _ = self;
+        const sep = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+        const data = payload[sep + 1 ..];
+        if (std.mem.eql(u8, data, "?")) return;
+
+        var decoded_buf: [OSC52_DECODED_MAX + 1]u8 = undefined;
+        const decoded = decodeOsc52Base64(data, decoded_buf[0..OSC52_DECODED_MAX]) catch return;
+
+        const nul_pos = std.mem.indexOfScalar(u8, decoded, 0) orelse decoded.len;
+        decoded_buf[nul_pos] = 0;
+        c.sapp_set_clipboard_string(@ptrCast(decoded_buf[0..nul_pos :0].ptr));
+    }
 };
+
+fn decodeOsc52Base64(data: []const u8, out: []u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, data, '=')) |_| {
+        const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(data);
+        if (decoded_len > out.len) return error.NoSpaceLeft;
+        try std.base64.standard.Decoder.decode(out[0..decoded_len], data);
+        return out[0..decoded_len];
+    }
+
+    const decoded_len = try std.base64.standard_no_pad.Decoder.calcSizeForSlice(data);
+    if (decoded_len > out.len) return error.NoSpaceLeft;
+    try std.base64.standard_no_pad.Decoder.decode(out[0..decoded_len], data);
+    return out[0..decoded_len];
+}
 
 fn trailingWin32ModePrefixLen(bytes: []const u8) usize {
     const enable = "\x1b[?9001h";

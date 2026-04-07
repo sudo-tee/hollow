@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @import("sokol_c");
 const Config = @import("config.zig").Config;
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
@@ -23,6 +24,9 @@ const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 const bar = @import("ui/bar.zig");
+const selection = @import("selection.zig");
+
+const CLIPBOARD_EVENT_MAX = 8192;
 
 fn countUtf8Codepoints(text: []const u8) usize {
     var i: usize = 0;
@@ -127,6 +131,23 @@ pub const PendingMouseEvent = union(enum) {
         bytes: [5]u8,
         len: u8,
     },
+    selection_begin: struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+        extend: bool,
+    },
+    selection_update: struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+    },
+    selection_end,
+    clear_selection,
+    copy_selection,
+    paste_clipboard,
+    paste: struct {
+        bytes: [CLIPBOARD_EVENT_MAX]u8,
+        len: u16,
+    },
 };
 
 var write_bridge: ?*App = null;
@@ -184,6 +205,11 @@ pub const App = struct {
     /// Fractional scroll accumulator — prevents sub-pixel scroll events from
     /// being silently dropped by integer truncation on smooth / touchpad input.
     scroll_accum: f32 = 0,
+    selection_pane: ?*Pane = null,
+    selection_anchor: ?selection.CellPoint = null,
+    selection_head: ?selection.CellPoint = null,
+    selection_drag_active: bool = false,
+    selection_generation: u64 = 0,
 
     // ── Pending mouse event queue ─────────────────────────────────────────────
     // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
@@ -335,6 +361,35 @@ pub const App = struct {
                 .char => |ch| {
                     if (ch.len > 0) self.sendText(ch.bytes[0..ch.len]);
                 },
+                .selection_begin => |sel| {
+                    self.selectionBegin(sel.pane, sel.point, sel.extend);
+                },
+                .selection_update => |sel| {
+                    self.selectionUpdate(sel.pane, sel.point);
+                },
+                .selection_end => {
+                    self.selectionEnd();
+                },
+                .clear_selection => {
+                    self.clearSelection();
+                },
+                .copy_selection => {
+                    self.copySelectionToClipboard() catch |err| {
+                        std.log.err("copy selection failed: {s}", .{@errorName(err)});
+                    };
+                },
+                .paste_clipboard => {
+                    self.pasteClipboard() catch |err| {
+                        std.log.err("paste clipboard failed: {s}", .{@errorName(err)});
+                    };
+                },
+                .paste => |paste| {
+                    if (paste.len > 0) {
+                        self.sendPaste(paste.bytes[0..paste.len]) catch |err| {
+                            std.log.err("paste failed: {s}", .{@errorName(err)});
+                        };
+                    }
+                },
             }
 
             @atomicStore(usize, &self.mouse_queue_head, (head + advance) % cap, .release);
@@ -462,6 +517,8 @@ pub const App = struct {
                 .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
                 .get_workspace_name = luaGetWorkspaceNameCallback,
                 .is_leader_active = luaIsLeaderActiveCallback,
+                .copy_selection = luaCopySelectionCallback,
+                .paste_clipboard = luaPasteClipboardCallback,
             });
         }
 
@@ -502,6 +559,7 @@ pub const App = struct {
         // the validation in handleMouseMove / flushPendingLayoutResize will
         // detect and discard.
         if (self.ghostty) |*runtime| self.cleanupDeadPanes(runtime);
+        self.pruneSelectionIfInvalid();
         self.drainMouseQueue();
         self.flushPendingResize();
         self.flushPendingLayoutResize();
@@ -663,6 +721,175 @@ pub const App = struct {
             return;
         }
         self.sendText(text);
+    }
+
+    pub fn selectionRange(self: *const App, pane: *const Pane) ?selection.Range {
+        if (self.selection_pane != pane) return null;
+        const anchor = self.selection_anchor orelse return null;
+        const head = self.selection_head orelse return null;
+        return selection.normalize(anchor, head);
+    }
+
+    pub fn selectionGeneration(self: *const App) u64 {
+        return self.selection_generation;
+    }
+
+    pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, extend: bool) void {
+        if (!self.hasPane(pane)) return;
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            mux.setActivePane(pane);
+            self.invalidateFocusedPaneCache(previous, pane);
+        }
+        const previous_selection_pane = self.selection_pane;
+        if (!extend or self.selection_pane != pane or self.selection_anchor == null) {
+            self.selection_pane = pane;
+            self.selection_anchor = point;
+        }
+        self.selection_head = point;
+        self.selection_drag_active = true;
+        if (previous_selection_pane) |prev| {
+            if (prev != pane) prev.render_dirty = .full;
+        }
+        pane.render_dirty = .full;
+        self.selection_generation +%= 1;
+    }
+
+    pub fn selectionUpdate(self: *App, pane: *Pane, point: selection.CellPoint) void {
+        if (!self.selection_drag_active or self.selection_pane != pane or !self.hasPane(pane)) return;
+        if (self.selection_head) |head| {
+            if (head.row == point.row and head.col == point.col) return;
+        }
+        self.selection_head = point;
+        pane.render_dirty = .full;
+        self.selection_generation +%= 1;
+    }
+
+    pub fn selectionEnd(self: *App) void {
+        self.selection_drag_active = false;
+    }
+
+    pub fn clearSelection(self: *App) void {
+        const pane = self.selection_pane;
+        self.selection_pane = null;
+        self.selection_anchor = null;
+        self.selection_head = null;
+        self.selection_drag_active = false;
+        if (pane) |p| p.render_dirty = .full;
+        self.selection_generation +%= 1;
+    }
+
+    pub fn hasSelection(self: *const App) bool {
+        if (self.selection_pane == null) return false;
+        return self.selectionRange(self.selection_pane.?) != null;
+    }
+
+    pub fn copySelectionToClipboard(self: *App) !void {
+        const pane = self.selection_pane orelse return;
+        if (!self.hasPane(pane)) {
+            self.pruneSelectionIfInvalid();
+            return;
+        }
+        const range = self.selectionRange(pane) orelse return;
+        var text_buf: [CLIPBOARD_EVENT_MAX]u8 = undefined;
+        const text = self.captureSelectionText(pane, range, text_buf[0 .. text_buf.len - 1]) orelse return;
+        if (text.len == 0) return;
+        text_buf[text.len] = 0;
+        c.sapp_set_clipboard_string(@ptrCast(text_buf[0..text.len :0].ptr));
+    }
+
+    pub fn pasteClipboard(self: *App) !void {
+        const clipboard = c.sapp_get_clipboard_string();
+        const text = std.mem.span(clipboard);
+        if (text.len == 0) return;
+        try self.sendPaste(text);
+    }
+
+    fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []u8) ?[]const u8 {
+        const runtime = if (self.ghostty) |*rt| rt else return null;
+        if (self.selection_pane != pane) return null;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+
+        var writer = std.io.fixedBufferStream(out);
+        var row_index: usize = 0;
+        while (runtime.nextRow(pane.row_iterator) and row_index <= range.end.row) : (row_index += 1) {
+            if (!selection.rowIntersects(range, row_index)) continue;
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+
+            var row_text: [4096]u8 = undefined;
+            var row_len: usize = 0;
+            var col_index: usize = 0;
+            while (runtime.nextCell(pane.row_cells)) : (col_index += 1) {
+                if (!selection.cellSelected(range, row_index, col_index)) continue;
+                appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
+            }
+            while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
+            writer.writer().writeAll(row_text[0..row_len]) catch break;
+            if (row_index < range.end.row) writer.writer().writeByte('\n') catch break;
+        }
+
+        return writer.getWritten();
+    }
+
+    pub fn cellPointFromPaneLocal(self: *const App, pane: *const Pane, x: f32, y: f32) selection.CellPoint {
+        const cols = @max(@as(usize, 1), @as(usize, pane.cols));
+        const rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const cell_w = @max(self.cell_width_px, @as(u32, 1));
+        const cell_h = @max(self.cell_height_px, @as(u32, 1));
+        const col = @min(cols - 1, @as(usize, @intFromFloat(@max(0, x) / @as(f32, @floatFromInt(cell_w)))));
+        const row = @min(rows - 1, @as(usize, @intFromFloat(@max(0, y) / @as(f32, @floatFromInt(cell_h)))));
+        return .{ .row = row, .col = col };
+    }
+
+    pub fn cellPointInPane(self: *App, pane: *Pane, x: f32, y: f32) ?selection.CellPoint {
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeActiveLayout(&layout_buf);
+        for (leaves) |leaf| {
+            if (leaf.pane != pane) continue;
+            const inner = self.paneInnerBounds(leaf.bounds);
+            const inner_right = inner.x + inner.width;
+            const inner_bottom = inner.y + inner.height;
+            const clamped_x = std.math.clamp(x, @as(f32, @floatFromInt(inner.x)), @as(f32, @floatFromInt(inner_right - 1)));
+            const clamped_y = std.math.clamp(y, @as(f32, @floatFromInt(inner.y)), @as(f32, @floatFromInt(inner_bottom - 1)));
+            return self.cellPointFromPaneLocal(
+                pane,
+                clamped_x - @as(f32, @floatFromInt(inner.x)),
+                clamped_y - @as(f32, @floatFromInt(inner.y)),
+            );
+        }
+        if (self.activePane() == pane) {
+            return self.cellPointFromPaneLocal(pane, x, y);
+        }
+        return null;
+    }
+
+    pub fn hasPane(self: *App, needle: *const Pane) bool {
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                if (pane == needle) return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn isPaneVisible(self: *App, needle: *const Pane) bool {
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeActiveLayout(&layout_buf);
+        for (leaves) |leaf| {
+            if (leaf.pane == needle) return true;
+        }
+        return false;
+    }
+
+    fn pruneSelectionIfInvalid(self: *App) void {
+        const pane = self.selection_pane orelse return;
+        if (self.hasPane(pane) and self.isPaneVisible(pane)) return;
+        self.selection_pane = null;
+        self.selection_anchor = null;
+        self.selection_head = null;
+        self.selection_drag_active = false;
+        self.selection_generation +%= 1;
     }
 
     pub fn sendFocus(self: *App, gained: bool) !void {
@@ -1588,6 +1815,51 @@ fn firstCodepoint(text: []const u8) u32 {
     return std.unicode.utf8Decode(text[0..len]) catch text[0];
 }
 
+fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, len: *usize) void {
+    if (len.* >= out.len) return;
+    const grapheme_len = runtime.cellGraphemeLen(row_cells);
+    if (grapheme_len == 0) {
+        out[len.*] = ' ';
+        len.* += 1;
+        return;
+    }
+
+    var cps: [16]u32 = [_]u32{0} ** 16;
+    runtime.cellGraphemes(row_cells, &cps);
+    var cp_index: usize = 0;
+    while (cp_index < grapheme_len and cps[cp_index] != 0) : (cp_index += 1) {
+        var utf8_buf: [4]u8 = undefined;
+        const encoded_len = encodeCodepointInto(cps[cp_index], &utf8_buf) orelse continue;
+        if (len.* + encoded_len > out.len) return;
+        @memcpy(out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
+        len.* += encoded_len;
+    }
+}
+
+fn encodeCodepointInto(codepoint: u32, buf: *[4]u8) ?usize {
+    if (codepoint == 0) return null;
+    if (codepoint < 0x80) {
+        buf[0] = @intCast(codepoint);
+        return 1;
+    }
+    if (codepoint < 0x800) {
+        buf[0] = @intCast(0xC0 | (codepoint >> 6));
+        buf[1] = @intCast(0x80 | (codepoint & 0x3F));
+        return 2;
+    }
+    if (codepoint < 0x10000) {
+        buf[0] = @intCast(0xE0 | (codepoint >> 12));
+        buf[1] = @intCast(0x80 | ((codepoint >> 6) & 0x3F));
+        buf[2] = @intCast(0x80 | (codepoint & 0x3F));
+        return 3;
+    }
+    buf[0] = @intCast(0xF0 | (codepoint >> 18));
+    buf[1] = @intCast(0x80 | ((codepoint >> 12) & 0x3F));
+    buf[2] = @intCast(0x80 | ((codepoint >> 6) & 0x3F));
+    buf[3] = @intCast(0x80 | (codepoint & 0x3F));
+    return 4;
+}
+
 fn legacyPrintableKeyText(key: ghostty.Key, mods: u32, out: *[4]u8) ?[]const u8 {
     const shift = (mods & ghostty.Mods.shift) != 0;
     const ch: u8 = switch (key) {
@@ -1824,4 +2096,14 @@ fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8)
 fn luaIsLeaderActiveCallback(app_ptr: *anyopaque) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.isLeaderActive();
+}
+
+fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.copy_selection);
+}
+
+fn luaPasteClipboardCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.paste_clipboard);
 }

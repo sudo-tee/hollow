@@ -15,6 +15,7 @@ const FtRendererConfig = @import("ft_renderer.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
+const selection = @import("../selection.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const HWND = *anyopaque;
@@ -78,6 +79,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.c) ?*anyopaque;
     // Standard cursor IDs (as usize for use with LoadCursorW's lpCursorName param)
     const IDC_ARROW: usize = 32512;
+    const IDC_IBEAM: usize = 32513;
     const IDC_SIZEWE: usize = 32644;
     const IDC_SIZENS: usize = 32645;
     // winmm — multimedia timer resolution
@@ -165,6 +167,8 @@ var g_phase_accum_atlas_stale_frames: usize = 0;
 var g_frames_since_drag_release: usize = std.math.maxInt(usize);
 var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
+var g_selection_pointer_active = false;
+var g_selection_pointer_pane: ?*Pane = null;
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -548,6 +552,8 @@ pub fn run(app: *App) !void {
     g_window_iconified = false;
     g_restore_pending = false;
     g_ignore_resize_frames = 0;
+    g_selection_pointer_active = false;
+    g_selection_pointer_pane = null;
     g_last_frame_time_ns = 0;
     g_last_perf_sample_ns = 0;
     g_perf_accum_frame_ns = 0;
@@ -853,6 +859,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     rend: *FtRenderer,
                     rt: *ghostty.Runtime,
                     cfg: *const Config,
+                    selection_range: ?selection.Range,
                     pane: *Pane,
                     ox: f32,
                     oy: f32,
@@ -1016,6 +1023,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         &cache_entry.row_map_keys,
                         &cache_entry.row_map_vals,
                         row_map_skip,
+                        selection_range,
                         cache_entry.prev_cursor_row,
                     );
                     g_phase_accum_rows_rendered += rend.last_rows_rendered;
@@ -1083,7 +1091,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, &app.config, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(leaf.pane), leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -1114,7 +1122,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, &app.config, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(pane), pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -1154,6 +1162,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
+                            app.selectionRange(leaf.pane),
                             std.math.maxInt(usize),
                         );
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
@@ -1186,6 +1195,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
+                            app.selectionRange(pane),
                             std.math.maxInt(usize),
                         );
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
@@ -1267,6 +1277,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             height,
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
+                            app.selectionRange(pane),
                             std.math.maxInt(usize),
                         );
                         // Accumulate direct-render diagnostics.
@@ -1525,6 +1536,33 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         drawBorderRect(0.0, height - 1.0, width, 1.0, br, bg_, bb, ba); // bottom
         drawBorderRect(0.0, 0.0, 1.0, height, br, bg_, bb, ba); // left
         drawBorderRect(width - 1.0, 0.0, 1.0, height, br, bg_, bb, ba); // right
+    }
+
+    if (app.hasSelection()) {
+        if (g_ft_renderer) |*renderer| {
+            const fw: i32 = @intFromFloat(width);
+            const fh: i32 = @intFromFloat(height);
+            c.sgl_defaults();
+            c.sgl_viewport(0, 0, fw, fh, true);
+            c.sgl_scissor_rect(0, 0, fw, fh, true);
+            c.sgl_load_default_pipeline();
+            c.sgl_matrix_mode_projection();
+            c.sgl_load_identity();
+            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+
+            const hint = if (builtin.os.tag == .macos)
+                "Cmd+C copy  Cmd+Shift+V paste  Cmd+drag select"
+            else
+                "Ctrl+C copy  Ctrl+Shift+V paste  Ctrl+drag select";
+            const hint_w = @as(f32, @floatFromInt(countCodepoints(hint))) * renderer.cell_w + renderer.cell_w;
+            const hint_h = renderer.cell_h + 8.0;
+            const hint_x = @max(@as(f32, 8.0), width - hint_w - 12.0);
+            const hint_y = @max(@as(f32, @floatFromInt(app.tabBarHeight())) + 8.0, 12.0);
+            drawBorderRect(hint_x, hint_y, hint_w, hint_h, 31, 36, 46, 220);
+            drawBorderRect(hint_x, hint_y, hint_w, 1.0, 122, 162, 247, 255);
+            renderer.drawLabelFace(hint_x + renderer.cell_w * 0.5, hint_y + 4.0, hint, 220, 225, 235, 0);
+            c.sgl_load_default_pipeline();
+        }
     }
 
     // Flush all queued geometry — exactly once per frame.
@@ -1904,6 +1942,16 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
 
+    if (shouldPasteOnKeyDown(event.key_code, mods)) {
+        _ = app.enqueueMouse(.paste_clipboard);
+        return;
+    }
+
+    if (key != .unidentified and handleClipboardShortcut(app, key, mods)) {
+        c.sapp_consume_event();
+        return;
+    }
+
     // Give Lua a chance to consume this key before the terminal sees it.
     // fireOnKey calls LuaJIT (not the ghostty DLL) so it is safe on the
     // event thread.  If Lua consumes the key we stop here — no DLL call needed.
@@ -1957,6 +2005,11 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (g_selection_pointer_active) {
+            g_selection_pointer_active = false;
+            g_selection_pointer_pane = null;
+            _ = app.enqueueMouse(.selection_end);
+        }
         if (g_drag_node != null) {
             _ = app.enqueueMouse(.divider_commit);
             // Reset all pane cache entries so they do force-full CLEAR renders
@@ -2004,6 +2057,13 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
+    if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
+        if (app.hasSelection()) {
+            _ = app.enqueueMouse(.copy_selection);
+            return;
+        }
+    }
+
     // On left-button press, check for a divider hit before forwarding to the terminal.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
         // 6-pixel hit radius on each side of the 2px seam.
@@ -2020,6 +2080,26 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             }
             // Don't forward the click to the terminal — it's a resize gesture.
             return;
+        }
+
+        if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
+            const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            if (wants_selection) {
+                const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
+                const point = app.cellPointFromPaneLocal(hit.pane, hit.x, hit.y);
+                g_selection_pointer_active = true;
+                g_selection_pointer_pane = hit.pane;
+                _ = app.enqueueMouse(.{ .selection_begin = .{
+                    .pane = hit.pane,
+                    .point = point,
+                    .extend = extend,
+                } });
+                return;
+            }
+        }
+
+        if (app.hasSelection()) {
+            _ = app.enqueueMouse(.clear_selection);
         }
     }
 
@@ -2077,7 +2157,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
     if (top_bar_hit.in_top_bar) {
         // Restore default cursor when in tab bar.
-        if (builtin.os.tag == .windows) _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
+        setTextSelectionCursor(.arrow);
         return;
     }
 
@@ -2090,7 +2170,21 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             };
             _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
         } else {
-            _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
+            if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
+                const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+                setTextSelectionCursor(if (wants_text_cursor) .ibeam else .arrow);
+            } else {
+                setTextSelectionCursor(.arrow);
+            }
+        }
+    }
+
+    if (g_selection_pointer_active) {
+        if (g_selection_pointer_pane) |pane| {
+            if (app.cellPointInPane(pane, event.mouse_x, event.mouse_y)) |point| {
+                _ = app.enqueueMouse(.{ .selection_update = .{ .pane = pane, .point = point } });
+                return;
+            }
         }
     }
 
@@ -2238,6 +2332,60 @@ fn ghosttyMods(modifiers: u32) u32 {
     if ((modifiers & c.SAPP_MODIFIER_ALT) != 0) mods |= ghostty.Mods.alt;
     if ((modifiers & c.SAPP_MODIFIER_SUPER) != 0) mods |= ghostty.Mods.super;
     return mods;
+}
+
+fn handleClipboardShortcut(app: *App, key: ghostty.Key, mods: u32) bool {
+    const primary = if (builtin.os.tag == .macos) ghostty.Mods.super else ghostty.Mods.ctrl;
+    if ((mods & primary) == 0) return false;
+    if ((mods & (if (builtin.os.tag == .macos) ghostty.Mods.ctrl else ghostty.Mods.super)) != 0) return false;
+
+    switch (key) {
+        .c => {
+            if (app.hasSelection()) {
+                _ = app.enqueueMouse(.copy_selection);
+                return true;
+            }
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn shouldPasteOnKeyDown(key_code: c.sapp_keycode, mods: u32) bool {
+    const only_shift = (mods & ghostty.Mods.shift) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == ghostty.Mods.shift;
+    if (only_shift and key_code == c.SAPP_KEYCODE_INSERT) return true;
+    if (only_shift and key_code == c.SAPP_KEYCODE_KP_0) return true;
+
+    const primary = if (builtin.os.tag == .macos) ghostty.Mods.super else ghostty.Mods.ctrl;
+    const required = primary | ghostty.Mods.shift;
+    if ((mods & required) != required) return false;
+    if ((mods & ~(ghostty.Mods.shift | ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) != 0) return false;
+    if (builtin.os.tag == .macos) {
+        if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt)) != 0) return false;
+    } else {
+        if ((mods & (ghostty.Mods.alt | ghostty.Mods.super)) != 0) return false;
+    }
+    return key_code == c.SAPP_KEYCODE_V;
+}
+
+fn selectionModifierActive(modifiers: u32) bool {
+    const mods = ghosttyMods(modifiers);
+    const primary = if (builtin.os.tag == .macos) ghostty.Mods.super else ghostty.Mods.ctrl;
+    return (mods & primary) != 0;
+}
+
+const SelectionCursor = enum {
+    arrow,
+    ibeam,
+};
+
+fn setTextSelectionCursor(cursor: SelectionCursor) void {
+    if (builtin.os.tag != .windows) return;
+    const cursor_id: usize = switch (cursor) {
+        .arrow => win32.IDC_ARROW,
+        .ibeam => win32.IDC_IBEAM,
+    };
+    _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
 }
 
 fn titleCString(text: []const u8) [*:0]const u8 {

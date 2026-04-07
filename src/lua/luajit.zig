@@ -76,6 +76,8 @@ pub const AppCallbacks = struct {
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
     is_leader_active: *const fn (app: *anyopaque) bool,
+    copy_selection: *const fn (app: *anyopaque) void,
+    paste_clipboard: *const fn (app: *anyopaque) void,
 };
 
 const BridgeContext = struct {
@@ -635,6 +637,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_system_metrics, 1);
         api.set_field(self.state, -2, "get_system_metrics");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_selection, 1);
+        api.set_field(self.state, -2, "copy_selection");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_paste_clipboard, 1);
+        api.set_field(self.state, -2, "paste_clipboard");
 
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
@@ -1684,6 +1694,18 @@ fn l_get_active_workspace_index(state: *State) callconv(.c) c_int {
     const idx = cbs.get_active_workspace_index(cbs.app);
     api.push_number(state, @floatFromInt(idx));
     return 1;
+}
+
+fn l_copy_selection(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_selection(cbs.app);
+    return 0;
+}
+
+fn l_paste_clipboard(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.paste_clipboard(cbs.app);
+    return 0;
 }
 
 /// hollow.on_key(fn(key, mods) -> bool)

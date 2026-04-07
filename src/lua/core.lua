@@ -440,6 +440,15 @@ function hollow.keymap.del(chord)
 	return del_binding(bindings, resolved)
 end
 
+function hollow.keymap.get(chord)
+	local use_leader, resolved, style = split_leader_chord(chord)
+	if use_leader then
+		return nil
+	end
+	local key, mods = parse_chord(resolved)
+	return get_binding(bindings, key, mods)
+end
+
 function hollow.keymap.set_leader(chord, opts)
 	if chord == nil then
 		leader = nil
@@ -579,7 +588,23 @@ hollow.action = {
 	resize_pane_down = function()
 		hollow.resize_pane("horizontal", 0.05)
 	end,
+	copy_selection = function()
+		hollow.copy_selection()
+	end,
+	paste_clipboard = function()
+		hollow.paste_clipboard()
+	end,
 }
+
+hollow.clipboard = hollow.clipboard or {}
+
+function hollow.clipboard.copy()
+	hollow.copy_selection()
+end
+
+function hollow.clipboard.paste()
+	hollow.paste_clipboard()
+end
 
 hollow.on_key(function(key, mods)
 	if is_leader_active() then
@@ -614,6 +639,8 @@ hollow.on_key(function(key, mods)
 end)
 
 -- Default bindings
+hollow.keymap.set("ctrl+shift+v", "paste_clipboard")
+hollow.keymap.set("shift+insert", "paste_clipboard")
 hollow.keymap.set("ctrl+backslash", "split_vertical")
 hollow.keymap.set("ctrl+shift+backslash", "split_horizontal")
 hollow.keymap.set("ctrl+t", "new_tab")

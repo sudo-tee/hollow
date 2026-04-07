@@ -18,6 +18,7 @@ const c = @import("sokol_c");
 const ft = @import("ft_c");
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
+const selection = @import("../selection.zig");
 const fonts = @import("fonts");
 const glyph_shader = @import("shaders/glyph_shader.zig");
 
@@ -928,7 +929,7 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, std.math.maxInt(usize));
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -951,6 +952,7 @@ pub const FtRenderer = struct {
         fb_h: f32,
         is_focused: bool,
         force_full: bool,
+        selection_range: ?selection.Range,
         prev_cursor_row: usize,
     ) void {
         // Reset per-call diagnostic counters.
@@ -962,7 +964,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, prev_cursor_row);
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -1001,6 +1003,7 @@ pub const FtRenderer = struct {
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
         row_map_skip: bool,
+        selection_range: ?selection.Range,
         /// Cursor row from the previous rendered frame; used to erase ghost
         /// cursor pixels when the cursor moves and ghostty doesn't mark the old
         /// row dirty.  Pass std.math.maxInt(usize) on first frame or force_full.
@@ -1047,6 +1050,7 @@ pub const FtRenderer = struct {
             row_map_keys,
             row_map_vals,
             row_map_skip,
+            selection_range,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
         const t_queue_end = std.time.nanoTimestamp();
@@ -1160,6 +1164,7 @@ pub const FtRenderer = struct {
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
         row_map_skip: bool,
+        selection_range: ?selection.Range,
         /// Row index of the cursor in the *previous* frame.  When the cursor has
         /// moved away from this row ghostty may not mark it dirty (the text
         /// content is unchanged) so old block-cursor pixels linger.  Passing the
@@ -1173,6 +1178,14 @@ pub const FtRenderer = struct {
         const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.background;
         const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.foreground;
         const palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.palette;
+        const selection_bg = if (cfg.terminal_theme.enabled)
+            (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
+        else
+            mixColor(default_bg, default_fg, 0.35);
+        const selection_fg = if (cfg.terminal_theme.enabled)
+            (cfg.terminal_theme.selection_fg orelse default_fg)
+        else
+            default_fg;
 
         c.sgl_defaults();
         // Set viewport and scissor to this pane's sub-rect.
@@ -1318,6 +1331,10 @@ pub const FtRenderer = struct {
 
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const row_has_selection = if (selection_range) |range|
+                    selection.rowIntersects(range, row_y)
+                else
+                    false;
 
                 // In partial mode we must first erase the old row pixels by
                 // drawing a full-width background rectangle in the default bg
@@ -1352,13 +1369,29 @@ pub const FtRenderer = struct {
                     // Use pure bit-extraction functions (no C call) for content_tag,
                     // has_text, and codepoint — replaces the C ABI dispatch for these.
                     const content_tag = runtime.cellContentTagRaw(raw_cell);
+                    const is_selected = if (selection_range) |range|
+                        row_has_selection and selection.cellSelected(range, row_y, col_x)
+                    else
+                        false;
 
                     // Background: skip the cellBackground() C-ABI call for cells with
                     // no styling (default bg) and no bg-color content tag.
                     // bg_color_palette/rgb cells always need the call; styled cells may have
                     // a style-based bg; unstyled codepoint/grapheme cells always use default bg.
                     const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
-                    if (is_bg_tag or runtime.cellStyleIdRaw(raw_cell) != 0) {
+                    if (is_selected) {
+                        self.last_bg_rects += 1;
+                        if (!quads_open) {
+                            c.sgl_begin_quads();
+                            quads_open = true;
+                        }
+                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                        c.sgl_c4b(selection_bg.r, selection_bg.g, selection_bg.b, 255);
+                        c.sgl_v2f(px, py);
+                        c.sgl_v2f(px + self.cell_w, py);
+                        c.sgl_v2f(px + self.cell_w, py + self.cell_h);
+                        c.sgl_v2f(px, py + self.cell_h);
+                    } else if (is_bg_tag or runtime.cellStyleIdRaw(raw_cell) != 0) {
                         const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
                         if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
                             self.last_bg_rects += 1;
@@ -1540,6 +1573,10 @@ pub const FtRenderer = struct {
                     continue;
                 }
                 const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const row_has_selection = if (selection_range) |range|
+                    selection.rowIntersects(range, row_y)
+                else
+                    false;
                 var col_x: usize = 0;
                 var run_start_col: usize = 0;
                 var run_len: usize = 0;
@@ -1572,6 +1609,11 @@ pub const FtRenderer = struct {
                                 face_idx = 3;
                             }
                             fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
+                        }
+                    }
+                    if (selection_range) |range| {
+                        if (row_has_selection and selection.cellSelected(range, row_y, col_x)) {
+                            fg = selection_fg;
                         }
                     }
 
@@ -1692,7 +1734,14 @@ pub const FtRenderer = struct {
                         }
 
                         const dec_px = self.padding_x + @as(f32, @floatFromInt(dec_col_x)) * self.cell_w;
-                        const dec_fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
+                        const dec_selected = if (selection_range) |range|
+                            selection.cellSelected(range, row_y, dec_col_x)
+                        else
+                            false;
+                        const dec_fg = if (dec_selected)
+                            selection_fg
+                        else
+                            ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
                         const dec_color = ghostty.resolveStyleColor(s.underline_color, dec_fg, palette);
                         // Use underline_color if set, otherwise fall back to fg.
                         const ul_r = dec_color.r;
@@ -2398,6 +2447,21 @@ inline fn srgbToLinearBg(r: f32, g: f32, b: f32) [4]f32 {
 
 fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+fn mixColor(a: ghostty.ColorRgb, b: ghostty.ColorRgb, t: f32) ghostty.ColorRgb {
+    const clamped = std.math.clamp(t, 0.0, 1.0);
+    return .{
+        .r = lerpByte(a.r, b.r, clamped),
+        .g = lerpByte(a.g, b.g, clamped),
+        .b = lerpByte(a.b, b.b, clamped),
+    };
+}
+
+fn lerpByte(a: u8, b: u8, t: f32) u8 {
+    const af: f32 = @floatFromInt(a);
+    const bf: f32 = @floatFromInt(b);
+    return @intFromFloat(@round(af + (bf - af) * t));
 }
 
 fn isLigatureCandidate(cps: []const u32) bool {

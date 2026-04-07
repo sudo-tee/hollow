@@ -107,11 +107,22 @@ hollow.set_config({
 Available helpers:
 
 - `hollow.log(...)`
+- `hollow.copy_selection()`
+- `hollow.paste_clipboard()`
 - `hollow.platform.os`
 - `hollow.platform.is_windows`
 - `hollow.platform.is_linux`
 - `hollow.platform.is_macos`
 - `hollow.platform.default_shell`
+
+Default clipboard bindings now live in Lua, so you can override them from config:
+
+```lua
+hollow.keymap.del("ctrl+shift+v")
+hollow.keymap.del("shift+insert")
+hollow.keymap.set("alt+v", "paste_clipboard")
+hollow.keymap.set("ctrl+shift+c", "copy_selection")
+```
 
 ## Next steps
 
