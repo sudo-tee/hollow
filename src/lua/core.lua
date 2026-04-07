@@ -594,6 +594,24 @@ hollow.action = {
 	paste_clipboard = function()
 		hollow.paste_clipboard()
 	end,
+	scrollback_line_up = function()
+		hollow.scroll_active(-1)
+	end,
+	scrollback_line_down = function()
+		hollow.scroll_active(1)
+	end,
+	scrollback_page_up = function()
+		hollow.scroll_active_page(-1)
+	end,
+	scrollback_page_down = function()
+		hollow.scroll_active_page(1)
+	end,
+	scrollback_top = function()
+		hollow.scroll_active_top()
+	end,
+	scrollback_bottom = function()
+		hollow.scroll_active_bottom()
+	end,
 }
 
 hollow.clipboard = hollow.clipboard or {}
@@ -659,3 +677,7 @@ hollow.keymap.set("ctrl+alt+shift+arrow_left", "resize_pane_left")
 hollow.keymap.set("ctrl+alt+shift+arrow_right", "resize_pane_right")
 hollow.keymap.set("ctrl+alt+arrow_up", "resize_pane_up")
 hollow.keymap.set("ctrl+alt+arrow_down", "resize_pane_down")
+hollow.keymap.set("alt+shift+page_up", "scrollback_page_up")
+hollow.keymap.set("alt+shift+page_down", "scrollback_page_down")
+hollow.keymap.set("ctrl+shift+home", "scrollback_top")
+hollow.keymap.set("ctrl+shift+end", "scrollback_bottom")

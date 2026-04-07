@@ -169,6 +169,10 @@ var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
+var g_scrollbar_drag_pane: ?*Pane = null;
+var g_scrollbar_drag_metrics: ?App.ScrollbarMetrics = null;
+var g_scrollbar_drag_grab_y: f32 = 0.0;
+var g_scrollbar_hover_pane: ?*Pane = null;
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -474,6 +478,39 @@ fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) T
     return hit;
 }
 
+fn scrollbarTrackRowForPosition(metrics: App.ScrollbarMetrics, pointer_y: f32, grab_offset_y: f32) u64 {
+    const travel = @max(@as(f32, 0.0), metrics.track_h - metrics.thumb_h);
+    if (travel <= 0 or metrics.total <= metrics.len) return 0;
+
+    const thumb_y = std.math.clamp(pointer_y - grab_offset_y, metrics.track_y, metrics.track_y + travel);
+    const ratio = (thumb_y - metrics.track_y) / travel;
+    const max_top = if (metrics.total > metrics.len) metrics.total - metrics.len else 0;
+    return @intFromFloat(@round(ratio * @as(f32, @floatFromInt(max_top))));
+}
+
+fn scrollbarHitThumb(metrics: App.ScrollbarMetrics, x: f32, y: f32) bool {
+    return x >= metrics.track_x and x < metrics.track_x + metrics.track_w and y >= metrics.thumb_y and y < metrics.thumb_y + metrics.thumb_h;
+}
+
+fn drawScrollbar(app: *App, metrics: App.ScrollbarMetrics) void {
+    const cfg = app.config.scrollbar;
+    const hover = g_scrollbar_hover_pane == metrics.pane;
+    const active = g_scrollbar_drag_pane == metrics.pane;
+    const thumb_color = if (active)
+        cfg.thumb_active_color
+    else if (hover)
+        cfg.thumb_hover_color
+    else
+        cfg.thumb_color;
+    const inset_x = metrics.track_x + 2.0;
+    const inset_w = @max(@as(f32, 2.0), metrics.track_w - 4.0);
+
+    drawBorderRect(metrics.track_x, metrics.track_y, metrics.track_w, metrics.track_h, cfg.track_color.r, cfg.track_color.g, cfg.track_color.b, 72);
+    drawBorderRect(metrics.track_x + metrics.track_w - 1.0, metrics.track_y, 1.0, metrics.track_h, cfg.border_color.r, cfg.border_color.g, cfg.border_color.b, 96);
+    drawBorderRect(inset_x, metrics.track_y, 1.0, metrics.track_h, cfg.border_color.r, cfg.border_color.g, cfg.border_color.b, 36);
+    drawBorderRect(inset_x, metrics.thumb_y, inset_w, metrics.thumb_h, thumb_color.r, thumb_color.g, thumb_color.b, if (active) 230 else 190);
+}
+
 fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
     var cursor_x = x;
     for (segments) |seg| {
@@ -554,6 +591,10 @@ pub fn run(app: *App) !void {
     g_ignore_resize_frames = 0;
     g_selection_pointer_active = false;
     g_selection_pointer_pane = null;
+    g_scrollbar_drag_pane = null;
+    g_scrollbar_drag_metrics = null;
+    g_scrollbar_drag_grab_y = 0.0;
+    g_scrollbar_hover_pane = null;
     g_last_frame_time_ns = 0;
     g_last_perf_sample_ns = 0;
     g_perf_accum_frame_ns = 0;
@@ -1513,6 +1554,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             if (app.config.debug_overlay) {
                 drawDebugOverlay(app, renderer, width, height);
             }
+
+            var layout_buf_scrollbar: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            const scrollbar_leaves = app.computeActiveLayout(&layout_buf_scrollbar);
+            for (scrollbar_leaves) |leaf| {
+                if (app.scrollbarMetricsForPane(leaf.pane)) |metrics| {
+                    drawScrollbar(app, metrics);
+                }
+            }
         }
     }
 
@@ -1918,12 +1967,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_MOUSE_DOWN => handleMouseButton(app, event, .press),
         c.SAPP_EVENTTYPE_MOUSE_UP => handleMouseButton(app, event, .release),
         c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
-        c.SAPP_EVENTTYPE_MOUSE_SCROLL => _ = app.enqueueMouse(.{ .scroll = .{
-            .x = event.mouse_x,
-            .y = event.mouse_y,
-            .raw_delta = -event.scroll_y,
-            .mods = ghosttyMods(event.modifiers),
-        } }),
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
         c.SAPP_EVENTTYPE_ICONIFIED => @atomicStore(bool, &g_window_iconified, true, .release),
         c.SAPP_EVENTTYPE_RESTORED => {
@@ -1960,6 +2004,13 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         if (app.fireOnKey(key_name, mods)) {
             g_swallow_char_pending = 4;
             g_swallow_char_until_frame = event.frame_count + 1;
+            return;
+        }
+
+        if (handleScrollbackKey(app, key, mods)) {
+            g_swallow_char_pending = 4;
+            g_swallow_char_until_frame = event.frame_count + 1;
+            c.sapp_consume_event();
             return;
         }
     }
@@ -2005,6 +2056,11 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (g_scrollbar_drag_pane != null) {
+            g_scrollbar_drag_pane = null;
+            g_scrollbar_drag_metrics = null;
+            g_scrollbar_drag_grab_y = 0.0;
+        }
         if (g_selection_pointer_active) {
             g_selection_pointer_active = false;
             g_selection_pointer_pane = null;
@@ -2066,6 +2122,35 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button press, check for a divider hit before forwarding to the terminal.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |metrics| {
+            g_scrollbar_hover_pane = metrics.pane;
+            if (scrollbarHitThumb(metrics, event.mouse_x, event.mouse_y)) {
+                g_scrollbar_drag_pane = metrics.pane;
+                g_scrollbar_drag_metrics = metrics;
+                g_scrollbar_drag_grab_y = event.mouse_y - metrics.thumb_y;
+            } else {
+                if (app.config.scrollbar.jump_to_click) {
+                    const jump_grab_y = metrics.thumb_h * 0.5;
+                    const target_row = scrollbarTrackRowForPosition(metrics, event.mouse_y, jump_grab_y);
+                    _ = app.enqueueMouse(.{ .scroll_pane_target = .{
+                        .pane = metrics.pane,
+                        .top_row = target_row,
+                    } });
+                    g_scrollbar_drag_pane = metrics.pane;
+                    g_scrollbar_drag_metrics = metrics;
+                    g_scrollbar_drag_grab_y = jump_grab_y;
+                } else {
+                    const visible_rows: isize = @max(@as(isize, 1), std.math.cast(isize, metrics.len) orelse std.math.maxInt(isize));
+                    const page_delta: isize = if (event.mouse_y < metrics.thumb_y) -visible_rows else visible_rows;
+                    _ = app.enqueueMouse(.{ .scroll_pane_delta = .{
+                        .pane = metrics.pane,
+                        .delta = page_delta,
+                    } });
+                }
+            }
+            return;
+        }
+
         // 6-pixel hit radius on each side of the 2px seam.
         if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
             g_drag_node = hit.node;
@@ -2119,6 +2204,32 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    if (g_scrollbar_drag_pane) |pane| {
+        const metrics = if (app.scrollbarMetricsForPane(pane)) |m| m else blk: {
+            g_scrollbar_drag_pane = null;
+            g_scrollbar_drag_metrics = null;
+            g_scrollbar_drag_grab_y = 0.0;
+            break :blk null;
+        };
+        if (metrics) |scroll_metrics| {
+            g_scrollbar_drag_metrics = scroll_metrics;
+            g_scrollbar_hover_pane = pane;
+            const target_row = scrollbarTrackRowForPosition(scroll_metrics, event.mouse_y, g_scrollbar_drag_grab_y);
+            _ = app.enqueueMouse(.{ .scroll_pane_target = .{
+                .pane = pane,
+                .top_row = target_row,
+            } });
+            if (builtin.os.tag == .windows) {
+                _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
+            }
+            return;
+        }
+    }
+
+    if (g_scrollbar_drag_metrics) |metrics| {
+        g_scrollbar_hover_pane = metrics.pane;
+    }
+
     // If we are currently dragging a divider, update the split ratio and skip
     // forwarding the event to the terminal (the cursor is a resize cursor, not
     // a text cursor).
@@ -2156,10 +2267,18 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
     if (top_bar_hit.in_top_bar) {
+        g_scrollbar_hover_pane = null;
         // Restore default cursor when in tab bar.
         setTextSelectionCursor(.arrow);
         return;
     }
+
+    if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
+        g_scrollbar_hover_pane = scrollbar_hit.pane;
+        if (builtin.os.tag == .windows) setTextSelectionCursor(.arrow);
+        return;
+    }
+    g_scrollbar_hover_pane = null;
 
     // Check if hovering over a split divider to show resize cursor.
     if (builtin.os.tag == .windows) {
@@ -2198,6 +2317,16 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
+    if (g_scrollbar_drag_pane != null) return;
+    if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
+        _ = app.enqueueMouse(.{ .scroll = .{
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .raw_delta = -event.scroll_y,
+            .mods = ghosttyMods(event.modifiers),
+        } });
+        return;
+    }
     _ = app.enqueueMouse(.{ .scroll = .{
         .x = event.mouse_x,
         .y = event.mouse_y,
@@ -2343,6 +2472,41 @@ fn handleClipboardShortcut(app: *App, key: ghostty.Key, mods: u32) bool {
         .c => {
             if (app.hasSelection()) {
                 _ = app.enqueueMouse(.copy_selection);
+                return true;
+            }
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn handleScrollbackKey(app: *App, key: ghostty.Key, mods: u32) bool {
+    switch (key) {
+        .page_up => {
+            if (mods == (ghostty.Mods.alt | ghostty.Mods.shift)) {
+                std.log.info("scrollback key: alt+shift+page_up", .{});
+                _ = app.enqueueMouse(.{ .scroll_active_page = -1 });
+                return true;
+            }
+        },
+        .page_down => {
+            if (mods == (ghostty.Mods.alt | ghostty.Mods.shift)) {
+                std.log.info("scrollback key: alt+shift+page_down", .{});
+                _ = app.enqueueMouse(.{ .scroll_active_page = 1 });
+                return true;
+            }
+        },
+        .home => {
+            if (mods == (ghostty.Mods.ctrl | ghostty.Mods.shift)) {
+                std.log.info("scrollback key: ctrl+shift+home", .{});
+                _ = app.enqueueMouse(.scroll_active_top);
+                return true;
+            }
+        },
+        .end => {
+            if (mods == (ghostty.Mods.ctrl | ghostty.Mods.shift)) {
+                std.log.info("scrollback key: ctrl+shift+end", .{});
+                _ = app.enqueueMouse(.scroll_active_bottom);
                 return true;
             }
         },

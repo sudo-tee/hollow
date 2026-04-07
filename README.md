@@ -99,7 +99,21 @@ hollow.set_config({
     },
     cols = 120,
     rows = 34,
-    scrollback = 20000,
+    -- Scrollback is a byte budget, not a line count.
+    -- 64_000_000 ~= 64 MB of history per terminal.
+    scrollback = 64_000_000,
+    scrollbar = {
+        enabled = true,
+        width = 10,
+        min_thumb_size = 24,
+        margin = 2,
+        jump_to_click = true,
+        track = "#1b1d25",
+        thumb = "#5f667a",
+        thumb_hover = "#7a839b",
+        thumb_active = "#9fb8e8",
+        border = "#2d3140",
+    },
     window_title = "hollow",
 })
 ```
@@ -122,6 +136,15 @@ hollow.keymap.del("ctrl+shift+v")
 hollow.keymap.del("shift+insert")
 hollow.keymap.set("alt+v", "paste_clipboard")
 hollow.keymap.set("ctrl+shift+c", "copy_selection")
+```
+
+Default scrollback bindings:
+
+```lua
+hollow.keymap.set("alt+shift+page_up", "scrollback_page_up")
+hollow.keymap.set("alt+shift+page_down", "scrollback_page_down")
+hollow.keymap.set("ctrl+shift+home", "scrollback_top")
+hollow.keymap.set("ctrl+shift+end", "scrollback_bottom")
 ```
 
 ## Next steps

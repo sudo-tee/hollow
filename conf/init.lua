@@ -22,7 +22,13 @@ local theme = {
 	selection_fg = "#c8c093",
 	selection_bg = "#0d0c0c",
 
-	scrollbar_thumb = "#16161d",
+	scrollbar = {
+		track = "#1b1d25",
+		thumb = "#5f667a",
+		thumb_hover = "#7a839b",
+		thumb_active = "#9fb8e8",
+		border = "#2d3140",
+	},
 	split = "#766b90",
 	accent = "#7e9cd8",
 	warm = "#e0af68",
@@ -63,7 +69,7 @@ local theme = {
 g.log("loading native rewrite config")
 
 g.set_config({
-	debug_overlay = true,
+	debug_overlay = false,
 	backend = "sokol",
 	vsync = false,
 	max_fps = 120,
@@ -91,7 +97,8 @@ g.set_config({
 	},
 	cols = 120,
 	rows = 34,
-	scrollback = 20000,
+	-- Scrollback is measured in bytes, not lines.
+	-- 64 MB retains far more history for wide terminals.
 	window_title = "hollow",
 	window_width = 1440,
 	window_height = 900,
@@ -102,6 +109,19 @@ g.set_config({
 	top_bar_bg = theme.tab_bar.background,
 	top_bar_draw_tabs = true,
 	top_bar_draw_status = true,
+	scrollback = 64000000,
+	scrollbar = {
+		enabled = true,
+		width = 14,
+		min_thumb_size = 24,
+		margin = 2,
+		jump_to_click = true,
+		track = "#1b1d25",
+		thumb = "#5f667a",
+		thumb_hover = "#7a839b",
+		thumb_active = "#9fb8e8",
+		border = "#2d3140",
+	},
 })
 
 hollow.workspace.set_name("default")
@@ -232,7 +252,7 @@ g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 -- g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- g.keymap.del("ctrl+shift+arrow_left")
-g.keymap.del("ctrl+shift+arrow_left")
-g.keymap.del("ctrl+shift+arrow_right")
-g.keymap.del("ctrl+shift+arrow_up")
-g.keymap.del("ctrl+shift+arrow_down")
+g.keymap.set("alt+shift+page_up", "scrollback_page_up", { desc = "scrollback page up" })
+g.keymap.set("alt+shift+page_down", "scrollback_page_down", { desc = "scrollback page down" })
+g.keymap.set("ctrl+shift+home", "scrollback_top", { desc = "scrollback top" })
+g.keymap.set("ctrl+shift+end", "scrollback_bottom", { desc = "scrollback bottom" })

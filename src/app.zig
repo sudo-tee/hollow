@@ -148,6 +148,18 @@ pub const PendingMouseEvent = union(enum) {
         bytes: [CLIPBOARD_EVENT_MAX]u8,
         len: u16,
     },
+    scroll_pane_delta: struct {
+        pane: *Pane,
+        delta: isize,
+    },
+    scroll_pane_target: struct {
+        pane: *Pane,
+        top_row: u64,
+    },
+    scroll_active_delta: isize,
+    scroll_active_page: isize,
+    scroll_active_top,
+    scroll_active_bottom,
 };
 
 var write_bridge: ?*App = null;
@@ -169,6 +181,20 @@ fn terminalCallbacks() ghostty.TerminalCallbacks {
 }
 
 pub const App = struct {
+    pub const ScrollbarMetrics = struct {
+        pane: *Pane,
+        outer_bounds: PaneBounds,
+        track_x: f32,
+        track_y: f32,
+        track_w: f32,
+        track_h: f32,
+        thumb_y: f32,
+        thumb_h: f32,
+        total: u64,
+        offset: u64,
+        len: u64,
+    };
+
     allocator: std.mem.Allocator,
     config: Config,
     lua: ?LuaRuntime = null,
@@ -390,6 +416,24 @@ pub const App = struct {
                         };
                     }
                 },
+                .scroll_pane_delta => |scroll_ev| {
+                    if (self.hasPane(scroll_ev.pane)) self.scrollPaneViewport(scroll_ev.pane, scroll_ev.delta);
+                },
+                .scroll_pane_target => |scroll_ev| {
+                    if (self.hasPane(scroll_ev.pane)) self.scrollPaneViewportToRow(scroll_ev.pane, scroll_ev.top_row);
+                },
+                .scroll_active_delta => |delta| {
+                    self.scrollActiveViewport(delta);
+                },
+                .scroll_active_page => |pages| {
+                    self.scrollActiveViewportPage(pages);
+                },
+                .scroll_active_top => {
+                    self.scrollActiveViewportTop();
+                },
+                .scroll_active_bottom => {
+                    self.scrollActiveViewportBottom();
+                },
             }
 
             @atomicStore(usize, &self.mouse_queue_head, (head + advance) % cap, .release);
@@ -519,6 +563,10 @@ pub const App = struct {
                 .is_leader_active = luaIsLeaderActiveCallback,
                 .copy_selection = luaCopySelectionCallback,
                 .paste_clipboard = luaPasteClipboardCallback,
+                .scroll_active = luaScrollActiveCallback,
+                .scroll_active_page = luaScrollActivePageCallback,
+                .scroll_active_top = luaScrollActiveTopCallback,
+                .scroll_active_bottom = luaScrollActiveBottomCallback,
             });
         }
 
@@ -625,6 +673,7 @@ pub const App = struct {
 
     pub fn sendText(self: *App, text: []const u8) void {
         const pane = self.activePane() orelse return;
+        self.scrollActiveViewportBottom();
         pane.sendText(text);
     }
 
@@ -645,7 +694,8 @@ pub const App = struct {
         self.config.window_height = pixel_height;
 
         const tbh = self.tabBarHeight();
-        const inner_width = if (pixel_width > self.config.terminal_padding.horizontal()) pixel_width - self.config.terminal_padding.horizontal() else 1;
+        const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
+        const inner_width = if (pixel_width > horizontal_reserved) pixel_width - horizontal_reserved else 1;
         const content_height = if (pixel_height > tbh) pixel_height - tbh else 1;
         const inner_height = if (content_height > self.config.terminal_padding.vertical()) content_height - self.config.terminal_padding.vertical() else 1;
 
@@ -935,7 +985,8 @@ pub const App = struct {
 
     fn paneInnerBounds(self: *const App, bounds: PaneBounds) PaneBounds {
         const pad = self.config.terminal_padding;
-        const trim_x = @min(bounds.width, pad.horizontal());
+        const scrollbar_gutter = @min(bounds.width, self.config.scrollbar.gutterWidth());
+        const trim_x = @min(bounds.width, pad.horizontal() + scrollbar_gutter);
         const trim_y = @min(bounds.height, pad.vertical());
         const inner_w = @max(@as(u32, 1), bounds.width - trim_x);
         const inner_h = @max(@as(u32, 1), bounds.height - trim_y);
@@ -1080,9 +1131,195 @@ pub const App = struct {
         return try self.encodeMouseForPane(hit.pane, action, button, hit.x, hit.y, mods);
     }
 
+    fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) ghostty.TerminalScrollbar {
+        if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
+            pane.scrollbar_total = scrollbar.total;
+            pane.scrollbar_offset = scrollbar.offset;
+            pane.scrollbar_len = scrollbar.len;
+            return scrollbar;
+        }
+        pane.scrollbar_total = @as(u64, pane.rows) + @as(u64, self.config.scrollback);
+        pane.scrollbar_offset = 0;
+        pane.scrollbar_len = @max(@as(u64, 1), pane.rows);
+        return pane.scrollbar();
+    }
+
+    fn scrollbarMaxTopRow(scrollbar: ghostty.TerminalScrollbar) u64 {
+        return if (scrollbar.total > scrollbar.len) scrollbar.total - scrollbar.len else 0;
+    }
+
+    fn pageScrollRows(pane: *const Pane) isize {
+        return @max(@as(isize, 1), @as(isize, @intCast(@max(@as(u16, 1), pane.rows))) - 1);
+    }
+
+    fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
+        if (delta == 0) return;
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        std.log.info("scrollPaneViewport pane={x} ui_delta={d}", .{ @intFromPtr(pane), delta });
+        runtime.terminalScroll(pane.terminal, delta);
+        pane.render_dirty = .full;
+        pane.last_render_state_update_ns = 0;
+        pane.pty_received_data = true;
+        self.scroll_accum = 0;
+        _ = self.refreshPaneScrollbar(runtime, pane);
+    }
+
+    fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const max_top = scrollbarMaxTopRow(scrollbar);
+        const clamped_target = @min(top_row, max_top);
+        const current_top = @min(scrollbar.offset, max_top);
+        if (clamped_target == current_top) return;
+
+        if (clamped_target == 0) {
+            runtime.terminalScrollTop(pane.terminal);
+            pane.render_dirty = .full;
+            pane.last_render_state_update_ns = 0;
+            pane.pty_received_data = true;
+            self.scroll_accum = 0;
+            _ = self.refreshPaneScrollbar(runtime, pane);
+            return;
+        }
+
+        if (clamped_target == max_top) {
+            runtime.terminalScrollBottom(pane.terminal);
+            pane.render_dirty = .full;
+            pane.last_render_state_update_ns = 0;
+            pane.pty_received_data = true;
+            self.scroll_accum = 0;
+            _ = self.refreshPaneScrollbar(runtime, pane);
+            return;
+        }
+
+        const target_i64: i64 = @intCast(clamped_target);
+        const current_i64: i64 = @intCast(current_top);
+        const delta_i64 = target_i64 - current_i64;
+        const delta: isize = std.math.cast(isize, delta_i64) orelse if (delta_i64 < 0)
+            std.math.minInt(isize)
+        else
+            std.math.maxInt(isize);
+        self.scrollPaneViewport(pane, delta);
+    }
+
+    fn scrollActiveViewport(self: *App, delta: isize) void {
+        const pane = self.activePane() orelse return;
+        self.scrollPaneViewport(pane, delta);
+    }
+
+    fn scrollActiveViewportPage(self: *App, pages: isize) void {
+        const pane = self.activePane() orelse return;
+        self.scrollPaneViewport(pane, pages * pageScrollRows(pane));
+    }
+
+    fn scrollActiveViewportTop(self: *App) void {
+        const pane = self.activePane() orelse return;
+        self.scrollPaneViewportToRow(pane, 0);
+    }
+
+    fn scrollActiveViewportBottom(self: *App) void {
+        const pane = self.activePane() orelse return;
+        self.scrollPaneViewportToRow(pane, scrollbarMaxTopRow(pane.scrollbar()));
+    }
+
+    fn paneScrollbarMetrics(self: *App, pane: *Pane, outer_bounds: PaneBounds) ?ScrollbarMetrics {
+        if (!self.config.scrollbar.enabled) return null;
+        const gutter = self.config.scrollbar.gutterWidth();
+        if (gutter == 0 or outer_bounds.width <= gutter) return null;
+
+        const scrollbar = pane.scrollbar();
+        if (scrollbar.len == 0 or scrollbar.total <= scrollbar.len) return null;
+        const track_len = scrollbar.len;
+        const total = scrollbar.total;
+
+        const margin_f: f32 = @floatFromInt(self.config.scrollbar.margin);
+        const width_f: f32 = @floatFromInt(@max(@as(u32, 1), self.config.scrollbar.width));
+        const gutter_f: f32 = @floatFromInt(gutter);
+        const track_x = @as(f32, @floatFromInt(outer_bounds.x)) + @as(f32, @floatFromInt(outer_bounds.width)) - gutter_f + margin_f;
+        const track_y = @as(f32, @floatFromInt(outer_bounds.y)) + margin_f;
+        const track_h = @max(@as(f32, 1.0), @as(f32, @floatFromInt(outer_bounds.height)) - margin_f * 2.0);
+        const min_thumb_h: f32 = @floatFromInt(@max(@as(u32, 1), self.config.scrollbar.min_thumb_size));
+        const visible_ratio = @as(f32, @floatFromInt(track_len)) / @as(f32, @floatFromInt(total));
+        const thumb_h = @min(track_h, @max(min_thumb_h, track_h * visible_ratio));
+        const max_top = if (total > track_len) total - track_len else 0;
+        const travel = @max(@as(f32, 0.0), track_h - thumb_h);
+        const ui_offset = @min(scrollbar.offset, max_top);
+        const thumb_y = track_y + if (max_top == 0)
+            0.0
+        else
+            travel * (@as(f32, @floatFromInt(ui_offset)) / @as(f32, @floatFromInt(max_top)));
+
+        return .{
+            .pane = pane,
+            .outer_bounds = outer_bounds,
+            .track_x = track_x,
+            .track_y = track_y,
+            .track_w = width_f,
+            .track_h = track_h,
+            .thumb_y = thumb_y,
+            .thumb_h = thumb_h,
+            .total = total,
+            .offset = scrollbar.offset,
+            .len = track_len,
+        };
+    }
+
+    pub fn scrollbarMetricsForPane(self: *App, pane: *Pane) ?ScrollbarMetrics {
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeActiveLayout(&layout_buf);
+        for (leaves) |leaf| {
+            if (leaf.pane == pane) return self.paneScrollbarMetrics(pane, leaf.bounds);
+        }
+
+        if (self.activePane() == pane) {
+            const tbh = self.tabBarHeight();
+            const pane_h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+            return self.paneScrollbarMetrics(pane, .{
+                .x = 0,
+                .y = tbh,
+                .width = self.config.window_width,
+                .height = pane_h,
+            });
+        }
+
+        return null;
+    }
+
+    pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?ScrollbarMetrics {
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeActiveLayout(&layout_buf);
+        for (leaves) |leaf| {
+            const metrics = self.paneScrollbarMetrics(leaf.pane, leaf.bounds) orelse continue;
+            if (x >= metrics.track_x and x < metrics.track_x + metrics.track_w and y >= metrics.track_y and y < metrics.track_y + metrics.track_h) {
+                return metrics;
+            }
+        }
+
+        if (self.activePane()) |pane| {
+            if (self.scrollbarMetricsForPane(pane)) |metrics| {
+                if (x >= metrics.track_x and x < metrics.track_x + metrics.track_w and y >= metrics.track_y and y < metrics.track_y + metrics.track_h) {
+                    return metrics;
+                }
+            }
+        }
+
+        return null;
+    }
+
     pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
         const hit = self.hitTestPane(x, y) orelse return;
         const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, hit.pane);
+        const max_top = scrollbarMaxTopRow(scrollbar);
+        const in_scrollback = scrollbar.offset < max_top;
+        const over_scrollbar = self.hitTestScrollbar(x, y) != null;
+        const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.last_mouse_tracking == 0;
+
+        if (should_scroll_viewport) {
+            self.scrollPaneViewport(hit.pane, delta);
+            return;
+        }
+
         const count: usize = @intCast(if (delta < 0) -delta else delta);
         if (count > 0) {
             const button: ghostty.MouseButton = if (delta < 0) .four else .five;
@@ -1102,9 +1339,7 @@ pub const App = struct {
         // When an app like nvim IS using mouse reporting but the encoder failed,
         // this only moves the viewport without notifying the app — the visual
         // result depends on the app re-rendering on its own.
-        if (hit.pane.terminal) |term| {
-            runtime.terminalScroll(term, delta);
-        }
+        self.scrollPaneViewport(hit.pane, delta);
     }
 
     /// Scroll with a raw float delta (e.g. from a touchpad or smooth mouse
@@ -1651,6 +1886,7 @@ pub const App = struct {
                         pane.render_dirty = post_dirty;
                     }
                 }
+                _ = self.refreshPaneScrollbar(runtime, pane);
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }
@@ -1735,7 +1971,7 @@ pub const App = struct {
                         self.config.terminal_padding.top,
                         self.config.terminal_padding.bottom,
                         self.config.terminal_padding.left,
-                        self.config.terminal_padding.right,
+                        self.config.terminal_padding.right + self.config.scrollbar.gutterWidth(),
                     );
                     leaf.pane.render_state_ready = true;
                     std.log.info("resizeAllPanes: leaf done pane={x} render_state_ready=true", .{@intFromPtr(leaf.pane)});
@@ -1746,7 +1982,8 @@ pub const App = struct {
                 if (pixel_width == 0 or pane_h == 0) continue;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    const inner_width = if (pixel_width > self.config.terminal_padding.horizontal()) pixel_width - self.config.terminal_padding.horizontal() else 1;
+                    const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
+                    const inner_width = if (pixel_width > horizontal_reserved) pixel_width - horizontal_reserved else 1;
                     const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
@@ -1766,7 +2003,7 @@ pub const App = struct {
                         self.config.terminal_padding.top,
                         self.config.terminal_padding.bottom,
                         self.config.terminal_padding.left,
-                        self.config.terminal_padding.right,
+                        self.config.terminal_padding.right + self.config.scrollbar.gutterWidth(),
                     );
                     pane.render_state_ready = true;
                     std.log.info("resizeAllPanes (fallback): pane done pane={x}", .{@intFromPtr(pane)});
@@ -2106,4 +2343,24 @@ fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
 fn luaPasteClipboardCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.paste_clipboard);
+}
+
+fn luaScrollActiveCallback(app_ptr: *anyopaque, delta: isize) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .scroll_active_delta = delta });
+}
+
+fn luaScrollActivePageCallback(app_ptr: *anyopaque, pages: isize) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .scroll_active_page = pages });
+}
+
+fn luaScrollActiveTopCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.scroll_active_top);
+}
+
+fn luaScrollActiveBottomCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.scroll_active_bottom);
 }

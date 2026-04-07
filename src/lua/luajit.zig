@@ -78,6 +78,10 @@ pub const AppCallbacks = struct {
     is_leader_active: *const fn (app: *anyopaque) bool,
     copy_selection: *const fn (app: *anyopaque) void,
     paste_clipboard: *const fn (app: *anyopaque) void,
+    scroll_active: *const fn (app: *anyopaque, delta: isize) void,
+    scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
+    scroll_active_top: *const fn (app: *anyopaque) void,
+    scroll_active_bottom: *const fn (app: *anyopaque) void,
 };
 
 const BridgeContext = struct {
@@ -646,6 +650,22 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_paste_clipboard, 1);
         api.set_field(self.state, -2, "paste_clipboard");
 
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_scroll_active, 1);
+        api.set_field(self.state, -2, "scroll_active");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_scroll_active_page, 1);
+        api.set_field(self.state, -2, "scroll_active_page");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_scroll_active_top, 1);
+        api.set_field(self.state, -2, "scroll_active_top");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_scroll_active_bottom, 1);
+        api.set_field(self.state, -2, "scroll_active_bottom");
+
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
         api.set_field(self.state, -2, "os");
@@ -798,6 +818,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "scrollbar") and value_type == .table) {
+            const scrollbar_idx = absoluteIndex(api, state, -1);
+            applyScrollbarThemeTable(ctx.cfg, api, state, scrollbar_idx) catch |err| std.log.err("config scrollbar field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
             const ansi_idx = absoluteIndex(api, state, -1);
             applyPaletteArray(ctx.cfg, api, state, ansi_idx, 0, 8) catch |err| std.log.err("config ansi field failed: {s}", .{@errorName(err)});
@@ -912,7 +938,7 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
     }
 
     if (std.mem.eql(u8, key, "scrollback")) {
-        cfg.scrollback = try asInt(u32, value);
+        cfg.scrollback = try asInt(usize, value);
         return;
     }
 
@@ -1019,6 +1045,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "renderer_disable_multi_pane_cache")) {
         cfg.renderer_disable_multi_pane_cache = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "scrollbar")) {
+        cfg.scrollbar.enabled = value;
         return;
     }
 }
@@ -1186,6 +1216,11 @@ fn applyHexColor(cfg: *config.Config, key: []const u8, value: []const u8) bool {
         cfg.terminal_theme.selection_bg = color;
         return true;
     }
+    if (std.mem.eql(u8, key, "scrollbar_thumb")) {
+        cfg.scrollbar.thumb_color = color;
+        cfg.scrollbar.thumb_hover_color = color;
+        return true;
+    }
     return false;
 }
 
@@ -1252,11 +1287,83 @@ fn applyThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
             continue;
         }
 
+        if (std.mem.eql(u8, key, "scrollbar") and value_type == .table) {
+            const scrollbar_idx = absoluteIndex(api, state, -1);
+            try applyScrollbarThemeTable(cfg, api, state, scrollbar_idx);
+            continue;
+        }
+
         if (value_type != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
         _ = applyHexColor(cfg, key, value_ptr[0..value_len]);
+    }
+}
+
+fn applyScrollbarThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (value_type == .boolean) {
+            const value = api.to_boolean(state, -1) != 0;
+            if (std.mem.eql(u8, key, "enabled")) {
+                cfg.scrollbar.enabled = value;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "jump_to_click")) {
+                cfg.scrollbar.jump_to_click = value;
+                continue;
+            }
+        }
+
+        if (value_type == .number) {
+            const value = api.to_number(state, -1);
+            if (std.mem.eql(u8, key, "width")) {
+                cfg.scrollbar.width = try asInt(u32, value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "min_thumb_size")) {
+                cfg.scrollbar.min_thumb_size = try asInt(u32, value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "margin")) {
+                cfg.scrollbar.margin = try asInt(u32, value);
+                continue;
+            }
+        }
+
+        if (value_type != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const color = parseHexColor(value_ptr[0..value_len]) orelse continue;
+        if (std.mem.eql(u8, key, "track")) {
+            cfg.scrollbar.track_color = color;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "thumb")) {
+            cfg.scrollbar.thumb_color = color;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "thumb_hover")) {
+            cfg.scrollbar.thumb_hover_color = color;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "thumb_active")) {
+            cfg.scrollbar.thumb_active_color = color;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "border")) {
+            cfg.scrollbar.border_color = color;
+            continue;
+        }
     }
 }
 
@@ -1705,6 +1812,42 @@ fn l_copy_selection(state: *State) callconv(.c) c_int {
 fn l_paste_clipboard(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.paste_clipboard(cbs.app);
+    return 0;
+}
+
+fn l_scroll_active(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const delta: isize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @intFromFloat(api.to_number(state, 1))
+    else
+        0;
+    cbs.scroll_active(cbs.app, delta);
+    return 0;
+}
+
+fn l_scroll_active_page(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const pages: isize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @intFromFloat(api.to_number(state, 1))
+    else
+        0;
+    cbs.scroll_active_page(cbs.app, pages);
+    return 0;
+}
+
+fn l_scroll_active_top(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.scroll_active_top(cbs.app);
+    return 0;
+}
+
+fn l_scroll_active_bottom(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.scroll_active_bottom(cbs.app);
     return 0;
 }
 

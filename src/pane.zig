@@ -70,6 +70,9 @@ pub const Pane = struct {
     /// data we call updateRenderState at most once per ~16 ms so that cursor
     /// blink (managed by ghostty's internal timer) still fires.
     last_render_state_update_ns: i128 = 0,
+    scrollbar_total: u64 = 0,
+    scrollbar_offset: u64 = 0,
+    scrollbar_len: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };
@@ -387,6 +390,14 @@ pub const Pane = struct {
     pub fn hasLiveChild(self: *Pane) bool {
         if (self.pty) |*pty| return pty.isAlive();
         return false;
+    }
+
+    pub fn scrollbar(self: *const Pane) ghostty.TerminalScrollbar {
+        return .{
+            .total = self.scrollbar_total,
+            .offset = self.scrollbar_offset,
+            .len = self.scrollbar_len,
+        };
     }
 
     fn sanitizePtyOutput(self: *Pane, bytes: []u8) []const u8 {

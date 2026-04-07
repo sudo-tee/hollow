@@ -6,7 +6,7 @@ pub const success = 0;
 pub const TerminalOptions = extern struct {
     cols: u16,
     rows: u16,
-    max_scrollback: u32,
+    max_scrollback: usize,
 };
 
 pub const ColorRgb = extern struct {
@@ -106,6 +106,7 @@ pub const ScrollViewport = extern struct {
     tag: u32,
     value: extern union {
         delta: isize,
+        _padding: [2]u64,
     },
 };
 
@@ -275,7 +276,9 @@ pub const FocusEvent = enum(u32) {
 };
 
 pub const ScrollViewportTag = enum(u32) {
-    delta = 0,
+    top = 0,
+    bottom = 1,
+    delta = 2,
 };
 
 pub const Key = enum(u32) {
@@ -610,7 +613,10 @@ pub const Runtime = struct {
     pub fn terminalScrollbar(self: *Runtime, handle: ?*anyopaque) ?TerminalScrollbar {
         if (handle) |terminal| {
             var scrollbar: TerminalScrollbar = undefined;
-            if (self.terminal_get(terminal, @intFromEnum(TerminalData.scrollbar), &scrollbar) == success) return scrollbar;
+            if (self.terminal_get(terminal, @intFromEnum(TerminalData.scrollbar), &scrollbar) == success) {
+                std.log.info("ghostty scrollbar total={d} offset={d} len={d}", .{ scrollbar.total, scrollbar.offset, scrollbar.len });
+                return scrollbar;
+            }
         }
         return null;
     }
@@ -618,6 +624,20 @@ pub const Runtime = struct {
     pub fn terminalScroll(self: *Runtime, handle: ?*anyopaque, delta: isize) void {
         if (handle) |terminal| {
             var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.delta), .value = .{ .delta = delta } };
+            self.terminal_scroll_viewport(terminal, &viewport);
+        }
+    }
+
+    pub fn terminalScrollTop(self: *Runtime, handle: ?*anyopaque) void {
+        if (handle) |terminal| {
+            var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
+            self.terminal_scroll_viewport(terminal, &viewport);
+        }
+    }
+
+    pub fn terminalScrollBottom(self: *Runtime, handle: ?*anyopaque) void {
+        if (handle) |terminal| {
+            var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
             self.terminal_scroll_viewport(terminal, &viewport);
         }
     }

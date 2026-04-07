@@ -134,6 +134,24 @@ pub const Config = struct {
         }
     };
 
+    pub const Scrollbar = struct {
+        enabled: bool = true,
+        width: u32 = 10,
+        min_thumb_size: u32 = 24,
+        margin: u32 = 2,
+        jump_to_click: bool = true,
+        track_color: ghostty.ColorRgb = .{ .r = 26, .g = 28, .b = 35 },
+        thumb_color: ghostty.ColorRgb = .{ .r = 76, .g = 82, .b = 100 },
+        thumb_hover_color: ghostty.ColorRgb = .{ .r = 106, .g = 114, .b = 136 },
+        thumb_active_color: ghostty.ColorRgb = .{ .r = 126, .g = 165, .b = 236 },
+        border_color: ghostty.ColorRgb = .{ .r = 46, .g = 49, .b = 60 },
+
+        pub fn gutterWidth(self: Scrollbar) u32 {
+            if (!self.enabled) return 0;
+            return self.width + self.margin * 2;
+        }
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
@@ -145,8 +163,12 @@ pub const Config = struct {
     window_height: u32 = 800,
     cols: u16 = 120,
     rows: u16 = 34,
-    scrollback: u32 = 10000,
+    /// Scrollback history budget in bytes, matching Ghostty's native API.
+    /// Rough rule of thumb: tens of MB gives much deeper history than a raw
+    /// line count because storage depends on row width and styling density.
+    scrollback: usize = 10_000_000,
     terminal_padding: TerminalPadding = .{},
+    scrollbar: Scrollbar = .{},
     lib_dir: ?[]u8 = null,
     top_bar_show: bool = true,
     window_titlebar_show: bool = true,
