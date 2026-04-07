@@ -82,6 +82,7 @@ hollow.set_config({
     backend = "sokol",
     shell = "pwsh.exe",
     ghostty_library = "ghostty-vt.dll",
+    padding = 12,
     fonts = {
         size = 14.5,
         line_height = 1.0,

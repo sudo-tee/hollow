@@ -906,6 +906,46 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "padding")) {
+        const pad = try asInt(u32, value);
+        cfg.terminal_padding = .{ .left = pad, .right = pad, .top = pad, .bottom = pad };
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_x")) {
+        const pad = try asInt(u32, value);
+        cfg.terminal_padding.left = pad;
+        cfg.terminal_padding.right = pad;
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_y")) {
+        const pad = try asInt(u32, value);
+        cfg.terminal_padding.top = pad;
+        cfg.terminal_padding.bottom = pad;
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_left")) {
+        cfg.terminal_padding.left = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_right")) {
+        cfg.terminal_padding.right = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_top")) {
+        cfg.terminal_padding.top = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "padding_bottom")) {
+        cfg.terminal_padding.bottom = try asInt(u32, value);
+        return;
+    }
+
     if (std.mem.eql(u8, key, "top_bar_height")) {
         cfg.top_bar_height = try asInt(u32, value);
         return;

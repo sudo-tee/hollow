@@ -119,6 +119,21 @@ pub const Config = struct {
         }
     };
 
+    pub const TerminalPadding = struct {
+        left: u32 = 0,
+        right: u32 = 0,
+        top: u32 = 0,
+        bottom: u32 = 0,
+
+        pub fn horizontal(self: TerminalPadding) u32 {
+            return self.left + self.right;
+        }
+
+        pub fn vertical(self: TerminalPadding) u32 {
+            return self.top + self.bottom;
+        }
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
@@ -131,6 +146,7 @@ pub const Config = struct {
     cols: u16 = 120,
     rows: u16 = 34,
     scrollback: u32 = 10000,
+    terminal_padding: TerminalPadding = .{},
     lib_dir: ?[]u8 = null,
     top_bar_show: bool = true,
     window_titlebar_show: bool = true,

@@ -586,8 +586,13 @@ pub const App = struct {
         self.config.window_width = pixel_width;
         self.config.window_height = pixel_height;
 
-        self.config.cols = @max(1, @as(u16, @intCast(pixel_width / @max(@as(u32, 1), self.cell_width_px))));
-        self.config.rows = @max(1, @as(u16, @intCast(pixel_height / @max(@as(u32, 1), self.cell_height_px))));
+        const tbh = self.tabBarHeight();
+        const inner_width = if (pixel_width > self.config.terminal_padding.horizontal()) pixel_width - self.config.terminal_padding.horizontal() else 1;
+        const content_height = if (pixel_height > tbh) pixel_height - tbh else 1;
+        const inner_height = if (content_height > self.config.terminal_padding.vertical()) content_height - self.config.terminal_padding.vertical() else 1;
+
+        self.config.cols = @max(1, @as(u16, @intCast(inner_width / @max(@as(u32, 1), self.cell_width_px))));
+        self.config.rows = @max(1, @as(u16, @intCast(inner_height / @max(@as(u32, 1), self.cell_height_px))));
 
         const grid_unchanged = self.config.cols == prev_cols and self.config.rows == prev_rows;
         const size_unchanged = pixel_width == prev_window_width and pixel_height == prev_window_height;
@@ -701,19 +706,40 @@ pub const App = struct {
         y: f32,
     };
 
+    fn paneInnerBounds(self: *const App, bounds: PaneBounds) PaneBounds {
+        const pad = self.config.terminal_padding;
+        const trim_x = @min(bounds.width, pad.horizontal());
+        const trim_y = @min(bounds.height, pad.vertical());
+        const inner_w = @max(@as(u32, 1), bounds.width - trim_x);
+        const inner_h = @max(@as(u32, 1), bounds.height - trim_y);
+        const inset_left = @min(pad.left, bounds.width - inner_w);
+        const inset_top = @min(pad.top, bounds.height - inner_h);
+        return .{
+            .x = bounds.x + inset_left,
+            .y = bounds.y + inset_top,
+            .width = inner_w,
+            .height = inner_h,
+        };
+    }
+
     pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
         const ix = @as(u32, @intFromFloat(@max(0, x)));
         const iy = @as(u32, @intFromFloat(@max(0, y)));
         for (leaves) |leaf| {
+            const inner = self.paneInnerBounds(leaf.bounds);
             if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
                 iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
             {
+                const inner_right = inner.x + inner.width;
+                const inner_bottom = inner.y + inner.height;
+                const clamped_x = std.math.clamp(x, @as(f32, @floatFromInt(inner.x)), @as(f32, @floatFromInt(inner_right - 1)));
+                const clamped_y = std.math.clamp(y, @as(f32, @floatFromInt(inner.y)), @as(f32, @floatFromInt(inner_bottom - 1)));
                 return .{
                     .pane = leaf.pane,
-                    .x = x - @as(f32, @floatFromInt(leaf.bounds.x)),
-                    .y = y - @as(f32, @floatFromInt(leaf.bounds.y)),
+                    .x = clamped_x - @as(f32, @floatFromInt(inner.x)),
+                    .y = clamped_y - @as(f32, @floatFromInt(inner.y)),
                 };
             }
         }
@@ -1454,8 +1480,9 @@ pub const App = struct {
                     // Skip panes with zero-size bounds — can happen when the window
                     // is very small or during layout transitions.
                     if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
-                    const raw_cols: u32 = leaf.bounds.width / @max(1, self.cell_width_px);
-                    const raw_rows: u32 = leaf.bounds.height / @max(1, self.cell_height_px);
+                    const inner = self.paneInnerBounds(leaf.bounds);
+                    const raw_cols: u32 = inner.width / @max(1, self.cell_width_px);
+                    const raw_rows: u32 = inner.height / @max(1, self.cell_height_px);
                     // Cap at sane max to prevent DLL crashes on extreme values.
                     const cols: u16 = @intCast(@min(1000, @max(1, raw_cols)));
                     const rows: u16 = @intCast(@min(500, @max(1, raw_rows)));
@@ -1478,10 +1505,10 @@ pub const App = struct {
                         leaf.bounds.height,
                         self.cell_width_px,
                         self.cell_height_px,
-                        0,
-                        0,
-                        0,
-                        0,
+                        self.config.terminal_padding.top,
+                        self.config.terminal_padding.bottom,
+                        self.config.terminal_padding.left,
+                        self.config.terminal_padding.right,
                     );
                     leaf.pane.render_state_ready = true;
                     std.log.info("resizeAllPanes: leaf done pane={x} render_state_ready=true", .{@intFromPtr(leaf.pane)});
@@ -1492,8 +1519,10 @@ pub const App = struct {
                 if (pixel_width == 0 or pane_h == 0) continue;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    const cols: u16 = @intCast(@min(1000, @max(1, pixel_width / @max(1, self.cell_width_px))));
-                    const rows: u16 = @intCast(@min(500, @max(1, pane_h / @max(1, self.cell_height_px))));
+                    const inner_width = if (pixel_width > self.config.terminal_padding.horizontal()) pixel_width - self.config.terminal_padding.horizontal() else 1;
+                    const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
+                    const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
+                    const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
                     std.log.info("resizeAllPanes (fallback): pane={x} grid={d}x{d}", .{ @intFromPtr(pane), cols, rows });
                     if (recreate_render_helpers) {
                         std.log.info("resizeAllPanes (fallback): recreateRenderHelpers pane={x}", .{@intFromPtr(pane)});
@@ -1507,10 +1536,10 @@ pub const App = struct {
                         pane_h,
                         self.cell_width_px,
                         self.cell_height_px,
-                        0,
-                        0,
-                        0,
-                        0,
+                        self.config.terminal_padding.top,
+                        self.config.terminal_padding.bottom,
+                        self.config.terminal_padding.left,
+                        self.config.terminal_padding.right,
                     );
                     pane.render_state_ready = true;
                     std.log.info("resizeAllPanes (fallback): pane done pane={x}", .{@intFromPtr(pane)});

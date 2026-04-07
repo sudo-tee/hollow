@@ -645,8 +645,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
         .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
         .line_height = app.config.fonts.line_height,
-        .padding_x = app.config.fonts.padding_x,
-        .padding_y = app.config.fonts.padding_y,
+        .padding_x = app.config.fonts.padding_x + @as(f32, @floatFromInt(app.config.terminal_padding.left)),
+        .padding_y = app.config.fonts.padding_y + @as(f32, @floatFromInt(app.config.terminal_padding.top)),
         .coverage_boost = app.config.fonts.coverage_boost,
         .coverage_add = app.config.fonts.coverage_add,
         .smoothing = switch (app.config.fonts.smoothing) {
@@ -864,6 +864,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     layout_generation: u32,
                     cell_width_px: u32,
                     cell_height_px: u32,
+                    pane_pad_x: u32,
+                    pane_pad_y: u32,
                 ) PaneRenderPath {
                     _ = oy;
                     _ = fb_w;
@@ -917,8 +919,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // rows dirty in rowDirty() after a CSI S, so force_full here doesn't save work
                     // but does force a slow CLEAR action.  Use atlas_stale as the only trigger for
                     // force_full so that scroll frames stay as fast as partial updates.
-                    const expected_cols: u16 = @intCast(@min(1000, @max(1, pw_u / @max(@as(u32, 1), cell_width_px))));
-                    const expected_rows: u16 = @intCast(@min(500, @max(1, ph_u / @max(@as(u32, 1), cell_height_px))));
+                    const inner_w = if (pw_u > pane_pad_x) pw_u - pane_pad_x else 1;
+                    const inner_h = if (ph_u > pane_pad_y) ph_u - pane_pad_y else 1;
+                    const expected_cols: u16 = @intCast(@min(1000, @max(1, inner_w / @max(@as(u32, 1), cell_width_px))));
+                    const expected_rows: u16 = @intCast(@min(500, @max(1, inner_h / @max(@as(u32, 1), cell_height_px))));
                     const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
                     const pty_active = pane.pty_wrote_this_frame;
@@ -1079,7 +1083,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, &app.config, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                    switch (renderPane(renderer, runtime, &app.config, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -1110,7 +1114,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, &app.config, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px)) {
+                    switch (renderPane(renderer, runtime, &app.config, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },

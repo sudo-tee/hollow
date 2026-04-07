@@ -67,6 +67,7 @@ g.set_config({
 	backend = "sokol",
 	vsync = false,
 	max_fps = 120,
+	padding = 0,
 	theme = theme,
 	fonts = {
 		size = 14.5,

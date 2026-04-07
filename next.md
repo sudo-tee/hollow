@@ -22,7 +22,8 @@
 - ~Navigating between panes is a bit buggy let's say a create an horizontal split and then a vertical split, the navigation gets a bit weird. Being on the bottom right pane and pressing sthift+ctrl+left will move the focus to the toppane instead of the bottom left one. This is because the navigation is currently based on the position of the panes and not on a graph of the panes. This can be fixed by implementing a graph of the panes and navigating based on that graph instead of the position. This will also allow for more complex layouts in the future.~
   -~Some keybords shortcuts don't work example in nvim all keymaps with alt+ don't work~
 - ~Minimizing and restoring the windows clears the shell output. It should be possible to minimize and restore the window without losing the shell output.~
-- Sometimes when an application is closed the terminal gets into a weird and won't display new output until I resize the window or hit a key. The best example is using the neovim :restart command. I wold still see last nvim frame, until i hit a key or resize the window, then I would see the nvim dashboard
+- ~Sometimes when an application is closed the terminal gets into a weird and won't display new output until I resize the window or hit a key. The best example is using the neovim :restart command. I wold still see last nvim frame, until i hit a key or resize the window, then I would see the nvim dashboard~
+- Sometimes the last line of the terminal gets cut off.
 
 ## Fonts
 
@@ -53,13 +54,13 @@
   - ~Click to set cursor position~
   - ~Click and drag to resize panes~
   - ~scroll wheel support for scrolling through output~
-- Add support for kitty keyboard protocol (https://sw.kovidgoyal.net/kitty/keyboard-protocol/) to enable features like:
-  - Support for advanced key combinations and modifiers (e.g., Ctrl+Shift+Arrow keys, Alt+Tab, etc.)
-  - Support for custom keybindings and macros
+- ~Add support for kitty keyboard protocol (https://sw.kovidgoyal.net/kitty/keyboard-protocol/) to enable features like:~
+  ~- Support for advanced key combinations and modifiers (e.g., Ctrl+Shift+Arrow keys, Alt+Tab, etc.)~
+  ~- Support for custom keybindings and macros~
 - Add text selection support
 - Add copy/paste support
 - Add scrollback buffer support (kitty scrollback)
--
+- Add padding configuration for the terminal content (e.g., padding between the text and the window borders).
 
 ## Windowing
 
