@@ -507,10 +507,7 @@ pub const App = struct {
         self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
         self.maybeRunStartupCommand();
-        if (!self.logged_first_render_update) {
-            self.logged_first_render_update = true;
-            std.log.info("first render-state update complete", .{});
-        }
+        if (!self.logged_first_render_update) self.logged_first_render_update = true;
         self.frame_count += 1;
     }
 
@@ -603,10 +600,8 @@ pub const App = struct {
             self.resizeAllPanes(runtime, pixel_width, pixel_height, !grid_unchanged, grid_unchanged);
         }
 
-        std.log.info(
-            "app: resized window={d}x{d} grid={d}x{d} cell={d}x{d} grid_unchanged={} size_unchanged={}",
-            .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px, grid_unchanged, size_unchanged },
-        );
+        _ = size_unchanged;
+        std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
     }
 
     pub fn requestResize(self: *App, pixel_width: u32, pixel_height: u32) void {
@@ -1306,9 +1301,7 @@ pub const App = struct {
     fn flushPendingResize(self: *App) void {
         if (!self.pending_resize) return;
         self.pending_resize = false;
-        std.log.info("flushPendingResize: {d}x{d}", .{ self.pending_width, self.pending_height });
         self.resize(self.pending_width, self.pending_height);
-        std.log.info("flushPendingResize: done", .{});
     }
 
     fn flushPendingLayoutResize(self: *App) void {

@@ -765,8 +765,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
 
-    app.dumpSnapshot(g_frame_index, "pre-render");
-
     const fb = framebufferSize();
     const width = fb.width;
     const height = fb.height;
@@ -1553,7 +1551,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     c.sg_end_pass();
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
-    app.dumpSnapshot(g_frame_index, "post-render");
     sleepForFrameCap(app, frame_start_ns, after_commit_ns);
 
     // ── Phase timing accumulation (logged every ~2 s) ─────────────────────
@@ -1858,10 +1855,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
             c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
             c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-            c.SAPP_EVENTTYPE_ICONIFIED => {
-                std.log.info("sokol iconified", .{});
-                @atomicStore(bool, &g_window_iconified, true, .release);
-            },
+            c.SAPP_EVENTTYPE_ICONIFIED => @atomicStore(bool, &g_window_iconified, true, .release),
             c.SAPP_EVENTTYPE_RESTORED => {
                 @atomicStore(bool, &g_window_iconified, false, .release);
                 @atomicStore(bool, &g_restore_pending, true, .release);
@@ -1889,10 +1883,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             .mods = ghosttyMods(event.modifiers),
         } }),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-        c.SAPP_EVENTTYPE_ICONIFIED => {
-            std.log.info("sokol iconified", .{});
-            @atomicStore(bool, &g_window_iconified, true, .release);
-        },
+        c.SAPP_EVENTTYPE_ICONIFIED => @atomicStore(bool, &g_window_iconified, true, .release),
         c.SAPP_EVENTTYPE_RESTORED => {
             @atomicStore(bool, &g_window_iconified, false, .release);
             @atomicStore(bool, &g_restore_pending, true, .release);
@@ -2120,15 +2111,10 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
 fn handleResize(app: *App, event: c.sapp_event) void {
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
     if (g_ignore_resize_frames > 0 and (event.framebuffer_width < 256 or event.framebuffer_height < 128)) {
-        std.log.info(
-            "handleResize: ignoring transient restore resize fb={d}x{d} win={d:.1}x{d:.1} frames_left={d}",
-            .{ event.framebuffer_width, event.framebuffer_height, event.window_width, event.window_height, g_ignore_resize_frames },
-        );
         return;
     }
     var fb_width = event.framebuffer_width;
     var fb_height = event.framebuffer_height;
-    var used_client_rect = false;
 
     if (builtin.os.tag == .windows) {
         const hwnd_raw = c.sapp_win32_get_hwnd() orelse return;
@@ -2143,17 +2129,12 @@ fn handleResize(app: *App, event: c.sapp_event) void {
                 if (client_w > 0 and client_h > 0) {
                     fb_width = client_w;
                     fb_height = client_h;
-                    used_client_rect = true;
                 }
             }
         }
     }
 
     if (fb_width <= 0 or fb_height <= 0) return;
-    std.log.info(
-        "handleResize: event_fb={d}x{d} event_win={d:.1}x{d:.1} chosen_fb={d}x{d} used_client_rect={}",
-        .{ event.framebuffer_width, event.framebuffer_height, event.window_width, event.window_height, fb_width, fb_height, used_client_rect },
-    );
     const pixel_size = windowSizeToPixels(@floatFromInt(fb_width), @floatFromInt(fb_height));
     app.requestResize(pixel_size.width, pixel_size.height);
 }
