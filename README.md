@@ -1,4 +1,4 @@
-# Hollow
+# Hollow Term
 
 <div align="center">
     <img src="assets/banner.png" alt="Hollow demo" width="600"/>
@@ -131,8 +131,10 @@ hollow.set_config({
     hyperlinks = {
         enabled = true,
         shift_click_only = true,
+        match_www = true,
         prefixes = "https:// http:// file:// ftp:// mailto:",
         delimiters = " \t\r\n\"'<>[]{}|\\^`",
+        trim_leading = "([<{'\"",
         trim_trailing = ".,;:!?)]}",
     },
     window_title = "hollow",
@@ -141,7 +143,8 @@ hollow.set_config({
 
 Shift-click hyperlink opening:
 
-- Hollow detects URLs in visible terminal rows using the configurable `hyperlinks.prefixes`, `hyperlinks.delimiters`, and `hyperlinks.trim_trailing` rules.
+- Hollow detects URLs in visible terminal rows using the configurable `hyperlinks.prefixes`, `hyperlinks.delimiters`, `hyperlinks.trim_leading`, and `hyperlinks.trim_trailing` rules.
+- `hyperlinks.match_www = true` also treats bare `www.example.com` style text as a link and opens it with an implicit `https://` prefix.
 - With `hyperlinks.shift_click_only = true`, hold `Shift` and left-click a URL to open it in the system browser.
 
 Available helpers:

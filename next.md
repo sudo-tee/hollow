@@ -24,6 +24,7 @@
 - ~Minimizing and restoring the windows clears the shell output. It should be possible to minimize and restore the window without losing the shell output.~
 - ~Sometimes when an application is closed the terminal gets into a weird and won't display new output until I resize the window or hit a key. The best example is using the neovim :restart command. I wold still see last nvim frame, until i hit a key or resize the window, then I would see the nvim dashboard~
 - Sometimes the last line of the terminal gets cut off.
+- Idle performance is not great, the terminal sits at around 2% cpu usage when idle. Most other terminal emulators are around 0.5% or less. There is already a framerate cap in place.
 
 ## Fonts
 
@@ -57,10 +58,15 @@
 - ~Add support for kitty keyboard protocol (https://sw.kovidgoyal.net/kitty/keyboard-protocol/) to enable features like:~
   ~- Support for advanced key combinations and modifiers (e.g., Ctrl+Shift+Arrow keys, Alt+Tab, etc.)~
   ~- Support for custom keybindings and macros~
-- Add text selection support
-- Add copy/paste support
+  ~- Add text selection support~
+  ~- Add copy/paste support and osc52 clipboard integration~
 - Add scrollback buffer support (kitty scrollback)
-- Add padding configuration for the terminal content (e.g., padding between the text and the window borders).
+  - ~Add support for scrollwheel scrolling to navigate through the scrollback buffer.~
+  - ~Add a scrollbar UI to indicate the current position in the scrollback buffer and allow for clicking and dragging to navigate, be sure to implement.~
+  - ~Add support for customizing the scollbar appearance(size, colors) and behavior and a config to disable it entirely through the Lua API.$
+  - ~add keybindings for scrolling through the scrollback buffer (e.g., Shift+PageUp/Down, Ctrl+Shift+Up/Down, etc.)~
+- ~Add padding configuration for the terminal content (e.g., padding between the text and the window borders).~
+- add support for hyperlinking (e.g., automatically detect URLs and allow users to shift click on them to open in a web browser). This is a common feature in modern terminal emulators that enhances the user experience by making it easier to interact with links directly from the terminal.
 
 ## Windowing
 

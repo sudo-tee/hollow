@@ -47,6 +47,15 @@ const win32 = if (builtin.os.tag == .windows) struct {
     pub extern "kernel32" fn GetLocalTime(
         lpSystemTime: *SYSTEMTIME,
     ) callconv(cc) void;
+
+    pub extern "shell32" fn ShellExecuteW(
+        hwnd: ?*anyopaque,
+        lpOperation: ?[*:0]const u16,
+        lpFile: ?[*:0]const u16,
+        lpParameters: ?[*:0]const u16,
+        lpDirectory: ?[*:0]const u16,
+        nShowCmd: c_int,
+    ) callconv(cc) isize;
 } else struct {};
 
 /// POSIX-specific C library types and extern functions.
@@ -166,6 +175,35 @@ pub fn getSystemMetrics(allocator: std.mem.Allocator) !SystemMetrics {
         .linux => getSystemMetricsLinux(),
         .macos => getSystemMetricsMacos(),
     };
+}
+
+pub fn openExternal(target: []const u8) !void {
+    return switch (comptime current()) {
+        .windows => openExternalWindows(target),
+        .linux => openExternalPosix(target, &.{"xdg-open"}),
+        .macos => openExternalPosix(target, &.{"open"}),
+    };
+}
+
+fn openExternalWindows(target: []const u8) !void {
+    const wide_target = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, target);
+    defer std.heap.page_allocator.free(wide_target);
+    const open_w = std.unicode.utf8ToUtf16LeStringLiteral("open");
+    const result = win32.ShellExecuteW(null, open_w, wide_target.ptr, null, null, 1);
+    if (@as(usize, @bitCast(result)) <= 32) return error.OpenExternalFailed;
+}
+
+fn openExternalPosix(target: []const u8, argv: []const []const u8) !void {
+    var child_args = std.ArrayList([]const u8).init(std.heap.page_allocator);
+    defer child_args.deinit();
+    try child_args.appendSlice(argv);
+    try child_args.append(target);
+
+    var child = std.process.Child.init(child_args.items, std.heap.page_allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
 }
 
 fn getSystemMetricsWindows(allocator: std.mem.Allocator) !SystemMetrics {

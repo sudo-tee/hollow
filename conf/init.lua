@@ -122,6 +122,15 @@ g.set_config({
 		thumb_active = "#9fb8e8",
 		border = "#2d3140",
 	},
+	hyperlinks = {
+		enabled = true,
+		shift_click_only = true,
+		match_www = true,
+		prefixes = "https:// http:// file:// ftp:// mailto:",
+		delimiters = " \t\r\n\"'<>[]{}|\\^`",
+		trim_leading = "([<{'\"",
+		trim_trailing = ".,;:!?)]}",
+	},
 })
 
 hollow.workspace.set_name("default")

@@ -824,6 +824,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "hyperlinks") and value_type == .table) {
+            const hyperlinks_idx = absoluteIndex(api, state, -1);
+            applyHyperlinksTable(ctx.cfg, api, state, hyperlinks_idx) catch |err| std.log.err("config hyperlinks field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
             const ansi_idx = absoluteIndex(api, state, -1);
             applyPaletteArray(ctx.cfg, api, state, ansi_idx, 0, 8) catch |err| std.log.err("config ansi field failed: {s}", .{@errorName(err)});
@@ -879,6 +885,10 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "font_bold_italic_path")) return cfg.setFontBoldItalic(value);
     if (std.mem.eql(u8, key, "font_smoothing")) return cfg.setFontSmoothing(value);
     if (std.mem.eql(u8, key, "font_hinting")) return cfg.setFontHinting(value);
+    if (std.mem.eql(u8, key, "hyperlink_prefixes")) return cfg.setHyperlinkPrefixes(value);
+    if (std.mem.eql(u8, key, "hyperlink_delimiters")) return cfg.setHyperlinkDelimiters(value);
+    if (std.mem.eql(u8, key, "hyperlink_trim_trailing")) return cfg.setHyperlinkTrimTrailing(value);
+    if (std.mem.eql(u8, key, "hyperlink_trim_leading")) return cfg.setHyperlinkTrimLeading(value);
 }
 
 fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
@@ -1050,6 +1060,60 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     if (std.mem.eql(u8, key, "scrollbar")) {
         cfg.scrollbar.enabled = value;
         return;
+    }
+    if (std.mem.eql(u8, key, "hyperlinks")) {
+        cfg.hyperlinks.enabled = value;
+        return;
+    }
+}
+
+fn applyHyperlinksTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (value_type == .boolean) {
+            const value = api.to_boolean(state, -1) != 0;
+            if (std.mem.eql(u8, key, "enabled")) {
+                cfg.hyperlinks.enabled = value;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "shift_click_only")) {
+                cfg.hyperlinks.shift_click_only = value;
+                continue;
+            }
+            if (std.mem.eql(u8, key, "match_www")) {
+                cfg.hyperlinks.match_www = value;
+                continue;
+            }
+        }
+
+        if (value_type != .string) continue;
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const value = value_ptr[0..value_len];
+
+        if (std.mem.eql(u8, key, "prefixes")) {
+            try cfg.setHyperlinkPrefixes(value);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "delimiters")) {
+            try cfg.setHyperlinkDelimiters(value);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "trim_trailing")) {
+            try cfg.setHyperlinkTrimTrailing(value);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "trim_leading")) {
+            try cfg.setHyperlinkTrimLeading(value);
+            continue;
+        }
     }
 }
 

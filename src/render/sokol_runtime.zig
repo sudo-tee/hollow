@@ -173,6 +173,11 @@ var g_scrollbar_drag_pane: ?*Pane = null;
 var g_scrollbar_drag_metrics: ?App.ScrollbarMetrics = null;
 var g_scrollbar_drag_grab_y: f32 = 0.0;
 var g_scrollbar_hover_pane: ?*Pane = null;
+var g_hover_hyperlink: bool = false;
+var g_skip_mouse_release: ?ghostty.MouseButton = null;
+var g_skip_mouse_move_frames: u32 = 0;
+var g_block_left_mouse_until_up: bool = false;
+var g_block_all_mouse_until_up: bool = false;
 
 // Last-frame timing breakdown (ms) for the debug overlay — updated every frame.
 var g_last_frame_tick_ms: f32 = 0;
@@ -595,6 +600,11 @@ pub fn run(app: *App) !void {
     g_scrollbar_drag_metrics = null;
     g_scrollbar_drag_grab_y = 0.0;
     g_scrollbar_hover_pane = null;
+    g_hover_hyperlink = false;
+    g_skip_mouse_release = null;
+    g_skip_mouse_move_frames = 0;
+    g_block_left_mouse_until_up = false;
+    g_block_all_mouse_until_up = false;
     g_last_frame_time_ns = 0;
     g_last_perf_sample_ns = 0;
     g_perf_accum_frame_ns = 0;
@@ -901,6 +911,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     rt: *ghostty.Runtime,
                     cfg: *const Config,
                     selection_range: ?selection.Range,
+                    hovered_hyperlink: ?App.HoveredHyperlink,
                     pane: *Pane,
                     ox: f32,
                     oy: f32,
@@ -1065,6 +1076,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         &cache_entry.row_map_vals,
                         row_map_skip,
                         selection_range,
+                        hovered_hyperlink,
                         cache_entry.prev_cursor_row,
                     );
                     g_phase_accum_rows_rendered += rend.last_rows_rendered;
@@ -1132,7 +1144,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(leaf.pane), leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -1163,7 +1175,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(pane), pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -1204,6 +1216,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             false,
                             app.selectionRange(leaf.pane),
+                            app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
@@ -1237,6 +1250,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             false,
                             app.selectionRange(pane),
+                            app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
@@ -1319,6 +1333,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
                             app.selectionRange(pane),
+                            app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
                         // Accumulate direct-render diagnostics.
@@ -2054,6 +2069,35 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         g_mouse_button_down = button;
     }
 
+    if (g_block_all_mouse_until_up) {
+        c.sapp_consume_event();
+        if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            g_block_all_mouse_until_up = false;
+            g_block_left_mouse_until_up = false;
+            g_skip_mouse_release = null;
+            g_skip_mouse_move_frames = 0;
+            g_mouse_button_down = null;
+        }
+        return;
+    }
+
+    if (g_block_left_mouse_until_up and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        c.sapp_consume_event();
+        if (action == .release) {
+            g_block_left_mouse_until_up = false;
+            g_skip_mouse_release = null;
+            g_skip_mouse_move_frames = 0;
+            g_mouse_button_down = null;
+        }
+        return;
+    }
+
+    if (action == .release and button != null and g_skip_mouse_release == button.?) {
+        g_skip_mouse_release = null;
+        if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) g_mouse_button_down = null;
+        return;
+    }
+
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
         if (g_scrollbar_drag_pane != null) {
@@ -2122,6 +2166,24 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button press, check for a divider hit before forwarding to the terminal.
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        const mods = ghosttyMods(event.modifiers);
+        if (app.hitTestPane(event.mouse_x, event.mouse_y)) |_| {
+            const wants_shift_click_link = app.config.hyperlinks.enabled and
+                (!app.config.hyperlinks.shift_click_only or (mods & ghostty.Mods.shift) != 0);
+            if (wants_shift_click_link) {
+                if (app.hoveredHyperlinkAtPointer()) |hovered_link| {
+                    c.sapp_consume_event();
+                    g_block_all_mouse_until_up = true;
+                    g_block_left_mouse_until_up = true;
+                    g_skip_mouse_release = .left;
+                    g_skip_mouse_move_frames = 8;
+                    g_mouse_button_down = null;
+                    _ = app.enqueueMouse(.{ .open_hyperlink = .{ .pane = hovered_link.pane, .point = hovered_link.point } });
+                    return;
+                }
+            }
+        }
+
         if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |metrics| {
             g_scrollbar_hover_pane = metrics.pane;
             if (scrollbarHitThumb(metrics, event.mouse_x, event.mouse_y)) {
@@ -2204,11 +2266,27 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    if (g_block_all_mouse_until_up) {
+        c.sapp_consume_event();
+        return;
+    }
+
+    if (g_block_left_mouse_until_up) {
+        c.sapp_consume_event();
+        return;
+    }
+
+    if (g_skip_mouse_move_frames > 0) {
+        g_skip_mouse_move_frames -= 1;
+        return;
+    }
+
     if (g_scrollbar_drag_pane) |pane| {
         const metrics = if (app.scrollbarMetricsForPane(pane)) |m| m else blk: {
             g_scrollbar_drag_pane = null;
             g_scrollbar_drag_metrics = null;
             g_scrollbar_drag_grab_y = 0.0;
+            g_hover_hyperlink = false;
             break :blk null;
         };
         if (metrics) |scroll_metrics| {
@@ -2268,6 +2346,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
     if (top_bar_hit.in_top_bar) {
         g_scrollbar_hover_pane = null;
+        g_hover_hyperlink = false;
         // Restore default cursor when in tab bar.
         setTextSelectionCursor(.arrow);
         return;
@@ -2275,6 +2354,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
         g_scrollbar_hover_pane = scrollbar_hit.pane;
+        g_hover_hyperlink = false;
         if (builtin.os.tag == .windows) setTextSelectionCursor(.arrow);
         return;
     }
@@ -2290,9 +2370,12 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
         } else {
             if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
+                const hover_link = hyperlinkHoverActive(app, event.modifiers);
+                g_hover_hyperlink = hover_link;
                 const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
-                setTextSelectionCursor(if (wants_text_cursor) .ibeam else .arrow);
+                setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
             } else {
+                g_hover_hyperlink = false;
                 setTextSelectionCursor(.arrow);
             }
         }
@@ -2316,6 +2399,11 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
+    if (g_block_all_mouse_until_up) {
+        c.sapp_consume_event();
+        return;
+    }
+
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
     if (g_scrollbar_drag_pane != null) return;
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
@@ -2538,9 +2626,16 @@ fn selectionModifierActive(modifiers: u32) bool {
     return (mods & primary) != 0;
 }
 
+fn hyperlinkHoverActive(app: *App, modifiers: u32) bool {
+    _ = modifiers;
+    if (!app.config.hyperlinks.enabled) return false;
+    return app.hovered_hyperlink != null;
+}
+
 const SelectionCursor = enum {
     arrow,
     ibeam,
+    hand,
 };
 
 fn setTextSelectionCursor(cursor: SelectionCursor) void {
@@ -2548,6 +2643,7 @@ fn setTextSelectionCursor(cursor: SelectionCursor) void {
     const cursor_id: usize = switch (cursor) {
         .arrow => win32.IDC_ARROW,
         .ibeam => win32.IDC_IBEAM,
+        .hand => 32649,
     };
     _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
 }

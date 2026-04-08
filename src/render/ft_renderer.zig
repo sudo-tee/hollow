@@ -16,6 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
+const App = @import("../app.zig").App;
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
 const selection = @import("../selection.zig");
@@ -929,7 +930,7 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, std.math.maxInt(usize));
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -953,6 +954,7 @@ pub const FtRenderer = struct {
         is_focused: bool,
         force_full: bool,
         selection_range: ?selection.Range,
+        hovered_hyperlink: ?App.HoveredHyperlink,
         prev_cursor_row: usize,
     ) void {
         // Reset per-call diagnostic counters.
@@ -964,7 +966,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, prev_cursor_row);
+        self.queueInViewport(runtime, cfg, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, hovered_hyperlink, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -1004,6 +1006,7 @@ pub const FtRenderer = struct {
         row_map_vals: ?[]u64,
         row_map_skip: bool,
         selection_range: ?selection.Range,
+        hovered_hyperlink: ?App.HoveredHyperlink,
         /// Cursor row from the previous rendered frame; used to erase ghost
         /// cursor pixels when the cursor moves and ghostty doesn't mark the old
         /// row dirty.  Pass std.math.maxInt(usize) on first frame or force_full.
@@ -1051,6 +1054,7 @@ pub const FtRenderer = struct {
             row_map_vals,
             row_map_skip,
             selection_range,
+            hovered_hyperlink,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
         const t_queue_end = std.time.nanoTimestamp();
@@ -1165,6 +1169,7 @@ pub const FtRenderer = struct {
         row_map_vals: ?[]u64,
         row_map_skip: bool,
         selection_range: ?selection.Range,
+        hovered_hyperlink: ?App.HoveredHyperlink,
         /// Row index of the cursor in the *previous* frame.  When the cursor has
         /// moved away from this row ghostty may not mark it dirty (the text
         /// content is unchanged) so old block-cursor pixels linger.  Passing the
@@ -1721,10 +1726,31 @@ pub const FtRenderer = struct {
                     var dec_quads_open = false;
                     while (runtime.nextCell(row_cells.*)) : (dec_col_x += 1) {
                         const raw_cell2 = runtime.cellRaw(row_cells.*);
-                        if (runtime.cellStyleIdRaw(raw_cell2) == 0) continue;
-                        const s = runtime.cellStyle(row_cells.*) orelse continue;
+                        const hovered_link_visual = if (hovered_hyperlink) |hovered|
+                            hovered.row == row_y and dec_col_x >= hovered.start_col and dec_col_x < hovered.end_col
+                        else
+                            false;
+                        const style_id = runtime.cellStyleIdRaw(raw_cell2);
+                        if (style_id == 0 and !hovered_link_visual) continue;
+                        const s_opt = runtime.cellStyle(row_cells.*);
+                        if (style_id != 0 and s_opt == null) continue;
+                        const s = s_opt orelse ghostty.Style{
+                            .size = @sizeOf(ghostty.Style),
+                            .fg_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
+                            .bg_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
+                            .underline_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
+                            .bold = false,
+                            .italic = false,
+                            .faint = false,
+                            .blink = false,
+                            .inverse = false,
+                            .invisible = false,
+                            .strikethrough = false,
+                            .overline = false,
+                            .underline = 0,
+                        };
 
-                        const has_decoration = s.underline != 0 or s.strikethrough or s.overline;
+                        const has_decoration = s.underline != 0 or s.strikethrough or s.overline or hovered_link_visual;
                         if (!has_decoration) continue;
 
                         if (!dec_quads_open) {
@@ -1752,7 +1778,9 @@ pub const FtRenderer = struct {
                         const ul_thickness: f32 = 1.0;
                         const ul_y = py + self.cell_h - ul_thickness - 1.0;
 
-                        switch (s.underline) {
+                        const effective_underline: i32 = if (hovered_link_visual and s.underline == 0) 1 else s.underline;
+
+                        switch (effective_underline) {
                             0 => {}, // GHOSTTY_SGR_UNDERLINE_NONE
                             1 => { // SINGLE
                                 emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);

@@ -160,6 +160,10 @@ pub const PendingMouseEvent = union(enum) {
     scroll_active_page: isize,
     scroll_active_top,
     scroll_active_bottom,
+    open_hyperlink: struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+    },
 };
 
 var write_bridge: ?*App = null;
@@ -193,6 +197,20 @@ pub const App = struct {
         total: u64,
         offset: u64,
         len: u64,
+    };
+
+    pub const HoveredHyperlink = struct {
+        pane: *Pane,
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+    };
+
+    const HyperlinkToken = struct {
+        text: []const u8,
+        start_col: usize,
+        end_col: usize,
+        open_text: []const u8,
     };
 
     allocator: std.mem.Allocator,
@@ -231,11 +249,15 @@ pub const App = struct {
     /// Fractional scroll accumulator — prevents sub-pixel scroll events from
     /// being silently dropped by integer truncation on smooth / touchpad input.
     scroll_accum: f32 = 0,
+    pointer_x: f32 = 0,
+    pointer_y: f32 = 0,
+    pointer_mods: u32 = 0,
     selection_pane: ?*Pane = null,
     selection_anchor: ?selection.CellPoint = null,
     selection_head: ?selection.CellPoint = null,
     selection_drag_active: bool = false,
     selection_generation: u64 = 0,
+    hovered_hyperlink: ?HoveredHyperlink = null,
 
     // ── Pending mouse event queue ─────────────────────────────────────────────
     // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
@@ -300,12 +322,15 @@ pub const App = struct {
             switch (ev) {
                 .none => {},
                 .button => |b| {
+                    self.recordPointerState(b.x, b.y, b.mods);
                     _ = self.sendMouse(b.action, b.button, b.x, b.y, b.mods) catch false;
                 },
                 .motion => |m| {
+                    self.recordPointerState(m.x, m.y, m.mods);
                     _ = self.sendMouse(.motion, m.held_button, m.x, m.y, m.mods) catch false;
                 },
                 .scroll => |s| {
+                    self.recordPointerState(s.x, s.y, s.mods);
                     self.scrollFloat(s.x, s.y, s.raw_delta, s.mods);
                 },
                 .switch_tab => |idx| {
@@ -433,6 +458,9 @@ pub const App = struct {
                 },
                 .scroll_active_bottom => {
                     self.scrollActiveViewportBottom();
+                },
+                .open_hyperlink => |open_ev| {
+                    if (self.hasPane(open_ev.pane)) self.openHyperlinkAt(open_ev.pane, open_ev.point);
                 },
             }
 
@@ -612,9 +640,16 @@ pub const App = struct {
         self.flushPendingResize();
         self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
+        self.updateHoveredHyperlink();
         self.maybeRunStartupCommand();
         if (!self.logged_first_render_update) self.logged_first_render_update = true;
         self.frame_count += 1;
+    }
+
+    fn recordPointerState(self: *App, x: f32, y: f32, mods: u32) void {
+        self.pointer_x = x;
+        self.pointer_y = y;
+        self.pointer_mods = mods;
     }
 
     pub fn captureSnapshot(self: *App) ?FrameSnapshot {
@@ -909,6 +944,165 @@ pub const App = struct {
         }
         if (self.activePane() == pane) {
             return self.cellPointFromPaneLocal(pane, x, y);
+        }
+        return null;
+    }
+
+    fn rowTextForHyperlinks(self: *App, pane: *Pane, row: usize, out: []u8) ?[]const u8 {
+        const runtime = if (self.ghostty) |*rt| rt else return null;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+
+        var row_index: usize = 0;
+        while (runtime.nextRow(pane.row_iterator)) : (row_index += 1) {
+            if (row_index != row) continue;
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) return null;
+
+            var len: usize = 0;
+            while (runtime.nextCell(pane.row_cells)) {
+                appendCellText(runtime, pane.row_cells, out, &len);
+            }
+            return out[0..len];
+        }
+
+        return null;
+    }
+
+    fn hyperlinkTokenAt(self: *App, pane: *Pane, point: selection.CellPoint, out: []u8) ?HyperlinkToken {
+        const runtime = if (self.ghostty) |*rt| rt else return null;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+        var row_index: usize = 0;
+        while (runtime.nextRow(pane.row_iterator)) : (row_index += 1) {
+            if (row_index != point.row) continue;
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) return null;
+
+            var ascii_cols: [4096]u8 = [_]u8{0} ** 4096;
+            var col_count: usize = 0;
+            while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
+                var cell_buf: [16]u8 = [_]u8{0} ** 16;
+                var cell_len: usize = 0;
+                appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
+                ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
+            }
+
+            if (point.col >= col_count) return null;
+            const cfg = self.config.hyperlinks;
+            const delimiters = cfg.delimitersOrDefault();
+            const isDelimiter = struct {
+                fn call(delims: []const u8, ch: u8) bool {
+                    return ch == 0 or std.mem.indexOfScalar(u8, delims, ch) != null;
+                }
+            }.call;
+
+            if (isDelimiter(delimiters, ascii_cols[point.col])) return null;
+
+            var start = point.col;
+            while (start > 0 and !isDelimiter(delimiters, ascii_cols[start - 1])) : (start -= 1) {}
+
+            var end = point.col;
+            while (end < col_count and !isDelimiter(delimiters, ascii_cols[end])) : (end += 1) {}
+            if (end <= start) return null;
+
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) return null;
+            var len: usize = 0;
+            var col: usize = 0;
+            while (runtime.nextCell(pane.row_cells)) : (col += 1) {
+                if (col < start) continue;
+                if (col >= end) break;
+                appendCellText(runtime, pane.row_cells, out, &len);
+            }
+            if (len == 0) return null;
+
+            var token = out[0..len];
+            var token_start = start;
+            const trim_leading_chars = cfg.trimLeadingOrDefault();
+            while (token.len > 0 and std.mem.indexOfScalar(u8, trim_leading_chars, token[0]) != null) {
+                token = token[1..];
+                token_start += 1;
+            }
+            var trimmed_end = end;
+            const trim_chars = cfg.trimTrailingOrDefault();
+            while (token.len > 0 and std.mem.indexOfScalar(u8, trim_chars, token[token.len - 1]) != null) {
+                token = token[0 .. token.len - 1];
+                trimmed_end -= 1;
+            }
+            if (token.len == 0 or trimmed_end <= token_start) return null;
+
+            const open_text = if (cfg.match_www and std.mem.startsWith(u8, token, "www.")) blk: {
+                if (out.len < token.len + "https://".len) return null;
+                @memcpy(out[0..8], "https://");
+                @memcpy(out[8 .. 8 + token.len], token);
+                break :blk out[0 .. 8 + token.len];
+            } else token;
+
+            var prefixes = std.mem.tokenizeScalar(u8, cfg.prefixesOrDefault(), ' ');
+            while (prefixes.next()) |prefix| {
+                if (prefix.len == 0) continue;
+                if (std.mem.startsWith(u8, token, prefix)) return .{
+                    .text = token,
+                    .start_col = token_start,
+                    .end_col = trimmed_end,
+                    .open_text = open_text,
+                };
+            }
+
+            if (cfg.match_www and std.mem.startsWith(u8, token, "www.")) return .{
+                .text = token,
+                .start_col = token_start,
+                .end_col = trimmed_end,
+                .open_text = open_text,
+            };
+
+            return null;
+        }
+
+        return null;
+    }
+
+    fn openHyperlinkAt(self: *App, pane: *Pane, point: selection.CellPoint) void {
+        if (!self.config.hyperlinks.enabled) return;
+        var row_buf: [8192]u8 = undefined;
+        const token = self.hyperlinkTokenAt(pane, point, &row_buf) orelse return;
+        platform.openExternal(token.open_text) catch |err| {
+            std.log.err("open hyperlink failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn hasHyperlinkAt(self: *App, pane: *Pane, point: selection.CellPoint) bool {
+        var row_buf: [8192]u8 = undefined;
+        return self.hyperlinkTokenAt(pane, point, &row_buf) != null;
+    }
+
+    pub fn isHoveringHyperlink(self: *const App, pane: *const Pane, row: usize, col: usize) bool {
+        const hovered = self.hovered_hyperlink orelse return false;
+        return hovered.pane == pane and hovered.row == row and col >= hovered.start_col and col < hovered.end_col;
+    }
+
+    fn updateHoveredHyperlink(self: *App) void {
+        self.hovered_hyperlink = null;
+        if (!self.config.hyperlinks.enabled) return;
+        if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
+            const point = self.cellPointFromPaneLocal(hit.pane, hit.x, hit.y);
+            var row_buf: [8192]u8 = undefined;
+            const token = self.hyperlinkTokenAt(hit.pane, point, &row_buf) orelse return;
+            self.hovered_hyperlink = .{
+                .pane = hit.pane,
+                .row = point.row,
+                .start_col = token.start_col,
+                .end_col = token.end_col,
+            };
+        }
+    }
+
+    pub fn hoveredHyperlinkAtPointer(self: *App) ?struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+    } {
+        const hovered = self.hovered_hyperlink orelse return null;
+        if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
+            if (hit.pane != hovered.pane) return null;
+            const point = self.cellPointFromPaneLocal(hit.pane, hit.x, hit.y);
+            if (point.row != hovered.row or point.col < hovered.start_col or point.col >= hovered.end_col) return null;
+            return .{ .pane = hit.pane, .point = point };
         }
         return null;
     }

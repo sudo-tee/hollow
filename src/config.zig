@@ -152,6 +152,40 @@ pub const Config = struct {
         }
     };
 
+    pub const Hyperlinks = struct {
+        enabled: bool = true,
+        shift_click_only: bool = true,
+        match_www: bool = true,
+        prefixes: ?[]u8 = null,
+        delimiters: ?[]u8 = null,
+        trim_trailing: ?[]u8 = null,
+        trim_leading: ?[]u8 = null,
+
+        pub fn deinit(self: *Hyperlinks, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.prefixes);
+            freeOwned(allocator, &self.delimiters);
+            freeOwned(allocator, &self.trim_trailing);
+            freeOwned(allocator, &self.trim_leading);
+            self.* = .{};
+        }
+
+        pub fn prefixesOrDefault(self: Hyperlinks) []const u8 {
+            return self.prefixes orelse "https:// http:// file:// ftp:// mailto:";
+        }
+
+        pub fn delimitersOrDefault(self: Hyperlinks) []const u8 {
+            return self.delimiters orelse " \t\r\n\"'<>[]{}|\\^`";
+        }
+
+        pub fn trimTrailingOrDefault(self: Hyperlinks) []const u8 {
+            return self.trim_trailing orelse ".,;:!?)]}";
+        }
+
+        pub fn trimLeadingOrDefault(self: Hyperlinks) []const u8 {
+            return self.trim_leading orelse "([{";
+        }
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
@@ -169,6 +203,7 @@ pub const Config = struct {
     scrollback: usize = 10_000_000,
     terminal_padding: TerminalPadding = .{},
     scrollbar: Scrollbar = .{},
+    hyperlinks: Hyperlinks = .{},
     lib_dir: ?[]u8 = null,
     top_bar_show: bool = true,
     window_titlebar_show: bool = true,
@@ -207,6 +242,7 @@ pub const Config = struct {
         self.fonts.deinit(self.allocator);
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
+        self.hyperlinks.deinit(self.allocator);
     }
 
     pub fn shellOrDefault(self: Config) []const u8 {
@@ -287,6 +323,22 @@ pub const Config = struct {
 
     pub fn addFontFallback(self: *Config, value: []const u8) !void {
         try self.fonts.fallback_paths.append(self.allocator, try self.allocator.dupe(u8, value));
+    }
+
+    pub fn setHyperlinkPrefixes(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.hyperlinks.prefixes, value);
+    }
+
+    pub fn setHyperlinkDelimiters(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.hyperlinks.delimiters, value);
+    }
+
+    pub fn setHyperlinkTrimTrailing(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.hyperlinks.trim_trailing, value);
+    }
+
+    pub fn setHyperlinkTrimLeading(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.hyperlinks.trim_leading, value);
     }
 
     pub fn setFontSmoothing(self: *Config, value: []const u8) !void {
