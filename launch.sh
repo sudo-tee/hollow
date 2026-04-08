@@ -69,24 +69,9 @@ copy_if_exists() {
 	fi
 }
 
-copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
-copy_if_exists "$BIN_DIR/ghostty-vt.dll" "$SCRIPT_DIR/ghostty-vt.dll"
-copy_if_exists "$BIN_DIR/lua51.dll" "$SCRIPT_DIR/lua51.dll"
-copy_if_exists "$SCRIPT_DIR/lua51.dll" "$BIN_DIR/lua51.dll"
-
-for _dll in libfreetype-6.dll libharfbuzz-0.dll libgcc_s_seh-1.dll libstdc++-6.dll \
-	libwinpthread-1.dll \
-	libglib-2.0-0.dll libbrotlidec.dll libbrotlicommon.dll \
-	libbz2-1.dll libpng16-16.dll zlib1.dll libpcre2-8-0.dll \
-	libiconv-2.dll libintl-8.dll; do
-	copy_if_exists "$BIN_DIR/$_dll" "$SCRIPT_DIR/$_dll"
-done
-
-if [[ ! -f "$SCRIPT_DIR/lua51.dll" ]]; then
-	echo "[launch] warning: lua51.dll missing from project root"
-fi
-
 if [[ $RUN -eq 1 ]]; then
+	copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
+
 	RUN_ARGS=()
 	if [[ $SAFE_RENDER -eq 1 ]]; then
 		echo "[launch] renderer safe mode enabled"

@@ -1,13 +1,15 @@
 # Zig build artifacts
 .zig-cache/
 .zig-local-cache/
+.zig-global-cache/
 zig-out/
+release/
 
 # Build outputs
 *.exe
 *.exe.old
 
-# Runtime DLLs (fetch via MSYS2: see README)
+# Runtime DLLs
 *.dll
 
 # Scratch / debug images and logs
@@ -26,5 +28,9 @@ started.txt
 main_test.lua
 test_fallback.lua
 
-# ghostty full source tree (237MB — not committed)
-third_party/ghostty/
+# Vendored dependencies may contain local Zig caches
+vendor/.zig-cache/
+
+# Local archive/checksum outputs
+*.zip
+*.sha256

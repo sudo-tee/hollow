@@ -4,7 +4,7 @@
     <img src="assets/banner.png" alt="Hollow demo" width="600"/>
 </div>
 
-Hollow is a terminal emulator built in Zig with a LuaJIT scripting layer and `libghostty-vt` for VT parsing and rendering. The project is currently in early development, but the goal is to create a fast, hackable, and cross-platform terminal with a Windows-first approach.
+Hollow is a terminal emulator built in Zig with a LuaJIT scripting layer and Ghostty's VT core for VT parsing and rendering. The project is currently in early development, but the goal is to create a fast, hackable, and cross-platform terminal with a Windows-first approach.
 
 This project is built out of self interest and a desire to create a wezterm-like terminal emulator that is hackable and extensible through Lua scripting.
 
@@ -16,14 +16,14 @@ This project was heavily prototyped with the help of AI. The current state of th
 
 - `Zig` for the core runtime, platform layer, PTY layer, and terminal orchestration
 - `LuaJIT` as the hackable host scripting layer
-- `libghostty-vt` as the VT/parser/render-state engine
+- Ghostty's VT core as the VT/parser/render-state engine
 - renderer seam shaped for `sokol` now and a future `webgpu` backend later
 - Windows treated as a first-class target instead of a fallback port
 
 ## Why the name Hollow?
 
 - The terminal is like a hollow shell that you can fill with whatever you want. It's a place where you can run your commands, scripts, and applications. It's also a nod to the idea of a "hollow" project that is meant to be filled in and built upon by the community.
-- The the concept of "hollowness" is deeply connected to spirits, ghosts, and the supernatural, often appearing as a physical or spiritual trait of restless entities. This ties into the use of `libghostty-vt` as the VT parsing and rendering engine, which is a key component of the terminal's architecture.
+- The concept of "hollowness" is deeply connected to spirits, ghosts, and the supernatural, often appearing as a physical or spiritual trait of restless entities. This ties into the use of Ghostty's VT core as the parsing and rendering engine, which is a key component of the terminal's architecture.
 - In the theme of spirits, you can also see Hollow as a spiritual successor to popular "WezTerm".
 
 ## Current layout
@@ -45,9 +45,9 @@ docs/rewrite-architecture.md
 ## What works today
 
 - native Zig build entry point via `./launch.sh`
-- dynamic LuaJIT loading and a tiny `hollow` Lua API
+- statically linked LuaJIT and a tiny `hollow` Lua API
 - config bootstrap from `conf/init.lua` or `~/.config/hollow/init.lua`
-- dynamic `libghostty-vt` loading and terminal/render-state bootstrap
+- statically linked Ghostty terminal/render-state bootstrap
 - Windows-first `sokol_app` frontend path with a native event loop
 - ConPTY backend for Windows and `forkpty` backend for Unix
 - full-grid terminal rendering from Ghostty row/cell state into a native window
@@ -63,22 +63,32 @@ docs/rewrite-architecture.md
 
 The Windows executable is emitted at `zig-out/bin/hollow-native.exe`.
 
-For Windows, place a LuaJIT runtime DLL next to the exe as one of:
+LuaJIT is embedded via Zig dependency management and does not require a separate runtime DLL.
 
-- `zig-out/bin/luajit-5.1.dll`
-- `zig-out/bin/luajit.dll`
-- `zig-out/bin/lua51.dll`
+## Releases
 
-The app already installs `zig-out/bin/ghostty-vt.dll` during a Windows build.
+- tagged pushes like `v0.1.0` trigger the GitHub Actions release workflow in `.github/workflows/release.yml`
+- the workflow currently builds a Windows `x86_64` release bundle and uploads a zip containing:
+  - `hollow-native.exe`
+  - `conf/init.lua`
+  - the RecMono font files referenced by the default config
+- local release verification uses `./launch.sh --build-only`
 
-The runtime now also searches relative to the executable directory, not just the current working directory.
+## Dependencies
+
+- `ghostty` is fetched as a pinned remote Zig dependency in `build.zig.zon`
+- `sokol` stays in `third_party/sokol` because Hollow carries local patches there
+- font dependencies are built by `vendor/ghostty-fontdeps`, which fetches pinned upstream tarballs in the same URL/hash style Ghostty uses
+- LuaJIT is embedded through a patched local `vendor/zluajit` + `vendor/luajit-upstream` setup for the current Windows cross-build path
+
+See `vendor/README.md` for the rationale behind the vendored pieces.
 
 ## Windows-first runtime
 
 - `src/render/sokol_runtime.zig` runs the app through `sokol_app`
 - Windows uses `D3D11` via Sokol; Linux keeps a fallback GL path for now
 - `src/pty/pty_windows.zig` uses ConPTY for the shell bridge
-- terminal content comes from `libghostty-vt` row/cell iteration, then gets painted into the Sokol window
+- terminal content comes from the embedded Ghostty VT core row/cell iteration, then gets painted into the Sokol window
 
 Current renderer status:
 
@@ -95,7 +105,6 @@ The new Lua host API is intentionally tiny right now:
 hollow.set_config({
     backend = "sokol",
     shell = "pwsh.exe",
-    ghostty_library = "ghostty-vt.dll",
     padding = 12,
     fonts = {
         size = 14.5,
@@ -178,7 +187,7 @@ hollow.keymap.set("ctrl+shift+end", "scrollback_bottom")
 
 ## Next steps
 
-- harden ConPTY process lifecycle and Windows packaging of LuaJIT + `libghostty-vt`
+- harden ConPTY process lifecycle and release packaging
 - add text selection and copy/paste
 - add workspaces on top of the existing tabs + splits model
 - expand Lua from config-only into events, actions, and layout control

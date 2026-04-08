@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Build Windows release
+        run: ./launch.sh --build-only
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
+      - name: Stage release bundle
+        run: |
+          mkdir -p release/hollow/conf release/hollow/fonts
+          cp zig-out/bin/hollow-native.exe release/hollow/
+          cp conf/init.lua release/hollow/conf/
+          cp fonts/RecMonoDuotone-Regular-1.085.ttf release/hollow/fonts/
+          cp fonts/RecMonoLinear-Bold-1.085.ttf release/hollow/fonts/
+          cp fonts/RecMonoDuotone-Italic-1.085.ttf release/hollow/fonts/
+          cp fonts/RecMonoDuotone-BoldItalic-1.085.ttf release/hollow/fonts/
+
+      - name: Archive release bundle
+        run: |
+          cd release
+          zip -r hollow-windows-x86_64.zip hollow
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hollow-windows-x86_64
+          path: release/hollow-windows-x86_64.zip
+
+      - name: Publish GitHub release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/hollow-windows-x86_64.zip

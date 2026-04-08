@@ -1,0 +1,15 @@
+.{
+    .name = .hollow,
+    .version = "0.0.0",
+    .fingerprint = 0x523e250065f12856,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .ghostty = .{
+            .url = "git+https://github.com/ghostty-org/ghostty.git#853183e911b70ff7b61057f52fc7b47ea4934238",
+            .hash = "ghostty-1.3.2-dev-5UdBC7VOBgVv0iA-qLRtBnau_zLIv7iGGLdnEiW6fUYU",
+        },
+        .fontdeps = .{ .path = "vendor/ghostty-fontdeps" },
+        .zluajit = .{ .path = "vendor/zluajit" },
+    },
+    .paths = .{""},
+}

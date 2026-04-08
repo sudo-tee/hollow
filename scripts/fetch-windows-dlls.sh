@@ -19,59 +19,12 @@ MSYS_MIRROR="https://mirror.msys2.org/msys/x86_64"
 
 echo "[dll-fetch] destination: $DEST_DIR"
 
-# DLLs we need and their package mappings
+# DLLs we need and their package mappings.
+# All current non-system runtime deps are statically linked, so this stays empty.
 declare -A DLL_TO_PKG
 declare -A PKG_TO_MIRROR
 
 # Map DLLs to their packages and mirrors
-# Note: Use mingw-w64-x86_64-lua51 for Lua 5.1 (the luajit package provides lua51.dll)
-DLL_TO_PKG["lua51.dll"]="mingw-w64-x86_64-lua51"
-PKG_TO_MIRROR["mingw-w64-x86_64-lua51"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libfreetype-6.dll"]="mingw-w64-x86_64-freetype"
-PKG_TO_MIRROR["mingw-w64-x86_64-freetype"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libharfbuzz-0.dll"]="mingw-w64-x86_64-harfbuzz"
-PKG_TO_MIRROR["mingw-w64-x86_64-harfbuzz"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libgraphite2.dll"]="mingw-w64-x86_64-graphite2"
-PKG_TO_MIRROR["mingw-w64-x86_64-graphite2"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libgcc_s_seh-1.dll"]="mingw-w64-x86_64-gcc-libs"
-PKG_TO_MIRROR["mingw-w64-x86_64-gcc-libs"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libstdc++-6.dll"]="mingw-w64-x86_64-gcc-libs"
-PKG_TO_MIRROR["mingw-w64-x86_64-gcc-libs"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libwinpthread-1.dll"]="mingw-w64-x86_64-libwinpthread"
-PKG_TO_MIRROR["mingw-w64-x86_64-libwinpthread"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libglib-2.0-0.dll"]="mingw-w64-x86_64-glib2"
-PKG_TO_MIRROR["mingw-w64-x86_64-glib2"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libbrotlidec.dll"]="mingw-w64-x86_64-brotli"
-PKG_TO_MIRROR["mingw-w64-x86_64-brotli"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libbrotlicommon.dll"]="mingw-w64-x86_64-brotli"
-PKG_TO_MIRROR["mingw-w64-x86_64-brotli"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libbz2-1.dll"]="mingw-w64-x86_64-bzip2"
-PKG_TO_MIRROR["mingw-w64-x86_64-bzip2"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libpng16-16.dll"]="mingw-w64-x86_64-libpng"
-PKG_TO_MIRROR["mingw-w64-x86_64-libpng"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["zlib1.dll"]="mingw-w64-x86_64-zlib"
-PKG_TO_MIRROR["mingw-w64-x86_64-zlib"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libpcre2-8-0.dll"]="mingw-w64-x86_64-pcre2"
-PKG_TO_MIRROR["mingw-w64-x86_64-pcre2"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libiconv-2.dll"]="mingw-w64-x86_64-libiconv"
-PKG_TO_MIRROR["mingw-w64-x86_64-libiconv"]="$MINGW_MIRROR"
-
-DLL_TO_PKG["libintl-8.dll"]="mingw-w64-x86_64-gettext"
-PKG_TO_MIRROR["mingw-w64-x86_64-gettext"]="$MINGW_MIRROR"
 
 # Returns 0 if all DLLs are present
 all_dlls_present() {

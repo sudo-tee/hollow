@@ -1,142 +1,79 @@
 # Windows & WSL Setup Guide
 
-## Prerequisites
+## Current runtime model
 
-### 1. Love2D for Windows
-Download the **64-bit** installer or zip from https://love2d.org  
-Tested on Love2D 11.4 and 11.5.
+Hollow now embeds Ghostty, FreeType, HarfBuzz, Zlib, and LuaJIT directly into
+`hollow-native.exe`.
 
-### 2. libghostty-VT.dll
-Build from the ghostty source tree on a Linux/WSL machine, then copy the DLL across:
+That means:
 
-```bash
-# Inside WSL or a Linux VM that has Zig installed
-cd ghostty
-zig build libghostty -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu
-# Output: zig-out/lib/libghostty-VT.dll
-```
+- no `ghostty-vt.dll`
+- no `lua51.dll`
+- no FreeType/HarfBuzz dependency DLL set
 
-Copy `libghostty-VT.dll` **next to `love.exe`** (or next to your `.love` file if
-you've packaged it). That location is what `love.filesystem.getSourceBaseDirectory()`
-returns on Windows, which is where the loader searches first.
+For normal development, the only file you need to run is:
 
-### 3. ConPTY requirement
-ConPTY is built into Windows 10 **build 1809** (October 2018 Update) and later,
-including Windows 11. If you're on an older build, upgrade or use WSL2.
+- `zig-out/bin/hollow-native.exe`
 
----
+The default project config is resolved from:
 
-## Running modes
+1. `%APPDATA%\hollow\init.lua` on Windows when present
+2. `conf/init.lua` in the project root during local development
+3. `conf/init.lua` next to the executable for packaged releases
 
-### Mode A – Native Windows shell (PowerShell / cmd)
+## WSL shell usage
+
+The default Windows config uses:
 
 ```lua
--- conf/init.lua
-hollow.set_config({ shell = "pwsh.exe" })        -- PowerShell 7
--- hollow.set_config({ shell = "powershell.exe" }) -- PowerShell 5
+hollow.set_config({ shell = "wsl.exe" })
+```
+
+This is the recommended development shell on Windows if you primarily work out
+of WSL.
+
+Examples:
+
+```lua
+hollow.set_config({ shell = "wsl.exe" })
+hollow.set_config({ shell = "wsl.exe --distribution Ubuntu" })
+hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
+```
+
+## Native Windows shell usage
+
+You can also run directly with PowerShell or cmd:
+
+```lua
+hollow.set_config({ shell = "pwsh.exe" })
+-- hollow.set_config({ shell = "powershell.exe" })
 -- hollow.set_config({ shell = "cmd.exe" })
 ```
 
-Launch:
-```bat
-love.exe C:\path\to\ghostty-love
-```
-
-### Mode B – WSL shell (recommended for dev work)
-
-Install WSL2 first (run in an **elevated** PowerShell):
-```powershell
-wsl --install          # installs Ubuntu by default
-# or
-wsl --install -d Debian
-```
-
-Then in your config:
-```lua
--- conf/init.lua
-
--- Default distro, default shell:
-hollow.set_config({ shell = "wsl.exe" })
-
--- Specific distro + shell:
-hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
-
--- Or via the API helper:
-hollow.on("app:ready", function()
-    -- list distros at startup
-    for _, d in ipairs(hollow.wsl.distros()) do
-        hollow.log("distro:", d)
-    end
-end)
-```
-
-The terminal will open directly into your WSL home directory with full colour,
-resize, and mouse support.
-
-### Mode C – Run Love2D *inside* WSL2 (Linux build)
-
-If you have an X server (VcXsrv, WSLg on Windows 11) you can run the Linux
-build of Love2D inside WSL2. The POSIX PTY path is used automatically.
+## Build from WSL
 
 ```bash
-# Inside WSL2
-sudo apt install love
-cd /mnt/c/Users/you/ghostty-love
-love .
+./launch.sh --build-only
 ```
 
-WSL2 + WSLg on Windows 11 gives you GPU-accelerated OpenGL with zero extra setup.
+The default target is `x86_64-windows-gnu`.
 
----
+## Release packaging
 
-## Keyboard / Terminal notes
+For a packaged Windows release, include at least:
 
-**ConPTY quirks to be aware of:**
+- `hollow-native.exe`
+- `conf/init.lua`
+- the `fonts/` directory if your config references bundled font files by path
 
-- ConPTY translates Win32 VK codes into VT sequences internally. The LuaJIT key
-  encoder in `keymap.lua` only needs to produce VT sequences (same as Linux).
-- `Ctrl+C`, `Ctrl+Z`, `Ctrl+D` work correctly through ConPTY.
-- Mouse reporting (`SET_ANY_EVENT_MOUSE`, `SGR` mode) is forwarded by ConPTY to
-  the child process. The Love2D mouse handler in `app.lua` converts pixel coords
-  to cell coords before sending.
-
-**WSL-specific:**
-
-- ConPTY + `wsl.exe` correctly sets `TERM=xterm-256color` inside the WSL shell.
-- `COLORTERM=truecolor` is **not** set automatically; add it to your `.bashrc` /
-  `.zshrc` if needed by your prompt or tools.
-- Resize events propagate through `wsl.exe` to the inner PTY, so tmux / Neovim
-  resize correctly when you drag the window.
-
----
-
-## Packaging as a .love / .exe
-
-```bat
-rem Create the .love archive
-cd ghostty-love
-powershell Compress-Archive -Path * -DestinationPath ..\ghostty-love.zip
-rename ..\ghostty-love.zip ..\ghostty-love.love
-
-rem Fuse into a standalone exe
-copy /b love.exe+ghostty-love.love ghostty-love.exe
-
-rem Copy the DLL alongside
-copy libghostty-VT.dll .
-```
-
-Distribute `ghostty-love.exe` + `libghostty-VT.dll` together (and any Love2D
-runtime DLLs if you're not assuming Love2D is installed).
-
----
+If you want a self-contained portable release, ship the fonts referenced by
+`conf/init.lua` together with the executable.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `Could not load libghostty-VT` | Put `libghostty-VT.dll` next to `love.exe` |
-| `CreatePseudoConsole` error | Windows build < 1809; upgrade or use WSL2 |
-| `wsl.exe not found` | Run `wsl --install` in an elevated PowerShell |
-| Blank terminal on WSL | Check `wsl --status`; ensure default distro is set |
-| Garbled Unicode | Set `LANG=en_US.UTF-8` in your WSL shell's `.profile` |
-| No colour in PowerShell | Add `$env:TERM="xterm-256color"` to your `$PROFILE` |
+| `wsl.exe not found` | Run `wsl --install` from elevated PowerShell |
+| `CreatePseudoConsole` error | Upgrade to Windows 10 1809+ or Windows 11 |
+| config not loading in packaged build | Put `conf/init.lua` next to the exe |
+| missing glyphs | Ship the configured fonts directory with the release |

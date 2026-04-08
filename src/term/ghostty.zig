@@ -1,5 +1,4 @@
 const std = @import("std");
-const platform = @import("../platform.zig");
 
 pub const success = 0;
 
@@ -123,8 +122,8 @@ pub const MouseEncoderSize = extern struct {
     cell_height: u32,
     padding_top: u32,
     padding_bottom: u32,
-    padding_left: u32,
     padding_right: u32,
+    padding_left: u32,
 };
 
 pub const TerminalOpt = enum(u32) {
@@ -234,9 +233,11 @@ pub const CellContentTag = enum(u32) {
 };
 
 pub const MouseEncOpt = enum(u32) {
-    size = 0,
-    any_button_pressed = 1,
-    track_last_cell = 2,
+    event = 0,
+    format = 1,
+    size = 2,
+    any_button_pressed = 3,
+    track_last_cell = 4,
 };
 
 pub const MouseAction = enum(u32) {
@@ -263,11 +264,11 @@ pub const KeyAction = enum(u32) {
 };
 
 pub const Mods = struct {
-    pub const none: u32 = 0;
-    pub const shift: u32 = 0x01;
-    pub const ctrl: u32 = 0x02;
-    pub const alt: u32 = 0x04;
-    pub const super: u32 = 0x08;
+    pub const none: u16 = 0;
+    pub const shift: u16 = 0x01;
+    pub const ctrl: u16 = 0x02;
+    pub const alt: u16 = 0x04;
+    pub const super: u16 = 0x08;
 };
 
 pub const FocusEvent = enum(u32) {
@@ -385,6 +386,56 @@ const ColorSchemeCallback = *const fn (?*anyopaque, ?*anyopaque, *ColorScheme) c
 const DeviceAttributesCallback = *const fn (?*anyopaque, ?*anyopaque, *DeviceAttributes) callconv(.c) bool;
 const TitleChangedCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
 
+extern fn ghostty_terminal_new(?*anyopaque, *?*anyopaque, TerminalOptions) callconv(.c) i32;
+extern fn ghostty_terminal_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_terminal_vt_write(?*anyopaque, [*]const u8, usize) callconv(.c) void;
+extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) void;
+extern fn ghostty_terminal_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) void;
+extern fn ghostty_terminal_mode_get(?*anyopaque, u32, *bool) callconv(.c) i32;
+extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
+extern fn ghostty_render_state_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_render_state_update(?*anyopaque, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_colors_get(?*anyopaque, *RenderStateColors) callconv(.c) i32;
+extern fn ghostty_render_state_row_iterator_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_row_iterator_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_render_state_row_iterator_next(?*anyopaque) callconv(.c) bool;
+extern fn ghostty_render_state_row_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_row_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_row_cells_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_row_cells_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_render_state_row_cells_next(?*anyopaque) callconv(.c) bool;
+extern fn ghostty_render_state_row_cells_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_cell_get(u64, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_key_encoder_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_key_encoder_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_key_encoder_setopt_from_terminal(?*anyopaque, ?*anyopaque) callconv(.c) void;
+extern fn ghostty_key_encoder_encode(?*anyopaque, ?*anyopaque, [*]u8, usize, *usize) callconv(.c) i32;
+extern fn ghostty_key_event_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_key_event_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_key_event_set_key(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_key_event_set_action(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_key_event_set_mods(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_key_event_set_consumed_mods(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_key_event_set_unshifted_codepoint(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_key_event_set_utf8(?*anyopaque, ?[*]const u8, usize) callconv(.c) void;
+extern fn ghostty_mouse_encoder_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_mouse_encoder_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_mouse_encoder_setopt_from_terminal(?*anyopaque, ?*anyopaque) callconv(.c) void;
+extern fn ghostty_mouse_encoder_setopt(?*anyopaque, u32, ?*const anyopaque) callconv(.c) void;
+extern fn ghostty_mouse_encoder_encode(?*anyopaque, ?*anyopaque, [*]u8, usize, *usize) callconv(.c) i32;
+extern fn ghostty_mouse_event_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_mouse_event_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_mouse_event_set_action(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_mouse_event_set_button(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_mouse_event_clear_button(?*anyopaque) callconv(.c) void;
+extern fn ghostty_mouse_event_set_mods(?*anyopaque, u32) callconv(.c) void;
+extern fn ghostty_mouse_event_set_position(?*anyopaque, MousePosition) callconv(.c) void;
+extern fn ghostty_focus_encode(u32, [*]u8, usize, *usize) callconv(.c) i32;
+
 /// Bundle of callbacks that must be registered on every new terminal before any
 /// ghostty API that might invoke them (resize, updateRenderState, vt_write).
 pub const TerminalCallbacks = struct {
@@ -400,17 +451,15 @@ pub const TerminalCallbacks = struct {
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
-    lib: std.DynLib,
-    loaded_path: []u8,
 
-    terminal_new: *const fn (?*anyopaque, *?*anyopaque, *const TerminalOptions) callconv(.c) i32,
+    terminal_new: *const fn (?*anyopaque, *?*anyopaque, TerminalOptions) callconv(.c) i32,
     terminal_free: *const fn (?*anyopaque) callconv(.c) void,
     terminal_vt_write: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
     terminal_resize: *const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void,
     terminal_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
     terminal_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void,
     terminal_mode_get: *const fn (?*anyopaque, u32, *bool) callconv(.c) i32,
-    terminal_scroll_viewport: *const fn (?*anyopaque, *const ScrollViewport) callconv(.c) void,
+    terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
 
     render_state_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     render_state_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -460,118 +509,73 @@ pub const Runtime = struct {
     mouse_event_set_button: *const fn (?*anyopaque, u32) callconv(.c) void,
     mouse_event_clear_button: *const fn (?*anyopaque) callconv(.c) void,
     mouse_event_set_mods: *const fn (?*anyopaque, u32) callconv(.c) void,
-    mouse_event_set_position: *const fn (?*anyopaque, *const MousePosition) callconv(.c) void,
+    mouse_event_set_position: *const fn (?*anyopaque, MousePosition) callconv(.c) void,
 
     focus_encode: *const fn (u32, [*]u8, usize, *usize) callconv(.c) i32,
 
     pub fn init(allocator: std.mem.Allocator, preferred_path: ?[]const u8) !Runtime {
-        if (preferred_path) |path| {
-            if (loadFromCandidate(allocator, path)) |runtime| {
-                return runtime;
-            } else |err| switch (err) {
-                error.LibraryOpenFailed => {},
-                else => return err,
-            }
-        }
-
-        for (platform.ghosttyLibraryCandidates()) |candidate| {
-            if (loadFromCandidate(allocator, candidate)) |runtime| {
-                return runtime;
-            } else |err| switch (err) {
-                error.LibraryOpenFailed => continue,
-                else => return err,
-            }
-        }
-
-        return error.LibraryOpenFailed;
-    }
-
-    fn loadFromCandidate(allocator: std.mem.Allocator, candidate: []const u8) !Runtime {
-        if (loadFromPath(allocator, candidate)) |runtime| {
-            return runtime;
-        } else |err| switch (err) {
-            error.LibraryOpenFailed => {},
-            else => return err,
-        }
-
-        if (platform.resolveRelativeToExe(allocator, candidate)) |maybe_resolved| {
-            if (maybe_resolved) |resolved| {
-                defer allocator.free(resolved);
-                return loadFromPath(allocator, resolved);
-            }
-        } else |_| {}
-
-        return error.LibraryOpenFailed;
-    }
-
-    fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Runtime {
-        var lib = std.DynLib.open(path) catch return error.LibraryOpenFailed;
-        errdefer lib.close();
-
+        _ = preferred_path;
         return .{
             .allocator = allocator,
-            .lib = lib,
-            .loaded_path = try allocator.dupe(u8, path),
-            .terminal_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque, *const TerminalOptions) callconv(.c) i32, "ghostty_terminal_new"),
-            .terminal_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_terminal_free"),
-            .terminal_vt_write = lookup(&lib, *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void, "ghostty_terminal_vt_write"),
-            .terminal_resize = lookup(&lib, *const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void, "ghostty_terminal_resize"),
-            .terminal_get = lookup(&lib, *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32, "ghostty_terminal_get"),
-            .terminal_set = lookup(&lib, *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void, "ghostty_terminal_set"),
-            .terminal_mode_get = lookup(&lib, *const fn (?*anyopaque, u32, *bool) callconv(.c) i32, "ghostty_terminal_mode_get"),
-            .terminal_scroll_viewport = lookup(&lib, *const fn (?*anyopaque, *const ScrollViewport) callconv(.c) void, "ghostty_terminal_scroll_viewport"),
-            .render_state_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_render_state_new"),
-            .render_state_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_render_state_free"),
-            .render_state_update = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque) callconv(.c) i32, "ghostty_render_state_update"),
-            .render_state_get = lookup(&lib, *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32, "ghostty_render_state_get"),
-            .render_state_set = lookup(&lib, *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32, "ghostty_render_state_set"),
-            .render_state_colors_get = lookup(&lib, *const fn (?*anyopaque, *RenderStateColors) callconv(.c) i32, "ghostty_render_state_colors_get"),
-            .row_iterator_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_render_state_row_iterator_new"),
-            .row_iterator_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_render_state_row_iterator_free"),
-            .row_iterator_next = lookup(&lib, *const fn (?*anyopaque) callconv(.c) bool, "ghostty_render_state_row_iterator_next"),
-            .row_get = lookup(&lib, *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32, "ghostty_render_state_row_get"),
-            .row_set = lookup(&lib, *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32, "ghostty_render_state_row_set"),
-            .row_cells_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_render_state_row_cells_new"),
-            .row_cells_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_render_state_row_cells_free"),
-            .row_cells_next = lookup(&lib, *const fn (?*anyopaque) callconv(.c) bool, "ghostty_render_state_row_cells_next"),
-            .row_cells_get = lookup(&lib, *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32, "ghostty_render_state_row_cells_get"),
-            .cell_get = lookup(&lib, *const fn (u64, u32, ?*anyopaque) callconv(.c) i32, "ghostty_cell_get"),
-            .key_encoder_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_key_encoder_new"),
-            .key_encoder_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_key_encoder_free"),
-            .key_encoder_setopt_from_terminal = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, "ghostty_key_encoder_setopt_from_terminal"),
-            .key_encoder_encode = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque, [*]u8, usize, *usize) callconv(.c) i32, "ghostty_key_encoder_encode"),
-            .key_event_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_key_event_new"),
-            .key_event_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_key_event_free"),
-            .key_event_set_key = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_key_event_set_key"),
-            .key_event_set_action = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_key_event_set_action"),
-            .key_event_set_mods = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_key_event_set_mods"),
-            .key_event_set_consumed_mods = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_key_event_set_consumed_mods"),
-            .key_event_set_unshifted_codepoint = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_key_event_set_unshifted_codepoint"),
-            .key_event_set_utf8 = lookup(&lib, *const fn (?*anyopaque, ?[*]const u8, usize) callconv(.c) void, "ghostty_key_event_set_utf8"),
-            .mouse_encoder_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_mouse_encoder_new"),
-            .mouse_encoder_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_mouse_encoder_free"),
-            .mouse_encoder_setopt_from_terminal = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, "ghostty_mouse_encoder_setopt_from_terminal"),
-            .mouse_encoder_setopt = lookup(&lib, *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void, "ghostty_mouse_encoder_setopt"),
-            .mouse_encoder_encode = lookup(&lib, *const fn (?*anyopaque, ?*anyopaque, [*]u8, usize, *usize) callconv(.c) i32, "ghostty_mouse_encoder_encode"),
-            .mouse_event_new = lookup(&lib, *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32, "ghostty_mouse_event_new"),
-            .mouse_event_free = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_mouse_event_free"),
-            .mouse_event_set_action = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_mouse_event_set_action"),
-            .mouse_event_set_button = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_mouse_event_set_button"),
-            .mouse_event_clear_button = lookup(&lib, *const fn (?*anyopaque) callconv(.c) void, "ghostty_mouse_event_clear_button"),
-            .mouse_event_set_mods = lookup(&lib, *const fn (?*anyopaque, u32) callconv(.c) void, "ghostty_mouse_event_set_mods"),
-            .mouse_event_set_position = lookup(&lib, *const fn (?*anyopaque, *const MousePosition) callconv(.c) void, "ghostty_mouse_event_set_position"),
-            .focus_encode = lookup(&lib, *const fn (u32, [*]u8, usize, *usize) callconv(.c) i32, "ghostty_focus_encode"),
+            .terminal_new = ghostty_terminal_new,
+            .terminal_free = ghostty_terminal_free,
+            .terminal_vt_write = ghostty_terminal_vt_write,
+            .terminal_resize = ghostty_terminal_resize,
+            .terminal_get = ghostty_terminal_get,
+            .terminal_set = ghostty_terminal_set,
+            .terminal_mode_get = ghostty_terminal_mode_get,
+            .terminal_scroll_viewport = ghostty_terminal_scroll_viewport,
+            .render_state_new = ghostty_render_state_new,
+            .render_state_free = ghostty_render_state_free,
+            .render_state_update = ghostty_render_state_update,
+            .render_state_get = ghostty_render_state_get,
+            .render_state_set = ghostty_render_state_set,
+            .render_state_colors_get = ghostty_render_state_colors_get,
+            .row_iterator_new = ghostty_render_state_row_iterator_new,
+            .row_iterator_free = ghostty_render_state_row_iterator_free,
+            .row_iterator_next = ghostty_render_state_row_iterator_next,
+            .row_get = ghostty_render_state_row_get,
+            .row_set = ghostty_render_state_row_set,
+            .row_cells_new = ghostty_render_state_row_cells_new,
+            .row_cells_free = ghostty_render_state_row_cells_free,
+            .row_cells_next = ghostty_render_state_row_cells_next,
+            .row_cells_get = ghostty_render_state_row_cells_get,
+            .cell_get = ghostty_cell_get,
+            .key_encoder_new = ghostty_key_encoder_new,
+            .key_encoder_free = ghostty_key_encoder_free,
+            .key_encoder_setopt_from_terminal = ghostty_key_encoder_setopt_from_terminal,
+            .key_encoder_encode = ghostty_key_encoder_encode,
+            .key_event_new = ghostty_key_event_new,
+            .key_event_free = ghostty_key_event_free,
+            .key_event_set_key = ghostty_key_event_set_key,
+            .key_event_set_action = ghostty_key_event_set_action,
+            .key_event_set_mods = ghostty_key_event_set_mods,
+            .key_event_set_consumed_mods = ghostty_key_event_set_consumed_mods,
+            .key_event_set_unshifted_codepoint = ghostty_key_event_set_unshifted_codepoint,
+            .key_event_set_utf8 = ghostty_key_event_set_utf8,
+            .mouse_encoder_new = ghostty_mouse_encoder_new,
+            .mouse_encoder_free = ghostty_mouse_encoder_free,
+            .mouse_encoder_setopt_from_terminal = ghostty_mouse_encoder_setopt_from_terminal,
+            .mouse_encoder_setopt = ghostty_mouse_encoder_setopt,
+            .mouse_encoder_encode = ghostty_mouse_encoder_encode,
+            .mouse_event_new = ghostty_mouse_event_new,
+            .mouse_event_free = ghostty_mouse_event_free,
+            .mouse_event_set_action = ghostty_mouse_event_set_action,
+            .mouse_event_set_button = ghostty_mouse_event_set_button,
+            .mouse_event_clear_button = ghostty_mouse_event_clear_button,
+            .mouse_event_set_mods = ghostty_mouse_event_set_mods,
+            .mouse_event_set_position = ghostty_mouse_event_set_position,
+            .focus_encode = ghostty_focus_encode,
         };
     }
 
     pub fn deinit(self: *Runtime) void {
-        self.lib.close();
-        self.allocator.free(self.loaded_path);
+        _ = self;
     }
 
     pub fn createTerminal(self: *Runtime, options: TerminalOptions) !?*anyopaque {
         var handle: ?*anyopaque = null;
-        const result = self.terminal_new(null, &handle, &options);
+        const result = self.terminal_new(null, &handle, options);
         if (result != success or handle == null) {
             return error.TerminalCreateFailed;
         }
@@ -623,22 +627,22 @@ pub const Runtime = struct {
 
     pub fn terminalScroll(self: *Runtime, handle: ?*anyopaque, delta: isize) void {
         if (handle) |terminal| {
-            var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.delta), .value = .{ .delta = delta } };
-            self.terminal_scroll_viewport(terminal, &viewport);
+            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.delta), .value = .{ .delta = delta } };
+            self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
     pub fn terminalScrollTop(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| {
-            var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
-            self.terminal_scroll_viewport(terminal, &viewport);
+            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
+            self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
     pub fn terminalScrollBottom(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| {
-            var viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
-            self.terminal_scroll_viewport(terminal, &viewport);
+            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
+            self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
@@ -1042,8 +1046,7 @@ pub const Runtime = struct {
         self.mouse_event_set_action(event, @intFromEnum(action));
         if (button) |value| self.mouse_event_set_button(event, @intFromEnum(value)) else self.mouse_event_clear_button(event);
         self.mouse_event_set_mods(event, mods);
-        var pos = position;
-        self.mouse_event_set_position(event, &pos);
+        self.mouse_event_set_position(event, position);
         var written: usize = 0;
         if (self.mouse_encoder_encode(encoder, event, out.ptr, out.len, &written) == success and written > 0) return out[0..written];
         return null;
@@ -1101,10 +1104,6 @@ pub const Runtime = struct {
         return h;
     }
 };
-
-fn lookup(lib: *std.DynLib, comptime T: type, symbol: [:0]const u8) T {
-    return lib.lookup(T, symbol) orelse @panic("missing required ghostty symbol");
-}
 
 /// Resolve a StyleColor tagged union to an RGB value, falling back to `default` when NONE.
 /// When PALETTE, looks up the color in the provided 256-entry palette.

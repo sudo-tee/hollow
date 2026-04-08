@@ -1,9 +1,37 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const config = @import("../config.zig");
 const platform = @import("../platform.zig");
 const ghostty = @import("../term/ghostty.zig");
 const bar = @import("../ui/bar.zig");
+
+extern fn luaL_newstate() callconv(.c) ?*State;
+extern fn lua_close(*State) callconv(.c) void;
+extern fn luaL_openlibs(*State) callconv(.c) void;
+extern fn luaL_loadfile(*State, [*:0]const u8) callconv(.c) c_int;
+extern fn luaL_loadbuffer(*State, [*]const u8, usize, [*:0]const u8) callconv(.c) c_int;
+extern fn lua_pcall(*State, c_int, c_int, c_int) callconv(.c) c_int;
+extern fn lua_gettop(*State) callconv(.c) c_int;
+extern fn lua_settop(*State, c_int) callconv(.c) void;
+extern fn lua_createtable(*State, c_int, c_int) callconv(.c) void;
+extern fn lua_setfield(*State, c_int, [*:0]const u8) callconv(.c) void;
+extern fn lua_getfield(*State, c_int, [*:0]const u8) callconv(.c) void;
+extern fn lua_pushstring(*State, [*:0]const u8) callconv(.c) void;
+extern fn lua_pushnumber(*State, f64) callconv(.c) void;
+extern fn lua_pushboolean(*State, c_int) callconv(.c) void;
+extern fn lua_pushnil(*State) callconv(.c) void;
+extern fn lua_pushlightuserdata(*State, ?*anyopaque) callconv(.c) void;
+extern fn lua_pushvalue(*State, c_int) callconv(.c) void;
+extern fn lua_pushcclosure(*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void;
+extern fn lua_pushinteger(*State, isize) callconv(.c) void;
+extern fn lua_tolstring(*State, c_int, *usize) callconv(.c) ?[*]const u8;
+extern fn lua_tonumber(*State, c_int) callconv(.c) f64;
+extern fn lua_toboolean(*State, c_int) callconv(.c) c_int;
+extern fn lua_touserdata(*State, c_int) callconv(.c) ?*anyopaque;
+extern fn lua_type(*State, c_int) callconv(.c) c_int;
+extern fn lua_next(*State, c_int) callconv(.c) c_int;
+extern fn luaL_ref(*State, c_int) callconv(.c) c_int;
+extern fn lua_rawgeti(*State, c_int, c_int) callconv(.c) void;
+extern fn luaL_unref(*State, c_int, c_int) callconv(.c) void;
 
 pub const State = opaque {};
 
@@ -109,83 +137,40 @@ const LUA_NOREF: c_int = -1;
 
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
-    lib: std.DynLib,
     state: *State,
-    loaded_path: []u8,
     context: *BridgeContext,
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
-        if (cfg.luajitLibrary()) |preferred| {
-            if (loadFromCandidate(allocator, cfg, preferred)) |runtime| {
-                return runtime;
-            } else |err| switch (err) {
-                error.LibraryOpenFailed => {},
-                else => return err,
-            }
-        }
-
-        for (platform.luajitLibraryCandidates()) |candidate| {
-            return loadFromCandidate(allocator, cfg, candidate) catch |err| switch (err) {
-                error.LibraryOpenFailed => continue,
-                else => return err,
-            };
-        }
-
-        return error.LibraryOpenFailed;
-    }
-
-    fn loadFromCandidate(allocator: std.mem.Allocator, cfg: *config.Config, candidate: []const u8) !Runtime {
-        if (loadFromPath(allocator, cfg, candidate)) |runtime| {
-            return runtime;
-        } else |err| switch (err) {
-            error.LibraryOpenFailed => {},
-            else => return err,
-        }
-
-        if (platform.resolveRelativeToExe(allocator, candidate)) |maybe_resolved| {
-            if (maybe_resolved) |resolved| {
-                defer allocator.free(resolved);
-                return loadFromPath(allocator, cfg, resolved);
-            }
-        } else |_| {}
-
-        return error.LibraryOpenFailed;
-    }
-
-    fn loadFromPath(allocator: std.mem.Allocator, cfg: *config.Config, path: []const u8) !Runtime {
-        var lib = std.DynLib.open(path) catch return error.LibraryOpenFailed;
-        errdefer lib.close();
-
         const api = Api{
-            .new_state = lookup(&lib, *const fn () callconv(.c) ?*State, "luaL_newstate"),
-            .close = lookup(&lib, *const fn (*State) callconv(.c) void, "lua_close"),
-            .open_libs = lookup(&lib, *const fn (*State) callconv(.c) void, "luaL_openlibs"),
-            .load_file = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) c_int, "luaL_loadfile"),
-            .load_buffer = lookup(&lib, *const fn (*State, [*]const u8, usize, [*:0]const u8) callconv(.c) c_int, "luaL_loadbuffer"),
-            .pcall = lookup(&lib, *const fn (*State, c_int, c_int, c_int) callconv(.c) c_int, "lua_pcall"),
-            .get_top = lookup(&lib, *const fn (*State) callconv(.c) c_int, "lua_gettop"),
-            .set_top = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_settop"),
-            .create_table = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "lua_createtable"),
-            .set_field = lookup(&lib, *const fn (*State, c_int, [*:0]const u8) callconv(.c) void, "lua_setfield"),
-            .get_field = lookup(&lib, *const fn (*State, c_int, [*:0]const u8) callconv(.c) void, "lua_getfield"),
-            .push_string = lookup(&lib, *const fn (*State, [*:0]const u8) callconv(.c) void, "lua_pushstring"),
-            .push_number = lookup(&lib, *const fn (*State, f64) callconv(.c) void, "lua_pushnumber"),
-            .push_boolean = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_pushboolean"),
-            .push_nil = lookup(&lib, *const fn (*State) callconv(.c) void, "lua_pushnil"),
-            .push_light_userdata = lookup(&lib, *const fn (*State, ?*anyopaque) callconv(.c) void, "lua_pushlightuserdata"),
-            .push_value = lookup(&lib, *const fn (*State, c_int) callconv(.c) void, "lua_pushvalue"),
-            .push_cclosure = lookup(&lib, *const fn (*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void, "lua_pushcclosure"),
-            .push_integer = lookup(&lib, *const fn (*State, isize) callconv(.c) void, "lua_pushinteger"),
-            .to_lstring = lookup(&lib, *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8, "lua_tolstring"),
-            .to_number = lookup(&lib, *const fn (*State, c_int) callconv(.c) f64, "lua_tonumber"),
-            .to_boolean = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_toboolean"),
-            .to_userdata = lookup(&lib, *const fn (*State, c_int) callconv(.c) ?*anyopaque, "lua_touserdata"),
-            .value_type = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_type"),
-            .next = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "lua_next"),
-            .ref = lookup(&lib, *const fn (*State, c_int) callconv(.c) c_int, "luaL_ref"),
-            .rawgeti = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "lua_rawgeti"),
-            .unref = lookup(&lib, *const fn (*State, c_int, c_int) callconv(.c) void, "luaL_unref"),
+            .new_state = luaL_newstate,
+            .close = lua_close,
+            .open_libs = luaL_openlibs,
+            .load_file = luaL_loadfile,
+            .load_buffer = luaL_loadbuffer,
+            .pcall = lua_pcall,
+            .get_top = lua_gettop,
+            .set_top = lua_settop,
+            .create_table = lua_createtable,
+            .set_field = lua_setfield,
+            .get_field = lua_getfield,
+            .push_string = lua_pushstring,
+            .push_number = lua_pushnumber,
+            .push_boolean = lua_pushboolean,
+            .push_nil = lua_pushnil,
+            .push_light_userdata = lua_pushlightuserdata,
+            .push_value = lua_pushvalue,
+            .push_cclosure = lua_pushcclosure,
+            .push_integer = lua_pushinteger,
+            .to_lstring = lua_tolstring,
+            .to_number = lua_tonumber,
+            .to_boolean = lua_toboolean,
+            .to_userdata = lua_touserdata,
+            .value_type = lua_type,
+            .next = lua_next,
+            .ref = luaL_ref,
+            .rawgeti = lua_rawgeti,
+            .unref = luaL_unref,
         };
 
         const state = api.new_state() orelse return error.LuaStateInitFailed;
@@ -197,9 +182,7 @@ pub const Runtime = struct {
 
         var runtime = Runtime{
             .allocator = allocator,
-            .lib = lib,
             .state = state,
-            .loaded_path = try allocator.dupe(u8, path),
             .context = ctx,
         };
 
@@ -214,8 +197,6 @@ pub const Runtime = struct {
         self.context.api.close(self.state);
         active_context = null;
         self.allocator.destroy(self.context);
-        self.allocator.free(self.loaded_path);
-        self.lib.close();
     }
 
     pub fn runString(self: *Runtime, code: [:0]const u8) !void {
@@ -683,10 +664,6 @@ pub const Runtime = struct {
     }
 };
 
-fn lookup(lib: *std.DynLib, comptime T: type, symbol: [:0]const u8) T {
-    return lib.lookup(T, symbol) orelse @panic("missing required luajit symbol");
-}
-
 fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value: []const u8) !void {
     const zvalue = try allocator.dupeZ(u8, value);
     defer allocator.free(zvalue);
@@ -875,8 +852,6 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (applyHexColor(cfg, key, value)) return;
     if (std.mem.eql(u8, key, "backend")) return cfg.setBackend(value);
     if (std.mem.eql(u8, key, "shell")) return cfg.setShell(value);
-    if (std.mem.eql(u8, key, "ghostty_library")) return cfg.setGhosttyLibrary(value);
-    if (std.mem.eql(u8, key, "luajit_library")) return cfg.setLuajitLibrary(value);
     if (std.mem.eql(u8, key, "window_title")) return cfg.setWindowTitle(value);
     if (std.mem.eql(u8, key, "lib_dir")) return cfg.setLibDir(value);
     if (std.mem.eql(u8, key, "font_path")) return cfg.setFontRegular(value);

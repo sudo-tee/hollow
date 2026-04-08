@@ -540,11 +540,10 @@ pub const App = struct {
 
     pub fn bootstrap(self: *App, config_override: ?[]const u8) !void {
         self.loaded_config_path = try self.resolveConfigPath(config_override);
-        try self.ensureDynamicLibraryPath();
 
         self.tryInitLua();
 
-        var runtime = try GhosttyRuntime.init(self.allocator, self.config.ghosttyLibrary());
+        var runtime = try GhosttyRuntime.init(self.allocator, null);
         errdefer runtime.deinit();
 
         var mux = Mux.init(self.allocator);
@@ -702,8 +701,6 @@ pub const App = struct {
         std.log.info("renderer_disable_swapchain_glyphs={}", .{self.config.renderer_disable_swapchain_glyphs});
         std.log.info("renderer_disable_multi_pane_cache={}", .{self.config.renderer_disable_multi_pane_cache});
         if (self.loaded_config_path) |path| std.log.info("config={s}", .{path});
-        if (self.ghostty) |runtime| std.log.info("libghostty-vt={s}", .{runtime.loaded_path});
-        if (self.lua) |lua| std.log.info("luajit={s}", .{lua.loaded_path});
     }
 
     pub fn sendText(self: *App, text: []const u8) void {
@@ -1956,17 +1953,6 @@ pub const App = struct {
         pane.title = pane.allocator.dupe(u8, title) catch &.{};
     }
 
-    fn ensureDynamicLibraryPath(self: *App) !void {
-        if (self.config.lib_dir) |dir| {
-            try prependLibraryPath(self.allocator, dir);
-            return;
-        }
-
-        if (pathExists("third_party/ghostty/zig-out/lib")) try prependLibraryPath(self.allocator, "third_party/ghostty/zig-out/lib");
-        if (pathExists("third_party/luajit/lib")) try prependLibraryPath(self.allocator, "third_party/luajit/lib");
-        if (platform.isLinux()) try prependLibraryPath(self.allocator, "/home/linuxbrew/.linuxbrew/lib");
-    }
-
     fn resolveConfigPath(self: *App, override: ?[]const u8) !?[]u8 {
         if (override) |path| return try self.allocator.dupe(u8, path);
 
@@ -1977,6 +1963,13 @@ pub const App = struct {
 
         const fallback = platform.projectFallbackConfigPath();
         if (pathExists(fallback)) return try self.allocator.dupe(u8, fallback);
+
+        if (try platform.resolveRelativeToExe(self.allocator, fallback)) |exe_relative| {
+            errdefer self.allocator.free(exe_relative);
+            if (pathExists(exe_relative)) return exe_relative;
+            self.allocator.free(exe_relative);
+        }
+
         return null;
     }
 
@@ -2222,12 +2215,6 @@ fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32) 
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     _ = app.enqueueMouse(.{ .split_pane = .{ .direction = dir, .ratio = ratio } });
-}
-
-fn prependLibraryPath(allocator: std.mem.Allocator, path: []const u8) !void {
-    _ = allocator;
-    _ = path;
-    return;
 }
 
 fn pathExists(path: []const u8) bool {

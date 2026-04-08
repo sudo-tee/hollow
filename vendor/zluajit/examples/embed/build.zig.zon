@@ -1,0 +1,22 @@
+.{
+    .name = .embed,
+
+    .version = "0.0.0",
+
+    .fingerprint = 0x47ba0513c46819d6, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.14.1",
+
+    .dependencies = .{
+        // Added using `zig fetch --save=zluajit git+https://github.com/negrel/zluajit`
+        .zluajit = .{
+            .url = "git+https://github.com/negrel/zluajit#896c6fdd8f1fc1adf85e7a7ed73fe97a096a595d",
+            .hash = "zluajit-0.0.0-uJQ3fgCCAgDHdKfngJl05fitLDl7pogEmX1_iO1xi7y-",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

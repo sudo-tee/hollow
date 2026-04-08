@@ -3,6 +3,28 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const ghostty_optimize: std.builtin.OptimizeMode = switch (optimize) {
+        .Debug => .ReleaseFast,
+        else => optimize,
+    };
+    const ghostty_dep = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = ghostty_optimize,
+        .simd = true,
+        .@"emit-lib-vt" = true,
+    });
+    const fontdeps_dep = b.dependency("fontdeps", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zluajit_dep = b.dependency("zluajit", .{
+        .target = target,
+        .optimize = optimize,
+        .system = false,
+        .shared = false,
+        .@"lua52-compat" = false,
+        .llvm = true,
+    });
 
     // Fonts module: root lives in third_party/fonts/ so @embedFile paths
     // stay inside that directory (avoids "outside package path" errors).
@@ -27,6 +49,8 @@ pub fn build(b: *std.Build) void {
     });
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
+    root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+    root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
 
     const translate = b.addTranslateC(.{
         .root_source_file = b.path("src/render/sokol_bindings.h"),
@@ -38,8 +62,8 @@ pub fn build(b: *std.Build) void {
     translate.addIncludePath(b.path("third_party/sokol/util"));
     translate.addIncludePath(b.path("third_party/stb"));
     translate.addIncludePath(b.path("third_party/fontstash"));
-    translate.addIncludePath(b.path("third_party/freetype-prebuilt/include"));
-    translate.addIncludePath(b.path("third_party/harfbuzz-prebuilt/include/harfbuzz"));
+    translate.addIncludePath(fontdeps_dep.artifact("freetype").getEmittedIncludeTree());
+    translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("sokol_c", translate.createModule());
 
     // Separate translate-c for freetype + harfbuzz C headers → Zig bindings.
@@ -49,8 +73,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    ft_translate.addIncludePath(b.path("third_party/freetype-prebuilt/include"));
-    ft_translate.addIncludePath(b.path("third_party/harfbuzz-prebuilt/include/harfbuzz"));
+    ft_translate.addIncludePath(fontdeps_dep.artifact("freetype").getEmittedIncludeTree());
+    ft_translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("ft_c", ft_translate.createModule());
 
     const exe = b.addExecutable(.{
@@ -58,6 +82,9 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
     });
     exe.linkLibC();
+    exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
+    exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+    exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
     exe.root_module.addCSourceFile(.{
         .file = b.path("src/render/sokol_app.c"),
         .flags = &.{
@@ -74,32 +101,6 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
-        // FreeType and HarfBuzz prebuilt Windows DLLs (mingw64).
-        // Link directly against the GNU import libs (.dll.a).
-        exe.addObjectFile(b.path("third_party/freetype-prebuilt/lib/libfreetype.dll.a"));
-        exe.addObjectFile(b.path("third_party/harfbuzz-prebuilt/lib/libharfbuzz.dll.a"));
-        const copy_ghostty = b.addInstallFile(b.path("ghostty-vt.dll"), "bin/ghostty-vt.dll");
-        b.getInstallStep().dependOn(&copy_ghostty.step);
-        // Copy FreeType/HarfBuzz DLLs and their runtime deps to bin/.
-        for (&[_][]const u8{
-            "libfreetype-6.dll",
-            "libharfbuzz-0.dll",
-            "libgcc_s_seh-1.dll",
-            "libstdc++-6.dll",
-            "libwinpthread-1.dll",
-            "libglib-2.0-0.dll",
-            "libbrotlidec.dll",
-            "libbrotlicommon.dll",
-            "libbz2-1.dll",
-            "libpng16-16.dll",
-            "zlib1.dll",
-            "libpcre2-8-0.dll",
-            "libiconv-2.dll",
-            "libintl-8.dll",
-        }) |dll| {
-            const copy = b.addInstallFile(b.path(dll), b.fmt("bin/{s}", .{dll}));
-            b.getInstallStep().dependOn(&copy.step);
-        }
     } else if (target.result.os.tag == .linux) {
         exe.root_module.linkSystemLibrary("X11", .{});
         exe.root_module.linkSystemLibrary("Xi", .{});

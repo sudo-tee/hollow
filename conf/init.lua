@@ -138,13 +138,10 @@ hollow.workspace.set_name("default")
 if g.platform.is_windows then
 	g.set_config({
 		shell = "wsl.exe",
-		ghostty_library = "ghostty-vt.dll",
-		luajit_library = "luajit-5.1.dll",
 	})
 else
 	g.set_config({
 		shell = g.platform.default_shell,
-		ghostty_library = "ghostty-vt.so",
 	})
 end
 
