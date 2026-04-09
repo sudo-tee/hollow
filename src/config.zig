@@ -210,6 +210,10 @@ pub const Config = struct {
     top_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
     top_bar_draw_tabs: bool = true,
     top_bar_draw_status: bool = true,
+    bottom_bar_show: bool = true,
+    bottom_bar_height: u32 = 0,
+    bottom_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
+    bottom_bar_draw_status: bool = true,
     debug_overlay: bool = false,
     vsync: bool = true,
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render

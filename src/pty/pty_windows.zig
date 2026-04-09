@@ -215,22 +215,6 @@ pub const WindowsPty = struct {
             return false;
         }
 
-        // Fallback: check the process handle directly.  wsl.exe hands off to the
-        // real shell inside WSL, so the *launcher* exits quickly — but the ConPTY
-        // output pipe stays open because the real shell still has it.  However
-        // when the user types `exit` in the WSL shell, the real shell exits, which
-        // tears down the ConPTY and eventually closes the output pipe.  In practice
-        // ReadFile then returns error 109 (broken pipe) and the reader thread sets
-        // eof, so the pipe check above catches it.
-        //
-        // As a belt-and-suspenders fallback, we also poll the process handle,
-        // but only before the PTY has produced any real output. Once we have
-        // seen bytes on the ConPTY pipe, the pipe lifetime is the authoritative
-        // signal. This avoids false deaths for launcher processes like `wsl.exe`
-        // that can exit while the real shell continues running behind the PTY.
-        // WAIT_OBJECT_0 (0) means the process has exited.
-        if (saw_read) return true;
-
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
             if (windows.kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
                 self.alive = false;
@@ -238,6 +222,8 @@ pub const WindowsPty = struct {
                 return false;
             }
         }
+
+        if (saw_read) return true;
 
         return true;
     }

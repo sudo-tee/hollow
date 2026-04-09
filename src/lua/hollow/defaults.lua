@@ -1,0 +1,31 @@
+local M = {}
+
+function M.setup(hollow)
+  hollow.keymap.set("ctrl+shift+c", "copy_selection")
+  hollow.keymap.set("ctrl+shift+v", "paste_clipboard")
+  hollow.keymap.set("shift+insert", "paste_clipboard")
+  hollow.keymap.set("ctrl+backslash", "split_vertical")
+  hollow.keymap.set("ctrl+shift+backslash", "split_horizontal")
+  hollow.keymap.set("ctrl+t", "new_tab")
+  hollow.keymap.set("ctrl+w", "close_tab")
+  hollow.keymap.set("ctrl+shift+w", "close_pane")
+  hollow.keymap.set("ctrl+tab", "next_tab")
+  hollow.keymap.set("ctrl+shift+tab", "prev_tab")
+  hollow.keymap.set("ctrl+alt+n", "new_workspace")
+  hollow.keymap.set("ctrl+alt+arrow_right", "next_workspace")
+  hollow.keymap.set("ctrl+alt+arrow_left", "prev_workspace")
+  hollow.keymap.set("ctrl+shift+arrow_left", "focus_pane_left")
+  hollow.keymap.set("ctrl+shift+arrow_right", "focus_pane_right")
+  hollow.keymap.set("ctrl+shift+arrow_up", "focus_pane_up")
+  hollow.keymap.set("ctrl+shift+arrow_down", "focus_pane_down")
+  hollow.keymap.set("ctrl+alt+shift+arrow_left", "resize_pane_left")
+  hollow.keymap.set("ctrl+alt+shift+arrow_right", "resize_pane_right")
+  hollow.keymap.set("ctrl+alt+arrow_up", "resize_pane_up")
+  hollow.keymap.set("ctrl+alt+arrow_down", "resize_pane_down")
+  hollow.keymap.set("alt+shift+page_up", "scrollback_page_up")
+  hollow.keymap.set("alt+shift+page_down", "scrollback_page_down")
+  hollow.keymap.set("ctrl+shift+home", "scrollback_top")
+  hollow.keymap.set("ctrl+shift+end", "scrollback_bottom")
+end
+
+return M

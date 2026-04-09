@@ -1,7 +1,9 @@
 # Zig build artifacts
 .zig-cache/
 .zig-local-cache/
+.zig-cache-local/
 .zig-global-cache/
+.zig-cache-global/
 zig-out/
 release/
 
@@ -30,6 +32,7 @@ test_fallback.lua
 
 # Vendored dependencies may contain local Zig caches
 vendor/.zig-cache/
+
 
 # Local archive/checksum outputs
 *.zip

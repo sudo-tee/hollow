@@ -2,8 +2,14 @@
   "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
   "runtime.version": "LuaJIT",
   "diagnostics.globals": [
-    "hollow"
+    "hollow",
+    "host_api"
   ],
+  "format.enable": true,
+  "format.defaultConfig": {
+    "indent_style": "space",
+    "indent_size": "2"
+  },
   "workspace.library": [
     "types"
   ]

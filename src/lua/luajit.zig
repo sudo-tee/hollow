@@ -24,6 +24,7 @@ extern fn lua_pushvalue(*State, c_int) callconv(.c) void;
 extern fn lua_pushcclosure(*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void;
 extern fn lua_pushinteger(*State, isize) callconv(.c) void;
 extern fn lua_rawseti(*State, c_int, c_int) callconv(.c) void;
+extern fn lua_settable(*State, c_int) callconv(.c) void;
 extern fn lua_tolstring(*State, c_int, *usize) callconv(.c) ?[*]const u8;
 extern fn lua_tonumber(*State, c_int) callconv(.c) f64;
 extern fn lua_toboolean(*State, c_int) callconv(.c) c_int;
@@ -33,6 +34,7 @@ extern fn lua_next(*State, c_int) callconv(.c) c_int;
 extern fn luaL_ref(*State, c_int) callconv(.c) c_int;
 extern fn lua_rawgeti(*State, c_int, c_int) callconv(.c) void;
 extern fn luaL_unref(*State, c_int, c_int) callconv(.c) void;
+extern fn luaL_error(*State, [*:0]const u8, ...) callconv(.c) c_int;
 
 pub const State = opaque {};
 
@@ -70,6 +72,7 @@ pub const Api = struct {
     push_cclosure: *const fn (*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void,
     push_integer: *const fn (*State, isize) callconv(.c) void,
     rawseti: *const fn (*State, c_int, c_int) callconv(.c) void,
+    set_table: *const fn (*State, c_int) callconv(.c) void,
     to_lstring: *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8,
     to_number: *const fn (*State, c_int) callconv(.c) f64,
     to_boolean: *const fn (*State, c_int) callconv(.c) c_int,
@@ -79,6 +82,24 @@ pub const Api = struct {
     ref: *const fn (*State, c_int) callconv(.c) c_int,
     rawgeti: *const fn (*State, c_int, c_int) callconv(.c) void,
     unref: *const fn (*State, c_int, c_int) callconv(.c) void,
+    raise_error: *const fn (*State, [*:0]const u8, ...) callconv(.c) c_int,
+};
+
+const LuaModule = struct {
+    name: []const u8,
+    source: [:0]const u8,
+};
+
+const embedded_lua_modules = [_]LuaModule{
+    .{ .name = "hollow.state", .source = @embedFile("hollow/state.lua") },
+    .{ .name = "hollow.util", .source = @embedFile("hollow/util.lua") },
+    .{ .name = "hollow.term", .source = @embedFile("hollow/term.lua") },
+    .{ .name = "hollow.config", .source = @embedFile("hollow/config.lua") },
+    .{ .name = "hollow.events", .source = @embedFile("hollow/events.lua") },
+    .{ .name = "hollow.actions", .source = @embedFile("hollow/actions.lua") },
+    .{ .name = "hollow.defaults", .source = @embedFile("hollow/defaults.lua") },
+    .{ .name = "hollow.keymap", .source = @embedFile("hollow/keymap.lua") },
+    .{ .name = "hollow.ui", .source = @embedFile("hollow/ui.lua") },
 };
 
 /// Callbacks from Lua into the App layer.
@@ -160,6 +181,10 @@ const LUA_ENVIRONINDEX: c_int = -10001;
 const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
+fn luaUpvalueIndex(i: c_int) c_int {
+    return LUA_GLOBALSINDEX - i;
+}
+
 pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
@@ -184,6 +209,12 @@ pub const BuiltInPayload = union(enum) {
         key: []const u8,
         mods: u32,
     },
+    topbar_node: struct {
+        id: []const u8,
+    },
+    bottombar_node: struct {
+        id: []const u8,
+    },
 };
 
 pub const SidebarLayoutSide = enum {
@@ -195,6 +226,10 @@ pub const SidebarLayout = struct {
     side: SidebarLayoutSide = .left,
     width_cols: usize = 0,
     reserve: bool = false,
+};
+
+pub const BottomBarLayout = struct {
+    height_px: u32 = 0,
 };
 
 pub const Runtime = struct {
@@ -225,6 +260,7 @@ pub const Runtime = struct {
             .push_cclosure = lua_pushcclosure,
             .push_integer = lua_pushinteger,
             .rawseti = lua_rawseti,
+            .set_table = lua_settable,
             .to_lstring = lua_tolstring,
             .to_number = lua_tonumber,
             .to_boolean = lua_toboolean,
@@ -234,6 +270,7 @@ pub const Runtime = struct {
             .ref = luaL_ref,
             .rawgeti = lua_rawgeti,
             .unref = luaL_unref,
+            .raise_error = luaL_error,
         };
 
         const state = api.new_state() orelse return error.LuaStateInitFailed;
@@ -252,6 +289,7 @@ pub const Runtime = struct {
         active_context = ctx;
 
         try runtime.exposeHollowTable();
+        try runtime.preloadLuaModules();
         return runtime;
     }
 
@@ -433,7 +471,7 @@ pub const Runtime = struct {
         return callback(self);
     }
 
-    pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
+    pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, is_hovered: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
         self.mutex.lock();
         defer self.mutex.unlock();
         const ctx = self.context;
@@ -451,6 +489,7 @@ pub const Runtime = struct {
 
         api.push_number(self.state, @floatFromInt(index));
         api.push_boolean(self.state, if (is_active) 1 else 0);
+        api.push_boolean(self.state, if (is_hovered) 1 else 0);
         api.push_boolean(self.state, if (hover_close) 1 else 0);
 
         const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
@@ -460,7 +499,7 @@ pub const Runtime = struct {
         defer std.heap.page_allocator.free(zfallback);
         api.push_string(self.state, zfallback);
 
-        const rc = api.pcall(self.state, 4, 1, 0);
+        const rc = api.pcall(self.state, 5, 1, 0);
         if (rc != 0) {
             std.log.err("resolveTopBarTitle: pcall failed rc={d}", .{rc});
             pop(api, self.state, 1);
@@ -662,6 +701,55 @@ pub const Runtime = struct {
 
         pop(api, self.state, 3);
         if (layout.width_cols == 0) return null;
+        return layout;
+    }
+
+    pub fn resolveBottomBarLayout(self: *Runtime) ?BottomBarLayout {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "ui");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "_bottombar_layout");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "bottombar_layout");
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        const layout_idx = absoluteIndex(api, self.state, -1);
+        var layout = BottomBarLayout{};
+
+        api.get_field(self.state, layout_idx, "height");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+            const height = api.to_number(self.state, -1);
+            if (height > 0) layout.height_px = asInt(u32, height) catch 0;
+        }
+        pop(api, self.state, 1);
+
+        pop(api, self.state, 3);
+        if (layout.height_px == 0) return null;
         return layout;
     }
 
@@ -923,9 +1011,67 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "default_shell");
         api.set_field(self.state, -2, "platform");
 
-        api.set_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        api.set_field(self.state, LUA_GLOBALSINDEX, "host_api");
+    }
+
+    fn preloadLuaModules(self: *Runtime) !void {
+        for (embedded_lua_modules) |module| {
+            try self.preloadLuaModule(module.name, module.source);
+        }
+    }
+
+    fn preloadLuaModule(self: *Runtime, name: []const u8, source: [:0]const u8) !void {
+        const api = self.context.api;
+
+        api.get_field(self.state, LUA_GLOBALSINDEX, "package");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return error.LuaRuntimeFailed;
+        }
+
+        api.get_field(self.state, -1, "preload");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return error.LuaRuntimeFailed;
+        }
+
+        try pushOwnedString(self.allocator, api, self.state, name);
+        api.push_light_userdata(self.state, @ptrCast(@constCast(source.ptr)));
+        api.push_integer(self.state, @as(isize, @intCast(source.len)));
+        api.push_cclosure(self.state, l_preloaded_module_loader, 3);
+
+        const zname = try self.allocator.dupeZ(u8, name);
+        defer self.allocator.free(zname);
+        api.set_field(self.state, -2, zname);
+        pop(api, self.state, 2);
     }
 };
+
+fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
+    const api = active_context.?.api;
+
+    const module_name_index = luaUpvalueIndex(1);
+    const source_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
+        _ = api.raise_error(state, "missing embedded module source");
+        return 0;
+    };
+    const source_len = @as(usize, @intFromFloat(api.to_number(state, luaUpvalueIndex(3))));
+    const source: [*]const u8 = @ptrCast(source_ptr);
+
+    if (api.load_buffer(state, source, source_len, "embedded-module") != 0) {
+        return api.raise_error(state, "failed to load embedded module");
+    }
+
+    api.push_value(state, 1);
+    if (api.pcall(state, 1, 1, 0) != 0) {
+        var module_name_len: usize = 0;
+        const module_name_ptr = api.to_lstring(state, module_name_index, &module_name_len);
+        const module_name = if (module_name_ptr) |ptr| ptr[0..module_name_len] else "(unknown)";
+        std.log.err("lua preload error in {s}", .{module_name});
+        return api.raise_error(state, "failed to run embedded module");
+    }
+    return 1;
+}
 
 fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value: []const u8) !void {
     const zvalue = try allocator.dupeZ(u8, value);
@@ -981,6 +1127,16 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "key");
             api.push_number(state, @floatFromInt(value.mods));
             api.set_field(state, -2, "mods");
+        },
+        .topbar_node => |value| {
+            api.create_table(state, 0, 1);
+            try pushOwnedString(allocator, api, state, value.id);
+            api.set_field(state, -2, "id");
+        },
+        .bottombar_node => |value| {
+            api.create_table(state, 0, 1);
+            try pushOwnedString(allocator, api, state, value.id);
+            api.set_field(state, -2, "id");
         },
     }
 }
@@ -1287,6 +1443,11 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "bottom_bar_height")) {
+        cfg.bottom_bar_height = try asInt(u32, value);
+        return;
+    }
+
     if (std.mem.eql(u8, key, "scroll_multiplier")) {
         cfg.scroll_multiplier = @floatCast(value);
         return;
@@ -1307,6 +1468,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.top_bar_show = value;
         return;
     }
+    if (std.mem.eql(u8, key, "bottom_bar_show")) {
+        cfg.bottom_bar_show = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "window_titlebar_show")) {
         cfg.window_titlebar_show = value;
         return;
@@ -1321,6 +1486,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
     }
     if (std.mem.eql(u8, key, "top_bar_draw_status")) {
         cfg.top_bar_draw_status = value;
+        return;
+    }
+    if (std.mem.eql(u8, key, "bottom_bar_draw_status")) {
+        cfg.bottom_bar_draw_status = value;
         return;
     }
     if (std.mem.eql(u8, key, "debug_overlay")) {
@@ -1545,6 +1714,10 @@ fn applyHexColor(cfg: *config.Config, key: []const u8, value: []const u8) bool {
         cfg.top_bar_bg = color;
         return true;
     }
+    if (std.mem.eql(u8, key, "bottom_bar_bg")) {
+        cfg.bottom_bar_bg = color;
+        return true;
+    }
     if (std.mem.eql(u8, key, "foreground")) {
         cfg.terminal_theme.enabled = true;
         cfg.terminal_theme.foreground = color;
@@ -1721,7 +1894,7 @@ fn applyScrollbarThemeTable(cfg: *config.Config, api: Api, state: *State, table_
     }
 }
 
-fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
+pub fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
@@ -1807,11 +1980,11 @@ fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8
     return seg;
 }
 
-fn pop(api: Api, state: *State, count: c_int) void {
+pub fn pop(api: Api, state: *State, count: c_int) void {
     api.set_top(state, -count - 1);
 }
 
-fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
+pub fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
     if (idx > 0 or idx <= LUA_REGISTRYINDEX) return idx;
     return api.get_top(state) + idx + 1;
 }
@@ -1938,7 +2111,7 @@ fn l_resize_pane(state: *State) callconv(.c) c_int {
     return 0;
 }
 
-/// hollow.on_top_bar(fn(index, is_active, hover_close, fallback_title) -> string|nil)
+/// hollow.on_top_bar(fn(index, is_active, is_hovered, hover_close, fallback_title) -> string|nil)
 fn l_on_top_bar(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;

@@ -19,6 +19,8 @@ const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
 
 const LUA_GLOBALSINDEX: c_int = -10002;
+const Api = lua_mod.Api;
+const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -132,7 +134,8 @@ var g_drag_node: ?*SplitNode = null;
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
-var g_top_bar_cache: TopBarCache = .{};
+var g_top_bar_cache: BarCache = .{};
+var g_bottom_bar_cache: BarCache = .{};
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -314,15 +317,27 @@ const CustomTabLayout = struct {
     x: f32,
     width: f32,
     title: []const u8,
+    close_x: f32,
+    close_w: f32,
     fg: ?ghostty.ColorRgb = null,
     bg: ?ghostty.ColorRgb = null,
     bold: bool = false,
 };
 
-const TopBarHit = struct {
-    in_top_bar: bool = false,
+const BarSurface = enum {
+    top,
+    bottom,
+};
+
+const BarHit = struct {
+    surface: ?BarSurface = null,
     tab_index: ?usize = null,
     close_tab_index: ?usize = null,
+    node_id: ?[]const u8 = null,
+
+    fn inBar(self: BarHit) bool {
+        return self.surface != null;
+    }
 };
 
 const MAX_TOP_BAR_TABS = 64;
@@ -333,12 +348,47 @@ const CachedTopBarTab = struct {
     close_x: f32 = 0,
     close_w: f32 = 0,
     has_close: bool = false,
+    node_id: ?[]const u8 = null,
 };
 
-const TopBarCache = struct {
+fn topBarSegmentFromLuaItem(api: Api, state: *State, item_idx: c_int, text_buf: []u8) bar.Segment {
+    var seg = bar.Segment{ .text = "" };
+
+    api.get_field(state, item_idx, "text");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+        var len: usize = 0;
+        if (api.to_lstring(state, -1, &len)) |ptr| {
+            const n = @min(len, text_buf.len);
+            @memcpy(text_buf[0..n], ptr[0..n]);
+            seg.text = text_buf[0..n];
+        }
+    }
+    lua_mod.pop(api, state, 1);
+
+    api.get_field(state, item_idx, "bold");
+    seg.bold = api.to_boolean(state, -1) != 0;
+    lua_mod.pop(api, state, 1);
+
+    seg.fg = lua_mod.parseColorField(api, state, item_idx, "fg");
+    seg.bg = lua_mod.parseColorField(api, state, item_idx, "bg");
+
+    api.get_field(state, item_idx, "id");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+        var len: usize = 0;
+        if (api.to_lstring(state, -1, &len)) |ptr| {
+            seg.id = ptr[0..len];
+        }
+    }
+    lua_mod.pop(api, state, 1);
+
+    return seg;
+}
+
+const BarCache = struct {
     enabled: bool = false,
     width: f32 = 0,
     height: f32 = 0,
+    y: f32 = 0,
     tab_count: usize = 0,
     tabs: [MAX_TOP_BAR_TABS]CachedTopBarTab = [_]CachedTopBarTab{.{}} ** MAX_TOP_BAR_TABS,
 };
@@ -360,6 +410,21 @@ fn takeCodepoints(text: []const u8, count: usize) []const u8 {
         used_codepoints += 1;
     }
     return text[0..used_bytes];
+}
+
+fn takeTrailingCodepoints(text: []const u8, count: usize) []const u8 {
+    const total = countCodepoints(text);
+    if (count >= total) return text;
+    const skip = total - count;
+    var used_bytes: usize = 0;
+    var used_codepoints: usize = 0;
+    while (used_bytes < text.len and used_codepoints < skip) {
+        const cp_len = utf8CodepointLen(text[used_bytes]);
+        if (used_bytes + cp_len > text.len) break;
+        used_bytes += cp_len;
+        used_codepoints += 1;
+    }
+    return text[used_bytes..];
 }
 
 fn countCodepoints(text: []const u8) usize {
@@ -432,6 +497,12 @@ const WidgetRenderCtx = struct {
 
 var g_widget_render_ctx: ?WidgetRenderCtx = null;
 
+const WidgetPreRasterCtx = struct {
+    renderer: *FtRenderer,
+};
+
+var g_widget_pre_raster_ctx: ?WidgetPreRasterCtx = null;
+
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_render_ctx orelse return;
     const api = runtime.context.api;
@@ -449,6 +520,325 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     var seg_text_buf: [2048]u8 = undefined;
     var reserved_sidebar_width: f32 = 0.0;
     var reserved_sidebar_side_right = false;
+    const top_h: f32 = @as(f32, @floatFromInt(ctx.app.tabBarHeight()));
+    var bottom_h: f32 = 0.0;
+
+    api.get_field(state, -1, "_bottombar_layout");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const layout_idx = lua_mod.absoluteIndex(api, state, -1);
+        api.get_field(state, layout_idx, "height");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            const height = api.to_number(state, -1);
+            if (height > 0) bottom_h = @as(f32, @floatCast(height));
+        }
+        lua_mod.pop(api, state, 1);
+    }
+    lua_mod.pop(api, state, 1);
+
+    const bottom_y: f32 = ctx.height - bottom_h;
+
+    api.get_field(state, -1, "_topbar_state");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const items_idx = lua_mod.absoluteIndex(api, state, -1);
+        const top_y: f32 = 0.0;
+        const text_y: f32 = top_y + @max(@as(f32, 0.0), @floor((top_h - ctx.renderer.cell_h) * 0.25));
+        var cursor_x: f32 = 0.0;
+        var right_reserved: f32 = 0.0;
+        var saw_spacer = false;
+
+        var count_i: c_int = 1;
+        while (true) : (count_i += 1) {
+            api.rawgeti(state, items_idx, count_i);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                lua_mod.pop(api, state, 1);
+                break;
+            }
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const item_idx = lua_mod.absoluteIndex(api, state, -1);
+                api.get_field(state, item_idx, "kind");
+                var kind_len: usize = 0;
+                const kind_ptr = api.to_lstring(state, -1, &kind_len);
+                const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                lua_mod.pop(api, state, 1);
+                if (std.mem.eql(u8, kind, "spacer")) {
+                    saw_spacer = true;
+                } else if (saw_spacer and std.mem.eql(u8, kind, "segment")) {
+                    const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    right_reserved += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                }
+            }
+            lua_mod.pop(api, state, 1);
+        }
+
+        var item_i: c_int = 1;
+        while (true) : (item_i += 1) {
+            api.rawgeti(state, items_idx, item_i);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                lua_mod.pop(api, state, 1);
+                break;
+            }
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const item_idx = lua_mod.absoluteIndex(api, state, -1);
+                api.get_field(state, item_idx, "kind");
+                var kind_len: usize = 0;
+                const kind_ptr = api.to_lstring(state, -1, &kind_len);
+                const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                lua_mod.pop(api, state, 1);
+
+                if (std.mem.eql(u8, kind, "spacer")) {
+                    cursor_x = @max(@as(f32, 0.0), ctx.width - right_reserved);
+                } else if (std.mem.eql(u8, kind, "tabs")) {
+                    const close_w: f32 = ctx.renderer.cell_w + 10.0;
+                    api.get_field(state, item_idx, "fit");
+                    var fit_len: usize = 0;
+                    const fit_ptr = api.to_lstring(state, -1, &fit_len);
+                    const fit = if (fit_ptr) |ptr| ptr[0..fit_len] else "fill";
+                    lua_mod.pop(api, state, 1);
+                    api.get_field(state, item_idx, "tabs");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                        lua_mod.pop(api, state, 1);
+                        lua_mod.pop(api, state, 1);
+                        continue;
+                    }
+                    const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
+                    var tab_count: usize = 0;
+                    while (true) : (tab_count += 1) {
+                        api.rawgeti(state, tabs_idx, @intCast(tab_count + 1));
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                            lua_mod.pop(api, state, 1);
+                            break;
+                        }
+                        lua_mod.pop(api, state, 1);
+                    }
+                    const active_idx = ctx.app.activeTabIndex();
+                    const available = @max(@as(f32, 1.0), ctx.width - cursor_x - right_reserved);
+                    const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
+                    var used_width: f32 = 0.0;
+                    for (0..tab_count) |ti| {
+                        api.rawgeti(state, tabs_idx, @intCast(ti + 1));
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                            lua_mod.pop(api, state, 1);
+                            continue;
+                        }
+                        const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                        lua_mod.pop(api, state, 1);
+
+                        const tab_w = if (std.mem.eql(u8, fit, "content"))
+                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
+                        else
+                            default_tab_w;
+                        const tx: f32 = cursor_x + used_width;
+                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
+                        cacheBarTab(&g_top_bar_cache, ti, tx, tab_w, close_x - 4.0, close_w, null);
+
+                        const hover_close = ctx.app.hovered_close_tab_index != null and ctx.app.hovered_close_tab_index.? == ti;
+                        const bg = tab_seg.bg orelse ghostty.ColorRgb{
+                            .r = if (ti == active_idx) 55 else 35,
+                            .g = if (ti == active_idx) 58 else 37,
+                            .b = if (ti == active_idx) 72 else 46,
+                        };
+                        drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, top_h - 1.0, bg.r, bg.g, bg.b, 255);
+                        if (ti == active_idx) {
+                            drawBorderRect(tx + 1.0, 0.0, tab_w - 2.0, 2.0, 120, 150, 220, 255);
+                        }
+
+                        const label_space = tab_w - close_w - ctx.renderer.cell_w;
+                        const max_label_chars: usize = if (label_space > 0)
+                            @max(1, @as(usize, @intFromFloat(label_space / ctx.renderer.cell_w)))
+                        else
+                            0;
+                        var display_buf: [256]u8 = undefined;
+                        const display_title = fitTabLabel(tab_seg.text, max_label_chars, &display_buf);
+                        if (display_title.len > 0) {
+                            const fg = tab_seg.fg orelse ghostty.ColorRgb{
+                                .r = if (ti == active_idx) 255 else 185,
+                                .g = if (ti == active_idx) 255 else 185,
+                                .b = if (ti == active_idx) 255 else 185,
+                            };
+                            ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
+                            c.sgl_load_default_pipeline();
+                        }
+
+                        const close_y: f32 = text_y;
+                        if (hover_close) {
+                            drawBorderRect(close_x - 4.0, 3.0, close_w - 2.0, top_h - 6.0, 92, 44, 44, 255);
+                        }
+                        ctx.renderer.drawLabelFace(close_x, close_y - 1.0, "\xc3\x97", if (hover_close) 255 else 215, if (hover_close) 220 else 140, if (hover_close) 220 else 140, 1);
+                        c.sgl_load_default_pipeline();
+                        used_width += tab_w;
+                    }
+                    lua_mod.pop(api, state, 1);
+                    cursor_x += if (std.mem.eql(u8, fit, "content")) used_width else available;
+                } else if (std.mem.eql(u8, kind, "segment")) {
+                    const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    const available_w = @max(@as(f32, 0.0), ctx.width - cursor_x);
+                    const max_chars: usize = if (available_w > 0)
+                        @max(1, @as(usize, @intFromFloat(available_w / ctx.renderer.cell_w)))
+                    else
+                        0;
+                    const trimmed_text = if (countCodepoints(seg.text) > max_chars)
+                        takeTrailingCodepoints(seg.text, max_chars)
+                    else
+                        seg.text;
+                    const seg_w = @as(f32, @floatFromInt(countCodepoints(trimmed_text))) * ctx.renderer.cell_w;
+                    if (seg.id) |id| cacheBarTab(&g_top_bar_cache, g_top_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
+                    if (seg.bg) |bg| drawBorderRect(cursor_x, top_y, seg_w, top_h, bg.r, bg.g, bg.b, 255);
+                    const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+                    ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+                    c.sgl_load_default_pipeline();
+                    cursor_x += seg_w;
+                    right_reserved -= @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                }
+            }
+            lua_mod.pop(api, state, 1);
+        }
+    }
+    lua_mod.pop(api, state, 1);
+
+    api.get_field(state, -1, "_bottombar_state");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table and bottom_h > 0) {
+        const items_idx = lua_mod.absoluteIndex(api, state, -1);
+        const text_y: f32 = bottom_y + @max(@as(f32, 0.0), @floor((bottom_h - ctx.renderer.cell_h) * 0.25));
+        var cursor_x: f32 = 0.0;
+        var right_reserved: f32 = 0.0;
+
+        var count_i: c_int = 1;
+        while (true) : (count_i += 1) {
+            api.rawgeti(state, items_idx, count_i);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                lua_mod.pop(api, state, 1);
+                break;
+            }
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const item_idx = lua_mod.absoluteIndex(api, state, -1);
+                api.get_field(state, item_idx, "kind");
+                var kind_len: usize = 0;
+                const kind_ptr = api.to_lstring(state, -1, &kind_len);
+                const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                lua_mod.pop(api, state, 1);
+                if (std.mem.eql(u8, kind, "segment")) {
+                    const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    right_reserved += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                }
+            }
+            lua_mod.pop(api, state, 1);
+        }
+
+        var item_i: c_int = 1;
+        while (true) : (item_i += 1) {
+            api.rawgeti(state, items_idx, item_i);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                lua_mod.pop(api, state, 1);
+                break;
+            }
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const item_idx = lua_mod.absoluteIndex(api, state, -1);
+                api.get_field(state, item_idx, "kind");
+                var kind_len: usize = 0;
+                const kind_ptr = api.to_lstring(state, -1, &kind_len);
+                const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                lua_mod.pop(api, state, 1);
+
+                if (std.mem.eql(u8, kind, "spacer")) {
+                    cursor_x = @max(@as(f32, 0.0), ctx.width - right_reserved);
+                } else if (std.mem.eql(u8, kind, "tabs")) {
+                    const close_w: f32 = ctx.renderer.cell_w + 10.0;
+                    api.get_field(state, item_idx, "fit");
+                    var fit_len: usize = 0;
+                    const fit_ptr = api.to_lstring(state, -1, &fit_len);
+                    const fit = if (fit_ptr) |ptr| ptr[0..fit_len] else "fill";
+                    lua_mod.pop(api, state, 1);
+                    api.get_field(state, item_idx, "tabs");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                        lua_mod.pop(api, state, 1);
+                        lua_mod.pop(api, state, 1);
+                        continue;
+                    }
+                    const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
+                    var tab_count: usize = 0;
+                    while (true) : (tab_count += 1) {
+                        api.rawgeti(state, tabs_idx, @intCast(tab_count + 1));
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                            lua_mod.pop(api, state, 1);
+                            break;
+                        }
+                        lua_mod.pop(api, state, 1);
+                    }
+                    const active_idx = ctx.app.activeTabIndex();
+                    const available = @max(@as(f32, 1.0), ctx.width - cursor_x - right_reserved);
+                    const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
+                    var used_width: f32 = 0.0;
+                    for (0..tab_count) |ti| {
+                        api.rawgeti(state, tabs_idx, @intCast(ti + 1));
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                            lua_mod.pop(api, state, 1);
+                            continue;
+                        }
+                        const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                        lua_mod.pop(api, state, 1);
+
+                        const tab_w = if (std.mem.eql(u8, fit, "content"))
+                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
+                        else
+                            default_tab_w;
+                        const tx: f32 = cursor_x + used_width;
+                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
+                        cacheBarTab(&g_bottom_bar_cache, ti, tx, tab_w, close_x - 4.0, close_w, null);
+
+                        const hover_close = ctx.app.hovered_close_tab_index != null and ctx.app.hovered_close_tab_index.? == ti;
+                        const bg = tab_seg.bg orelse ghostty.ColorRgb{
+                            .r = if (ti == active_idx) 55 else 35,
+                            .g = if (ti == active_idx) 58 else 37,
+                            .b = if (ti == active_idx) 72 else 46,
+                        };
+                        drawBorderRect(tx + 1.0, bottom_y + 1.0, tab_w - 2.0, bottom_h - 1.0, bg.r, bg.g, bg.b, 255);
+                        if (ti == active_idx) {
+                            drawBorderRect(tx + 1.0, bottom_y + bottom_h - 2.0, tab_w - 2.0, 2.0, 120, 150, 220, 255);
+                        }
+
+                        const label_space = tab_w - close_w - ctx.renderer.cell_w;
+                        const max_label_chars: usize = if (label_space > 0)
+                            @max(1, @as(usize, @intFromFloat(label_space / ctx.renderer.cell_w)))
+                        else
+                            0;
+                        var display_buf: [256]u8 = undefined;
+                        const display_title = fitTabLabel(tab_seg.text, max_label_chars, &display_buf);
+                        if (display_title.len > 0) {
+                            const fg = tab_seg.fg orelse ghostty.ColorRgb{
+                                .r = if (ti == active_idx) 255 else 185,
+                                .g = if (ti == active_idx) 255 else 185,
+                                .b = if (ti == active_idx) 255 else 185,
+                            };
+                            ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
+                            c.sgl_load_default_pipeline();
+                        }
+
+                        const close_y: f32 = text_y;
+                        if (hover_close) {
+                            drawBorderRect(close_x - 4.0, bottom_y + 3.0, close_w - 2.0, bottom_h - 6.0, 92, 44, 44, 255);
+                        }
+                        ctx.renderer.drawLabelFace(close_x, close_y - 1.0, "\xc3\x97", if (hover_close) 255 else 215, if (hover_close) 220 else 140, if (hover_close) 220 else 140, 1);
+                        c.sgl_load_default_pipeline();
+                        used_width += tab_w;
+                    }
+                    lua_mod.pop(api, state, 1);
+                    cursor_x += if (std.mem.eql(u8, fit, "content")) used_width else available;
+                } else if (std.mem.eql(u8, kind, "segment")) {
+                    const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                    if (seg.id) |id| cacheBarTab(&g_bottom_bar_cache, g_bottom_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
+                    if (seg.bg) |bg| drawBorderRect(cursor_x, bottom_y, seg_w, bottom_h, bg.r, bg.g, bg.b, 255);
+                    const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+                    ctx.renderer.drawLabelFace(cursor_x, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+                    c.sgl_load_default_pipeline();
+                    cursor_x += seg_w;
+                    right_reserved -= seg_w;
+                }
+            }
+            lua_mod.pop(api, state, 1);
+        }
+    }
+    lua_mod.pop(api, state, 1);
 
     api.get_field(state, -1, "_sidebar_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
@@ -473,8 +863,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         }
 
         const panel_x: f32 = if (std.mem.eql(u8, side, "right")) ctx.width - sidebar_width else 0.0;
-        const panel_y: f32 = @as(f32, @floatFromInt(ctx.app.tabBarHeight()));
-        const panel_h: f32 = ctx.height - panel_y;
+        const panel_y: f32 = top_h;
+        const panel_h: f32 = ctx.height - panel_y - bottom_h;
         drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, 22, 27, 34, 235);
         drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, 122, 162, 247, 255);
 
@@ -520,7 +910,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 else
                     0.0;
                 const panel_x = content_left + (available_width - panel_w) * 0.5;
-                const panel_y = @as(f32, @floatFromInt(ctx.app.tabBarHeight())) + ctx.renderer.cell_h * 1.5 * @as(f32, @floatFromInt(stack_i));
+                const panel_y = top_h + ctx.renderer.cell_h * 1.5 * @as(f32, @floatFromInt(stack_i));
                 drawBorderRect(panel_x, panel_y, panel_w, panel_h, 18, 22, 30, 235);
                 drawBorderRect(panel_x, panel_y, panel_w, 1.0, 136, 192, 208, 255);
 
@@ -545,6 +935,82 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     pop(api, state, 3);
 }
 
+fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
+    const ctx = g_widget_pre_raster_ctx orelse return;
+    const renderer = ctx.renderer;
+    const api = runtime.context.api;
+    const state = runtime.state;
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+        pop(api, state, 1);
+        return;
+    }
+    api.get_field(state, -1, "ui");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+        pop(api, state, 2);
+        return;
+    }
+
+    inline for ([_][:0]const u8{ "_topbar_state", "_bottombar_state" }) |field_name| {
+        api.get_field(state, -1, field_name);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            const items_idx = lua_mod.absoluteIndex(api, state, -1);
+            var item_i: c_int = 1;
+            while (true) : (item_i += 1) {
+                api.rawgeti(state, items_idx, item_i);
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                    lua_mod.pop(api, state, 1);
+                    break;
+                }
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    const item_idx = lua_mod.absoluteIndex(api, state, -1);
+                    api.get_field(state, item_idx, "kind");
+                    var kind_len: usize = 0;
+                    const kind_ptr = api.to_lstring(state, -1, &kind_len);
+                    const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                    lua_mod.pop(api, state, 1);
+
+                    if (std.mem.eql(u8, kind, "segment")) {
+                        api.get_field(state, item_idx, "text");
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+                            var len: usize = 0;
+                            if (api.to_lstring(state, -1, &len)) |ptr| renderer.preRasterizeLabel(ptr[0..len]);
+                        }
+                        lua_mod.pop(api, state, 1);
+                    } else if (std.mem.eql(u8, kind, "tabs")) {
+                        api.get_field(state, item_idx, "tabs");
+                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                            const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
+                            var tab_i: c_int = 1;
+                            while (true) : (tab_i += 1) {
+                                api.rawgeti(state, tabs_idx, tab_i);
+                                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                                    lua_mod.pop(api, state, 1);
+                                    break;
+                                }
+                                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                                    api.get_field(state, -1, "text");
+                                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+                                        var len: usize = 0;
+                                        if (api.to_lstring(state, -1, &len)) |ptr| renderer.preRasterizeLabel(ptr[0..len]);
+                                    }
+                                    lua_mod.pop(api, state, 1);
+                                }
+                                lua_mod.pop(api, state, 1);
+                            }
+                        }
+                        lua_mod.pop(api, state, 1);
+                    }
+                }
+                lua_mod.pop(api, state, 1);
+            }
+        }
+        lua_mod.pop(api, state, 1);
+    }
+
+    pop(api, state, 2);
+}
+
 fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
     const tab_count = @min(app.tabCount(), layouts.len);
     if (tab_count == 0 or max_right <= start_x or title_storage.len == 0) return layouts[0..0];
@@ -552,6 +1018,8 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
     var temp_title_buf: [256]u8 = undefined;
     const available_width = max_right - start_x;
     if (available_width <= 0) return layouts[0..0];
+    const close_w: f32 = renderer.cell_w + 10.0;
+    const label_padding: f32 = renderer.cell_w;
 
     var text_used: usize = 0;
     var cursor_x = start_x;
@@ -561,9 +1029,10 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
         const seg = app.topBarTitleSegment(ti, false, &temp_title_buf);
         const title = seg.text;
         const x = cursor_x;
-        const desired_width = @max(renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(title))) * renderer.cell_w);
+        const desired_width = @max(close_w + label_padding, @as(f32, @floatFromInt(countCodepoints(title))) * renderer.cell_w + close_w + label_padding);
         const width = @min(desired_width, max_right - x);
         if (width <= 0) break;
+        const close_x = @floor(x + width - close_w + 2.0);
         const remaining_storage = title_storage.len - text_used;
         if (remaining_storage == 0) break;
         const copy_len = @min(title.len, remaining_storage);
@@ -574,6 +1043,8 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
             .x = x,
             .width = width,
             .title = stored_title,
+            .close_x = close_x,
+            .close_w = close_w,
             .fg = seg.fg,
             .bg = seg.bg,
             .bold = seg.bold,
@@ -586,36 +1057,39 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
     return layouts[0..layout_count];
 }
 
-fn resetTopBarCache(window_width: f32, tbh: f32) void {
-    g_top_bar_cache = .{
-        .enabled = tbh > 0,
+fn resetBarCache(cache: *BarCache, window_width: f32, y: f32, bar_h: f32) void {
+    cache.* = .{
+        .enabled = bar_h > 0,
         .width = window_width,
-        .height = tbh,
+        .height = bar_h,
+        .y = y,
     };
 }
 
-fn cacheTopBarTab(index: usize, x: f32, width: f32, close_x: ?f32, close_w: f32) void {
-    if (index >= g_top_bar_cache.tabs.len) return;
-    g_top_bar_cache.tab_count = @max(g_top_bar_cache.tab_count, index + 1);
-    g_top_bar_cache.tabs[index] = .{
+fn cacheBarTab(cache: *BarCache, index: usize, x: f32, width: f32, close_x: ?f32, close_w: f32, node_id: ?[]const u8) void {
+    if (index >= cache.tabs.len) return;
+    cache.tab_count = @max(cache.tab_count, index + 1);
+    cache.tabs[index] = .{
         .x = x,
         .width = width,
         .close_x = close_x orelse 0,
         .close_w = close_w,
         .has_close = close_x != null,
+        .node_id = node_id,
     };
 }
 
-fn topBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
-    var hit = TopBarHit{};
-    if (!g_top_bar_cache.enabled or mouse_y < 0 or mouse_y >= g_top_bar_cache.height or mouse_x < 0 or mouse_x >= window_width) return hit;
+fn hitTestBar(cache: *const BarCache, surface: BarSurface, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+    var hit = BarHit{};
+    if (!cache.enabled or mouse_y < cache.y or mouse_y >= cache.y + cache.height or mouse_x < 0 or mouse_x >= window_width) return hit;
 
-    hit.in_top_bar = true;
-    const tab_count = @min(g_top_bar_cache.tab_count, g_top_bar_cache.tabs.len);
-    for (g_top_bar_cache.tabs[0..tab_count], 0..) |tab, ti| {
+    hit.surface = surface;
+    const tab_count = @min(cache.tab_count, cache.tabs.len);
+    for (cache.tabs[0..tab_count], 0..) |tab, ti| {
         if (tab.width <= 0) continue;
         if (mouse_x >= tab.x and mouse_x < tab.x + tab.width) {
             hit.tab_index = ti;
+            hit.node_id = tab.node_id;
             if (tab.has_close and mouse_x >= tab.close_x and mouse_x < tab.close_x + tab.close_w) {
                 hit.close_tab_index = ti;
             }
@@ -625,12 +1099,52 @@ fn topBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarH
     return hit;
 }
 
-fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) TopBarHit {
+fn topBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+    return hitTestBar(&g_top_bar_cache, .top, mouse_x, mouse_y, window_width);
+}
+
+fn bottomBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+    return hitTestBar(&g_bottom_bar_cache, .bottom, mouse_x, mouse_y, window_width);
+}
+
+fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+    const bottom_hit = bottomBarHitTest(app, mouse_x, mouse_y, window_width);
+    const top_hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
+    const hit = if (bottom_hit.surface != null) bottom_hit else top_hit;
+    _ = app.enqueueMouse(.{ .hover = .{
+        .tab_index = hit.tab_index,
+        .close_tab_index = hit.close_tab_index,
+    } });
+    if (hit.surface == .top) {
+        if (hit.node_id) |id| {
+            app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id } });
+        } else {
+            app.emitLuaBuiltInEvent("topbar:leave", .none);
+        }
+        app.emitLuaBuiltInEvent("bottombar:leave", .none);
+        return hit;
+    }
+
+    app.emitLuaBuiltInEvent("topbar:leave", .none);
+    if (hit.node_id) |id| {
+        app.emitLuaBuiltInEvent("bottombar:hover", .{ .bottombar_node = .{ .id = id } });
+    } else {
+        app.emitLuaBuiltInEvent("bottombar:leave", .none);
+    }
+    return hit;
+}
+
+fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
     const hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
     _ = app.enqueueMouse(.{ .hover = .{
         .tab_index = hit.tab_index,
         .close_tab_index = hit.close_tab_index,
     } });
+    if (hit.node_id) |id| {
+        app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id } });
+    } else {
+        app.emitLuaBuiltInEvent("topbar:leave", .none);
+    }
     return hit;
 }
 
@@ -667,13 +1181,16 @@ fn drawScrollbar(app: *App, metrics: App.ScrollbarMetrics) void {
     drawBorderRect(inset_x, metrics.thumb_y, inset_w, metrics.thumb_h, thumb_color.r, thumb_color.g, thumb_color.b, if (active) 230 else 190);
 }
 
-fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
+fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_y: f32, bar_h: f32, segments: []const bar.Segment) f32 {
     var cursor_x = x;
     for (segments) |seg| {
         if (seg.text.len == 0) continue;
         const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        if (seg.id) |id| {
+            cacheBarTab(&g_top_bar_cache, g_top_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
+        }
         if (seg.bg) |bg| {
-            drawBorderRect(cursor_x, 0.0, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
+            drawBorderRect(cursor_x, bar_y, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
         renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
@@ -683,11 +1200,14 @@ fn drawStatusSegments(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segment
     return cursor_x;
 }
 
-fn drawSingleSegment(renderer: *FtRenderer, x: f32, y: f32, bar_h: f32, segment: bar.Segment, default_fg: ghostty.ColorRgb, default_bg: ?ghostty.ColorRgb) f32 {
+fn drawSingleSegment(renderer: *FtRenderer, x: f32, y: f32, bar_y: f32, bar_h: f32, segment: bar.Segment, default_fg: ghostty.ColorRgb, default_bg: ?ghostty.ColorRgb) f32 {
     if (segment.text.len == 0) return x;
     const seg_w = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
+    if (segment.id) |id| {
+        cacheBarTab(&g_top_bar_cache, g_top_bar_cache.tab_count, x, seg_w, null, 0.0, id);
+    }
     if (segment.bg orelse default_bg) |bg| {
-        drawBorderRect(x, 0.0, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
+        drawBorderRect(x, bar_y, seg_w, bar_h, bg.r, bg.g, bg.b, 255);
     }
     const fg = segment.fg orelse default_fg;
     renderer.drawLabelFace(x, y, segment.text, fg.r, fg.g, fg.b, if (segment.bold) 1 else 0);
@@ -1019,7 +1539,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // renderer_safe_mode forces the simpler direct path for all panes as a
     // diagnostic escape hatch from the cached RT pipeline.
     const use_direct_render = app.config.renderer_single_pane_direct and
-        leaves.len == 0 and app.tabBarHeight() == 0;
+        leaves.len == 0 and app.tabBarHeight() == 0 and app.bottomBarHeight() == 0;
     const use_safe_render = app.config.renderer_safe_mode;
     const use_direct_multi_pane = app.config.renderer_disable_multi_pane_cache and leaves.len > 1;
     if (g_ft_renderer) |*renderer| {
@@ -1027,19 +1547,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Reset frame-local queue/gpu accumulators for the debug overlay.
         g_frame_queue_ns = 0;
         g_frame_gpu_ns = 0;
-
-        // Pre-rasterize tab bar glyphs so they land in the atlas before any
-        // pane offscreen pass flushes it (avoids a double sg_update_image).
-        if (app.tabBarHeight() > 0 and app.shouldDrawTopBarTabs()) {
-            const tc = app.tabCount();
-            const close_sym = "\xc3\x97"; // U+00D7 ×
-            for (0..tc) |ti| {
-                var title_buf: [256]u8 = undefined;
-                const title = app.topBarTitleSegment(ti, false, &title_buf).text;
-                renderer.preRasterizeLabel(title);
-                renderer.preRasterizeLabel(close_sym);
-            }
-        }
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -1417,6 +1924,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             }
         }
 
+        if (app.lua) |*lua| {
+            g_widget_pre_raster_ctx = .{ .renderer = renderer };
+            defer g_widget_pre_raster_ctx = null;
+            lua.withLockedState(void, preRasterizeLuaBarWidgets);
+        }
+
         // Flush atlas if any new glyphs were rasterized during the offscreen
         // pass(es) — needed before the swapchain pass uses the atlas.
         // Skip for direct render mode (already flushed above).
@@ -1560,9 +2073,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Draw tab bar when ≥2 tabs exist.
+    // Draw top bar background; Lua widgets render the contents.
     const tbh_u = app.tabBarHeight();
-    resetTopBarCache(width, @floatFromInt(tbh_u));
+    const bbh_u = app.bottomBarHeight();
+    resetBarCache(&g_top_bar_cache, width, 0.0, @floatFromInt(tbh_u));
+    resetBarCache(&g_bottom_bar_cache, width, height - @as(f32, @floatFromInt(bbh_u)), @floatFromInt(bbh_u));
     if (tbh_u > 0) {
         if (g_ft_renderer) |*renderer| {
             const tbh: f32 = @floatFromInt(tbh_u);
@@ -1581,142 +2096,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const bar_bg = app.config.top_bar_bg;
             drawBorderRect(0.0, 0.0, width, tbh, bar_bg.r, bar_bg.g, bar_bg.b, 255);
 
-            const tab_count = app.tabCount();
-            const active_idx = app.activeTabIndex();
-            const tab_w: f32 = if (tab_count > 0) width / @as(f32, @floatFromInt(tab_count)) else width;
-            const close_w: f32 = renderer.cell_w + 10.0;
-            var title_buf: [256]u8 = undefined;
-            var left_text_buf: [512]u8 = undefined;
-            var right_text_buf: [512]u8 = undefined;
-            var left_segments_buf: [16]bar.Segment = undefined;
-            var right_segments_buf: [16]bar.Segment = undefined;
-            var custom_tab_layouts: [32]CustomTabLayout = undefined;
-            var custom_tab_title_storage: [1024]u8 = undefined;
-
-            const status_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
-            var left_end: f32 = 4.0;
-            var right_width: f32 = 0.0;
-            var right_start: f32 = width;
-            if (app.shouldDrawTopBarStatus()) {
-                const left_segments = app.topBarStatus(.left, &left_segments_buf, &left_text_buf);
-                const right_segments = app.topBarStatus(.right, &right_segments_buf, &right_text_buf);
-                left_end = drawStatusSegments(renderer, 0.0, status_y, tbh, left_segments);
-                for (right_segments) |seg| {
-                    right_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
-                }
-                right_start = @max(left_end, width - right_width);
-                _ = drawStatusSegments(renderer, right_start, status_y, tbh, right_segments);
-            }
-
-            if (app.shouldDrawWorkspaceSwitcher()) {
-                var ws_buf: [128]u8 = undefined;
-                const ws_seg = app.workspaceTitleSegment(app.activeWorkspaceIndex(), &ws_buf);
-                const ws_default_bg = if (app.hasCustomWorkspaceTitle()) null else ghostty.ColorRgb{ .r = 36, .g = 39, .b = 48 };
-                left_end = drawSingleSegment(renderer, left_end, status_y, tbh, ws_seg, ghostty.ColorRgb{ .r = 205, .g = 210, .b = 225 }, ws_default_bg);
-                if (!app.hasCustomWorkspaceTitle()) left_end += renderer.cell_w * 0.5;
-            }
-
-            if (app.shouldDrawTopBarTabs()) {
-                if (app.hasCustomTopBarTabs()) {
-                    const tab_gap: f32 = if (right_width > 0) renderer.cell_w else 0.0;
-                    const max_right = if (right_width > 0) right_start - tab_gap else width;
-                    const layouts = computeCustomTabLayouts(app, renderer, left_end, max_right, &custom_tab_layouts, &custom_tab_title_storage);
-                    for (layouts, 0..) |layout, ti| {
-                        cacheTopBarTab(ti, layout.x, layout.width, null, 0.0);
-                        const is_active = ti == active_idx;
-                        const hover_tab = app.hovered_tab_index != null and app.hovered_tab_index.? == ti;
-                        const bg = layout.bg orelse if (is_active)
-                            ghostty.ColorRgb{ .r = 64, .g = 68, .b = 86 }
-                        else if (hover_tab)
-                            ghostty.ColorRgb{ .r = 52, .g = 55, .b = 70 }
-                        else
-                            ghostty.ColorRgb{ .r = 43, .g = 45, .b = 55 };
-                        drawBorderRect(layout.x, 0.0, layout.width, tbh, bg.r, bg.g, bg.b, 255);
-
-                        const label_space = layout.width;
-                        const max_label_chars: usize = if (label_space > 0)
-                            @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
-                        else
-                            0;
-                        var display_buf: [256]u8 = undefined;
-                        const display_title = fitTabLabel(layout.title, max_label_chars, &display_buf);
-                        if (display_title.len > 0) {
-                            const fg = layout.fg orelse ghostty.ColorRgb{
-                                .r = if (is_active) 255 else 190,
-                                .g = if (is_active) 255 else 190,
-                                .b = if (is_active) 255 else 190,
-                            };
-                            renderer.drawLabelFace(@floor(layout.x), status_y, display_title, fg.r, fg.g, fg.b, if (layout.bold) 1 else 0);
-                            c.sgl_load_default_pipeline();
-                        }
-                    }
-                } else {
-                    for (0..tab_count) |ti| {
-                        const tx: f32 = @as(f32, @floatFromInt(ti)) * tab_w;
-                        const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
-                        cacheTopBarTab(ti, tx, tab_w, close_x - 4.0, close_w);
-
-                        // Tab background.
-                        const is_active = ti == active_idx;
-                        const bg_r: u8 = if (is_active) 55 else 35;
-                        const bg_g: u8 = if (is_active) 58 else 37;
-                        const bg_b: u8 = if (is_active) 72 else 46;
-                        drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, bg_r, bg_g, bg_b, 255);
-
-                        // Active tab: top accent line.
-                        if (is_active) {
-                            drawBorderRect(tx + 1.0, 0.0, tab_w - 2.0, 2.0, 120, 150, 220, 255);
-                        }
-
-                        // Tab title text — leave room for the close button on the right.
-                        const hover_close = app.hovered_close_tab_index != null and app.hovered_close_tab_index.? == ti;
-                        const title_seg = app.topBarTitleSegment(ti, hover_close, &title_buf);
-                        const title = title_seg.text;
-                        const label_space = tab_w - close_w - renderer.cell_w;
-                        const max_label_chars: usize = if (label_space > 0)
-                            @max(1, @as(usize, @intFromFloat(label_space / renderer.cell_w)))
-                        else
-                            0;
-                        const label_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
-                        const label_x: f32 = @floor(tx + renderer.cell_w * 0.5);
-                        var display_buf: [256]u8 = undefined;
-                        const display_title = fitTabLabel(title, max_label_chars, &display_buf);
-                        if (display_title.len > 0) {
-                            const fg = title_seg.fg orelse ghostty.ColorRgb{
-                                .r = if (is_active) 255 else 185,
-                                .g = if (is_active) 255 else 185,
-                                .b = if (is_active) 255 else 185,
-                            };
-                            if (title_seg.bg) |bg| {
-                                drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, bg.r, bg.g, bg.b, 255);
-                            } else if (!app.hasCustomTopBarTabs()) {
-                                const fallback_bg_r: u8 = if (is_active) 55 else 35;
-                                const fallback_bg_g: u8 = if (is_active) 58 else 37;
-                                const fallback_bg_b: u8 = if (is_active) 72 else 46;
-                                drawBorderRect(tx + 1.0, 1.0, tab_w - 2.0, tbh - 1.0, fallback_bg_r, fallback_bg_g, fallback_bg_b, 255);
-                            }
-                            const draw_x = if (app.hasCustomTopBarTabs()) tx + 1.0 else label_x;
-                            renderer.drawLabelFace(draw_x, label_y, display_title, fg.r, fg.g, fg.b, if (title_seg.bold) 1 else 0);
-                            // After drawLabel the pipeline changed; restore defaults for rects.
-                            c.sgl_load_default_pipeline();
-                        }
-
-                        // Close button "×".
-                        const close_y: f32 = @floor((tbh - renderer.cell_h) * 0.5);
-                        if (hover_close) {
-                            drawBorderRect(close_x - 4.0, 3.0, close_w - 2.0, tbh - 6.0, 92, 44, 44, 255);
-                        }
-                        renderer.drawLabelFace(close_x, close_y - 1.0, "\xc3\x97", if (hover_close) 255 else 215, if (hover_close) 220 else 140, if (hover_close) 220 else 140, 1); // U+00D7 ×
-                        c.sgl_load_default_pipeline();
-
-                        // Separator line between tabs.
-                        if (ti + 1 < tab_count) {
-                            drawBorderRect(tx + tab_w - 1.0, 1.0, 1.0, tbh - 2.0, 50, 52, 65, 255);
-                        }
-                    }
-                }
-            }
-
             if (app.config.debug_overlay) {
                 drawDebugOverlay(app, renderer, width, height);
             }
@@ -1728,6 +2107,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     drawScrollbar(app, metrics);
                 }
             }
+        }
+    }
+    if (bbh_u > 0) {
+        if (g_ft_renderer) |_| {
+            const bbh: f32 = @floatFromInt(bbh_u);
+            const bar_bg = app.config.bottom_bar_bg;
+            drawBorderRect(0.0, height - bbh, width, bbh, bar_bg.r, bar_bg.g, bar_bg.b, 255);
         }
     }
 
@@ -1949,7 +2335,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     }
 
     const render_mode: []const u8 = if (app.config.renderer_safe_mode) "safe-direct" else if (app.config.renderer_single_pane_direct and
-        app.activePane() != null and app.tabBarHeight() == 0) "direct" else "cached";
+        app.activePane() != null and app.tabBarHeight() == 0 and app.bottomBarHeight() == 0) "direct" else "cached";
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
 
@@ -2304,14 +2690,16 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
     }
 
-    const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
-    if (top_bar_hit.in_top_bar) {
+    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    if (bar_hit.inBar()) {
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-            if (top_bar_hit.tab_index) |ti| {
-                if (app.hasCustomTopBarTabs()) {
-                    _ = app.enqueueMouse(.{ .switch_tab = ti });
-                } else if (top_bar_hit.close_tab_index != null and top_bar_hit.close_tab_index.? == ti) {
-                    _ = app.enqueueMouse(.{ .switch_and_close_tab = ti });
+            if (bar_hit.tab_index) |ti| {
+                if (bar_hit.surface == .top and bar_hit.node_id != null and bar_hit.close_tab_index == null) {
+                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.? } });
+                } else if (bar_hit.surface == .bottom and bar_hit.node_id != null) {
+                    app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.? } });
+                } else if (bar_hit.close_tab_index != null and bar_hit.close_tab_index.? == ti) {
+                    _ = app.enqueueMouse(.{ .close_tab_at = ti });
                 } else {
                     _ = app.enqueueMouse(.{ .switch_tab = ti });
                 }
@@ -2510,11 +2898,11 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         }
     }
 
-    const top_bar_hit = updateTopBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
-    if (top_bar_hit.in_top_bar) {
+    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    if (bar_hit.inBar()) {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
-        // Restore default cursor when in tab bar.
+        // Restore default cursor when in a bar.
         setTextSelectionCursor(.arrow);
         return;
     }
@@ -2571,7 +2959,8 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
         return;
     }
 
-    if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).in_top_bar) return;
+    if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
+    if (bottomBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
     if (g_scrollbar_drag_pane != null) return;
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
         _ = app.enqueueMouse(.{ .scroll = .{

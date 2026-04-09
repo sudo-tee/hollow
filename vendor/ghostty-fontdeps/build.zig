@@ -4,9 +4,9 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zlib = buildZlib(b, target, optimize);
-    const freetype = buildFreeType(b, target, optimize, zlib);
-    const harfbuzz = buildHarfbuzz(b, target, optimize, freetype);
+    const zlib = buildZlib(b, target, optimize) orelse return;
+    const freetype = buildFreeType(b, target, optimize, zlib) orelse return;
+    const harfbuzz = buildHarfbuzz(b, target, optimize, freetype) orelse return;
 
     b.installArtifact(zlib);
     b.installArtifact(freetype);
@@ -17,8 +17,8 @@ fn buildZlib(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) *std.Build.Step.Compile {
-    const upstream = b.lazyDependency("zlib_upstream", .{}) orelse @panic("missing zlib_upstream");
+) ?*std.Build.Step.Compile {
+    const upstream = b.lazyDependency("zlib_upstream", .{}) orelse return null;
 
     const lib = b.addLibrary(.{
         .name = "z",
@@ -63,8 +63,8 @@ fn buildFreeType(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     zlib: *std.Build.Step.Compile,
-) *std.Build.Step.Compile {
-    const upstream = b.lazyDependency("freetype_upstream", .{}) orelse @panic("missing freetype_upstream");
+) ?*std.Build.Step.Compile {
+    const upstream = b.lazyDependency("freetype_upstream", .{}) orelse return null;
 
     const lib = b.addLibrary(.{
         .name = "freetype",
@@ -138,8 +138,8 @@ fn buildHarfbuzz(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     freetype: *std.Build.Step.Compile,
-) *std.Build.Step.Compile {
-    const upstream = b.lazyDependency("harfbuzz_upstream", .{}) orelse @panic("missing harfbuzz_upstream");
+) ?*std.Build.Step.Compile {
+    const upstream = b.lazyDependency("harfbuzz_upstream", .{}) orelse return null;
 
     const lib = b.addLibrary(.{
         .name = "harfbuzz",

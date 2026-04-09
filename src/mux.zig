@@ -697,6 +697,21 @@ pub const Mux = struct {
         return self.removeWorkspace(runtime, ws);
     }
 
+    pub fn tabAt(self: *Mux, index: usize) ?*Tab {
+        const ws = self.activeWorkspace() orelse return null;
+        if (index >= ws.tabs.items.len) return null;
+        return ws.tabs.items[index];
+    }
+
+    pub fn closeTabAt(self: *Mux, runtime: *GhosttyRuntime, index: usize) bool {
+        const ws = self.activeWorkspace() orelse return true;
+        if (index >= ws.tabs.items.len) return false;
+        ws.active_tab = ws.tabs.items[index];
+        ws.closeTab(runtime);
+        if (ws.tabs.items.len > 0) return false;
+        return self.removeWorkspace(runtime, ws);
+    }
+
     /// Close the currently active pane. Kills the associated process.
     /// Returns true if the entire app should quit (no panes remain anywhere).
     pub fn closeActivePane(self: *Mux, runtime: *GhosttyRuntime) bool {
@@ -848,33 +863,40 @@ pub const Mux = struct {
     pub fn closeDeadPanes(self: *Mux, runtime: *GhosttyRuntime) bool {
         const ws = self.activeWorkspace() orelse return true;
 
-        // Collect dead panes from active tab (we can't remove while iterating).
-        var dead_buf: [64]*Pane = undefined;
-        var dead_count: usize = 0;
+        var tab_index: usize = 0;
+        while (tab_index < ws.tabs.items.len) {
+            const tab = ws.tabs.items[tab_index];
+            var dead_buf: [64]*Pane = undefined;
+            var dead_count: usize = 0;
+            for (tab.panes.items) |pane| {
+                if (!pane.hasLiveChild() and dead_count < dead_buf.len) {
+                    dead_buf[dead_count] = pane;
+                    dead_count += 1;
+                }
+            }
 
-        const tab = ws.activeTab() orelse return false;
-        for (tab.panes.items) |pane| {
-            if (!pane.hasLiveChild() and dead_count < dead_buf.len) {
-                dead_buf[dead_count] = pane;
-                dead_count += 1;
+            if (dead_count == 0) {
+                tab_index += 1;
+                continue;
+            }
+
+            const was_active = ws.active_tab == tab;
+            for (dead_buf[0..dead_count]) |pane| {
+                const tab_empty = tab.closePane(runtime, pane);
+                if (tab_empty) {
+                    ws.active_tab = tab;
+                    ws.closeTab(runtime);
+                    if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
+                    if (!was_active and tab_index > 0) tab_index -= 1;
+                    break;
+                }
+            }
+
+            if (tab_index < ws.tabs.items.len and ws.tabs.items[tab_index] == tab) {
+                tab_index += 1;
             }
         }
 
-        if (dead_count == 0) return false;
-
-        for (dead_buf[0..dead_count]) |pane| {
-            const tab_empty = tab.closePane(runtime, pane);
-            if (tab_empty) {
-                // Close the tab itself.
-                ws.closeTab(runtime);
-                // If workspace has no more tabs, and this is the only workspace,
-                // signal quit.
-                if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
-                break; // tab is gone, stop iterating dead_buf for this tab
-            }
-        }
-
-        // Re-register callbacks for the new active pane (focus may have moved).
         return false;
     }
 

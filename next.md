@@ -23,8 +23,8 @@
   -~Some keybords shortcuts don't work example in nvim all keymaps with alt+ don't work~
 - ~Minimizing and restoring the windows clears the shell output. It should be possible to minimize and restore the window without losing the shell output.~
 - ~Sometimes when an application is closed the terminal gets into a weird and won't display new output until I resize the window or hit a key. The best example is using the neovim :restart command. I wold still see last nvim frame, until i hit a key or resize the window, then I would see the nvim dashboard~
-- Sometimes the last line of the terminal gets cut off.
-- Idle performance is not great, the terminal sits at around 2% cpu usage when idle. Most other terminal emulators are around 0.5% or less. There is already a framerate cap in place.
+- ~Sometimes the last line of the terminal gets cut off.~
+- Cursor should be transparent when the terminal is not focused. This is a common feature in terminal emulators that helps to visually indicate when the terminal is active or inactive. When the terminal is not focused, the cursor should become transparent or have a reduced opacity, making it less distracting while still allowing users to see where the cursor is located when they return focus to the terminal.
 
 ## Fonts
 

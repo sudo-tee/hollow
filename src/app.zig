@@ -7,6 +7,7 @@ const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
 const LuaRuntime = @import("lua/luajit.zig").Runtime;
 const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
 const SidebarLayout = @import("lua/luajit.zig").SidebarLayout;
+const BottomBarLayout = @import("lua/luajit.zig").BottomBarLayout;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const mux_mod = @import("mux.zig");
@@ -100,8 +101,8 @@ pub const PendingMouseEvent = union(enum) {
     },
     /// Switch to a specific tab index (calls runtime.registerCallbacks on frame thread).
     switch_tab: usize,
-    /// Switch to a tab index and then close it (close_tab button click).
-    switch_and_close_tab: usize,
+    /// Close a specific tab index without focusing it first.
+    close_tab_at: usize,
     new_tab,
     close_tab,
     close_pane,
@@ -349,9 +350,8 @@ pub const App = struct {
                 .switch_tab => |idx| {
                     self.switchTab(idx);
                 },
-                .switch_and_close_tab => |idx| {
-                    self.switchTab(idx);
-                    self.closeTab();
+                .close_tab_at => |idx| {
+                    self.closeTabAt(idx);
                 },
                 .new_tab => {
                     self.newTab();
@@ -589,7 +589,7 @@ pub const App = struct {
         if (self.lua) |*lua| lua.fireGuiReady();
     }
 
-    fn emitLuaBuiltInEvent(self: *App, name: []const u8, payload: @import("lua/luajit.zig").BuiltInPayload) void {
+    pub fn emitLuaBuiltInEvent(self: *App, name: []const u8, payload: @import("lua/luajit.zig").BuiltInPayload) void {
         if (self.lua) |*lua| lua.emitBuiltInEvent(name, payload);
     }
 
@@ -777,6 +777,7 @@ pub const App = struct {
         self.config.window_height = pixel_height;
 
         const tbh = self.tabBarHeight();
+        const bbh = self.bottomBarHeight();
         const sidebar = self.sidebarLayout();
         const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
             self.sidebarReservedWidthPx(sidebar.?)
@@ -789,7 +790,8 @@ pub const App = struct {
         const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
         const content_width = if (pixel_width > left_inset + right_inset) pixel_width - left_inset - right_inset else 1;
         const inner_width = if (content_width > horizontal_reserved) content_width - horizontal_reserved else 1;
-        const content_height = if (pixel_height > tbh) pixel_height - tbh else 1;
+        const vertical_reserved = tbh + bbh;
+        const content_height = if (pixel_height > vertical_reserved) pixel_height - vertical_reserved else 1;
         const inner_height = if (content_height > self.config.terminal_padding.vertical()) content_height - self.config.terminal_padding.vertical() else 1;
 
         self.config.cols = @max(1, @as(u16, @intCast(inner_width / @max(@as(u32, 1), self.cell_width_px))));
@@ -1534,7 +1536,8 @@ pub const App = struct {
 
         if (self.activePane() == pane) {
             const tbh = self.tabBarHeight();
-            const pane_h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+            const bbh = self.bottomBarHeight();
+            const pane_h = if (self.config.window_height > tbh + bbh) self.config.window_height - tbh - bbh else 1;
             return self.paneScrollbarMetrics(pane, .{
                 .x = 0,
                 .y = tbh,
@@ -1694,6 +1697,15 @@ pub const App = struct {
             return;
         };
         self.requestLayoutResize(false);
+        // Re-register callbacks for the new active pane after tab creation.
+        // The new pane's terminal was created in mux.newTab() but callbacks
+        // need to be registered to ensure focus events work correctly.
+        if (mux.activePane()) |active| {
+            runtime.registerCallbacks(active.terminal, cbs);
+        }
+        if (mux.activeTab()) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        }
         std.log.info("app: created new tab", .{});
     }
 
@@ -1711,6 +1723,28 @@ pub const App = struct {
             return;
         }
         // Re-register callbacks for the new active pane after tab switch.
+        if (mux.activePane()) |active| {
+            runtime.registerCallbacks(active.terminal, terminalCallbacks());
+        }
+        if (mux.activeTab()) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        }
+        self.requestLayoutResize(false);
+    }
+
+    pub fn closeTabAt(self: *App, index: usize) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const closed_tab = mux.tabAt(index);
+        const should_quit = mux.closeTabAt(runtime, index);
+        if (closed_tab) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab.id });
+        }
+        if (should_quit) {
+            std.log.info("app: last tab closed, quitting", .{});
+            self.pending_quit = true;
+            return;
+        }
         if (mux.activePane()) |active| {
             runtime.registerCallbacks(active.terminal, terminalCallbacks());
         }
@@ -1852,7 +1886,8 @@ pub const App = struct {
 
     fn activeLayoutBounds(self: *App) PaneBounds {
         const tbh = self.tabBarHeight();
-        const height = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+        const bbh = self.bottomBarHeight();
+        const height = if (self.config.window_height > tbh + bbh) self.config.window_height - tbh - bbh else 1;
         const sidebar = self.sidebarLayout();
         const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
             self.sidebarReservedWidthPx(sidebar.?)
@@ -1900,6 +1935,20 @@ pub const App = struct {
         return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
     }
 
+    pub fn bottomBarLayout(self: *App) ?BottomBarLayout {
+        if (!self.config.bottom_bar_show) return null;
+        if (self.lua) |*lua| {
+            if (lua.resolveBottomBarLayout()) |layout| return layout;
+        }
+        if (self.config.bottom_bar_height == 0) return null;
+        return .{ .height_px = self.config.bottom_bar_height };
+    }
+
+    pub fn bottomBarHeight(self: *App) u32 {
+        if (self.bottomBarLayout()) |layout| return layout.height_px;
+        return 0;
+    }
+
     pub fn shouldDrawTopBarTabs(self: *App) bool {
         return self.config.top_bar_draw_tabs and self.tabCount() > 0;
     }
@@ -1944,7 +1993,14 @@ pub const App = struct {
     pub fn topBarTitle(self: *App, index: usize, hover_close: bool, out_buf: []u8) []const u8 {
         const fallback = self.tabTitle(index);
         if (self.lua) |*lua| {
-            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf).text;
+            return lua.resolveTopBarTitle(
+                index,
+                index == self.activeTabIndex(),
+                self.hovered_tab_index != null and self.hovered_tab_index.? == index,
+                hover_close,
+                fallback,
+                out_buf,
+            ).text;
         }
         return fallback;
     }
@@ -1952,7 +2008,14 @@ pub const App = struct {
     pub fn topBarTitleSegment(self: *App, index: usize, hover_close: bool, out_buf: []u8) bar.Segment {
         const fallback = self.tabTitle(index);
         if (self.lua) |*lua| {
-            return lua.resolveTopBarTitle(index, index == self.activeTabIndex(), hover_close, fallback, out_buf);
+            return lua.resolveTopBarTitle(
+                index,
+                index == self.activeTabIndex(),
+                self.hovered_tab_index != null and self.hovered_tab_index.? == index,
+                hover_close,
+                fallback,
+                out_buf,
+            );
         }
         return .{ .text = fallback };
     }
@@ -2028,96 +2091,12 @@ pub const App = struct {
     }
 
     pub fn updateTopBarHover(self: *App, mouse_x: f32, mouse_y: f32, window_width: f32, close_w: f32) void {
+        _ = mouse_x;
+        _ = mouse_y;
+        _ = window_width;
+        _ = close_w;
         self.hovered_tab_index = null;
         self.hovered_close_tab_index = null;
-
-        const tbh: f32 = @floatFromInt(self.tabBarHeight());
-        const tab_count = self.tabCount();
-        if (tbh <= 0 or mouse_y < 0 or mouse_y >= tbh or mouse_x < 0 or window_width <= 0 or tab_count == 0) return;
-
-        var left_end: f32 = 0.0;
-        if (self.shouldDrawTopBarStatus()) {
-            var left_text_buf: [512]u8 = undefined;
-            var right_text_buf: [512]u8 = undefined;
-            var left_segments_buf: [16]bar.Segment = undefined;
-            var right_segments_buf: [16]bar.Segment = undefined;
-            const left_segments = self.topBarStatus(.left, &left_segments_buf, &left_text_buf);
-            const right_segments = self.topBarStatus(.right, &right_segments_buf, &right_text_buf);
-
-            left_end = 4.0;
-            for (left_segments) |seg| {
-                left_end += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
-            }
-
-            if (self.shouldDrawWorkspaceSwitcher()) {
-                var ws_buf: [128]u8 = undefined;
-                const ws_seg = self.workspaceTitleSegment(self.activeWorkspaceIndex(), &ws_buf);
-                left_end += @as(f32, @floatFromInt(countUtf8Codepoints(ws_seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
-            }
-
-            _ = right_segments;
-        }
-
-        if (self.hasCustomTopBarTabs()) {
-            var title_buf: [256]u8 = undefined;
-            const left_reserved: f32 = @as(f32, @floatFromInt(self.cell_width_px)) * 4.0;
-            const right_reserved: f32 = @as(f32, @floatFromInt(self.cell_width_px)) * 4.0;
-            const available = @max(@as(f32, 1.0), window_width - left_reserved - right_reserved);
-            const tab_w = available / @as(f32, @floatFromInt(tab_count));
-            var cursor_x: f32 = left_reserved;
-            for (0..tab_count) |ti| {
-                _ = self.topBarTitle(ti, false, &title_buf);
-                if (mouse_x >= cursor_x and mouse_x < cursor_x + tab_w and mouse_y >= 0 and mouse_y < tbh) {
-                    self.hovered_tab_index = ti;
-                    return;
-                }
-                cursor_x += tab_w;
-            }
-            return;
-        }
-
-        var left_reserved: f32 = 4.0;
-        var right_reserved: f32 = 0.0;
-        if (self.shouldDrawTopBarStatus()) {
-            var left_text_buf: [512]u8 = undefined;
-            var right_text_buf: [512]u8 = undefined;
-            var left_segments_buf: [16]bar.Segment = undefined;
-            var right_segments_buf: [16]bar.Segment = undefined;
-            const left_segments = self.topBarStatus(.left, &left_segments_buf, &left_text_buf);
-            const right_segments = self.topBarStatus(.right, &right_segments_buf, &right_text_buf);
-
-            for (left_segments) |seg| {
-                left_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
-            }
-
-            if (self.shouldDrawWorkspaceSwitcher()) {
-                var ws_buf: [128]u8 = undefined;
-                const ws_seg = self.workspaceTitleSegment(self.activeWorkspaceIndex(), &ws_buf);
-                left_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(ws_seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
-            }
-
-            for (right_segments) |seg| {
-                right_reserved += @as(f32, @floatFromInt(countUtf8Codepoints(seg.text))) * @as(f32, @floatFromInt(self.cell_width_px));
-            }
-        }
-
-        const tab_start = left_reserved;
-        const tab_end = @max(tab_start + 1.0, window_width - right_reserved);
-        if (mouse_x < tab_start or mouse_x >= tab_end) return;
-
-        const usable_width = @max(@as(f32, 1.0), tab_end - tab_start);
-        const tab_w = usable_width / @as(f32, @floatFromInt(tab_count));
-        if (tab_w <= 0) return;
-
-        const raw = (mouse_x - tab_start) / tab_w;
-        const clamped = @min(@as(f32, @floatFromInt(tab_count - 1)), @max(0.0, raw));
-        const ti: usize = @intFromFloat(clamped);
-        self.hovered_tab_index = ti;
-
-        const tab_right = tab_start + (@as(f32, @floatFromInt(ti)) + 1.0) * tab_w;
-        if (mouse_x >= tab_right - close_w) {
-            self.hovered_close_tab_index = ti;
-        }
     }
 
     /// Override the active pane's title (used by Lua hollow.set_tab_title).
@@ -2308,7 +2287,8 @@ pub const App = struct {
         // the mux hasn't changed yet at this call site (new tab just added).
         // Use tabBarHeight() which already handles the count guard.
         const tbh = self.tabBarHeight();
-        const pane_h = if (pixel_height > tbh) pixel_height - tbh else 1;
+        const bbh = self.bottomBarHeight();
+        const pane_h = if (pixel_height > tbh + bbh) pixel_height - tbh - bbh else 1;
         const sidebar = self.sidebarLayout();
         const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
             self.sidebarReservedWidthPx(sidebar.?)

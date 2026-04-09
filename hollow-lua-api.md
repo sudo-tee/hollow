@@ -150,6 +150,18 @@ hollow.ui.icon(name, style?)
 hollow.ui.group(children, style?)
 ```
 
+Shared bar item primitives:
+
+```lua
+hollow.ui.bar.tabs(opts?)
+hollow.ui.bar.workspace(opts?)
+hollow.ui.bar.time(fmt, opts?)
+hollow.ui.bar.key_legend(opts?)
+hollow.ui.bar.custom(opts)
+```
+
+These are bar-level items rather than topbar-specific items, so the same nodes can be reused by future bar surfaces.
+
 ### Widget protocol
 
 All widget surfaces accept a table with at least:
@@ -182,6 +194,18 @@ hollow.ui.topbar.invalidate()
 
 The current renderer adapts topbar widgets onto the existing top status bar path.
 A single `hollow.ui.spacer()` splits left and right content.
+
+### `hollow.ui.bottombar`
+
+```lua
+widget = hollow.ui.bottombar.new(opts)
+hollow.ui.bottombar.mount(widget)
+hollow.ui.bottombar.unmount()
+hollow.ui.bottombar.invalidate()
+```
+
+Bottom bar widgets accept the same list of bar items as the top bar.
+Set `opts.height` to reserve vertical space and render the bar at the bottom of the window.
 
 ### `hollow.ui.sidebar`
 

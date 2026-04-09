@@ -10,4 +10,5 @@ pub const Segment = struct {
     fg: ?ghostty.ColorRgb = null,
     bg: ?ghostty.ColorRgb = null,
     bold: bool = false,
+    id: ?[]const u8 = null,
 };
