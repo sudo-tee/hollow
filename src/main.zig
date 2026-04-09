@@ -4,6 +4,7 @@ const sokol_runtime = @import("render/sokol_runtime.zig");
 
 var g_log_file: ?std.fs.File = null;
 var g_log_mutex: std.Thread.Mutex = .{};
+threadlocal var g_log_recursion_depth: usize = 0;
 
 pub const std_options: std.Options = .{
     .logFn = fileLogFn,
@@ -12,8 +13,17 @@ pub const std_options: std.Options = .{
 
 fn writeLogLine(prefix: []const u8, text: []const u8) void {
     if (g_log_file) |f| {
-        g_log_mutex.lock();
-        defer g_log_mutex.unlock();
+        const needs_lock = g_log_recursion_depth == 0;
+        if (needs_lock) {
+            g_log_recursion_depth = 1;
+            g_log_mutex.lock();
+        } else {
+            g_log_recursion_depth += 1;
+        }
+        defer {
+            g_log_recursion_depth -= 1;
+            if (needs_lock) g_log_mutex.unlock();
+        }
         var buf: [1024]u8 = undefined;
         var w = f.writer(&buf);
         w.interface.print("[{s}] {s}\n", .{ prefix, text }) catch {};
@@ -24,8 +34,17 @@ fn writeLogLine(prefix: []const u8, text: []const u8) void {
 
 fn writeCurrentStackToLog(start_addr: ?usize) void {
     if (g_log_file) |f| {
-        g_log_mutex.lock();
-        defer g_log_mutex.unlock();
+        const needs_lock = g_log_recursion_depth == 0;
+        if (needs_lock) {
+            g_log_recursion_depth = 1;
+            g_log_mutex.lock();
+        } else {
+            g_log_recursion_depth += 1;
+        }
+        defer {
+            g_log_recursion_depth -= 1;
+            if (needs_lock) g_log_mutex.unlock();
+        }
         var buf: [2048]u8 = undefined;
         var w = f.writer(&buf);
 
@@ -55,8 +74,17 @@ fn fileLogFn(
     _ = scope;
     const prefix = comptime level.asText();
     if (g_log_file) |f| {
-        g_log_mutex.lock();
-        defer g_log_mutex.unlock();
+        const needs_lock = g_log_recursion_depth == 0;
+        if (needs_lock) {
+            g_log_recursion_depth = 1;
+            g_log_mutex.lock();
+        } else {
+            g_log_recursion_depth += 1;
+        }
+        defer {
+            g_log_recursion_depth -= 1;
+            if (needs_lock) g_log_mutex.unlock();
+        }
         var buf: [1024]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
         fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
@@ -70,8 +98,17 @@ pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ra: ?usize) noret
     writeLogLine("panic", msg);
     if (trace) |t| {
         if (g_log_file) |f| {
-            g_log_mutex.lock();
-            defer g_log_mutex.unlock();
+            const needs_lock = g_log_recursion_depth == 0;
+            if (needs_lock) {
+                g_log_recursion_depth = 1;
+                g_log_mutex.lock();
+            } else {
+                g_log_recursion_depth += 1;
+            }
+            defer {
+                g_log_recursion_depth -= 1;
+                if (needs_lock) g_log_mutex.unlock();
+            }
             var buf: [2048]u8 = undefined;
             var w = f.writer(&buf);
 

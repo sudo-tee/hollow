@@ -23,6 +23,7 @@ extern fn lua_pushlightuserdata(*State, ?*anyopaque) callconv(.c) void;
 extern fn lua_pushvalue(*State, c_int) callconv(.c) void;
 extern fn lua_pushcclosure(*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void;
 extern fn lua_pushinteger(*State, isize) callconv(.c) void;
+extern fn lua_rawseti(*State, c_int, c_int) callconv(.c) void;
 extern fn lua_tolstring(*State, c_int, *usize) callconv(.c) ?[*]const u8;
 extern fn lua_tonumber(*State, c_int) callconv(.c) f64;
 extern fn lua_toboolean(*State, c_int) callconv(.c) c_int;
@@ -35,7 +36,7 @@ extern fn luaL_unref(*State, c_int, c_int) callconv(.c) void;
 
 pub const State = opaque {};
 
-const LuaType = enum(c_int) {
+pub const LuaType = enum(c_int) {
     nil_type = 0,
     boolean = 1,
     lightuserdata = 2,
@@ -48,7 +49,7 @@ const LuaType = enum(c_int) {
     _,
 };
 
-const Api = struct {
+pub const Api = struct {
     new_state: *const fn () callconv(.c) ?*State,
     close: *const fn (*State) callconv(.c) void,
     open_libs: *const fn (*State) callconv(.c) void,
@@ -68,6 +69,7 @@ const Api = struct {
     push_value: *const fn (*State, c_int) callconv(.c) void,
     push_cclosure: *const fn (*State, *const fn (*State) callconv(.c) c_int, c_int) callconv(.c) void,
     push_integer: *const fn (*State, isize) callconv(.c) void,
+    rawseti: *const fn (*State, c_int, c_int) callconv(.c) void,
     to_lstring: *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8,
     to_number: *const fn (*State, c_int) callconv(.c) f64,
     to_boolean: *const fn (*State, c_int) callconv(.c) c_int,
@@ -98,11 +100,34 @@ pub const AppCallbacks = struct {
     switch_tab: *const fn (app: *anyopaque, index: usize) void,
     set_workspace_name: *const fn (app: *anyopaque, title: []const u8) void,
     set_tab_title: *const fn (app: *anyopaque, title: []const u8) void,
+    set_tab_title_by_id: *const fn (app: *anyopaque, tab_id: usize, title: []const u8) bool,
+    reload_config: *const fn (app: *anyopaque) bool,
     get_tab_count: *const fn (app: *anyopaque) usize,
     get_active_tab_index: *const fn (app: *anyopaque) usize,
+    get_current_tab_id: *const fn (app: *anyopaque) usize,
+    get_current_pane_id: *const fn (app: *anyopaque) usize,
+    get_tab_id_at: *const fn (app: *anyopaque, index: usize) usize,
+    get_tab_pane_count: *const fn (app: *anyopaque, tab_id: usize) usize,
+    get_tab_pane_id_at: *const fn (app: *anyopaque, tab_id: usize, index: usize) usize,
+    get_tab_active_pane_id: *const fn (app: *anyopaque, tab_id: usize) usize,
+    get_tab_index_by_id: *const fn (app: *anyopaque, tab_id: usize) usize,
     get_workspace_count: *const fn (app: *anyopaque) usize,
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
+    get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_width: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_height: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_window_width: *const fn (app: *anyopaque) usize,
+    get_window_height: *const fn (app: *anyopaque) usize,
+    pane_is_focused: *const fn (app: *anyopaque, pane_id: usize) bool,
+    pane_exists: *const fn (app: *anyopaque, pane_id: usize) bool,
+    switch_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
+    close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
+    send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
     copy_selection: *const fn (app: *anyopaque) void,
     paste_clipboard: *const fn (app: *anyopaque) void,
@@ -135,6 +160,43 @@ const LUA_ENVIRONINDEX: c_int = -10001;
 const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
+pub const BuiltInPayload = union(enum) {
+    none,
+    tab_id: usize,
+    pane_id: usize,
+    pane_title_changed: struct {
+        pane_id: usize,
+        old_title: []const u8,
+        new_title: []const u8,
+    },
+    pane_cwd_changed: struct {
+        pane_id: usize,
+        old_cwd: []const u8,
+        new_cwd: []const u8,
+    },
+    window_size: struct {
+        rows: usize,
+        cols: usize,
+        width: usize,
+        height: usize,
+    },
+    key_unhandled: struct {
+        key: []const u8,
+        mods: u32,
+    },
+};
+
+pub const SidebarLayoutSide = enum {
+    left,
+    right,
+};
+
+pub const SidebarLayout = struct {
+    side: SidebarLayoutSide = .left,
+    width_cols: usize = 0,
+    reserve: bool = false,
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     state: *State,
@@ -162,6 +224,7 @@ pub const Runtime = struct {
             .push_value = lua_pushvalue,
             .push_cclosure = lua_pushcclosure,
             .push_integer = lua_pushinteger,
+            .rawseti = lua_rawseti,
             .to_lstring = lua_tolstring,
             .to_number = lua_tonumber,
             .to_boolean = lua_toboolean,
@@ -327,6 +390,47 @@ pub const Runtime = struct {
         const active = api.to_boolean(self.state, -1) != 0;
         pop(api, self.state, 3);
         return active;
+    }
+
+    pub fn emitBuiltInEvent(self: *Runtime, name: []const u8, payload: BuiltInPayload) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return;
+        }
+
+        api.get_field(self.state, -1, "_emit_builtin_event");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 2);
+            return;
+        }
+
+        pushOwnedString(self.allocator, api, self.state, name) catch {
+            pop(api, self.state, 3);
+            return;
+        };
+        pushBuiltInPayload(self.allocator, api, self.state, payload) catch {
+            pop(api, self.state, 4);
+            return;
+        };
+
+        if (api.pcall(self.state, 2, 0, 0) != 0) {
+            logLuaError(api, self.state, "emit_builtin_event");
+            pop(api, self.state, 1);
+            return;
+        }
+
+        pop(api, self.state, 1);
+    }
+
+    pub fn withLockedState(self: *Runtime, comptime T: type, callback: fn (*Runtime) T) T {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return callback(self);
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
@@ -498,6 +602,69 @@ pub const Runtime = struct {
         return seg_buf[0..seg_count];
     }
 
+    pub fn resolveSidebarLayout(self: *Runtime) ?SidebarLayout {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "ui");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "_sidebar_state");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "sidebar_state");
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        const sidebar_idx = absoluteIndex(api, self.state, -1);
+        var layout = SidebarLayout{};
+
+        api.get_field(self.state, sidebar_idx, "width");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+            const width = api.to_number(self.state, -1);
+            if (width > 0) layout.width_cols = @as(usize, @intFromFloat(width));
+        }
+        pop(api, self.state, 1);
+
+        api.get_field(self.state, sidebar_idx, "reserve");
+        layout.reserve = api.to_boolean(self.state, -1) != 0;
+        pop(api, self.state, 1);
+
+        api.get_field(self.state, sidebar_idx, "side");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
+            var side_len: usize = 0;
+            if (api.to_lstring(self.state, -1, &side_len)) |ptr| {
+                const side = ptr[0..side_len];
+                if (std.mem.eql(u8, side, "right")) layout.side = .right;
+            }
+        }
+        pop(api, self.state, 1);
+
+        pop(api, self.state, 3);
+        if (layout.width_cols == 0) return null;
+        return layout;
+    }
+
     fn exposeHollowTable(self: *Runtime) !void {
         const api = self.context.api;
 
@@ -647,6 +814,102 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_scroll_active_bottom, 1);
         api.set_field(self.state, -2, "scroll_active_bottom");
 
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_current_tab_id, 1);
+        api.set_field(self.state, -2, "current_tab_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_current_pane_id, 1);
+        api.set_field(self.state, -2, "current_pane_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_id_at, 1);
+        api.set_field(self.state, -2, "get_tab_id_at");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_pane_count, 1);
+        api.set_field(self.state, -2, "get_tab_pane_count");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_pane_id_at, 1);
+        api.set_field(self.state, -2, "get_tab_pane_id_at");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_active_pane_id, 1);
+        api.set_field(self.state, -2, "get_tab_active_pane_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_tab_index_by_id, 1);
+        api.set_field(self.state, -2, "get_tab_index_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_pid, 1);
+        api.set_field(self.state, -2, "get_pane_pid");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_title, 1);
+        api.set_field(self.state, -2, "get_pane_title");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_cwd, 1);
+        api.set_field(self.state, -2, "get_pane_cwd");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_rows, 1);
+        api.set_field(self.state, -2, "get_pane_rows");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_cols, 1);
+        api.set_field(self.state, -2, "get_pane_cols");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_width, 1);
+        api.set_field(self.state, -2, "get_pane_width");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_height, 1);
+        api.set_field(self.state, -2, "get_pane_height");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_window_width, 1);
+        api.set_field(self.state, -2, "get_window_width");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_window_height, 1);
+        api.set_field(self.state, -2, "get_window_height");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_pane_is_focused, 1);
+        api.set_field(self.state, -2, "pane_is_focused");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_pane_exists, 1);
+        api.set_field(self.state, -2, "pane_exists");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_switch_tab_by_id, 1);
+        api.set_field(self.state, -2, "switch_tab_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_close_tab_by_id, 1);
+        api.set_field(self.state, -2, "close_tab_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_tab_title_by_id, 1);
+        api.set_field(self.state, -2, "set_tab_title_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_send_text_to_pane, 1);
+        api.set_field(self.state, -2, "send_text_to_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_send_text, 1);
+        api.set_field(self.state, -2, "send_text");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_reload_config, 1);
+        api.set_field(self.state, -2, "reload_config");
+
         api.create_table(self.state, 0, 5);
         try pushOwnedString(self.allocator, api, self.state, platform.name());
         api.set_field(self.state, -2, "os");
@@ -668,6 +931,58 @@ fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value:
     const zvalue = try allocator.dupeZ(u8, value);
     defer allocator.free(zvalue);
     api.push_string(state, zvalue);
+}
+
+fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, payload: BuiltInPayload) !void {
+    switch (payload) {
+        .none => api.create_table(state, 0, 0),
+        .tab_id => |tab_id| {
+            api.create_table(state, 0, 1);
+            api.push_number(state, @floatFromInt(tab_id));
+            api.set_field(state, -2, "tab_id");
+        },
+        .pane_id => |pane_id| {
+            api.create_table(state, 0, 1);
+            api.push_number(state, @floatFromInt(pane_id));
+            api.set_field(state, -2, "pane_id");
+        },
+        .pane_title_changed => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            try pushOwnedString(allocator, api, state, value.old_title);
+            api.set_field(state, -2, "old_title");
+            try pushOwnedString(allocator, api, state, value.new_title);
+            api.set_field(state, -2, "new_title");
+        },
+        .pane_cwd_changed => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            try pushOwnedString(allocator, api, state, value.old_cwd);
+            api.set_field(state, -2, "old_cwd");
+            try pushOwnedString(allocator, api, state, value.new_cwd);
+            api.set_field(state, -2, "new_cwd");
+        },
+        .window_size => |value| {
+            api.create_table(state, 0, 4);
+            api.push_number(state, @floatFromInt(value.rows));
+            api.set_field(state, -2, "rows");
+            api.push_number(state, @floatFromInt(value.cols));
+            api.set_field(state, -2, "cols");
+            api.push_number(state, @floatFromInt(value.width));
+            api.set_field(state, -2, "width");
+            api.push_number(state, @floatFromInt(value.height));
+            api.set_field(state, -2, "height");
+        },
+        .key_unhandled => |value| {
+            api.create_table(state, 0, 2);
+            try pushOwnedString(allocator, api, state, value.key);
+            api.set_field(state, -2, "key");
+            api.push_number(state, @floatFromInt(value.mods));
+            api.set_field(state, -2, "mods");
+        },
+    }
 }
 
 fn bridgeContext(state: *State) *BridgeContext {
@@ -1415,6 +1730,47 @@ fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const 
     return parseHexColor(ptr[0..len]);
 }
 
+pub fn parseSegmentArray(api: Api, state: *State, text_buf: []u8, table_idx: c_int) []bar.Segment {
+    var seg_buf: [32]bar.Segment = undefined;
+    var seg_count: usize = 0;
+    var text_used: usize = 0;
+
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+        if (seg_count >= seg_buf.len) break;
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
+
+        var seg = bar.Segment{ .text = "" };
+        api.get_field(state, -1, "text");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+            var len: usize = 0;
+            if (api.to_lstring(state, -1, &len)) |ptr| {
+                if (text_used + len <= text_buf.len) {
+                    @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                    seg.text = text_buf[text_used .. text_used + len];
+                    text_used += len;
+                }
+            }
+        }
+        pop(api, state, 1);
+
+        api.get_field(state, -1, "bold");
+        seg.bold = api.to_boolean(state, -1) != 0;
+        pop(api, state, 1);
+
+        seg.fg = parseColorField(api, state, -1, "fg");
+        seg.bg = parseColorField(api, state, -1, "bg");
+
+        if (seg.text.len > 0) {
+            seg_buf[seg_count] = seg;
+            seg_count += 1;
+        }
+    }
+
+    return seg_buf[0..seg_count];
+}
+
 fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8) bar.Segment {
     const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
     if (value_type == .string) {
@@ -1738,6 +2094,30 @@ fn l_set_tab_title(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_set_tab_title_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+        api.to_lstring(state, 2, &len)
+    else
+        null;
+    const title: []const u8 = if (ptr) |p| p[0..len] else "";
+
+    api.push_boolean(state, if (cbs.set_tab_title_by_id(cbs.app, tab_id, title)) 1 else 0);
+    return 1;
+}
+
 fn l_is_leader_active(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -1818,6 +2198,137 @@ fn l_get_active_tab_index(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_current_tab_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const id = cbs.get_current_tab_id(cbs.app);
+    if (id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(id));
+    }
+    return 1;
+}
+
+fn l_current_pane_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const id = cbs.get_current_pane_id(cbs.app);
+    if (id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(id));
+    }
+    return 1;
+}
+
+fn l_get_tab_id_at(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const id = cbs.get_tab_id_at(cbs.app, index);
+    if (id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(id));
+    }
+    return 1;
+}
+
+fn l_get_tab_pane_count(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_tab_pane_count(cbs.app, tab_id)));
+    return 1;
+}
+
+fn l_get_tab_pane_id_at(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 2)))
+    else
+        0;
+    const pane_id = cbs.get_tab_pane_id_at(cbs.app, tab_id, index);
+    if (pane_id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(pane_id));
+    }
+    return 1;
+}
+
+fn l_get_tab_active_pane_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const pane_id = cbs.get_tab_active_pane_id(cbs.app, tab_id);
+    if (pane_id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(pane_id));
+    }
+    return 1;
+}
+
+fn l_get_tab_index_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const index = cbs.get_tab_index_by_id(cbs.app, tab_id);
+    if (index == std.math.maxInt(usize)) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(index));
+    }
+    return 1;
+}
+
 fn l_get_workspace_count(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -1839,6 +2350,256 @@ fn l_get_active_workspace_index(state: *State) callconv(.c) c_int {
     };
     const idx = cbs.get_active_workspace_index(cbs.app);
     api.push_number(state, @floatFromInt(idx));
+    return 1;
+}
+
+fn l_get_pane_pid(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_pid(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_pane_title(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var out_buf: [256]u8 = undefined;
+    const title = cbs.get_pane_title(cbs.app, pane_id, &out_buf);
+    const ztitle = std.heap.page_allocator.dupeZ(u8, title) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(ztitle);
+    api.push_string(state, ztitle);
+    return 1;
+}
+
+fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var out_buf: [512]u8 = undefined;
+    const cwd = cbs.get_pane_cwd(cbs.app, pane_id, &out_buf);
+    const zcwd = std.heap.page_allocator.dupeZ(u8, cwd) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(zcwd);
+    api.push_string(state, zcwd);
+    return 1;
+}
+
+fn l_get_pane_rows(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_rows(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_pane_cols(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_cols(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_pane_width(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_width(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_pane_height(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_height(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_window_width(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    api.push_number(state, @floatFromInt(cbs.get_window_width(cbs.app)));
+    return 1;
+}
+
+fn l_get_window_height(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    api.push_number(state, @floatFromInt(cbs.get_window_height(cbs.app)));
+    return 1;
+}
+
+fn l_pane_is_focused(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.pane_is_focused(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_pane_exists(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.pane_exists(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_switch_tab_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.switch_tab_by_id(cbs.app, tab_id)) 1 else 0);
+    return 1;
+}
+
+fn l_close_tab_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.close_tab_by_id(cbs.app, tab_id)) 1 else 0);
+    return 1;
+}
+
+fn l_send_text_to_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+        api.to_lstring(state, 2, &len)
+    else
+        null;
+    const text: []const u8 = if (ptr) |p| p[0..len] else "";
+    api.push_boolean(state, if (cbs.send_text_to_pane(cbs.app, pane_id, text)) 1 else 0);
+    return 1;
+}
+
+fn l_send_text(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &len)
+    else
+        null;
+    const text: []const u8 = if (ptr) |p| p[0..len] else "";
+    api.push_boolean(state, if (cbs.send_text_to_pane(cbs.app, cbs.get_current_pane_id(cbs.app), text)) 1 else 0);
+    return 1;
+}
+
+fn l_reload_config(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    api.push_boolean(state, if (cbs.reload_config(cbs.app)) 1 else 0);
     return 1;
 }
 

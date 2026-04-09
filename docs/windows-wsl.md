@@ -26,7 +26,7 @@ The default project config is resolved from:
 The default Windows config uses:
 
 ```lua
-hollow.set_config({ shell = "wsl.exe" })
+hollow.config.set({ shell = "wsl.exe" })
 ```
 
 This is the recommended development shell on Windows if you primarily work out
@@ -35,9 +35,9 @@ of WSL.
 Examples:
 
 ```lua
-hollow.set_config({ shell = "wsl.exe" })
-hollow.set_config({ shell = "wsl.exe --distribution Ubuntu" })
-hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
+hollow.config.set({ shell = "wsl.exe" })
+hollow.config.set({ shell = "wsl.exe --distribution Ubuntu" })
+hollow.config.set({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
 ```
 
 ## Native Windows shell usage
@@ -45,9 +45,9 @@ hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
 You can also run directly with PowerShell or cmd:
 
 ```lua
-hollow.set_config({ shell = "pwsh.exe" })
--- hollow.set_config({ shell = "powershell.exe" })
--- hollow.set_config({ shell = "cmd.exe" })
+hollow.config.set({ shell = "pwsh.exe" })
+-- hollow.config.set({ shell = "powershell.exe" })
+-- hollow.config.set({ shell = "cmd.exe" })
 ```
 
 ## Build from WSL

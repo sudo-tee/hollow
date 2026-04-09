@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const c = @import("sokol_c");
 const icon_data = @import("icon_data");
 const App = @import("../app.zig").App;
+const lua_mod = @import("../lua/luajit.zig");
 const ghostty = @import("../term/ghostty.zig");
 const bar = @import("../ui/bar.zig");
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
@@ -16,6 +17,9 @@ const Config = @import("../config.zig").Config;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
+
+const LUA_GLOBALSINDEX: c_int = -10002;
+const LuaType = lua_mod.LuaType;
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const HWND = *anyopaque;
@@ -392,6 +396,153 @@ fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
     @memcpy(out_buf[0..prefix.len], prefix);
     @memcpy(out_buf[prefix.len..total], ellipsis);
     return out_buf[0..total];
+}
+
+fn absoluteIndex(api: lua_mod.Api, state: *lua_mod.State, idx: c_int) c_int {
+    if (idx > 0 or idx <= LUA_GLOBALSINDEX) return idx;
+    return api.get_top(state) + idx + 1;
+}
+
+fn pop(api: lua_mod.Api, state: *lua_mod.State, count: c_int) void {
+    api.set_top(state, -count - 1);
+}
+
+fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
+    var cursor_x = x;
+    for (segments) |seg| {
+        if (seg.text.len == 0) continue;
+        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        if (seg.bg) |bg| {
+            drawBorderRect(cursor_x, y - 2.0, seg_w, renderer.cell_h + 4.0, bg.r, bg.g, bg.b, 220);
+        }
+        const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+        renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        c.sgl_load_default_pipeline();
+        cursor_x += seg_w;
+        if (cursor_x >= x + max_width) break;
+    }
+}
+
+const WidgetRenderCtx = struct {
+    app: *App,
+    renderer: *FtRenderer,
+    width: f32,
+    height: f32,
+};
+
+var g_widget_render_ctx: ?WidgetRenderCtx = null;
+
+fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
+    const ctx = g_widget_render_ctx orelse return;
+    const api = runtime.context.api;
+    const state = runtime.state;
+    api.get_field(state, LUA_GLOBALSINDEX, "hollow");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+        pop(api, state, 1);
+        return;
+    }
+    api.get_field(state, -1, "ui");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+        pop(api, state, 2);
+        return;
+    }
+    var seg_text_buf: [2048]u8 = undefined;
+    var reserved_sidebar_width: f32 = 0.0;
+    var reserved_sidebar_side_right = false;
+
+    api.get_field(state, -1, "_sidebar_state");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const sidebar_idx = absoluteIndex(api, state, -1);
+        api.get_field(state, sidebar_idx, "width");
+        const sidebar_cols = if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) @as(usize, @intFromFloat(api.to_number(state, -1))) else 24;
+        pop(api, state, 1);
+        const sidebar_width = @as(f32, @floatFromInt(sidebar_cols)) * ctx.renderer.cell_w + ctx.renderer.cell_w;
+
+        api.get_field(state, sidebar_idx, "reserve");
+        const reserve = api.to_boolean(state, -1) != 0;
+        pop(api, state, 1);
+
+        api.get_field(state, sidebar_idx, "side");
+        var side_len: usize = 0;
+        const side_ptr = api.to_lstring(state, -1, &side_len);
+        const side = if (side_ptr) |ptr| ptr[0..side_len] else "left";
+        pop(api, state, 1);
+        if (reserve) {
+            reserved_sidebar_width = sidebar_width;
+            reserved_sidebar_side_right = std.mem.eql(u8, side, "right");
+        }
+
+        const panel_x: f32 = if (std.mem.eql(u8, side, "right")) ctx.width - sidebar_width else 0.0;
+        const panel_y: f32 = @as(f32, @floatFromInt(ctx.app.tabBarHeight()));
+        const panel_h: f32 = ctx.height - panel_y;
+        drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, 22, 27, 34, 235);
+        drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, 122, 162, 247, 255);
+
+        api.get_field(state, sidebar_idx, "rows");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            const rows_idx = absoluteIndex(api, state, -1);
+            var row_i: c_int = 1;
+            while (true) : (row_i += 1) {
+                api.rawgeti(state, rows_idx, row_i);
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                    pop(api, state, 1);
+                    break;
+                }
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    const row_segments = lua_mod.parseSegmentArray(api, state, seg_text_buf[0..], absoluteIndex(api, state, -1));
+                    const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
+                    drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments);
+                }
+                pop(api, state, 1);
+            }
+        }
+        pop(api, state, 1);
+    }
+    pop(api, state, 1);
+
+    api.get_field(state, -1, "_overlay_state");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const stacks_idx = absoluteIndex(api, state, -1);
+        var stack_i: c_int = 1;
+        while (true) : (stack_i += 1) {
+            api.rawgeti(state, stacks_idx, stack_i);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                pop(api, state, 1);
+                break;
+            }
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const rows_idx = absoluteIndex(api, state, -1);
+                const available_width = @max(@as(f32, 160.0), ctx.width - reserved_sidebar_width);
+                const panel_w = available_width * 0.6;
+                const panel_h = ctx.renderer.cell_h * 6.0;
+                const content_left = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right)
+                    reserved_sidebar_width
+                else
+                    0.0;
+                const panel_x = content_left + (available_width - panel_w) * 0.5;
+                const panel_y = @as(f32, @floatFromInt(ctx.app.tabBarHeight())) + ctx.renderer.cell_h * 1.5 * @as(f32, @floatFromInt(stack_i));
+                drawBorderRect(panel_x, panel_y, panel_w, panel_h, 18, 22, 30, 235);
+                drawBorderRect(panel_x, panel_y, panel_w, 1.0, 136, 192, 208, 255);
+
+                var row_i: c_int = 1;
+                while (true) : (row_i += 1) {
+                    api.rawgeti(state, rows_idx, row_i);
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                        pop(api, state, 1);
+                        break;
+                    }
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        const row_segments = lua_mod.parseSegmentArray(api, state, seg_text_buf[0..], absoluteIndex(api, state, -1));
+                        const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
+                        drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, panel_w - ctx.renderer.cell_w, row_segments);
+                    }
+                    pop(api, state, 1);
+                }
+            }
+            pop(api, state, 1);
+        }
+    }
+    pop(api, state, 3);
 }
 
 fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_right: f32, layouts: []CustomTabLayout, title_storage: []u8) []CustomTabLayout {
@@ -1626,6 +1777,22 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             drawBorderRect(hint_x, hint_y, hint_w, 1.0, 122, 162, 247, 255);
             renderer.drawLabelFace(hint_x + renderer.cell_w * 0.5, hint_y + 4.0, hint, 220, 225, 235, 0);
             c.sgl_load_default_pipeline();
+        }
+    }
+
+    if (g_ft_renderer) |*renderer| {
+        c.sgl_defaults();
+        c.sgl_viewport(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+        c.sgl_scissor_rect(0, 0, @intFromFloat(width), @intFromFloat(height), true);
+        c.sgl_load_default_pipeline();
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+
+        if (app.lua) |*lua| {
+            g_widget_render_ctx = .{ .app = app, .renderer = renderer, .width = width, .height = height };
+            defer g_widget_render_ctx = null;
+            lua.withLockedState(void, renderLuaWidgets);
         }
     }
 

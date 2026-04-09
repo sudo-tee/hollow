@@ -1,10 +1,12 @@
 const std = @import("std");
 const c = @import("sokol_c");
+const builtin = @import("builtin");
 const Config = @import("config.zig").Config;
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
 const LuaRuntime = @import("lua/luajit.zig").Runtime;
 const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
+const SidebarLayout = @import("lua/luajit.zig").SidebarLayout;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const mux_mod = @import("mux.zig");
@@ -25,6 +27,8 @@ const Pane = @import("pane.zig").Pane;
 const platform = @import("platform.zig");
 const bar = @import("ui/bar.zig");
 const selection = @import("selection.zig");
+
+extern fn sapp_set_window_title(title: [*:0]const u8) void;
 
 const CLIPBOARD_EVENT_MAX = 8192;
 
@@ -55,6 +59,15 @@ fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
         hasher.update("\n");
     }
     return hasher.final();
+}
+
+fn titleCString(text: []const u8) [*:0]const u8 {
+    const max_len = 255;
+    var buf: [max_len + 1]u8 = undefined;
+    const trimmed = if (text.len > max_len) text[0..max_len] else text;
+    @memcpy(buf[0..trimmed.len], trimmed);
+    buf[trimmed.len] = 0;
+    return @ptrCast(&buf);
 }
 
 /// An event captured on the sokol event thread, to be dispatched
@@ -387,6 +400,7 @@ pub const App = struct {
                 },
                 .focus => |gained| {
                     self.sendFocus(gained) catch {};
+                    self.emitLuaBuiltInEvent(if (gained) "window:focused" else "window:blurred", .none);
                 },
                 .key => |k| {
                     var text: ?[]const u8 = null;
@@ -565,36 +579,7 @@ pub const App = struct {
 
         // Register app action callbacks so Lua can call split_pane etc.
         if (self.lua) |*lua| {
-            lua.registerAppCallbacks(.{
-                .app = self,
-                .split_pane = luaSplitPaneCallback,
-                .new_tab = luaNewTabCallback,
-                .close_tab = luaCloseTabCallback,
-                .close_pane = luaClosePaneCallback,
-                .next_tab = luaNextTabCallback,
-                .prev_tab = luaPrevTabCallback,
-                .new_workspace = luaNewWorkspaceCallback,
-                .next_workspace = luaNextWorkspaceCallback,
-                .prev_workspace = luaPrevWorkspaceCallback,
-                .switch_workspace = luaSwitchWorkspaceCallback,
-                .focus_pane = luaFocusPaneCallback,
-                .resize_pane = luaResizePaneCallback,
-                .switch_tab = luaSwitchTabCallback,
-                .set_workspace_name = luaSetWorkspaceNameCallback,
-                .set_tab_title = luaSetTabTitleCallback,
-                .get_tab_count = luaGetTabCountCallback,
-                .get_active_tab_index = luaGetActiveTabIndexCallback,
-                .get_workspace_count = luaGetWorkspaceCountCallback,
-                .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
-                .get_workspace_name = luaGetWorkspaceNameCallback,
-                .is_leader_active = luaIsLeaderActiveCallback,
-                .copy_selection = luaCopySelectionCallback,
-                .paste_clipboard = luaPasteClipboardCallback,
-                .scroll_active = luaScrollActiveCallback,
-                .scroll_active_page = luaScrollActivePageCallback,
-                .scroll_active_top = luaScrollActiveTopCallback,
-                .scroll_active_bottom = luaScrollActiveBottomCallback,
-            });
+            self.registerLuaCallbacks(lua);
         }
 
         try self.tick();
@@ -602,6 +587,66 @@ pub const App = struct {
 
     pub fn fireGuiReady(self: *App) void {
         if (self.lua) |*lua| lua.fireGuiReady();
+    }
+
+    fn emitLuaBuiltInEvent(self: *App, name: []const u8, payload: @import("lua/luajit.zig").BuiltInPayload) void {
+        if (self.lua) |*lua| lua.emitBuiltInEvent(name, payload);
+    }
+
+    fn registerLuaCallbacks(self: *App, lua: *LuaRuntime) void {
+        lua.registerAppCallbacks(.{
+            .app = self,
+            .split_pane = luaSplitPaneCallback,
+            .new_tab = luaNewTabCallback,
+            .close_tab = luaCloseTabCallback,
+            .close_pane = luaClosePaneCallback,
+            .next_tab = luaNextTabCallback,
+            .prev_tab = luaPrevTabCallback,
+            .new_workspace = luaNewWorkspaceCallback,
+            .next_workspace = luaNextWorkspaceCallback,
+            .prev_workspace = luaPrevWorkspaceCallback,
+            .switch_workspace = luaSwitchWorkspaceCallback,
+            .focus_pane = luaFocusPaneCallback,
+            .resize_pane = luaResizePaneCallback,
+            .switch_tab = luaSwitchTabCallback,
+            .set_workspace_name = luaSetWorkspaceNameCallback,
+            .set_tab_title = luaSetTabTitleCallback,
+            .set_tab_title_by_id = luaSetTabTitleByIdCallback,
+            .reload_config = luaReloadConfigCallback,
+            .get_tab_count = luaGetTabCountCallback,
+            .get_active_tab_index = luaGetActiveTabIndexCallback,
+            .get_current_tab_id = luaCurrentTabIdCallback,
+            .get_current_pane_id = luaCurrentPaneIdCallback,
+            .get_tab_id_at = luaGetTabIdAtCallback,
+            .get_tab_pane_count = luaGetTabPaneCountCallback,
+            .get_tab_pane_id_at = luaGetTabPaneIdAtCallback,
+            .get_tab_active_pane_id = luaGetTabActivePaneIdCallback,
+            .get_tab_index_by_id = luaGetTabIndexByIdCallback,
+            .get_workspace_count = luaGetWorkspaceCountCallback,
+            .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
+            .get_workspace_name = luaGetWorkspaceNameCallback,
+            .get_pane_pid = luaGetPanePidCallback,
+            .get_pane_title = luaGetPaneTitleCallback,
+            .get_pane_cwd = luaGetPaneCwdCallback,
+            .get_pane_rows = luaGetPaneRowsCallback,
+            .get_pane_cols = luaGetPaneColsCallback,
+            .get_pane_width = luaGetPaneWidthCallback,
+            .get_pane_height = luaGetPaneHeightCallback,
+            .get_window_width = luaGetWindowWidthCallback,
+            .get_window_height = luaGetWindowHeightCallback,
+            .pane_is_focused = luaPaneIsFocusedCallback,
+            .pane_exists = luaPaneExistsCallback,
+            .switch_tab_by_id = luaSwitchTabByIdCallback,
+            .close_tab_by_id = luaCloseTabByIdCallback,
+            .send_text_to_pane = luaSendTextToPaneCallback,
+            .is_leader_active = luaIsLeaderActiveCallback,
+            .copy_selection = luaCopySelectionCallback,
+            .paste_clipboard = luaPasteClipboardCallback,
+            .scroll_active = luaScrollActiveCallback,
+            .scroll_active_page = luaScrollActivePageCallback,
+            .scroll_active_top = luaScrollActiveTopCallback,
+            .scroll_active_bottom = luaScrollActiveBottomCallback,
+        });
     }
 
     fn tryInitLua(self: *App) void {
@@ -709,6 +754,12 @@ pub const App = struct {
         pane.sendText(text);
     }
 
+    pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
+        const pane = self.findPaneById(pane_id) orelse return false;
+        pane.sendText(text);
+        return true;
+    }
+
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
         self.cell_width_px = @max(1, cell_w);
         self.cell_height_px = @max(1, cell_h);
@@ -726,8 +777,18 @@ pub const App = struct {
         self.config.window_height = pixel_height;
 
         const tbh = self.tabBarHeight();
+        const sidebar = self.sidebarLayout();
+        const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
+        const right_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .right)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
         const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
-        const inner_width = if (pixel_width > horizontal_reserved) pixel_width - horizontal_reserved else 1;
+        const content_width = if (pixel_width > left_inset + right_inset) pixel_width - left_inset - right_inset else 1;
+        const inner_width = if (content_width > horizontal_reserved) content_width - horizontal_reserved else 1;
         const content_height = if (pixel_height > tbh) pixel_height - tbh else 1;
         const inner_height = if (content_height > self.config.terminal_padding.vertical()) content_height - self.config.terminal_padding.vertical() else 1;
 
@@ -747,6 +808,12 @@ pub const App = struct {
 
         _ = size_unchanged;
         std.log.info("app: resized window={d}x{d} grid={d}x{d} cell={d}x{d}", .{ pixel_width, pixel_height, self.config.cols, self.config.rows, self.cell_width_px, self.cell_height_px });
+        self.emitLuaBuiltInEvent("window:resized", .{ .window_size = .{
+            .rows = self.config.rows,
+            .cols = self.config.cols,
+            .width = pixel_width,
+            .height = pixel_height,
+        } });
     }
 
     pub fn requestResize(self: *App, pixel_width: u32, pixel_height: u32) void {
@@ -1114,6 +1181,16 @@ pub const App = struct {
         return false;
     }
 
+    pub fn findPaneById(self: *App, pane_id: usize) ?*Pane {
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                if (@intFromPtr(pane) == pane_id) return pane;
+            }
+        }
+        return null;
+    }
+
     pub fn isPaneVisible(self: *App, needle: *const Pane) bool {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
@@ -1223,14 +1300,7 @@ pub const App = struct {
         const mux = if (self.mux) |*m| m else return null;
         const tab = mux.activeTab() orelse return null;
         const root = tab.root_split orelse return null;
-        const tbh = self.tabBarHeight();
-        const h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
-        const bounds = PaneBounds{
-            .x = 0,
-            .y = tbh,
-            .width = self.config.window_width,
-            .height = h,
-        };
+        const bounds = self.activeLayoutBounds();
         return hitTestDivider(root, bounds, x, y, radius);
     }
 
@@ -1566,6 +1636,55 @@ pub const App = struct {
         return null;
     }
 
+    pub fn tabById(self: *App, id: usize) ?*Tab {
+        if (self.mux) |*mux| return mux.tabById(id);
+        return null;
+    }
+
+    pub fn reloadConfig(self: *App) bool {
+        if (self.loaded_config_path == null) return false;
+
+        const old_window_width = self.config.window_width;
+        const old_window_height = self.config.window_height;
+        const old_cell_width = self.cell_width_px;
+        const old_cell_height = self.cell_height_px;
+
+        self.config.deinit();
+        self.config = Config.init(self.allocator);
+
+        if (self.lua) |*lua| {
+            lua.deinit();
+            self.lua = null;
+        }
+
+        self.tryInitLua();
+        if (self.lua == null) return false;
+
+        if (self.config.window_width == 1280 and old_window_width != 0) self.config.window_width = old_window_width;
+        if (self.config.window_height == 800 and old_window_height != 0) self.config.window_height = old_window_height;
+        self.cell_width_px = @max(1, old_cell_width);
+        self.cell_height_px = @max(1, old_cell_height);
+
+        if (self.ghostty) |*runtime| {
+            if (self.mux) |*mux| {
+                var panes = mux.paneIterator();
+                while (panes.next()) |pane| {
+                    pane.refreshTitle(runtime, self.config.windowTitle());
+                    _ = pane.refreshCwd();
+                }
+                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
+            }
+            self.resize(self.config.window_width, self.config.window_height);
+            self.requestLayoutResize(true);
+        }
+
+        sapp_set_window_title(titleCString(self.activeTitle()));
+
+        if (self.lua) |*lua| self.registerLuaCallbacks(lua);
+        self.emitLuaBuiltInEvent("config:reloaded", .none);
+        return true;
+    }
+
     pub fn newTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
@@ -1581,7 +1700,11 @@ pub const App = struct {
     pub fn closeTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
+        const closed_tab = mux.activeTab();
         const should_quit = mux.closeTab(runtime);
+        if (closed_tab) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab.id });
+        }
         if (should_quit) {
             std.log.info("app: last tab closed, quitting", .{});
             self.pending_quit = true;
@@ -1590,6 +1713,9 @@ pub const App = struct {
         // Re-register callbacks for the new active pane after tab switch.
         if (mux.activePane()) |active| {
             runtime.registerCallbacks(active.terminal, terminalCallbacks());
+        }
+        if (mux.activeTab()) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.requestLayoutResize(false);
     }
@@ -1612,12 +1738,18 @@ pub const App = struct {
     }
 
     pub fn nextTab(self: *App) void {
-        if (self.mux) |*mux| mux.nextTab();
+        if (self.mux) |*mux| {
+            mux.nextTab();
+            if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        }
         self.requestLayoutResize(false);
     }
 
     pub fn prevTab(self: *App) void {
-        if (self.mux) |*mux| mux.prevTab();
+        if (self.mux) |*mux| {
+            mux.prevTab();
+            if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        }
         self.requestLayoutResize(false);
     }
 
@@ -1669,6 +1801,7 @@ pub const App = struct {
             if (self.ghostty) |*runtime| {
                 if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
             }
+            if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutResize(false);
         }
     }
@@ -1699,26 +1832,58 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.focusPaneInDirection(direction, self.config.window_width, self.config.window_height);
             self.invalidateFocusedPaneCache(previous, mux.activePane());
+            if (mux.activePane()) |pane| {
+                if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = @intFromPtr(pane) });
+            }
         }
     }
 
     pub fn computeActiveLayout(self: *App, out: []LayoutLeaf) []LayoutLeaf {
-        const tbh = self.tabBarHeight();
-        const h = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+        const bounds = self.activeLayoutBounds();
         if (self.mux) |*mux| {
             const tab = mux.activeTab() orelse return out[0..0];
             var written: usize = 0;
             const root = tab.root_split orelse return out[0..0];
-            const bounds = PaneBounds{
-                .x = 0,
-                .y = tbh,
-                .width = self.config.window_width,
-                .height = h,
-            };
             layoutSplitTree(root, bounds, out, &written);
             return out[0..written];
         }
         return out[0..0];
+    }
+
+    fn activeLayoutBounds(self: *App) PaneBounds {
+        const tbh = self.tabBarHeight();
+        const height = if (self.config.window_height > tbh) self.config.window_height - tbh else 1;
+        const sidebar = self.sidebarLayout();
+        const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
+        const right_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .right)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
+        const width = if (self.config.window_width > left_inset + right_inset)
+            self.config.window_width - left_inset - right_inset
+        else
+            1;
+        return .{
+            .x = left_inset,
+            .y = tbh,
+            .width = width,
+            .height = height,
+        };
+    }
+
+    pub fn sidebarLayout(self: *App) ?SidebarLayout {
+        if (self.lua) |*lua| return lua.resolveSidebarLayout();
+        return null;
+    }
+
+    pub fn sidebarReservedWidthPx(self: *App, sidebar: SidebarLayout) u32 {
+        if (!sidebar.reserve or sidebar.width_cols == 0) return 0;
+        const cols_u32 = std.math.cast(u32, sidebar.width_cols) orelse std.math.maxInt(u32);
+        const base = cols_u32 * self.cell_width_px;
+        return @min(self.config.window_width, base + self.cell_width_px);
     }
 
     pub fn activeTitle(self: *App) []const u8 {
@@ -1766,6 +1931,14 @@ pub const App = struct {
             }
         }
         return self.config.windowTitle();
+    }
+
+    pub fn tabIndexById(self: *App, tab_id: usize) ?usize {
+        const ws = self.activeWorkspace() orelse return null;
+        for (ws.tabs.items, 0..) |tab, index| {
+            if (tab.id == tab_id) return index;
+        }
+        return null;
     }
 
     pub fn topBarTitle(self: *App, index: usize, hover_close: bool, out_buf: []u8) []const u8 {
@@ -1849,6 +2022,7 @@ pub const App = struct {
                     runtime.registerCallbacks(active.terminal, terminalCallbacks());
                 }
             }
+            if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutResize(false);
         }
     }
@@ -1953,6 +2127,14 @@ pub const App = struct {
         pane.title = pane.allocator.dupe(u8, title) catch &.{};
     }
 
+    pub fn setTabTitleById(self: *App, tab_id: usize, title: []const u8) bool {
+        const tab = self.tabById(tab_id) orelse return false;
+        const pane = tab.activePane() orelse return false;
+        if (pane.title.len > 0) pane.allocator.free(pane.title);
+        pane.title = pane.allocator.dupe(u8, title) catch &.{};
+        return true;
+    }
+
     fn resolveConfigPath(self: *App, override: ?[]const u8) !?[]u8 {
         if (override) |path| return try self.allocator.dupe(u8, path);
 
@@ -2047,6 +2229,25 @@ pub const App = struct {
                 pane.pollPty(runtime) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
+                if (pane.title_dirty and builtin.os.tag != .windows) {
+                    const old_title = self.allocator.dupe(u8, pane.title) catch null;
+                    defer if (old_title) |value| self.allocator.free(value);
+                    pane.refreshTitle(runtime, self.config.windowTitle());
+                    self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
+                        .pane_id = @intFromPtr(pane),
+                        .old_title = if (old_title) |value| value else "",
+                        .new_title = pane.title,
+                    } });
+                }
+                const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
+                defer if (old_cwd) |value| self.allocator.free(value);
+                if (pane.refreshCwd()) {
+                    self.emitLuaBuiltInEvent("term:cwd_changed", .{ .pane_cwd_changed = .{
+                        .pane_id = @intFromPtr(pane),
+                        .old_cwd = if (old_cwd) |value| value else "",
+                        .new_cwd = pane.cwd,
+                    } });
+                }
                 std.log.info("tickPanes[{d}]: pollPty done", .{pane_idx});
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
@@ -2108,6 +2309,19 @@ pub const App = struct {
         // Use tabBarHeight() which already handles the count guard.
         const tbh = self.tabBarHeight();
         const pane_h = if (pixel_height > tbh) pixel_height - tbh else 1;
+        const sidebar = self.sidebarLayout();
+        const left_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .left)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
+        const right_inset = if (sidebar != null and sidebar.?.reserve and sidebar.?.side == .right)
+            self.sidebarReservedWidthPx(sidebar.?)
+        else
+            0;
+        const layout_width = if (pixel_width > left_inset + right_inset)
+            pixel_width - left_inset - right_inset
+        else
+            1;
 
         // Resize panes on every tab so that background tabs get
         // render_state_ready = true even when they are not visible.
@@ -2116,9 +2330,9 @@ pub const App = struct {
         for (ws.tabs.items) |tab| {
             var written: usize = 0;
             const bounds = PaneBounds{
-                .x = 0,
+                .x = left_inset,
                 .y = tbh,
-                .width = pixel_width,
+                .width = layout_width,
                 .height = pane_h,
             };
             if (tab.root_split) |root| {
@@ -2170,7 +2384,7 @@ pub const App = struct {
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
                     const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
-                    const inner_width = if (pixel_width > horizontal_reserved) pixel_width - horizontal_reserved else 1;
+                    const inner_width = if (layout_width > horizontal_reserved) layout_width - horizontal_reserved else 1;
                     const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
@@ -2183,7 +2397,7 @@ pub const App = struct {
                     pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     pane.setMouseSize(
                         runtime,
-                        pixel_width,
+                        layout_width,
                         pane_h,
                         self.cell_width_px,
                         self.cell_height_px,
@@ -2200,7 +2414,11 @@ pub const App = struct {
     }
     /// Fire the Lua on_key handler. Returns true if the key was consumed.
     pub fn fireOnKey(self: *App, key: []const u8, mods: u32) bool {
-        if (self.lua) |*lua| return lua.fireOnKey(key, mods);
+        if (self.lua) |*lua| {
+            const consumed = lua.fireOnKey(key, mods);
+            if (!consumed) self.emitLuaBuiltInEvent("key:unhandled", .{ .key_unhandled = .{ .key = key, .mods = mods } });
+            return consumed;
+        }
         return false;
     }
 
@@ -2406,11 +2624,11 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.Devic
 }
 
 fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (builtin.os.tag == .windows) return;
     const app = title_bridge orelse return;
-    if (app.ghostty) |*runtime| {
-        if (getPaneForTerminal(app, term)) |pane| {
-            pane.refreshTitle(runtime, app.config.windowTitle());
-        }
+    _ = app;
+    if (getPaneForTerminal(title_bridge orelse return, term)) |pane| {
+        pane.title_dirty = true;
     }
 }
 
@@ -2484,6 +2702,153 @@ fn luaSwitchTabCallback(app_ptr: *anyopaque, index: usize) void {
 fn luaSetTabTitleCallback(app_ptr: *anyopaque, title: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     app.setTabTitle(title);
+}
+
+fn luaCurrentTabIdCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const tab = app.activeTab() orelse return 0;
+    return tab.id;
+}
+
+fn luaCurrentPaneIdCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.activePane() orelse return 0;
+    return @intFromPtr(pane);
+}
+
+fn luaGetTabIdAtCallback(app_ptr: *anyopaque, index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const ws = app.activeWorkspace() orelse return 0;
+    if (index >= ws.tabs.items.len) return 0;
+    return ws.tabs.items[index].id;
+}
+
+fn luaGetTabPaneCountCallback(app_ptr: *anyopaque, tab_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const tab = app.tabById(tab_id) orelse return 0;
+    return tab.panes.items.len;
+}
+
+fn luaGetTabPaneIdAtCallback(app_ptr: *anyopaque, tab_id: usize, index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const tab = app.tabById(tab_id) orelse return 0;
+    if (index >= tab.panes.items.len) return 0;
+    return @intFromPtr(tab.panes.items[index]);
+}
+
+fn luaGetTabActivePaneIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const tab = app.tabById(tab_id) orelse return 0;
+    const pane = tab.activePane() orelse return 0;
+    return @intFromPtr(pane);
+}
+
+fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.tabIndexById(tab_id) orelse std.math.maxInt(usize);
+}
+
+fn luaGetPanePidCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.childPid();
+}
+
+fn luaGetPaneTitleCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
+    _ = out_buf;
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return "";
+    return pane.title;
+}
+
+fn luaGetPaneCwdCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
+    _ = out_buf;
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return "";
+    return pane.cwd;
+}
+
+fn luaGetPaneRowsCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.rows;
+}
+
+fn luaGetPaneColsCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.cols;
+}
+
+fn luaGetPaneWidthCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&layout_buf);
+    for (leaves) |leaf| {
+        if (@intFromPtr(leaf.pane) == pane_id) return leaf.bounds.width;
+    }
+    return 0;
+}
+
+fn luaGetPaneHeightCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const leaves = app.computeActiveLayout(&layout_buf);
+    for (leaves) |leaf| {
+        if (@intFromPtr(leaf.pane) == pane_id) return leaf.bounds.height;
+    }
+    return 0;
+}
+
+fn luaGetWindowWidthCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.config.window_width;
+}
+
+fn luaGetWindowHeightCallback(app_ptr: *anyopaque) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.config.window_height;
+}
+
+fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.activePane() orelse return false;
+    return @intFromPtr(pane) == pane_id;
+}
+
+fn luaPaneExistsCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.findPaneById(pane_id) != null;
+}
+
+fn luaSwitchTabByIdCallback(app_ptr: *anyopaque, tab_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const index = app.tabIndexById(tab_id) orelse return false;
+    app.switchTab(index);
+    return true;
+}
+
+fn luaCloseTabByIdCallback(app_ptr: *anyopaque, tab_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const index = app.tabIndexById(tab_id) orelse return false;
+    app.switchTab(index);
+    app.closeTab();
+    return true;
+}
+
+fn luaSetTabTitleByIdCallback(app_ptr: *anyopaque, tab_id: usize, title: []const u8) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.setTabTitleById(tab_id, title);
+}
+
+fn luaReloadConfigCallback(app_ptr: *anyopaque) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.reloadConfig();
+}
+
+fn luaSendTextToPaneCallback(app_ptr: *anyopaque, pane_id: usize, text: []const u8) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.sendTextToPane(pane_id, text);
 }
 
 fn luaGetTabCountCallback(app_ptr: *anyopaque) usize {

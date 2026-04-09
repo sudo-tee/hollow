@@ -43,6 +43,7 @@ pub const WindowsPty = struct {
     hpc: HPCON,
     process: windows.HANDLE,
     thread: windows.HANDLE,
+    process_id: windows.DWORD,
     input_pipe_pty: windows.HANDLE,
     output_pipe_pty: windows.HANDLE,
     read_pipe: windows.HANDLE,
@@ -180,6 +181,7 @@ pub const WindowsPty = struct {
             .hpc = hpc.?,
             .process = pi.hProcess,
             .thread = pi.hThread,
+            .process_id = pi.dwProcessId,
             .input_pipe_pty = input_read, // kept open (closing it breaks ConPTY input on some configs)
             .output_pipe_pty = windows.INVALID_HANDLE_VALUE, // already closed
             .read_pipe = output_read,
@@ -205,6 +207,7 @@ pub const WindowsPty = struct {
         // Check pipe EOF first — the reader thread sets this when ReadFile fails.
         self.reader_state.mutex.lock();
         const eof = self.reader_state.eof;
+        const saw_read = self.reader_state.saw_read;
         self.reader_state.mutex.unlock();
         if (eof) {
             self.alive = false;
@@ -220,8 +223,14 @@ pub const WindowsPty = struct {
         // ReadFile then returns error 109 (broken pipe) and the reader thread sets
         // eof, so the pipe check above catches it.
         //
-        // As a belt-and-suspenders fallback, we also poll the process handle.
+        // As a belt-and-suspenders fallback, we also poll the process handle,
+        // but only before the PTY has produced any real output. Once we have
+        // seen bytes on the ConPTY pipe, the pipe lifetime is the authoritative
+        // signal. This avoids false deaths for launcher processes like `wsl.exe`
+        // that can exit while the real shell continues running behind the PTY.
         // WAIT_OBJECT_0 (0) means the process has exited.
+        if (saw_read) return true;
+
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
             if (windows.kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
                 self.alive = false;
@@ -273,6 +282,10 @@ pub const WindowsPty = struct {
 
     pub fn resize(self: *WindowsPty, cols: u16, rows: u16) void {
         _ = ResizePseudoConsole(self.hpc, .{ .X = @intCast(cols), .Y = @intCast(rows) });
+    }
+
+    pub fn childPid(self: *const WindowsPty) usize {
+        return @intCast(self.process_id);
     }
 
     pub fn close(self: *WindowsPty) void {
@@ -338,7 +351,6 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
         }
 
         reader_state.mutex.lock();
-        defer reader_state.mutex.unlock();
         reader_state.saw_read = true;
 
         var i: usize = 0;
@@ -348,6 +360,7 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
             reader_state.buf[idx] = temp[i];
             reader_state.len += 1;
         }
+        reader_state.mutex.unlock();
     }
 }
 

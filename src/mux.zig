@@ -491,6 +491,13 @@ pub const Workspace = struct {
         return self.active_tab;
     }
 
+    pub fn tabById(self: *Workspace, id: usize) ?*Tab {
+        for (self.tabs.items) |tab| {
+            if (tab.id == id) return tab;
+        }
+        return null;
+    }
+
     pub fn paneIterator(self: *Workspace) PaneIterator {
         return .{ .workspace = self };
     }
@@ -606,6 +613,11 @@ pub const Mux = struct {
     pub fn activeTab(self: *Mux) ?*Tab {
         const workspace = self.activeWorkspace() orelse return null;
         return workspace.activeTab();
+    }
+
+    pub fn tabById(self: *Mux, id: usize) ?*Tab {
+        if (self.activeWorkspace()) |ws| return ws.tabById(id);
+        return null;
     }
 
     pub fn setActivePane(self: *Mux, pane: *Pane) void {

@@ -7,6 +7,8 @@ const TerminalCallbacks = ghostty.TerminalCallbacks;
 const Pty = @import("pty/pty.zig").Pty;
 const platform = @import("platform.zig");
 
+const is_windows = @import("builtin").os.tag == .windows;
+
 const OSC52_PREFIX = "\x1b]52;";
 const OSC52_SEQUENCE_MAX = 65536;
 const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
@@ -23,6 +25,7 @@ pub const Pane = struct {
     mouse_encoder: ?*anyopaque = null,
     mouse_event: ?*anyopaque = null,
     title: []u8 = &.{},
+    cwd: []u8 = &.{},
     /// Actual terminal dimensions in characters (updated on every resize).
     cols: u16 = 0,
     rows: u16 = 0,
@@ -73,6 +76,7 @@ pub const Pane = struct {
     scrollbar_total: u64 = 0,
     scrollbar_offset: u64 = 0,
     scrollbar_len: u64 = 0,
+    title_dirty: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };
@@ -90,6 +94,7 @@ pub const Pane = struct {
         runtime.freeTerminal(self.terminal);
         if (self.pty) |*pty| pty.deinit();
         if (self.title.len > 0) self.allocator.free(self.title);
+        if (self.cwd.len > 0) self.allocator.free(self.cwd);
         self.* = Pane.init(self.allocator);
     }
 
@@ -236,6 +241,30 @@ pub const Pane = struct {
         }
     }
 
+    pub fn setCwd(self: *Pane, cwd: []const u8) void {
+        if (self.cwd.len > 0) self.allocator.free(self.cwd);
+        self.cwd = if (cwd.len > 0) self.allocator.dupe(u8, cwd) catch &.{} else &.{};
+    }
+
+    pub fn childPid(self: *const Pane) usize {
+        if (self.pty) |pty| return pty.childPid();
+        return 0;
+    }
+
+    pub fn refreshCwd(self: *Pane) bool {
+        if (is_windows) return false;
+        const pid = self.childPid();
+        if (pid == 0) return false;
+
+        var proc_path_buf: [64]u8 = undefined;
+        const proc_path = std.fmt.bufPrint(&proc_path_buf, "/proc/{d}/cwd", .{pid}) catch return false;
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = std.posix.readlink(proc_path, &cwd_buf) catch return false;
+        const changed = !std.mem.eql(u8, self.cwd, cwd);
+        self.setCwd(cwd);
+        return changed;
+    }
+
     /// Resize the pane.
     ///
     /// When `skip_pty` is true (drag-preview mode) only the pixel geometry and
@@ -375,6 +404,13 @@ pub const Pane = struct {
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8) void {
         std.log.info("refreshTitle start title.len={d}", .{self.title.len});
+        if (is_windows) {
+            if (self.title.len == 0) {
+                self.title = self.allocator.dupe(u8, fallback_title) catch &.{};
+            }
+            self.title_dirty = false;
+            return;
+        }
         if (self.title.len > 0) {
             self.allocator.free(self.title);
             self.title = &.{};
@@ -385,6 +421,7 @@ pub const Pane = struct {
         } else {
             self.title = self.allocator.dupe(u8, fallback_title) catch &.{};
         }
+        self.title_dirty = false;
     }
 
     pub fn hasLiveChild(self: *Pane) bool {

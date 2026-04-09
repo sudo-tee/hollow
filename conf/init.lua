@@ -66,9 +66,9 @@ local theme = {
 	indexed = { [16] = "#ffa066", [17] = "#ff5d62" },
 }
 
-g.log("loading native rewrite config")
+-- g.log("loading native rewrite config")
 
-g.set_config({
+g.config.set({
 	debug_overlay = false,
 	backend = "sokol",
 	vsync = false,
@@ -133,14 +133,14 @@ g.set_config({
 	},
 })
 
-hollow.workspace.set_name("default")
+-- g.term.set_workspace_name("default")
 
 if g.platform.is_windows then
-	g.set_config({
+	g.config.set({
 		shell = "wsl.exe",
 	})
 else
-	g.set_config({
+	g.config.set({
 		shell = g.platform.default_shell,
 	})
 end
@@ -148,106 +148,49 @@ end
 local _metrics_cache = nil
 local _metrics_last_t = 0
 
-hollow.status.set(function(side, active_tab_index, tab_count)
-	local workspace_count = hollow.get_workspace_count()
-	local workspace_name = hollow.workspace.get_name(hollow.get_active_workspace_index())
-
-	if side == "left" then
-		local leader_state = hollow.get_leader_state and hollow.get_leader_state() or nil
-		local leader = nil
+g.ui.topbar.mount(g.ui.topbar.new({
+	render = function(ctx)
+		local left = {}
+		local right = {}
+		local leader_state = nil -- g.keys.get_leader_state()
 
 		if leader_state and leader_state.active then
-			leader = {
-				{
-					text = " " .. leader_state.display .. " ",
-					fg = theme.background,
-					bg = theme.warm,
-					bold = true,
-				},
-			}
-
+			left[#left + 1] = g.ui.span(" " .. leader_state.display .. " ", {
+				fg = theme.background,
+				bg = theme.warm,
+				bold = true,
+			})
 			if leader_state.next and #leader_state.next > 0 then
-				local next_items = leader_state.next_display or {}
-				table.insert(leader, {
-					text = " " .. table.concat(next_items, "  ") .. " ",
+				left[#left + 1] = g.ui.span(" " .. table.concat(leader_state.next_display or {}, "  ") .. " ", {
 					fg = theme.status.fg,
 					bg = theme.status.bg,
 				})
 			end
+		else
+			left[#left + 1] = g.ui.span("  ", { fg = theme.warm, bg = theme.tab_bar.background, bold = true })
 		end
+		left[#left + 1] = g.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " ", {
+			fg = theme.status.fg,
+			bg = theme.status.bg,
+		})
 
-		if leader then
-			return leader
+		-- right[#right + 1] = g.ui.span(g.strftime("%H:%M:%S"), { fg = theme.status.fg, bg = theme.status.bg })
+
+		local row = {}
+		for _, node in ipairs(left) do
+			row[#row + 1] = node
 		end
+		row[#row + 1] = g.ui.spacer()
+		for _, node in ipairs(right) do
+			row[#row + 1] = node
+		end
+		return row
+	end,
+}))
 
-		return {
-			{ text = "  ", fg = theme.warm, bg = theme.tab_bar.background, bold = true },
-		}
-	end
-
-	if side == "right" then
-		local now = os.time()
-		-- if now ~= _metrics_last_t then
-		-- 	_metrics_cache = hollow.get_system_metrics()
-		-- 	_metrics_last_t = now
-		-- end
-		--
-		-- local cpu_text = ""
-		-- local mem_text = ""
-		-- local m = _metrics_cache
-		-- if m and m.error ~= "error" then
-		-- 	cpu_text = string.format("CPU: %.0f%% ", m.cpu_usage)
-		-- 	mem_text = string.format("RAM: %d/%dMB ", m.memory_used_mb, m.memory_total_mb)
-		-- end
-
-		local time_text = hollow.strftime("%H:%M:%S")
-
-		return {
-			{ text = time_text, fg = theme.status.fg, bg = theme.status.bg },
-		}
-	end
-
-	return nil
-end)
-
-hollow.top_bar.format_tab_title(function(index, is_active, hover_close, fallback_title)
-	local icon = is_active and "" or ""
-	local title = fallback_title
-
-	if title == nil or title == "" then
-		title = "shell"
-	end
-
-	return {
-		text = " " .. icon .. " " .. title .. " ",
-		fg = is_active and theme.tab_bar.active_tab.fg or theme.tab_bar.inactive_tab.fg,
-		bg = hover_close and theme.tab_bar.hover_close_bg
-			or (is_active and theme.tab_bar.active_tab.bg or theme.tab_bar.inactive_tab.bg),
-		bold = is_active,
-	}
-end)
-
-hollow.top_bar.format_workspace_title(
-	function(index, is_active, active_workspace_index, workspace_count, fallback_title)
-		local label = "  "
-			.. fallback_title
-			.. "  "
-			.. tostring(index + 1)
-			.. "/"
-			.. tostring(workspace_count)
-			.. " "
-
-		return {
-			text = label,
-			fg = is_active and theme.workspace.active_fg or theme.workspace.inactive_fg,
-			bg = is_active and theme.workspace.active_bg or theme.workspace.inactive_bg,
-		}
-	end
-)
-
-g.keymap.set_leader("ctrl+space", { timeout_ms = 1200 })
-g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
-g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
+-- g.keymap.set_leader("ctrl+space", { timeout_ms = 1200 })
+-- g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
+-- g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- Example of user overriding or adding keys:
 -- g.keymap.set("ctrl+t", "new_tab")
 -- g.keymap.set("ctrl+w", "close_tab")
@@ -258,7 +201,7 @@ g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- g.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 -- g.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 -- g.keymap.del("ctrl+shift+arrow_left")
-g.keymap.set("alt+shift+page_up", "scrollback_page_up", { desc = "scrollback page up" })
-g.keymap.set("alt+shift+page_down", "scrollback_page_down", { desc = "scrollback page down" })
-g.keymap.set("ctrl+shift+home", "scrollback_top", { desc = "scrollback top" })
-g.keymap.set("ctrl+shift+end", "scrollback_bottom", { desc = "scrollback bottom" })
+-- g.keymap.set("alt+shift+page_up", "scrollback_page_up", { desc = "scrollback page up" })
+-- g.keymap.set("alt+shift+page_down", "scrollback_page_down", { desc = "scrollback page down" })
+-- g.keymap.set("ctrl+shift+home", "scrollback_top", { desc = "scrollback top" })
+-- g.keymap.set("ctrl+shift+end", "scrollback_bottom", { desc = "scrollback bottom" })

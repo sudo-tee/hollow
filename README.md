@@ -4,55 +4,19 @@
     <img src="assets/banner.png" alt="Hollow demo" width="600"/>
 </div>
 
-Hollow is a terminal emulator built in Zig with a LuaJIT scripting layer and Ghostty's VT core for VT parsing and rendering. The project is currently in early development, but the goal is to create a fast, hackable, and cross-platform terminal with a Windows-first approach.
+Hollow is a Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core.
+The project is still early, but the current direction is already clear: native
+rendering, Lua-configured behavior, and a widget-driven UI layer.
 
-This project is built out of self interest and a desire to create a wezterm-like terminal emulator that is hackable and extensible through Lua scripting.
+## What works now
 
-## Disclaimer
-
-This project was heavily prototyped with the help of AI. The current state of the codebase is a mix of human-written and AI-generated code, and there may be some rough edges and inconsistencies as a result. However, the core architecture and design decisions were made by me.
-
-## Direction
-
-- `Zig` for the core runtime, platform layer, PTY layer, and terminal orchestration
-- `LuaJIT` as the hackable host scripting layer
-- Ghostty's VT core as the VT/parser/render-state engine
-- renderer seam shaped for `sokol` now and a future `webgpu` backend later
-- Windows treated as a first-class target instead of a fallback port
-
-## Why the name Hollow?
-
-- The terminal is like a hollow shell that you can fill with whatever you want. It's a place where you can run your commands, scripts, and applications. It's also a nod to the idea of a "hollow" project that is meant to be filled in and built upon by the community.
-- The concept of "hollowness" is deeply connected to spirits, ghosts, and the supernatural, often appearing as a physical or spiritual trait of restless entities. This ties into the use of Ghostty's VT core as the parsing and rendering engine, which is a key component of the terminal's architecture.
-- In the theme of spirits, you can also see Hollow as a spiritual successor to popular "WezTerm".
-
-## Current layout
-
-```text
-build.zig
-conf/init.lua
-src/
-  app.zig
-  config.zig
-  main.zig
-  platform.zig
-  lua/luajit.zig
-  term/ghostty.zig
-  render/
-docs/rewrite-architecture.md
-```
-
-## What works today
-
-- native Zig build entry point via `./launch.sh`
-- statically linked LuaJIT and a tiny `hollow` Lua API
-- config bootstrap from `conf/init.lua` or `~/.config/hollow/init.lua`
-- statically linked Ghostty terminal/render-state bootstrap
-- Windows-first `sokol_app` frontend path with a native event loop
-- ConPTY backend for Windows and `forkpty` backend for Unix
-- full-grid terminal rendering from Ghostty row/cell state into a native window
-- split panes, tabs, tab bar, and status bar rendering
-- configurable native font rendering with custom faces, fallback fonts, smoothing, and ligatures
+- native build and launch via `./launch.sh`
+- Lua config loading from `conf/init.lua` or the user config path
+- tabs, split panes, workspaces, scrollback, selection, clipboard, and hyperlinks
+- namespaced Lua API: `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keys`, `hollow.ui`
+- widget surfaces for topbar, sidebar, and overlay stacks
+- optional sidebar reservation so the terminal can shrink around the sidebar instead of drawing under it
+- LuaLS typings in `types/hollow.lua`
 
 ## Build
 
@@ -63,131 +27,85 @@ docs/rewrite-architecture.md
 
 The Windows executable is emitted at `zig-out/bin/hollow-native.exe`.
 
-LuaJIT is embedded via Zig dependency management and does not require a separate runtime DLL.
-
-## Releases
-
-- tagged pushes like `v0.1.0` trigger the GitHub Actions release workflow in `.github/workflows/release.yml`
-- the workflow currently builds a Windows `x86_64` release bundle and uploads a zip containing:
-  - `hollow-native.exe`
-  - `conf/init.lua`
-  - the RecMono font files referenced by the default config
-- local release verification uses `./launch.sh --build-only`
-
-## Dependencies
-
-- `ghostty` is fetched as a pinned remote Zig dependency in `build.zig.zon`
-- `sokol` stays in `third_party/sokol` because Hollow carries local patches there
-- font dependencies are built by `vendor/ghostty-fontdeps`, which fetches pinned upstream tarballs in the same URL/hash style Ghostty uses
-- LuaJIT is embedded through a patched local `vendor/zluajit` + `vendor/luajit-upstream` setup for the current Windows cross-build path
-
-See `vendor/README.md` for the rationale behind the vendored pieces.
-
-## Windows-first runtime
-
-- `src/render/sokol_runtime.zig` runs the app through `sokol_app`
-- Windows uses `D3D11` via Sokol; Linux keeps a fallback GL path for now
-- `src/pty/pty_windows.zig` uses ConPTY for the shell bridge
-- terminal content comes from the embedded Ghostty VT core row/cell iteration, then gets painted into the Sokol window
-
-Current renderer status:
-
-- full terminal grid is rendered through the native FreeType/HarfBuzz atlas path
-- keyboard, mouse, focus, resize, and scroll events are wired into Ghostty + PTY
-- split borders, panes, tabs, and top-bar/status content are rendered natively
-- font config supports custom regular/bold/italic faces, fallback stacks, smoothing, and ligatures
-
 ## Config model
 
-The new Lua host API is intentionally tiny right now:
+Hollow now uses the namespaced API directly:
 
 ```lua
-hollow.set_config({
+local hollow = require("hollow")
+
+hollow.config.set({
     backend = "sokol",
     shell = "pwsh.exe",
-    padding = 12,
-    fonts = {
-        size = 14.5,
-        line_height = 1.0,
-        smoothing = "grayscale",
-        hinting = "light",
-        ligatures = true,
-        regular = "fonts/YourMono-Regular.ttf",
-        bold = "fonts/YourMono-Bold.ttf",
-        italic = "fonts/YourMono-Italic.ttf",
-        bold_italic = "fonts/YourMono-BoldItalic.ttf",
-        fallbacks = {
-            "fonts/YourSymbols.ttf",
-        },
-    },
     cols = 120,
     rows = 34,
-    -- Scrollback is a byte budget, not a line count.
-    -- 64_000_000 ~= 64 MB of history per terminal.
     scrollback = 64_000_000,
-    scrollbar = {
-        enabled = true,
-        width = 10,
-        min_thumb_size = 24,
-        margin = 2,
-        jump_to_click = true,
-        track = "#1b1d25",
-        thumb = "#5f667a",
-        thumb_hover = "#7a839b",
-        thumb_active = "#9fb8e8",
-        border = "#2d3140",
+})
+
+hollow.ui.topbar.mount(hollow.ui.topbar.new({
+    render = function(ctx)
+        return {
+            hollow.ui.span(ctx.term.pane.cwd or "", { fg = "#dcd7ba" }),
+            hollow.ui.spacer(),
+            hollow.ui.span(hollow.strftime("%H:%M:%S"), { fg = "#7e9cd8" }),
+        }
+    end,
+}))
+
+hollow.keys.bind({
+    {
+        mods = "CTRL|SHIFT",
+        key = "n",
+        action = hollow.term.new_tab,
     },
-    hyperlinks = {
-        enabled = true,
-        shift_click_only = true,
-        match_www = true,
-        prefixes = "https:// http:// file:// ftp:// mailto:",
-        delimiters = " \t\r\n\"'<>[]{}|\\^`",
-        trim_leading = "([<{'\"",
-        trim_trailing = ".,;:!?)]}",
-    },
-    window_title = "hollow",
 })
 ```
 
-Shift-click hyperlink opening:
+## UI widgets
 
-- Hollow detects URLs in visible terminal rows using the configurable `hyperlinks.prefixes`, `hyperlinks.delimiters`, `hyperlinks.trim_leading`, and `hyperlinks.trim_trailing` rules.
-- `hyperlinks.match_www = true` also treats bare `www.example.com` style text as a link and opens it with an implicit `https://` prefix.
-- With `hyperlinks.shift_click_only = true`, hold `Shift` and left-click a URL to open it in the system browser.
+Widgets use shared primitives:
 
-Available helpers:
+- `hollow.ui.span(text, style?)`
+- `hollow.ui.spacer()`
+- `hollow.ui.icon(name, style?)`
+- `hollow.ui.group(children, style?)`
 
-- `hollow.log(...)`
-- `hollow.copy_selection()`
-- `hollow.paste_clipboard()`
-- `hollow.platform.os`
-- `hollow.platform.is_windows`
-- `hollow.platform.is_linux`
-- `hollow.platform.is_macos`
-- `hollow.platform.default_shell`
+Available surfaces:
 
-Default clipboard bindings now live in Lua, so you can override them from config:
+- `hollow.ui.topbar`
+- `hollow.ui.sidebar`
+- `hollow.ui.overlay`
+- `hollow.ui.notify`
+- `hollow.ui.input`
+- `hollow.ui.select`
 
-```lua
-hollow.keymap.del("ctrl+shift+v")
-hollow.keymap.del("shift+insert")
-hollow.keymap.set("alt+v", "paste_clipboard")
-hollow.keymap.set("ctrl+shift+c", "copy_selection")
-```
-
-Default scrollback bindings:
+Sidebar reservation is opt-in:
 
 ```lua
-hollow.keymap.set("alt+shift+page_up", "scrollback_page_up")
-hollow.keymap.set("alt+shift+page_down", "scrollback_page_down")
-hollow.keymap.set("ctrl+shift+home", "scrollback_top")
-hollow.keymap.set("ctrl+shift+end", "scrollback_bottom")
+hollow.ui.sidebar.mount(hollow.ui.sidebar.new({
+    side = "left",
+    width = 28,
+    reserve = true,
+    render = function(ctx)
+        return {
+            { hollow.ui.span("tabs", { bold = true }) },
+            { hollow.ui.span("active: " .. ctx.term.tab.title) },
+        }
+    end,
+}))
 ```
 
-## Next steps
+When `reserve = true`, Hollow reduces the terminal layout width to make room for
+the sidebar. When the sidebar is hidden or unmounted, that space is released.
 
-- harden ConPTY process lifecycle and release packaging
-- add text selection and copy/paste
-- add workspaces on top of the existing tabs + splits model
-- expand Lua from config-only into events, actions, and layout control
+## Docs and typings
+
+- API reference: `hollow-lua-api.md`
+- LuaLS typings: `types/hollow.lua`
+- default example config: `conf/init.lua`
+
+## Notes
+
+- `require("hollow")` returns the injected global runtime table.
+- The old flat Lua API has been removed from the default config surface.
+- `hollow.htp` and `hollow.process` still exist as planned namespaces, but are not fully implemented yet.

@@ -94,6 +94,10 @@ pub const PosixPty = struct {
         _ = c.ioctl(self.fd, c.TIOCSWINSZ, &winsize);
     }
 
+    pub fn childPid(self: *const PosixPty) usize {
+        return @intCast(self.pid);
+    }
+
     pub fn close(self: *PosixPty) void {
         if (self.closed) return;
         if (self.isAlive()) _ = c.kill(self.pid, c.SIGTERM);
