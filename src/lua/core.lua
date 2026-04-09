@@ -67,6 +67,8 @@ local mounted_sidebar = nil
 local sidebar_visible = false
 local overlay_stack = {}
 local notifications = {}
+local clone_value
+local merge_tables
 
 local function window_size_snapshot()
 	return {
@@ -355,7 +357,7 @@ local function trim_row_for_width(row, max_chars)
 	return segments
 end
 
-local function clone_value(value, seen)
+clone_value = function(value, seen)
 	if type(value) ~= "table" then
 		return value
 	end
@@ -373,7 +375,8 @@ local function clone_value(value, seen)
 	return copy
 end
 
-local function merge_tables(dst, src)
+
+merge_tables = function(dst, src)
 	for k, v in pairs(src) do
 		if type(v) == "table" then
 			local current = dst[k]

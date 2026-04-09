@@ -152,7 +152,7 @@ g.ui.topbar.mount(g.ui.topbar.new({
 	render = function(ctx)
 		local left = {}
 		local right = {}
-		local leader_state = nil -- g.keys.get_leader_state()
+		local leader_state = g.keymap.get_leader_state()
 
 		if leader_state and leader_state.active then
 			left[#left + 1] = g.ui.span(" " .. leader_state.display .. " ", {

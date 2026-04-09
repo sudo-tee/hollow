@@ -2359,6 +2359,8 @@ pub const App = struct {
                         leaf.pane.recreateRenderHelpers(runtime);
                         std.log.info("resizeAllPanes: recreateRenderHelpers done pane={x}", .{@intFromPtr(leaf.pane)});
                     }
+                    leaf.pane.width_px = leaf.bounds.width;
+                    leaf.pane.height_px = leaf.bounds.height;
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
@@ -2394,6 +2396,8 @@ pub const App = struct {
                         pane.recreateRenderHelpers(runtime);
                         std.log.info("resizeAllPanes (fallback): recreateRenderHelpers done pane={x}", .{@intFromPtr(pane)});
                     }
+                    pane.width_px = pixel_width;
+                    pane.height_px = pane_h;
                     pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     pane.setMouseSize(
                         runtime,
@@ -2782,22 +2786,14 @@ fn luaGetPaneColsCallback(app_ptr: *anyopaque, pane_id: usize) usize {
 
 fn luaGetPaneWidthCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-    const leaves = app.computeActiveLayout(&layout_buf);
-    for (leaves) |leaf| {
-        if (@intFromPtr(leaf.pane) == pane_id) return leaf.bounds.width;
-    }
-    return 0;
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.width_px;
 }
 
 fn luaGetPaneHeightCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
-    const leaves = app.computeActiveLayout(&layout_buf);
-    for (leaves) |leaf| {
-        if (@intFromPtr(leaf.pane) == pane_id) return leaf.bounds.height;
-    }
-    return 0;
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.height_px;
 }
 
 fn luaGetWindowWidthCallback(app_ptr: *anyopaque) usize {
