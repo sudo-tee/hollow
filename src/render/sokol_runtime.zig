@@ -34,6 +34,33 @@ const win32 = if (builtin.os.tag == .windows) struct {
         right: i32,
         bottom: i32,
     };
+    const POINT = extern struct {
+        x: i32,
+        y: i32,
+    };
+    const MONITORINFO = extern struct {
+        cbSize: u32,
+        rcMonitor: RECT,
+        rcWork: RECT,
+        dwFlags: u32,
+    };
+    const MINMAXINFO = extern struct {
+        ptReserved: POINT,
+        ptMaxSize: POINT,
+        ptMaxPosition: POINT,
+        ptMinTrackSize: POINT,
+        ptMaxTrackSize: POINT,
+    };
+    const MARGINS = extern struct {
+        cxLeftWidth: i32,
+        cxRightWidth: i32,
+        cyTopHeight: i32,
+        cyBottomHeight: i32,
+    };
+    const NCCALCSIZE_PARAMS = extern struct {
+        rgrc: [3]RECT,
+        lppos: ?*anyopaque,
+    };
 
     const GWL_STYLE: c_int = -16;
     const GWLP_WNDPROC: c_int = -4;
@@ -41,6 +68,11 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const WS_THICKFRAME: u32 = 0x00040000;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_NCHITTEST: u32 = 0x0084;
+    const WM_GETMINMAXINFO: u32 = 0x0024;
+    const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+    const MONITOR_DEFAULTTONEAREST: u32 = 0x00000002;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOZORDER: u32 = 0x0004;
@@ -76,6 +108,9 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) i32;
     extern "user32" fn GetSystemMetrics(nIndex: c_int) callconv(.c) c_int;
     extern "user32" fn IsIconic(hWnd: HWND) callconv(.c) i32;
+    extern "user32" fn IsZoomed(hWnd: HWND) callconv(.c) i32;
+    extern "user32" fn MonitorFromWindow(hWnd: HWND, dwFlags: u32) callconv(.c) ?*anyopaque;
+    extern "user32" fn GetMonitorInfoW(hMonitor: ?*anyopaque, lpmi: *MONITORINFO) callconv(.c) i32;
     extern "user32" fn SetCapture(hWnd: HWND) callconv(.c) ?HWND;
     extern "user32" fn ReleaseCapture() callconv(.c) i32;
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
@@ -83,6 +118,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn LoadCursorW(hInstance: ?*anyopaque, lpCursorName: usize) callconv(.c) ?*anyopaque;
     extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.c) ?*anyopaque;
+    extern "dwmapi" fn DwmExtendFrameIntoClientArea(hWnd: HWND, pMarInset: *const MARGINS) callconv(.c) i32;
+    extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.c) i32;
     // Standard cursor IDs (as usize for use with LoadCursorW's lpCursorName param)
     const IDC_ARROW: usize = 32512;
     const IDC_IBEAM: usize = 32513;
@@ -2186,28 +2223,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Draw 1px window frame border when the OS title bar is hidden.
-    if (!app.config.window_titlebar_show) {
-        const fw: i32 = @intFromFloat(width);
-        const fh: i32 = @intFromFloat(height);
-        c.sgl_defaults();
-        c.sgl_viewport(0, 0, fw, fh, true);
-        c.sgl_scissor_rect(0, 0, fw, fh, true);
-        c.sgl_load_default_pipeline();
-        c.sgl_matrix_mode_projection();
-        c.sgl_load_identity();
-        c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
-        // Subtle border colour — matches the inactive split-pane seam tone.
-        const br: u8 = 60;
-        const bg_: u8 = 65;
-        const bb: u8 = 75;
-        const ba: u8 = 255;
-        drawBorderRect(0.0, 0.0, width, 1.0, br, bg_, bb, ba); // top
-        drawBorderRect(0.0, height - 1.0, width, 1.0, br, bg_, bb, ba); // bottom
-        drawBorderRect(0.0, 0.0, 1.0, height, br, bg_, bb, ba); // left
-        drawBorderRect(width - 1.0, 0.0, 1.0, height, br, bg_, bb, ba); // right
-    }
-
     if (app.hasSelection()) {
         if (g_ft_renderer) |*renderer| {
             const fw: i32 = @intFromFloat(width);
@@ -2495,14 +2510,36 @@ fn applyWindowChrome(app: *App) bool {
         0,
         win32.SWP_NOSIZE | win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE | win32.SWP_FRAMECHANGED,
     );
+    extendDwmFrame(hwnd);
     return true;
+}
+
+fn extendDwmFrame(hwnd: win32.HWND) void {
+    if (builtin.os.tag != .windows) return;
+
+    const margins = win32.MARGINS{
+        .cxLeftWidth = 1,
+        .cxRightWidth = 1,
+        .cyTopHeight = 0,
+        .cyBottomHeight = 1,
+    };
+    _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+    const no_border: u32 = win32.DWMWA_COLOR_NONE;
+    _ = win32.DwmSetWindowAttribute(
+        hwnd,
+        win32.DWMWA_BORDER_COLOR,
+        @ptrCast(&no_border),
+        @sizeOf(u32),
+    );
 }
 
 fn borderHitTest(local_x: i32, local_y: i32, width: i32, height: i32) usize {
     if (builtin.os.tag != .windows) return win32.HTCLIENT;
 
-    const border_x = @max(1, win32.GetSystemMetrics(win32.SM_CXSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER));
-    const border_y = @max(1, win32.GetSystemMetrics(win32.SM_CYSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER));
+    const border = windowFrameBorder();
+    const border_x = border.x;
+    const border_y = border.y;
     const on_left = local_x >= 0 and local_x < border_x;
     const on_right = local_x < width and local_x >= width - border_x;
     const on_top = local_y >= 0 and local_y < border_y;
@@ -2519,6 +2556,15 @@ fn borderHitTest(local_x: i32, local_y: i32, width: i32, height: i32) usize {
     return win32.HTCLIENT;
 }
 
+fn windowFrameBorder() struct { x: i32, y: i32 } {
+    if (builtin.os.tag != .windows) return .{ .x = 0, .y = 0 };
+
+    return .{
+        .x = @max(1, win32.GetSystemMetrics(win32.SM_CXSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER)),
+        .y = @max(1, win32.GetSystemMetrics(win32.SM_CYSIZEFRAME) + win32.GetSystemMetrics(win32.SM_CXPADDEDBORDER)),
+    };
+}
+
 fn getXLParam(lparam: isize) i32 {
     const bits: usize = @bitCast(lparam);
     const value: u16 = @truncate(bits & 0xFFFF);
@@ -2531,10 +2577,34 @@ fn getYLParam(lparam: isize) i32 {
     return @as(i32, @as(i16, @bitCast(value)));
 }
 
+fn adjustMaximizedClientRect(mmi: *win32.MINMAXINFO, hwnd: win32.HWND) void {
+    if (builtin.os.tag != .windows) return;
+
+    const monitor = win32.MonitorFromWindow(hwnd, win32.MONITOR_DEFAULTTONEAREST) orelse return;
+    var mi = std.mem.zeroes(win32.MONITORINFO);
+    mi.cbSize = @sizeOf(win32.MONITORINFO);
+    if (win32.GetMonitorInfoW(monitor, &mi) == 0) return;
+
+    const work = mi.rcWork;
+    const monitor_rect = mi.rcMonitor;
+    mmi.ptMaxPosition.x = work.left - monitor_rect.left;
+    mmi.ptMaxPosition.y = work.top - monitor_rect.top;
+    mmi.ptMaxSize.x = work.right - work.left;
+    mmi.ptMaxSize.y = work.bottom - work.top;
+}
+
 fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.winapi) win32.LRESULT {
     switch (Msg) {
         win32.WM_NCCALCSIZE => {
             if (wParam != 0) return 0;
+        },
+        win32.WM_GETMINMAXINFO => {
+            const mmi: *win32.MINMAXINFO = @ptrFromInt(@as(usize, @intCast(lParam)));
+            adjustMaximizedClientRect(mmi, hWnd);
+            return 0;
+        },
+        win32.WM_DWMCOMPOSITIONCHANGED => {
+            extendDwmFrame(hWnd);
         },
         win32.WM_NCHITTEST => {
             var rect: win32.RECT = undefined;

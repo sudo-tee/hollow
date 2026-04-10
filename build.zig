@@ -101,6 +101,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("shell32", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
+        exe.root_module.linkSystemLibrary("dwmapi", .{});
     } else if (target.result.os.tag == .linux) {
         exe.root_module.linkSystemLibrary("X11", .{});
         exe.root_module.linkSystemLibrary("Xi", .{});
