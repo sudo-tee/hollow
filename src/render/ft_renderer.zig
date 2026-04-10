@@ -480,12 +480,17 @@ pub const FtRenderer = struct {
         const line_height = if (std.math.isFinite(cfg.line_height) and cfg.line_height > 0.0) cfg.line_height else 1.0;
         const cell_h = @ceil(base_cell_h * line_height);
         const baseline_ascender = ascender + (cell_h - base_cell_h) * 0.5;
-        // Advance of 'M' for cell width
+        // Advance of 'M' for cell width.
+        // Using ceil here tends to overestimate the cell for fonts with
+        // fractional advances, which shows up as extra horizontal breathing room
+        // across the entire terminal (very noticeable in editors like nvim).
+        // Round to the nearest pixel instead so the reported grid width tracks
+        // the actual font metrics more closely without biasing wide.
         var raw_cell_w: f32 = font_size_px * 0.6; // fallback
         if (ft.FT_Load_Char(face_regular, 'M', ft.FT_LOAD_NO_BITMAP) == 0) {
             raw_cell_w = @as(f32, @floatFromInt(face_regular.*.glyph.*.advance.x)) / 64.0;
         }
-        const cell_w = @ceil(raw_cell_w);
+        const cell_w = @max(@as(f32, 1.0), @round(raw_cell_w));
 
         std.log.info("ft_renderer: font_size={d:.1} dpi={d:.2} line_height={d:.2} cell={d:.1}x{d:.1} asc={d:.1}", .{
             cfg.font_size, cfg.dpi_scale, line_height, cell_w, cell_h, baseline_ascender,

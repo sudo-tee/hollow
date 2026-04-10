@@ -125,7 +125,7 @@ hwl.config.set({
   top_bar_draw_status = true,
   scrollback = 64000000,
   scrollbar = {
-    enabled = true,
+    enabled = false,
     width = 14,
     min_thumb_size = 24,
     margin = 2,

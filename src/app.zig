@@ -787,7 +787,10 @@ pub const App = struct {
             self.sidebarReservedWidthPx(sidebar.?)
         else
             0;
-        const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
+        const horizontal_reserved = if (self.activePane()) |pane|
+            self.paneHorizontalReserved(pane)
+        else
+            self.config.terminal_padding.horizontal();
         const content_width = if (pixel_width > left_inset + right_inset) pixel_width - left_inset - right_inset else 1;
         const inner_width = if (content_width > horizontal_reserved) content_width - horizontal_reserved else 1;
         const vertical_reserved = tbh + bbh;
@@ -997,7 +1000,7 @@ pub const App = struct {
         const leaves = self.computeActiveLayout(&layout_buf);
         for (leaves) |leaf| {
             if (leaf.pane != pane) continue;
-            const inner = self.paneInnerBounds(leaf.bounds);
+            const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
             const inner_right = inner.x + inner.width;
             const inner_bottom = inner.y + inner.height;
             const clamped_x = std.math.clamp(x, @as(f32, @floatFromInt(inner.x)), @as(f32, @floatFromInt(inner_right - 1)));
@@ -1173,6 +1176,18 @@ pub const App = struct {
         return null;
     }
 
+    fn scrollbarVisible(self: *const App, scrollbar: ghostty.TerminalScrollbar) bool {
+        return self.config.scrollbar.enabled and scrollbar.len > 0 and scrollbar.total > scrollbar.len;
+    }
+
+    fn paneScrollbarGutter(self: *const App, pane: *const Pane) u32 {
+        return if (self.scrollbarVisible(pane.scrollbar())) self.config.scrollbar.gutterWidth() else 0;
+    }
+
+    fn paneHorizontalReserved(self: *const App, pane: *const Pane) u32 {
+        return self.config.terminal_padding.horizontal() + self.paneScrollbarGutter(pane);
+    }
+
     pub fn hasPane(self: *App, needle: *const Pane) bool {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
@@ -1253,9 +1268,9 @@ pub const App = struct {
         y: f32,
     };
 
-    fn paneInnerBounds(self: *const App, bounds: PaneBounds) PaneBounds {
+    fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
         const pad = self.config.terminal_padding;
-        const scrollbar_gutter = @min(bounds.width, self.config.scrollbar.gutterWidth());
+        const scrollbar_gutter = @min(bounds.width, self.paneScrollbarGutter(pane));
         const trim_x = @min(bounds.width, pad.horizontal() + scrollbar_gutter);
         const trim_y = @min(bounds.height, pad.vertical());
         const inner_w = @max(@as(u32, 1), bounds.width - trim_x);
@@ -1276,7 +1291,7 @@ pub const App = struct {
         const ix = @as(u32, @intFromFloat(@max(0, x)));
         const iy = @as(u32, @intFromFloat(@max(0, y)));
         for (leaves) |leaf| {
-            const inner = self.paneInnerBounds(leaf.bounds);
+            const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
             if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
                 iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
             {
@@ -1395,16 +1410,20 @@ pub const App = struct {
     }
 
     fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) ghostty.TerminalScrollbar {
+        const was_visible = self.scrollbarVisible(pane.scrollbar());
         if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
             pane.scrollbar_total = scrollbar.total;
             pane.scrollbar_offset = scrollbar.offset;
             pane.scrollbar_len = scrollbar.len;
+            if (was_visible != self.scrollbarVisible(scrollbar)) self.requestLayoutResize(false);
             return scrollbar;
         }
-        pane.scrollbar_total = @as(u64, pane.rows) + @as(u64, self.config.scrollback);
+        pane.scrollbar_total = @max(@as(u64, 1), @as(u64, pane.rows));
         pane.scrollbar_offset = 0;
         pane.scrollbar_len = @max(@as(u64, 1), pane.rows);
-        return pane.scrollbar();
+        const fallback = pane.scrollbar();
+        if (was_visible != self.scrollbarVisible(fallback)) self.requestLayoutResize(false);
+        return fallback;
     }
 
     fn scrollbarMaxTopRow(scrollbar: ghostty.TerminalScrollbar) u64 {
@@ -1487,7 +1506,7 @@ pub const App = struct {
 
     fn paneScrollbarMetrics(self: *App, pane: *Pane, outer_bounds: PaneBounds) ?ScrollbarMetrics {
         if (!self.config.scrollbar.enabled) return null;
-        const gutter = self.config.scrollbar.gutterWidth();
+        const gutter = self.paneScrollbarGutter(pane);
         if (gutter == 0 or outer_bounds.width <= gutter) return null;
 
         const scrollbar = pane.scrollbar();
@@ -2324,7 +2343,7 @@ pub const App = struct {
                     // Skip panes with zero-size bounds — can happen when the window
                     // is very small or during layout transitions.
                     if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
-                    const inner = self.paneInnerBounds(leaf.bounds);
+                    const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
                     const raw_cols: u32 = inner.width / @max(1, self.cell_width_px);
                     const raw_rows: u32 = inner.height / @max(1, self.cell_height_px);
                     // Cap at sane max to prevent DLL crashes on extreme values.
@@ -2345,6 +2364,7 @@ pub const App = struct {
                     std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
                     // using the full surface size plus the pane's outer padding.
+                    const scrollbar_gutter = self.paneScrollbarGutter(leaf.pane);
                     leaf.pane.setMouseSize(
                         runtime,
                         leaf.bounds.width,
@@ -2354,7 +2374,7 @@ pub const App = struct {
                         self.config.terminal_padding.top,
                         self.config.terminal_padding.bottom,
                         self.config.terminal_padding.left,
-                        self.config.terminal_padding.right + self.config.scrollbar.gutterWidth(),
+                        self.config.terminal_padding.right + scrollbar_gutter,
                     );
                     leaf.pane.render_state_ready = true;
                     std.log.info("resizeAllPanes: leaf done pane={x} render_state_ready=true", .{@intFromPtr(leaf.pane)});
@@ -2365,7 +2385,8 @@ pub const App = struct {
                 if (pixel_width == 0 or pane_h == 0) continue;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    const horizontal_reserved = self.config.terminal_padding.horizontal() + self.config.scrollbar.gutterWidth();
+                    const scrollbar_gutter = self.paneScrollbarGutter(pane);
+                    const horizontal_reserved = self.config.terminal_padding.horizontal() + scrollbar_gutter;
                     const inner_width = if (layout_width > horizontal_reserved) layout_width - horizontal_reserved else 1;
                     const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
@@ -2388,7 +2409,7 @@ pub const App = struct {
                         self.config.terminal_padding.top,
                         self.config.terminal_padding.bottom,
                         self.config.terminal_padding.left,
-                        self.config.terminal_padding.right + self.config.scrollbar.gutterWidth(),
+                        self.config.terminal_padding.right + scrollbar_gutter,
                     );
                     pane.render_state_ready = true;
                     std.log.info("resizeAllPanes (fallback): pane done pane={x}", .{@intFromPtr(pane)});
