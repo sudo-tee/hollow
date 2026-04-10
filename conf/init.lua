@@ -83,7 +83,7 @@ local theme = {
 -- g.log("loading native rewrite config")
 
 hwl.config.set({
-  debug_overlay = false,
+  debug_overlay = true,
   backend = "sokol",
   vsync = false,
   max_fps = 120,

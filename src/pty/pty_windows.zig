@@ -208,12 +208,15 @@ pub const WindowsPty = struct {
         self.reader_state.mutex.lock();
         const eof = self.reader_state.eof;
         const saw_read = self.reader_state.saw_read;
+        const pending = self.reader_state.len;
         self.reader_state.mutex.unlock();
         if (eof) {
             self.alive = false;
             std.log.info("conpty pipe closed (shell exited)", .{});
             return false;
         }
+
+        if (saw_read and pending > 0) return true;
 
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
             if (windows.kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
@@ -222,8 +225,6 @@ pub const WindowsPty = struct {
                 return false;
             }
         }
-
-        if (saw_read) return true;
 
         return true;
     }

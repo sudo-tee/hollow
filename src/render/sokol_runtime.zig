@@ -565,12 +565,32 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 } else if (saw_spacer and std.mem.eql(u8, kind, "segment")) {
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
                     right_reserved += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                } else if (saw_spacer and std.mem.eql(u8, kind, "tabs")) {
+                    api.get_field(state, item_idx, "tabs");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
+                        var tab_i: c_int = 1;
+                        while (true) : (tab_i += 1) {
+                            api.rawgeti(state, tabs_idx, tab_i);
+                            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                                lua_mod.pop(api, state, 1);
+                                break;
+                            }
+                            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                                const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                                right_reserved += @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
+                            }
+                            lua_mod.pop(api, state, 1);
+                        }
+                    }
+                    lua_mod.pop(api, state, 1);
                 }
             }
             lua_mod.pop(api, state, 1);
         }
 
         var item_i: c_int = 1;
+        var on_right_side = false;
         while (true) : (item_i += 1) {
             api.rawgeti(state, items_idx, item_i);
             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
@@ -587,6 +607,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
                 if (std.mem.eql(u8, kind, "spacer")) {
                     cursor_x = @max(@as(f32, 0.0), ctx.width - right_reserved);
+                    on_right_side = true;
                 } else if (std.mem.eql(u8, kind, "tabs")) {
                     const close_w: f32 = ctx.renderer.cell_w + 10.0;
                     api.get_field(state, item_idx, "fit");
@@ -612,6 +633,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     }
                     const active_idx = ctx.app.activeTabIndex();
                     const available = @max(@as(f32, 1.0), ctx.width - cursor_x - right_reserved);
+                    const max_right = ctx.width - right_reserved;
                     const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
                     var used_width: f32 = 0.0;
                     for (0..tab_count) |ti| {
@@ -623,11 +645,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
                         lua_mod.pop(api, state, 1);
 
-                        const tab_w = if (std.mem.eql(u8, fit, "content"))
+                        const tx: f32 = cursor_x + used_width;
+                        const remaining_w = max_right - tx;
+                        if (remaining_w <= close_w) break;
+                        const desired_tab_w = if (std.mem.eql(u8, fit, "content"))
                             @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
                         else
                             default_tab_w;
-                        const tx: f32 = cursor_x + used_width;
+                        const tab_w = @min(desired_tab_w, remaining_w);
                         const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
                         cacheBarTab(&g_top_bar_cache, ti, tx, tab_w, close_x - 4.0, close_w, null);
 
@@ -668,18 +693,23 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         used_width += tab_w;
                     }
                     lua_mod.pop(api, state, 1);
-                    cursor_x += if (std.mem.eql(u8, fit, "content")) used_width else available;
+                    cursor_x += used_width;
+                    if (on_right_side) right_reserved -= used_width;
                 } else if (std.mem.eql(u8, kind, "segment")) {
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
-                    const available_w = @max(@as(f32, 0.0), ctx.width - cursor_x);
-                    const max_chars: usize = if (available_w > 0)
-                        @max(1, @as(usize, @intFromFloat(available_w / ctx.renderer.cell_w)))
-                    else
-                        0;
-                    const trimmed_text = if (countCodepoints(seg.text) > max_chars)
-                        takeTrailingCodepoints(seg.text, max_chars)
-                    else
-                        seg.text;
+                    const trimmed_text = if (on_right_side)
+                        seg.text
+                    else blk: {
+                        const available_w = @max(@as(f32, 0.0), ctx.width - cursor_x);
+                        const max_chars: usize = if (available_w > 0)
+                            @max(1, @as(usize, @intFromFloat(available_w / ctx.renderer.cell_w)))
+                        else
+                            0;
+                        break :blk if (countCodepoints(seg.text) > max_chars)
+                            takeTrailingCodepoints(seg.text, max_chars)
+                        else
+                            seg.text;
+                    };
                     const seg_w = @as(f32, @floatFromInt(countCodepoints(trimmed_text))) * ctx.renderer.cell_w;
                     if (seg.id) |id| cacheBarTab(&g_top_bar_cache, g_top_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
                     if (seg.bg) |bg| drawBorderRect(cursor_x, top_y, seg_w, top_h, bg.r, bg.g, bg.b, 255);
@@ -687,7 +717,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
                     cursor_x += seg_w;
-                    right_reserved -= @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                    if (on_right_side) right_reserved -= @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
                 }
             }
             lua_mod.pop(api, state, 1);
@@ -719,12 +749,32 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 if (std.mem.eql(u8, kind, "segment")) {
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
                     right_reserved += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                } else if (std.mem.eql(u8, kind, "tabs")) {
+                    api.get_field(state, item_idx, "tabs");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
+                        var tab_i: c_int = 1;
+                        while (true) : (tab_i += 1) {
+                            api.rawgeti(state, tabs_idx, tab_i);
+                            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                                lua_mod.pop(api, state, 1);
+                                break;
+                            }
+                            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                                const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                                right_reserved += @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
+                            }
+                            lua_mod.pop(api, state, 1);
+                        }
+                    }
+                    lua_mod.pop(api, state, 1);
                 }
             }
             lua_mod.pop(api, state, 1);
         }
 
         var item_i: c_int = 1;
+        var on_right_side = false;
         while (true) : (item_i += 1) {
             api.rawgeti(state, items_idx, item_i);
             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
@@ -741,6 +791,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
                 if (std.mem.eql(u8, kind, "spacer")) {
                     cursor_x = @max(@as(f32, 0.0), ctx.width - right_reserved);
+                    on_right_side = true;
                 } else if (std.mem.eql(u8, kind, "tabs")) {
                     const close_w: f32 = ctx.renderer.cell_w + 10.0;
                     api.get_field(state, item_idx, "fit");
@@ -766,6 +817,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     }
                     const active_idx = ctx.app.activeTabIndex();
                     const available = @max(@as(f32, 1.0), ctx.width - cursor_x - right_reserved);
+                    const max_right = ctx.width - right_reserved;
                     const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
                     var used_width: f32 = 0.0;
                     for (0..tab_count) |ti| {
@@ -777,11 +829,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
                         lua_mod.pop(api, state, 1);
 
-                        const tab_w = if (std.mem.eql(u8, fit, "content"))
+                        const tx: f32 = cursor_x + used_width;
+                        const remaining_w = max_right - tx;
+                        if (remaining_w <= close_w) break;
+                        const desired_tab_w = if (std.mem.eql(u8, fit, "content"))
                             @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
                         else
                             default_tab_w;
-                        const tx: f32 = cursor_x + used_width;
+                        const tab_w = @min(desired_tab_w, remaining_w);
                         const close_x: f32 = @floor(tx + tab_w - close_w + 2.0);
                         cacheBarTab(&g_bottom_bar_cache, ti, tx, tab_w, close_x - 4.0, close_w, null);
 
@@ -822,17 +877,31 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         used_width += tab_w;
                     }
                     lua_mod.pop(api, state, 1);
-                    cursor_x += if (std.mem.eql(u8, fit, "content")) used_width else available;
+                    cursor_x += used_width;
+                    if (on_right_side) right_reserved -= used_width;
                 } else if (std.mem.eql(u8, kind, "segment")) {
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
-                    const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
+                    const trimmed_text = if (on_right_side)
+                        seg.text
+                    else blk: {
+                        const available_w = @max(@as(f32, 0.0), ctx.width - cursor_x);
+                        const max_chars: usize = if (available_w > 0)
+                            @max(1, @as(usize, @intFromFloat(available_w / ctx.renderer.cell_w)))
+                        else
+                            0;
+                        break :blk if (countCodepoints(seg.text) > max_chars)
+                            takeTrailingCodepoints(seg.text, max_chars)
+                        else
+                            seg.text;
+                    };
+                    const seg_w = @as(f32, @floatFromInt(countCodepoints(trimmed_text))) * ctx.renderer.cell_w;
                     if (seg.id) |id| cacheBarTab(&g_bottom_bar_cache, g_bottom_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
                     if (seg.bg) |bg| drawBorderRect(cursor_x, bottom_y, seg_w, bottom_h, bg.r, bg.g, bg.b, 255);
                     const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-                    ctx.renderer.drawLabelFace(cursor_x, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+                    ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
                     c.sgl_load_default_pipeline();
                     cursor_x += seg_w;
-                    right_reserved -= seg_w;
+                    if (on_right_side) right_reserved -= seg_w;
                 }
             }
             lua_mod.pop(api, state, 1);

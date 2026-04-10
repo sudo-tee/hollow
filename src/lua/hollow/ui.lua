@@ -143,6 +143,9 @@ function M.setup(hollow, host_api, state, util)
       segment.fg = style
       return segment
     end
+    if type(style) == "table" and type(style.style) == "table" then
+      style = style.style
+    end
     if type(style) == "table" then
       segment.bold = style.bold == true
       if type(style.id) == "string" and style.id ~= "" then
