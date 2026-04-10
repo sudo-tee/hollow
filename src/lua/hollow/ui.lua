@@ -230,7 +230,7 @@ function M.setup(hollow, host_api, state, util)
   end
 
   local function dispatch_overlay_key(key, mods)
-    local canonical_mods = hollow.keymap._canonical_mods_from_mask(mods)
+    local canonical_mods = hollow.keymap._format_mods(mods)
     for i = #overlay_stack, 1, -1 do
       local widget = overlay_stack[i]
       if type(widget.on_key) == "function" then

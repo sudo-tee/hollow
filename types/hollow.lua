@@ -19,23 +19,8 @@
 ---@alias HollowNotifyLevel "info"|"warn"|"error"|"success"
 ---@alias HollowKeyMode "normal"
 
----@alias HollowKeyMods
----| "NONE"
----| "CTRL"
----| "SHIFT"
----| "ALT"
----| "SUPER"
----| "CTRL|SHIFT"
----| "CTRL|ALT"
----| "CTRL|SUPER"
----| "SHIFT|ALT"
----| "SHIFT|SUPER"
----| "ALT|SUPER"
----| "CTRL|SHIFT|ALT"
----| "CTRL|SHIFT|SUPER"
----| "CTRL|ALT|SUPER"
----| "SHIFT|ALT|SUPER"
----| "CTRL|SHIFT|ALT|SUPER"
+---@alias HollowKeyChord string
+---@alias HollowKeyMods string
 
 ---@alias HollowEventName
 ---| "config:reloaded"
@@ -463,6 +448,10 @@ function events.emit(name, payload) end
 ---@field desc? string
 ---@field timeout_ms? integer
 
+---@class HollowKeymapValue
+---@field action HollowKeyAction
+---@field desc? string
+
 ---@class HollowLeaderState
 ---@field active boolean
 ---@field prefix string
@@ -478,20 +467,20 @@ function events.emit(name, payload) end
 ---@class HollowKeymapNamespace
 local keymap = {}
 
----@param chord string
+---@param chord HollowKeyChord
 ---@param rhs HollowKeyAction
 ---@param opts? HollowKeymapOpts
 function keymap.set(chord, rhs, opts) end
 
----@param chord string
+---@param chord HollowKeyChord
 ---@return boolean
 function keymap.del(chord) end
 
----@param chord string
+---@param chord HollowKeyChord
 ---@return HollowKeyAction|nil
 function keymap.get(chord) end
 
----@param chord? string
+---@param chord? HollowKeyChord
 ---@param opts? HollowKeymapOpts
 function keymap.set_leader(chord, opts) end
 

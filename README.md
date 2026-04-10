@@ -13,7 +13,7 @@ rendering, Lua-configured behavior, and a widget-driven UI layer.
 - native build and launch via `./launch.sh`
 - Lua config loading from `conf/init.lua` or the user config path
 - tabs, split panes, workspaces, scrollback, selection, clipboard, and hyperlinks
-- namespaced Lua API: `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keys`, `hollow.ui`
+- namespaced Lua API: `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keymap`, `hollow.ui`
 - widget surfaces for topbar, sidebar, and overlay stacks
 - optional sidebar reservation so the terminal can shrink around the sidebar instead of drawing under it
 - LuaLS typings in `types/hollow.lua`
@@ -52,13 +52,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
     end,
 }))
 
-hollow.keys.bind({
-    {
-        mods = "CTRL|SHIFT",
-        key = "n",
-        action = hollow.term.new_tab,
-    },
-})
+hollow.keymap.set("<C-S-n>", hollow.term.new_tab)
 ```
 
 ## UI widgets

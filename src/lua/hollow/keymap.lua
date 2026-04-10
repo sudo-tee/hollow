@@ -13,10 +13,6 @@ local function now_ms()
   return math.floor(os.clock() * 1000)
 end
 
-local function is_sequence_modifier_token(token)
-  return token == "ctrl" or token == "shift" or token == "alt" or token == "super" or token == "cmd"
-end
-
 local function normalize_key_name(key)
   local lower = key:lower()
   if lower == "left" then
@@ -33,6 +29,24 @@ local function normalize_key_name(key)
     return "enter"
   elseif lower == "bs" then
     return "backspace"
+  elseif lower == "tab" then
+    return "tab"
+  elseif lower == "space" or key == " " then
+    return "space"
+  elseif lower == "pageup" or lower == "page_up" or lower == "pgup" then
+    return "page_up"
+  elseif lower == "pagedown" or lower == "page_down" or lower == "pgdown" or lower == "pgdn" then
+    return "page_down"
+  elseif lower == "home" then
+    return "home"
+  elseif lower == "end" then
+    return "end"
+  elseif lower == "insert" or lower == "ins" then
+    return "insert"
+  elseif lower == "delete" or lower == "del" then
+    return "delete"
+  elseif lower == "backslash" or lower == "bslash" or key == "\\" then
+    return "backslash"
   end
   return lower
 end
@@ -43,64 +57,88 @@ local function split_leader_chord(chord)
   end
 
   local lower = chord:lower()
-  if lower:sub(1, 7) == "leader+" then
-    return true, chord:sub(8), "legacy"
-  elseif lower:sub(1, 8) == "<leader>" then
+  if lower:sub(1, 8) == "<leader>" then
     return true, chord:sub(9), "vim"
   end
 
   return false, chord, nil
 end
 
+local function modifier_mask_from_token(token)
+  local lower = token:lower()
+  if lower == "ctrl" or lower == "c" then
+    return MODS_CTRL
+  elseif lower == "shift" or lower == "s" then
+    return MODS_SHIFT
+  elseif lower == "alt" or lower == "a" or lower == "m" or lower == "meta" then
+    return MODS_ALT
+  elseif lower == "super" or lower == "d" or lower == "cmd" or lower == "w" then
+    return MODS_SUPER
+  end
+  return nil
+end
+
 local function parse_chord(chord)
-  if type(chord) == "string" and chord:sub(1, 1) == "<" and chord:sub(-1) == ">" then
+  if type(chord) ~= "string" then
+    error("key chord must be a string")
+  end
+
+  if chord == "" then
+    error("key chord must not be empty")
+  end
+
+  if chord:find("+", 1, true) then
+    error("legacy key chord syntax is not supported; use Vim-style chords like <C-t> or <leader>e")
+  end
+
+  if chord:sub(1, 1) == "<" then
+    local close = chord:find(">", 1, true)
+    if close ~= #chord then
+      error("expected a single Vim-style key chord like <C-t> or a leader sequence like <leader>e")
+    end
+
     local inner = chord:sub(2, -2)
+    if inner == "" then
+      error("key chord must not be empty")
+    end
+
     local parts = {}
     for part in inner:gmatch("[^-]+") do
       table.insert(parts, part)
     end
 
-    if #parts > 0 then
-      local mods = 0
-      local key = normalize_key_name(table.remove(parts))
-      for _, mod in ipairs(parts) do
-        local lower = mod:lower()
-        if lower == "ctrl" or lower == "c" then
-          mods = bor(mods, MODS_CTRL)
-        elseif lower == "shift" or lower == "s" then
-          mods = bor(mods, MODS_SHIFT)
-        elseif lower == "alt" or lower == "a" or lower == "m" or lower == "meta" then
-          mods = bor(mods, MODS_ALT)
-        elseif lower == "super" or lower == "d" or lower == "cmd" or lower == "w" then
-          mods = bor(mods, MODS_SUPER)
-        end
+    if #parts == 0 then
+      error("key chord must not be empty")
+    end
+
+    local mods = 0
+    local key = normalize_key_name(table.remove(parts))
+    for _, mod in ipairs(parts) do
+      local mask = modifier_mask_from_token(mod)
+      if mask == nil then
+        error("unknown modifier in key chord: " .. tostring(mod))
       end
-      return key, mods
+      mods = bor(mods, mask)
     end
+    return key, mods
   end
 
-  local mods = 0
-  local parts = {}
-  for part in chord:gmatch("[^+]+") do
-    table.insert(parts, part:lower())
+  if #chord ~= 1 then
+    error("plain key chords must be a single character; use Vim-style tokens like <Tab> for special keys")
   end
 
-  local key = normalize_key_name(table.remove(parts))
-  for _, mod in ipairs(parts) do
-    if mod == "ctrl" or mod == "c" then
-      mods = bor(mods, MODS_CTRL)
-    elseif mod == "shift" or mod == "s" then
-      mods = bor(mods, MODS_SHIFT)
-    elseif mod == "alt" or mod == "m" then
-      mods = bor(mods, MODS_ALT)
-    elseif mod == "super" or mod == "cmd" or mod == "w" then
-      mods = bor(mods, MODS_SUPER)
-    end
-  end
-  return key, mods
+  return normalize_key_name(chord), 0
 end
 
 local function parse_vim_sequence(chord)
+  if type(chord) ~= "string" or chord == "" then
+    return nil
+  end
+
+  if chord:find("+", 1, true) then
+    return nil
+  end
+
   local steps = {}
   local i = 1
   while i <= #chord do
@@ -128,23 +166,7 @@ local function parse_leader_sequence(chord, style)
     return parse_vim_sequence(chord)
   end
 
-  local steps = {}
-  local current = {}
-
-  for part in chord:gmatch("[^+]+") do
-    local token = part:lower()
-    table.insert(current, token)
-    if not is_sequence_modifier_token(token) then
-      table.insert(steps, table.concat(current, "+"))
-      current = {}
-    end
-  end
-
-  if #current ~= 0 or #steps == 0 then
-    return nil
-  end
-
-  return steps
+  return nil
 end
 
 local function normalize_binding(action_or_opts, maybe_opts)
@@ -215,6 +237,20 @@ local function format_key_name(key)
     return "Tab"
   elseif key == "space" then
     return "Space"
+  elseif key == "page_up" then
+    return "PageUp"
+  elseif key == "page_down" then
+    return "PageDown"
+  elseif key == "home" then
+    return "Home"
+  elseif key == "end" then
+    return "End"
+  elseif key == "insert" then
+    return "Insert"
+  elseif key == "delete" then
+    return "Del"
+  elseif key == "backslash" then
+    return "\\"
   end
   return key
 end
@@ -234,7 +270,7 @@ local function format_chord(key, mods)
     table.insert(parts, "S")
   end
   if has_mod(mods, MODS_ALT) then
-    table.insert(parts, "M")
+    table.insert(parts, "A")
   end
   if has_mod(mods, MODS_SUPER) then
     table.insert(parts, "D")
@@ -315,10 +351,18 @@ local function get_sequence_child(node, key, mods)
   return key_bindings[mods]
 end
 
-local function reset_leader_state(keymap_state)
-  keymap_state.leader_pending_until = nil
-  keymap_state.leader_active_node = nil
-  keymap_state.leader_sequence_steps = {}
+local function reset_sequence_state(keymap_state)
+  keymap_state.sequence_pending_until = nil
+  keymap_state.sequence_active_node = nil
+  keymap_state.sequence_steps = {}
+  keymap_state.sequence_prefix = nil
+end
+
+local function set_sequence_state(keymap_state, node, prefix, steps)
+  keymap_state.sequence_active_node = node
+  keymap_state.sequence_prefix = prefix
+  keymap_state.sequence_steps = steps or {}
+  keymap_state.sequence_pending_until = now_ms() + keymap_state.sequence_timeout_ms
 end
 
 local function set_leader_binding(keymap_state, chord, style, action, opts)
@@ -329,6 +373,16 @@ local function set_leader_binding(keymap_state, chord, style, action, opts)
   local binding = normalize_binding(action, opts)
 
   local node = keymap_state.leader_bindings
+  for _, step in ipairs(steps) do
+    node = ensure_sequence_child(node, step)
+  end
+  node.action = binding.action
+  node.desc = binding.desc
+end
+
+local function set_sequence_binding(root, steps, action, opts)
+  local binding = normalize_binding(action, opts)
+  local node = root
   for _, step in ipairs(steps) do
     node = ensure_sequence_child(node, step)
   end
@@ -376,6 +430,56 @@ local function del_leader_binding(keymap_state, chord, style)
   return true
 end
 
+local function del_sequence_binding(root, steps)
+  local path = {}
+  local node = root
+  for _, step in ipairs(steps) do
+    local key, mods = parse_chord(step)
+    local next_node = get_sequence_child(node, key, mods)
+    if not next_node then
+      return false
+    end
+    table.insert(path, { parent = node, key = key, mods = mods, node = next_node })
+    node = next_node
+  end
+
+  if node.action == nil then
+    return false
+  end
+
+  node.action = nil
+  node.desc = nil
+
+  for i = #path, 1, -1 do
+    local item = path[i]
+    if item.node.action ~= nil or has_sequence_children(item.node) then
+      break
+    end
+
+    item.parent.children[item.key][item.mods] = nil
+    if next(item.parent.children[item.key]) == nil then
+      item.parent.children[item.key] = nil
+    end
+  end
+
+  return true
+end
+
+local function get_sequence_binding(root, steps)
+  local node = root
+  for _, step in ipairs(steps) do
+    local key, mods = parse_chord(step)
+    node = get_sequence_child(node, key, mods)
+    if node == nil then
+      return nil
+    end
+  end
+  if node.action == nil then
+    return nil
+  end
+  return node
+end
+
 local function run_action(hollow, binding)
   if binding == nil then
     return false
@@ -395,105 +499,58 @@ local function run_action(hollow, binding)
   return false
 end
 
-local function is_leader_active(keymap_state)
-  if keymap_state.leader_pending_until == nil then
+local function is_sequence_active(keymap_state)
+  if keymap_state.sequence_pending_until == nil then
     return false
   end
 
-  if now_ms() > keymap_state.leader_pending_until then
-    reset_leader_state(keymap_state)
+  if now_ms() > keymap_state.sequence_pending_until then
+    reset_sequence_state(keymap_state)
     return false
   end
 
   return true
 end
 
-local function normalize_key_mods(mods)
-  if mods == nil or mods == "" or mods == "NONE" then
-    return {}
-  end
-
-  if type(mods) ~= "string" then
-    error("mods must be a string")
-  end
-
-  local seen = {}
-  for token in mods:gmatch("[^|]+") do
-    local upper = token:upper()
-    if
-      upper ~= "CTRL"
-      and upper ~= "SHIFT"
-      and upper ~= "ALT"
-      and upper ~= "SUPER"
-      and upper ~= "NONE"
-    then
-      error("unknown modifier: " .. tostring(token))
-    end
-    if upper ~= "NONE" then
-      seen[upper] = true
-    end
-  end
-
-  local ordered = {}
-  if seen.CTRL then
-    table.insert(ordered, "ctrl")
-  end
-  if seen.SHIFT then
-    table.insert(ordered, "shift")
-  end
-  if seen.ALT then
-    table.insert(ordered, "alt")
-  end
-  if seen.SUPER then
-    table.insert(ordered, "super")
-  end
-  return ordered
-end
-
-local function make_chord(mods, key)
-  if type(key) ~= "string" then
-    error("key must be a string")
-  end
-
-  local parts = normalize_key_mods(mods)
-  table.insert(parts, key)
-  return table.concat(parts, "+")
-end
-
-local function canonical_mods_from_mask(mods)
+local function format_mods_from_mask(mods)
   local parts = {}
   if type(mods) ~= "number" then
-    return "NONE"
+    return ""
   end
   if mods % (MODS_CTRL * 2) >= MODS_CTRL then
-    table.insert(parts, "CTRL")
+    table.insert(parts, "C")
   end
   if mods % (MODS_SHIFT * 2) >= MODS_SHIFT then
-    table.insert(parts, "SHIFT")
+    table.insert(parts, "S")
   end
   if mods % (MODS_ALT * 2) >= MODS_ALT then
-    table.insert(parts, "ALT")
+    table.insert(parts, "A")
   end
   if mods % (MODS_SUPER * 2) >= MODS_SUPER then
-    table.insert(parts, "SUPER")
+    table.insert(parts, "D")
   end
   if #parts == 0 then
-    return "NONE"
+    return ""
   end
-  return table.concat(parts, "|")
+  return "<" .. table.concat(parts, "-") .. ">"
 end
 
 function M.setup(hollow, host_api, state, ui_runtime)
   local keymap_state = state.keymap
 
-  hollow.keymap._canonical_mods_from_mask = canonical_mods_from_mask
+  hollow.keymap._format_mods = format_mods_from_mask
 
   function hollow.keymap.set(chord, action, opts)
     local use_leader, resolved, style = split_leader_chord(chord)
     if use_leader then
       set_leader_binding(keymap_state, resolved, style, action, opts)
     else
-      set_binding(keymap_state.bindings, resolved, action, opts)
+      local steps = parse_vim_sequence(resolved)
+      if steps ~= nil and #steps > 1 then
+        set_sequence_binding(keymap_state.sequence_bindings, steps, action, opts)
+      else
+        set_binding(keymap_state.bindings, resolved, action, opts)
+      end
     end
   end
 
@@ -502,62 +559,85 @@ function M.setup(hollow, host_api, state, ui_runtime)
     if use_leader then
       return del_leader_binding(keymap_state, resolved, style)
     end
+    local steps = parse_vim_sequence(resolved)
+    if steps ~= nil and #steps > 1 then
+      return del_sequence_binding(keymap_state.sequence_bindings, steps)
+    end
     return del_binding(keymap_state.bindings, resolved)
   end
 
   function hollow.keymap.get(chord)
     local use_leader, resolved = split_leader_chord(chord)
     if use_leader then
-      return nil
+      local steps = parse_vim_sequence(resolved)
+      if steps == nil then
+        return nil
+      end
+      local binding = get_sequence_binding(keymap_state.leader_bindings, steps)
+      return binding and binding.action or nil
+    end
+    local steps = parse_vim_sequence(resolved)
+    if steps ~= nil and #steps > 1 then
+      local binding = get_sequence_binding(keymap_state.sequence_bindings, steps)
+      return binding and binding.action or nil
     end
     local key, mods = parse_chord(resolved)
-    return get_binding(keymap_state.bindings, key, mods)
+    local binding = get_binding(keymap_state.bindings, key, mods)
+    return binding and binding.action or nil
   end
 
   function hollow.keymap.set_leader(chord, opts)
     if chord == nil then
       keymap_state.leader = nil
-      reset_leader_state(keymap_state)
+      reset_sequence_state(keymap_state)
       return
     end
 
     local key, mods = parse_chord(chord)
     keymap_state.leader = { key = key, mods = mods }
-    reset_leader_state(keymap_state)
+    reset_sequence_state(keymap_state)
 
     if type(opts) == "table" and type(opts.timeout_ms) == "number" and opts.timeout_ms > 0 then
-      keymap_state.leader_timeout_ms = math.floor(opts.timeout_ms)
+      keymap_state.sequence_timeout_ms = math.floor(opts.timeout_ms)
     end
   end
 
   function hollow.keymap.clear_leader()
     keymap_state.leader = nil
-    reset_leader_state(keymap_state)
+    reset_sequence_state(keymap_state)
   end
 
   function hollow.keymap.is_leader_active()
-    return is_leader_active(keymap_state)
+    return is_sequence_active(keymap_state)
   end
 
   function hollow.keymap.get_leader_state()
-    if not is_leader_active(keymap_state) then
+    if not is_sequence_active(keymap_state) then
       return nil
     end
 
-    local node = keymap_state.leader_active_node or keymap_state.leader_bindings
+    local node = keymap_state.sequence_active_node
     local next_items = get_leader_next_keys(node)
+    local prefix = keymap_state.sequence_prefix or ""
+    local steps = copy_list(keymap_state.sequence_steps)
+    local display = prefix
+    if #steps > 0 then
+      if display ~= "" then
+        display = display .. " " .. table.concat(steps, " ")
+      else
+        display = table.concat(steps, " ")
+      end
+    end
     return {
       active = true,
-      prefix = "<leader>",
-      sequence = copy_list(keymap_state.leader_sequence_steps),
-      display = #keymap_state.leader_sequence_steps > 0
-          and ("<leader> " .. table.concat(keymap_state.leader_sequence_steps, " "))
-        or "<leader>",
+      prefix = prefix,
+      sequence = steps,
+      display = display,
       next = next_items,
       next_display = format_next_items(next_items),
       desc = node.desc,
-      remaining_ms = math.max(0, keymap_state.leader_pending_until - now_ms()),
-      timeout_ms = keymap_state.leader_timeout_ms,
+      remaining_ms = math.max(0, keymap_state.sequence_pending_until - now_ms()),
+      timeout_ms = keymap_state.sequence_timeout_ms,
       complete = node.action ~= nil,
     }
   end
@@ -567,26 +647,33 @@ function M.setup(hollow, host_api, state, ui_runtime)
       return true
     end
 
-    if is_leader_active(keymap_state) then
-      local node = get_sequence_child(keymap_state.leader_active_node or keymap_state.leader_bindings, key, mods)
+    if is_sequence_active(keymap_state) then
+      local node = get_sequence_child(keymap_state.sequence_active_node, key, mods)
       if node ~= nil then
-        keymap_state.leader_active_node = node
-        table.insert(keymap_state.leader_sequence_steps, format_chord(key, mods))
-        keymap_state.leader_pending_until = now_ms() + keymap_state.leader_timeout_ms
+        keymap_state.sequence_active_node = node
+        table.insert(keymap_state.sequence_steps, format_chord(key, mods))
+        keymap_state.sequence_pending_until = now_ms() + keymap_state.sequence_timeout_ms
         if node.action ~= nil and not has_sequence_children(node) then
-          reset_leader_state(keymap_state)
+          reset_sequence_state(keymap_state)
           return run_action(hollow, node)
         end
         return true
       end
-      reset_leader_state(keymap_state)
+      reset_sequence_state(keymap_state)
       return true
     end
 
     if keymap_state.leader ~= nil and key == keymap_state.leader.key and mods == keymap_state.leader.mods then
-      keymap_state.leader_active_node = keymap_state.leader_bindings
-      keymap_state.leader_sequence_steps = {}
-      keymap_state.leader_pending_until = now_ms() + keymap_state.leader_timeout_ms
+      set_sequence_state(keymap_state, keymap_state.leader_bindings, "<leader>", {})
+      return true
+    end
+
+    local sequence_node = get_sequence_child(keymap_state.sequence_bindings, key, mods)
+    if sequence_node ~= nil then
+      if sequence_node.action ~= nil and not has_sequence_children(sequence_node) then
+        return run_action(hollow, sequence_node)
+      end
+      set_sequence_state(keymap_state, sequence_node, format_chord(key, mods), {})
       return true
     end
 
@@ -599,10 +686,9 @@ function M.setup(hollow, host_api, state, ui_runtime)
   end)
 
   return {
-    make_chord = make_chord,
     parse_chord = parse_chord,
     format_chord = format_chord,
-    canonical_mods_from_mask = canonical_mods_from_mask,
+    format_mods_from_mask = format_mods_from_mask,
   }
 end
 

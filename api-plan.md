@@ -31,7 +31,7 @@ These types are used throughout the API.
 ```
 HollowColor  — string: "#rrggbb" | "#rrggbbaa" | CSS color name
 
-HollowKeyMods — string: "NONE" | "CTRL" | "SHIFT" | "ALT" | "SUPER" | combos joined by `|`
+HollowKeyChord — string using Vim-style notation, e.g. `j`, `<C-t>`, `<leader>e`, `<C-w>o`
 
 HollowEventHandle — integer
 
@@ -192,43 +192,47 @@ hollow.events.off(h)
 
 ---
 
-## hollow.keys
+## hollow.keymap
 
-Register global key bindings.
+Register key bindings with Vim-style chord strings only.
 
 ```lua
-hollow.keys.bind(binds: HollowKeyBind[])
-hollow.keys.bind_one(bind: HollowKeyBind)
-hollow.keys.unbind(mods, key)
+hollow.keymap.set(chord: HollowKeyChord, action, opts?)
+hollow.keymap.del(chord: HollowKeyChord)
+hollow.keymap.get(chord: HollowKeyChord) -> action?
+hollow.keymap.set_leader(chord: HollowKeyChord, opts?)
+hollow.keymap.clear_leader()
+hollow.keymap.is_leader_active() -> boolean
+hollow.keymap.get_leader_state() -> HollowLeaderState?
 ```
 
-Modifier order is normalized by Hollow, so `CTRL|SHIFT` and `SHIFT|CTRL` are equivalent.
-
-**HollowKeyBind:**
+**Accepted chord forms:**
 
 ```
-mods    HollowKeyMods
-key     string    -- "p", "F1", "Return", "Tab", etc.
-action  fun()
-mode?   "normal"  -- reserved for future modal support
+"x"            -- plain character
+"<C-t>"        -- modified chord
+"<C-S-Tab>"    -- special key with modifiers
+"<leader>e"    -- leader sequence
+"<C-w>o"       -- non-leader multi-step sequence
 ```
+
+Legacy `ctrl+...`, `leader+...`, and split `mods`/`key` forms should be rejected.
 
 **Example:**
 
 ```lua
-hollow.keys.bind({
-  { mods = "CTRL|SHIFT", key = "p", action = function()
-      hollow.ui.select.open({
-        items = hollow.term.tabs(),
-        label = function(t) return t.title end,
-        prompt = "Switch tab",
-        actions = {
-          { name = "focus", fn = function(t) hollow.term.focus_tab(t.id) end, key = "Return" },
-        },
-      })
-  end },
-  { mods = "CTRL|SHIFT", key = "n", action = hollow.term.new_tab },
-})
+hollow.keymap.set("<C-S-p>", function()
+  hollow.ui.select.open({
+    items = hollow.term.tabs(),
+    label = function(t) return t.title end,
+    prompt = "Switch tab",
+    actions = {
+      { name = "focus", fn = function(t) hollow.term.focus_tab(t.id) end, key = "<CR>" },
+    },
+  })
+end)
+
+hollow.keymap.set("<C-S-n>", hollow.term.new_tab)
 ```
 
 ---
@@ -386,7 +390,7 @@ on_mount?   fun()
 on_unmount? fun()
 ```
 
-`on_key` receives canonical key names and modifier strings using the same conventions as `hollow.keys`.
+`on_key` receives canonical key names and a Vim-style modifier prefix string like `""`, `<C>`, or `<C-S>`.
 
 Phase 5 note: overlays are currently a Lua-side runtime with keyboard handling and simple multi-line text rendering through existing top-level drawing hooks. This is enough to power prompts, pickers, and notifications before a dedicated Zig overlay compositor lands.
 Updated: overlays are now visually rendered by the Zig renderer as stacked optional panels. If no overlays are pushed, nothing is drawn.
@@ -481,7 +485,7 @@ label?     fun(item: T): string    -- display text; default tostring
 detail?    fun(item: T): string    -- second column / preview line
 prompt?    string
 fuzzy?     boolean                 -- default true
-actions    HollowSelectAction[]    -- first = default (Return); rest = alternates
+actions    HollowSelectAction[]    -- first = default (<CR>); rest = alternates
 on_cancel? fun()
 ```
 
@@ -490,11 +494,11 @@ on_cancel? fun()
 ```
 name   string    -- e.g. "open", "open_split", "delete"
 fn     fun(item: T)
-key?   string    -- key hint shown in footer, e.g. "Return", "ctrl+d"
+key?   string    -- key hint shown in footer, e.g. "<CR>", "<C-d>"
 desc?  string    -- tooltip shown in footer
 ```
 
-The **first** action is always the default, executed on plain `Return`. Alternate action keys are shown as hints in the widget footer. The `key` field is a label only — the widget manages its own keymap internally.
+The **first** action is always the default, executed on plain `<CR>`. Alternate action keys are shown as hints in the widget footer. The `key` field is a label only — the widget manages its own keymap internally.
 
 **Example:**
 
@@ -507,17 +511,17 @@ hollow.ui.select.open({
     {
       name = "focus",
       fn   = function(t) hollow.term.focus_tab(t.id) end,
-      key  = "Return",
+      key  = "<CR>",
     },
     {
       name = "close",
       fn   = function(t) hollow.term.close_tab(t.id) end,
-      key  = "ctrl+d",
+      key  = "<C-d>",
       desc = "Close tab",
     },
     {
       name = "rename",
-      key  = "ctrl+r",
+      key  = "<C-r>",
       desc = "Rename tab",
       fn   = function(t)
         hollow.ui.input.open({
@@ -644,27 +648,26 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 }))
 
 -- Keybinds
-hollow.keys.bind({
-  { mods = "CTRL|SHIFT", key = "p", action = function()
-      hollow.ui.select.open({
-        items  = hollow.term.tabs(),
-        label  = function(t) return t.title end,
-        prompt = "Switch tab",
-        actions = {
-          { name = "focus",  fn = function(t) hollow.term.focus_tab(t.id) end,  key = "Return" },
-          { name = "close",  fn = function(t) hollow.term.close_tab(t.id) end,  key = "ctrl+d" },
-        },
-      })
-  end },
-  { mods = "CTRL|SHIFT", key = "n", action = hollow.term.new_tab },
-  { mods = "CTRL|SHIFT", key = "r", action = function()
-      hollow.ui.input.open({
-        prompt     = "Rename tab: ",
-        default    = hollow.term.current_tab().title,
-        on_confirm = function(v) hollow.term.set_title(v) end,
-      })
-  end },
-})
+hollow.keymap.set("<C-S-p>", function()
+  hollow.ui.select.open({
+    items  = hollow.term.tabs(),
+    label  = function(t) return t.title end,
+    prompt = "Switch tab",
+    actions = {
+      { name = "focus", fn = function(t) hollow.term.focus_tab(t.id) end, key = "<CR>" },
+      { name = "close", fn = function(t) hollow.term.close_tab(t.id) end, key = "<C-d>" },
+    },
+  })
+end)
+
+hollow.keymap.set("<C-S-n>", hollow.term.new_tab)
+hollow.keymap.set("<C-S-r>", function()
+  hollow.ui.input.open({
+    prompt     = "Rename tab: ",
+    default    = hollow.term.current_tab().title,
+    on_confirm = function(v) hollow.term.set_title(v) end,
+  })
+end)
 
 -- Events
 hollow.events.on("term:cwd_changed", function(e)
@@ -694,7 +697,7 @@ Yes — I’d implement this as a staged migration, not a big-bang rewrite.
   - `hollow.config`
   -  `hollow.term`
   - `hollow.events`
-  -  `hollow.keys`
+  -  `hollow.keymap`
   -  `hollow.ui`
   -  `hollow.htp`
   - `hollow.process`

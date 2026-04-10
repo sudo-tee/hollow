@@ -31,12 +31,14 @@ function M.new(host_api)
     },
     keymap = {
       bindings = {},
+      sequence_bindings = { children = {} },
       leader = nil,
-      leader_timeout_ms = 1000,
-      leader_pending_until = nil,
-      leader_active_node = nil,
-      leader_sequence_steps = {},
       leader_bindings = { children = {} },
+      sequence_timeout_ms = 1000,
+      sequence_pending_until = nil,
+      sequence_active_node = nil,
+      sequence_steps = {},
+      sequence_prefix = nil,
     },
     ui = {
       mounted_topbar = nil,

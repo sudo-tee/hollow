@@ -15,7 +15,7 @@ Primary namespaces:
 - `hollow.config`
 - `hollow.term`
 - `hollow.events`
-- `hollow.keys`
+- `hollow.keymap`
 - `hollow.ui`
 - `hollow.htp`
 - `hollow.process`
@@ -117,17 +117,17 @@ Built-in events currently include:
 
 Built-in events cannot be emitted from Lua.
 
-## `hollow.keys`
+## `hollow.keymap`
 
-High-level key registration:
+Hollow uses Vim-style key notation for all keymaps:
 
-```lua
-hollow.keys.bind(binds)
-hollow.keys.bind_one(bind)
-hollow.keys.unbind(mods, key)
-```
+- plain characters: `j`, `/`, `?`
+- modified chords: `<C-t>`, `<C-S-Tab>`, `<A-PageDown>`
+- leader sequences: `<leader>e`, `<leader>wo`, `<leader><C-p>`
 
-Lower-level leader and chord helpers live under `hollow.keymap`:
+Legacy `ctrl+...`, `leader+...`, and split `mods`/`key` APIs are not supported.
+
+Available helpers:
 
 ```lua
 hollow.keymap.set(chord, action, opts?)
@@ -299,7 +299,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
   end,
 }))
 
-hollow.keymap.set_leader("ctrl+space", { timeout_ms = 1200 })
+hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 hollow.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 
 hollow.events.on("config:reloaded", function()
