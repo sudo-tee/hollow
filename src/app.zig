@@ -150,6 +150,16 @@ pub const PendingMouseEvent = union(enum) {
         point: selection.CellPoint,
         extend: bool,
     },
+    /// Double-click: expand selection to the word containing `point`.
+    selection_begin_word: struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+    },
+    /// Triple-click: select the entire row containing `point`.
+    selection_begin_line: struct {
+        pane: *Pane,
+        point: selection.CellPoint,
+    },
     selection_update: struct {
         pane: *Pane,
         point: selection.CellPoint,
@@ -429,6 +439,12 @@ pub const App = struct {
                 .selection_begin => |sel| {
                     self.selectionBegin(sel.pane, sel.point, sel.extend);
                 },
+                .selection_begin_word => |sel| {
+                    self.selectionBeginWord(sel.pane, sel.point);
+                },
+                .selection_begin_line => |sel| {
+                    self.selectionBeginLine(sel.pane, sel.point);
+                },
                 .selection_update => |sel| {
                     self.selectionUpdate(sel.pane, sel.point);
                 },
@@ -634,6 +650,7 @@ pub const App = struct {
             .get_pane_height = luaGetPaneHeightCallback,
             .get_window_width = luaGetWindowWidthCallback,
             .get_window_height = luaGetWindowHeightCallback,
+            .now_ms = luaNowMsCallback,
             .pane_is_focused = luaPaneIsFocusedCallback,
             .pane_exists = luaPaneExistsCallback,
             .switch_tab_by_id = luaSwitchTabByIdCallback,
@@ -895,6 +912,7 @@ pub const App = struct {
             mux.setActivePane(pane);
             self.invalidateFocusedPaneCache(previous, pane);
         }
+        const had_selection = self.hasSelection();
         const previous_selection_pane = self.selection_pane;
         if (!extend or self.selection_pane != pane or self.selection_anchor == null) {
             self.selection_pane = pane;
@@ -907,6 +925,9 @@ pub const App = struct {
         }
         pane.render_dirty = .full;
         self.selection_generation +%= 1;
+        if (had_selection) {
+            self.emitLuaBuiltInEvent("selection:cleared", .none);
+        }
     }
 
     pub fn selectionUpdate(self: *App, pane: *Pane, point: selection.CellPoint) void {
@@ -921,6 +942,101 @@ pub const App = struct {
 
     pub fn selectionEnd(self: *App) void {
         self.selection_drag_active = false;
+        if (self.hasSelection()) {
+            self.emitLuaBuiltInEvent("selection:begin", .none);
+        }
+    }
+
+    /// Double-click: select the word (whitespace-delimited token) at `point`.
+    pub fn selectionBeginWord(self: *App, pane: *Pane, point: selection.CellPoint) void {
+        if (!self.hasPane(pane)) return;
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            mux.setActivePane(pane);
+            self.invalidateFocusedPaneCache(previous, pane);
+        }
+        const had_selection = self.hasSelection();
+
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
+
+        // Scan to the target row and extract per-column codepoints (ASCII only; non-ASCII treated as word chars).
+        var ascii_cols: [4096]u8 = [_]u8{0} ** 4096;
+        var col_count: usize = 0;
+        var row_index: usize = 0;
+        var found_row = false;
+        while (runtime.nextRow(pane.row_iterator)) : (row_index += 1) {
+            if (row_index != point.row) continue;
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+            while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
+                var cell_buf: [16]u8 = [_]u8{0} ** 16;
+                var cell_len: usize = 0;
+                appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
+                // ASCII printable non-space → word char; everything else (incl. NUL, non-ASCII) treated as word char too.
+                // Only space (0x20) and control chars (< 0x21) are word boundaries.
+                ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] != 0) cell_buf[0] else ' ';
+            }
+            found_row = true;
+            break;
+        }
+
+        if (!found_row or col_count == 0 or point.col >= col_count) {
+            // Fall back to single-cell selection.
+            self.selectionBegin(pane, point, false);
+            return;
+        }
+
+        const isWordChar = struct {
+            fn call(ch: u8) bool {
+                // Word chars: printable non-whitespace (everything except space, tab, and other control chars)
+                return ch != ' ' and ch != '\t' and ch >= 0x21;
+            }
+        }.call;
+
+        if (!isWordChar(ascii_cols[point.col])) {
+            // Clicked on whitespace: single-cell selection
+            self.selectionBegin(pane, point, false);
+            return;
+        }
+
+        var start = point.col;
+        while (start > 0 and isWordChar(ascii_cols[start - 1])) : (start -= 1) {}
+        var end = point.col;
+        while (end + 1 < col_count and isWordChar(ascii_cols[end + 1])) : (end += 1) {}
+
+        if (had_selection) {
+            self.emitLuaBuiltInEvent("selection:cleared", .none);
+        }
+        self.selection_pane = pane;
+        self.selection_anchor = .{ .row = point.row, .col = start };
+        self.selection_head = .{ .row = point.row, .col = end };
+        self.selection_drag_active = false;
+        pane.render_dirty = .full;
+        self.selection_generation +%= 1;
+        self.emitLuaBuiltInEvent("selection:begin", .none);
+    }
+
+    /// Triple-click: select the entire row containing `point`.
+    pub fn selectionBeginLine(self: *App, pane: *Pane, point: selection.CellPoint) void {
+        if (!self.hasPane(pane)) return;
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            mux.setActivePane(pane);
+            self.invalidateFocusedPaneCache(previous, pane);
+        }
+        const had_selection = self.hasSelection();
+
+        const cols = @max(@as(usize, 1), @as(usize, pane.cols));
+        if (had_selection) {
+            self.emitLuaBuiltInEvent("selection:cleared", .none);
+        }
+        self.selection_pane = pane;
+        self.selection_anchor = .{ .row = point.row, .col = 0 };
+        self.selection_head = .{ .row = point.row, .col = cols - 1 };
+        self.selection_drag_active = false;
+        pane.render_dirty = .full;
+        self.selection_generation +%= 1;
+        self.emitLuaBuiltInEvent("selection:begin", .none);
     }
 
     pub fn clearSelection(self: *App) void {
@@ -931,6 +1047,7 @@ pub const App = struct {
         self.selection_drag_active = false;
         if (pane) |p| p.render_dirty = .full;
         self.selection_generation +%= 1;
+        self.emitLuaBuiltInEvent("selection:cleared", .none);
     }
 
     pub fn hasSelection(self: *const App) bool {
@@ -950,6 +1067,7 @@ pub const App = struct {
         if (text.len == 0) return;
         text_buf[text.len] = 0;
         c.sapp_set_clipboard_string(@ptrCast(text_buf[0..text.len :0].ptr));
+        self.clearSelection();
     }
 
     pub fn pasteClipboard(self: *App) !void {
@@ -1225,6 +1343,7 @@ pub const App = struct {
         self.selection_head = null;
         self.selection_drag_active = false;
         self.selection_generation +%= 1;
+        self.emitLuaBuiltInEvent("selection:cleared", .none);
     }
 
     pub fn sendFocus(self: *App, gained: bool) !void {
@@ -2805,6 +2924,11 @@ fn luaGetWindowWidthCallback(app_ptr: *anyopaque) usize {
 fn luaGetWindowHeightCallback(app_ptr: *anyopaque) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.config.window_height;
+}
+
+fn luaNowMsCallback(app_ptr: *anyopaque) i64 {
+    _ = app_ptr;
+    return @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
 }
 
 fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {

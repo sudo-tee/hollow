@@ -289,6 +289,10 @@ HollowWidget
   on_mount?()
   on_unmount?()
 
+HollowOverlayOpts
+  align?  "center"|"top_left"|"top_center"|"top_right"|"left_center"|"right_center"|"bottom_left"|"bottom_center"|"bottom_right"
+  backdrop? boolean|"#rrggbb"|{ color?: "#rrggbb", alpha?: 0..255 }
+
 HollowWidgetCtx
   term
     tab    HollowTab
@@ -388,9 +392,11 @@ render      fun(ctx) → HollowSpanNode[]
 on_key?     fun(key, mods): boolean   -- return true to consume the key
 on_mount?   fun()
 on_unmount? fun()
+chrome?     { bg?: "#rrggbb", border?: "#rrggbb" }
 ```
 
 `on_key` receives canonical key names and a Vim-style modifier prefix string like `""`, `<C>`, or `<C-S>`.
+Built-in `input` and `select` helpers also treat printable keys such as digits and punctuation as text input.
 
 Phase 5 note: overlays are currently a Lua-side runtime with keyboard handling and simple multi-line text rendering through existing top-level drawing hooks. This is enough to power prompts, pickers, and notifications before a dedicated Zig overlay compositor lands.
 Updated: overlays are now visually rendered by the Zig renderer as stacked optional panels. If no overlays are pushed, nothing is drawn.
@@ -417,6 +423,10 @@ hollow.ui.notify.error(message, opts?)
 level?   "info"|"warn"|"error"|"success"   -- default "info"
 title?   string
 ttl?     integer                           -- ms; nil = sticky until dismissed
+align?   HollowOverlayAlign                -- default "center"; accepts shortcuts like "right" or "bottom_right"
+backdrop? boolean                          -- default false; dim content behind the toast when true
+chrome?  { bg?: "#rrggbb", border?: "#rrggbb" }
+theme?   HollowWidgetTheme                 -- overrides resolved widget theme tokens for this call
 action?
   label  string
   fn     fun()    -- invoked when the user activates the toast action
@@ -450,6 +460,11 @@ hollow.ui.input.close()
 ```
 prompt?    string
 default?   string
+backdrop?  boolean|"#rrggbb"|{ color?: "#rrggbb", alpha?: 0..255 }
+width?     integer                 -- overlay width in cols
+height?    integer                 -- overlay height in rows
+chrome?    { bg?: "#rrggbb", border?: "#rrggbb" }
+theme?     HollowWidgetTheme
 on_confirm fun(value: string)
 on_cancel? fun()
 ```
@@ -481,10 +496,16 @@ hollow.ui.select.close()
 
 ```
 items      T[]
-label?     fun(item: T): string    -- display text; default tostring
-detail?    fun(item: T): string    -- second column / preview line
+label?     fun(item: T): string|HollowSpanNode|{ string, ...style }|Array<string|HollowSpanNode|{ string, ...style }>    -- display text; default tostring
+detail?    fun(item: T): string|HollowSpanNode|{ string, ...style }|Array<string|HollowSpanNode|{ string, ...style }>    -- second column / preview line
 prompt?    string
 fuzzy?     boolean                 -- default true
+query?     string                  -- initial filter text
+backdrop?  boolean|"#rrggbb"|{ color?: "#rrggbb", alpha?: 0..255 } -- default true
+width?     integer                 -- overlay width in cols
+height?    integer                 -- overlay height in rows; list scrolls when needed
+chrome?    { bg?: "#rrggbb", border?: "#rrggbb" }
+theme?     HollowWidgetTheme
 actions    HollowSelectAction[]    -- first = default (<CR>); rest = alternates
 on_cancel? fun()
 ```
@@ -498,7 +519,23 @@ key?   string    -- key hint shown in footer, e.g. "<CR>", "<C-d>"
 desc?  string    -- tooltip shown in footer
 ```
 
-The **first** action is always the default, executed on plain `<CR>`. Alternate action keys are shown as hints in the widget footer. The `key` field is a label only — the widget manages its own keymap internally.
+The select always renders a filter input row. When `fuzzy ~= false`, typed input uses fuzzy subsequence matching and ranks closer matches first; otherwise it falls back to plain substring filtering.
+
+Arrow navigation wraps from last to first and first to last. When the result list exceeds the available height, the visible window scrolls around the active item.
+
+Built-in widgets resolve colors from `theme.widgets.all` plus `theme.widgets.notify`, `theme.widgets.input`, and `theme.widgets.select`. Per-call `opts.theme` overrides those tokens.
+
+`label` and `detail` may return formatted span nodes, so select items can include custom colors/styles while fuzzy matching still uses the flattened plain text.
+
+For lighter-weight formatting, a text shorthand like `{ "warn", fg = "#e0af68", bold = true }` is accepted anywhere a formatted select label/detail node is expected.
+
+There are also lighter helpers for this style of composition: `hollow.ui.text(value, style?)` and `hollow.ui.row(...)`.
+
+For a more React-ish composition style without JSX, `hollow.ui.h(tag, props?, ...)` / `hollow.ui.el(...)` provide a tiny hyperscript helper.
+
+Component functions receive `props.children`, `props.children_row`, and `props.children_rows`. There is also `hollow.ui.fragment(...)` plus `hollow.ui.tags.row(...)` / `hollow.ui.tags.text(...)` style tag factories.
+
+The **first** action is always the default, executed on plain `<CR>`. Alternate action keys are shown as hints in the widget footer and matched against `action.key` when provided.
 
 **Example:**
 

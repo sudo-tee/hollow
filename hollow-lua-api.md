@@ -260,6 +260,22 @@ hollow.ui.select.open(opts)
 hollow.ui.select.close()
 ```
 
+Notifications accept `ttl` in milliseconds and now dismiss automatically, plus `align` values like `"top_right"` or `"bottom_right"`.
+
+Input/select overlays capture printable keys including digits and punctuation, render a visible caret, support customizable backdrops via `true`, a color string like `"#000000"`, or `{ color = "#000000", alpha = 72 }`, and accept overlay `width`/`height`. Select navigation wraps and scrolls when the list is taller than the visible area.
+
+Built-in widgets (`notify`, `input`, `select`) now resolve a shared palette from `theme.widgets.all` and per-widget sections like `theme.widgets.select`; each call can also override tokens with `opts.theme` or panel chrome with `opts.chrome`.
+
+`hollow.ui.select` also accepts formatted `label`/`detail` content via span nodes, so picker items can be colorized while filtering still matches against the plain text.
+
+It also accepts a shorthand text node form like `{ "Error", fg = "#ff5d62", bold = true }`, which is easier to write than a full `hollow.ui.span(...)` for simple colored labels.
+
+For a lighter DSL, use `hollow.ui.text(...)`, `hollow.ui.row(...)`, and `hollow.ui.rows(...)` to build inline content and conditional row lists without as much ceremony.
+
+There is also a small hyperscript-style helper: `hollow.ui.h(...)` / `hollow.ui.el(...)`, so you can write things like `hwl.ui.h("row", nil, {"Name", fg="#98bb6c"}, hwl.ui.h("text", { fg="#7e9cd8" }, " [ok]"))`.
+
+Component functions now receive `props.children`, `props.children_row`, and `props.children_rows`, there is a `hollow.ui.fragment(...)` helper for nested row groups, and `hollow.ui.tags.row(...)` / `hollow.ui.tags.text(...)` style factories are available if you prefer not to use string tag names.
+
 ## `hollow.htp`
 
 Planned namespace, not fully implemented yet:

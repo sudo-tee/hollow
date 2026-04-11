@@ -26,6 +26,48 @@ function M.setup(hollow)
   hollow.keymap.set("<A-S-PageDown>", "scrollback_page_down")
   hollow.keymap.set("<C-S-Home>", "scrollback_top")
   hollow.keymap.set("<C-S-End>", "scrollback_bottom")
+
+  local is_mac = hollow.platform.is_macos
+  local copy_chord  = is_mac and "<D-S-c>" or "<C-S-c>"
+  local paste_chord = is_mac and "<D-S-v>" or "<C-S-v>"
+
+  local selection_hint_widget = nil
+
+  hollow.events.on("selection:begin", function()
+    if hollow.config.get("selection_hint") == false then
+      return
+    end
+    if selection_hint_widget ~= nil then
+      return
+    end
+    local widget
+    widget = hollow.ui.overlay.new({
+      align = "top_right",
+      backdrop = false,
+      render = function()
+        local t = hollow.ui.tags
+        local theme = hollow.ui.resolve_theme("overlay")
+        return {
+          t.overlay_row(nil,
+            t.text({ fg = theme.panel_border, bold = true }, copy_chord),
+            t.text({ fg = theme.muted }, " copy"),
+            t.text({ fg = theme.divider }, "   "),
+            t.text({ fg = theme.panel_border, bold = true }, paste_chord),
+            t.text({ fg = theme.muted }, " paste")
+          ),
+        }
+      end,
+      on_event = function(name)
+        if name == "selection:cleared" then
+          hollow.ui.overlay.remove(widget)
+          selection_hint_widget = nil
+        end
+      end,
+      chrome = false,
+    })
+    selection_hint_widget = widget
+    hollow.ui.overlay.push(widget)
+  end)
 end
 
 return M

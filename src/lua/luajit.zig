@@ -144,6 +144,7 @@ pub const AppCallbacks = struct {
     get_pane_height: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_window_width: *const fn (app: *anyopaque) usize,
     get_window_height: *const fn (app: *anyopaque) usize,
+    now_ms: *const fn (app: *anyopaque) i64,
     pane_is_focused: *const fn (app: *anyopaque, pane_id: usize) bool,
     pane_exists: *const fn (app: *anyopaque, pane_id: usize) bool,
     switch_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
@@ -965,6 +966,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_window_height, 1);
         api.set_field(self.state, -2, "get_window_height");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_now_ms, 1);
+        api.set_field(self.state, -2, "now_ms");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_is_focused, 1);
@@ -1903,8 +1908,7 @@ pub fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]co
     return parseHexColor(ptr[0..len]);
 }
 
-pub fn parseSegmentArray(api: Api, state: *State, text_buf: []u8, table_idx: c_int) []bar.Segment {
-    var seg_buf: [32]bar.Segment = undefined;
+pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_buf: []u8, table_idx: c_int) []bar.Segment {
     var seg_count: usize = 0;
     var text_used: usize = 0;
 
@@ -2664,6 +2668,17 @@ fn l_get_window_height(state: *State) callconv(.c) c_int {
         return 1;
     };
     api.push_number(state, @floatFromInt(cbs.get_window_height(cbs.app)));
+    return 1;
+}
+
+fn l_now_ms(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    api.push_number(state, @floatFromInt(cbs.now_ms(cbs.app)));
     return 1;
 }
 

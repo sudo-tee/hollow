@@ -1,5 +1,32 @@
 local hwl = hollow
 local theme = {
+  widgets = {
+    all = {
+      panel_bg = "#1b1f2a",
+      panel_border = "#7e9cd8",
+      title = "#7fb4ca",
+      fg = "#dcd7ba",
+      input_bg = "#222733",
+      input_fg = "#dcd7ba",
+      cursor_bg = "#dcd7ba",
+      cursor_fg = "#1f1f28",
+      divider = "#2d3445",
+      backdrop = { color = "#000000", alpha = 40 },
+    },
+    select = {
+      selected_bg = "#2a3142",
+      selected_detail_bg = "#232938",
+      scrollbar_thumb = "#e0af68",
+    },
+    notify = {
+      notify_levels = {
+        info = "#7fb4ca",
+        warn = "#e0af68",
+        error = "#ff5d62",
+        success = "#98bb6c",
+      },
+    },
+  },
   tab_bar = {
     background = "#2A2A37",
     active_tab = {
@@ -22,16 +49,6 @@ local theme = {
     },
     hover_close_bg = "#5a2d35",
   },
-  foreground = "#dcd7ba",
-  background = "#1F1F28",
-
-  cursor_bg = "#c8c093",
-  cursor_fg = "#0d0c0c",
-  cursor_border = "#c8c093",
-
-  selection_fg = "#c8c093",
-  selection_bg = "#0d0c0c",
-
   scrollbar = {
     track = "#1b1d25",
     thumb = "#5f667a",
@@ -57,6 +74,13 @@ local theme = {
     },
   },
 
+  foreground = "#dcd7ba",
+  background = "#1F1F28",
+  cursor_bg = "#c8c093",
+  cursor_fg = "#0d0c0c",
+  cursor_border = "#c8c093",
+  selection_fg = "#c8c093",
+  selection_bg = "#0d0c0c",
   ansi = {
     "#090618", -- Black
     "#c34043", -- Maroon
@@ -260,21 +284,74 @@ hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hwl.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
 hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
+hwl.keymap.set("<leader>uu", function()
+  hwl.config.reload()
+end, { desc = "reload config" })
+
+hwl.keymap.set("<leader>r", function()
+  local tab = hwl.term.current_tab()
+  if tab then
+    hwl.ui.input.open({
+      prompt = "New tab name",
+      default = tab.title,
+      on_confirm = function(new_title)
+        hwl.term.set_title(new_title, tab.id)
+      end,
+    })
+  end
+end, { desc = "rename tab" })
 hwl.keymap.set("<leader>e", function()
   hwl.ui.select.open({
-    title = "Choose an option",
+    prompt = "Choose an option",
+    width = 65,
+    -- max_height = 50,
     items = {
-      "Option 1",
-      "Option 2",
-      "Option 3",
+      { name = "Option 1", kind = "ok" },
+      { name = "Option 2", kind = "warn" },
+      { name = "Option 3", kind = "err" },
+      { name = "Option 4", kind = "err" },
+      { name = "Option 5", kind = "err" },
+      { name = "Option 6", kind = "err" },
+      { name = "Option 7", kind = "err" },
+      { name = "Option 8", kind = "err" },
+      { name = "Option 9", kind = "err" },
+      { name = "Option 10", kind = "err" },
+      { name = "Option 11", kind = "err" },
+      { name = "Option 12", kind = "err" },
+      { name = "Option 13", kind = "err" },
+      { name = "Option 14", kind = "err" },
+      { name = "Option 15", kind = "err" },
+      { name = "Option 16", kind = "err" },
+      { name = "Option 17", kind = "err" },
+      { name = "Option 18", kind = "err" },
+      { name = "Option 19", kind = "err" },
+      { name = "Option 20", kind = "err" },
+      { name = "Option 21", kind = "err" },
+      { name = "Option 22", kind = "err" },
+      { name = "Option 23", kind = "err" },
+      { name = "Option 24", kind = "err" },
+      { name = "Option 25", kind = "err" },
+      { name = "Option 26", kind = "err" },
+      { name = "Option 27", kind = "err" },
+      { name = "Option 28", kind = "err" },
     },
-    fuzzy = true,
+    label = function(item)
+      local color = ({
+        ok = "#c8d9f5",
+        warn = "#e0af68",
+        err = "#ff5d62",
+      })[item.kind] or "#dcd7ba"
+
+      return {
+        hwl.ui.span(item.name, { fg = color, bold = true }),
+        hwl.ui.span("  [" .. item.kind .. "]", { fg = "#7e9cd8" }),
+      }
+    end,
     actions = {
       {
         name = "select",
-        keys = { "enter" },
-        fn = function(value)
-          hwl.ui.notify.info("You selected: " .. value, { ttl = 1200 })
+        fn = function(item)
+          hwl.ui.notify.info("You selected: " .. item.name, { ttl = 1200, align = "top_right" })
         end,
       },
     },

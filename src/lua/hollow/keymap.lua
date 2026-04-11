@@ -9,8 +9,12 @@ local function bor(a, b)
   return a + b
 end
 
+local time_now_ms = function()
+  return math.floor(os.time() * 1000)
+end
+
 local function now_ms()
-  return math.floor(os.clock() * 1000)
+  return time_now_ms()
 end
 
 local function normalize_key_name(key)
@@ -538,7 +542,19 @@ end
 function M.setup(hollow, host_api, state, ui_runtime)
   local keymap_state = state.keymap
 
+  time_now_ms = function()
+    if type(host_api.now_ms) == "function" then
+      local ok, value = pcall(host_api.now_ms)
+      if ok and type(value) == "number" then
+        return math.floor(value)
+      end
+    end
+    return math.floor(os.time() * 1000)
+  end
+
   hollow.keymap._format_mods = format_mods_from_mask
+  hollow.keymap._format_chord = format_chord
+  hollow.keymap._parse_chord = parse_chord
 
   function hollow.keymap.set(chord, action, opts)
     local use_leader, resolved, style = split_leader_chord(chord)

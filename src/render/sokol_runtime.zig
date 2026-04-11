@@ -213,6 +213,11 @@ var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
+// Double/triple click tracking (event thread only)
+var g_click_count: u32 = 0;
+var g_last_click_time_ms: u64 = 0;
+var g_last_click_x: f32 = 0;
+var g_last_click_y: f32 = 0;
 var g_scrollbar_drag_pane: ?*Pane = null;
 var g_scrollbar_drag_metrics: ?App.ScrollbarMetrics = null;
 var g_scrollbar_drag_grab_y: f32 = 0.0;
@@ -509,13 +514,45 @@ fn pop(api: lua_mod.Api, state: *lua_mod.State, count: c_int) void {
     api.set_top(state, -count - 1);
 }
 
+fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {
+    if (text.len != 7 or text[0] != '#') return null;
+    const r = std.fmt.parseInt(u8, text[1..3], 16) catch return null;
+    const g = std.fmt.parseInt(u8, text[3..5], 16) catch return null;
+    const b = std.fmt.parseInt(u8, text[5..7], 16) catch return null;
+    return .{ .r = r, .g = g, .b = b };
+}
+
+fn overlayRowSegmentsIndex(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int) c_int {
+    api.get_field(state, row_idx, "segments");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        return absoluteIndex(api, state, -1);
+    }
+    pop(api, state, 1);
+    return row_idx;
+}
+
+fn overlayRowColorField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
+    api.get_field(state, row_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, -1, &len) orelse return null;
+    return parseHexColor(ptr[0..len]);
+}
+
+fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) bool {
+    api.get_field(state, row_idx, field);
+    defer pop(api, state, 1);
+    return api.to_boolean(state, -1) != 0;
+}
+
 fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
     var cursor_x = x;
     for (segments) |seg| {
         if (seg.text.len == 0) continue;
         const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
         if (seg.bg) |bg| {
-            drawBorderRect(cursor_x, y - 2.0, seg_w, renderer.cell_h + 4.0, bg.r, bg.g, bg.b, 220);
+            drawBorderRect(cursor_x, y + 1.0, seg_w, @max(@as(f32, 1.0), renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 220);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
         renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
@@ -533,6 +570,7 @@ const WidgetRenderCtx = struct {
 };
 
 var g_widget_render_ctx: ?WidgetRenderCtx = null;
+var g_rect_pip: c.sgl_pipeline = .{ .id = 0 };
 
 const WidgetPreRasterCtx = struct {
     renderer: *FtRenderer,
@@ -976,6 +1014,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
         api.get_field(state, sidebar_idx, "rows");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            var sidebar_seg_buf: [32]bar.Segment = undefined;
             const rows_idx = absoluteIndex(api, state, -1);
             var row_i: c_int = 1;
             while (true) : (row_i += 1) {
@@ -985,7 +1024,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     break;
                 }
                 if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                    const row_segments = lua_mod.parseSegmentArray(api, state, seg_text_buf[0..], absoluteIndex(api, state, -1));
+                    const row_segments = lua_mod.parseSegmentArray(api, state, sidebar_seg_buf[0..], seg_text_buf[0..], absoluteIndex(api, state, -1));
                     const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
                     drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments);
                 }
@@ -998,6 +1037,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        var overlay_seg_buf: [32]bar.Segment = undefined;
         const stacks_idx = absoluteIndex(api, state, -1);
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
@@ -1007,18 +1047,157 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 break;
             }
             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                const overlay_idx = absoluteIndex(api, state, -1);
+                api.get_field(state, overlay_idx, "backdrop");
+                var backdrop_color: ?ghostty.ColorRgb = null;
+                var backdrop_alpha: u8 = 0;
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    api.get_field(state, -1, "color");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+                        var color_len: usize = 0;
+                        if (api.to_lstring(state, -1, &color_len)) |color_ptr| {
+                            backdrop_color = parseHexColor(color_ptr[0..color_len]);
+                        }
+                    }
+                    pop(api, state, 1);
+
+                    api.get_field(state, -1, "alpha");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                        const value = api.to_number(state, -1);
+                        backdrop_alpha = @intCast(std.math.clamp(@as(i32, @intFromFloat(value)), 0, 255));
+                    }
+                    pop(api, state, 1);
+                }
+                pop(api, state, 1);
+
+                api.get_field(state, overlay_idx, "width");
+                var width_rows: usize = 0;
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    const value = api.to_number(state, -1);
+                    if (value > 0) width_rows = @intFromFloat(value);
+                }
+                pop(api, state, 1);
+
+                api.get_field(state, overlay_idx, "height");
+                var height_rows: usize = 0;
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    const value = api.to_number(state, -1);
+                    if (value > 0) height_rows = @intFromFloat(value);
+                }
+                pop(api, state, 1);
+
+                api.get_field(state, overlay_idx, "chrome");
+                var panel_bg = ghostty.ColorRgb{ .r = 18, .g = 22, .b = 30 };
+                var panel_border = ghostty.ColorRgb{ .r = 136, .g = 192, .b = 208 };
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    if (overlayRowColorField(api, state, absoluteIndex(api, state, -1), "bg")) |bg| {
+                        panel_bg = bg;
+                    }
+                    if (overlayRowColorField(api, state, absoluteIndex(api, state, -1), "border")) |border| {
+                        panel_border = border;
+                    }
+                }
+                pop(api, state, 1);
+
+                api.get_field(state, overlay_idx, "rows");
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                    pop(api, state, 1);
+                    pop(api, state, 1);
+                    continue;
+                }
                 const rows_idx = absoluteIndex(api, state, -1);
+                api.get_field(state, overlay_idx, "align");
+                var align_len: usize = 0;
+                const align_ptr = api.to_lstring(state, -1, &align_len);
+                const overlay_align = if (align_ptr) |ptr| ptr[0..align_len] else "center";
+                pop(api, state, 1);
+
+                var max_chars: usize = 0;
+                var row_count: usize = 0;
+                var row_i_measure: c_int = 1;
+                while (true) : (row_i_measure += 1) {
+                    api.rawgeti(state, rows_idx, row_i_measure);
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                        pop(api, state, 1);
+                        break;
+                    }
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        const row_idx = absoluteIndex(api, state, -1);
+                        const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
+                        const row_segments = lua_mod.parseSegmentArray(api, state, overlay_seg_buf[0..], seg_text_buf[0..], row_segments_idx);
+                        var row_chars: usize = 0;
+                        for (row_segments) |seg| row_chars += countCodepoints(seg.text);
+                        if (row_chars > max_chars) max_chars = row_chars;
+                        row_count += 1;
+                        if (row_segments_idx != row_idx) pop(api, state, 1);
+                    }
+                    pop(api, state, 1);
+                }
+
                 const available_width = @max(@as(f32, 160.0), ctx.width - reserved_sidebar_width);
-                const panel_w = available_width * 0.6;
-                const panel_h = ctx.renderer.cell_h * 6.0;
+                const max_panel_w = available_width - ctx.renderer.cell_w * 2.0;
+                const content_w = @as(f32, @floatFromInt(max_chars)) * ctx.renderer.cell_w;
+                const desired_panel_w = if (width_rows > 0)
+                    @as(f32, @floatFromInt(width_rows)) * ctx.renderer.cell_w
+                else
+                    content_w + ctx.renderer.cell_w * 2.0;
+                const desired_panel_h = if (height_rows > 0)
+                    @as(f32, @floatFromInt(height_rows)) * ctx.renderer.cell_h
+                else
+                    @as(f32, @floatFromInt(@max(@as(usize, 1), row_count))) * ctx.renderer.cell_h + ctx.renderer.cell_h * 1.5;
+                const panel_w = std.math.clamp(desired_panel_w, @as(f32, 160.0), @max(@as(f32, 160.0), max_panel_w));
+                const panel_h = std.math.clamp(desired_panel_h, ctx.renderer.cell_h * 3.0, ctx.height - top_h - bottom_h - ctx.renderer.cell_h * 2.0);
                 const content_left = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right)
                     reserved_sidebar_width
                 else
                     0.0;
-                const panel_x = content_left + (available_width - panel_w) * 0.5;
-                const panel_y = top_h + ctx.renderer.cell_h * 1.5 * @as(f32, @floatFromInt(stack_i));
-                drawBorderRect(panel_x, panel_y, panel_w, panel_h, 18, 22, 30, 235);
-                drawBorderRect(panel_x, panel_y, panel_w, 1.0, 136, 192, 208, 255);
+                const content_right = if (reserved_sidebar_width > 0 and reserved_sidebar_side_right)
+                    ctx.width - reserved_sidebar_width
+                else
+                    ctx.width;
+                const content_width = @max(@as(f32, 1.0), content_right - content_left);
+                const overlay_margin_x = ctx.renderer.cell_w;
+                const overlay_margin_y = ctx.renderer.cell_h;
+                const stack_offset = ctx.renderer.cell_h * 0.75 * @as(f32, @floatFromInt(stack_i - 1));
+
+                var panel_x = content_left + (content_width - panel_w) * 0.5;
+                var panel_y = top_h + overlay_margin_y + stack_offset;
+
+                if (std.mem.eql(u8, overlay_align, "top_left")) {
+                    panel_x = content_left + overlay_margin_x;
+                    panel_y = top_h + overlay_margin_y + stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "top_center")) {
+                    panel_x = content_left + (content_width - panel_w) * 0.5;
+                    panel_y = top_h + overlay_margin_y + stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "top_right")) {
+                    panel_x = content_right - panel_w - overlay_margin_x;
+                    panel_y = top_h + overlay_margin_y + stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "left_center")) {
+                    panel_x = content_left + overlay_margin_x;
+                    panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "right_center")) {
+                    panel_x = content_right - panel_w - overlay_margin_x;
+                    panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "bottom_left")) {
+                    panel_x = content_left + overlay_margin_x;
+                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "bottom_center")) {
+                    panel_x = content_left + (content_width - panel_w) * 0.5;
+                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                } else if (std.mem.eql(u8, overlay_align, "bottom_right")) {
+                    panel_x = content_right - panel_w - overlay_margin_x;
+                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                }
+
+                panel_x = std.math.clamp(panel_x, content_left + overlay_margin_x, content_right - panel_w - overlay_margin_x);
+                panel_y = std.math.clamp(panel_y, top_h + overlay_margin_y, ctx.height - bottom_h - panel_h - overlay_margin_y);
+                if (backdrop_color) |bg| {
+                    if (backdrop_alpha > 0) {
+                        drawBorderRect(content_left, top_h, content_width, ctx.height - top_h - bottom_h, bg.r, bg.g, bg.b, backdrop_alpha);
+                    }
+                }
+                drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, 235);
+                drawBorderRect(panel_x, panel_y, panel_w, 1.0, panel_border.r, panel_border.g, panel_border.b, 255);
 
                 var row_i: c_int = 1;
                 while (true) : (row_i += 1) {
@@ -1028,12 +1207,34 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         break;
                     }
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                        const row_segments = lua_mod.parseSegmentArray(api, state, seg_text_buf[0..], absoluteIndex(api, state, -1));
+                        const row_idx = absoluteIndex(api, state, -1);
+                        const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
+                        const row_segments = lua_mod.parseSegmentArray(api, state, overlay_seg_buf[0..], seg_text_buf[0..], row_segments_idx);
                         const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
+                        const row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
+                        const row_divider = overlayRowColorField(api, state, row_idx, "divider");
+                        const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
+                        const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
+                        const row_scrollbar_track_color = overlayRowColorField(api, state, row_idx, "scrollbar_track_color") orelse ghostty.ColorRgb{ .r = 90, .g = 99, .b = 117 };
+                        const row_scrollbar_thumb_color = overlayRowColorField(api, state, row_idx, "scrollbar_thumb_color") orelse panel_border;
+                        const row_x = panel_x + ctx.renderer.cell_w * 0.5;
+                        const row_w = panel_w - ctx.renderer.cell_w;
+                        if (row_fill_bg) |bg| {
+                            drawBorderRect(row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 255);
+                        }
+                        if (row_divider) |divider| {
+                            drawBorderRect(row_x, text_y + ctx.renderer.cell_h * 0.5, row_w, 1.0, divider.r, divider.g, divider.b, 255);
+                        }
+                        if (row_scrollbar_track) {
+                            const sc = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
+                            drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), sc.r, sc.g, sc.b, if (row_scrollbar_thumb) 255 else 120);
+                        }
                         drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, panel_w - ctx.renderer.cell_w, row_segments);
+                        if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);
                 }
+                pop(api, state, 1);
             }
             pop(api, state, 1);
         }
@@ -1467,6 +1668,14 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     sgl_desc.max_vertices = 1 << 20;
     sgl_desc.max_commands = 1 << 18;
     c.sgl_setup(&sgl_desc);
+
+    var rect_pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
+    rect_pip_desc.colors[0].blend.enabled = true;
+    rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
+    rect_pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
+    rect_pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     // Query DPI scale after sg_setup so the GPU context is ready.
     // On a 2× HiDPI display this returns 2.0; on a 1× display it returns 1.0.
@@ -2223,33 +2432,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    if (app.hasSelection()) {
-        if (g_ft_renderer) |*renderer| {
-            const fw: i32 = @intFromFloat(width);
-            const fh: i32 = @intFromFloat(height);
-            c.sgl_defaults();
-            c.sgl_viewport(0, 0, fw, fh, true);
-            c.sgl_scissor_rect(0, 0, fw, fh, true);
-            c.sgl_load_default_pipeline();
-            c.sgl_matrix_mode_projection();
-            c.sgl_load_identity();
-            c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
-
-            const hint = if (builtin.os.tag == .macos)
-                "Cmd+C copy  Cmd+Shift+V paste  Cmd+drag select"
-            else
-                "Ctrl+C copy  Ctrl+Shift+V paste  Ctrl+drag select";
-            const hint_w = @as(f32, @floatFromInt(countCodepoints(hint))) * renderer.cell_w + renderer.cell_w;
-            const hint_h = renderer.cell_h + 8.0;
-            const hint_x = @max(@as(f32, 8.0), width - hint_w - 12.0);
-            const hint_y = @max(@as(f32, @floatFromInt(app.tabBarHeight())) + 8.0, 12.0);
-            drawBorderRect(hint_x, hint_y, hint_w, hint_h, 31, 36, 46, 220);
-            drawBorderRect(hint_x, hint_y, hint_w, 1.0, 122, 162, 247, 255);
-            renderer.drawLabelFace(hint_x + renderer.cell_w * 0.5, hint_y + 4.0, hint, 220, 225, 235, 0);
-            c.sgl_load_default_pipeline();
-        }
-    }
-
     if (g_ft_renderer) |*renderer| {
         c.sgl_defaults();
         c.sgl_viewport(0, 0, @intFromFloat(width), @intFromFloat(height), true);
@@ -2477,6 +2659,10 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_ft_renderer) |*renderer| {
         renderer.deinit();
         g_ft_renderer = null;
+    }
+    if (g_rect_pip.id != 0) {
+        c.sgl_destroy_pipeline(g_rect_pip);
+        g_rect_pip = .{ .id = 0 };
     }
     c.sgl_shutdown();
     c.sg_shutdown();
@@ -2711,6 +2897,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         if (app.fireOnKey(key_name, mods)) {
             g_swallow_char_pending = 4;
             g_swallow_char_until_frame = event.frame_count + 1;
+            c.sapp_consume_event();
             return;
         }
 
@@ -2928,13 +3115,41 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             if (wants_selection) {
                 const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
                 const point = app.cellPointFromPaneLocal(hit.pane, hit.x, hit.y);
+
+                // Detect double/triple click: same position within 500 ms.
+                const now_ms: u64 = @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
+                const dt_ms = now_ms -| g_last_click_time_ms;
+                const dx = event.mouse_x - g_last_click_x;
+                const dy = event.mouse_y - g_last_click_y;
+                const same_spot = dx * dx + dy * dy < 16.0; // within ~4 px radius
+                if (dt_ms < 500 and same_spot) {
+                    g_click_count += 1;
+                } else {
+                    g_click_count = 1;
+                }
+                g_last_click_time_ms = now_ms;
+                g_last_click_x = event.mouse_x;
+                g_last_click_y = event.mouse_y;
+
                 g_selection_pointer_active = true;
                 g_selection_pointer_pane = hit.pane;
-                _ = app.enqueueMouse(.{ .selection_begin = .{
-                    .pane = hit.pane,
-                    .point = point,
-                    .extend = extend,
-                } });
+                if (g_click_count >= 3) {
+                    _ = app.enqueueMouse(.{ .selection_begin_line = .{
+                        .pane = hit.pane,
+                        .point = point,
+                    } });
+                } else if (g_click_count == 2) {
+                    _ = app.enqueueMouse(.{ .selection_begin_word = .{
+                        .pane = hit.pane,
+                        .point = point,
+                    } });
+                } else {
+                    _ = app.enqueueMouse(.{ .selection_begin = .{
+                        .pane = hit.pane,
+                        .point = point,
+                        .extend = extend,
+                    } });
+                }
                 return;
             }
         }
@@ -3387,6 +3602,9 @@ fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) vo
     const gf = @as(f32, @floatFromInt(g)) / 255.0;
     const bf = @as(f32, @floatFromInt(b)) / 255.0;
     const af = @as(f32, @floatFromInt(a)) / 255.0;
+    if (g_rect_pip.id != 0) {
+        c.sgl_load_pipeline(g_rect_pip);
+    }
     c.sgl_begin_quads();
     c.sgl_c4f(rf, gf, bf, af);
     c.sgl_v2f(x, y);
@@ -3394,4 +3612,5 @@ fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) vo
     c.sgl_v2f(x + w, y + h);
     c.sgl_v2f(x, y + h);
     c.sgl_end();
+    c.sgl_load_default_pipeline();
 }

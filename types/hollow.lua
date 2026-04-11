@@ -2,20 +2,40 @@
 
 ---@alias HollowColor string
 
----@alias HollowFontWeight
----| "thin"
----| "extralight"
----| "light"
----| "regular"
----| "medium"
----| "semibold"
----| "bold"
----| "extrabold"
----| "black"
+---@alias HollowFontWeight "thin"|"extralight"|"light"|"regular"|"medium"|"semibold"|"bold"|"extrabold"|"black"
 
 ---@alias HollowFontStyle "normal"|"italic"|"oblique"
 ---@alias HollowCursorStyle "block"|"bar"|"underline"
 ---@alias HollowSidebarSide "left"|"right"
+---@alias HollowOverlayAlign "center"|"top_left"|"top_center"|"top_right"|"left_center"|"right_center"|"bottom_left"|"bottom_center"|"bottom_right"|"left"|"right"|"top"|"bottom"
+---@class HollowOverlayBackdrop
+---@field color? HollowColor
+---@field alpha? integer
+
+---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowOverlayBackdrop
+---@class HollowWidgetTheme
+---@field panel_bg? HollowColor
+---@field panel_border? HollowColor
+---@field divider? HollowColor
+---@field title? HollowColor
+---@field fg? HollowColor
+---@field muted? HollowColor
+---@field input_bg? HollowColor
+---@field input_fg? HollowColor
+---@field cursor_bg? HollowColor
+---@field cursor_fg? HollowColor
+---@field selected_bg? HollowColor
+---@field selected_detail_bg? HollowColor
+---@field selected_fg? HollowColor
+---@field selected_muted? HollowColor
+---@field detail? HollowColor
+---@field notify_fg? HollowColor
+---@field counter? HollowColor
+---@field empty? HollowColor
+---@field scrollbar_track? HollowColor
+---@field scrollbar_thumb? HollowColor
+---@field backdrop? HollowOverlayBackdropValue
+---@field notify_levels? { info?: HollowColor, warn?: HollowColor, error?: HollowColor, success?: HollowColor }
 ---@alias HollowNotifyLevel "info"|"warn"|"error"|"success"
 ---@alias HollowKeyMode "normal"
 
@@ -179,6 +199,9 @@
 ---@field children HollowSpanNode[]
 ---@field style? HollowStyleValue
 
+---@class HollowTextShorthand: HollowStyle
+---@field [1] string
+
 ---@class HollowButtonOpts
 ---@field id string
 ---@field text? string
@@ -188,6 +211,7 @@
 ---@field on_mouse_leave? fun(e: { id: string })
 
 ---@alias HollowSpanNode HollowSpan|HollowSpacerSpan|HollowIconSpan|HollowGroupSpan
+---@alias HollowInlineValue string|HollowSpanNode|HollowTextShorthand
 
 ---@class HollowBarTabState
 ---@field id integer|nil
@@ -294,6 +318,11 @@
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
 ---@field on_mount? fun()
 ---@field on_unmount? fun()
+---@field align? HollowOverlayAlign
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field chrome? { bg?: HollowColor, border?: HollowColor }
 
 ---@class HollowNotifyAction
 ---@field label string
@@ -302,12 +331,21 @@
 ---@class HollowNotifyOpts
 ---@field level? HollowNotifyLevel
 ---@field title? string
----@field ttl? integer
+---@field ttl? number
 ---@field action? HollowNotifyAction
+---@field align? HollowOverlayAlign
+---@field backdrop? HollowOverlayBackdropValue
+---@field chrome? { bg?: HollowColor, border?: HollowColor }
+---@field theme? HollowWidgetTheme
 
 ---@class HollowInputOpts
 ---@field prompt? string
 ---@field default? string
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field chrome? { bg?: HollowColor, border?: HollowColor }
+---@field theme? HollowWidgetTheme
 ---@field on_confirm fun(value: string)
 ---@field on_cancel? fun()
 
@@ -321,10 +359,16 @@
 ---@generic T
 ---@class HollowSelectOpts<T>
 ---@field items T[]
----@field label? fun(item: T): string
----@field detail? fun(item: T): string
+---@field label? fun(item: T): HollowInlineValue|HollowInlineValue[]
+---@field detail? fun(item: T): HollowInlineValue|HollowInlineValue[]
 ---@field prompt? string
 ---@field fuzzy? boolean
+---@field query? string
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field chrome? { bg?: HollowColor, border?: HollowColor }
+---@field theme? HollowWidgetTheme
 ---@field actions HollowSelectAction<T>[]
 ---@field on_cancel? fun()
 
@@ -618,10 +662,57 @@ function select.close() end
 ---@class HollowUiNamespace
 local ui = {}
 
+---@class HollowUiComponentProps: table
+---@field children any[]
+---@field children_row HollowSpanNode[]
+---@field children_rows table[]
+
 ---@param text string
 ---@param style? HollowStyleValue
 ---@return HollowSpan
 function ui.span(text, style) end
+
+---@param value HollowInlineValue
+---@param style? HollowStyleValue
+---@return HollowSpanNode
+function ui.text(value, style) end
+
+---@param ... HollowInlineValue|HollowInlineValue[]
+---@return HollowSpanNode[]
+function ui.row(...) end
+
+---@param ... any
+---@return table[]
+function ui.rows(...) end
+
+---@param tag string|fun(props: HollowUiComponentProps): any
+---@param props? table|HollowInlineValue
+---@param ... any
+---@return any
+function ui.h(tag, props, ...) end
+
+---@param tag string|fun(props: HollowUiComponentProps): any
+---@param props? table|HollowInlineValue
+---@param ... any
+---@return any
+function ui.el(tag, props, ...) end
+
+---@param ... any
+---@return table[]
+function ui.fragment(...) end
+
+---@class HollowUiTagFactory
+---@field row fun(props?: table, ...: any): any
+---@field rows fun(props?: table, ...: any): any
+---@field text fun(props?: table, ...: any): any
+---@field span fun(props?: table, ...: any): any
+---@field group fun(props?: table, ...: any): any
+---@field icon fun(props?: table, ...: any): any
+---@field spacer fun(props?: table, ...: any): any
+---@field button fun(props?: table, ...: any): any
+
+---@type HollowUiTagFactory
+ui.tags = {}
 
 ---@return HollowSpacerSpan
 function ui.spacer() end
@@ -704,6 +795,7 @@ function process.exec(opts) end
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean
 ---@field get_window_width fun(): integer
 ---@field get_window_height fun(): integer
+---@field now_ms fun(): integer
 ---@field pane_exists fun(pane_id: integer): boolean
 ---@field get_pane_pid fun(pane_id: integer): integer
 ---@field get_pane_cwd fun(pane_id: integer): string

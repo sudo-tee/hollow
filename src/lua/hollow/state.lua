@@ -7,7 +7,7 @@ function M.new(host_api)
       values = {},
     },
     events = {
-      builtin_names = {
+        builtin_names = {
         ["config:reloaded"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
@@ -24,6 +24,8 @@ function M.new(host_api)
         ["bottombar:hover"] = true,
         ["bottombar:leave"] = true,
         ["bottombar:click"] = true,
+        ["selection:begin"] = true,
+        ["selection:cleared"] = true,
       },
       handles = {},
       listeners = {},
