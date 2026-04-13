@@ -539,6 +539,9 @@ local function format_mods(mods)
   return "<" .. table.concat(parts, "-") .. ">"
 end
 
+---@param hollow Hollow
+---@param host_api HollowHostBridge
+---@param state HollowState
 function M.setup(hollow, host_api, state)
   local keymap_state = state.keymap
 

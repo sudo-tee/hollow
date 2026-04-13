@@ -1,20 +1,38 @@
 local M = {}
 
+---@type HollowState|nil
 local _instance = nil
 
+---@return HollowKeymapSequenceNode
+local function empty_sequence_node()
+  return {
+    action = nil,
+    desc = nil,
+    children = {},
+  }
+end
+
+---@return HollowState
 function M.get()
+  if _instance == nil then
+    error("hollow.state not initialized. Call hollow.state.new(host_api) first.")
+  end
   return _instance
 end
 
+---@param host_api HollowHostBridge
+---@return HollowState
 function M.new(host_api)
   assert(_instance == nil, "hollow.state already initialized")
+
+  ---@type HollowState
   _instance = {
     host_api = host_api,
     config = {
       values = {},
     },
     events = {
-        builtin_names = {
+      builtin_names = {
         ["config:reloaded"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
@@ -40,9 +58,9 @@ function M.new(host_api)
     },
     keymap = {
       bindings = {},
-      sequence_bindings = { children = {} },
+      sequence_bindings = empty_sequence_node(),
       leader = nil,
-      leader_bindings = { children = {} },
+      leader_bindings = empty_sequence_node(),
       sequence_timeout_ms = 1000,
       sequence_pending_until = nil,
       sequence_active_node = nil,

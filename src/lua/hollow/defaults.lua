@@ -45,6 +45,7 @@ function M.setup(hollow)
       align = "top_right",
       backdrop = false,
       render = function()
+        ---@type HollowUiTags
         local t = hollow.ui.tags
         local theme = hollow.ui.resolve_theme("overlay")
         return {

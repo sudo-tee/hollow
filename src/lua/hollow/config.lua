@@ -1,5 +1,9 @@
 local M = {}
 
+---@param hollow Hollow
+---@param host_api HollowHostBridge
+---@param state HollowState
+---@param util table
 function M.setup(hollow, host_api, state, util)
   function hollow.config.set(opts)
     if type(opts) ~= "table" then

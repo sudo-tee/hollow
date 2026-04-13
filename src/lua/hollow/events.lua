@@ -1,5 +1,8 @@
 local M = {}
 
+---@param hollow Hollow
+---@param state HollowState
+---@param term_helpers table
 function M.setup(hollow, state, term_helpers)
   local event_handles = state.events.handles
   local event_listeners = state.events.listeners

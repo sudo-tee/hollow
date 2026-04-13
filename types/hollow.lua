@@ -8,12 +8,12 @@
 ---@alias HollowCursorStyle "block"|"bar"|"underline"
 ---@alias HollowSidebarSide "left"|"right"
 ---@alias HollowOverlayAlign "center"|"top_left"|"top_center"|"top_right"|"left_center"|"right_center"|"bottom_left"|"bottom_center"|"bottom_right"|"left"|"right"|"top"|"bottom"
----@class HollowOverlayBackdrop
+---@class HollowUiThemeBackdrop
 ---@field color? HollowColor
 ---@field alpha? integer
 
----@alias HollowOverlayBackdropValue boolean|HollowColor|HollowOverlayBackdrop
----@class HollowWidgetTheme
+---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowUiThemeBackdrop
+---@class HollowUiTheme
 ---@field panel_bg? HollowColor
 ---@field panel_border? HollowColor
 ---@field divider? HollowColor
@@ -41,6 +41,8 @@
 
 ---@alias HollowKeyChord string
 ---@alias HollowKeyMods string
+---@alias HollowHexColor HollowColor
+---@alias HollowUiKeyMods HollowKeyMods
 
 ---@alias HollowEventName
 ---| "config:reloaded"
@@ -72,6 +74,16 @@
 ---@field on_mouse_leave? fun(e: { id: string })
 
 ---@alias HollowStyleValue HollowStyle|HollowColor
+---@alias HollowUiNodeStyle HollowStyle
+
+---@class HollowUiStyleWrapper
+---@field style HollowUiNodeStyle
+
+---@alias HollowUiNodeEventPayload table<string, any>
+
+---@class HollowUiChrome
+---@field bg? HollowColor
+---@field border? HollowColor
 
 ---@class HollowSize
 ---@field rows integer
@@ -177,45 +189,83 @@
 ---@field name string
 ---@field is_active boolean
 
+---@alias HollowPaneSnapshot HollowPane
+---@alias HollowTabSnapshot HollowTab
+---@alias HollowWorkspaceSnapshot HollowWorkspace
+---@alias HollowPaneSizeSnapshot HollowSize
+---@alias HollowWindowSizeSnapshot HollowSize
+
 ---@class HollowNewTabOpts
 ---@field cmd? string|string[]
 ---@field cwd? string
 ---@field env? table<string, string>
 ---@field title? string
 
----@class HollowSpan
+---@class HollowUiSpanNode
 ---@field _type "span"
 ---@field text string
----@field style? HollowStyleValue
+---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowSpacerSpan
+---@class HollowUiSpacerNode
 ---@field _type "spacer"
 
----@class HollowIconSpan
+---@class HollowUiIconNode
 ---@field _type "icon"
 ---@field name string
----@field style? HollowStyleValue
+---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowGroupSpan
+---@class HollowUiGroupNode
 ---@field _type "group"
----@field children HollowSpanNode[]
----@field style? HollowStyleValue
+---@field children HollowUiRenderableNode[]
+---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowTextShorthand: HollowStyle
+---@class HollowUiTextShorthand: HollowStyle
 ---@field [1] string
 
----@class HollowButtonOpts
+---@class HollowUiButtonOptions
 ---@field id string
 ---@field text? string
----@field style? HollowStyleValue
+---@field style? HollowUiNodeStyle
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
 
----@alias HollowSpanNode HollowSpan|HollowSpacerSpan|HollowIconSpan|HollowGroupSpan
----@alias HollowInlineValue string|HollowSpanNode|HollowTextShorthand
+---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
+---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
+---@class HollowUiOverlayRowOptions
+---@field fill_bg? HollowColor
+---@field divider? HollowColor
+---@field scrollbar_track? boolean
+---@field scrollbar_thumb? boolean
+---@field scrollbar_track_color? HollowColor
+---@field scrollbar_thumb_color? HollowColor
 
----@class HollowBarTabState
+---@class HollowUiOverlayRow
+---@field _overlay_row true
+---@field nodes HollowUiRenderableNode[]
+---@field fill_bg? HollowColor
+---@field divider? HollowColor
+---@field scrollbar_track boolean
+---@field scrollbar_thumb boolean
+---@field scrollbar_track_color? HollowColor
+---@field scrollbar_thumb_color? HollowColor
+
+---@alias HollowUiRow HollowUiRenderableNode[]|HollowUiOverlayRow
+---@alias HollowUiRows HollowUiRow[]
+
+---@class HollowUiTagProps: HollowStyle
+---@field name? string
+---@field children? any[]
+---@field color? HollowColor
+---@field divider? HollowColor
+---@field fill_bg? HollowColor
+---@field scrollbar_track? boolean
+---@field scrollbar_thumb? boolean
+---@field scrollbar_track_color? HollowColor
+---@field scrollbar_thumb_color? HollowColor
+---@field style? HollowStyle
+
+---@class HollowUiTabState
 ---@field id integer|nil
 ---@field title string
 ---@field index integer
@@ -225,60 +275,54 @@
 ---@field pane HollowPane|nil
 ---@field panes HollowPane[]
 
----@class HollowBarWorkspaceState
+---@class HollowUiWorkspaceState
 ---@field index integer
 ---@field name string
 ---@field is_active boolean
 ---@field active_index integer
 ---@field count integer
 
----@alias HollowTopbarTabState HollowBarTabState
----@alias HollowTopbarWorkspaceState HollowBarWorkspaceState
+---@class HollowUiBarNodeBase
+---@field _type string
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(state:any, ctx:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
+---@field fit? "content"|"fill"
 
----@class HollowBarTabsNode
+---@class HollowUiBarNodePayload
+---@field id string
+
+---@class HollowUiBarTabsNode
 ---@field _type "bar_tabs"
 ---@field fit? "fill"|"content"
----@field format? fun(tab: HollowBarTabState, ctx: HollowWidgetCtx): string|HollowSpan
----@field style? HollowStyleValue|fun(tab: HollowBarTabState, ctx: HollowWidgetCtx): HollowStyleValue|nil
+---@field format? fun(tab: HollowUiTabState, ctx: HollowWidgetCtx): string|HollowUiSpanNode
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(tab: HollowUiTabState, ctx: HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
----@class HollowBarTabsOpts
----@field fit? "fill"|"content"
----@field format? fun(tab: HollowBarTabState, ctx: HollowWidgetCtx): string|HollowSpan
----@field style? HollowStyleValue|fun(tab: HollowBarTabState, ctx: HollowWidgetCtx): HollowStyleValue|nil
-
----@class HollowBarWorkspaceNode
+---@class HollowUiBarWorkspaceNode
 ---@field _type "bar_workspace"
----@field format? fun(workspace: HollowBarWorkspaceState, ctx: HollowWidgetCtx): string|HollowSpan
----@field style? HollowStyleValue|fun(workspace: HollowBarWorkspaceState, ctx: HollowWidgetCtx): HollowStyleValue|nil
+---@field format? fun(workspace: HollowUiWorkspaceState, ctx: HollowWidgetCtx): string|HollowUiSpanNode
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(workspace: HollowUiWorkspaceState, ctx: HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
----@class HollowBarWorkspaceOpts
----@field format? fun(workspace: HollowBarWorkspaceState, ctx: HollowWidgetCtx): string|HollowSpan
----@field style? HollowStyleValue|fun(workspace: HollowBarWorkspaceState, ctx: HollowWidgetCtx): HollowStyleValue|nil
-
----@class HollowBarTimeNode
+---@class HollowUiBarTimeNode
 ---@field _type "bar_time"
 ---@field format string
----@field style? HollowStyleValue
+---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowBarTimeOpts
----@field style? HollowStyleValue
-
----@class HollowBarKeyLegendNode
+---@class HollowUiBarKeyLegendNode
 ---@field _type "bar_key_legend"
----@field style? HollowStyleValue
+---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowBarKeyLegendOpts
----@field style? HollowStyleValue
-
----@class HollowBarCustomNode
+---@class HollowUiBarCustomNode
 ---@field _type "bar_custom"
 ---@field id? string
----@field render fun(ctx: HollowWidgetCtx): string|HollowSpan
+---@field render fun(ctx: HollowWidgetCtx): string|HollowUiSpanNode
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
-
----@alias HollowBarItem HollowSpanNode|HollowBarTabsNode|HollowBarWorkspaceNode|HollowBarTimeNode|HollowBarKeyLegendNode|HollowBarCustomNode
+---@class HollowUiBarCustomOptions
+---@field id? string
+---@field render fun(ctx:HollowWidgetCtx):string|HollowUiSegment|HollowUiNodeStyle|nil
+---@field on_click? fun(payload:HollowUiNodeEventPayload)
+---@field on_mouse_enter? fun(payload:HollowUiNodeEventPayload)
+---@field on_mouse_leave? fun(payload:HollowUiNodeEventPayload)
 
 ---@class HollowWidgetCtxTerm
 ---@field tab HollowTab|nil
@@ -296,26 +340,84 @@
 ---@field size HollowSize
 ---@field time HollowWidgetCtxTime
 
----@alias HollowWidgetRenderResult HollowBarItem[]|HollowSpanNode[][]
+---@class HollowUiFlatNode
+---@field text string
+---@field spacer? boolean
+---@field style? HollowStyle
+
+---@class HollowUiSegment
+---@field text string
+---@field fg? HollowColor
+---@field bg? HollowColor
+---@field bold? boolean
+---@field id? string
+---@field kind? string
+
+---@class HollowUiTabsLayout
+---@field kind "tabs"
+---@field fit "content"|"fill"
+---@field tabs HollowUiSegment[]
+
+---@class HollowUiOverlaySerializedRow
+---@field segments HollowUiSegment[]
+---@field fill_bg? HollowColor
+---@field divider? HollowColor
+---@field scrollbar_track boolean
+---@field scrollbar_thumb boolean
+---@field scrollbar_track_color? HollowColor
+---@field scrollbar_thumb_color? HollowColor
+
+---@class HollowUiOverlaySerializedWidget
+---@field align string
+---@field backdrop HollowUiThemeBackdrop|nil
+---@field chrome HollowUiChrome|nil
+---@field width integer|nil
+---@field height integer|nil
+---@field max_height integer|nil
+---@field rows HollowUiOverlaySerializedRow[]
+
+---@class HollowUiSidebarState
+---@field side "left"|"right"
+---@field width integer
+---@field reserve boolean
+---@field rows HollowUiSegment[][]
+
+---@alias HollowWidgetRenderResult HollowUiRows|HollowUiRenderableNode[]|HollowUiRenderableNode|nil
 
 ---@class HollowWidget
+---@field _kind? string
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_event? fun(name: string, e: any)
+---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
 ---@field on_mount? fun()
 ---@field on_unmount? fun()
+---@field height? number
+---@field max_height? number
+---@field width? number
+---@field side? HollowSidebarSide
+---@field align? HollowOverlayAlign|string
+---@field backdrop? HollowOverlayBackdropValue
+---@field chrome? HollowUiChrome|boolean
+---@field hidden? boolean
+---@field reserve? boolean
+---@field _notify? boolean
+---@field _expires_at? integer
 
----@class HollowTopbarOpts: HollowWidget
+---@alias HollowUiWidget HollowWidget
+---@alias HollowUiWidgetOptions HollowWidget
+
+---@class HollowUiTopbarOptions: HollowWidget
 ---@field height? integer
 
----@class HollowBottombarOpts: HollowWidget
+---@class HollowUiBottombarOptions: HollowWidget
 ---@field height? integer
 
----@class HollowSidebarOpts: HollowWidget
+---@class HollowUiSidebarOptions: HollowWidget
 ---@field side? HollowSidebarSide
 ---@field width? integer
 ---@field reserve? boolean
 
----@class HollowOverlayOpts
+---@class HollowUiOverlayOptions
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
 ---@field on_mount? fun()
@@ -326,53 +428,130 @@
 ---@field height? integer
 ---@field chrome? { bg?: HollowColor, border?: HollowColor }
 
----@class HollowNotifyAction
+---@class HollowUiNotifyAction
 ---@field label string
 ---@field fn fun()
 
----@class HollowNotifyOpts
+---@class HollowUiNotifyOptions
 ---@field level? HollowNotifyLevel
 ---@field title? string
 ---@field ttl? number
----@field action? HollowNotifyAction
+---@field action? HollowUiNotifyAction
 ---@field align? HollowOverlayAlign
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field chrome? { bg?: HollowColor, border?: HollowColor }
----@field theme? HollowWidgetTheme
+---@field theme? HollowUiTheme
 
----@class HollowInputOpts
+---@class HollowUiInputOptions
 ---@field prompt? string
 ---@field default? string
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer
----@field chrome? { bg?: HollowColor, border?: HollowColor }
----@field theme? HollowWidgetTheme
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
 ---@field on_confirm fun(value: string)
 ---@field on_cancel? fun()
 
----@generic T
----@class HollowSelectAction<T>
+---@class HollowUiInputState
+---@field prompt string
+---@field value string
+
+---@class HollowUiSelectAction
 ---@field name string
----@field fn fun(item: T)
+---@field fn fun(item: any)
 ---@field key? string
 ---@field desc? string
 
----@generic T
----@class HollowSelectOpts<T>
----@field items T[]
----@field label? fun(item: T): HollowInlineValue|HollowInlineValue[]
----@field detail? fun(item: T): HollowInlineValue|HollowInlineValue[]
+---@class HollowUiSelectState
+---@field index integer
+---@field query string
+---@field scroll_top integer
+
+---@class HollowUiSelectEntry
+---@field item any
+---@field label_nodes HollowUiRenderableNode[]
+---@field label_text string
+---@field detail_nodes HollowUiRenderableNode[]|nil
+---@field detail_text string|nil
+---@field source_index integer
+---@field score number
+
+---@class HollowUiSelectOptions
+---@field items any[]
+---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
+---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string
 ---@field fuzzy? boolean
 ---@field query? string
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer
----@field chrome? { bg?: HollowColor, border?: HollowColor }
----@field theme? HollowWidgetTheme
----@field actions HollowSelectAction<T>[]
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
+---@field actions HollowUiSelectAction[]
 ---@field on_cancel? fun()
+
+---@class HollowEventListener
+---@field name string
+---@field handler fun(payload:any)
+---@field once boolean
+
+---@alias HollowEventHandleMap table<integer, HollowEventListener>
+---@alias HollowEventListenerMap table<string, integer[]>
+
+---@class HollowEventState
+---@field builtin_names table<string, boolean>
+---@field handles HollowEventHandleMap
+---@field listeners HollowEventListenerMap
+---@field next_handle integer
+
+---@class HollowConfigState
+---@field values table<string, any>
+
+---@class HollowKeymapBinding
+---@field action any
+---@field desc string|nil
+
+---@alias HollowKeymapBindingStore table<string, table<integer, HollowKeymapBinding>>
+---@alias HollowKeymapSequenceChildren table<string, table<integer, HollowKeymapSequenceNode>>
+
+---@class HollowKeymapSequenceNode
+---@field action any
+---@field desc string|nil
+---@field children HollowKeymapSequenceChildren
+
+---@class HollowKeymapLeader
+---@field key string
+---@field mods integer
+
+---@class HollowKeymapState
+---@field bindings HollowKeymapBindingStore
+---@field sequence_bindings HollowKeymapSequenceNode
+---@field leader HollowKeymapLeader|nil
+---@field leader_bindings HollowKeymapSequenceNode
+---@field sequence_timeout_ms integer
+---@field sequence_pending_until integer|nil
+---@field sequence_active_node HollowKeymapSequenceNode|nil
+---@field sequence_steps string[]
+---@field sequence_prefix string|nil
+
+---@class HollowUiState
+---@field mounted_topbar HollowUiWidget|nil
+---@field topbar_hovered_id string|nil
+---@field mounted_bottombar HollowUiWidget|nil
+---@field bottombar_hovered_id string|nil
+---@field mounted_sidebar HollowUiWidget|nil
+---@field sidebar_visible boolean
+---@field overlay_stack HollowUiWidget[]
+---@field notifications HollowUiWidget[]
+
+---@class HollowState
+---@field host_api HollowHostBridge
+---@field config HollowConfigState
+---@field events HollowEventState
+---@field keymap HollowKeymapState
+---@field ui HollowUiState
 
 ---@class HtpQueryContext
 ---@field pane HollowPane
@@ -424,23 +603,23 @@ function config.reload() end
 ---@class HollowTermNamespace
 local term = {}
 
----@return HollowTab|nil
+---@return HollowTabSnapshot|nil
 function term.current_tab() end
 
----@return HollowPane|nil
+---@return HollowPaneSnapshot|nil
 function term.current_pane() end
 
----@return HollowTab[]
+---@return HollowTabSnapshot[]
 function term.tabs() end
 
----@return HollowWorkspace[]
+---@return HollowWorkspaceSnapshot[]
 function term.workspaces() end
 
----@return HollowWorkspace|nil
+---@return HollowWorkspaceSnapshot|nil
 function term.current_workspace() end
 
 ---@param id integer
----@return HollowTab|nil
+---@return HollowTabSnapshot|nil
 function term.tab_by_id(id) end
 
 ---@param opts? HollowNewTabOpts
@@ -538,34 +717,34 @@ function keymap.is_leader_active() end
 ---@return HollowLeaderState|nil
 function keymap.get_leader_state() end
 
----@class HollowBarNamespace
+---@class HollowUiBarNamespace
 local bar = {}
 
----@param opts? HollowBarTabsOpts
----@return HollowBarTabsNode
+---@param opts? HollowUiBarTabsNode
+---@return HollowUiBarTabsNode
 function bar.tabs(opts) end
 
----@param opts? HollowBarWorkspaceOpts
----@return HollowBarWorkspaceNode
+---@param opts? HollowUiBarWorkspaceNode
+---@return HollowUiBarWorkspaceNode
 function bar.workspace(opts) end
 
 ---@param fmt string
----@param opts? HollowBarTimeOpts
----@return HollowBarTimeNode
+---@param opts? HollowUiBarTimeNode
+---@return HollowUiBarTimeNode
 function bar.time(fmt, opts) end
 
----@param opts? HollowBarKeyLegendOpts
----@return HollowBarKeyLegendNode
+---@param opts? HollowUiBarKeyLegendNode
+---@return HollowUiBarKeyLegendNode
 function bar.key_legend(opts) end
 
----@param opts HollowBarCustomNode
----@return HollowBarCustomNode
+---@param opts HollowUiBarCustomOptions
+---@return HollowUiBarCustomNode
 function bar.custom(opts) end
 
----@class HollowTopbarNamespace
+---@class HollowUiWidgetSurfaceNamespace
 local topbar = {}
 
----@param opts HollowTopbarOpts
+---@param opts HollowUiTopbarOptions
 ---@return HollowWidget
 function topbar.new(opts) end
 
@@ -574,12 +753,15 @@ function topbar.mount(widget) end
 
 function topbar.unmount() end
 
+---@return boolean
 function topbar.invalidate() end
 
----@class HollowBottombarNamespace
+---@alias HollowUiTopbarNamespace HollowUiWidgetSurfaceNamespace
+
+---@class HollowUiBottombarNamespace
 local bottombar = {}
 
----@param opts HollowBottombarOpts
+---@param opts HollowUiBottombarOptions
 ---@return HollowWidget
 function bottombar.new(opts) end
 
@@ -588,12 +770,13 @@ function bottombar.mount(widget) end
 
 function bottombar.unmount() end
 
+---@return boolean
 function bottombar.invalidate() end
 
----@class HollowSidebarNamespace
+---@class HollowUiSidebarNamespace
 local sidebar = {}
 
----@param opts HollowSidebarOpts
+---@param opts HollowUiSidebarOptions
 ---@return HollowWidget
 function sidebar.new(opts) end
 
@@ -602,14 +785,16 @@ function sidebar.mount(widget) end
 
 function sidebar.unmount() end
 
+---@return boolean
 function sidebar.toggle() end
 
+---@return boolean
 function sidebar.invalidate() end
 
----@class HollowOverlayNamespace
+---@class HollowUiOverlayNamespace
 local overlay = {}
 
----@param opts HollowOverlayOpts
+---@param opts HollowUiOverlayOptions
 ---@return HollowWidget
 function overlay.new(opts) end
 
@@ -623,115 +808,104 @@ function overlay.clear() end
 ---@return integer
 function overlay.depth() end
 
----@class HollowNotifyNamespace
+---@class HollowUiNotifyNamespace
 local notify = {}
 
 ---@param message string
----@param opts? HollowNotifyOpts
+---@param opts? HollowUiNotifyOptions
 function notify.show(message, opts) end
 
 function notify.clear() end
 
 ---@param message string
----@param opts? HollowNotifyOpts
+---@param opts? HollowUiNotifyOptions
 function notify.info(message, opts) end
 
 ---@param message string
----@param opts? HollowNotifyOpts
+---@param opts? HollowUiNotifyOptions
 function notify.warn(message, opts) end
 
 ---@param message string
----@param opts? HollowNotifyOpts
+---@param opts? HollowUiNotifyOptions
 function notify.error(message, opts) end
 
----@class HollowInputNamespace
+---@class HollowUiInputNamespace
 local input = {}
 
----@param opts HollowInputOpts
+---@param opts HollowUiInputOptions
 function input.open(opts) end
 
 function input.close() end
 
----@class HollowSelectNamespace
+---@class HollowUiSelectNamespace
 local select = {}
 
----@generic T
----@param opts HollowSelectOpts<T>
+---@param opts HollowUiSelectOptions
 function select.open(opts) end
 
 function select.close() end
 
----@class HollowUiNamespace
+---@class HollowUi
 local ui = {}
 
----@class HollowUiComponentProps: table
----@field children any[]
----@field children_row HollowSpanNode[]
----@field children_rows table[]
+---@class HollowUiOverlayRowNamespace
+---@field make fun(nodes:HollowUiRenderableNode[]|nil, opts:HollowUiOverlayRowOptions|nil):HollowUiOverlayRow
+---@field nodes fun(row:HollowUiRow):HollowUiRenderableNode[]
+
+---@alias HollowUiTagBuilder fun(props:HollowUiTagProps|HollowUiInlineNode|string|number|nil, ...:any):any
+
+---@class HollowUiTags
+---@field overlay_row fun(props:HollowUiTagProps|nil, ...:any):HollowUiOverlayRow
+---@field divider fun(props:HollowUiTagProps|nil):HollowUiOverlayRow
+---@field text HollowUiTagBuilder
+---@field span HollowUiTagBuilder
+---@field group HollowUiTagBuilder
+---@field row HollowUiTagBuilder
+---@field rows HollowUiTagBuilder
+---@field icon HollowUiTagBuilder
+---@field spacer HollowUiTagBuilder
+---@field button HollowUiTagBuilder
 
 ---@param text string
----@param style? HollowStyleValue
----@return HollowSpan
+---@param style? HollowUiNodeStyle|HollowHexColor
+---@return HollowUiSpanNode
 function ui.span(text, style) end
 
----@param value HollowInlineValue
----@param style? HollowStyleValue
----@return HollowSpanNode
+---@param value HollowUiInlineNode
+---@param style? HollowUiNodeStyle|HollowHexColor
+---@return HollowUiRenderableNode
 function ui.text(value, style) end
 
----@param ... HollowInlineValue|HollowInlineValue[]
----@return HollowSpanNode[]
+---@param ... HollowUiInlineNode|HollowUiInlineNode[]
+---@return HollowUiRenderableNode[]
 function ui.row(...) end
 
 ---@param ... any
----@return table[]
+---@return HollowUiRows
 function ui.rows(...) end
 
----@param tag string|fun(props: HollowUiComponentProps): any
----@param props? table|HollowInlineValue
----@param ... any
----@return any
-function ui.h(tag, props, ...) end
-
----@param tag string|fun(props: HollowUiComponentProps): any
----@param props? table|HollowInlineValue
----@param ... any
----@return any
-function ui.el(tag, props, ...) end
-
----@param ... any
----@return table[]
-function ui.fragment(...) end
-
----@class HollowUiTagFactory
----@field row fun(props?: table, ...: any): any
----@field rows fun(props?: table, ...: any): any
----@field text fun(props?: table, ...: any): any
----@field span fun(props?: table, ...: any): any
----@field group fun(props?: table, ...: any): any
----@field icon fun(props?: table, ...: any): any
----@field spacer fun(props?: table, ...: any): any
----@field button fun(props?: table, ...: any): any
-
----@type HollowUiTagFactory
+---@type HollowUiTags
 ui.tags = {}
 
----@return HollowSpacerSpan
+---@return HollowUiSpacerNode
 function ui.spacer() end
 
 ---@param name string
----@param style? HollowStyleValue
----@return HollowIconSpan
+---@param style? HollowUiNodeStyle|HollowHexColor
+---@return HollowUiIconNode
 function ui.icon(name, style) end
 
----@param children HollowSpanNode[]
----@param style? HollowStyleValue
----@return HollowGroupSpan
+---@param children HollowUiRenderableNode[]
+---@param style? HollowUiNodeStyle|HollowHexColor
+---@return HollowUiGroupNode
 function ui.group(children, style) end
 
----@param opts HollowButtonOpts
----@return HollowSpan
+---@param opts HollowUiButtonOptions
+---@return HollowUiSpanNode
 function ui.button(opts) end
+
+---@type HollowUiOverlayRowNamespace
+ui.overlay_row = {}
 
 ui.bar = bar
 ui.topbar = topbar
@@ -741,6 +915,19 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.select = select
+
+---@field new_widget fun(kind:string, opts:HollowUiWidgetOptions):HollowUiWidget
+---@field close_overlay_widget fun(widget:HollowUiWidget):HollowUiWidget|nil
+---@field dispatch_widget_event fun(name:string, payload:HollowUiNodeEventPayload)
+---@field dispatch_overlay_key fun(key:string, mods:HollowUiKeyMods):boolean
+---@field trim_row_for_width fun(row:HollowUiRow, max_chars:number|nil):HollowUiSegment[]
+---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
+---@field resolve_theme fun(kind:string):HollowUiTheme
+---@field _overlay_state fun():HollowUiOverlaySerializedWidget[]|nil
+---@field _topbar_state fun():((HollowUiSegment|HollowUiTabsLayout|{kind:"spacer"})[])|nil
+---@field _bottombar_state fun():((HollowUiSegment|HollowUiTabsLayout|{kind:"spacer"})[])|nil
+---@field _bottombar_layout fun():{height:integer}|nil
+---@field _sidebar_state fun():HollowUiSidebarState|nil
 
 ---@class HollowHtpNamespace
 local htp = {}
@@ -830,12 +1017,17 @@ function process.exec(opts) end
 ---@field scroll_active_bottom fun()
 ---@field platform HollowPlatformInfo
 
+---@class HollowUiModuleExports
+---@field dispatch_widget_event fun(name:string, payload:HollowUiNodeEventPayload)
+---@field dispatch_overlay_key fun(key:string, mods:HollowUiKeyMods):boolean
+---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
+
 ---@class Hollow
 ---@field config HollowConfigNamespace
 ---@field term HollowTermNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
----@field ui HollowUiNamespace
+---@field ui HollowUi
 ---@field htp HollowHtpNamespace
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
