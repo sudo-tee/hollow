@@ -125,8 +125,8 @@ local function build_overlay_divider(props)
   return overlay_row.make({}, { divider = props.color or props.divider })
 end
 
----@param opts HollowUiBarNodeBase|nil
----@return HollowUiBarNodeBase
+---@param opts HollowUiBarNodeOptionsBase|nil
+---@return HollowUiBarNodeOptionsBase
 local function make_bar_node(opts)
   return opts or {}
 end
@@ -282,7 +282,7 @@ ui.tags.divider = function(props)
   return build_overlay_divider(type(props) == "table" and props or {})
 end
 
----@param opts HollowUiBarTabsNode|nil
+---@param opts HollowUiBarTabsOptions|nil
 ---@return HollowUiBarTabsNode
 function bar.tabs(opts)
   opts = make_bar_node(opts)
@@ -290,7 +290,7 @@ function bar.tabs(opts)
   return opts
 end
 
----@param opts HollowUiBarWorkspaceNode|nil
+---@param opts HollowUiBarWorkspaceOptions|nil
 ---@return HollowUiBarWorkspaceNode
 function bar.workspace(opts)
   opts = make_bar_node(opts)
@@ -299,7 +299,7 @@ function bar.workspace(opts)
 end
 
 ---@param fmt string|nil
----@param opts HollowUiBarTimeNode|nil
+---@param opts HollowUiBarTimeOptions|nil
 ---@return HollowUiBarTimeNode
 function bar.time(fmt, opts)
   opts = make_bar_node(opts)
@@ -308,7 +308,7 @@ function bar.time(fmt, opts)
   return opts
 end
 
----@param opts HollowUiBarKeyLegendNode|nil
+---@param opts HollowUiBarKeyLegendOptions|nil
 ---@return HollowUiBarKeyLegendNode
 function bar.key_legend(opts)
   opts = make_bar_node(opts)

@@ -282,33 +282,44 @@
 ---@field active_index integer
 ---@field count integer
 
----@class HollowUiBarNodeBase
----@field _type string
----@field style? HollowUiNodeStyle|HollowHexColor|fun(state:any, ctx:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
+---@class HollowUiBarNodeOptionsBase
+---@field _type? string
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(state:any, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 ---@field fit? "content"|"fill"
+
+---@class HollowUiBarNodeBase: HollowUiBarNodeOptionsBase
+---@field _type string
 
 ---@class HollowUiBarNodePayload
 ---@field id string
 
----@class HollowUiBarTabsNode
----@field _type "bar_tabs"
+---@class HollowUiBarTabsOptions: HollowUiBarNodeOptionsBase
 ---@field fit? "fill"|"content"
----@field format? fun(tab: HollowUiTabState, ctx: HollowWidgetCtx): string|HollowUiSpanNode
----@field style? HollowUiNodeStyle|HollowHexColor|fun(tab: HollowUiTabState, ctx: HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
+---@field format? fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): string|HollowUiSpanNode
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
----@class HollowUiBarWorkspaceNode
+---@class HollowUiBarTabsNode: HollowUiBarTabsOptions
+---@field _type "bar_tabs"
+
+---@class HollowUiBarWorkspaceOptions: HollowUiBarNodeOptionsBase
+---@field format? fun(workspace: HollowUiWorkspaceState, ctx?:HollowWidgetCtx): string|HollowUiSpanNode
+---@field style? HollowUiNodeStyle|HollowHexColor|fun(workspace: HollowUiWorkspaceState, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
+
+---@class HollowUiBarWorkspaceNode: HollowUiBarWorkspaceOptions
 ---@field _type "bar_workspace"
----@field format? fun(workspace: HollowUiWorkspaceState, ctx: HollowWidgetCtx): string|HollowUiSpanNode
----@field style? HollowUiNodeStyle|HollowHexColor|fun(workspace: HollowUiWorkspaceState, ctx: HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
----@class HollowUiBarTimeNode
+---@class HollowUiBarTimeOptions: HollowUiBarNodeOptionsBase
+---@field style? HollowUiNodeStyle|HollowHexColor
+
+---@class HollowUiBarTimeNode: HollowUiBarTimeOptions
 ---@field _type "bar_time"
 ---@field format string
+
+---@class HollowUiBarKeyLegendOptions: HollowUiBarNodeOptionsBase
 ---@field style? HollowUiNodeStyle|HollowHexColor
 
----@class HollowUiBarKeyLegendNode
+---@class HollowUiBarKeyLegendNode: HollowUiBarKeyLegendOptions
 ---@field _type "bar_key_legend"
----@field style? HollowUiNodeStyle|HollowHexColor
 
 ---@class HollowUiBarCustomNode
 ---@field _type "bar_custom"
@@ -720,20 +731,20 @@ function keymap.get_leader_state() end
 ---@class HollowUiBarNamespace
 local bar = {}
 
----@param opts? HollowUiBarTabsNode
+---@param opts? HollowUiBarTabsOptions
 ---@return HollowUiBarTabsNode
 function bar.tabs(opts) end
 
----@param opts? HollowUiBarWorkspaceNode
+---@param opts? HollowUiBarWorkspaceOptions
 ---@return HollowUiBarWorkspaceNode
 function bar.workspace(opts) end
 
 ---@param fmt string
----@param opts? HollowUiBarTimeNode
+---@param opts? HollowUiBarTimeOptions
 ---@return HollowUiBarTimeNode
 function bar.time(fmt, opts) end
 
----@param opts? HollowUiBarKeyLegendNode
+---@param opts? HollowUiBarKeyLegendOptions
 ---@return HollowUiBarKeyLegendNode
 function bar.key_legend(opts) end
 
