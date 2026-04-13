@@ -24,9 +24,9 @@ local util = require("hollow.util")
 
 require("hollow.config").setup(hollow, host_api, state, util)
 local term_helpers = require("hollow.term").setup(hollow, host_api)
-local ui_runtime = require("hollow.ui").setup(hollow, host_api, state, util)
+require("hollow.ui")
 require("hollow.actions").setup(hollow, host_api)
-require("hollow.keymap").setup(hollow, host_api, state, ui_runtime)
+require("hollow.keymap").setup(hollow, host_api, state)
 local events_runtime = require("hollow.events").setup(hollow, state, term_helpers)
 
 function hollow._emit_builtin_event(name, payload)
@@ -39,9 +39,9 @@ function hollow._emit_builtin_event(name, payload)
     or name == "bottombar:leave"
     or name == "bottombar:click"
   then
-    ui_runtime.handle_bar_node_event(name, adapted)
+    hollow.ui.handle_bar_node_event(name, adapted)
   end
-  ui_runtime.dispatch_widget_event(name, adapted)
+  hollow.ui.dispatch_widget_event(name, adapted)
   events_runtime.emit_event(name, adapted, true)
 end
 

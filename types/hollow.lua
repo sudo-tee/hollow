@@ -130,6 +130,8 @@
 ---@field max_fps? integer
 ---@field padding? integer
 ---@field theme? table
+---@field terminal_theme? table
+---@field ui_theme? table
 ---@field fonts? HollowFontsConfig
 ---@field scrollback? integer
 ---@field cols? integer

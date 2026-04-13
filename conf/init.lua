@@ -1,107 +1,164 @@
 local hwl = hollow
-local theme = {
+
+local wave = {
+  foreground = "#dcd7ba",
+  background = "#1f1f28",
+  cursor_bg = "#c8c093",
+  cursor_fg = "#1f1f28",
+  selection_bg = "#2d4f67",
+  selection_fg = "#c8c093",
+  ansi = {
+    "#16161d",
+    "#c34043",
+    "#76946a",
+    "#c0a36e",
+    "#7e9cd8",
+    "#957fb8",
+    "#6a9589",
+    "#c8c093",
+  },
+  brights = {
+    "#727169",
+    "#e82424",
+    "#98bb6c",
+    "#e6c384",
+    "#7fb4ca",
+    "#938aa9",
+    "#7aa89f",
+    "#dcd7ba",
+  },
+}
+
+local dragon = {
+  foreground = "#c5c9c5",
+  background = "#181616",
+  cursor_bg = "#c8c093",
+  cursor_fg = "#181616",
+  selection_bg = "#2d4f67",
+  selection_fg = "#c8c093",
+  ansi = {
+    "#0d0c0c",
+    "#c4746e",
+    "#8a9a7b",
+    "#c4b28a",
+    "#8ba4b0",
+    "#a292a3",
+    "#8ea4a2",
+    "#c8c093",
+  },
+  brights = {
+    "#a6a69c",
+    "#e46876",
+    "#87a987",
+    "#e6c384",
+    "#7fb4ca",
+    "#938aa9",
+    "#7aa89f",
+    "#c5c9c5",
+  },
+}
+
+local terminal_theme = dragon
+
+local palette = {
+  bg = terminal_theme.background,
+  fg = terminal_theme.foreground,
+  black = terminal_theme.ansi[1],
+  red = terminal_theme.ansi[2],
+  green = terminal_theme.ansi[3],
+  yellow = terminal_theme.ansi[4],
+  blue = terminal_theme.ansi[5],
+  magenta = terminal_theme.ansi[6],
+  cyan = terminal_theme.ansi[7],
+  gray = terminal_theme.brights[1],
+  bright_red = terminal_theme.brights[2],
+  bright_green = terminal_theme.brights[3],
+  bright_yellow = terminal_theme.brights[4],
+  bright_blue = terminal_theme.brights[5],
+  bright_magenta = terminal_theme.brights[6],
+  bright_cyan = terminal_theme.brights[7],
+  bright_white = terminal_theme.brights[8],
+  orange = terminal_theme.brights[4],
+  error = terminal_theme.brights[2],
+}
+
+local ui_theme = {
   widgets = {
     all = {
-      panel_bg = "#1b1f2a",
-      panel_border = "#7e9cd8",
-      title = "#7fb4ca",
-      fg = "#dcd7ba",
-      input_bg = "#222733",
-      input_fg = "#dcd7ba",
-      cursor_bg = "#dcd7ba",
-      cursor_fg = "#1f1f28",
-      divider = "#2d3445",
-      backdrop = { color = "#000000", alpha = 40 },
+      panel_bg = palette.bg,
+      panel_border = palette.blue,
+      title = palette.bright_blue,
+      fg = palette.fg,
+      input_bg = palette.black,
+      input_fg = palette.fg,
+      cursor_bg = palette.fg,
+      cursor_fg = palette.bg,
+      divider = palette.gray,
+    },
+    input = {
+      backdrop = { color = palette.black, alpha = 168 },
     },
     select = {
-      selected_bg = "#2a3142",
-      selected_detail_bg = "#232938",
-      scrollbar_thumb = "#e0af68",
+      selected_bg = palette.black,
+      selected_detail_bg = palette.bg,
+      scrollbar_thumb = palette.bright_yellow,
+      backdrop = { color = palette.black, alpha = 168 },
     },
     notify = {
       notify_levels = {
-        info = "#7fb4ca",
-        warn = "#e0af68",
-        error = "#ff5d62",
-        success = "#98bb6c",
+        info = palette.bright_blue,
+        warn = palette.bright_yellow,
+        error = palette.error,
+        success = palette.bright_green,
       },
     },
   },
   tab_bar = {
-    background = "#2A2A37",
+    background = palette.black,
     active_tab = {
-      bg = "#1F1F28",
-      fg = "#e0af68",
+      bg = palette.bg,
+      fg = palette.bright_yellow,
       bold = true,
     },
     inactive_tab = {
-      bg = "#2A2A37",
-      fg = "#dcd7ba",
+      bg = palette.black,
+      fg = palette.fg,
     },
     hover_tab = {
-      bg = "#2A2A37",
-      fg = "#dcd7ba",
+      bg = palette.black,
+      fg = palette.bright_white,
     },
     badge = {
-      fg = "#e0af68",
-      bg = "#2A2A37",
+      fg = palette.bright_yellow,
+      bg = palette.black,
       bold = true,
     },
-    hover_close_bg = "#5a2d35",
+    hover_close_bg = palette.red,
   },
   scrollbar = {
-    track = "#1b1d25",
-    thumb = "#5f667a",
-    thumb_hover = "#7a839b",
-    thumb_active = "#9fb8e8",
-    border = "#2d3140",
+    track = palette.black,
+    thumb = palette.gray,
+    thumb_hover = palette.blue,
+    thumb_active = palette.bright_blue,
+    border = palette.bg,
   },
-  split = "#766b90",
-  accent = "#7e9cd8",
-  warm = "#e0af68",
+  split = palette.magenta,
+  accent = palette.blue,
+  warm = palette.bright_yellow,
   status = {
-    bg = "#2A2A37",
-    fg = "#7e9cd8",
+    bg = palette.black,
+    fg = palette.blue,
   },
   workspace = {
     active = {
-      fg = "#1F1F28",
-      bg = "#7e9cd8",
+      fg = palette.bg,
+      bg = palette.blue,
     },
     inactive = {
-      fg = "#dcd7ba",
-      bg = "#2A2A37",
+      fg = palette.fg,
+      bg = palette.black,
     },
   },
-
-  foreground = "#dcd7ba",
-  background = "#1F1F28",
-  cursor_bg = "#c8c093",
-  cursor_fg = "#0d0c0c",
-  cursor_border = "#c8c093",
-  selection_fg = "#c8c093",
-  selection_bg = "#0d0c0c",
-  ansi = {
-    "#090618", -- Black
-    "#c34043", -- Maroon
-    "#76946a", -- Green
-    "#c0a36e", -- Olive
-    "#7e9cd8", -- Navy
-    "#957fb8", -- Purple
-    "#6a9589", -- Teal
-    "#c8c093", -- Silver
-  },
-  brights = {
-    "#727169", -- Grey
-    "#e82424", -- Red
-    "#98bb6c", -- Lime
-    "#e6c384", -- Yellow
-    "#7fb4ca", -- Blue
-    "#938aa9", -- Fuchsia
-    "#7aa89f", -- Aqua
-    "#dcd7ba", -- White
-  },
-  indexed = { [16] = "#ffa066", [17] = "#ff5d62" },
 }
 
 -- g.log("loading native rewrite config")
@@ -112,7 +169,8 @@ hwl.config.set({
   vsync = false,
   max_fps = 120,
   padding = 0,
-  theme = theme,
+  terminal_theme = terminal_theme,
+  -- ui_theme = ui_theme,A
   fonts = {
     size = 14.5,
     line_height = 0.9,
@@ -144,7 +202,7 @@ hwl.config.set({
   top_bar_show = true,
   top_bar_show_when_single_tab = true,
   top_bar_height = 20,
-  top_bar_bg = theme.tab_bar.background,
+  top_bar_bg = ui_theme.tab_bar.background,
   top_bar_draw_tabs = true,
   top_bar_draw_status = true,
   scrollback = 64000000,
@@ -154,11 +212,11 @@ hwl.config.set({
     min_thumb_size = 24,
     margin = 2,
     jump_to_click = true,
-    track = "#1b1d25",
-    thumb = "#5f667a",
-    thumb_hover = "#7a839b",
-    thumb_active = "#9fb8e8",
-    border = "#2d3140",
+    track = ui_theme.scrollbar.track,
+    thumb = ui_theme.scrollbar.thumb,
+    thumb_hover = ui_theme.scrollbar.thumb_hover,
+    thumb_active = ui_theme.scrollbar.thumb_active,
+    border = ui_theme.scrollbar.border,
   },
   hyperlinks = {
     enabled = true,
@@ -193,8 +251,8 @@ local function leader_or_terminal()
       id = "leader-state",
       text = " " .. leader_state.display .. " ",
       style = {
-        fg = theme.background,
-        bg = theme.warm,
+        fg = ui_theme.workspace.active.fg,
+        bg = ui_theme.warm,
         bold = true,
       },
       on_click = function()
@@ -205,7 +263,7 @@ local function leader_or_terminal()
   return hwl.ui.button({
     id = "terminal-badge",
     text = "  ",
-    style = theme.tab_bar.badge,
+    style = ui_theme.tab_bar.badge,
     on_click = function()
       hwl.term.new_tab()
     end,
@@ -213,7 +271,7 @@ local function leader_or_terminal()
 end
 
 local function cwd_span(ctx)
-  return hwl.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " ", theme.status)
+  return hwl.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " ", ui_theme.status)
 end
 
 local function workspace_widget()
@@ -222,7 +280,7 @@ local function workspace_widget()
       return " " .. workspace.name .. " "
     end,
     style = function(workspace)
-      return workspace.is_active and theme.workspace.active or theme.workspace.inactive
+      return workspace.is_active and ui_theme.workspace.active or ui_theme.workspace.inactive
     end,
   })
 end
@@ -246,10 +304,10 @@ local function tabs_widget()
     end,
     style = function(tab)
       if tab.is_active then
-        return theme.tab_bar.active_tab
+        return ui_theme.tab_bar.active_tab
       end
 
-      return tab.is_hovered and theme.tab_bar.hover_tab or theme.tab_bar.inactive_tab
+      return tab.is_hovered and ui_theme.tab_bar.hover_tab or ui_theme.tab_bar.inactive_tab
     end,
   })
 end
@@ -261,7 +319,7 @@ end
 --       hollow.ui.bar.tabs({ fit = "content" }),
 --       hollow.ui.spacer(),
 --       hollow.ui.bar.key_legend(),
---       hwl.ui.bar.time("%H:%M", { style = theme.status }),
+--       hwl.ui.bar.time("%H:%M", { style = ui_theme.status }),
 --     }
 --   end,
 -- }))
@@ -273,8 +331,8 @@ hwl.ui.topbar.mount(hwl.ui.topbar.new({
       workspace_widget(),
       tabs_widget(),
       hwl.ui.spacer(),
-      hwl.ui.bar.key_legend({ style = theme.status }),
-      hwl.ui.bar.time("%H:%M:%S", { style = theme.status }),
+      hwl.ui.bar.key_legend({ style = ui_theme.status }),
+      hwl.ui.bar.time("%H:%M:%S", { style = ui_theme.status }),
     }
   end,
 }))
@@ -283,7 +341,6 @@ hwl.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hwl.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
-hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hwl.keymap.set("<leader>uu", function()
   hwl.config.reload()
 end, { desc = "reload config" })

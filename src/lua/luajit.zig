@@ -99,6 +99,15 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.actions", .source = @embedFile("hollow/actions.lua") },
     .{ .name = "hollow.defaults", .source = @embedFile("hollow/defaults.lua") },
     .{ .name = "hollow.keymap", .source = @embedFile("hollow/keymap.lua") },
+    .{ .name = "hollow.ui.shared", .source = @embedFile("hollow/ui/shared.lua") },
+    .{ .name = "hollow.ui.primitives", .source = @embedFile("hollow/ui/primitives.lua") },
+    .{ .name = "hollow.ui.widgets.core", .source = @embedFile("hollow/ui/widgets/core.lua") },
+    .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("hollow/ui/widgets/bars.lua") },
+    .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("hollow/ui/widgets/overlay.lua") },
+    .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("hollow/ui/widgets/notify.lua") },
+    .{ .name = "hollow.ui.widgets.input", .source = @embedFile("hollow/ui/widgets/input.lua") },
+    .{ .name = "hollow.ui.widgets.select", .source = @embedFile("hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.runtime", .source = @embedFile("hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("hollow/ui.lua") },
 };
 
@@ -1268,6 +1277,16 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         if (std.mem.eql(u8, key, "theme") and value_type == .table) {
             const theme_idx = absoluteIndex(api, state, -1);
             applyThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config theme field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "terminal_theme") and value_type == .table) {
+            const theme_idx = absoluteIndex(api, state, -1);
+            applyThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config terminal_theme field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "ui_theme") and value_type == .table) {
             continue;
         }
 

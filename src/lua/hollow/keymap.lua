@@ -516,7 +516,7 @@ local function is_sequence_active(keymap_state)
   return true
 end
 
-local function format_mods_from_mask(mods)
+local function format_mods(mods)
   local parts = {}
   if type(mods) ~= "number" then
     return ""
@@ -539,7 +539,7 @@ local function format_mods_from_mask(mods)
   return "<" .. table.concat(parts, "-") .. ">"
 end
 
-function M.setup(hollow, host_api, state, ui_runtime)
+function M.setup(hollow, host_api, state)
   local keymap_state = state.keymap
 
   time_now_ms = function()
@@ -552,9 +552,9 @@ function M.setup(hollow, host_api, state, ui_runtime)
     return math.floor(os.time() * 1000)
   end
 
-  hollow.keymap._format_mods = format_mods_from_mask
-  hollow.keymap._format_chord = format_chord
-  hollow.keymap._parse_chord = parse_chord
+  hollow.keymap.format_mods = format_mods
+  hollow.keymap.format_chord = format_chord
+  hollow.keymap.parse_chord = parse_chord
 
   function hollow.keymap.set(chord, action, opts)
     local use_leader, resolved, style = split_leader_chord(chord)
@@ -659,7 +659,7 @@ function M.setup(hollow, host_api, state, ui_runtime)
   end
 
   host_api.on_key(function(key, mods)
-    if ui_runtime.dispatch_overlay_key(key, mods) then
+    if hollow.ui.dispatch_overlay_key(key, mods) then
       return true
     end
 
@@ -701,11 +701,6 @@ function M.setup(hollow, host_api, state, ui_runtime)
     return false
   end)
 
-  return {
-    parse_chord = parse_chord,
-    format_chord = format_chord,
-    format_mods_from_mask = format_mods_from_mask,
-  }
 end
 
 return M

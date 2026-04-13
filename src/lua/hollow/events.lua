@@ -92,7 +92,7 @@ function M.setup(hollow, state, term_helpers)
     if name == "key:unhandled" then
       return {
         key = payload.key,
-        mods = hollow.keymap._format_mods(payload.mods),
+        mods = hollow.keymap.format_mods(payload.mods),
       }
     end
     if

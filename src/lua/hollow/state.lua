@@ -1,7 +1,14 @@
 local M = {}
 
+local _instance = nil
+
+function M.get()
+  return _instance
+end
+
 function M.new(host_api)
-  return {
+  assert(_instance == nil, "hollow.state already initialized")
+  _instance = {
     host_api = host_api,
     config = {
       values = {},
@@ -53,6 +60,7 @@ function M.new(host_api)
       notifications = {},
     },
   }
+  return _instance
 end
 
 return M
