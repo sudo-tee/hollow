@@ -7,9 +7,9 @@ pub const Pty = switch (builtin.os.tag) {
     else => @import("pty_posix.zig").PosixPty,
 };
 
-pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16) !Pty {
+pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !Pty {
     return switch (builtin.os.tag) {
-        .windows => Pty.spawnWithFallbacks(allocator, shell, cols, rows, platform.windowsShellCandidates()),
-        else => Pty.spawn(allocator, shell, cols, rows),
+        .windows => Pty.spawnWithFallbacks(allocator, shell, cols, rows, cwd, platform.windowsShellCandidates()),
+        else => Pty.spawn(allocator, shell, cols, rows, cwd),
     };
 }

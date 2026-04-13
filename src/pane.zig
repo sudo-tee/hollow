@@ -10,6 +10,7 @@ const platform = @import("platform.zig");
 const is_windows = @import("builtin").os.tag == .windows;
 
 const OSC52_PREFIX = "\x1b]52;";
+const OSC7_PREFIX = "\x1b]7;";
 const OSC52_SEQUENCE_MAX = 65536;
 const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
 
@@ -51,6 +52,11 @@ pub const Pane = struct {
     osc52_overflow: bool = false,
     osc52_buf: [OSC52_SEQUENCE_MAX]u8 = [_]u8{0} ** OSC52_SEQUENCE_MAX,
     osc52_len: usize = 0,
+    osc_prefix_len: usize = 0,
+    osc7_active: bool = false,
+    osc7_st_pending: bool = false,
+    osc7_buf: [1024]u8 = [_]u8{0} ** 1024,
+    osc7_len: usize = 0,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
     /// this tick.  Cleared by tickPanes after updateRenderState is called.
@@ -100,7 +106,7 @@ pub const Pane = struct {
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
+    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8) !void {
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
@@ -141,7 +147,7 @@ pub const Pane = struct {
 
         const shell = try self.allocator.dupeZ(u8, cfg.shellOrDefault());
         defer self.allocator.free(shell);
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows);
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd);
         errdefer pty.deinit();
 
         self.terminal = terminal;
@@ -171,7 +177,8 @@ pub const Pane = struct {
         // layout pass on the frame thread. `newTab()` is triggered from the sokol
         // event callback, and calling ghostty resize/update APIs here has been a
         // recurring source of null-deref crashes during tab creation.
-        self.title = self.allocator.dupe(u8, cfg.windowTitle()) catch &.{};
+        self.title = &.{};
+        if (inherited_cwd) |cwd| self.setCwd(cwd);
     }
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
@@ -202,6 +209,7 @@ pub const Pane = struct {
                         continue;
                     }
                     if (pty_bytes.len > 0) {
+                        std.log.info("pollPty: received bytes len={d} first_byte={x}", .{ pty_bytes.len, pty_bytes[0] });
                         std.log.info("pollPty: terminalWrite len={d}", .{pty_bytes.len});
                         runtime.terminalWrite(self.terminal, pty_bytes);
                         std.log.info("pollPty: terminalWrite done", .{});
@@ -404,26 +412,64 @@ pub const Pane = struct {
         self.render_state_ready = false;
     }
 
-    pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8) void {
+    pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
         std.log.info("refreshTitle start title.len={d}", .{self.title.len});
-        if (is_windows) {
-            if (self.title.len == 0) {
-                self.title = self.allocator.dupe(u8, fallback_title) catch &.{};
-            }
-            self.title_dirty = false;
-            return;
-        }
         if (self.title.len > 0) {
             self.allocator.free(self.title);
             self.title = &.{};
         }
         const maybe_title = runtime.terminalTitle(self.allocator, self.terminal) catch null;
         if (maybe_title) |title| {
-            self.title = title;
-        } else {
+            if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command)) {
+                self.allocator.free(title);
+            } else {
+                self.title = title;
+            }
+        } else if (!is_windows) {
             self.title = self.allocator.dupe(u8, fallback_title) catch &.{};
         }
         self.title_dirty = false;
+    }
+
+    fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8) bool {
+        const trimmed_title = std.mem.trim(u8, title, " \t\r\n");
+        if (trimmed_title.len == 0) return false;
+
+        const shell_program = shellProgram(shell_command);
+        const shell_name = pathBasenameAny(shell_program);
+        const title_name = pathBasenameAny(trimmed_title);
+
+        if (shell_name.len > 0 and std.ascii.eqlIgnoreCase(trimmed_title, shell_name)) return true;
+        if (shell_name.len > 0 and std.ascii.eqlIgnoreCase(title_name, shell_name)) return true;
+        return isWindowsLauncherTitle(trimmed_title) or isWindowsLauncherTitle(title_name);
+    }
+
+    fn shellProgram(shell_command: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, shell_command, " \t\r\n");
+        if (trimmed.len == 0) return trimmed;
+        if (trimmed[0] == '"') {
+            const rest = trimmed[1..];
+            const end_quote = std.mem.indexOfScalar(u8, rest, '"') orelse return rest;
+            return rest[0..end_quote];
+        }
+        const end = std.mem.indexOfAny(u8, trimmed, " \t\r\n") orelse trimmed.len;
+        return trimmed[0..end];
+    }
+
+    fn pathBasenameAny(path: []const u8) []const u8 {
+        const idx = std.mem.lastIndexOfAny(u8, path, "/\\") orelse return path;
+        return path[idx + 1 ..];
+    }
+
+    fn isWindowsLauncherTitle(title: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(title, "wsl") or
+            std.ascii.eqlIgnoreCase(title, "wsl.exe") or
+            std.ascii.eqlIgnoreCase(title, "pwsh") or
+            std.ascii.eqlIgnoreCase(title, "pwsh.exe") or
+            std.ascii.eqlIgnoreCase(title, "powershell") or
+            std.ascii.eqlIgnoreCase(title, "powershell.exe") or
+            std.ascii.eqlIgnoreCase(title, "cmd") or
+            std.ascii.eqlIgnoreCase(title, "cmd.exe");
     }
 
     pub fn hasLiveChild(self: *Pane) bool {
@@ -550,23 +596,88 @@ pub const Pane = struct {
                 continue;
             }
 
-            if (self.osc52_prefix_len > 0 or byte == OSC52_PREFIX[0]) {
-                if (byte == OSC52_PREFIX[self.osc52_prefix_len]) {
-                    self.osc52_prefix_len += 1;
-                    read_idx += 1;
-                    if (self.osc52_prefix_len == OSC52_PREFIX.len) {
-                        self.osc52_prefix_len = 0;
-                        self.osc52_active = true;
-                        self.osc52_st_pending = false;
-                        self.osc52_overflow = false;
-                        self.osc52_len = 0;
+            if (self.osc7_active) {
+                if (self.osc7_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc7Sequence();
+                    } else {
+                        self.appendOsc7Byte(0x1b);
+                        self.appendOsc7Byte(byte);
                     }
+                    self.osc7_st_pending = false;
+                    read_idx += 1;
                     continue;
                 }
 
-                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc52_prefix_len], OSC52_PREFIX[0..self.osc52_prefix_len]);
-                write_idx += self.osc52_prefix_len;
-                self.osc52_prefix_len = 0;
+                if (byte == 0x07) {
+                    self.finishOsc7Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc7_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc7Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc_prefix_len > 0 or byte == 0x1b) {
+                if (self.osc_prefix_len == 0 and byte == 0x1b) {
+                    std.log.info("pane: detected ESC (0x1b)", .{});
+                    self.osc_prefix_len = 1;
+                    read_idx += 1;
+                    continue;
+                }
+                if (self.osc_prefix_len == 1 and byte == ']') {
+                    self.osc_prefix_len = 2;
+                    read_idx += 1;
+                    continue;
+                }
+                if (self.osc_prefix_len == 2) {
+                    if (byte == '5') {
+                        self.osc_prefix_len = 3;
+                        read_idx += 1;
+                        continue;
+                    }
+                    if (byte == '7') {
+                        self.osc_prefix_len = 5; // Jump to "saw \x1b]7"
+                        read_idx += 1;
+                        continue;
+                    }
+                }
+                if (self.osc_prefix_len == 3 and byte == '2') {
+                    self.osc_prefix_len = 4; // Saw \x1b]52
+                    read_idx += 1;
+                    continue;
+                }
+                if (self.osc_prefix_len == 4 and byte == ';') {
+                    self.osc52_active = true;
+                    self.osc52_st_pending = false;
+                    self.osc52_overflow = false;
+                    self.osc52_len = 0;
+                    self.osc_prefix_len = 0;
+                    read_idx += 1;
+                    continue;
+                }
+                if (self.osc_prefix_len == 5 and byte == ';') {
+                    self.osc7_active = true;
+                    self.osc7_st_pending = false;
+                    self.osc7_len = 0;
+                    self.osc_prefix_len = 0;
+                    read_idx += 1;
+                    continue;
+                }
+
+                // Match failed: write back the prefix we've collected so far
+                const prefix = if (self.osc_prefix_len == 1) "\x1b" else if (self.osc_prefix_len == 2) "\x1b]" else if (self.osc_prefix_len == 3) "\x1b]5" else if (self.osc_prefix_len == 4) "\x1b]52" else if (self.osc_prefix_len == 5) "\x1b]7" else "";
+                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                write_idx += prefix.len;
+                self.osc_prefix_len = 0;
+                // Do NOT increment read_idx here, so we can process the current byte again
                 continue;
             }
 
@@ -587,6 +698,15 @@ pub const Pane = struct {
         self.osc52_len += 1;
     }
 
+    fn appendOsc7Byte(self: *Pane, byte: u8) void {
+        if (self.osc7_len >= self.osc7_buf.len) {
+            // Overflow: just stop collecting, sequence will be terminated by BEL/ST
+            return;
+        }
+        self.osc7_buf[self.osc7_len] = byte;
+        self.osc7_len += 1;
+    }
+
     fn finishOsc52Sequence(self: *Pane) void {
         if (!self.osc52_overflow and self.osc52_len > 0) {
             self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
@@ -595,6 +715,15 @@ pub const Pane = struct {
         self.osc52_st_pending = false;
         self.osc52_overflow = false;
         self.osc52_len = 0;
+    }
+
+    fn finishOsc7Sequence(self: *Pane) void {
+        if (self.osc7_len > 0) {
+            self.applyOsc7Cwd(self.osc7_buf[0..self.osc7_len]);
+        }
+        self.osc7_active = false;
+        self.osc7_st_pending = false;
+        self.osc7_len = 0;
     }
 
     fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
@@ -609,6 +738,21 @@ pub const Pane = struct {
         const nul_pos = std.mem.indexOfScalar(u8, decoded, 0) orelse decoded.len;
         decoded_buf[nul_pos] = 0;
         c.sapp_set_clipboard_string(@ptrCast(decoded_buf[0..nul_pos :0].ptr));
+    }
+
+    fn applyOsc7Cwd(self: *Pane, payload: []const u8) void {
+        var path = payload;
+        if (std.mem.startsWith(u8, path, "cwd;")) {
+            path = path[4..];
+        }
+        if (std.mem.startsWith(u8, path, "file://")) {
+            path = path[7..];
+            if (std.mem.indexOfScalar(u8, path, '/')) |idx| {
+                path = path[idx..];
+            }
+        }
+        std.log.info("pane: received OSC 7 cwd: {s}", .{path});
+        self.setCwd(path);
     }
 };
 

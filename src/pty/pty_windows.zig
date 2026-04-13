@@ -53,12 +53,12 @@ pub const WindowsPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16) !WindowsPty {
-        return spawnWithShell(allocator, shell, cols, rows);
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !WindowsPty {
+        return spawnWithShell(allocator, shell, cols, rows, cwd);
     }
 
-    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, fallbacks: []const []const u8) !WindowsPty {
-        if (spawnWithShell(allocator, preferred_shell, cols, rows)) |pty| {
+    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, fallbacks: []const []const u8) !WindowsPty {
+        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd)) |pty| {
             return pty;
         } else |err| switch (err) {
             error.CreateProcessFailed => {},
@@ -69,7 +69,7 @@ pub const WindowsPty = struct {
             if (std.mem.eql(u8, candidate, preferred_shell)) continue;
             const shell_z = try allocator.dupeZ(u8, candidate);
             defer allocator.free(shell_z);
-            if (spawnWithShell(allocator, shell_z, cols, rows)) |pty| {
+            if (spawnWithShell(allocator, shell_z, cols, rows, cwd)) |pty| {
                 return pty;
             } else |err| switch (err) {
                 error.CreateProcessFailed => continue,
@@ -80,7 +80,7 @@ pub const WindowsPty = struct {
         return error.CreateProcessFailed;
     }
 
-    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16) !WindowsPty {
+    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !WindowsPty {
         var input_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var input_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var output_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -131,9 +131,10 @@ pub const WindowsPty = struct {
         si.lpAttributeList = attr_mem.ptr;
 
         var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
-        const spec = try buildCommandSpec(allocator, shell);
+        const spec = try buildCommandSpec(allocator, shell, cwd);
         defer freeSentinelU16(allocator, spec.application_utf16);
         defer freeSentinelU16(allocator, spec.command_line_utf16);
+        defer if (spec.cwd_utf16) |value| freeSentinelU16(allocator, value);
         defer freeSentinelU8(allocator, spec.log_command);
         if (CreateProcessW(
             spec.application_utf16.ptr,
@@ -143,7 +144,7 @@ pub const WindowsPty = struct {
             windows.TRUE, // inherit handles (reverted to test if FALSE was causing input issues)
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
             null,
-            null,
+            if (spec.cwd_utf16) |value| value.ptr else null,
             &si.StartupInfo,
             &pi,
         ) == windows.FALSE) {
@@ -373,15 +374,17 @@ fn freeSentinelU16(allocator: std.mem.Allocator, bytes: [:0]u16) void {
 const CommandSpec = struct {
     application_utf16: [:0]u16,
     command_line_utf16: [:0]u16,
+    cwd_utf16: ?[:0]u16,
     log_command: [:0]u8,
 };
 
-fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8) !CommandSpec {
-    const shell_name = std.fs.path.basename(shell);
+fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]const u8) !CommandSpec {
+    const shell_program = shellProgram(shell);
+    const shell_name = std.fs.path.basename(shell_program);
     const argv: []const []const u8 = if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))
         &.{ shell, "/Q", "/K", "echo [hollow] child started" }
-    else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl"))
-        &.{shell}
+    else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and cwd != null and cwd.?.len > 0)
+        &.{ shell, "--cd", cwd.? }
     else
         &.{shell};
 
@@ -389,10 +392,26 @@ fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8) !CommandS
     errdefer freeSentinelU8(allocator, command_line);
 
     return .{
-        .application_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, shell),
+        .application_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, shell_program),
         .command_line_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, command_line),
+        .cwd_utf16 = if (cwd) |value|
+            if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) or value.len == 0) null else try std.unicode.utf8ToUtf16LeAllocZ(allocator, value)
+        else
+            null,
         .log_command = command_line,
     };
+}
+
+fn shellProgram(shell_command: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, shell_command, " \t\r\n");
+    if (trimmed.len == 0) return trimmed;
+    if (trimmed[0] == '"') {
+        const rest = trimmed[1..];
+        const end_quote = std.mem.indexOfScalar(u8, rest, '"') orelse return rest;
+        return rest[0..end_quote];
+    }
+    const end = std.mem.indexOfAny(u8, trimmed, " \t\r\n") orelse trimmed.len;
+    return trimmed[0..end];
 }
 
 fn windowsCreateCommandLine(allocator: std.mem.Allocator, argv: []const []const u8) ![:0]u8 {

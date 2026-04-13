@@ -19,7 +19,7 @@ pub const PosixPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16) !PosixPty {
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !PosixPty {
         var winsize = std.mem.zeroes(c.struct_winsize);
         winsize.ws_col = cols;
         winsize.ws_row = rows;
@@ -27,6 +27,11 @@ pub const PosixPty = struct {
         var master: c_int = -1;
         const pid = c.forkpty(&master, null, null, &winsize);
         if (pid == 0) {
+            if (cwd) |dir| {
+                const dir_z = std.cstr.addNullByte(std.heap.page_allocator, dir) catch c._exit(1);
+                defer std.heap.page_allocator.free(dir_z);
+                if (c.chdir(dir_z.ptr) != 0) c._exit(1);
+            }
             const argv = [_:null]?[*:0]const u8{ shell.ptr, null };
             _ = c.execve(shell.ptr, @ptrCast(@constCast(&argv)), null);
             c._exit(1);

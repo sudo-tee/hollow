@@ -1810,7 +1810,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    pane.refreshTitle(runtime, self.config.windowTitle());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
                 if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
@@ -2060,7 +2060,9 @@ pub const App = struct {
     }
 
     pub fn activeTitle(self: *App) []const u8 {
-        if (self.activePane()) |pane| return pane.title;
+        if (self.activePane()) |pane| {
+            if (pane.title.len > 0) return pane.title;
+        }
         return self.config.windowTitle();
     }
 
@@ -2346,10 +2348,10 @@ pub const App = struct {
                 pane.pollPty(runtime) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
-                if (pane.title_dirty and builtin.os.tag != .windows) {
+                if (pane.title_dirty) {
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
-                    pane.refreshTitle(runtime, self.config.windowTitle());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
                         .pane_id = @intFromPtr(pane),
                         .old_title = if (old_title) |value| value else "",
@@ -2748,7 +2750,6 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.Devic
 }
 
 fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
-    if (builtin.os.tag == .windows) return;
     const app = title_bridge orelse return;
     _ = app;
     if (getPaneForTerminal(title_bridge orelse return, term)) |pane| {

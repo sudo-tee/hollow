@@ -589,7 +589,7 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
         };
 
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null);
         var pane_owned_by_tab = false;
         defer if (!pane_owned_by_tab) {
             pane.deinit(runtime);
@@ -658,12 +658,12 @@ pub const Mux = struct {
         return tab;
     }
 
-    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Pane {
+    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
-        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd);
         return pane;
     }
 
@@ -671,6 +671,11 @@ pub const Mux = struct {
     /// The new pane becomes the active pane.
     pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
+        const current_pane = self.activePane();
+        const inherited_cwd: ?[]const u8 = if (current_pane) |pane|
+            if (pane.cwd.len > 0) pane.cwd else null
+        else
+            null;
         const previous_active = ws.active_tab;
         const tab = try ws.newTab(self.allocId());
         errdefer {
@@ -685,7 +690,7 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
             ws.active_tab = previous_active;
         }
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd);
         try tab.appendPane(pane);
     }
 
@@ -779,7 +784,9 @@ pub const Mux = struct {
 
     pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32) !void {
         const tab = self.activeTab() orelse return error.NoActiveTab;
-        const new_pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const source_pane = tab.activePane() orelse return error.NoActivePane;
+        const inherited_cwd: ?[]const u8 = if (source_pane.cwd.len > 0) source_pane.cwd else null;
+        const new_pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd);
         errdefer {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);

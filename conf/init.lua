@@ -291,11 +291,10 @@ local function tabs_widget()
     format = function(tab)
       local pane = tab.pane
       if pane then
-        local title = pane.title
-        if title and title ~= "" then
-          return " " .. title .. " "
+        if pane.title and pane.title ~= "" then
+          return " " .. pane.title .. " "
         end
-        if pane.cwd then
+        if pane.cwd and pane.cwd ~= "" then
           return " " .. pane.cwd .. " "
         end
       end
@@ -332,6 +331,7 @@ hwl.ui.topbar.mount(hwl.ui.topbar.new({
       tabs_widget(),
       hwl.ui.spacer(),
       hwl.ui.bar.key_legend({ style = ui_theme.status }),
+      cwd_span(ctx),
       hwl.ui.bar.time("%H:%M:%S", { style = ui_theme.status }),
     }
   end,
