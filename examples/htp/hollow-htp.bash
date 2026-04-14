@@ -48,51 +48,54 @@ hollow_htp_debug_env() {
 
 hollow_htp_read_frame() {
 	local timeout=${1:-1.5}
-	python3 - "$timeout" <<'PY'
-import os
-import select
-import sys
-import termios
-import tty
-
-timeout = float(sys.argv[1])
-fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
-old = termios.tcgetattr(fd)
-data = bytearray()
-
-try:
-    tty.setraw(fd)
-    while True:
-        r, _, _ = select.select([fd], [], [], timeout)
-        if not r:
-            break
-        chunk = os.read(fd, 1)
-        if not chunk:
-            break
-        data += chunk
-        if data.endswith(b'\x1b\\'):
-            break
-finally:
-    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    os.close(fd)
-
-prefix = b'\x1b]1337;Hollow;'
-start = data.find(prefix)
-if start >= 0 and data.endswith(b'\x1b\\'):
-    payload = data[start + len(prefix):-2]
-    sys.stdout.write(payload.decode('utf-8', 'replace'))
-    sys.stdout.write('\n')
-    sys.exit(0)
-
-sys.stderr.write('hollow_htp_read_frame: timed out waiting for HTP reply\n')
-sys.exit(1)
-PY
+	local tty_dev=/dev/tty
+	local tmp
+	tmp=$(mktemp)
+	local saved_tty
+	saved_tty=$(stty -g <"$tty_dev" 2>/dev/null) || saved_tty=""
+	stty raw -echo <"$tty_dev" 2>/dev/null || true
+	local max_iter=$((${timeout%.*} * 200 + 200))
+	local iter=0 found=0
+	while ((iter < max_iter)); do
+		dd bs=1 count=1 <"$tty_dev" >>"$tmp" 2>/dev/null
+		local tail
+		tail=$(tail -c 2 "$tmp" | od -An -tx1 | tr -d ' \n')
+		[[ "$tail" == "1b5c" ]] && {
+			found=1
+			break
+		}
+		((iter++))
+	done
+	if [[ -n "$saved_tty" ]]; then
+		stty "$saved_tty" <"$tty_dev" 2>/dev/null || stty sane <"$tty_dev" 2>/dev/null || true
+	else
+		stty sane <"$tty_dev" 2>/dev/null || true
+	fi
+	if ((found)); then
+		local hex prefix_hex="1b5d313333373b486f6c6c6f773b"
+		hex=$(od -An -tx1 "$tmp" | tr -d ' \n')
+		local after="${hex##*$prefix_hex}"
+		local payload_hex="${after%1b5c}"
+		rm -f "$tmp"
+		if command -v xxd &>/dev/null; then
+			printf '%s\n' "$(printf '%s' "$payload_hex" | xxd -r -p)"
+		else
+			printf '%s' "$payload_hex" | python3 -c \
+				"import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))"
+			printf '\n'
+		fi
+		return 0
+	fi
+	rm -f "$tmp"
+	printf 'hollow_htp_read_frame: timed out\n' >&2
+	return 1
 }
 
 hollow_htp_query_once() {
 	local name=${1:?query name required}
 	local params_json=${2:-\{\}}
-	python3 "$(dirname "${BASH_SOURCE[0]}")/hollow-query.py" "$name" "$params_json" "${3:-1.5}" --id-prefix bash
+	local timeout=${3:-1.5}
+	sh "$(dirname "${BASH_SOURCE[0]}")/hollow-query" "$name" "$params_json" "$timeout" --id-prefix bash
 }
 
 # Examples:

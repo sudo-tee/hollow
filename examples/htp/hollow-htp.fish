@@ -49,46 +49,47 @@ function hollow_htp_read_frame
     if test (count $argv) -ge 1
         set timeout $argv[1]
     end
-
-    python3 - "$timeout" <<'PY'
-import sys
-import os
-import select
-import termios
-import tty
-
-timeout = float(sys.argv[1])
-fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
-old = termios.tcgetattr(fd)
-data = bytearray()
-
-try:
-    tty.setraw(fd)
-    while True:
-        r, _, _ = select.select([fd], [], [], timeout)
-        if not r:
+    # Delegate to hollow-query's OSC reader via a throwaway query that reads a raw frame.
+    # For a standalone frame reader, use sh + stty directly.
+    set -l tmp (mktemp)
+    set -l tty_dev /dev/tty
+    set -l saved_tty (stty -g <$tty_dev 2>/dev/null)
+    stty raw -echo <$tty_dev 2>/dev/null
+    set -l max_iter (math "$timeout * 200 + 200" | string replace -r '\..*' '')
+    set -l iter 0
+    set -l found 0
+    while test $iter -lt $max_iter
+        dd bs=1 count=1 <$tty_dev >>$tmp 2>/dev/null
+        set -l tail (tail -c 2 $tmp | od -An -tx1 | tr -d ' \n')
+        if test "$tail" = "1b5c"
+            set found 1
             break
-        b = os.read(fd, 1)
-        if not b:
-            break
-        data += b
-        if data.endswith(b'\x1b\\'):
-            break
-finally:
-    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    os.close(fd)
-
-prefix = b'\x1b]1337;Hollow;'
-start = data.find(prefix)
-if start >= 0 and data.endswith(b'\x1b\\'):
-    payload = data[start + len(prefix):-2]
-    sys.stdout.write(payload.decode('utf-8', 'replace'))
-    sys.stdout.write('\n')
-    sys.exit(0)
-
-sys.stderr.write('hollow_htp_read_frame: timed out waiting for HTP reply\n')
-sys.exit(1)
-PY
+        end
+        set iter (math $iter + 1)
+    end
+    if test -n "$saved_tty"
+        stty $saved_tty <$tty_dev 2>/dev/null; or stty sane <$tty_dev 2>/dev/null
+    else
+        stty sane <$tty_dev 2>/dev/null
+    end
+    if test $found -eq 1
+        set -l hex (od -An -tx1 $tmp | tr -d ' \n')
+        set -l prefix_hex "1b5d313333373b486f6c6c6f773b"
+        set -l after (string replace --regex ".*$prefix_hex" '' -- $hex)
+        set -l payload_hex (string replace --regex "1b5c\$" '' -- $after)
+        rm -f $tmp
+        if command -q xxd
+            printf '%s\n' (printf '%s' $payload_hex | xxd -r -p)
+        else
+            printf '%s' $payload_hex | python3 -c \
+                "import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))"
+            printf '\n'
+        end
+        return 0
+    end
+    rm -f $tmp
+    printf 'hollow_htp_read_frame: timed out\n' >&2
+    return 1
 end
 
 function hollow_htp_query_once
@@ -101,7 +102,7 @@ function hollow_htp_query_once
     if test (count $argv) -ge 3
         set timeout $argv[3]
     end
-    python3 "$HOLLOW_HTP_DIR/hollow-query.py" "$name" "$params_json" "$timeout" --id-prefix fish
+    sh "$HOLLOW_HTP_DIR/hollow-query" "$name" "$params_json" "$timeout" --id-prefix fish
 end
 
 # Examples:
