@@ -25,6 +25,7 @@ extern fn lua_pushcclosure(*State, *const fn (*State) callconv(.c) c_int, c_int)
 extern fn lua_pushinteger(*State, isize) callconv(.c) void;
 extern fn lua_rawseti(*State, c_int, c_int) callconv(.c) void;
 extern fn lua_settable(*State, c_int) callconv(.c) void;
+extern fn lua_gettable(*State, c_int) callconv(.c) void;
 extern fn lua_tolstring(*State, c_int, *usize) callconv(.c) ?[*]const u8;
 extern fn lua_tonumber(*State, c_int) callconv(.c) f64;
 extern fn lua_toboolean(*State, c_int) callconv(.c) c_int;
@@ -73,6 +74,7 @@ pub const Api = struct {
     push_integer: *const fn (*State, isize) callconv(.c) void,
     rawseti: *const fn (*State, c_int, c_int) callconv(.c) void,
     set_table: *const fn (*State, c_int) callconv(.c) void,
+    get_table: *const fn (*State, c_int) callconv(.c) void,
     to_lstring: *const fn (*State, c_int, *usize) callconv(.c) ?[*]const u8,
     to_number: *const fn (*State, c_int) callconv(.c) f64,
     to_boolean: *const fn (*State, c_int) callconv(.c) c_int,
@@ -98,6 +100,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.events", .source = @embedFile("hollow/events.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("hollow/actions.lua") },
     .{ .name = "hollow.defaults", .source = @embedFile("hollow/defaults.lua") },
+    .{ .name = "hollow.htp", .source = @embedFile("hollow/htp.lua") },
     .{ .name = "hollow.keymap", .source = @embedFile("hollow/keymap.lua") },
     .{ .name = "hollow.ui.shared", .source = @embedFile("hollow/ui/shared.lua") },
     .{ .name = "hollow.ui.primitives", .source = @embedFile("hollow/ui/primitives.lua") },
@@ -191,6 +194,132 @@ const LUA_ENVIRONINDEX: c_int = -10001;
 const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
+fn luaValueToJson(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_int) anyerror!std.json.Value {
+    const abs_idx = absoluteIndex(api, state, idx);
+    const value_type: LuaType = @enumFromInt(api.value_type(state, abs_idx));
+    switch (value_type) {
+        .nil_type => return .null,
+        .boolean => return .{ .bool = api.to_boolean(state, abs_idx) != 0 },
+        .number => {
+            const num = api.to_number(state, abs_idx);
+            if (std.math.floor(num) == num and num >= @as(f64, @floatFromInt(std.math.minInt(i64))) and num <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
+                return .{ .integer = @intFromFloat(num) };
+            }
+            return .{ .float = num };
+        },
+        .string => {
+            var len: usize = 0;
+            const ptr = api.to_lstring(state, abs_idx, &len) orelse return .null;
+            return .{ .string = try allocator.dupe(u8, ptr[0..len]) };
+        },
+        .table => return try luaTableToJson(allocator, api, state, abs_idx),
+        else => return error.UnsupportedLuaType,
+    }
+}
+
+fn luaTableToJson(allocator: std.mem.Allocator, api: Api, state: *State, table_idx: c_int) anyerror!std.json.Value {
+    const abs_idx = absoluteIndex(api, state, table_idx);
+    var max_numeric_key: usize = 0;
+    var numeric_key_count: usize = 0;
+    var has_non_numeric = false;
+
+    api.push_nil(state);
+    while (api.next(state, abs_idx) != 0) {
+        defer pop(api, state, 1);
+        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
+        switch (key_type) {
+            .number => {
+                const n = api.to_number(state, -2);
+                if (std.math.floor(n) != n or n < 1) {
+                    has_non_numeric = true;
+                } else {
+                    const k: usize = @intFromFloat(n);
+                    numeric_key_count += 1;
+                    if (k > max_numeric_key) max_numeric_key = k;
+                }
+            },
+            .string => has_non_numeric = true,
+            else => return error.UnsupportedLuaTableKey,
+        }
+    }
+
+    if (!has_non_numeric and numeric_key_count > 0 and max_numeric_key == numeric_key_count) {
+        var array = std.json.Array.init(allocator);
+        errdefer {
+            for (array.items) |item| deinitJsonValue(allocator, item);
+            array.deinit();
+        }
+        var index: usize = 1;
+        while (index <= max_numeric_key) : (index += 1) {
+            api.push_number(state, @floatFromInt(index));
+            api.get_table(state, abs_idx);
+            defer pop(api, state, 1);
+            try array.append(try luaValueToJson(allocator, api, state, -1));
+        }
+        return .{ .array = array };
+    }
+
+    var object = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var it = object.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            deinitJsonValue(allocator, entry.value_ptr.*);
+        }
+        object.deinit();
+    }
+
+    api.push_nil(state);
+    while (api.next(state, abs_idx) != 0) {
+        defer pop(api, state, 1);
+        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
+        const key = switch (key_type) {
+            .string => blk: {
+                var len: usize = 0;
+                const ptr = api.to_lstring(state, -2, &len) orelse return error.UnsupportedLuaTableKey;
+                break :blk try allocator.dupe(u8, ptr[0..len]);
+            },
+            .number => blk: {
+                const num = api.to_number(state, -2);
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{@as(i64, @intFromFloat(num))});
+            },
+            else => return error.UnsupportedLuaTableKey,
+        };
+        errdefer allocator.free(key);
+        try object.put(key, try luaValueToJson(allocator, api, state, -1));
+    }
+
+    return .{ .object = object };
+}
+
+fn pushJsonValue(allocator: std.mem.Allocator, api: Api, state: *State, value: std.json.Value) !void {
+    switch (value) {
+        .null => api.push_nil(state),
+        .bool => |v| api.push_boolean(state, if (v) 1 else 0),
+        .integer => |v| api.push_number(state, @floatFromInt(v)),
+        .float => |v| api.push_number(state, v),
+        .number_string => |v| try pushOwnedString(allocator, api, state, v),
+        .string => |v| try pushOwnedString(allocator, api, state, v),
+        .array => |arr| {
+            api.create_table(state, @intCast(arr.items.len), 0);
+            for (arr.items, 0..) |item, idx| {
+                try pushJsonValue(allocator, api, state, item);
+                api.rawseti(state, -2, @intCast(idx + 1));
+            }
+        },
+        .object => |obj| {
+            api.create_table(state, 0, @intCast(obj.count()));
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try pushJsonValue(allocator, api, state, entry.value_ptr.*);
+                const zkey = try allocator.dupeZ(u8, entry.key_ptr.*);
+                defer allocator.free(zkey);
+                api.set_field(state, -2, zkey);
+            }
+        },
+    }
+}
+
 fn luaUpvalueIndex(i: c_int) c_int {
     return LUA_GLOBALSINDEX - i;
 }
@@ -242,6 +371,48 @@ pub const BottomBarLayout = struct {
     height_px: u32 = 0,
 };
 
+fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
+    switch (value) {
+        .number_string => |v| allocator.free(v),
+        .string => |v| allocator.free(v),
+        .array => |arr| {
+            for (arr.items) |item| deinitJsonValue(allocator, item);
+            var owned = arr;
+            owned.deinit();
+        },
+        .object => |obj| {
+            var owned = obj;
+            var it = owned.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                deinitJsonValue(allocator, entry.value_ptr.*);
+            }
+            owned.deinit();
+        },
+        else => {},
+    }
+}
+
+pub const HtpQueryResult = struct {
+    success: bool,
+    value: ?std.json.Value = null,
+    error_message: ?[]u8 = null,
+
+    pub fn deinit(self: HtpQueryResult, allocator: std.mem.Allocator) void {
+        if (self.value) |value| deinitJsonValue(allocator, value);
+        if (self.error_message) |message| allocator.free(message);
+    }
+};
+
+const HtpDispatchResult = struct {
+    success: bool,
+    error_message: ?[]u8 = null,
+
+    pub fn deinit(self: HtpDispatchResult, allocator: std.mem.Allocator) void {
+        if (self.error_message) |message| allocator.free(message);
+    }
+};
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     state: *State,
@@ -271,6 +442,7 @@ pub const Runtime = struct {
             .push_integer = lua_pushinteger,
             .rawseti = lua_rawseti,
             .set_table = lua_settable,
+            .get_table = lua_gettable,
             .to_lstring = lua_tolstring,
             .to_number = lua_tonumber,
             .to_boolean = lua_toboolean,
@@ -305,6 +477,11 @@ pub const Runtime = struct {
 
     pub fn deinit(self: *Runtime) void {
         if (self.context.pending_workspace_name) |name| self.allocator.free(name);
+        if (self.context.on_key_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.on_key_ref);
+        if (self.context.top_bar_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.top_bar_ref);
+        if (self.context.workspace_title_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.workspace_title_ref);
+        if (self.context.status_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.status_ref);
+        if (self.context.gui_ready_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.gui_ready_ref);
         self.context.api.close(self.state);
         active_context = null;
         self.allocator.destroy(self.context);
@@ -479,6 +656,91 @@ pub const Runtime = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return callback(self);
+    }
+
+    pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value) !HtpDispatchResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow global") };
+        }
+        api.get_field(self.state, -1, "htp");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow.htp namespace") };
+        }
+        api.get_field(self.state, -1, "_handle_emit");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing htp emit handler") };
+        }
+
+        try pushOwnedString(self.allocator, api, self.state, channel);
+        if (payload) |value| {
+            try pushJsonValue(self.allocator, api, self.state, value);
+        } else {
+            api.push_nil(self.state);
+        }
+        api.push_number(self.state, @floatFromInt(pane_id));
+
+        if (api.pcall(self.state, 3, 2, 0) != 0) {
+            const message = luaErrorToOwnedString(self.allocator, api, self.state);
+            pop(api, self.state, 2);
+            return .{ .success = false, .error_message = message };
+        }
+
+        const success = api.to_boolean(self.state, -2) != 0;
+        const error_message = if (!success) luaValueToOwnedString(self.allocator, api, self.state, -1) else null;
+        pop(api, self.state, 4);
+        return .{ .success = success, .error_message = error_message };
+    }
+
+    pub fn dispatchHtpQuery(self: *Runtime, pane_id: usize, channel: []const u8, params: ?std.json.Value) !HtpQueryResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow global") };
+        }
+        api.get_field(self.state, -1, "htp");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow.htp namespace") };
+        }
+        api.get_field(self.state, -1, "_handle_query");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing htp query handler") };
+        }
+
+        try pushOwnedString(self.allocator, api, self.state, channel);
+        if (params) |value| {
+            try pushJsonValue(self.allocator, api, self.state, value);
+        } else {
+            api.push_nil(self.state);
+        }
+        api.push_number(self.state, @floatFromInt(pane_id));
+
+        if (api.pcall(self.state, 3, 2, 0) != 0) {
+            const message = luaErrorToOwnedString(self.allocator, api, self.state);
+            pop(api, self.state, 2);
+            return .{ .success = false, .error_message = message };
+        }
+
+        const success = api.to_boolean(self.state, -2) != 0;
+        const result = if (success)
+            HtpQueryResult{ .success = true, .value = try luaValueToJson(self.allocator, api, self.state, -1) }
+        else
+            HtpQueryResult{ .success = false, .error_message = luaValueToOwnedString(self.allocator, api, self.state, -1) };
+        pop(api, self.state, 4);
+        return result;
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, is_hovered: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
@@ -1347,6 +1609,7 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (applyHexColor(cfg, key, value)) return;
     if (std.mem.eql(u8, key, "backend")) return cfg.setBackend(value);
     if (std.mem.eql(u8, key, "shell")) return cfg.setShell(value);
+    if (std.mem.eql(u8, key, "htp_transport")) return cfg.setHtpTransport(value);
     if (std.mem.eql(u8, key, "window_title")) return cfg.setWindowTitle(value);
     if (std.mem.eql(u8, key, "lib_dir")) return cfg.setLibDir(value);
     if (std.mem.eql(u8, key, "font_path")) return cfg.setFontRegular(value);
@@ -1722,6 +1985,31 @@ fn logLuaError(api: Api, state: *State, ctx_label: []const u8) void {
         std.log.err("lua {s} error: (no message)", .{ctx_label});
     }
     pop(api, state, 1);
+}
+
+fn luaValueToOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_int) ?[]u8 {
+    const value_type: LuaType = @enumFromInt(api.value_type(state, idx));
+    if (value_type == .string) {
+        var len: usize = 0;
+        const ptr = api.to_lstring(state, idx, &len) orelse return null;
+        return allocator.dupe(u8, ptr[0..len]) catch null;
+    }
+    if (value_type == .number) {
+        return std.fmt.allocPrint(allocator, "{d}", .{api.to_number(state, idx)}) catch null;
+    }
+    if (value_type == .boolean) {
+        return allocator.dupe(u8, if (api.to_boolean(state, idx) != 0) "true" else "false") catch null;
+    }
+    if (value_type == .nil_type) {
+        return allocator.dupe(u8, "nil") catch null;
+    }
+    return allocator.dupe(u8, "<non-string lua value>") catch null;
+}
+
+fn luaErrorToOwnedString(allocator: std.mem.Allocator, api: Api, state: *State) ?[]u8 {
+    const message = luaValueToOwnedString(allocator, api, state, -1);
+    pop(api, state, 1);
+    return message;
 }
 
 fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {

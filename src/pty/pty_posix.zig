@@ -19,7 +19,7 @@ pub const PosixPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !PosixPty {
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !PosixPty {
         var winsize = std.mem.zeroes(c.struct_winsize);
         winsize.ws_col = cols;
         winsize.ws_row = rows;
@@ -33,7 +33,12 @@ pub const PosixPty = struct {
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
             const argv = [_:null]?[*:0]const u8{ shell.ptr, null };
-            _ = c.execve(shell.ptr, @ptrCast(@constCast(&argv)), null);
+            const envp = if (env_block) |env| tryParseEnvBlock(std.heap.page_allocator, env) catch null else null;
+            defer if (envp) |items| {
+                for (items) |item| std.heap.page_allocator.free(item);
+                std.heap.page_allocator.free(items);
+            };
+            _ = c.execve(shell.ptr, @ptrCast(@constCast(&argv)), if (envp) |items| @ptrCast(items.ptr) else null);
             c._exit(1);
         }
         if (pid < 0) return error.ForkPtyFailed;
@@ -46,6 +51,20 @@ pub const PosixPty = struct {
             .fd = master,
             .pid = pid,
         };
+    }
+
+    fn tryParseEnvBlock(allocator: std.mem.Allocator, env_block: []const u8) ![][:0]u8 {
+        var list = std.ArrayList([:0]u8).init(allocator);
+        errdefer {
+            for (list.items) |item| allocator.free(item);
+            list.deinit();
+        }
+        var it = std.mem.splitScalar(u8, env_block, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0) continue;
+            try list.append(try allocator.dupeZ(u8, line));
+        }
+        return try list.toOwnedSlice();
     }
 
     pub fn deinit(self: *PosixPty) void {

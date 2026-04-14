@@ -430,6 +430,86 @@ pub fn resolveRelativeToExe(allocator: std.mem.Allocator, candidate: []const u8)
     return try std.fs.path.join(allocator, &.{ exe_dir, trimmed });
 }
 
+/// Returns the Hollow runtime directory path (e.g., %LOCALAPPDATA%\hollow on Windows).
+/// Creates the directory if it doesn't exist.
+/// Caller must free the returned path.
+pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
+    const base_dir = if (isWindows())
+        std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch |err| blk: {
+            if (err == error.EnvironmentVariableNotFound) {
+                std.log.warn("LOCALAPPDATA not set, using fallback", .{});
+                break :blk try allocator.dupe(u8, "C:\\Users\\Default\\AppData\\Local");
+            }
+            return err;
+        }
+    else if (isMacos())
+        std.process.getEnvVarOwned(allocator, "HOME") catch |err| blk: {
+            if (err == error.EnvironmentVariableNotFound) {
+                break :blk try allocator.dupe(u8, "/tmp");
+            }
+            return err;
+        }
+    else // Linux/Unix
+        std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch |err| blk: {
+            if (err == error.EnvironmentVariableNotFound) {
+                const home = std.process.getEnvVarOwned(allocator, "HOME") catch "/tmp";
+                defer if (!std.mem.eql(u8, home, "/tmp")) allocator.free(home);
+                break :blk try std.fs.path.join(allocator, &.{ home, ".local", "share" });
+            }
+            return err;
+        };
+    defer allocator.free(base_dir);
+
+    const hollow_dir = try std.fs.path.join(allocator, &.{ base_dir, "hollow" });
+    errdefer allocator.free(hollow_dir);
+
+    // Create the directory if it doesn't exist
+    std.fs.makeDirAbsolute(hollow_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    return hollow_dir;
+}
+
+/// Converts a Windows host path to the equivalent shell path for WSL or other shells.
+/// For WSL, converts C:\foo\bar to /mnt/c/foo/bar.
+/// For other shells, returns the path unchanged.
+/// Caller must free the returned path.
+pub fn runtimeDirForShell(allocator: std.mem.Allocator, host_path: []const u8) ![]u8 {
+    if (!isWindows()) {
+        // On non-Windows platforms, the path is already in the correct format
+        return allocator.dupe(u8, host_path);
+    }
+
+    // On Windows, check if we need to convert to WSL path
+    // For now, always convert to WSL format assuming WSL is the primary use case
+    // Format: C:\Users\... -> /mnt/c/Users/...
+
+    if (host_path.len >= 3 and host_path[1] == ':' and (host_path[2] == '\\' or host_path[2] == '/')) {
+        // Windows absolute path with drive letter
+        const drive = std.ascii.toLower(host_path[0]);
+        var wsl_path: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer wsl_path.deinit(allocator);
+
+        try wsl_path.appendSlice(allocator, "/mnt/");
+        try wsl_path.append(allocator, drive);
+
+        // Convert backslashes to forward slashes and skip the drive: part
+        for (host_path[2..]) |c| {
+            if (c == '\\') {
+                try wsl_path.append(allocator, '/');
+            } else {
+                try wsl_path.append(allocator, c);
+            }
+        }
+
+        return wsl_path.toOwnedSlice(allocator);
+    }
+
+    // If not a Windows path format, return as-is
+    return allocator.dupe(u8, host_path);
+}
+
 test "platform names are stable" {
     try std.testing.expect(name().len > 0);
     try std.testing.expect(defaultShell().len > 0);

@@ -8,6 +8,8 @@ const LuaRuntime = @import("lua/luajit.zig").Runtime;
 const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
 const SidebarLayout = @import("lua/luajit.zig").SidebarLayout;
 const BottomBarLayout = @import("lua/luajit.zig").BottomBarLayout;
+const HtpQueryResult = @import("lua/luajit.zig").HtpQueryResult;
+const HtpFs = @import("htp_fs.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const mux_mod = @import("mux.zig");
@@ -32,6 +34,9 @@ const selection = @import("selection.zig");
 extern fn sapp_set_window_title(title: [*:0]const u8) void;
 
 const CLIPBOARD_EVENT_MAX = 8192;
+const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
+const HTP_ST = "\x1b\\";
+const HTP_MAX_CHUNK_PAYLOAD = 3072;
 
 fn countUtf8Codepoints(text: []const u8) usize {
     var i: usize = 0;
@@ -69,6 +74,108 @@ fn titleCString(text: []const u8) [*:0]const u8 {
     @memcpy(buf[0..trimmed.len], trimmed);
     buf[trimmed.len] = 0;
     return @ptrCast(&buf);
+}
+
+fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = object.get(key) orelse return null;
+    return switch (value) {
+        .string => |text| text,
+        else => null,
+    };
+}
+
+fn jsonObjectValue(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
+    return object.get(key);
+}
+
+fn jsonObjectIndex(object: std.json.ObjectMap, key: []const u8) ?usize {
+    const value = object.get(key) orelse return null;
+    return switch (value) {
+        .integer => |n| if (n >= 0) @intCast(n) else null,
+        .float => |n| if (n >= 0 and std.math.floor(n) == n) @intFromFloat(n) else null,
+        else => null,
+    };
+}
+
+fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    switch (value) {
+        .null => return .null,
+        .bool => |v| return .{ .bool = v },
+        .integer => |v| return .{ .integer = v },
+        .float => |v| return .{ .float = v },
+        .number_string => |v| return .{ .number_string = try allocator.dupe(u8, v) },
+        .string => |v| return .{ .string = try allocator.dupe(u8, v) },
+        .array => |arr| {
+            var out = std.json.Array.init(allocator);
+            errdefer {
+                for (out.items) |*item| deinitJsonValue(allocator, item.*);
+                out.deinit();
+            }
+            for (arr.items) |item| {
+                try out.append(try cloneJsonValue(allocator, item));
+            }
+            return .{ .array = out };
+        },
+        .object => |obj| {
+            var out = std.json.ObjectMap.init(allocator);
+            errdefer {
+                var it = out.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    deinitJsonValue(allocator, entry.value_ptr.*);
+                }
+                out.deinit();
+            }
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                try out.put(try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
+            }
+            return .{ .object = out };
+        },
+    }
+}
+
+fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
+    switch (value) {
+        .number_string => |v| allocator.free(v),
+        .string => |v| allocator.free(v),
+        .array => |arr| {
+            for (arr.items) |item| deinitJsonValue(allocator, item);
+            var owned = arr;
+            owned.deinit();
+        },
+        .object => |obj| {
+            var owned = obj;
+            var it = owned.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                deinitJsonValue(allocator, entry.value_ptr.*);
+            }
+            owned.deinit();
+        },
+        else => {},
+    }
+}
+
+fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?std.json.Value {
+    const value = jsonObjectValue(object, key) orelse return null;
+    return try cloneJsonValue(allocator, value);
+}
+
+fn chunkPayloadObject(allocator: std.mem.Allocator, chunk: []const u8, index: usize, total: usize) !std.json.ObjectMap {
+    var object = std.json.ObjectMap.init(allocator);
+    errdefer {
+        var it = object.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            deinitJsonValue(allocator, entry.value_ptr.*);
+        }
+        object.deinit();
+    }
+    try object.put(try allocator.dupe(u8, "index"), .{ .integer = @intCast(index) });
+    try object.put(try allocator.dupe(u8, "total"), .{ .integer = @intCast(total) });
+    try object.put(try allocator.dupe(u8, "data"), .{ .string = try allocator.dupe(u8, chunk) });
+    return object;
 }
 
 /// An event captured on the sokol event thread, to be dispatched
@@ -190,10 +297,22 @@ pub const PendingMouseEvent = union(enum) {
     },
 };
 
-var write_bridge: ?*App = null;
+pub var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
 var attrs_bridge: ?*App = null;
 var title_bridge: ?*App = null;
+var htp_bridge: ?*App = null;
+
+fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
+    const app = htp_bridge orelse return;
+    std.log.info("htp: received payload pane={x} bytes={d}", .{ @intFromPtr(pane), payload.len });
+    app.queueHtpMessage(pane, payload);
+}
+
+fn htpIpcQueryCallback(ctx: *anyopaque, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    return app.dispatchHtpQuerySync(pane_id, channel, params);
+}
 
 fn terminalCallbacks() ghostty.TerminalCallbacks {
     return .{
@@ -282,6 +401,10 @@ pub const App = struct {
     selection_drag_active: bool = false,
     selection_generation: u64 = 0,
     hovered_hyperlink: ?HoveredHyperlink = null,
+    htp_pending_messages: std.ArrayListUnmanaged(HtpQueuedMessage) = .empty,
+    htp_chunk_assemblies: std.ArrayListUnmanaged(HtpChunkAssembly) = .empty,
+    htp_next_message_id: u64 = 1,
+    htp_fs: ?HtpFs.Server = null,
 
     // ── Pending mouse event queue ─────────────────────────────────────────────
     // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
@@ -299,6 +422,31 @@ pub const App = struct {
     mouse_queue: [64]PendingMouseEvent = [_]PendingMouseEvent{.none} ** 64,
     mouse_queue_head: usize = 0, // next slot to read  (frame thread)
     mouse_queue_tail: usize = 0, // next slot to write (event thread)
+
+    const HtpQueuedMessage = struct {
+        pane_id: usize,
+        payload: []u8,
+    };
+
+    const HtpChunkAssembly = struct {
+        pane_id: usize,
+        request_id: []u8,
+        total: usize,
+        next_index: usize,
+        buffer: std.ArrayListUnmanaged(u8) = .empty,
+    };
+
+    const HtpEnvelope = struct {
+        v: u8 = 1,
+        id: u64,
+        kind: []const u8,
+        channel: ?[]const u8 = null,
+        request_id: ?std.json.Value = null,
+        status: ?[]const u8 = null,
+        @"error": ?[]const u8 = null,
+        payload: ?std.json.Value = null,
+        params: ?std.json.Value = null,
+    };
 
     /// Push any pending event onto the shared ring buffer.  Called from the
     /// event thread.  Returns true on success, false if the queue is full
@@ -329,6 +477,40 @@ pub const App = struct {
         var ev: PendingMouseEvent = .{ .char = .{ .bytes = [_]u8{0} ** 5, .len = @intCast(bytes.len) } };
         @memcpy(ev.char.bytes[0..bytes.len], bytes);
         return self.enqueueMouse(ev);
+    }
+
+    pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
+        const owned = self.allocator.dupe(u8, payload) catch return;
+        std.log.info("htp: queue pane={x} bytes={d}", .{ @intFromPtr(pane), payload.len });
+        self.htp_pending_messages.append(self.allocator, .{
+            .pane_id = @intFromPtr(pane),
+            .payload = owned,
+        }) catch self.allocator.free(owned);
+    }
+
+    fn bindHtpHandlers(self: *App) void {
+        std.log.info("htp: bind handlers mux_present={} panes_pending={}", .{ self.mux != null, if (self.mux) |_| true else false });
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                std.log.info("htp: binding pane={x}", .{@intFromPtr(pane)});
+                // TODO: Implement setHtpMessageHandler on Pane
+                // pane.setHtpMessageHandler(htpMessageCallback);
+            }
+        }
+    }
+
+    fn startHtpTransport(self: *App) void {
+        if (self.htp_fs != null) return; // already started
+        self.htp_fs = HtpFs.Server.init(self.allocator, self, htpIpcQueryCallback);
+        self.htp_fs.?.start() catch |err| {
+            std.log.warn("htp-fs: failed to start: {s}", .{@errorName(err)});
+            self.htp_fs.?.deinit();
+            self.htp_fs = null;
+        };
+        if (self.htp_fs != null) {
+            std.log.info("htp-fs: started, watching {?s}", .{self.htp_fs.?.requestDirForShell()});
+        }
     }
 
     /// Drain all pending events and dispatch them.  Called from tick()
@@ -510,6 +692,22 @@ pub const App = struct {
         size_bridge = null;
         attrs_bridge = null;
         title_bridge = null;
+        htp_bridge = null;
+
+        if (self.htp_fs) |*server| {
+            server.deinit();
+            self.htp_fs = null;
+        }
+
+        for (self.htp_pending_messages.items) |message| {
+            self.allocator.free(message.payload);
+        }
+        self.htp_pending_messages.deinit(self.allocator);
+        for (self.htp_chunk_assemblies.items) |*assembly| {
+            self.allocator.free(assembly.request_id);
+            assembly.buffer.deinit(self.allocator);
+        }
+        self.htp_chunk_assemblies.deinit(self.allocator);
 
         if (self.renderer) |*renderer| {
             renderer.deinit();
@@ -586,11 +784,14 @@ pub const App = struct {
         size_bridge = self;
         attrs_bridge = self;
         title_bridge = self;
+        htp_bridge = self;
+        self.startHtpTransport();
         const cbs = terminalCallbacks();
         try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
         self.ghostty = runtime;
         self.mux = mux;
+        // self.bindHtpHandlers();
         self.renderer = Backend.init(self.allocator, self.config);
 
         // Register app action callbacks so Lua can call split_pane etc.
@@ -698,6 +899,7 @@ pub const App = struct {
         if (self.ghostty) |*runtime| self.cleanupDeadPanes(runtime);
         self.pruneSelectionIfInvalid();
         self.drainMouseQueue();
+        self.processHtpMessages();
         self.flushPendingResize();
         self.flushPendingLayoutResize();
         if (self.ghostty) |*runtime| try self.tickPanes(runtime);
@@ -711,6 +913,318 @@ pub const App = struct {
         self.pointer_x = x;
         self.pointer_y = y;
         self.pointer_mods = mods;
+    }
+
+    fn processHtpMessages(self: *App) void {
+        while (self.htp_pending_messages.items.len > 0) {
+            const message = self.htp_pending_messages.orderedRemove(0);
+            defer self.allocator.free(message.payload);
+            const pane = self.findPaneById(message.pane_id) orelse {
+                self.removeChunkAssembliesForPane(message.pane_id);
+                continue;
+            };
+            self.handleHtpMessage(pane, message.payload);
+        }
+    }
+
+    fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
+        std.log.info("htp: handle pane={x} payload={s}", .{ @intFromPtr(pane), payload });
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, payload, .{ .ignore_unknown_fields = true }) catch |err| {
+            self.sendHtpProtocolError(pane, null, "invalid_json", @errorName(err));
+            return;
+        };
+        defer parsed.deinit();
+
+        const root = switch (parsed.value) {
+            .object => |object| object,
+            else => {
+                self.sendHtpProtocolError(pane, null, "invalid_message", "root JSON value must be an object");
+                return;
+            },
+        };
+
+        const kind = jsonObjectString(root, "kind") orelse jsonObjectString(root, "type") orelse {
+            self.sendHtpProtocolError(pane, null, "invalid_message", "missing kind");
+            return;
+        };
+        const message_id = jsonObjectString(root, "id");
+
+        if (std.mem.eql(u8, kind, "chunk")) {
+            self.handleHtpChunk(pane, message_id, root);
+            return;
+        }
+
+        if (std.mem.eql(u8, kind, "event")) {
+            const channel = jsonObjectString(root, "name") orelse jsonObjectString(root, "channel") orelse {
+                self.sendHtpProtocolError(pane, message_id, "invalid_message", "event message missing name");
+                return;
+            };
+            const payload_value = jsonObjectValueClone(self.allocator, root, "payload") catch |err| {
+                self.sendHtpProtocolError(pane, message_id, "internal", @errorName(err));
+                return;
+            };
+            defer if (payload_value) |value| deinitJsonValue(self.allocator, value);
+            self.dispatchHtpEvent(pane, message_id, channel, payload_value);
+            return;
+        }
+
+        if (std.mem.eql(u8, kind, "query")) {
+            const channel = jsonObjectString(root, "name") orelse jsonObjectString(root, "channel") orelse {
+                self.sendHtpProtocolError(pane, message_id, "invalid_message", "query message missing name");
+                return;
+            };
+            const request_id = jsonObjectString(root, "request_id") orelse message_id;
+            const params_value = jsonObjectValueClone(self.allocator, root, "params") catch |err| {
+                self.sendHtpQueryError(pane, message_id, request_id, "internal", @errorName(err));
+                return;
+            };
+            defer if (params_value) |value| deinitJsonValue(self.allocator, value);
+            self.dispatchHtpQuery(pane, message_id, request_id, channel, params_value);
+            return;
+        }
+
+        self.sendHtpProtocolError(pane, message_id, "invalid_message", "unknown kind");
+    }
+
+    fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.json.ObjectMap) void {
+        const request_id = jsonObjectString(root, "request_id") orelse {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk missing request_id");
+            return;
+        };
+        const payload_value = jsonObjectValue(root, "payload") orelse {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk missing payload");
+            return;
+        };
+        const payload_object = switch (payload_value) {
+            .object => |obj| obj,
+            else => {
+                self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk payload must be an object");
+                return;
+            },
+        };
+        const index = jsonObjectIndex(payload_object, "index") orelse {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk missing index");
+            return;
+        };
+        const total = jsonObjectIndex(payload_object, "total") orelse {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk missing total");
+            return;
+        };
+        const data = jsonObjectString(payload_object, "data") orelse {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk missing data");
+            return;
+        };
+        if (index == 0 or total == 0 or index > total) {
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "chunk index out of range");
+            return;
+        }
+
+        var assembly = self.findOrCreateChunkAssembly(pane, request_id, total) catch |err| {
+            self.sendHtpProtocolError(pane, message_id, "internal", @errorName(err));
+            return;
+        };
+        if (assembly.total != total or assembly.next_index != index) {
+            self.resetChunkAssembly(assembly);
+            self.sendHtpProtocolError(pane, message_id, "invalid_message", "unexpected chunk order");
+            return;
+        }
+        assembly.buffer.appendSlice(self.allocator, data) catch |err| {
+            self.resetChunkAssembly(assembly);
+            self.sendHtpProtocolError(pane, message_id, "internal", @errorName(err));
+            return;
+        };
+        assembly.next_index += 1;
+        if (index < total) return;
+
+        const joined = self.allocator.dupe(u8, assembly.buffer.items) catch |err| {
+            self.resetChunkAssembly(assembly);
+            self.sendHtpProtocolError(pane, message_id, "internal", @errorName(err));
+            return;
+        };
+        defer self.allocator.free(joined);
+        self.removeChunkAssembly(pane, request_id);
+        self.handleHtpMessage(pane, joined);
+    }
+
+    fn findOrCreateChunkAssembly(self: *App, pane: *Pane, request_id: []const u8, total: usize) !*HtpChunkAssembly {
+        for (self.htp_chunk_assemblies.items) |*assembly| {
+            if (assembly.pane_id == @intFromPtr(pane) and std.mem.eql(u8, assembly.request_id, request_id)) return assembly;
+        }
+        const request_id_owned = try self.allocator.dupe(u8, request_id);
+        errdefer self.allocator.free(request_id_owned);
+        try self.htp_chunk_assemblies.append(self.allocator, .{
+            .pane_id = @intFromPtr(pane),
+            .request_id = request_id_owned,
+            .total = total,
+            .next_index = 1,
+        });
+        return &self.htp_chunk_assemblies.items[self.htp_chunk_assemblies.items.len - 1];
+    }
+
+    fn resetChunkAssembly(self: *App, assembly: *HtpChunkAssembly) void {
+        _ = self;
+        assembly.buffer.clearRetainingCapacity();
+        assembly.next_index = 1;
+    }
+
+    fn removeChunkAssembly(self: *App, pane: *Pane, request_id: []const u8) void {
+        var index: usize = 0;
+        while (index < self.htp_chunk_assemblies.items.len) : (index += 1) {
+            const assembly = &self.htp_chunk_assemblies.items[index];
+            if (assembly.pane_id != @intFromPtr(pane) or !std.mem.eql(u8, assembly.request_id, request_id)) continue;
+            self.allocator.free(assembly.request_id);
+            assembly.buffer.deinit(self.allocator);
+            _ = self.htp_chunk_assemblies.swapRemove(index);
+            return;
+        }
+    }
+
+    fn removeChunkAssembliesForPane(self: *App, pane_id: usize) void {
+        var index: usize = 0;
+        while (index < self.htp_chunk_assemblies.items.len) {
+            const assembly = &self.htp_chunk_assemblies.items[index];
+            if (assembly.pane_id != pane_id) {
+                index += 1;
+                continue;
+            }
+            self.allocator.free(assembly.request_id);
+            assembly.buffer.deinit(self.allocator);
+            _ = self.htp_chunk_assemblies.swapRemove(index);
+        }
+    }
+
+    fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value) void {
+        std.log.info("htp: dispatch event pane={x} channel={s}", .{ @intFromPtr(pane), channel });
+        const lua = if (self.lua) |*value| value else {
+            self.sendHtpProtocolError(pane, message_id, "unavailable", "lua runtime unavailable");
+            return;
+        };
+
+        const ok = lua.dispatchHtpEvent(@intFromPtr(pane), channel, payload) catch |err| {
+            self.sendHtpProtocolError(pane, message_id, "internal", @errorName(err));
+            return;
+        };
+
+        if (!ok.success) {
+            self.sendHtpProtocolError(pane, message_id, "handler_error", ok.error_message orelse "event handler failed");
+            return;
+        }
+
+        const envelope = HtpEnvelope{
+            .id = self.nextHtpMessageId(),
+            .kind = "event_ack",
+            .status = "ok",
+            .channel = channel,
+            .request_id = if (message_id) |value| .{ .string = value } else null,
+        };
+        self.sendHtpEnvelope(pane, envelope);
+    }
+
+    fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, channel: []const u8, params: ?std.json.Value) void {
+        std.log.info("htp: dispatch query pane={x} channel={s}", .{ @intFromPtr(pane), channel });
+        const result = self.dispatchHtpQuerySync(@intFromPtr(pane), channel, params) catch |err| {
+            self.sendHtpQueryError(pane, message_id, request_id, "internal", @errorName(err));
+            return;
+        };
+        defer result.deinit(self.allocator);
+
+        if (!result.success) {
+            self.sendHtpQueryError(pane, message_id, request_id, "handler_error", result.error_message orelse "query handler failed");
+            return;
+        }
+
+        const payload_value = if (result.value) |value| cloneJsonValue(self.allocator, value) catch |err| {
+            self.sendHtpQueryError(pane, message_id, request_id, "internal", @errorName(err));
+            return;
+        } else null;
+        defer if (payload_value) |value| deinitJsonValue(self.allocator, value);
+
+        const envelope = HtpEnvelope{
+            .id = self.nextHtpMessageId(),
+            .kind = "result",
+            .status = "ok",
+            .channel = channel,
+            .request_id = if (request_id) |value| .{ .string = value } else null,
+            .payload = payload_value,
+        };
+        self.sendHtpEnvelope(pane, envelope);
+    }
+
+    fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
+        const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
+        return try lua.dispatchHtpQuery(pane_id, channel, params);
+    }
+
+    fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {
+        const envelope = HtpEnvelope{
+            .id = self.nextHtpMessageId(),
+            .kind = "error",
+            .status = code,
+            .request_id = if (request_id) |value| .{ .string = value } else null,
+            .@"error" = message,
+        };
+        self.sendHtpEnvelope(pane, envelope);
+    }
+
+    fn sendHtpQueryError(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, code: []const u8, message: []const u8) void {
+        const envelope = HtpEnvelope{
+            .id = self.nextHtpMessageId(),
+            .kind = "result",
+            .status = code,
+            .request_id = if (request_id orelse message_id) |value| .{ .string = value } else null,
+            .@"error" = message,
+        };
+        self.sendHtpEnvelope(pane, envelope);
+    }
+
+    fn sendHtpEnvelope(self: *App, pane: *Pane, envelope: HtpEnvelope) void {
+        var buf: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buf.deinit();
+
+        std.json.Stringify.value(envelope, .{}, &buf.writer) catch return;
+        std.log.info("htp: send pane={x} payload={s}", .{ @intFromPtr(pane), buf.written() });
+        self.sendHtpChunkedJson(pane, buf.written());
+    }
+
+    fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
+        if (json_text.len <= HTP_MAX_CHUNK_PAYLOAD) {
+            var writer: std.Io.Writer.Allocating = .init(self.allocator);
+            defer writer.deinit();
+            writer.writer.writeAll(HTP_OSC_PREFIX) catch return;
+            writer.writer.writeAll(json_text) catch return;
+            writer.writer.writeAll(HTP_ST) catch return;
+            pane.writeEscapeSequence(writer.written());
+            return;
+        }
+
+        const total = std.math.divCeil(usize, json_text.len, HTP_MAX_CHUNK_PAYLOAD) catch return;
+        const request_id = self.nextHtpMessageId();
+        var index: usize = 0;
+        while (index < total) : (index += 1) {
+            const start = index * HTP_MAX_CHUNK_PAYLOAD;
+            const end = @min(start + HTP_MAX_CHUNK_PAYLOAD, json_text.len);
+            var buf: std.Io.Writer.Allocating = .init(self.allocator);
+            defer buf.deinit();
+            std.json.Stringify.value(HtpEnvelope{
+                .id = self.nextHtpMessageId(),
+                .kind = "chunk",
+                .request_id = .{ .integer = @intCast(request_id) },
+                .status = "partial",
+                .payload = std.json.Value{ .object = chunkPayloadObject(self.allocator, json_text[start..end], index + 1, total) catch return },
+            }, .{}, &buf.writer) catch return;
+            var writer: std.Io.Writer.Allocating = .init(self.allocator);
+            defer writer.deinit();
+            writer.writer.writeAll(HTP_OSC_PREFIX) catch return;
+            writer.writer.writeAll(buf.written()) catch return;
+            writer.writer.writeAll(HTP_ST) catch return;
+            pane.writeEscapeSequence(writer.written());
+        }
+    }
+
+    fn nextHtpMessageId(self: *App) u64 {
+        const value = self.htp_next_message_id;
+        self.htp_next_message_id +%= 1;
+        return value;
     }
 
     pub fn captureSnapshot(self: *App) ?FrameSnapshot {
@@ -1844,6 +2358,7 @@ pub const App = struct {
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
+        self.bindHtpHandlers();
         std.log.info("app: created new tab", .{});
     }
 
@@ -1933,6 +2448,7 @@ pub const App = struct {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
             return;
         };
+        self.bindHtpHandlers();
         self.requestLayoutResize(false);
         std.log.info("app: created new workspace", .{});
     }
@@ -1986,6 +2502,7 @@ pub const App = struct {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
+        self.bindHtpHandlers();
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.requestLayoutResize(false);

@@ -147,7 +147,45 @@ pub const Pane = struct {
 
         const shell = try self.allocator.dupeZ(u8, cfg.shellOrDefault());
         defer self.allocator.free(shell);
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd);
+
+        // Build environment block for HTP
+        // Format: "KEY1=value1\0KEY2=value2\0\0"
+        var env_block: std.ArrayListUnmanaged(u8) = .empty;
+        defer env_block.deinit(self.allocator);
+
+        const pane_id = @intFromPtr(self);
+        var pane_id_buf: [32]u8 = undefined;
+        const pane_id_str = try std.fmt.bufPrint(&pane_id_buf, "{d}", .{pane_id});
+
+        try env_block.appendSlice(self.allocator, "HOLLOW_PANE_ID=");
+        try env_block.appendSlice(self.allocator, pane_id_str);
+        try env_block.append(self.allocator, 0);
+
+        try env_block.appendSlice(self.allocator, "HOLLOW_TRANSPORT=auto");
+        try env_block.append(self.allocator, 0);
+
+        const base_dir = platform.ensureHollowRuntimeDir(self.allocator) catch null;
+        if (base_dir) |dir| {
+            defer self.allocator.free(dir);
+            const htp_dir = std.fs.path.join(self.allocator, &.{ dir, "htp-requests" }) catch null;
+            if (htp_dir) |hdir| {
+                defer self.allocator.free(hdir);
+                // Ensure the htp-requests directory exists
+                std.fs.makeDirAbsolute(hdir) catch |err| {
+                    if (err != error.PathAlreadyExists) std.log.warn("failed to create htp-requests dir: {}", .{err});
+                };
+                // On Windows, pass the raw Windows path (e.g. C:\...\htp-requests).
+                // WSLENV with /p flag will translate it to /mnt/c/... for WSL automatically.
+                // Do NOT pre-convert the path — that would double-convert it.
+                try env_block.appendSlice(self.allocator, "HOLLOW_REQUEST_DIR=");
+                try env_block.appendSlice(self.allocator, hdir);
+                try env_block.append(self.allocator, 0);
+            }
+        }
+
+        try env_block.append(self.allocator, 0); // double-null terminator
+
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd, env_block.items);
         errdefer pty.deinit();
 
         self.terminal = terminal;
@@ -376,6 +414,15 @@ pub const Pane = struct {
         std.log.info("pane.setMouseSize: setMouseEncoderSize done", .{});
         runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, false);
         std.log.info("pane.setMouseSize: done", .{});
+    }
+
+    pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {
+        // Write an escape sequence to the PTY
+        if (self.pty) |*pty| {
+            pty.writeAll(sequence) catch |err| {
+                std.log.warn("pane: writeEscapeSequence failed: {s}", .{@errorName(err)});
+            };
+        }
     }
 
     pub fn recreateRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {

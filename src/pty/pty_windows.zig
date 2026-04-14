@@ -25,6 +25,8 @@ extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: windo
 extern "kernel32" fn InitializeProcThreadAttributeList(lpAttributeList: ?*anyopaque, dwAttributeCount: windows.DWORD, dwFlags: windows.DWORD, lpSize: *usize) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn UpdateProcThreadAttribute(lpAttributeList: ?*anyopaque, dwFlags: windows.DWORD, attribute: usize, lpValue: ?*const anyopaque, cbSize: usize, lpPreviousValue: ?*anyopaque, lpReturnSize: ?*usize) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: ?*anyopaque) callconv(.winapi) void;
+extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) [*:0]u16;
+extern "kernel32" fn FreeEnvironmentStringsW(lpszEnvironmentBlock: [*:0]u16) callconv(.winapi) windows.BOOL;
 
 const EXTENDED_STARTUPINFO_PRESENT: windows.DWORD = 0x00080000;
 const CREATE_UNICODE_ENVIRONMENT: windows.DWORD = 0x00000400;
@@ -53,12 +55,12 @@ pub const WindowsPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !WindowsPty {
-        return spawnWithShell(allocator, shell, cols, rows, cwd);
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !WindowsPty {
+        return spawnWithShell(allocator, shell, cols, rows, cwd, env_block);
     }
 
-    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, fallbacks: []const []const u8) !WindowsPty {
-        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd)) |pty| {
+    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, fallbacks: []const []const u8) !WindowsPty {
+        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block)) |pty| {
             return pty;
         } else |err| switch (err) {
             error.CreateProcessFailed => {},
@@ -69,7 +71,7 @@ pub const WindowsPty = struct {
             if (std.mem.eql(u8, candidate, preferred_shell)) continue;
             const shell_z = try allocator.dupeZ(u8, candidate);
             defer allocator.free(shell_z);
-            if (spawnWithShell(allocator, shell_z, cols, rows, cwd)) |pty| {
+            if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block)) |pty| {
                 return pty;
             } else |err| switch (err) {
                 error.CreateProcessFailed => continue,
@@ -80,7 +82,7 @@ pub const WindowsPty = struct {
         return error.CreateProcessFailed;
     }
 
-    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8) !WindowsPty {
+    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !WindowsPty {
         var input_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var input_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var output_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -136,6 +138,12 @@ pub const WindowsPty = struct {
         defer freeSentinelU16(allocator, spec.command_line_utf16);
         defer if (spec.cwd_utf16) |value| freeSentinelU16(allocator, value);
         defer freeSentinelU8(allocator, spec.log_command);
+
+        // Build the environment block for the process
+        const shell_name = std.fs.path.basename(shellProgram(shell));
+        const env_block_utf16 = try buildEnvironmentBlock(allocator, env_block, shell_name);
+        defer if (env_block_utf16) |block| freeSentinelU16(allocator, block);
+
         if (CreateProcessW(
             spec.application_utf16.ptr,
             spec.command_line_utf16.ptr,
@@ -143,7 +151,7 @@ pub const WindowsPty = struct {
             null,
             windows.TRUE, // inherit handles (reverted to test if FALSE was causing input issues)
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-            null,
+            if (env_block_utf16) |block| @as(?*anyopaque, @ptrCast(block.ptr)) else null,
             if (spec.cwd_utf16) |value| value.ptr else null,
             &si.StartupInfo,
             &pi,
@@ -448,6 +456,124 @@ fn windowsCreateCommandLine(allocator: std.mem.Allocator, argv: []const []const 
     }
 
     return buf.toOwnedSliceSentinel(0);
+}
+
+/// Builds a Windows UTF-16 environment block from a null-separated UTF-8 env_block string.
+/// The env_block format is: "KEY1=value1\0KEY2=value2\0\0"
+/// Returns a UTF-16 environment block suitable for CreateProcessW, or null if env_block is null.
+/// Caller must free the returned memory with freeSentinelU16.
+fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, shell_name: []const u8) !?[:0]u16 {
+    if (env_block == null or env_block.?.len == 0) return null;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temp_alloc = arena.allocator();
+
+    // Start by inheriting the parent environment from Windows
+    var vars: std.ArrayListUnmanaged(struct { key: []const u8, value: []const u8 }) = .empty;
+    const parent_env = GetEnvironmentStringsW();
+    defer _ = FreeEnvironmentStringsW(parent_env);
+    var idx: usize = 0;
+    while (parent_env[idx] != 0) {
+        const entry_start = idx;
+        while (parent_env[idx] != 0) : (idx += 1) {}
+        const entry_utf16 = parent_env[entry_start..idx];
+        idx += 1;
+        const entry_utf8 = std.unicode.utf16LeToUtf8Alloc(temp_alloc, entry_utf16) catch continue;
+        // Skip Windows-internal vars that start with '='
+        if (entry_utf8.len == 0 or entry_utf8[0] == '=') continue;
+        if (std.mem.indexOfScalar(u8, entry_utf8, '=')) |eq_pos| {
+            try vars.append(temp_alloc, .{ .key = entry_utf8[0..eq_pos], .value = entry_utf8[eq_pos + 1 ..] });
+        }
+    }
+    std.log.info("buildEnvironmentBlock: inherited {} parent vars", .{vars.items.len});
+
+    // Parse and override/add custom vars from env_block
+    var i: usize = 0;
+    while (i < env_block.?.len) {
+        const entry_start = i;
+        while (i < env_block.?.len and env_block.?[i] != 0) : (i += 1) {}
+        if (i > entry_start) {
+            const entry = env_block.?[entry_start..i];
+            if (std.mem.indexOfScalar(u8, entry, '=')) |eq_pos| {
+                const key = entry[0..eq_pos];
+                const value = entry[eq_pos + 1 ..];
+                var found = false;
+                for (vars.items) |*v| {
+                    if (std.ascii.eqlIgnoreCase(v.key, key)) {
+                        v.value = value;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) try vars.append(temp_alloc, .{ .key = key, .value = value });
+            }
+        }
+        i += 1;
+        if (i < env_block.?.len and env_block.?[i] == 0) break;
+    }
+
+    // For WSL: append HOLLOW_* vars to WSLENV so they cross the boundary
+    const is_wsl = std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl");
+    if (is_wsl) {
+        var wslenv_additions: std.ArrayListUnmanaged(u8) = .empty;
+        var j: usize = 0;
+        while (j < env_block.?.len) {
+            const entry_start = j;
+            while (j < env_block.?.len and env_block.?[j] != 0) : (j += 1) {}
+            if (j > entry_start) {
+                const entry = env_block.?[entry_start..j];
+                if (std.mem.indexOfScalar(u8, entry, '=')) |eq_pos| {
+                    const key = entry[0..eq_pos];
+                    if (std.mem.startsWith(u8, key, "HOLLOW_")) {
+                        if (wslenv_additions.items.len > 0) try wslenv_additions.append(temp_alloc, ':');
+                        try wslenv_additions.appendSlice(temp_alloc, key);
+                        if (std.mem.indexOf(u8, key, "DIR") != null) {
+                            try wslenv_additions.appendSlice(temp_alloc, "/p");
+                        } else {
+                            try wslenv_additions.appendSlice(temp_alloc, "/u");
+                        }
+                    }
+                }
+            }
+            j += 1;
+            if (j < env_block.?.len and env_block.?[j] == 0) break;
+        }
+
+        if (wslenv_additions.items.len > 0) {
+            // Find existing WSLENV and append, or add new
+            var found = false;
+            for (vars.items) |*v| {
+                if (std.ascii.eqlIgnoreCase(v.key, "WSLENV")) {
+                    const new_val = if (v.value.len > 0)
+                        try std.fmt.allocPrint(temp_alloc, "{s}:{s}", .{ v.value, wslenv_additions.items })
+                    else
+                        wslenv_additions.items;
+                    v.value = new_val;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) try vars.append(temp_alloc, .{ .key = "WSLENV", .value = wslenv_additions.items });
+        }
+    }
+
+    // Build the UTF-16 environment block: each "KEY=value\0", terminated by extra \0
+    var utf16_block: std.ArrayListUnmanaged(u16) = .empty;
+    errdefer utf16_block.deinit(allocator);
+    for (vars.items) |v| {
+        var entry_utf8: std.ArrayListUnmanaged(u8) = .empty;
+        defer entry_utf8.deinit(temp_alloc);
+        try entry_utf8.appendSlice(temp_alloc, v.key);
+        try entry_utf8.append(temp_alloc, '=');
+        try entry_utf8.appendSlice(temp_alloc, v.value);
+        const entry_utf16 = try std.unicode.utf8ToUtf16LeAlloc(temp_alloc, entry_utf8.items);
+        try utf16_block.appendSlice(allocator, entry_utf16);
+        try utf16_block.append(allocator, 0);
+    }
+    try utf16_block.append(allocator, 0); // final double-null
+
+    return try allocator.dupeZ(u16, utf16_block.items);
 }
 
 threadlocal var preview_buf: [48]u8 = undefined;

@@ -189,6 +189,7 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
+    htp_transport: ?[]u8 = null,
     fonts: Fonts = .{},
     window_title: ?[]u8 = null,
     window_width: u32 = 1280,
@@ -239,6 +240,7 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config) void {
         freeOwned(self.allocator, &self.shell);
+        freeOwned(self.allocator, &self.htp_transport);
         self.fonts.deinit(self.allocator);
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
@@ -274,6 +276,10 @@ pub const Config = struct {
 
     pub fn setShell(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.shell, value);
+    }
+
+    pub fn setHtpTransport(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.htp_transport, value);
     }
 
     pub fn setWindowTitle(self: *Config, value: []const u8) !void {
