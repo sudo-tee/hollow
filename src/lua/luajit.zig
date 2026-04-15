@@ -118,8 +118,8 @@ const embedded_lua_modules = [_]LuaModule{
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32) void,
-    new_tab: *const fn (app: *anyopaque) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void,
+    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8) void,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
@@ -150,6 +150,7 @@ pub const AppCallbacks = struct {
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_width: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -1267,6 +1268,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "send_text_to_pane");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_domain, 1);
+        api.set_field(self.state, -2, "get_pane_domain");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_send_text, 1);
         api.set_field(self.state, -2, "send_text");
 
@@ -1564,6 +1569,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "domains") and value_type == .table) {
+            const domains_idx = absoluteIndex(api, state, -1);
+            applyDomainsTable(ctx.cfg, api, state, domains_idx) catch |err| std.log.err("config domains field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
             const ansi_idx = absoluteIndex(api, state, -1);
             applyPaletteArray(ctx.cfg, api, state, ansi_idx, 0, 8) catch |err| std.log.err("config ansi field failed: {s}", .{@errorName(err)});
@@ -1609,6 +1620,7 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (applyHexColor(cfg, key, value)) return;
     if (std.mem.eql(u8, key, "backend")) return cfg.setBackend(value);
     if (std.mem.eql(u8, key, "shell")) return cfg.setShell(value);
+    if (std.mem.eql(u8, key, "default_domain")) return cfg.setDefaultDomain(value);
     if (std.mem.eql(u8, key, "htp_transport")) return cfg.setHtpTransport(value);
     if (std.mem.eql(u8, key, "window_title")) return cfg.setWindowTitle(value);
     if (std.mem.eql(u8, key, "lib_dir")) return cfg.setLibDir(value);
@@ -1861,6 +1873,32 @@ fn applyHyperlinksTable(cfg: *config.Config, api: Api, state: *State, table_idx:
             continue;
         }
     }
+}
+
+fn applyDomainsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        if (value_type != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        try cfg.setDomainShell(key, value_ptr[0..value_len]);
+    }
+}
+
+fn luaStringField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?[]const u8 {
+    api.get_field(state, table_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, -1, &len) orelse return null;
+    return ptr[0..len];
 }
 
 fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
@@ -2300,11 +2338,24 @@ pub fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
     return api.get_top(state) + idx + 1;
 }
 
-/// hollow.split_pane(direction)
-/// direction: "vertical" (left/right) or "horizontal" (top/bottom)
+/// hollow.new_tab([domain|string|opts])
 fn l_new_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
-    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app);
+    const api = ctx.api;
+    var domain_name: ?[]const u8 = null;
+
+    switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+        .string => {
+            var len: usize = 0;
+            if (api.to_lstring(state, 1, &len)) |ptr| domain_name = ptr[0..len];
+        },
+        .table => {
+            domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
+        },
+        else => {},
+    }
+
+    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name);
     return 0;
 }
 
@@ -2350,6 +2401,8 @@ fn l_prev_workspace(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+/// hollow.split_pane(direction|opts, ratio?, domain?)
+/// direction: "vertical" (left/right) or "horizontal" (top/bottom)
 fn l_split_pane(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -2365,15 +2418,35 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     else
         null;
 
-    const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
+    var direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
 
     // Optional second argument: ratio in (0, 1). Defaults to 0.5.
-    const ratio: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    var ratio: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
         @as(f32, @floatCast(api.to_number(state, 2)))
     else
         0.5;
 
-    cbs.split_pane(cbs.app, direction, ratio);
+    var domain_name: ?[]const u8 = null;
+    var cwd: ?[]const u8 = null;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .string) {
+        var domain_len: usize = 0;
+        if (api.to_lstring(state, 3, &domain_len)) |ptr| domain_name = ptr[0..domain_len];
+    } else if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .table) {
+        const opts_idx = absoluteIndex(api, state, 1);
+        domain_name = luaStringField(api, state, opts_idx, "domain");
+        cwd = luaStringField(api, state, opts_idx, "cwd");
+        if (luaStringField(api, state, opts_idx, "direction")) |opt_direction| {
+            dir_len = opt_direction.len;
+            direction = opt_direction;
+        }
+        api.get_field(state, opts_idx, "ratio");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            ratio = @as(f32, @floatCast(api.to_number(state, -1)));
+        }
+        pop(api, state, 1);
+    }
+
+    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd);
     return 0;
 }
 
@@ -2893,6 +2966,28 @@ fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
     };
     defer std.heap.page_allocator.free(zcwd);
     api.push_string(state, zcwd);
+    return 1;
+}
+
+fn l_get_pane_domain(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var out_buf: [128]u8 = undefined;
+    const domain = cbs.get_pane_domain(cbs.app, pane_id, &out_buf);
+    const zdomain = std.heap.page_allocator.dupeZ(u8, domain) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(zdomain);
+    api.push_string(state, zdomain);
     return 1;
 }
 

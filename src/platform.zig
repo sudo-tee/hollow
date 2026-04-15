@@ -367,14 +367,14 @@ pub fn defaultShell() []const u8 {
 
 pub fn windowsShellCandidates() []const []const u8 {
     return &.{
-        "wsl.exe",
-        "C:\\Windows\\System32\\wsl.exe",
         "pwsh.exe",
         "powershell.exe",
-        "cmd.exe",
         "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "cmd.exe",
         "C:\\Windows\\System32\\cmd.exe",
+        "wsl.exe",
+        "C:\\Windows\\System32\\wsl.exe",
     };
 }
 

@@ -17,6 +17,11 @@ pub const RendererBackend = enum {
 };
 
 pub const Config = struct {
+    pub const Domain = struct {
+        name: []u8,
+        shell: []u8,
+    };
+
     pub const TerminalTheme = struct {
         enabled: bool = false,
         foreground: ghostty.ColorRgb = .{ .r = 220, .g = 220, .b = 220 },
@@ -189,6 +194,8 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
+    default_domain: ?[]u8 = null,
+    domains: std.ArrayListUnmanaged(Domain) = .{},
     htp_transport: ?[]u8 = null,
     fonts: Fonts = .{},
     window_title: ?[]u8 = null,
@@ -240,6 +247,12 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config) void {
         freeOwned(self.allocator, &self.shell);
+        freeOwned(self.allocator, &self.default_domain);
+        for (self.domains.items) |domain| {
+            self.allocator.free(domain.name);
+            self.allocator.free(domain.shell);
+        }
+        self.domains.deinit(self.allocator);
         freeOwned(self.allocator, &self.htp_transport);
         self.fonts.deinit(self.allocator);
         freeOwned(self.allocator, &self.window_title);
@@ -249,6 +262,27 @@ pub const Config = struct {
 
     pub fn shellOrDefault(self: Config) []const u8 {
         return self.shell orelse platform.defaultShell();
+    }
+
+    pub fn defaultDomainName(self: Config) ?[]const u8 {
+        if (self.default_domain) |name| {
+            if (self.domainByName(name) != null) return name;
+        }
+        return null;
+    }
+
+    pub fn shellForDomain(self: Config, domain_name: ?[]const u8) ![]const u8 {
+        if (domain_name) |name| {
+            const domain = self.domainByName(name) orelse return error.UnknownDomain;
+            return domain.shell;
+        }
+
+        if (self.defaultDomainName()) |name| {
+            const domain = self.domainByName(name) orelse return self.shellOrDefault();
+            return domain.shell;
+        }
+
+        return self.shellOrDefault();
     }
 
     pub fn windowTitle(self: Config) []const u8 {
@@ -276,6 +310,32 @@ pub const Config = struct {
 
     pub fn setShell(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.shell, value);
+    }
+
+    pub fn setDefaultDomain(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.default_domain, value);
+    }
+
+    pub fn setDomainShell(self: *Config, name: []const u8, shell_value: []const u8) !void {
+        for (self.domains.items) |*domain| {
+            if (std.mem.eql(u8, domain.name, name)) {
+                self.allocator.free(domain.shell);
+                domain.shell = try self.allocator.dupe(u8, shell_value);
+                return;
+            }
+        }
+
+        try self.domains.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, name),
+            .shell = try self.allocator.dupe(u8, shell_value),
+        });
+    }
+
+    fn domainByName(self: Config, name: []const u8) ?Domain {
+        for (self.domains.items) |domain| {
+            if (std.mem.eql(u8, domain.name, name)) return domain;
+        }
+        return null;
     }
 
     pub fn setHtpTransport(self: *Config, value: []const u8) !void {

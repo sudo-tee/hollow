@@ -33,6 +33,24 @@ hollow.config.reload()
 
 `set()` merges config state and applies it to the host.
 
+Domain-related config fields:
+
+```lua
+hollow.config.set({
+  default_domain = "wsl",
+  domains = {
+    wsl = "wsl.exe",
+    pwsh = "pwsh.exe",
+    cmd = "cmd.exe",
+    ssh = "ssh user@example.com",
+    unix = "/bin/zsh",
+  },
+})
+```
+
+`default_domain` picks the shell used for normal tab/pane creation when no domain is passed explicitly.
+`domains` maps a domain name to the shell command that should be launched for that domain.
+
 ## `hollow.term`
 
 ```lua
@@ -49,10 +67,22 @@ hollow.term.next_workspace()
 hollow.term.prev_workspace()
 
 hollow.term.new_tab(opts?)
+hollow.term.split_pane(direction_or_opts, opts?)
 hollow.term.focus_tab(id)
 hollow.term.close_tab(id)
 hollow.term.set_title(title, tab_id?)
 hollow.term.send_text(text, pane_id?)
+```
+
+`split_pane` accepts either `(direction, opts?)` or a single options table with:
+
+```lua
+{
+  direction = "horizontal" | "vertical",
+  ratio = number,
+  domain = string,
+  cwd = string,
+}
 ```
 
 ### Shapes
@@ -63,6 +93,7 @@ hollow.term.send_text(text, pane_id?)
 {
   id = integer,
   pid = integer,
+  domain = string|nil,
   cwd = string,
   title = string,
   is_focused = boolean,
@@ -302,7 +333,13 @@ hollow.process.exec(opts)
 local hollow = require("hollow")
 
 hollow.config.set({
-  shell = hollow.platform.is_windows and "wsl.exe" or hollow.platform.default_shell,
+  default_domain = hollow.platform.is_windows and "wsl" or "unix",
+  domains = {
+    wsl = "wsl.exe",
+    pwsh = "pwsh.exe",
+    cmd = "cmd.exe",
+    unix = hollow.platform.default_shell,
+  },
 })
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
@@ -317,6 +354,10 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 hollow.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
+
+hollow.term.new_tab({ domain = "pwsh" })
+hollow.term.split_pane({ direction = "vertical", ratio = 0.4, domain = "wsl" })
+hollow.term.split_pane({ direction = "horizontal", cwd = "/tmp/project" })
 
 hollow.events.on("config:reloaded", function()
   hollow.ui.notify.info("Config reloaded", { ttl = 1500 })

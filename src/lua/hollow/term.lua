@@ -8,6 +8,7 @@ function M.setup(hollow, host_api)
     return {
       id = pane_id,
       pid = host_api.get_pane_pid(pane_id),
+      domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
       is_focused = host_api.pane_is_focused(pane_id),
@@ -135,10 +136,44 @@ function M.setup(hollow, host_api)
     if opts ~= nil and type(opts) ~= "table" then
       error("hollow.term.new_tab(opts) expects a table or nil")
     end
-    if opts ~= nil and next(opts) ~= nil then
-      error("hollow.term.new_tab(opts) is not implemented yet")
+    if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
+      error("hollow.term.new_tab(opts) expects opts.domain to be a string")
     end
-    host_api.new_tab()
+    host_api.new_tab(opts)
+    return nil
+  end
+
+  function hollow.term.split_pane(direction, opts)
+    if type(direction) == "table" then
+      host_api.split_pane(direction)
+      return nil
+    end
+
+    if direction ~= nil and type(direction) ~= "string" then
+      error("hollow.term.split_pane(direction, opts) expects a string or table")
+    end
+
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.split_pane(direction, opts) expects opts to be a table")
+    end
+
+    local payload = { direction = direction }
+    if opts ~= nil then
+      if opts.ratio ~= nil and type(opts.ratio) ~= "number" then
+        error("hollow.term.split_pane(direction, opts) expects opts.ratio to be a number")
+      end
+      if opts.domain ~= nil and type(opts.domain) ~= "string" then
+        error("hollow.term.split_pane(direction, opts) expects opts.domain to be a string")
+      end
+      if opts.cwd ~= nil and type(opts.cwd) ~= "string" then
+        error("hollow.term.split_pane(direction, opts) expects opts.cwd to be a string")
+      end
+      payload.ratio = opts.ratio
+      payload.domain = opts.domain
+      payload.cwd = opts.cwd
+    end
+
+    host_api.split_pane(payload)
     return nil
   end
 

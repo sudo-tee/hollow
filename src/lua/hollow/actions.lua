@@ -3,13 +3,13 @@ local M = {}
 function M.setup(hollow, host_api)
   hollow.action = {
     split_vertical = function()
-      host_api.split_pane("vertical")
+      host_api.split_pane({ direction = "vertical" })
     end,
     split_horizontal = function()
-      host_api.split_pane("horizontal")
+      host_api.split_pane({ direction = "horizontal" })
     end,
     new_tab = function()
-      host_api.new_tab()
+      host_api.new_tab({})
     end,
     close_tab = function()
       host_api.close_tab()

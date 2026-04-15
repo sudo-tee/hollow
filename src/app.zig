@@ -210,7 +210,7 @@ pub const PendingMouseEvent = union(enum) {
     switch_tab: usize,
     /// Close a specific tab index without focusing it first.
     close_tab_at: usize,
-    new_tab,
+    new_tab: ?[]const u8,
     close_tab,
     close_pane,
     next_tab,
@@ -221,6 +221,8 @@ pub const PendingMouseEvent = union(enum) {
     split_pane: struct {
         direction: SplitDirection,
         ratio: f32,
+        domain_name: ?[]const u8,
+        cwd: ?[]const u8,
     },
     focus_pane: FocusDirection,
     resize_pane: struct {
@@ -545,8 +547,9 @@ pub const App = struct {
                 .close_tab_at => |idx| {
                     self.closeTabAt(idx);
                 },
-                .new_tab => {
-                    self.newTab();
+                .new_tab => |domain_name| {
+                    defer if (domain_name) |owned| self.allocator.free(owned);
+                    self.newTab(domain_name);
                 },
                 .close_tab => {
                     self.closeTab();
@@ -570,7 +573,9 @@ pub const App = struct {
                     self.prevWorkspace();
                 },
                 .split_pane => |split| {
-                    self.splitPane(split.direction, split.ratio);
+                    defer if (split.domain_name) |owned| self.allocator.free(owned);
+                    defer if (split.cwd) |owned| self.allocator.free(owned);
+                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd);
                 },
                 .focus_pane => |direction| {
                     self.focusPane(direction);
@@ -857,6 +862,7 @@ pub const App = struct {
             .switch_tab_by_id = luaSwitchTabByIdCallback,
             .close_tab_by_id = luaCloseTabByIdCallback,
             .send_text_to_pane = luaSendTextToPaneCallback,
+            .get_pane_domain = luaGetPaneDomainCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
             .copy_selection = luaCopySelectionCallback,
             .paste_clipboard = luaPasteClipboardCallback,
@@ -2324,7 +2330,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
                 if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
@@ -2340,11 +2346,11 @@ pub const App = struct {
         return true;
     }
 
-    pub fn newTab(self: *App) void {
+    pub fn newTab(self: *App, domain_name: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
-        mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
+        mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name) catch |err| {
             std.log.err("app: newTab failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2494,11 +2500,11 @@ pub const App = struct {
         }
     }
 
-    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32) void {
+    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
-        mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio) catch |err| {
+        mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2868,7 +2874,7 @@ pub const App = struct {
                 if (pane.title_dirty) {
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
-                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellOrDefault());
+                    pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
                     self.emitLuaBuiltInEvent("term:title_changed", .{ .pane_title_changed = .{
                         .pane_id = @intFromPtr(pane),
                         .old_title = if (old_title) |value| value else "",
@@ -3072,10 +3078,12 @@ pub const App = struct {
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
-fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32) void {
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
-    _ = app.enqueueMouse(.{ .split_pane = .{ .direction = dir, .ratio = ratio } });
+    const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
+    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .split_pane = .{ .direction = dir, .ratio = ratio, .domain_name = owned_domain, .cwd = owned_cwd } });
 }
 
 fn pathExists(path: []const u8) bool {
@@ -3274,9 +3282,10 @@ fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     }
 }
 
-fn luaNewTabCallback(app_ptr: *anyopaque) void {
+fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    _ = app.enqueueMouse(.new_tab);
+    const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
+    _ = app.enqueueMouse(.{ .new_tab = owned_domain });
 }
 
 fn luaCloseTabCallback(app_ptr: *anyopaque) void {
@@ -3408,6 +3417,13 @@ fn luaGetPaneCwdCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []c
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return "";
     return pane.cwd;
+}
+
+fn luaGetPaneDomainCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
+    _ = out_buf;
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return "";
+    return pane.domain_name;
 }
 
 fn luaGetPaneRowsCallback(app_ptr: *anyopaque, pane_id: usize) usize {

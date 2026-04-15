@@ -166,11 +166,14 @@
 ---@field hyperlinks? HollowHyperlinksConfig
 ---@field cursor? HollowCursorConfig
 ---@field shell? string|string[]
+---@field default_domain? string
+---@field domains? table<string, string>
 ---@field env? table<string, string>
 
 ---@class HollowPane
 ---@field id integer
 ---@field pid integer
+---@field domain? string
 ---@field cwd string
 ---@field title string
 ---@field is_focused boolean
@@ -200,6 +203,13 @@
 ---@field cwd? string
 ---@field env? table<string, string>
 ---@field title? string
+---@field domain? string
+
+---@class HollowSplitPaneOpts
+---@field direction? "horizontal"|"vertical"
+---@field ratio? number
+---@field domain? string
+---@field cwd? string
 
 ---@class HollowUiSpanNode
 ---@field _type "span"
@@ -636,6 +646,10 @@ function term.tab_by_id(id) end
 ---@param opts? HollowNewTabOpts
 function term.new_tab(opts) end
 
+---@param direction? "horizontal"|"vertical"|HollowSplitPaneOpts
+---@param opts? HollowSplitPaneOpts
+function term.split_pane(direction, opts) end
+
 ---@param id integer
 function term.focus_tab(id) end
 
@@ -977,7 +991,7 @@ function process.exec(opts) end
 
 ---@class HollowHostBridge
 ---@field set_config fun(opts: table)
----@field new_tab fun()
+---@field new_tab fun(opts?: table)
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun()
@@ -993,6 +1007,7 @@ function process.exec(opts) end
 ---@field close_tab_by_id fun(tab_id: integer): boolean
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean
+---@field get_pane_domain fun(pane_id: integer): string
 ---@field get_window_width fun(): integer
 ---@field get_window_height fun(): integer
 ---@field now_ms fun(): integer
@@ -1016,7 +1031,7 @@ function process.exec(opts) end
 ---@field reload_config fun(): boolean
 ---@field strftime fun(fmt: string): string
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
----@field split_pane fun(direction: string, ratio?: number)
+---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field close_pane fun()
 ---@field focus_pane fun(direction: string)
 ---@field resize_pane fun(axis: string, delta: number)

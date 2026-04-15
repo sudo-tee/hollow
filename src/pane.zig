@@ -85,6 +85,7 @@ pub const Pane = struct {
     title_dirty: bool = false,
     width_px: u32 = 0,
     height_px: u32 = 0,
+    domain_name: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };
@@ -103,10 +104,11 @@ pub const Pane = struct {
         if (self.pty) |*pty| pty.deinit();
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
+        if (self.domain_name.len > 0) self.allocator.free(self.domain_name);
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8) !void {
+    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !void {
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
@@ -145,7 +147,7 @@ pub const Pane = struct {
         const mouse_event = try runtime.createMouseEvent();
         errdefer runtime.freeMouseEvent(mouse_event);
 
-        const shell = try self.allocator.dupeZ(u8, cfg.shellOrDefault());
+        const shell = try self.allocator.dupeZ(u8, try cfg.shellForDomain(domain_name));
         defer self.allocator.free(shell);
 
         // Build environment block for HTP
@@ -216,6 +218,7 @@ pub const Pane = struct {
         // event callback, and calling ghostty resize/update APIs here has been a
         // recurring source of null-deref crashes during tab creation.
         self.title = &.{};
+        if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
         if (inherited_cwd) |cwd| self.setCwd(cwd);
     }
 

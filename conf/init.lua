@@ -164,6 +164,15 @@ local ui_theme = {
 -- g.log("loading native rewrite config")
 
 hwl.config.set({
+  default_domain = hwl.platform.is_windows and "wsl" or "unix",
+  domains = {
+    wsl = "wsl.exe",
+    pwsh = "pwsh.exe",
+    powershell = "powershell.exe",
+    cmd = "cmd.exe",
+    ssh = "ssh",
+    unix = hwl.platform.default_shell,
+  },
   debug_overlay = true,
   backend = "sokol",
   vsync = false,
@@ -230,16 +239,6 @@ hwl.config.set({
 })
 
 hwl.term.set_workspace_name("default")
-
-if hwl.platform.is_windows then
-  hwl.config.set({
-    shell = "wsl.exe",
-  })
-else
-  hwl.config.set({
-    shell = hwl.platform.default_shell,
-  })
-end
 
 local _metrics_cache = nil
 local _metrics_last_t = 0
