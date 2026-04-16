@@ -242,6 +242,7 @@ var g_frame_gpu_ns: i128 = 0;
 // Keyed by pane pointer (stable for the lifetime of the pane).
 // MAX_LAYOUT_LEAVES is the max concurrent panes we ever render.
 const MAX_PANE_CACHES = 32;
+const MAX_CACHED_VISIBLE_PANES = 12;
 /// Open-addressing hash map capacity for per-row content caching.
 /// Keys are GhosttyRow raw values (u64); values are cell-content hashes (u64).
 /// Must be a power of 2.  2048 slots at 2×8 bytes = 32 KB per pane — fine.
@@ -351,6 +352,37 @@ fn releasePaneCache(pane: *const Pane) void {
                 slot.* = null;
                 return;
             }
+        }
+    }
+}
+
+fn releaseAllPaneCaches() void {
+    for (&g_pane_caches) |*slot| {
+        if (slot.*) |*entry| {
+            entry.cache.deinit();
+            slot.* = null;
+        }
+    }
+}
+
+fn prunePaneCachesToVisible(leaves: []const LayoutLeaf, single_visible_pane: ?*Pane) void {
+    for (&g_pane_caches) |*slot| {
+        const entry = slot.* orelse continue;
+        var keep = false;
+        if (single_visible_pane) |pane| {
+            if (entry.pane == pane) keep = true;
+        }
+        if (!keep) {
+            for (leaves) |leaf| {
+                if (entry.pane == leaf.pane) {
+                    keep = true;
+                    break;
+                }
+            }
+        }
+        if (!keep) {
+            slot.*.?.cache.deinit();
+            slot.* = null;
         }
     }
 }
@@ -1656,6 +1688,21 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     var sg_desc = std.mem.zeroes(c.sg_desc);
     sg_desc.environment = c.sglue_environment();
+    // The cached multi-pane renderer allocates per-pane images, views, samplers,
+    // buffers, pipelines, and commit listeners. The sokol defaults are tuned for
+    // simple demos and start failing once a realistic multi-project workspace has
+    // many tabs plus split panes alive at once, even if only one tab is visible.
+    sg_desc.buffer_pool_size = MAX_PANE_CACHES * 2 + 64;
+    sg_desc.image_pool_size = MAX_PANE_CACHES * 2 + 32;
+    sg_desc.sampler_pool_size = MAX_PANE_CACHES * 3 + 32;
+    sg_desc.shader_pool_size = 64;
+    sg_desc.view_pool_size = MAX_PANE_CACHES * 4 + 64;
+    sg_desc.max_commit_listeners = MAX_PANE_CACHES * 2 + 64;
+    // Each pane cache ends up consuming a surprising number of sg pipelines:
+    // one sokol_gl context default pipeline (5 backend pipelines) plus one
+    // extra pane atlas pipeline (another 5). With 6 panes we exceed sokol_gfx's
+    // default pipeline pool size of 64 and crash during cache creation.
+    sg_desc.pipeline_pool_size = MAX_PANE_CACHES * 12 + 64;
     c.sg_setup(&sg_desc);
     {
         const sc = c.sglue_swapchain();
@@ -1667,6 +1714,12 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     var sgl_desc = std.mem.zeroes(c.sgl_desc_t);
     sgl_desc.max_vertices = 1 << 20;
     sgl_desc.max_commands = 1 << 18;
+    // Each pane cache owns its own sokol_gl context, plus the default context
+    // used for swapchain/UI rendering. The sokol_gl default context pool size is
+    // 4 total contexts, which makes the 4th cached pane fail to get a usable
+    // context and drops overlays like the cursor. Size the pool to our cache cap.
+    sgl_desc.context_pool_size = MAX_PANE_CACHES + 1;
+    sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 2 + 16;
     c.sgl_setup(&sgl_desc);
 
     var rect_pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
@@ -1856,7 +1909,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const use_direct_render = app.config.renderer_single_pane_direct and
         leaves.len == 0 and app.tabBarHeight() == 0 and app.bottomBarHeight() == 0;
     const use_safe_render = app.config.renderer_safe_mode;
-    const use_direct_multi_pane = app.config.renderer_disable_multi_pane_cache and leaves.len > 1;
+    const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
+    const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
+    const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1;
+    if (use_direct_multi_pane) {
+        releaseAllPaneCaches();
+    } else {
+        prunePaneCachesToVisible(leaves, single_visible_pane);
+    }
     if (g_ft_renderer) |*renderer| {
         renderer.beginFrame();
         // Reset frame-local queue/gpu accumulators for the debug overlay.

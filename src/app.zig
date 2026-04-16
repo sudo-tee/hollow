@@ -1378,6 +1378,23 @@ pub const App = struct {
         if (current) |pane| pane.render_dirty = .full;
     }
 
+    fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
+        self.invalidateFocusedPaneCache(previous, current);
+        if (previous == current) return;
+        if (self.ghostty) |*runtime| {
+            if (current) |pane| runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+        }
+    }
+
+    fn refreshActivePaneBinding(self: *App) void {
+        if (self.activePane()) |pane| {
+            pane.render_dirty = .full;
+            if (self.ghostty) |*runtime| {
+                runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+            }
+        }
+    }
+
     fn maybeRunStartupCommand(self: *App) void {
         if (self.startup_command_sent) return;
         const command = self.startup_command orelse return;
@@ -1430,7 +1447,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             const previous = mux.activePane();
             mux.setActivePane(pane);
-            self.invalidateFocusedPaneCache(previous, pane);
+            self.syncActivePaneChange(previous, pane);
         }
         const had_selection = self.hasSelection();
         const previous_selection_pane = self.selection_pane;
@@ -1473,7 +1490,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             const previous = mux.activePane();
             mux.setActivePane(pane);
-            self.invalidateFocusedPaneCache(previous, pane);
+            self.syncActivePaneChange(previous, pane);
         }
         const had_selection = self.hasSelection();
 
@@ -1542,7 +1559,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             const previous = mux.activePane();
             mux.setActivePane(pane);
-            self.invalidateFocusedPaneCache(previous, pane);
+            self.syncActivePaneChange(previous, pane);
         }
         const had_selection = self.hasSelection();
 
@@ -2042,7 +2059,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 const was_active = mux.activePane();
                 mux.setActivePane(hit.pane);
-                self.invalidateFocusedPaneCache(was_active, hit.pane);
+                self.syncActivePaneChange(was_active, hit.pane);
             }
         }
         return try self.encodeMouseForPane(hit.pane, action, button, hit.x, hit.y, mods);
@@ -2350,17 +2367,13 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
+        const previous = mux.activePane();
         mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name) catch |err| {
             std.log.err("app: newTab failed: {s}", .{@errorName(err)});
             return;
         };
         self.requestLayoutResize(false);
-        // Re-register callbacks for the new active pane after tab creation.
-        // The new pane's terminal was created in mux.newTab() but callbacks
-        // need to be registered to ensure focus events work correctly.
-        if (mux.activePane()) |active| {
-            runtime.registerCallbacks(active.terminal, cbs);
-        }
+        self.syncActivePaneChange(previous, mux.activePane());
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
@@ -2381,10 +2394,7 @@ pub const App = struct {
             self.pending_quit = true;
             return;
         }
-        // Re-register callbacks for the new active pane after tab switch.
-        if (mux.activePane()) |active| {
-            runtime.registerCallbacks(active.terminal, terminalCallbacks());
-        }
+        self.refreshActivePaneBinding();
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
@@ -2404,9 +2414,7 @@ pub const App = struct {
             self.pending_quit = true;
             return;
         }
-        if (mux.activePane()) |active| {
-            runtime.registerCallbacks(active.terminal, terminalCallbacks());
-        }
+        self.refreshActivePaneBinding();
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
@@ -2422,17 +2430,16 @@ pub const App = struct {
             self.pending_quit = true;
             return;
         }
-        // Re-register callbacks for the new active pane.
-        if (mux.activePane()) |active| {
-            runtime.registerCallbacks(active.terminal, terminalCallbacks());
-        }
+        self.refreshActivePaneBinding();
         self.requestLayoutResize(false);
         std.log.info("app: active pane closed via close_pane", .{});
     }
 
     pub fn nextTab(self: *App) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.nextTab();
+            self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.requestLayoutResize(false);
@@ -2440,7 +2447,9 @@ pub const App = struct {
 
     pub fn prevTab(self: *App) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.prevTab();
+            self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.requestLayoutResize(false);
@@ -2450,31 +2459,31 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
+        const previous = mux.activePane();
         mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
             return;
         };
         self.bindHtpHandlers();
+        self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         std.log.info("app: created new workspace", .{});
     }
 
     pub fn nextWorkspace(self: *App) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.nextWorkspace();
-            if (self.ghostty) |*runtime| {
-                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
-            }
+            self.syncActivePaneChange(previous, mux.activePane());
             self.requestLayoutResize(false);
         }
     }
 
     pub fn prevWorkspace(self: *App) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.prevWorkspace();
-            if (self.ghostty) |*runtime| {
-                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
-            }
+            self.syncActivePaneChange(previous, mux.activePane());
             self.requestLayoutResize(false);
         }
     }
@@ -2491,10 +2500,9 @@ pub const App = struct {
 
     pub fn switchWorkspace(self: *App, index: usize) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.switchWorkspace(index);
-            if (self.ghostty) |*runtime| {
-                if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
-            }
+            self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutResize(false);
         }
@@ -2504,11 +2512,13 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
+        const previous = mux.activePane();
         mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
         self.bindHtpHandlers();
+        self.syncActivePaneChange(previous, mux.activePane());
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.requestLayoutResize(false);
@@ -2526,7 +2536,7 @@ pub const App = struct {
         if (self.mux) |*mux| {
             const previous = mux.activePane();
             mux.focusPaneInDirection(direction, self.config.window_width, self.config.window_height);
-            self.invalidateFocusedPaneCache(previous, mux.activePane());
+            self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activePane()) |pane| {
                 if (previous != pane) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = @intFromPtr(pane) });
             }
@@ -2741,13 +2751,9 @@ pub const App = struct {
 
     pub fn switchTab(self: *App, index: usize) void {
         if (self.mux) |*mux| {
+            const previous = mux.activePane();
             mux.switchTab(index);
-            // Re-register callbacks for the new active pane.
-            if (self.ghostty) |*runtime| {
-                if (mux.activePane()) |active| {
-                    runtime.registerCallbacks(active.terminal, terminalCallbacks());
-                }
-            }
+            self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutResize(false);
         }
