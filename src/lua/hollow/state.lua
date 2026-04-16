@@ -38,6 +38,7 @@ function M.new(host_api)
         ["term:tab_activated"] = true,
         ["term:tab_closed"] = true,
         ["term:pane_focused"] = true,
+        ["term:pane_layout_changed"] = true,
         ["term:cwd_changed"] = true,
         ["key:unhandled"] = true,
         ["window:resized"] = true,

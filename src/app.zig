@@ -223,6 +223,32 @@ pub const PendingMouseEvent = union(enum) {
         ratio: f32,
         domain_name: ?[]const u8,
         cwd: ?[]const u8,
+        floating: bool,
+        fullscreen: bool,
+        x: ?f32,
+        y: ?f32,
+        width: ?f32,
+        height: ?f32,
+    },
+    toggle_pane_maximized: struct {
+        pane_id: usize,
+        show_background: bool,
+    },
+    set_pane_floating: struct {
+        pane_id: usize,
+        floating: bool,
+    },
+    set_floating_pane_bounds: struct {
+        pane_id: usize,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    move_pane: struct {
+        pane_id: usize,
+        direction: FocusDirection,
+        amount: f32,
     },
     focus_pane: FocusDirection,
     resize_pane: struct {
@@ -575,7 +601,19 @@ pub const App = struct {
                 .split_pane => |split| {
                     defer if (split.domain_name) |owned| self.allocator.free(owned);
                     defer if (split.cwd) |owned| self.allocator.free(owned);
-                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd);
+                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd, split.floating, split.fullscreen, split.x, split.y, split.width, split.height);
+                },
+                .toggle_pane_maximized => |maximize| {
+                    self.togglePaneMaximizedById(maximize.pane_id, maximize.show_background);
+                },
+                .set_pane_floating => |floating| {
+                    self.setPaneFloatingById(floating.pane_id, floating.floating);
+                },
+                .set_floating_pane_bounds => |floating| {
+                    self.setFloatingPaneBoundsById(floating.pane_id, floating.x, floating.y, floating.width, floating.height);
+                },
+                .move_pane => |move_ev| {
+                    self.movePaneById(move_ev.pane_id, move_ev.direction, move_ev.amount);
                 },
                 .focus_pane => |direction| {
                     self.focusPane(direction);
@@ -819,6 +857,10 @@ pub const App = struct {
         lua.registerAppCallbacks(.{
             .app = self,
             .split_pane = luaSplitPaneCallback,
+            .toggle_pane_maximized = luaTogglePaneMaximizedCallback,
+            .set_pane_floating = luaSetPaneFloatingCallback,
+            .set_floating_pane_bounds = luaSetFloatingPaneBoundsCallback,
+            .move_pane = luaMovePaneCallback,
             .new_tab = luaNewTabCallback,
             .close_tab = luaCloseTabCallback,
             .close_pane = luaClosePaneCallback,
@@ -852,11 +894,15 @@ pub const App = struct {
             .get_pane_cwd = luaGetPaneCwdCallback,
             .get_pane_rows = luaGetPaneRowsCallback,
             .get_pane_cols = luaGetPaneColsCallback,
+            .get_pane_x = luaGetPaneXCallback,
+            .get_pane_y = luaGetPaneYCallback,
             .get_pane_width = luaGetPaneWidthCallback,
             .get_pane_height = luaGetPaneHeightCallback,
             .get_window_width = luaGetWindowWidthCallback,
             .get_window_height = luaGetWindowHeightCallback,
             .now_ms = luaNowMsCallback,
+            .pane_is_floating = luaPaneIsFloatingCallback,
+            .pane_is_maximized = luaPaneIsMaximizedCallback,
             .pane_is_focused = luaPaneIsFocusedCallback,
             .pane_exists = luaPaneExistsCallback,
             .switch_tab_by_id = luaSwitchTabByIdCallback,
@@ -1946,7 +1992,10 @@ pub const App = struct {
         const leaves = self.computeActiveLayout(&layout_buf);
         const ix = @as(u32, @intFromFloat(@max(0, x)));
         const iy = @as(u32, @intFromFloat(@max(0, y)));
-        for (leaves) |leaf| {
+        var i = leaves.len;
+        while (i > 0) {
+            i -= 1;
+            const leaf = leaves[i];
             const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
             if (ix >= leaf.bounds.x and ix < leaf.bounds.x + leaf.bounds.width and
                 iy >= leaf.bounds.y and iy < leaf.bounds.y + leaf.bounds.height)
@@ -1970,6 +2019,9 @@ pub const App = struct {
     /// `radius` is the pixel slop on each side of the 2px seam line.
     /// Returns the matching DividerHit (node + its bounds) or null.
     pub fn hitTestDividerAt(self: *App, x: f32, y: f32, radius: f32) ?DividerHit {
+        if (self.hitTestPane(x, y)) |hit| {
+            if (hit.pane.is_floating) return null;
+        }
         const mux = if (self.mux) |*m| m else return null;
         const tab = mux.activeTab() orelse return null;
         const root = tab.root_split orelse return null;
@@ -2227,7 +2279,10 @@ pub const App = struct {
     pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?ScrollbarMetrics {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
-        for (leaves) |leaf| {
+        var i = leaves.len;
+        while (i > 0) {
+            i -= 1;
+            const leaf = leaves[i];
             const metrics = self.paneScrollbarMetrics(leaf.pane, leaf.bounds) orelse continue;
             if (x >= metrics.track_x and x < metrics.track_x + metrics.track_w and y >= metrics.track_y and y < metrics.track_y + metrics.track_h) {
                 return metrics;
@@ -2508,15 +2563,29 @@ pub const App = struct {
         }
     }
 
-    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void {
+    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
         const previous = mux.activePane();
-        mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd) catch |err| {
+        const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd, floating) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
+        if (floating) {
+            if (x != null or y != null or width != null or height != null) {
+                _ = mux.setFloatingPaneBounds(
+                    pane,
+                    x orelse pane.floating_x,
+                    y orelse pane.floating_y,
+                    width orelse pane.floating_width,
+                    height orelse pane.floating_height,
+                );
+            }
+        }
+        if (fullscreen) {
+            _ = mux.togglePaneMaximized(pane, false);
+        }
         self.bindHtpHandlers();
         self.syncActivePaneChange(previous, mux.activePane());
         // Schedule a layout resize for the next tick() (frame callback thread),
@@ -2529,6 +2598,48 @@ pub const App = struct {
         if (self.mux) |*mux| {
             mux.resizeActivePane(direction, delta);
             self.requestLayoutResize(false);
+        }
+    }
+
+    pub fn togglePaneMaximizedById(self: *App, pane_id: usize, show_background: bool) void {
+        const pane = self.findPaneById(pane_id) orelse return;
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            if (!mux.togglePaneMaximized(pane, show_background)) return;
+            self.syncActivePaneChange(previous, mux.activePane());
+            self.requestLayoutResize(false);
+            self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+            self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+        }
+    }
+
+    pub fn setPaneFloatingById(self: *App, pane_id: usize, floating: bool) void {
+        const pane = self.findPaneById(pane_id) orelse return;
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            if (!mux.setPaneFloating(pane, floating)) return;
+            self.syncActivePaneChange(previous, mux.activePane());
+            self.requestLayoutResize(false);
+            if (floating) self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+            self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+        }
+    }
+
+    pub fn setFloatingPaneBoundsById(self: *App, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void {
+        const pane = self.findPaneById(pane_id) orelse return;
+        if (self.mux) |*mux| {
+            if (!mux.setFloatingPaneBounds(pane, x, y, width, height)) return;
+            self.requestLayoutResize(false);
+            self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
+        }
+    }
+
+    pub fn movePaneById(self: *App, pane_id: usize, direction: FocusDirection, amount: f32) void {
+        const pane = self.findPaneById(pane_id) orelse return;
+        if (self.mux) |*mux| {
+            if (!mux.movePane(pane, direction, self.config.window_width, self.config.window_height, amount)) return;
+            self.requestLayoutResize(false);
+            self.emitLuaBuiltInEvent("term:pane_layout_changed", .{ .pane_layout_changed = .{ .pane_id = pane_id } });
         }
     }
 
@@ -2547,10 +2658,7 @@ pub const App = struct {
         const bounds = self.activeLayoutBounds();
         if (self.mux) |*mux| {
             const tab = mux.activeTab() orelse return out[0..0];
-            var written: usize = 0;
-            const root = tab.root_split orelse return out[0..0];
-            layoutSplitTree(root, bounds, out, &written);
-            return out[0..written];
+            return tab.computeLayoutInBounds(bounds, out);
         }
         return out[0..0];
     }
@@ -2977,17 +3085,13 @@ pub const App = struct {
         // Without this, tickPanes would call ghostty on uninitialised state
         // the moment a new tab is created and the old tab's panes are iterated.
         for (ws.tabs.items) |tab| {
-            var written: usize = 0;
             const bounds = PaneBounds{
                 .x = left_inset,
                 .y = tbh,
                 .width = layout_width,
                 .height = pane_h,
             };
-            if (tab.root_split) |root| {
-                layoutSplitTree(root, bounds, &layout_buf, &written);
-            }
-            const leaves = layout_buf[0..written];
+            const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     // Skip panes with zero-size bounds — can happen when the window
@@ -3010,6 +3114,8 @@ pub const App = struct {
                     }
                     leaf.pane.width_px = leaf.bounds.width;
                     leaf.pane.height_px = leaf.bounds.height;
+                    leaf.pane.x_px = leaf.bounds.x;
+                    leaf.pane.y_px = leaf.bounds.y;
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
@@ -3049,6 +3155,8 @@ pub const App = struct {
                     }
                     pane.width_px = pixel_width;
                     pane.height_px = pane_h;
+                    pane.x_px = left_inset;
+                    pane.y_px = tbh;
                     pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
                     pane.setMouseSize(
                         runtime,
@@ -3084,12 +3192,44 @@ pub const App = struct {
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
-fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void {
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .split_pane = .{ .direction = dir, .ratio = ratio, .domain_name = owned_domain, .cwd = owned_cwd } });
+    _ = app.enqueueMouse(.{ .split_pane = .{
+        .direction = dir,
+        .ratio = ratio,
+        .domain_name = owned_domain,
+        .cwd = owned_cwd,
+        .floating = floating,
+        .fullscreen = fullscreen,
+        .x = if (has_bounds) x else null,
+        .y = if (has_bounds) y else null,
+        .width = if (has_bounds) width else null,
+        .height = if (has_bounds) height else null,
+    } });
+}
+
+fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .toggle_pane_maximized = .{ .pane_id = pane_id, .show_background = show_background } });
+}
+
+fn luaSetPaneFloatingCallback(app_ptr: *anyopaque, pane_id: usize, floating: bool) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .set_pane_floating = .{ .pane_id = pane_id, .floating = floating } });
+}
+
+fn luaSetFloatingPaneBoundsCallback(app_ptr: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.{ .set_floating_pane_bounds = .{ .pane_id = pane_id, .x = x, .y = y, .width = width, .height = height } });
+}
+
+fn luaMovePaneCallback(app_ptr: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
+    _ = app.enqueueMouse(.{ .move_pane = .{ .pane_id = pane_id, .direction = dir, .amount = amount } });
 }
 
 fn pathExists(path: []const u8) bool {
@@ -3444,6 +3584,18 @@ fn luaGetPaneColsCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     return pane.cols;
 }
 
+fn luaGetPaneXCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.x_px;
+}
+
+fn luaGetPaneYCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.y_px;
+}
+
 fn luaGetPaneWidthCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;
@@ -3469,6 +3621,19 @@ fn luaGetWindowHeightCallback(app_ptr: *anyopaque) usize {
 fn luaNowMsCallback(app_ptr: *anyopaque) i64 {
     _ = app_ptr;
     return @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
+}
+
+fn luaPaneIsFloatingCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return false;
+    return pane.is_floating;
+}
+
+fn luaPaneIsMaximizedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return false;
+    if (app.mux) |*mux| return mux.paneIsMaximized(pane);
+    return false;
 }
 
 fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {

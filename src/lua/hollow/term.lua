@@ -12,6 +12,14 @@ function M.setup(hollow, host_api)
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
       is_focused = host_api.pane_is_focused(pane_id),
+      is_floating = host_api.pane_is_floating and host_api.pane_is_floating(pane_id) or false,
+      is_maximized = host_api.pane_is_maximized and host_api.pane_is_maximized(pane_id) or false,
+      frame = {
+        x = host_api.get_pane_x and host_api.get_pane_x(pane_id) or 0,
+        y = host_api.get_pane_y and host_api.get_pane_y(pane_id) or 0,
+        width = host_api.get_pane_width(pane_id),
+        height = host_api.get_pane_height(pane_id),
+      },
       size = {
         rows = host_api.get_pane_rows(pane_id),
         cols = host_api.get_pane_cols(pane_id),
@@ -145,6 +153,33 @@ function M.setup(hollow, host_api)
 
   function hollow.term.split_pane(direction, opts)
     if type(direction) == "table" then
+      if direction.ratio ~= nil and type(direction.ratio) ~= "number" then
+        error("hollow.term.split_pane(opts) expects opts.ratio to be a number")
+      end
+      if direction.domain ~= nil and type(direction.domain) ~= "string" then
+        error("hollow.term.split_pane(opts) expects opts.domain to be a string")
+      end
+      if direction.cwd ~= nil and type(direction.cwd) ~= "string" then
+        error("hollow.term.split_pane(opts) expects opts.cwd to be a string")
+      end
+      if direction.floating ~= nil and type(direction.floating) ~= "boolean" then
+        error("hollow.term.split_pane(opts) expects opts.floating to be a boolean")
+      end
+      if direction.fullscreen ~= nil and type(direction.fullscreen) ~= "boolean" then
+        error("hollow.term.split_pane(opts) expects opts.fullscreen to be a boolean")
+      end
+      if direction.x ~= nil and type(direction.x) ~= "number" then
+        error("hollow.term.split_pane(opts) expects opts.x to be a number")
+      end
+      if direction.y ~= nil and type(direction.y) ~= "number" then
+        error("hollow.term.split_pane(opts) expects opts.y to be a number")
+      end
+      if direction.width ~= nil and type(direction.width) ~= "number" then
+        error("hollow.term.split_pane(opts) expects opts.width to be a number")
+      end
+      if direction.height ~= nil and type(direction.height) ~= "number" then
+        error("hollow.term.split_pane(opts) expects opts.height to be a number")
+      end
       host_api.split_pane(direction)
       return nil
     end
@@ -168,9 +203,33 @@ function M.setup(hollow, host_api)
       if opts.cwd ~= nil and type(opts.cwd) ~= "string" then
         error("hollow.term.split_pane(direction, opts) expects opts.cwd to be a string")
       end
+      if opts.floating ~= nil and type(opts.floating) ~= "boolean" then
+        error("hollow.term.split_pane(direction, opts) expects opts.floating to be a boolean")
+      end
+      if opts.fullscreen ~= nil and type(opts.fullscreen) ~= "boolean" then
+        error("hollow.term.split_pane(direction, opts) expects opts.fullscreen to be a boolean")
+      end
+      if opts.x ~= nil and type(opts.x) ~= "number" then
+        error("hollow.term.split_pane(direction, opts) expects opts.x to be a number")
+      end
+      if opts.y ~= nil and type(opts.y) ~= "number" then
+        error("hollow.term.split_pane(direction, opts) expects opts.y to be a number")
+      end
+      if opts.width ~= nil and type(opts.width) ~= "number" then
+        error("hollow.term.split_pane(direction, opts) expects opts.width to be a number")
+      end
+      if opts.height ~= nil and type(opts.height) ~= "number" then
+        error("hollow.term.split_pane(direction, opts) expects opts.height to be a number")
+      end
       payload.ratio = opts.ratio
       payload.domain = opts.domain
       payload.cwd = opts.cwd
+      payload.floating = opts.floating
+      payload.fullscreen = opts.fullscreen
+      payload.x = opts.x
+      payload.y = opts.y
+      payload.width = opts.width
+      payload.height = opts.height
     end
 
     host_api.split_pane(payload)
@@ -219,6 +278,84 @@ function M.setup(hollow, host_api)
       return
     end
     host_api.send_text(text)
+  end
+
+  function hollow.term.toggle_pane_maximized(pane_id, opts)
+    if pane_id ~= nil and type(pane_id) == "table" then
+      opts = pane_id
+      pane_id = nil
+    end
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.toggle_pane_maximized(pane_id?, opts?) expects pane_id to be a number")
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.toggle_pane_maximized(pane_id?, opts?) expects opts to be a table")
+    end
+    local show_background = opts ~= nil and opts.show_background == true or false
+    host_api.toggle_pane_maximized(pane_id, show_background)
+  end
+
+  function hollow.term.set_pane_floating(pane_id, floating)
+    if pane_id ~= nil and type(pane_id) == "table" then
+      floating = pane_id.floating
+      pane_id = pane_id.pane_id or pane_id.id
+    end
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.set_pane_floating(pane_id, floating) expects pane_id to be a number")
+    end
+    if floating ~= nil and type(floating) ~= "boolean" then
+      error("hollow.term.set_pane_floating(pane_id, floating) expects floating to be a boolean")
+    end
+    host_api.set_pane_floating(pane_id, floating ~= false)
+  end
+
+  function hollow.term.set_floating_pane_bounds(pane_id, opts)
+    if type(pane_id) ~= "number" then
+      error("hollow.term.set_floating_pane_bounds(pane_id, opts) expects pane_id to be a number")
+    end
+    if type(opts) ~= "table" then
+      error("hollow.term.set_floating_pane_bounds(pane_id, opts) expects opts to be a table")
+    end
+    host_api.set_floating_pane_bounds(
+      pane_id,
+      opts.x or 0.15,
+      opts.y or 0.1,
+      opts.width or 0.7,
+      opts.height or 0.75
+    )
+  end
+
+  function hollow.term.move_pane(direction_or_opts, opts)
+    local pane_id = nil
+    local direction = nil
+    local amount = nil
+
+    if type(direction_or_opts) == "table" then
+      pane_id = direction_or_opts.pane_id or direction_or_opts.id
+      direction = direction_or_opts.direction
+      amount = direction_or_opts.amount
+    else
+      direction = direction_or_opts
+      if opts ~= nil then
+        if type(opts) ~= "table" then
+          error("hollow.term.move_pane(direction, opts) expects opts to be a table")
+        end
+        pane_id = opts.pane_id or opts.id
+        amount = opts.amount
+      end
+    end
+
+    if type(direction) ~= "string" then
+      error("hollow.term.move_pane(...) expects a direction string")
+    end
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.move_pane(...) expects pane_id to be a number")
+    end
+    if amount ~= nil and type(amount) ~= "number" then
+      error("hollow.term.move_pane(...) expects amount to be a number")
+    end
+
+    host_api.move_pane(pane_id, direction, amount or 0.08)
   end
 
   return {

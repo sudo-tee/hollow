@@ -289,16 +289,17 @@ local function tabs_widget()
     fit = "content",
     format = function(tab)
       local pane = tab.pane
+      local maximized = pane and pane.is_maximized and " [M]" or ""
       if pane then
         if pane.title and pane.title ~= "" then
-          return " " .. pane.title .. " "
+          return " " .. pane.title .. maximized .. " "
         end
         if pane.cwd and pane.cwd ~= "" then
-          return " " .. pane.cwd .. " "
+          return " " .. pane.cwd .. " " .. maximized .. " "
         end
       end
 
-      return " " .. (tab.title ~= "" and tab.title or "shell") .. " "
+      return " " .. (tab.title ~= "" and tab.title or "shell") .. " " .. maximized
     end,
     style = function(tab)
       if tab.is_active then
@@ -339,6 +340,10 @@ hwl.ui.topbar.mount(hwl.ui.topbar.new({
 hwl.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hwl.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
+hwl.keymap.set("<leader>sf", function()
+  hwl.ui.notify.info("Split horizontal triggered", { ttl = 1200 })
+  hwl.term.split_pane({ floating = true })
+end, { desc = "split horizontal" })
 hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
 hwl.keymap.set("<leader>uu", function()
   hwl.config.reload()
@@ -418,6 +423,11 @@ hwl.keymap.set("<C-t>", "new_tab")
 hwl.keymap.set("<C-w>", "close_tab")
 hwl.keymap.set("<C-Tab>", "next_tab")
 hwl.keymap.set("<C-S-Tab>", "prev_tab")
+-- hollow.keymap.set("<C-S-m>", function()
+--   hwl.ui.notify.info("Maximize pane toggled", { ttl = 1200 })
+--   hwl.term.toggle_pane_maximized(hwl.term.current_pane().id)
+-- end, { desc = "toggle maximize pane" })
+
 -- g.keymap.set("<A-S-PageUp>", "scrollback_page_up", { desc = "scrollback page up" })
 -- g.keymap.set("<A-S-PageDown>", "scrollback_page_down", { desc = "scrollback page down" })
 -- g.keymap.set("<C-S-Home>", "scrollback_top", { desc = "scrollback top" })

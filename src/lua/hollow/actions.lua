@@ -8,6 +8,18 @@ function M.setup(hollow, host_api)
     split_horizontal = function()
       host_api.split_pane({ direction = "horizontal" })
     end,
+    maximize_pane = function()
+      host_api.toggle_pane_maximized(nil, false)
+    end,
+    maximize_pane_background = function()
+      host_api.toggle_pane_maximized(nil, true)
+    end,
+    float_pane = function()
+      host_api.set_pane_floating(nil, true)
+    end,
+    tile_pane = function()
+      host_api.set_pane_floating(nil, false)
+    end,
     new_tab = function()
       host_api.new_tab({})
     end,
@@ -43,6 +55,18 @@ function M.setup(hollow, host_api)
     end,
     focus_pane_down = function()
       host_api.focus_pane("down")
+    end,
+    move_pane_left = function()
+      host_api.move_pane(nil, "left", 0.08)
+    end,
+    move_pane_right = function()
+      host_api.move_pane(nil, "right", 0.08)
+    end,
+    move_pane_up = function()
+      host_api.move_pane(nil, "up", 0.08)
+    end,
+    move_pane_down = function()
+      host_api.move_pane(nil, "down", 0.08)
     end,
     resize_pane_left = function()
       host_api.resize_pane("vertical", -0.05)

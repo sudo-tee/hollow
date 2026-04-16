@@ -67,6 +67,23 @@ function M.setup(hollow, host_api, state, util, term_helpers)
     return util.clone_value(value)
   end
 
+  local function event_payload(ctx)
+    if type(ctx.payload) == "table" then
+      return ctx.payload
+    end
+    return {}
+  end
+
+  local function target_pane_id(ctx, payload)
+    if type(payload.pane_id) == "number" then
+      return payload.pane_id
+    end
+    if type(payload.id) == "number" then
+      return payload.id
+    end
+    return ctx.pane and ctx.pane.id or nil
+  end
+
   function hollow.htp.on_query(channel, handler)
     ensure_channel(channel, "hollow.htp.on_query(channel, handler)")
     ensure_handler(handler, "hollow.htp.on_query(channel, handler)")
@@ -158,6 +175,57 @@ function M.setup(hollow, host_api, state, util, term_helpers)
 
   hollow.htp.on_query("echo", function(ctx)
     return ctx.params
+  end)
+
+  hollow.htp.on_emit("split_pane", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.split_pane({
+      direction = payload.direction,
+      ratio = payload.ratio,
+      domain = payload.domain,
+      cwd = payload.cwd,
+      floating = payload.floating,
+      fullscreen = payload.fullscreen,
+      x = payload.x,
+      y = payload.y,
+      width = payload.width,
+      height = payload.height,
+    })
+  end)
+
+  hollow.htp.on_emit("toggle_pane_maximized", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.toggle_pane_maximized(target_pane_id(ctx, payload), {
+      show_background = payload.show_background == true,
+    })
+  end)
+
+  hollow.htp.on_emit("set_pane_floating", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.set_pane_floating(target_pane_id(ctx, payload), payload.floating ~= false)
+  end)
+
+  hollow.htp.on_emit("set_floating_pane_bounds", function(ctx)
+    local payload = event_payload(ctx)
+    local pane_id = target_pane_id(ctx, payload)
+    if type(pane_id) ~= "number" then
+      error("set_floating_pane_bounds requires a pane id")
+    end
+    hollow.term.set_floating_pane_bounds(pane_id, {
+      x = payload.x,
+      y = payload.y,
+      width = payload.width,
+      height = payload.height,
+    })
+  end)
+
+  hollow.htp.on_emit("move_pane", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.move_pane({
+      pane_id = target_pane_id(ctx, payload),
+      direction = payload.direction,
+      amount = payload.amount,
+    })
   end)
 end
 

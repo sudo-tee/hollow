@@ -143,6 +143,70 @@ pub fn layoutSplitTree(
     }
 }
 
+fn layoutVisibleTree(
+    node: *SplitNode,
+    bounds: PaneBounds,
+    out: []LayoutLeaf,
+    written: *usize,
+    skip_pane: ?*Pane,
+) void {
+    switch (node.kind) {
+        .pane => {
+            const pane = node.pane orelse return;
+            if (skip_pane == pane or pane.is_floating) return;
+            if (written.* >= out.len) return;
+            out[written.*] = .{ .pane = pane, .bounds = bounds };
+            written.* += 1;
+        },
+        .split => {
+            const first = node.first orelse return;
+            const second = node.second orelse return;
+            const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
+            var first_bounds: PaneBounds = undefined;
+            var second_bounds: PaneBounds = undefined;
+            switch (node.direction) {
+                .vertical => {
+                    const divider: u32 = if (bounds.width > 1) 1 else 0;
+                    const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
+                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                    const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                    second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                },
+                .horizontal => {
+                    const divider: u32 = if (bounds.height > 1) 1 else 0;
+                    const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
+                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                    const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                },
+            }
+            layoutVisibleTree(first, first_bounds, out, written, skip_pane);
+            layoutVisibleTree(second, second_bounds, out, written, skip_pane);
+        },
+    }
+}
+
+fn floatingPaneBounds(bounds: PaneBounds, pane: *const Pane) PaneBounds {
+    const max_w: f32 = @floatFromInt(bounds.width);
+    const max_h: f32 = @floatFromInt(bounds.height);
+    const width = std.math.clamp(pane.floating_width, 0.2, 1.0);
+    const height = std.math.clamp(pane.floating_height, 0.15, 1.0);
+    const x = std.math.clamp(pane.floating_x, 0.0, 1.0 - width);
+    const y = std.math.clamp(pane.floating_y, 0.0, 1.0 - height);
+    const pane_w = @max(@as(u32, 1), @as(u32, @intFromFloat(max_w * width)));
+    const pane_h = @max(@as(u32, 1), @as(u32, @intFromFloat(max_h * height)));
+    const pane_x = bounds.x + @as(u32, @intFromFloat(max_w * x));
+    const pane_y = bounds.y + @as(u32, @intFromFloat(max_h * y));
+    return .{
+        .x = pane_x,
+        .y = pane_y,
+        .width = @min(bounds.width, pane_w),
+        .height = @min(bounds.height, pane_h),
+    };
+}
+
 pub const SplitNode = struct {
     kind: Kind,
     pane: ?*Pane = null,
@@ -192,6 +256,8 @@ pub const Tab = struct {
     panes: std.ArrayList(*Pane),
     active_pane: ?*Pane = null,
     root_split: ?*SplitNode = null,
+    maximized_pane: ?*Pane = null,
+    maximized_show_background: bool = false,
 
     pub const PaneIterator = struct {
         tab: *Tab,
@@ -291,6 +357,7 @@ pub const Tab = struct {
 
     pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const current_pane = self.active_pane orelse return error.NoActivePane;
+        current_pane.is_floating = false;
         const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
 
         const existing_leaf = try self.allocator.create(SplitNode);
@@ -304,6 +371,7 @@ pub const Tab = struct {
         target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, ratio);
         try self.panes.append(self.allocator, new_pane);
         self.active_pane = new_pane;
+        self.maximized_pane = null;
     }
 
     pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
@@ -315,6 +383,7 @@ pub const Tab = struct {
     /// the split). Focus moves to the sibling; if no sibling exists the root is
     /// cleared. Returns true if the tab is now empty (caller should close it).
     pub fn closePane(self: *Tab, runtime: *GhosttyRuntime, pane: *Pane) bool {
+        if (self.maximized_pane == pane) self.maximized_pane = null;
         // Collapse the split tree.
         if (self.root_split) |root| {
             if (root.kind == .pane and root.pane == pane) {
@@ -355,16 +424,135 @@ pub const Tab = struct {
     /// Compute pixel bounds for every leaf pane in this tab's split tree.
     /// Returns a slice into `out` (length = number of panes).
     pub fn computeLayout(self: *Tab, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
-        const root = self.root_split orelse return out[0..0];
-        const full_bounds = PaneBounds{
+        return self.computeLayoutInBounds(.{
             .x = 0,
             .y = 0,
             .width = window_width,
             .height = window_height,
-        };
+        }, out);
+    }
+
+    pub fn computeLayoutInBounds(self: *Tab, bounds: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
         var written: usize = 0;
-        layoutSplitTree(root, full_bounds, out, &written);
+        if (self.maximized_pane) |pane| {
+            if (self.maximized_show_background) {
+                if (self.root_split) |root| {
+                    layoutVisibleTree(root, bounds, out, &written, null);
+                }
+            }
+            if (written < out.len) {
+                out[written] = .{ .pane = pane, .bounds = bounds };
+                written += 1;
+            }
+        } else if (self.root_split) |root| {
+            layoutVisibleTree(root, bounds, out, &written, null);
+        }
+
+        for (self.panes.items) |pane| {
+            if (!pane.is_floating) continue;
+            if (self.maximized_pane == pane) continue;
+            if (written >= out.len) break;
+            out[written] = .{ .pane = pane, .bounds = floatingPaneBounds(bounds, pane) };
+            written += 1;
+        }
+
         return out[0..written];
+    }
+
+    pub fn isPaneMaximized(self: *const Tab, pane: *const Pane) bool {
+        return self.maximized_pane == pane;
+    }
+
+    pub fn setPaneMaximized(self: *Tab, pane: *Pane, enabled: bool, show_background: bool) bool {
+        if (!enabled) {
+            self.maximized_pane = null;
+            self.maximized_show_background = false;
+            return false;
+        }
+        self.maximized_pane = pane;
+        self.maximized_show_background = show_background;
+        self.active_pane = pane;
+        return true;
+    }
+
+    pub fn togglePaneMaximized(self: *Tab, pane: *Pane, show_background: bool) bool {
+        if (self.maximized_pane == pane) {
+            if (self.maximized_show_background != show_background) {
+                self.maximized_show_background = show_background;
+                return true;
+            }
+            return self.setPaneMaximized(pane, false, false);
+        }
+        return self.setPaneMaximized(pane, true, show_background);
+    }
+
+    pub fn setPaneFloating(self: *Tab, pane: *Pane, floating: bool) bool {
+        if (pane.is_floating == floating) return floating;
+        if (floating) {
+            if (self.active_pane) |active| {
+                if (active != pane and !active.is_floating) {
+                    pane.restore_anchor_id = @intFromPtr(active);
+                }
+            }
+            pane.is_floating = true;
+        } else {
+            if (self.findPaneLeaf(pane) == null) {
+                if (!self.reinsertFloatingPane(pane)) return false;
+            }
+            pane.is_floating = false;
+            pane.floating_x = 0.15;
+            pane.floating_y = 0.1;
+            pane.floating_width = 0.7;
+            pane.floating_height = 0.75;
+            self.active_pane = pane;
+            return true;
+        }
+        if (self.maximized_pane == pane and floating) self.maximized_pane = null;
+        if (floating) self.active_pane = pane;
+        return pane.is_floating;
+    }
+
+    pub fn setFloatingPaneBounds(self: *Tab, pane: *Pane, x: f32, y: f32, width: f32, height: f32) bool {
+        _ = self;
+        pane.floating_x = std.math.clamp(x, 0.0, 1.0);
+        pane.floating_y = std.math.clamp(y, 0.0, 1.0);
+        pane.floating_width = std.math.clamp(width, 0.2, 1.0);
+        pane.floating_height = std.math.clamp(height, 0.15, 1.0);
+        if (pane.floating_x + pane.floating_width > 1.0) pane.floating_x = 1.0 - pane.floating_width;
+        if (pane.floating_y + pane.floating_height > 1.0) pane.floating_y = 1.0 - pane.floating_height;
+        if (pane.floating_x < 0.0) pane.floating_x = 0.0;
+        if (pane.floating_y < 0.0) pane.floating_y = 0.0;
+        return true;
+    }
+
+    pub fn movePane(self: *Tab, pane: *Pane, direction: FocusDirection, window_width: u32, window_height: u32, amount: f32) bool {
+        if (pane.is_floating) {
+            const delta = std.math.clamp(amount, 0.01, 0.5);
+            switch (direction) {
+                .left => pane.floating_x -= delta,
+                .right => pane.floating_x += delta,
+                .up => pane.floating_y -= delta,
+                .down => pane.floating_y += delta,
+            }
+            _ = self.setFloatingPaneBounds(pane, pane.floating_x, pane.floating_y, pane.floating_width, pane.floating_height);
+            return true;
+        }
+
+        var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+        const leaves = self.computeLayout(window_width, window_height, &layout_buf);
+        if (leaves.len < 2) return false;
+
+        const target = findAdjacentPane(leaves, pane, direction) orelse return false;
+        return self.swapPanePositions(pane, target);
+    }
+
+    pub fn swapPanePositions(self: *Tab, first_pane: *Pane, second_pane: *Pane) bool {
+        if (first_pane == second_pane) return true;
+        const first_leaf = self.findPaneLeaf(first_pane) orelse return false;
+        const second_leaf = self.findPaneLeaf(second_pane) orelse return false;
+        first_leaf.pane = second_pane;
+        second_leaf.pane = first_pane;
+        return true;
     }
 
     fn initRootSplitForPane(self: *Tab, pane: *Pane) !void {
@@ -377,6 +565,49 @@ pub const Tab = struct {
     fn findPaneLeaf(self: *Tab, pane: *Pane) ?*SplitNode {
         const root = self.root_split orelse return null;
         return findPaneLeafNode(root, pane);
+    }
+
+    fn reinsertFloatingPane(self: *Tab, pane: *Pane) bool {
+        const root = self.root_split orelse return false;
+
+        var anchor: ?*Pane = null;
+        if (pane.restore_anchor_id != 0) {
+            for (self.panes.items) |candidate| {
+                if (@intFromPtr(candidate) == pane.restore_anchor_id and candidate != pane and !candidate.is_floating) {
+                    anchor = candidate;
+                    break;
+                }
+            }
+        }
+        if (anchor == null) {
+            for (self.panes.items) |candidate| {
+                if (candidate != pane and !candidate.is_floating) {
+                    anchor = candidate;
+                    break;
+                }
+            }
+        }
+
+        const anchor_pane = anchor orelse return false;
+        const target = findPaneLeafNode(root, anchor_pane) orelse return false;
+
+        const existing_leaf = self.allocator.create(SplitNode) catch return false;
+        errdefer self.allocator.destroy(existing_leaf);
+        existing_leaf.* = SplitNode.initPane(anchor_pane);
+
+        const new_leaf = self.allocator.create(SplitNode) catch return false;
+        errdefer self.allocator.destroy(new_leaf);
+        new_leaf.* = SplitNode.initPane(pane);
+
+        const direction: SplitDirection = if (pane.restore_split_horizontal) .horizontal else .vertical;
+        const ratio = std.math.clamp(pane.restore_ratio, 0.1, 0.9);
+        if (pane.restore_place_first) {
+            target.* = SplitNode.initSplit(new_leaf, existing_leaf, direction, ratio);
+        } else {
+            target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, ratio);
+        }
+        pane.restore_anchor_id = @intFromPtr(anchor_pane);
+        return true;
     }
 };
 
@@ -646,6 +877,50 @@ pub const Mux = struct {
         return tab.computeLayout(window_width, window_height, out);
     }
 
+    pub fn activeTabContainsPane(self: *Mux, pane: *Pane) bool {
+        const tab = self.activeTab() orelse return false;
+        var panes = tab.paneIterator();
+        while (panes.next()) |item| {
+            if (item == pane) return true;
+        }
+        return false;
+    }
+
+    pub fn togglePaneMaximized(self: *Mux, pane: *Pane, show_background: bool) bool {
+        const tab = self.activeTab() orelse return false;
+        if (!self.activeTabContainsPane(pane)) return false;
+        _ = tab.togglePaneMaximized(pane, show_background);
+        tab.active_pane = pane;
+        return true;
+    }
+
+    pub fn paneIsMaximized(self: *Mux, pane: *Pane) bool {
+        const tab = self.activeTab() orelse return false;
+        return tab.isPaneMaximized(pane);
+    }
+
+    pub fn setPaneFloating(self: *Mux, pane: *Pane, floating: bool) bool {
+        const tab = self.activeTab() orelse return false;
+        if (!self.activeTabContainsPane(pane)) return false;
+        _ = tab.setPaneFloating(pane, floating);
+        if (floating) tab.active_pane = pane;
+        return true;
+    }
+
+    pub fn setFloatingPaneBounds(self: *Mux, pane: *Pane, x: f32, y: f32, width: f32, height: f32) bool {
+        const tab = self.activeTab() orelse return false;
+        if (!self.activeTabContainsPane(pane) or !pane.is_floating) return false;
+        return tab.setFloatingPaneBounds(pane, x, y, width, height);
+    }
+
+    pub fn movePane(self: *Mux, pane: *Pane, direction: FocusDirection, window_width: u32, window_height: u32, amount: f32) bool {
+        const tab = self.activeTab() orelse return false;
+        if (!self.activeTabContainsPane(pane)) return false;
+        const moved = tab.movePane(pane, direction, window_width, window_height, amount);
+        if (moved) tab.active_pane = pane;
+        return moved;
+    }
+
     fn createWorkspace(self: *Mux) !*Workspace {
         const workspace = try self.allocator.create(Workspace);
         workspace.* = Workspace.init(self.allocator, self.allocId());
@@ -783,9 +1058,12 @@ pub const Mux = struct {
         return 0;
     }
 
-    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) !void {
+    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool) !*Pane {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
+        if (!floating and source_pane.is_floating) {
+            if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
+        }
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
             value
         else if (source_pane.cwd.len > 0)
@@ -798,7 +1076,26 @@ pub const Mux = struct {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);
         }
+        if (floating) {
+            try tab.appendPane(new_pane);
+            _ = tab.setPaneFloating(new_pane, true);
+            const restore_anchor = if (!source_pane.is_floating)
+                source_pane
+            else blk: {
+                for (tab.panes.items) |candidate| {
+                    if (candidate != new_pane and !candidate.is_floating) break :blk candidate;
+                }
+                break :blk null;
+            };
+            if (restore_anchor) |anchor| new_pane.restore_anchor_id = @intFromPtr(anchor);
+            new_pane.restore_ratio = std.math.clamp(ratio, 0.1, 0.9);
+            new_pane.restore_split_horizontal = direction == .horizontal;
+            new_pane.restore_place_first = false;
+            tab.active_pane = new_pane;
+            return new_pane;
+        }
         try tab.splitActivePane(new_pane, direction, ratio);
+        return new_pane;
     }
 
     /// Resize the active pane by adjusting the ratio of the nearest enclosing
@@ -1040,6 +1337,55 @@ fn secondaryAxisGap(current: PaneBounds, candidate: PaneBounds, direction: Focus
     };
 }
 
+fn findAdjacentPane(leaves: []const LayoutLeaf, pane: *Pane, direction: FocusDirection) ?*Pane {
+    var current_bounds: ?PaneBounds = null;
+    for (leaves) |leaf| {
+        if (leaf.pane == pane) {
+            current_bounds = leaf.bounds;
+            break;
+        }
+    }
+    const cb = current_bounds orelse return null;
+
+    var best_pane: ?*Pane = null;
+    var best_overlap: u32 = 0;
+    var best_primary_gap: u32 = std.math.maxInt(u32);
+    var best_secondary_gap: u32 = std.math.maxInt(u32);
+
+    for (leaves) |leaf| {
+        if (leaf.pane == pane) continue;
+        if (pane.is_floating != leaf.pane.is_floating) continue;
+
+        const is_in_direction = switch (direction) {
+            .left => leaf.bounds.x + leaf.bounds.width <= cb.x,
+            .right => leaf.bounds.x >= cb.x + cb.width,
+            .up => leaf.bounds.y + leaf.bounds.height <= cb.y,
+            .down => leaf.bounds.y >= cb.y + cb.height,
+        };
+        if (!is_in_direction) continue;
+
+        const overlap = switch (direction) {
+            .left, .right => intervalOverlap(cb.y, cb.height, leaf.bounds.y, leaf.bounds.height),
+            .up, .down => intervalOverlap(cb.x, cb.width, leaf.bounds.x, leaf.bounds.width),
+        };
+        const primary_gap = primaryAxisGap(cb, leaf.bounds, direction);
+        const secondary_gap = secondaryAxisGap(cb, leaf.bounds, direction);
+
+        if (best_pane == null or
+            overlap > best_overlap or
+            (overlap == best_overlap and primary_gap < best_primary_gap) or
+            (overlap == best_overlap and primary_gap == best_primary_gap and secondary_gap < best_secondary_gap))
+        {
+            best_overlap = overlap;
+            best_primary_gap = primary_gap;
+            best_secondary_gap = secondary_gap;
+            best_pane = leaf.pane;
+        }
+    }
+
+    return best_pane;
+}
+
 test "pane focus follows nearest matching split subtree" {
     const allocator = std.testing.allocator;
 
@@ -1086,6 +1432,76 @@ test "pane focus follows nearest matching split subtree" {
 
     mux.focusPaneInDirection(.up, 1200, 800);
     try std.testing.expect(tab.active_pane == top);
+}
+
+test "maximized pane takes full tab bounds" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    const first = try allocator.create(Pane);
+    first.* = Pane.init(allocator);
+    try tab.appendPane(first);
+
+    const second = try allocator.create(Pane);
+    second.* = Pane.init(allocator);
+    try tab.splitActivePane(second, .vertical, 0.5);
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 10, .y = 20, .width = 1200, .height = 800 };
+
+    _ = tab.setPaneMaximized(second, true, false);
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+
+    try std.testing.expectEqual(@as(usize, 1), leaves.len);
+    try std.testing.expect(leaves[0].pane == second);
+    try std.testing.expectEqualDeep(bounds, leaves[0].bounds);
+}
+
+test "maximized pane background keeps tiled panes visible" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    const left = try allocator.create(Pane);
+    left.* = Pane.init(allocator);
+    try tab.appendPane(left);
+
+    const right = try allocator.create(Pane);
+    right.* = Pane.init(allocator);
+    try tab.splitActivePane(right, .vertical, 0.5);
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 700 };
+
+    _ = tab.setPaneMaximized(right, true, true);
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+
+    try std.testing.expectEqual(@as(usize, 3), leaves.len);
+    try std.testing.expect(leaves[0].pane == left);
+    try std.testing.expect(leaves[1].pane == right);
+    try std.testing.expect(leaves[2].pane == right);
+    try std.testing.expectEqualDeep(bounds, leaves[2].bounds);
 }
 
 /// Returns the innermost split node with the given direction that contains `pane`

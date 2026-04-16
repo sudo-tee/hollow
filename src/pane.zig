@@ -83,9 +83,20 @@ pub const Pane = struct {
     scrollbar_offset: u64 = 0,
     scrollbar_len: u64 = 0,
     title_dirty: bool = false,
+    x_px: u32 = 0,
+    y_px: u32 = 0,
     width_px: u32 = 0,
     height_px: u32 = 0,
     domain_name: []u8 = &.{},
+    is_floating: bool = false,
+    floating_x: f32 = 0.15,
+    floating_y: f32 = 0.1,
+    floating_width: f32 = 0.7,
+    floating_height: f32 = 0.75,
+    restore_anchor_id: usize = 0,
+    restore_ratio: f32 = 0.5,
+    restore_split_horizontal: bool = false,
+    restore_place_first: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Pane {
         return .{ .allocator = allocator };

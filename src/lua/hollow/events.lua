@@ -75,6 +75,9 @@ function M.setup(hollow, state, term_helpers)
     if name == "term:pane_focused" then
       return { pane = term_helpers.pane_snapshot(payload.pane_id) }
     end
+    if name == "term:pane_layout_changed" then
+      return { pane = term_helpers.pane_snapshot(payload.pane_id) }
+    end
     if name == "term:title_changed" then
       return {
         pane = term_helpers.pane_snapshot(payload.pane_id),

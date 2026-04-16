@@ -2399,9 +2399,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     // Draw split borders as filled 2px quads (only when >1 pane).
-    // We draw only seam edges (right/bottom of each pane that is not the
-    // framebuffer edge) to avoid overdrawing the active pane outline on top
-    // of terminal content from neighbouring panes.
+    // Floating panes are modal overlays, so any seam covered by a floating pane
+    // is skipped here and the floating pane gets its own explicit outline below.
     if (leaves.len > 1) {
         const fw: i32 = @intFromFloat(width);
         const fh: i32 = @intFromFloat(height);
@@ -2438,13 +2437,48 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             // Right seam — only draw if the right edge does not touch the
             // framebuffer boundary (i.e. there is a neighbour to the right).
             if (@as(i32, @intFromFloat(x1)) < fw) {
-                // rect drawn at x1 - border_px/2 so it straddles the seam
-                drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
+                const seam = PaneBounds{
+                    .x = @as(u32, @intFromFloat(@max(0.0, x1 - border_px / 2.0))),
+                    .y = leaf.bounds.y,
+                    .width = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                    .height = leaf.bounds.height,
+                };
+                if (!seamCoveredByFloating(leaves, seam)) {
+                    // rect drawn at x1 - border_px/2 so it straddles the seam
+                    drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
+                }
             }
             // Bottom seam — same logic vertically.
             if (@as(i32, @intFromFloat(y1)) < fh) {
-                drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+                const seam = PaneBounds{
+                    .x = leaf.bounds.x,
+                    .y = @as(u32, @intFromFloat(@max(0.0, y1 - border_px / 2.0))),
+                    .width = leaf.bounds.width,
+                    .height = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                };
+                if (!seamCoveredByFloating(leaves, seam)) {
+                    drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+                }
             }
+        }
+
+        for (leaves) |leaf| {
+            if (!leaf.pane.is_floating) continue;
+
+            const is_active = leaf.pane == active;
+            const x0: f32 = @floatFromInt(leaf.bounds.x);
+            const y0: f32 = @floatFromInt(leaf.bounds.y);
+            const lw: f32 = @floatFromInt(leaf.bounds.width);
+            const lh: f32 = @floatFromInt(leaf.bounds.height);
+            const br: u8 = if (is_active) 120 else 72;
+            const bg: u8 = if (is_active) 150 else 90;
+            const bb: u8 = if (is_active) 220 else 110;
+            const ba: u8 = 255;
+
+            drawBorderRect(x0, y0, lw, border_px, br, bg, bb, ba);
+            drawBorderRect(x0, y0 + lh - border_px, lw, border_px, br, bg, bb, ba);
+            drawBorderRect(x0, y0, border_px, lh, br, bg, bb, ba);
+            drawBorderRect(x0 + lw - border_px, y0, border_px, lh, br, bg, bb, ba);
         }
     }
 
@@ -2702,6 +2736,22 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
         renderer.drawLabelFace(panel_x + pad_x, text_y, line, 220, 225, 238, if (i < 2) 1 else 0);
         c.sgl_load_default_pipeline();
     }
+}
+
+fn rectsOverlap(a: PaneBounds, b: PaneBounds) bool {
+    const a_right = a.x + a.width;
+    const a_bottom = a.y + a.height;
+    const b_right = b.x + b.width;
+    const b_bottom = b.y + b.height;
+    return a.x < b_right and a_right > b.x and a.y < b_bottom and a_bottom > b.y;
+}
+
+fn seamCoveredByFloating(leaves: []const LayoutLeaf, seam: PaneBounds) bool {
+    for (leaves) |leaf| {
+        if (!leaf.pane.is_floating) continue;
+        if (rectsOverlap(leaf.bounds, seam)) return true;
+    }
+    return false;
 }
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {

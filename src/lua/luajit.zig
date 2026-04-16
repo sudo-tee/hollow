@@ -118,7 +118,11 @@ const embedded_lua_modules = [_]LuaModule{
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void,
+    toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
+    set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
+    set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
+    move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
     new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8) void,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
@@ -153,8 +157,12 @@ pub const AppCallbacks = struct {
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_x: *const fn (app: *anyopaque, pane_id: usize) usize,
+    get_pane_y: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_width: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_height: *const fn (app: *anyopaque, pane_id: usize) usize,
+    pane_is_floating: *const fn (app: *anyopaque, pane_id: usize) bool,
+    pane_is_maximized: *const fn (app: *anyopaque, pane_id: usize) bool,
     get_window_width: *const fn (app: *anyopaque) usize,
     get_window_height: *const fn (app: *anyopaque) usize,
     now_ms: *const fn (app: *anyopaque) i64,
@@ -329,6 +337,9 @@ pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
     pane_id: usize,
+    pane_layout_changed: struct {
+        pane_id: usize,
+    },
     pane_title_changed: struct {
         pane_id: usize,
         old_title: []const u8,
@@ -1048,6 +1059,22 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "split_pane");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_toggle_pane_maximized, 1);
+        api.set_field(self.state, -2, "toggle_pane_maximized");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_pane_floating, 1);
+        api.set_field(self.state, -2, "set_pane_floating");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_floating_pane_bounds, 1);
+        api.set_field(self.state, -2, "set_floating_pane_bounds");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_move_pane, 1);
+        api.set_field(self.state, -2, "move_pane");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_new_tab, 1);
         api.set_field(self.state, -2, "new_tab");
 
@@ -1224,6 +1251,14 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "get_pane_cols");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_x, 1);
+        api.set_field(self.state, -2, "get_pane_x");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_y, 1);
+        api.set_field(self.state, -2, "get_pane_y");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_width, 1);
         api.set_field(self.state, -2, "get_pane_width");
 
@@ -1242,6 +1277,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_now_ms, 1);
         api.set_field(self.state, -2, "now_ms");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_pane_is_floating, 1);
+        api.set_field(self.state, -2, "pane_is_floating");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_pane_is_maximized, 1);
+        api.set_field(self.state, -2, "pane_is_maximized");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_is_focused, 1);
@@ -1371,6 +1414,11 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
         .pane_id => |pane_id| {
             api.create_table(state, 0, 1);
             api.push_number(state, @floatFromInt(pane_id));
+            api.set_field(state, -2, "pane_id");
+        },
+        .pane_layout_changed => |value| {
+            api.create_table(state, 0, 1);
+            api.push_number(state, @floatFromInt(value.pane_id));
             api.set_field(state, -2, "pane_id");
         },
         .pane_title_changed => |value| {
@@ -2428,6 +2476,13 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
 
     var domain_name: ?[]const u8 = null;
     var cwd: ?[]const u8 = null;
+    var floating = false;
+    var fullscreen = false;
+    var x: f32 = 0.15;
+    var y: f32 = 0.1;
+    var width: f32 = 0.7;
+    var height: f32 = 0.75;
+    var has_bounds = false;
     if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .string) {
         var domain_len: usize = 0;
         if (api.to_lstring(state, 3, &domain_len)) |ptr| domain_name = ptr[0..domain_len];
@@ -2439,14 +2494,122 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
             dir_len = opt_direction.len;
             direction = opt_direction;
         }
+        api.get_field(state, opts_idx, "floating");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+            floating = api.to_boolean(state, -1) != 0;
+        }
+        pop(api, state, 1);
+        api.get_field(state, opts_idx, "fullscreen");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+            fullscreen = api.to_boolean(state, -1) != 0;
+        }
+        pop(api, state, 1);
         api.get_field(state, opts_idx, "ratio");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
             ratio = @as(f32, @floatCast(api.to_number(state, -1)));
         }
         pop(api, state, 1);
+        api.get_field(state, opts_idx, "x");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            x = @as(f32, @floatCast(api.to_number(state, -1)));
+            has_bounds = true;
+        }
+        pop(api, state, 1);
+        api.get_field(state, opts_idx, "y");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            y = @as(f32, @floatCast(api.to_number(state, -1)));
+            has_bounds = true;
+        }
+        pop(api, state, 1);
+        api.get_field(state, opts_idx, "width");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            width = @as(f32, @floatCast(api.to_number(state, -1)));
+            has_bounds = true;
+        }
+        pop(api, state, 1);
+        api.get_field(state, opts_idx, "height");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            height = @as(f32, @floatCast(api.to_number(state, -1)));
+            has_bounds = true;
+        }
+        pop(api, state, 1);
     }
 
-    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd);
+    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, floating, fullscreen, x, y, width, height, has_bounds);
+    return 0;
+}
+
+fn l_toggle_pane_maximized(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        cbs.get_current_pane_id(cbs.app);
+    const show_background = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .boolean)
+        api.to_boolean(state, 2) != 0
+    else
+        false;
+    cbs.toggle_pane_maximized(cbs.app, pane_id, show_background);
+    return 0;
+}
+
+fn l_set_pane_floating(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        cbs.get_current_pane_id(cbs.app);
+    const floating = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .boolean)
+        api.to_boolean(state, 2) != 0
+    else
+        true;
+    cbs.set_pane_floating(cbs.app, pane_id, floating);
+    return 0;
+}
+
+fn l_set_floating_pane_bounds(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        cbs.get_current_pane_id(cbs.app);
+    const x: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number) @floatCast(api.to_number(state, 2)) else 0.15;
+    const y: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number) @floatCast(api.to_number(state, 3)) else 0.1;
+    const width: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 4))) == .number) @floatCast(api.to_number(state, 4)) else 0.7;
+    const height: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 5))) == .number) @floatCast(api.to_number(state, 5)) else 0.75;
+    cbs.set_floating_pane_bounds(cbs.app, pane_id, x, y, width, height);
+    return 0;
+}
+
+fn l_move_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        cbs.get_current_pane_id(cbs.app);
+    var dir_len: usize = 0;
+    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+        api.to_lstring(state, 2, &dir_len)
+    else
+        null;
+    const direction = if (dir_ptr) |ptr| ptr[0..dir_len] else "right";
+    const amount: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+        @floatCast(api.to_number(state, 3))
+    else
+        0.08;
+    cbs.move_pane(cbs.app, pane_id, direction, amount);
     return 0;
 }
 
@@ -3021,6 +3184,36 @@ fn l_get_pane_cols(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_get_pane_x(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_x(cbs.app, pane_id)));
+    return 1;
+}
+
+fn l_get_pane_y(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_pane_y(cbs.app, pane_id)));
+    return 1;
+}
+
 fn l_get_pane_width(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -3081,6 +3274,36 @@ fn l_now_ms(state: *State) callconv(.c) c_int {
         return 1;
     };
     api.push_number(state, @floatFromInt(cbs.now_ms(cbs.app)));
+    return 1;
+}
+
+fn l_pane_is_floating(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.pane_is_floating(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_pane_is_maximized(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.pane_is_maximized(cbs.app, pane_id)) 1 else 0);
     return 1;
 }
 

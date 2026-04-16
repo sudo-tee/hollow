@@ -18,6 +18,14 @@ function M.setup(hollow)
   hollow.keymap.set("<C-S-Right>", "focus_pane_right")
   hollow.keymap.set("<C-S-Up>", "focus_pane_up")
   hollow.keymap.set("<C-S-Down>", "focus_pane_down")
+  hollow.keymap.set("<C-S-m>", "maximize_pane")
+  hollow.keymap.set("<C-A-S-m>", "maximize_pane_background")
+  hollow.keymap.set("<C-S-f>", "float_pane")
+  hollow.keymap.set("<C-A-S-f>", "tile_pane")
+  hollow.keymap.set("<C-A-h>", "move_pane_left")
+  hollow.keymap.set("<C-A-l>", "move_pane_right")
+  hollow.keymap.set("<C-A-k>", "move_pane_up")
+  hollow.keymap.set("<C-A-j>", "move_pane_down")
   hollow.keymap.set("<C-A-S-Left>", "resize_pane_left")
   hollow.keymap.set("<C-A-S-Right>", "resize_pane_right")
   hollow.keymap.set("<C-A-Up>", "resize_pane_up")
@@ -28,7 +36,7 @@ function M.setup(hollow)
   hollow.keymap.set("<C-S-End>", "scrollback_bottom")
 
   local is_mac = hollow.platform.is_macos
-  local copy_chord  = is_mac and "<D-S-c>" or "<C-S-c>"
+  local copy_chord = is_mac and "<D-S-c>" or "<C-S-c>"
   local paste_chord = is_mac and "<D-S-v>" or "<C-S-v>"
 
   local selection_hint_widget = nil
@@ -49,7 +57,8 @@ function M.setup(hollow)
         local t = hollow.ui.tags
         local theme = hollow.ui.resolve_theme("overlay")
         return {
-          t.overlay_row(nil,
+          t.overlay_row(
+            nil,
             t.text({ fg = theme.panel_border, bold = true }, copy_chord),
             t.text({ fg = theme.muted }, " copy"),
             t.text({ fg = theme.divider }, "   "),

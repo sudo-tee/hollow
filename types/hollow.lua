@@ -50,6 +50,7 @@
 ---| "term:tab_activated"
 ---| "term:tab_closed"
 ---| "term:pane_focused"
+---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "key:unhandled"
 ---| "window:resized"
@@ -177,6 +178,9 @@
 ---@field cwd string
 ---@field title string
 ---@field is_focused boolean
+---@field is_floating boolean
+---@field is_maximized boolean
+---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field size HollowSize
 
 ---@class HollowTab
@@ -210,6 +214,27 @@
 ---@field ratio? number
 ---@field domain? string
 ---@field cwd? string
+---@field floating? boolean
+---@field fullscreen? boolean
+---@field x? number
+---@field y? number
+---@field width? number
+---@field height? number
+
+---@class HollowPaneMaximizeOpts
+---@field show_background? boolean
+
+---@class HollowFloatingPaneBounds
+---@field x? number
+---@field y? number
+---@field width? number
+---@field height? number
+
+---@class HollowMovePaneOpts
+---@field pane_id? integer
+---@field id? integer
+---@field direction "left"|"right"|"up"|"down"
+---@field amount? number
 
 ---@class HollowUiSpanNode
 ---@field _type "span"
@@ -664,6 +689,22 @@ function term.set_title(title, tab_id) end
 ---@param pane_id? integer
 function term.send_text(text, pane_id) end
 
+---@param pane_id? integer|HollowPaneMaximizeOpts
+---@param opts? HollowPaneMaximizeOpts
+function term.toggle_pane_maximized(pane_id, opts) end
+
+---@param pane_id integer|{ pane_id?: integer, id?: integer, floating?: boolean }
+---@param floating? boolean
+function term.set_pane_floating(pane_id, floating) end
+
+---@param pane_id integer
+---@param opts HollowFloatingPaneBounds
+function term.set_floating_pane_bounds(pane_id, opts) end
+
+---@param direction_or_opts "left"|"right"|"up"|"down"|HollowMovePaneOpts
+---@param opts? HollowMovePaneOpts
+function term.move_pane(direction_or_opts, opts) end
+
 ---@param name string
 function term.set_workspace_name(name) end
 
@@ -1018,8 +1059,12 @@ function process.exec(opts) end
 ---@field pane_is_focused fun(pane_id: integer): boolean
 ---@field get_pane_rows fun(pane_id: integer): integer
 ---@field get_pane_cols fun(pane_id: integer): integer
+---@field get_pane_x fun(pane_id: integer): integer
+---@field get_pane_y fun(pane_id: integer): integer
 ---@field get_pane_width fun(pane_id: integer): integer
 ---@field get_pane_height fun(pane_id: integer): integer
+---@field pane_is_floating fun(pane_id: integer): boolean
+---@field pane_is_maximized fun(pane_id: integer): boolean
 ---@field get_tab_pane_count fun(tab_id: integer): integer
 ---@field get_tab_pane_id_at fun(tab_id: integer, index: integer): integer
 ---@field get_tab_active_pane_id fun(tab_id: integer): integer
@@ -1032,6 +1077,10 @@ function process.exec(opts) end
 ---@field strftime fun(fmt: string): string
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
+---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
+---@field set_pane_floating fun(pane_id?: integer, floating?: boolean)
+---@field set_floating_pane_bounds fun(pane_id?: integer, x?: number, y?: number, width?: number, height?: number)
+---@field move_pane fun(pane_id?: integer, direction: string, amount?: number)
 ---@field close_pane fun()
 ---@field focus_pane fun(direction: string)
 ---@field resize_pane fun(axis: string, delta: number)

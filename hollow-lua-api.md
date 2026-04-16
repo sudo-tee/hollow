@@ -68,6 +68,10 @@ hollow.term.prev_workspace()
 
 hollow.term.new_tab(opts?)
 hollow.term.split_pane(direction_or_opts, opts?)
+hollow.term.toggle_pane_maximized(pane_id?, opts?)
+hollow.term.set_pane_floating(pane_id, floating)
+hollow.term.set_floating_pane_bounds(pane_id, opts)
+hollow.term.move_pane(direction_or_opts, opts?)
 hollow.term.focus_tab(id)
 hollow.term.close_tab(id)
 hollow.term.set_title(title, tab_id?)
@@ -82,6 +86,31 @@ hollow.term.send_text(text, pane_id?)
   ratio = number,
   domain = string,
   cwd = string,
+  floating = boolean,
+  fullscreen = boolean,
+  x = number,
+  y = number,
+  width = number,
+  height = number,
+}
+```
+
+Set `floating = true` to create a new floating pane without inserting a new split into the tiled layout.
+Set `fullscreen = true` to maximize the newly created pane immediately after creation.
+When creating a floating pane, `x`, `y`, `width`, and `height` set the initial normalized bounds in `0..1` space.
+
+`toggle_pane_maximized` defaults to the active pane and accepts `{ show_background = true }` to keep tiled panes rendered underneath the maximized pane.
+
+`move_pane` reorders tiled panes in the requested direction; for floating panes it nudges the pane by `amount` (default `0.08`) in normalized window space.
+
+`set_floating_pane_bounds` expects normalized values in the `0..1` range:
+
+```lua
+{
+  x = number,
+  y = number,
+  width = number,
+  height = number,
 }
 ```
 
@@ -97,6 +126,9 @@ hollow.term.send_text(text, pane_id?)
   cwd = string,
   title = string,
   is_focused = boolean,
+  is_floating = boolean,
+  is_maximized = boolean,
+  frame = { x = integer, y = integer, width = integer, height = integer },
   size = { rows = integer, cols = integer, width = integer, height = integer },
 }
 ```
@@ -140,6 +172,7 @@ Built-in events currently include:
 - `term:tab_activated`
 - `term:tab_closed`
 - `term:pane_focused`
+- `term:pane_layout_changed`
 - `term:cwd_changed`
 - `key:unhandled`
 - `window:resized`
@@ -358,6 +391,8 @@ hollow.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hollow.term.new_tab({ domain = "pwsh" })
 hollow.term.split_pane({ direction = "vertical", ratio = 0.4, domain = "wsl" })
 hollow.term.split_pane({ direction = "horizontal", cwd = "/tmp/project" })
+hollow.term.split_pane({ floating = true, width = 0.6, height = 0.7 })
+hollow.term.split_pane({ floating = true, fullscreen = true, domain = "wsl" })
 
 hollow.events.on("config:reloaded", function()
   hollow.ui.notify.info("Config reloaded", { ttl = 1500 })
