@@ -5,6 +5,7 @@ const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const TerminalCallbacks = ghostty.TerminalCallbacks;
 const Pty = @import("pty/pty.zig").Pty;
+const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 
 const is_windows = @import("builtin").os.tag == .windows;
@@ -119,7 +120,7 @@ pub const Pane = struct {
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !void {
+    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
@@ -198,7 +199,7 @@ pub const Pane = struct {
 
         try env_block.append(self.allocator, 0); // double-null terminator
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd, env_block.items);
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd, env_block.items, launch_command);
         errdefer pty.deinit();
 
         self.terminal = terminal;

@@ -27,9 +27,15 @@ const hitTestDivider = mux_mod.hitTestDivider;
 const nodeIsInTree = mux_mod.nodeIsInTree;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
+const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const bar = @import("ui/bar.zig");
 const selection = @import("selection.zig");
+
+const SplitCommandMode = enum {
+    send,
+    spawn,
+};
 
 extern fn sapp_set_window_title(title: [*:0]const u8) void;
 
@@ -223,6 +229,9 @@ pub const PendingMouseEvent = union(enum) {
         ratio: f32,
         domain_name: ?[]const u8,
         cwd: ?[]const u8,
+        command: ?[]const u8,
+        command_mode: SplitCommandMode,
+        close_on_exit: bool,
         floating: bool,
         fullscreen: bool,
         x: ?f32,
@@ -601,7 +610,8 @@ pub const App = struct {
                 .split_pane => |split| {
                     defer if (split.domain_name) |owned| self.allocator.free(owned);
                     defer if (split.cwd) |owned| self.allocator.free(owned);
-                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd, split.floating, split.fullscreen, split.x, split.y, split.width, split.height);
+                    defer if (split.command) |owned| self.allocator.free(owned);
+                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height);
                 },
                 .toggle_pane_maximized => |maximize| {
                     self.togglePaneMaximizedById(maximize.pane_id, maximize.show_background);
@@ -2563,12 +2573,16 @@ pub const App = struct {
         }
     }
 
-    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32) void {
+    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
         const previous = mux.activePane();
-        const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd, floating) catch |err| {
+        const launch_command: ?LaunchCommand = if (command != null and command_mode == .spawn)
+            .{ .command = command.?, .close_on_exit = close_on_exit }
+        else
+            null;
+        const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd, floating, launch_command) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2585,6 +2599,11 @@ pub const App = struct {
         }
         if (fullscreen) {
             _ = mux.togglePaneMaximized(pane, false);
+        }
+        if (command_mode == .send) {
+            if (command) |cmd| {
+                sendSplitPaneCommand(self, pane, cmd, close_on_exit);
+            }
         }
         self.bindHtpHandlers();
         self.syncActivePaneChange(previous, mux.activePane());
@@ -3192,16 +3211,21 @@ pub const App = struct {
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
-fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void {
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
+    const mode: SplitCommandMode = if (std.mem.eql(u8, command_mode, "spawn")) .spawn else .send;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
+    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
     _ = app.enqueueMouse(.{ .split_pane = .{
         .direction = dir,
         .ratio = ratio,
         .domain_name = owned_domain,
         .cwd = owned_cwd,
+        .command = owned_command,
+        .command_mode = mode,
+        .close_on_exit = close_on_exit,
         .floating = floating,
         .fullscreen = fullscreen,
         .x = if (has_bounds) x else null,
@@ -3209,6 +3233,39 @@ fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, 
         .width = if (has_bounds) width else null,
         .height = if (has_bounds) height else null,
     } });
+}
+
+fn sendSplitPaneCommand(self: *App, pane: *Pane, command: []const u8, close_on_exit: bool) void {
+    if (!close_on_exit) {
+        pane.sendText(command);
+        if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
+            pane.sendText("\r");
+        }
+        return;
+    }
+
+    const wrapped = wrapCommandForCloseOnExit(self, pane, command) catch |err| {
+        std.log.err("app: failed to wrap split command for close_on_exit: {s}", .{@errorName(err)});
+        pane.sendText(command);
+        if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
+            pane.sendText("\r");
+        }
+        return;
+    };
+    defer self.allocator.free(wrapped);
+    pane.sendText(wrapped);
+    pane.sendText("\r");
+}
+
+fn wrapCommandForCloseOnExit(self: *App, pane: *Pane, command: []const u8) ![]u8 {
+    const trimmed = std.mem.trimRight(u8, command, "\r\n");
+    const is_windows_domain = pane.domain_name.len > 0 and !std.mem.eql(u8, pane.domain_name, "wsl") and !std.mem.eql(u8, pane.domain_name, "unix");
+
+    if (is_windows_domain) {
+        return std.fmt.allocPrint(self.allocator, "{s} & exit", .{trimmed});
+    }
+
+    return std.fmt.allocPrint(self.allocator, "{s}; exit", .{trimmed});
 }
 
 fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {

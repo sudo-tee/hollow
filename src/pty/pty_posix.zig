@@ -1,4 +1,5 @@
 const std = @import("std");
+const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
@@ -19,7 +20,7 @@ pub const PosixPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !PosixPty {
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !PosixPty {
         var winsize = std.mem.zeroes(c.struct_winsize);
         winsize.ws_col = cols;
         winsize.ws_row = rows;
@@ -32,13 +33,14 @@ pub const PosixPty = struct {
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
-            const argv = [_:null]?[*:0]const u8{ shell.ptr, null };
+            const argv = try buildArgv(std.heap.page_allocator, shell, launch_command);
+            defer freeArgv(std.heap.page_allocator, argv);
             const envp = if (env_block) |env| tryParseEnvBlock(std.heap.page_allocator, env) catch null else null;
             defer if (envp) |items| {
                 for (items) |item| std.heap.page_allocator.free(item);
                 std.heap.page_allocator.free(items);
             };
-            _ = c.execve(shell.ptr, @ptrCast(@constCast(&argv)), if (envp) |items| @ptrCast(items.ptr) else null);
+            _ = c.execve(shell.ptr, @ptrCast(@constCast(argv.ptr)), if (envp) |items| @ptrCast(items.ptr) else null);
             c._exit(1);
         }
         if (pid < 0) return error.ForkPtyFailed;
@@ -54,17 +56,50 @@ pub const PosixPty = struct {
     }
 
     fn tryParseEnvBlock(allocator: std.mem.Allocator, env_block: []const u8) ![][:0]u8 {
-        var list = std.ArrayList([:0]u8).init(allocator);
+        var list: std.ArrayListUnmanaged([:0]u8) = .empty;
         errdefer {
             for (list.items) |item| allocator.free(item);
-            list.deinit();
+            list.deinit(allocator);
         }
         var it = std.mem.splitScalar(u8, env_block, '\n');
         while (it.next()) |line| {
             if (line.len == 0) continue;
-            try list.append(try allocator.dupeZ(u8, line));
+            try list.append(allocator, try allocator.dupeZ(u8, line));
         }
-        return try list.toOwnedSlice();
+        return try list.toOwnedSlice(allocator);
+    }
+
+    fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand) ![]?[*:0]const u8 {
+        var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
+        errdefer {
+            freeArgvOwnedStrings(allocator, argv.items);
+            argv.deinit(allocator);
+        }
+        try argv.append(allocator, shell.ptr);
+
+        if (launch_command) |cmd| {
+            const shell_name = std.fs.path.basename(shell);
+            if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
+                try argv.append(allocator, "-lc");
+                const wrapped = if (cmd.close_on_exit)
+                    try std.fmt.allocPrintZ(allocator, "{s}; exit", .{std.mem.trimRight(u8, cmd.command, "\r\n")})
+                else
+                    try allocator.dupeZ(u8, cmd.command);
+                try argv.append(allocator, wrapped.ptr);
+            }
+        }
+
+        try argv.append(allocator, null);
+        return try argv.toOwnedSlice(allocator);
+    }
+
+    fn freeArgv(allocator: std.mem.Allocator, argv: []?[*:0]const u8) void {
+        freeArgvOwnedStrings(allocator, argv);
+        allocator.free(argv);
+    }
+
+    fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]const u8) void {
+        if (argv.len > 2 and argv[2]) |ptr| allocator.free(std.mem.span(ptr));
     }
 
     pub fn deinit(self: *PosixPty) void {

@@ -118,7 +118,7 @@ const embedded_lua_modules = [_]LuaModule{
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
@@ -2476,6 +2476,9 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
 
     var domain_name: ?[]const u8 = null;
     var cwd: ?[]const u8 = null;
+    var command: ?[]const u8 = null;
+    var command_mode: []const u8 = "send";
+    var close_on_exit = false;
     var floating = false;
     var fullscreen = false;
     var x: f32 = 0.15;
@@ -2490,6 +2493,13 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         const opts_idx = absoluteIndex(api, state, 1);
         domain_name = luaStringField(api, state, opts_idx, "domain");
         cwd = luaStringField(api, state, opts_idx, "cwd");
+        command = luaStringField(api, state, opts_idx, "command");
+        if (luaStringField(api, state, opts_idx, "command_mode")) |mode| command_mode = mode;
+        api.get_field(state, opts_idx, "close_on_exit");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+            close_on_exit = api.to_boolean(state, -1) != 0;
+        }
+        pop(api, state, 1);
         if (luaStringField(api, state, opts_idx, "direction")) |opt_direction| {
             dir_len = opt_direction.len;
             direction = opt_direction;
@@ -2535,7 +2545,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         pop(api, state, 1);
     }
 
-    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, floating, fullscreen, x, y, width, height, has_bounds);
+    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds);
     return 0;
 }
 

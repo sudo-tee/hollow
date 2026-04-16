@@ -164,9 +164,9 @@ local ui_theme = {
 -- g.log("loading native rewrite config")
 
 hwl.config.set({
-  default_domain = hwl.platform.is_windows and "wsl" or "unix",
+  default_domain = "wsl",
   domains = {
-    wsl = "wsl.exe",
+    wsl = "C:\\Windows\\System32\\wsl.exe",
     pwsh = "pwsh.exe",
     powershell = "powershell.exe",
     cmd = "cmd.exe",
@@ -341,8 +341,11 @@ hwl.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
 hwl.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
 hwl.keymap.set("<leader>sf", function()
-  hwl.ui.notify.info("Split horizontal triggered", { ttl = 1200 })
-  hwl.term.split_pane({ floating = true })
+  hwl.term.split_pane({
+    floating = true,
+    command = "lazygit",
+    close_on_exit = true,
+  })
 end, { desc = "split horizontal" })
 hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
 hwl.keymap.set("<leader>uu", function()

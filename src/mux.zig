@@ -1,6 +1,7 @@
 const std = @import("std");
 const Config = @import("config.zig").Config;
 const Pane = @import("pane.zig").Pane;
+const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const TerminalCallbacks = @import("term/ghostty.zig").TerminalCallbacks;
 
@@ -820,7 +821,7 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
         };
 
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, cfg.defaultDomainName());
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, cfg.defaultDomainName(), null);
         var pane_owned_by_tab = false;
         defer if (!pane_owned_by_tab) {
             pane.deinit(runtime);
@@ -933,12 +934,12 @@ pub const Mux = struct {
         return tab;
     }
 
-    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !*Pane {
+    pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
-        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name);
+        try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command);
         return pane;
     }
 
@@ -966,7 +967,7 @@ pub const Mux = struct {
             ws.active_tab = previous_active;
         }
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, null);
         try tab.appendPane(pane);
     }
 
@@ -1058,7 +1059,7 @@ pub const Mux = struct {
         return 0;
     }
 
-    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool) !*Pane {
+    pub fn splitActivePane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, floating: bool, launch_command: ?LaunchCommand) !*Pane {
         const tab = self.activeTab() orelse return error.NoActiveTab;
         const source_pane = tab.activePane() orelse return error.NoActivePane;
         if (!floating and source_pane.is_floating) {
@@ -1071,7 +1072,7 @@ pub const Mux = struct {
         else
             null;
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
-        const new_pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain);
+        const new_pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, launch_command);
         errdefer {
             new_pane.deinit(runtime);
             self.allocator.destroy(new_pane);

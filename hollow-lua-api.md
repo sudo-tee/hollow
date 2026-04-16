@@ -86,6 +86,9 @@ hollow.term.send_text(text, pane_id?)
   ratio = number,
   domain = string,
   cwd = string,
+  command = string,
+  command_mode = "send" | "spawn",
+  close_on_exit = boolean,
   floating = boolean,
   fullscreen = boolean,
   x = number,
@@ -97,6 +100,10 @@ hollow.term.send_text(text, pane_id?)
 
 Set `floating = true` to create a new floating pane without inserting a new split into the tiled layout.
 Set `fullscreen = true` to maximize the newly created pane immediately after creation.
+Set `command` to run a command in the newly created pane.
+Set `command_mode = "send"` (default) to type the command into the shell, which will echo it in the pane.
+Set `command_mode = "spawn"` to launch the shell with that command directly so it does not appear as typed input. Beware this mode is not running the application with the user's default shell.
+Set `close_on_exit = true` to close the pane after that command finishes. This is opt-in and leaves normal split panes unchanged.
 When creating a floating pane, `x`, `y`, `width`, and `height` set the initial normalized bounds in `0..1` space.
 
 `toggle_pane_maximized` defaults to the active pane and accepts `{ show_background = true }` to keep tiled panes rendered underneath the maximized pane.

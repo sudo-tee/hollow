@@ -1,5 +1,6 @@
 const std = @import("std");
 const windows = std.os.windows;
+const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
@@ -55,12 +56,12 @@ pub const WindowsPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !WindowsPty {
-        return spawnWithShell(allocator, shell, cols, rows, cwd, env_block);
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
+        return spawnWithShell(allocator, shell, cols, rows, cwd, env_block, launch_command);
     }
 
-    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, fallbacks: []const []const u8) !WindowsPty {
-        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block)) |pty| {
+    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, fallbacks: []const []const u8) !WindowsPty {
+        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block, launch_command)) |pty| {
             return pty;
         } else |err| switch (err) {
             error.CreateProcessFailed => {},
@@ -71,7 +72,7 @@ pub const WindowsPty = struct {
             if (std.mem.eql(u8, candidate, preferred_shell)) continue;
             const shell_z = try allocator.dupeZ(u8, candidate);
             defer allocator.free(shell_z);
-            if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block)) |pty| {
+            if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block, launch_command)) |pty| {
                 return pty;
             } else |err| switch (err) {
                 error.CreateProcessFailed => continue,
@@ -82,7 +83,7 @@ pub const WindowsPty = struct {
         return error.CreateProcessFailed;
     }
 
-    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8) !WindowsPty {
+    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
         var input_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var input_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
         var output_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -133,7 +134,7 @@ pub const WindowsPty = struct {
         si.lpAttributeList = attr_mem.ptr;
 
         var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
-        const spec = try buildCommandSpec(allocator, shell, cwd);
+        const spec = try buildCommandSpec(allocator, shell, cwd, launch_command);
         defer freeSentinelU16(allocator, spec.application_utf16);
         defer freeSentinelU16(allocator, spec.command_line_utf16);
         defer if (spec.cwd_utf16) |value| freeSentinelU16(allocator, value);
@@ -386,15 +387,11 @@ const CommandSpec = struct {
     log_command: [:0]u8,
 };
 
-fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]const u8) !CommandSpec {
+fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]const u8, launch_command: ?LaunchCommand) !CommandSpec {
     const shell_program = shellProgram(shell);
     const shell_name = std.fs.path.basename(shell_program);
-    const argv: []const []const u8 = if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))
-        &.{ shell, "/Q", "/K", "echo [hollow] child started" }
-    else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and cwd != null and cwd.?.len > 0)
-        &.{ shell, "--cd", cwd.? }
-    else
-        &.{shell};
+    const argv = try buildArgv(allocator, shell, shell_name, cwd, launch_command);
+    defer freeArgv(allocator, argv);
 
     const command_line = try windowsCreateCommandLine(allocator, argv);
     errdefer freeSentinelU8(allocator, command_line);
@@ -408,6 +405,83 @@ fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]c
             null,
         .log_command = command_line,
     };
+}
+
+fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []const u8, cwd: ?[]const u8, launch_command: ?LaunchCommand) ![]const []const u8 {
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        freeArgvOwnedStrings(allocator, argv.items);
+        argv.deinit(allocator);
+    }
+
+    try argv.append(allocator, shell);
+
+    if (launch_command) |cmd| {
+        const trimmed = std.mem.trimRight(u8, cmd.command, "\r\n");
+        if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
+            try argv.append(allocator, "/Q");
+            try argv.append(allocator, if (cmd.close_on_exit) "/C" else "/K");
+            const wrapped = try allocator.dupe(u8, trimmed);
+            try argv.append(allocator, wrapped);
+        } else if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
+            if (!cmd.close_on_exit) try argv.append(allocator, "-NoExit");
+            try argv.append(allocator, "-Command");
+            const wrapped = try allocator.dupe(u8, trimmed);
+            try argv.append(allocator, wrapped);
+        } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
+            if (cwd) |dir| {
+                if (dir.len > 0) {
+                    try argv.append(allocator, "--cd");
+                    try argv.append(allocator, dir);
+                }
+            }
+            try argv.append(allocator, "sh");
+            try argv.append(allocator, "-lc");
+            const wrapped = if (cmd.close_on_exit)
+                try std.fmt.allocPrint(allocator, "{s}; exit", .{trimmed})
+            else
+                try allocator.dupe(u8, trimmed);
+            try argv.append(allocator, wrapped);
+        } else {
+            const wrapped = if (cmd.close_on_exit)
+                try std.fmt.allocPrint(allocator, "{s} & exit", .{trimmed})
+            else
+                try allocator.dupe(u8, trimmed);
+            try argv.append(allocator, wrapped);
+        }
+    } else if ((std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))) {
+        try argv.append(allocator, "/Q");
+        try argv.append(allocator, "/K");
+        try argv.append(allocator, "echo [hollow] child started");
+    } else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and cwd != null and cwd.?.len > 0) {
+        try argv.append(allocator, "--cd");
+        try argv.append(allocator, cwd.?);
+    }
+
+    return try argv.toOwnedSlice(allocator);
+}
+
+fn freeArgv(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    freeArgvOwnedStrings(allocator, argv);
+    allocator.free(argv);
+}
+
+fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (argv.len < 2) return;
+    const shell_name = std.fs.path.basename(argv[0]);
+    if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
+        if (argv.len > 3 and !std.mem.eql(u8, argv[3], "echo [hollow] child started")) allocator.free(argv[3]);
+        return;
+    }
+    if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
+        if (argv.len > 2 and std.mem.eql(u8, argv[argv.len - 2], "-Command")) allocator.free(argv[argv.len - 1]);
+        return;
+    }
+    if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
+        if (argv.len > 0 and std.mem.eql(u8, argv[argv.len - 2], "-lc")) allocator.free(argv[argv.len - 1]);
+        return;
+    }
+    if (argv.len > 1) allocator.free(argv[1]);
 }
 
 fn shellProgram(shell_command: []const u8) []const u8 {
