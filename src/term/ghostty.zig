@@ -618,7 +618,6 @@ pub const Runtime = struct {
         if (handle) |terminal| {
             var scrollbar: TerminalScrollbar = undefined;
             if (self.terminal_get(terminal, @intFromEnum(TerminalData.scrollbar), &scrollbar) == success) {
-                std.log.info("ghostty scrollbar total={d} offset={d} len={d}", .{ scrollbar.total, scrollbar.offset, scrollbar.len });
                 return scrollbar;
             }
         }

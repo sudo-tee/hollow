@@ -173,7 +173,7 @@ hwl.config.set({
     ssh = "ssh",
     unix = hwl.platform.default_shell,
   },
-  debug_overlay = true,
+  debug_overlay = false,
   backend = "sokol",
   vsync = false,
   max_fps = 120,

@@ -53,6 +53,7 @@ pub const WindowsPty = struct {
     write_pipe: windows.HANDLE,
     reader_state: *ReaderState,
     reader_thread: ?std.Thread,
+    pending_input: std.ArrayListUnmanaged(u8) = .empty,
     alive: bool = true,
     closed: bool = false,
 
@@ -162,14 +163,11 @@ pub const WindowsPty = struct {
         }
         std.log.info("conpty spawned process pid={d} shell={s}", .{ pi.dwProcessId, spec.log_command });
 
-        // Briefly check if the child exited immediately (bad args, missing exe, etc.)
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        // Non-blocking check for immediate spawn failure (bad args, missing exe, etc.).
         if (windows.kernel32.WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
             var exit_code: windows.DWORD = 0;
             _ = windows.kernel32.GetExitCodeProcess(pi.hProcess, &exit_code);
             std.log.warn("conpty child exited immediately after spawn code={d}", .{exit_code});
-        } else {
-            std.log.info("conpty child still alive after 100ms", .{});
         }
 
         // Do not write any initial input — let the shell start cleanly.
@@ -241,6 +239,7 @@ pub const WindowsPty = struct {
 
     pub fn read(self: *WindowsPty, buffer: []u8) !usize {
         if (buffer.len == 0) return 0;
+        try self.flushPendingInputIfReady();
         self.reader_state.mutex.lock();
         defer self.reader_state.mutex.unlock();
 
@@ -263,6 +262,15 @@ pub const WindowsPty = struct {
     }
 
     pub fn writeAll(self: *WindowsPty, bytes: []const u8) !void {
+        if (!self.shellProducedOutput()) {
+            try self.pending_input.appendSlice(self.allocator, bytes);
+            return;
+        }
+        try self.flushPendingInputIfReady();
+        try self.writeToConPty(bytes);
+    }
+
+    fn writeToConPty(self: *WindowsPty, bytes: []const u8) !void {
         var offset: usize = 0;
         while (offset < bytes.len) {
             var written: windows.DWORD = 0;
@@ -275,6 +283,20 @@ pub const WindowsPty = struct {
             }
             offset += written;
         }
+    }
+
+    fn shellProducedOutput(self: *WindowsPty) bool {
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.saw_read;
+    }
+
+    fn flushPendingInputIfReady(self: *WindowsPty) !void {
+        if (self.pending_input.items.len == 0 or !self.shellProducedOutput()) return;
+        const pending = try self.pending_input.toOwnedSlice(self.allocator);
+        defer self.allocator.free(pending);
+        self.pending_input.clearRetainingCapacity();
+        try self.writeToConPty(pending);
     }
 
     pub fn resize(self: *WindowsPty, cols: u16, rows: u16) void {
@@ -302,6 +324,7 @@ pub const WindowsPty = struct {
         if (self.reader_thread) |thread| thread.join();
         closeHandleIfValid(self.process);
         closeHandleIfValid(self.thread);
+        self.pending_input.deinit(self.allocator);
         self.allocator.destroy(self.reader_state);
         self.closed = true;
         self.alive = false;

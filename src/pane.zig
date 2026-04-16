@@ -292,11 +292,8 @@ pub const Pane = struct {
             // read mode flags from the terminal object and can crash on a
             // terminal that has never been through updateRenderState.
             if (self.render_state_ready) {
-                std.log.info("pollPty: syncKeyEncoder", .{});
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-                std.log.info("pollPty: syncMouseEncoder", .{});
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
-                std.log.info("pollPty: sync done", .{});
                 // Log mouse tracking state changes for diagnostics.
                 var mouse_tracking: u32 = 0;
                 const mt_result = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.mouse_tracking), &mouse_tracking);

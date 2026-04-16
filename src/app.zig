@@ -2999,7 +2999,6 @@ pub const App = struct {
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
             while (panes.next()) |pane| {
-                std.log.info("tickPanes[{d}]: pollPty start pane={x} ready={}", .{ pane_idx, @intFromPtr(pane), pane.render_state_ready });
                 pane.pollPty(runtime) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
@@ -3022,7 +3021,6 @@ pub const App = struct {
                         .new_cwd = pane.cwd,
                     } });
                 }
-                std.log.info("tickPanes[{d}]: pollPty done", .{pane_idx});
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
                     continue;
@@ -3036,13 +3034,10 @@ pub const App = struct {
                 if (needs_update) {
                     pane.pty_received_data = false;
                     pane.last_render_state_update_ns = now_ns;
-                    std.log.info("tickPanes[{d}]: clearRenderStateDirty", .{pane_idx});
                     runtime.clearRenderStateDirty(pane.render_state);
-                    std.log.info("tickPanes[{d}]: updateRenderState", .{pane_idx});
                     runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                         std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                     };
-                    std.log.info("tickPanes[{d}]: updateRenderState done", .{pane_idx});
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
