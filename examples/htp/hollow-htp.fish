@@ -28,6 +28,21 @@ function hollow_htp_emit
     hollow_htp_send_raw "{\"kind\":\"event\",\"id\":\"$id\",\"name\":\"$(hollow_htp_json_escape $name)\",\"payload\":$payload_json}"
 end
 
+function hollow_htp_emit_checked
+    set -l name $argv[1]
+    set -l payload_json '{}'
+    if test (count $argv) -ge 2
+        set payload_json $argv[2]
+    end
+    set -l timeout 1.5
+    if test (count $argv) -ge 3
+        set timeout $argv[3]
+    end
+    set -l id (hollow_htp_next_id)
+    hollow_htp_send_raw "{\"kind\":\"event\",\"id\":\"$id\",\"name\":\"$(hollow_htp_json_escape $name)\",\"payload\":$payload_json}"
+    hollow_htp_read_frame $timeout
+end
+
 function hollow_htp_emit_cwd
     set -l cwd $PWD
     if test (count $argv) -ge 1
@@ -107,5 +122,5 @@ end
 
 # Examples:
 #   source ./examples/htp/hollow-htp.fish
-#   hollow_htp_emit_cwd
+#   hollow_htp_emit_checked split_pane '{"floating":true}'
 #   hollow_htp_query_once current_tab

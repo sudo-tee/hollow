@@ -34,6 +34,16 @@ hollow_htp_emit() {
   hollow_htp_send_raw "{\"kind\":\"event\",\"id\":\"$id\",\"name\":\"$(hollow_htp_json_escape "$name")\",\"payload\":$payload_json}"
 }
 
+hollow_htp_emit_checked() {
+  emulate -L zsh
+  local name=${1:?event name required}
+  local payload_json=${2:-\{\}}
+  local timeout=${3:-1.5}
+  local id=$(hollow_htp_next_id)
+  hollow_htp_send_raw "{\"kind\":\"event\",\"id\":\"$id\",\"name\":\"$(hollow_htp_json_escape "$name")\",\"payload\":$payload_json}"
+  hollow_htp_read_frame "$timeout"
+}
+
 hollow_htp_emit_cwd() {
   emulate -L zsh
   local cwd=${1:-$PWD}
@@ -112,5 +122,5 @@ hollow_htp_query_once() {
 
 # Examples:
 #   source ./examples/htp/hollow-htp.zsh
-#   hollow_htp_emit_cwd
+#   hollow_htp_emit_checked split_pane '{"floating":true}'
 #   hollow_htp_query_once current_workspace

@@ -531,8 +531,7 @@ pub const App = struct {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
                 std.log.info("htp: binding pane={x}", .{@intFromPtr(pane)});
-                // TODO: Implement setHtpMessageHandler on Pane
-                // pane.setHtpMessageHandler(htpMessageCallback);
+                pane.setHtpMessageHandler(htpMessageCallback);
             }
         }
     }
@@ -844,7 +843,7 @@ pub const App = struct {
 
         self.ghostty = runtime;
         self.mux = mux;
-        // self.bindHtpHandlers();
+        self.bindHtpHandlers();
         self.renderer = Backend.init(self.allocator, self.config);
 
         // Register app action callbacks so Lua can call split_pane etc.

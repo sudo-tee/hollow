@@ -12,10 +12,20 @@ const is_windows = @import("builtin").os.tag == .windows;
 
 const OSC52_PREFIX = "\x1b]52;";
 const OSC7_PREFIX = "\x1b]7;";
+const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC52_SEQUENCE_MAX = 65536;
 const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
+const HTP_OSC_LOG_MAX = 8192;
+
+fn prefixMatchesKnownOsc(prefix: []const u8) bool {
+    return std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC7_PREFIX, prefix) or
+        std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix);
+}
 
 pub const Pane = struct {
+    pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
+
     allocator: std.mem.Allocator,
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
@@ -53,11 +63,18 @@ pub const Pane = struct {
     osc52_overflow: bool = false,
     osc52_buf: [OSC52_SEQUENCE_MAX]u8 = [_]u8{0} ** OSC52_SEQUENCE_MAX,
     osc52_len: usize = 0,
+    osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = [_]u8{0} ** HTP_OSC_PREFIX.len,
     osc_prefix_len: usize = 0,
     osc7_active: bool = false,
     osc7_st_pending: bool = false,
     osc7_buf: [1024]u8 = [_]u8{0} ** 1024,
     osc7_len: usize = 0,
+    htp_osc_active: bool = false,
+    htp_osc_st_pending: bool = false,
+    htp_osc_overflow: bool = false,
+    htp_osc_buf: [HTP_OSC_LOG_MAX]u8 = [_]u8{0} ** HTP_OSC_LOG_MAX,
+    htp_osc_len: usize = 0,
+    htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
     /// this tick.  Cleared by tickPanes after updateRenderState is called.
@@ -312,6 +329,10 @@ pub const Pane = struct {
     pub fn childPid(self: *const Pane) usize {
         if (self.pty) |pty| return pty.childPid();
         return 0;
+    }
+
+    pub fn setHtpMessageHandler(self: *Pane, handler: ?HtpMessageHandler) void {
+        self.htp_message_handler = handler;
     }
 
     pub fn refreshCwd(self: *Pane) bool {
@@ -687,59 +708,86 @@ pub const Pane = struct {
                 continue;
             }
 
+            if (self.htp_osc_active) {
+                if (self.htp_osc_st_pending) {
+                    if (byte == '\\') {
+                        self.finishHtpOscSequence();
+                    } else {
+                        self.appendHtpOscByte(0x1b);
+                        self.appendHtpOscByte(byte);
+                    }
+                    self.htp_osc_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishHtpOscSequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.htp_osc_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendHtpOscByte(byte);
+                read_idx += 1;
+                continue;
+            }
+
             if (self.osc_prefix_len > 0 or byte == 0x1b) {
                 if (self.osc_prefix_len == 0 and byte == 0x1b) {
-                    std.log.info("pane: detected ESC (0x1b)", .{});
+                    self.osc_prefix_buf[0] = byte;
                     self.osc_prefix_len = 1;
                     read_idx += 1;
                     continue;
                 }
-                if (self.osc_prefix_len == 1 and byte == ']') {
-                    self.osc_prefix_len = 2;
+
+                if (self.osc_prefix_len < self.osc_prefix_buf.len) {
+                    self.osc_prefix_buf[self.osc_prefix_len] = byte;
+                    self.osc_prefix_len += 1;
                     read_idx += 1;
+                } else {
+                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
+                    write_idx += self.osc_prefix_len;
+                    self.osc_prefix_len = 0;
                     continue;
                 }
-                if (self.osc_prefix_len == 2) {
-                    if (byte == '5') {
-                        self.osc_prefix_len = 3;
-                        read_idx += 1;
-                        continue;
-                    }
-                    if (byte == '7') {
-                        self.osc_prefix_len = 5; // Jump to "saw \x1b]7"
-                        read_idx += 1;
-                        continue;
-                    }
-                }
-                if (self.osc_prefix_len == 3 and byte == '2') {
-                    self.osc_prefix_len = 4; // Saw \x1b]52
-                    read_idx += 1;
-                    continue;
-                }
-                if (self.osc_prefix_len == 4 and byte == ';') {
+
+                const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
+                if (std.mem.eql(u8, prefix, OSC52_PREFIX)) {
                     self.osc52_active = true;
                     self.osc52_st_pending = false;
                     self.osc52_overflow = false;
                     self.osc52_len = 0;
                     self.osc_prefix_len = 0;
-                    read_idx += 1;
                     continue;
                 }
-                if (self.osc_prefix_len == 5 and byte == ';') {
+                if (std.mem.eql(u8, prefix, OSC7_PREFIX)) {
                     self.osc7_active = true;
                     self.osc7_st_pending = false;
                     self.osc7_len = 0;
                     self.osc_prefix_len = 0;
-                    read_idx += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) {
+                    self.htp_osc_active = true;
+                    self.htp_osc_st_pending = false;
+                    self.htp_osc_overflow = false;
+                    self.htp_osc_len = 0;
+                    self.osc_prefix_len = 0;
                     continue;
                 }
 
-                // Match failed: write back the prefix we've collected so far
-                const prefix = if (self.osc_prefix_len == 1) "\x1b" else if (self.osc_prefix_len == 2) "\x1b]" else if (self.osc_prefix_len == 3) "\x1b]5" else if (self.osc_prefix_len == 4) "\x1b]52" else if (self.osc_prefix_len == 5) "\x1b]7" else "";
+                if (prefixMatchesKnownOsc(prefix)) {
+                    continue;
+                }
+
                 @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
                 write_idx += prefix.len;
                 self.osc_prefix_len = 0;
-                // Do NOT increment read_idx here, so we can process the current byte again
                 continue;
             }
 
@@ -769,6 +817,15 @@ pub const Pane = struct {
         self.osc7_len += 1;
     }
 
+    fn appendHtpOscByte(self: *Pane, byte: u8) void {
+        if (self.htp_osc_len >= self.htp_osc_buf.len) {
+            self.htp_osc_overflow = true;
+            return;
+        }
+        self.htp_osc_buf[self.htp_osc_len] = byte;
+        self.htp_osc_len += 1;
+    }
+
     fn finishOsc52Sequence(self: *Pane) void {
         if (!self.osc52_overflow and self.osc52_len > 0) {
             self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
@@ -786,6 +843,20 @@ pub const Pane = struct {
         self.osc7_active = false;
         self.osc7_st_pending = false;
         self.osc7_len = 0;
+    }
+
+    fn finishHtpOscSequence(self: *Pane) void {
+        if (!self.htp_osc_overflow and self.htp_osc_len > 0) {
+            const payload = self.htp_osc_buf[0..self.htp_osc_len];
+            std.log.info("htp: received osc pane={x} payload={s}", .{ @intFromPtr(self), payload });
+            if (self.htp_message_handler) |handler| handler(self, payload);
+        } else if (self.htp_osc_overflow) {
+            std.log.warn("htp: dropped oversized osc pane={x} bytes={d}", .{ @intFromPtr(self), self.htp_osc_len });
+        }
+        self.htp_osc_active = false;
+        self.htp_osc_st_pending = false;
+        self.htp_osc_overflow = false;
+        self.htp_osc_len = 0;
     }
 
     fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
