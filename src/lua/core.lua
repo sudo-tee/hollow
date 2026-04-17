@@ -21,6 +21,9 @@ end
 
 local state = require("hollow.state").new(host_api)
 local util = require("hollow.util")
+local public_utils = require("hollow.utils")
+
+hollow.utils = public_utils
 
 require("hollow.config").setup(hollow, host_api, state, util)
 local term_helpers = require("hollow.term").setup(hollow, host_api)

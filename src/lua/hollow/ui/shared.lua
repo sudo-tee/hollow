@@ -1,12 +1,12 @@
 local state = require("hollow.state").get()
 local util = require("hollow.util")
+local public_utils = require("hollow.utils")
 
 local hollow = _G.hollow
 local host_api = state.host_api
 
 local M = {}
 
-local HEX_COLOR_PATTERN = "^#%x%x%x%x%x%x$"
 local SPAN_NODE_TYPES = {
   span = true,
   spacer = true,
@@ -124,12 +124,6 @@ local DEFAULT_THEME = {
 }
 
 ---@param value any
----@return boolean
-local function is_hex_color(value)
-  return type(value) == "string" and value:match(HEX_COLOR_PATTERN) ~= nil
-end
-
----@param value any
 ---@return HollowUiNodeStyle|nil
 local function optional_table(value)
   return type(value) == "table" and value or nil
@@ -228,35 +222,7 @@ end
 ---@param fallback HollowHexColor|nil
 ---@return HollowHexColor|nil
 local function normalize_hex_color(value, fallback)
-  if is_hex_color(value) then
-    return value
-  end
-
-  return fallback
-end
-
----@param value any
----@param amount number
----@param fallback HollowHexColor|nil
----@return HollowHexColor|nil
-local function brighten_hex_color(value, amount, fallback)
-  local color = normalize_hex_color(value, nil)
-  if color == nil then
-    return fallback
-  end
-
-  local red = tonumber(color:sub(2, 3), 16)
-  local green = tonumber(color:sub(4, 5), 16)
-  local blue = tonumber(color:sub(6, 7), 16)
-  if red == nil or green == nil or blue == nil then
-    return fallback
-  end
-
-  local function brighten(channel)
-    return math.floor(channel + (255 - channel) * amount + 0.5)
-  end
-
-  return string.format("#%02x%02x%02x", brighten(red), brighten(green), brighten(blue))
+  return public_utils.normalize_hex_color(value, fallback)
 end
 
 ---@param rendered any
@@ -429,7 +395,7 @@ end
 function M.style_to_segment(text, style)
   local segment = { text = text }
 
-  if is_hex_color(style) then
+  if public_utils.is_hex_color(style) then
     segment.fg = style
     return segment
   end
@@ -440,10 +406,10 @@ function M.style_to_segment(text, style)
     if type(style.id) == "string" and style.id ~= "" then
       segment.id = style.id
     end
-    if is_hex_color(style.fg) then
+    if public_utils.is_hex_color(style.fg) then
       segment.fg = style.fg
     end
-    if is_hex_color(style.bg) then
+    if public_utils.is_hex_color(style.bg) then
       segment.bg = style.bg
     end
   end
@@ -706,7 +672,7 @@ function M.normalize_overlay_backdrop(value)
     return { color = "#000000", alpha = DEFAULT_THEME.backdrop.alpha }
   end
 
-  if is_hex_color(value) then
+  if public_utils.is_hex_color(value) then
     return { color = value, alpha = DEFAULT_THEME.backdrop.alpha }
   end
 
@@ -844,7 +810,7 @@ function M.resolve_widget_theme(kind)
   local split = ui_theme.split or status.fg
 
   local resolved = {
-    panel_bg = brighten_hex_color(terminal_theme.background, 0.2, nil),
+    panel_bg = public_utils.brighten_hex_color(terminal_theme.background, 0.2, nil),
     panel_border = normalize_hex_color(accent, nil),
     divider = normalize_hex_color(split, nil),
     title = normalize_hex_color(accent, nil),

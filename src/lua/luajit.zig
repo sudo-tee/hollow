@@ -95,6 +95,7 @@ const LuaModule = struct {
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("hollow/state.lua") },
     .{ .name = "hollow.util", .source = @embedFile("hollow/util.lua") },
+    .{ .name = "hollow.utils", .source = @embedFile("hollow/utils.lua") },
     .{ .name = "hollow.term", .source = @embedFile("hollow/term.lua") },
     .{ .name = "hollow.config", .source = @embedFile("hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("hollow/events.lua") },

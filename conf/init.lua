@@ -85,7 +85,7 @@ local palette = {
 local ui_theme = {
   widgets = {
     all = {
-      panel_bg = palette.bg,
+      panel_bg = hwl.utils.brighten_hex_color(palette.bg, 0.2, palette.gray),
       panel_border = palette.blue,
       title = palette.bright_blue,
       fg = palette.fg,
@@ -179,7 +179,7 @@ hwl.config.set({
   max_fps = 120,
   padding = 0,
   terminal_theme = terminal_theme,
-  -- ui_theme = ui_theme,A
+  ui_theme = ui_theme,
   fonts = {
     size = 14.5,
     line_height = 0.9,
