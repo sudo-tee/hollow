@@ -1,5 +1,5 @@
-local util = require("hollow.util")
 local state = require("hollow.state").get()
+local util = require("hollow.util")
 
 local hollow = _G.hollow
 local host_api = state.host_api
@@ -235,6 +235,30 @@ local function normalize_hex_color(value, fallback)
   return fallback
 end
 
+---@param value any
+---@param amount number
+---@param fallback HollowHexColor|nil
+---@return HollowHexColor|nil
+local function brighten_hex_color(value, amount, fallback)
+  local color = normalize_hex_color(value, nil)
+  if color == nil then
+    return fallback
+  end
+
+  local red = tonumber(color:sub(2, 3), 16)
+  local green = tonumber(color:sub(4, 5), 16)
+  local blue = tonumber(color:sub(6, 7), 16)
+  if red == nil or green == nil or blue == nil then
+    return fallback
+  end
+
+  local function brighten(channel)
+    return math.floor(channel + (255 - channel) * amount + 0.5)
+  end
+
+  return string.format("#%02x%02x%02x", brighten(red), brighten(green), brighten(blue))
+end
+
 ---@param rendered any
 ---@return HollowUiRows
 local function normalize_widget_rows(rendered)
@@ -466,7 +490,10 @@ function M.bar_value_to_segment(value, fallback_text, style)
 
   if type(value) == "table" then
     if value._type == "span" then
-      return M.style_to_segment(value.text or fallback_text, M.merge_style_tables(style, value.style))
+      return M.style_to_segment(
+        value.text or fallback_text,
+        M.merge_style_tables(style, value.style)
+      )
     end
 
     if value.text ~= nil or value.fg ~= nil or value.bg ~= nil or value.bold ~= nil then
@@ -610,7 +637,8 @@ function M.select_item_matches(query, searchable, fuzzy)
     return true, 0
   end
 
-  local score = fuzzy and M.fuzzy_match_score(searchable, query) or M.plain_match_score(searchable, query)
+  local score = fuzzy and M.fuzzy_match_score(searchable, query)
+    or M.plain_match_score(searchable, query)
   if score == nil then
     return false, nil
   end
@@ -816,7 +844,7 @@ function M.resolve_widget_theme(kind)
   local split = ui_theme.split or status.fg
 
   local resolved = {
-    panel_bg = normalize_hex_color(terminal_theme.background, nil),
+    panel_bg = brighten_hex_color(terminal_theme.background, 0.2, nil),
     panel_border = normalize_hex_color(accent, nil),
     divider = normalize_hex_color(split, nil),
     title = normalize_hex_color(accent, nil),

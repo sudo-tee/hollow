@@ -63,7 +63,7 @@ function ui.notify.show(message, opts)
         ),
       }
     end,
-    align = opts.align,
+    align = opts.align or "top_right",
     chrome = opts.chrome or { bg = theme.panel_bg, border = level_color },
     backdrop = opts.backdrop,
     on_key = function(key)
