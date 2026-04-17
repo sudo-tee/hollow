@@ -253,11 +253,21 @@ end
 function ui.button(opts)
   opts = opts or {}
 
-  local style = clone_table(opts.style)
-  style.id = opts.id
-  style.on_click = opts.on_click
-  style.on_mouse_enter = opts.on_mouse_enter
-  style.on_mouse_leave = opts.on_mouse_leave
+  local style = opts.style
+  if type(style) == "table" then
+    style = clone_table(style)
+    style.id = opts.id
+    style.on_click = opts.on_click
+    style.on_mouse_enter = opts.on_mouse_enter
+    style.on_mouse_leave = opts.on_mouse_leave
+  else
+    style = {
+      id = opts.id,
+      on_click = opts.on_click,
+      on_mouse_enter = opts.on_mouse_enter,
+      on_mouse_leave = opts.on_mouse_leave,
+    }
+  end
 
   return ui.span(opts.text or "", style)
 end

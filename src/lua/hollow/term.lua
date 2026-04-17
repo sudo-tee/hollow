@@ -119,8 +119,18 @@ function M.setup(hollow, host_api)
     host_api.set_workspace_name(name)
   end
 
-  function hollow.term.new_workspace()
-    host_api.new_workspace()
+  function hollow.term.new_workspace(opts)
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.new_workspace(opts) expects a table or nil")
+    end
+    if opts ~= nil and opts.cwd ~= nil and type(opts.cwd) ~= "string" then
+      error("hollow.term.new_workspace(opts) expects opts.cwd to be a string")
+    end
+    host_api.new_workspace(opts)
+  end
+
+  function hollow.term.close_workspace()
+    host_api.close_workspace()
   end
 
   function hollow.term.next_workspace()
@@ -129,6 +139,13 @@ function M.setup(hollow, host_api)
 
   function hollow.term.prev_workspace()
     host_api.prev_workspace()
+  end
+
+  function hollow.term.switch_workspace(index)
+    if type(index) ~= "number" then
+      error("hollow.term.switch_workspace(index) expects a number")
+    end
+    host_api.switch_workspace(index - 1)
   end
 
   function hollow.term.tab_by_id(id)

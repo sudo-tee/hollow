@@ -77,6 +77,16 @@ function M.new(host_api)
       sidebar_visible = false,
       overlay_stack = {},
       notifications = {},
+      workspace_switcher = {
+        known_workspaces = nil,
+        format_item = nil,
+        cache_ttl_ms = 5000,
+        cache_loaded_at_ms = 0,
+        cached_items = nil,
+        last_opened = {},
+        listeners_registered = false,
+        project_roots = nil,
+      },
     },
   }
   return _instance

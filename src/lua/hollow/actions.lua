@@ -38,6 +38,18 @@ function M.setup(hollow, host_api)
     new_workspace = function()
       host_api.new_workspace()
     end,
+    workspace_switcher = function()
+      hollow.ui.workspace.open_switcher()
+    end,
+    create_workspace = function()
+      hollow.ui.workspace.create()
+    end,
+    rename_workspace = function()
+      hollow.ui.workspace.rename()
+    end,
+    close_workspace = function()
+      hollow.ui.workspace.close()
+    end,
     next_workspace = function()
       host_api.next_workspace()
     end,

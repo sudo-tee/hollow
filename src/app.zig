@@ -221,9 +221,13 @@ pub const PendingMouseEvent = union(enum) {
     close_pane,
     next_tab,
     prev_tab,
-    new_workspace,
+    new_workspace: ?[]const u8,
+    close_workspace,
     next_workspace,
     prev_workspace,
+    switch_workspace: usize,
+    set_workspace_name: []const u8,
+    set_workspace_default_cwd: []const u8,
     split_pane: struct {
         direction: SplitDirection,
         ratio: f32,
@@ -597,14 +601,29 @@ pub const App = struct {
                 .prev_tab => {
                     self.prevTab();
                 },
-                .new_workspace => {
-                    self.newWorkspace();
+                .new_workspace => |cwd| {
+                    defer if (cwd) |value| self.allocator.free(value);
+                    self.newWorkspace(cwd);
+                },
+                .close_workspace => {
+                    self.closeWorkspace();
                 },
                 .next_workspace => {
                     self.nextWorkspace();
                 },
                 .prev_workspace => {
                     self.prevWorkspace();
+                },
+                .switch_workspace => |idx| {
+                    self.switchWorkspace(idx);
+                },
+                .set_workspace_name => |name| {
+                    defer self.allocator.free(name);
+                    self.setWorkspaceName(name);
+                },
+                .set_workspace_default_cwd => |cwd| {
+                    defer self.allocator.free(cwd);
+                    self.setWorkspaceDefaultCwd(cwd);
                 },
                 .split_pane => |split| {
                     defer if (split.domain_name) |owned| self.allocator.free(owned);
@@ -876,6 +895,7 @@ pub const App = struct {
             .next_tab = luaNextTabCallback,
             .prev_tab = luaPrevTabCallback,
             .new_workspace = luaNewWorkspaceCallback,
+            .close_workspace = luaCloseWorkspaceCallback,
             .next_workspace = luaNextWorkspaceCallback,
             .prev_workspace = luaPrevWorkspaceCallback,
             .switch_workspace = luaSwitchWorkspaceCallback,
@@ -883,6 +903,7 @@ pub const App = struct {
             .resize_pane = luaResizePaneCallback,
             .switch_tab = luaSwitchTabCallback,
             .set_workspace_name = luaSetWorkspaceNameCallback,
+            .set_workspace_default_cwd = luaSetWorkspaceDefaultCwdCallback,
             .set_tab_title = luaSetTabTitleCallback,
             .set_tab_title_by_id = luaSetTabTitleByIdCallback,
             .reload_config = luaReloadConfigCallback,
@@ -2519,12 +2540,22 @@ pub const App = struct {
         self.requestLayoutResize(false);
     }
 
-    pub fn newWorkspace(self: *App) void {
+    pub fn newWorkspace(self: *App, cwd: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
         const previous = mux.activePane();
-        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height) catch |err| {
+        const inherited_cwd = if (cwd) |value|
+            if (value.len > 0) value else null
+        else if (previous) |pane|
+            if (pane.cwd.len > 0) pane.cwd else null
+        else
+            null;
+        const inherited_domain = if (previous) |pane|
+            if (pane.domain_name.len > 0) pane.domain_name else null
+        else
+            null;
+        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain) catch |err| {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2532,6 +2563,21 @@ pub const App = struct {
         self.syncActivePaneChange(previous, mux.activePane());
         self.requestLayoutResize(false);
         std.log.info("app: created new workspace", .{});
+    }
+
+    pub fn closeWorkspace(self: *App) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const previous = mux.activePane();
+        const should_quit = mux.closeWorkspace(runtime);
+        if (should_quit) {
+            std.log.info("app: last workspace closed, quitting", .{});
+            self.pending_quit = true;
+            return;
+        }
+        self.syncActivePaneChange(previous, mux.activePane());
+        if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        self.requestLayoutResize(false);
     }
 
     pub fn nextWorkspace(self: *App) void {
@@ -2843,6 +2889,13 @@ pub const App = struct {
         const ws = self.activeWorkspace() orelse return;
         ws.setName(name) catch |err| {
             std.log.err("app: setWorkspaceName failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn setWorkspaceDefaultCwd(self: *App, cwd: []const u8) void {
+        const ws = self.activeWorkspace() orelse return;
+        ws.setDefaultCwd(if (cwd.len > 0) cwd else null) catch |err| {
+            std.log.err("app: setWorkspaceDefaultCwd failed: {s}", .{@errorName(err)});
         };
     }
 
@@ -3505,9 +3558,15 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-fn luaNewWorkspaceCallback(app_ptr: *anyopaque) void {
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    _ = app.enqueueMouse(.new_workspace);
+    const owned = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .new_workspace = owned });
+}
+
+fn luaCloseWorkspaceCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    _ = app.enqueueMouse(.close_workspace);
 }
 
 fn luaNextWorkspaceCallback(app_ptr: *anyopaque) void {
@@ -3522,12 +3581,19 @@ fn luaPrevWorkspaceCallback(app_ptr: *anyopaque) void {
 
 fn luaSwitchWorkspaceCallback(app_ptr: *anyopaque, index: usize) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    app.switchWorkspace(index);
+    _ = app.enqueueMouse(.{ .switch_workspace = index });
 }
 
 fn luaSetWorkspaceNameCallback(app_ptr: *anyopaque, name: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    app.setWorkspaceName(name);
+    const owned = app.allocator.dupe(u8, name) catch return;
+    _ = app.enqueueMouse(.{ .set_workspace_name = owned });
+}
+
+fn luaSetWorkspaceDefaultCwdCallback(app_ptr: *anyopaque, cwd: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const owned = app.allocator.dupe(u8, cwd) catch return;
+    _ = app.enqueueMouse(.{ .set_workspace_default_cwd = owned });
 }
 
 fn luaFocusPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {

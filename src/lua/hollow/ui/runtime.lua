@@ -10,6 +10,7 @@ local modules = {
   "hollow.ui.widgets.notify",
   "hollow.ui.widgets.input",
   "hollow.ui.widgets.select",
+  "hollow.ui.widgets.workspace",
 }
 
 for _, module_name in ipairs(modules) do

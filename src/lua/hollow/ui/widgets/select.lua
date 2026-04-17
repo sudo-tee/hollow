@@ -384,8 +384,8 @@ local function invoke_action(opts, local_state, action_index)
   end
 
   local entry = entries[local_state.index]
-  if entry and type(action.fn) == "function" then
-    action.fn(entry.item)
+  if type(action.fn) == "function" then
+    action.fn(entry and entry.item or nil)
   end
 
   return true

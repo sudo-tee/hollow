@@ -712,11 +712,17 @@ function term.move_pane(direction_or_opts, opts) end
 ---@param name string
 function term.set_workspace_name(name) end
 
-function term.new_workspace() end
+---@param opts? { cwd?: string }
+function term.new_workspace(opts) end
+
+function term.close_workspace() end
 
 function term.next_workspace() end
 
 function term.prev_workspace() end
+
+---@param index integer
+function term.switch_workspace(index) end
 
 ---@class HollowEventsNamespace
 local events = {}
@@ -915,6 +921,49 @@ function select.open(opts) end
 
 function select.close() end
 
+---@class HollowUiWorkspaceItem
+---@field id string
+---@field name string
+---@field cwd? string
+---@field source "open"|"user"
+---@field is_active boolean
+---@field is_open boolean
+---@field open_index? integer
+---@field last_opened_at? integer
+
+---@class HollowUiWorkspaceSwitcherOptions
+---@field prompt? string
+---@field width? integer
+---@field height? integer
+---@field max_height? integer
+---@field backdrop? HollowOverlayBackdropValue
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
+---@field known_workspaces? fun(): HollowUiWorkspaceItem[]|table[]|nil
+---@field format_item? fun(workspace: HollowUiWorkspaceItem): HollowUiInlineNode|HollowUiInlineNode[]
+---@field cache_ttl_ms? integer
+---@field force_refresh? boolean
+---@field project_roots? string[]
+---@field rename_key? string
+---@field rename_desc? string
+---@field close_key? string
+---@field close_desc? string
+---@field create_key? string
+---@field create_desc? string
+
+---@class HollowUiWorkspaceNamespace
+---@field configure fun(opts?: HollowUiWorkspaceSwitcherOptions)
+---@field clear_cache fun()
+---@field known_workspaces fun(force_refresh?: boolean): HollowUiWorkspaceItem[]
+---@field items fun(force_refresh?: boolean): HollowUiWorkspaceItem[]
+---@field open_switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
+---@field switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
+---@field topbar_button fun(opts?: { id?: string, text?: string, style?: HollowUiNodeStyle, switcher?: HollowUiWorkspaceSwitcherOptions }): HollowUiSpanNode
+---@field create fun(opts?: { prompt?: string, on_confirm?: fun(name: string) })
+---@field rename fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem, opts?: { prompt?: string, on_confirm?: fun(name: string, workspace: any) })
+---@field close fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem)
+local workspace = {}
+
 ---@class HollowUi
 local ui = {}
 
@@ -985,6 +1034,7 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.select = select
+ui.workspace = workspace
 
 ---@field new_widget fun(kind:string, opts:HollowUiWidgetOptions):HollowUiWidget
 ---@field close_overlay_widget fun(widget:HollowUiWidget):HollowUiWidget|nil
@@ -1039,10 +1089,13 @@ function process.exec(opts) end
 ---@field new_tab fun(opts?: table)
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
----@field new_workspace fun()
+---@field new_workspace fun(opts?: { cwd?: string })
+---@field close_workspace fun()
 ---@field next_workspace fun()
 ---@field prev_workspace fun()
+---@field switch_workspace fun(index: integer)
 ---@field set_workspace_name fun(name: string)
+---@field set_workspace_default_cwd fun(cwd: string)
 ---@field get_workspace_name fun(index: integer): string
 ---@field get_workspace_count fun(): integer
 ---@field get_active_workspace_index fun(): integer

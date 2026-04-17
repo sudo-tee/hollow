@@ -616,6 +616,7 @@ pub const Workspace = struct {
     allocator: std.mem.Allocator,
     id: usize,
     name: ?[]u8 = null,
+    default_cwd: ?[]u8 = null,
     tabs: std.ArrayList(*Tab),
     active_tab: ?*Tab = null,
 
@@ -649,6 +650,7 @@ pub const Workspace = struct {
 
     pub fn deinit(self: *Workspace, runtime: *GhosttyRuntime) void {
         if (self.name) |name| self.allocator.free(name);
+        if (self.default_cwd) |cwd| self.allocator.free(cwd);
         for (self.tabs.items) |tab| {
             tab.deinit(runtime);
             self.allocator.destroy(tab);
@@ -748,6 +750,15 @@ pub const Workspace = struct {
         if (self.name) |name| self.allocator.free(name);
         self.name = if (value.len > 0) try self.allocator.dupe(u8, value) else null;
     }
+
+    pub fn setDefaultCwd(self: *Workspace, value: ?[]const u8) !void {
+        if (self.default_cwd) |cwd| self.allocator.free(cwd);
+        if (value) |cwd| {
+            self.default_cwd = if (cwd.len > 0) try self.allocator.dupe(u8, cwd) else null;
+        } else {
+            self.default_cwd = null;
+        }
+    }
 };
 
 pub const Mux = struct {
@@ -795,18 +806,19 @@ pub const Mux = struct {
     pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         if (self.workspaces.items.len != 0) return error.MuxAlreadyBootstrapped;
 
-        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, null);
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
     }
 
-    pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
-        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height);
+    pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !void {
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name);
+        try workspace.setDefaultCwd(inherited_cwd);
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
     }
 
-    fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !*Workspace {
+    fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !*Workspace {
         const workspace = try self.createWorkspace();
         var workspace_owned_by_mux = false;
         defer if (!workspace_owned_by_mux) {
@@ -821,7 +833,8 @@ pub const Mux = struct {
             self.allocator.destroy(tab);
         };
 
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, cfg.defaultDomainName(), null);
+        const resolved_domain = domain_name orelse cfg.defaultDomainName();
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, null);
         var pane_owned_by_tab = false;
         defer if (!pane_owned_by_tab) {
             pane.deinit(runtime);
@@ -950,6 +963,8 @@ pub const Mux = struct {
         const current_pane = self.activePane();
         const inherited_cwd: ?[]const u8 = if (current_pane) |pane|
             if (pane.cwd.len > 0) pane.cwd else null
+        else if (ws.default_cwd) |cwd|
+            cwd
         else
             null;
         const previous_active = ws.active_tab;
@@ -1032,6 +1047,11 @@ pub const Mux = struct {
     pub fn switchWorkspace(self: *Mux, index: usize) void {
         if (index >= self.workspaces.items.len) return;
         self.active_workspace = self.workspaces.items[index];
+    }
+
+    pub fn closeWorkspace(self: *Mux, runtime: *GhosttyRuntime) bool {
+        const workspace = self.activeWorkspace() orelse return true;
+        return self.removeWorkspace(runtime, workspace);
     }
 
     pub fn activeWorkspaceIndex(self: *Mux) usize {

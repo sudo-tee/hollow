@@ -111,6 +111,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("hollow/ui/widgets/notify.lua") },
     .{ .name = "hollow.ui.widgets.input", .source = @embedFile("hollow/ui/widgets/input.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.runtime", .source = @embedFile("hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("hollow/ui.lua") },
 };
@@ -129,7 +130,8 @@ pub const AppCallbacks = struct {
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8) void,
+    close_workspace: *const fn (app: *anyopaque) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
     switch_workspace: *const fn (app: *anyopaque, index: usize) void,
@@ -137,6 +139,7 @@ pub const AppCallbacks = struct {
     resize_pane: *const fn (app: *anyopaque, direction: []const u8, delta: f32) void,
     switch_tab: *const fn (app: *anyopaque, index: usize) void,
     set_workspace_name: *const fn (app: *anyopaque, title: []const u8) void,
+    set_workspace_default_cwd: *const fn (app: *anyopaque, cwd: []const u8) void,
     set_tab_title: *const fn (app: *anyopaque, title: []const u8) void,
     set_tab_title_by_id: *const fn (app: *anyopaque, tab_id: usize, title: []const u8) bool,
     reload_config: *const fn (app: *anyopaque) bool,
@@ -1041,7 +1044,7 @@ pub const Runtime = struct {
     fn exposeHollowTable(self: *Runtime) !void {
         const api = self.context.api;
 
-        api.create_table(self.state, 0, 8);
+        api.create_table(self.state, 0, 64);
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_config, 1);
@@ -1100,6 +1103,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "new_workspace");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_close_workspace, 1);
+        api.set_field(self.state, -2, "close_workspace");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_next_workspace, 1);
         api.set_field(self.state, -2, "next_workspace");
 
@@ -1150,6 +1157,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_workspace_name, 1);
         api.set_field(self.state, -2, "set_workspace_name");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_workspace_default_cwd, 1);
+        api.set_field(self.state, -2, "set_workspace_default_cwd");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_name, 1);
@@ -2466,7 +2477,27 @@ fn l_prev_tab(state: *State) callconv(.c) c_int {
 
 fn l_new_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app);
+    const api = ctx.api;
+    var cwd: ?[]const u8 = null;
+
+    switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+        .string => {
+            var len: usize = 0;
+            if (api.to_lstring(state, 1, &len)) |ptr| cwd = ptr[0..len];
+        },
+        .table => {
+            cwd = luaStringField(api, state, absoluteIndex(api, state, 1), "cwd");
+        },
+        else => {},
+    }
+
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd);
+    return 0;
+}
+
+fn l_close_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.close_workspace(cbs.app);
     return 0;
 }
 
@@ -2907,6 +2938,20 @@ fn l_set_workspace_name(state: *State) callconv(.c) c_int {
 
     if (ctx.pending_workspace_name) |existing| ctx.cfg.allocator.free(existing);
     ctx.pending_workspace_name = if (title.len > 0) ctx.cfg.allocator.dupe(u8, title) catch null else null;
+    return 0;
+}
+
+fn l_set_workspace_default_cwd(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    var len: usize = 0;
+    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &len)
+    else
+        null;
+    const cwd: []const u8 = if (ptr) |p| p[0..len] else "";
+
+    if (ctx.app_callbacks) |cbs| cbs.set_workspace_default_cwd(cbs.app, cwd);
     return 0;
 }
 
