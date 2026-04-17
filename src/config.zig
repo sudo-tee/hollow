@@ -19,7 +19,8 @@ pub const RendererBackend = enum {
 pub const Config = struct {
     pub const Domain = struct {
         name: []u8,
-        shell: []u8,
+        shell: ?[]u8 = null,
+        default_cwd: ?[]u8 = null,
     };
 
     pub const TerminalTheme = struct {
@@ -248,9 +249,10 @@ pub const Config = struct {
     pub fn deinit(self: *Config) void {
         freeOwned(self.allocator, &self.shell);
         freeOwned(self.allocator, &self.default_domain);
-        for (self.domains.items) |domain| {
+        for (self.domains.items) |*domain| {
             self.allocator.free(domain.name);
-            self.allocator.free(domain.shell);
+            freeOwned(self.allocator, &domain.shell);
+            freeOwned(self.allocator, &domain.default_cwd);
         }
         self.domains.deinit(self.allocator);
         freeOwned(self.allocator, &self.htp_transport);
@@ -274,15 +276,29 @@ pub const Config = struct {
     pub fn shellForDomain(self: Config, domain_name: ?[]const u8) ![]const u8 {
         if (domain_name) |name| {
             const domain = self.domainByName(name) orelse return error.UnknownDomain;
-            return domain.shell;
+            return domain.shell orelse error.DomainShellMissing;
         }
 
         if (self.defaultDomainName()) |name| {
             const domain = self.domainByName(name) orelse return self.shellOrDefault();
-            return domain.shell;
+            return domain.shell orelse self.shellOrDefault();
         }
 
         return self.shellOrDefault();
+    }
+
+    pub fn defaultCwdForDomain(self: Config, domain_name: ?[]const u8) ?[]const u8 {
+        if (domain_name) |name| {
+            const domain = self.domainByName(name) orelse return null;
+            return domain.default_cwd;
+        }
+
+        if (self.defaultDomainName()) |name| {
+            const domain = self.domainByName(name) orelse return null;
+            return domain.default_cwd;
+        }
+
+        return null;
     }
 
     pub fn windowTitle(self: Config) []const u8 {
@@ -317,12 +333,9 @@ pub const Config = struct {
     }
 
     pub fn setDomainShell(self: *Config, name: []const u8, shell_value: []const u8) !void {
-        for (self.domains.items) |*domain| {
-            if (std.mem.eql(u8, domain.name, name)) {
-                self.allocator.free(domain.shell);
-                domain.shell = try self.allocator.dupe(u8, shell_value);
-                return;
-            }
+        if (self.domainByNamePtr(name)) |domain| {
+            try replaceOwned(self.allocator, &domain.shell, shell_value);
+            return;
         }
 
         try self.domains.append(self.allocator, .{
@@ -331,8 +344,27 @@ pub const Config = struct {
         });
     }
 
+    pub fn setDomainDefaultCwd(self: *Config, name: []const u8, cwd_value: []const u8) !void {
+        if (self.domainByNamePtr(name)) |domain| {
+            try replaceOwned(self.allocator, &domain.default_cwd, cwd_value);
+            return;
+        }
+
+        try self.domains.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, name),
+            .default_cwd = try self.allocator.dupe(u8, cwd_value),
+        });
+    }
+
     fn domainByName(self: Config, name: []const u8) ?Domain {
         for (self.domains.items) |domain| {
+            if (std.mem.eql(u8, domain.name, name)) return domain;
+        }
+        return null;
+    }
+
+    fn domainByNamePtr(self: *Config, name: []const u8) ?*Domain {
+        for (self.domains.items) |*domain| {
             if (std.mem.eql(u8, domain.name, name)) return domain;
         }
         return null;

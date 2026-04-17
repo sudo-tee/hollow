@@ -166,12 +166,12 @@ local ui_theme = {
 hwl.config.set({
   default_domain = "wsl",
   domains = {
-    wsl = "C:\\Windows\\System32\\wsl.exe",
-    pwsh = "pwsh.exe",
-    powershell = "powershell.exe",
-    cmd = "cmd.exe",
-    ssh = "ssh",
-    unix = hwl.platform.default_shell,
+    wsl = { shell = "C:\\Windows\\System32\\wsl.exe", default_cwd = "/home/francis" },
+    pwsh = { shell = "pwsh.exe" },
+    powershell = { shell = "powershell.exe" },
+    cmd = { shell = "cmd.exe" },
+    ssh = { shell = "ssh" },
+    unix = { shell = hwl.platform.default_shell },
   },
   debug_overlay = false,
   backend = "sokol",

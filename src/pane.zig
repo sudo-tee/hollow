@@ -216,7 +216,8 @@ pub const Pane = struct {
 
         try env_block.append(self.allocator, 0); // double-null terminator
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, inherited_cwd, env_block.items, launch_command);
+        const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name);
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, launch_command);
         errdefer pty.deinit();
 
         self.terminal = terminal;
@@ -248,7 +249,7 @@ pub const Pane = struct {
         // recurring source of null-deref crashes during tab creation.
         self.title = &.{};
         if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
-        if (inherited_cwd) |cwd| self.setCwd(cwd);
+        if (launch_cwd) |cwd| self.setCwd(cwd);
     }
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {

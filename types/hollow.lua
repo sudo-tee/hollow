@@ -168,8 +168,12 @@
 ---@field cursor? HollowCursorConfig
 ---@field shell? string|string[]
 ---@field default_domain? string
----@field domains? table<string, string>
+---@field domains? table<string, string|HollowDomainConfig>
 ---@field env? table<string, string>
+
+---@class HollowDomainConfig
+---@field shell? string
+---@field default_cwd? string
 
 ---@class HollowPane
 ---@field id integer

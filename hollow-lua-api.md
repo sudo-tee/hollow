@@ -39,17 +39,21 @@ Domain-related config fields:
 hollow.config.set({
   default_domain = "wsl",
   domains = {
-    wsl = "wsl.exe",
-    pwsh = "pwsh.exe",
-    cmd = "cmd.exe",
-    ssh = "ssh user@example.com",
-    unix = "/bin/zsh",
+    wsl = {
+      shell = "wsl.exe",
+      default_cwd = "/home/me",
+    },
+    pwsh = { shell = "pwsh.exe" },
+    cmd = { shell = "cmd.exe" },
+    ssh = { shell = "ssh user@example.com" },
+    unix = { shell = "/bin/zsh" },
   },
 })
 ```
 
 `default_domain` picks the shell used for normal tab/pane creation when no domain is passed explicitly.
-`domains` maps a domain name to the shell command that should be launched for that domain.
+`domains` maps a domain name to either a shell string or an object with per-domain options.
+`default_cwd` is used when a pane starts in that domain without an explicit cwd.
 
 ## `hollow.term`
 
@@ -375,10 +379,10 @@ local hollow = require("hollow")
 hollow.config.set({
   default_domain = hollow.platform.is_windows and "wsl" or "unix",
   domains = {
-    wsl = "wsl.exe",
-    pwsh = "pwsh.exe",
-    cmd = "cmd.exe",
-    unix = hollow.platform.default_shell,
+    wsl = { shell = "wsl.exe" },
+    pwsh = { shell = "pwsh.exe" },
+    cmd = { shell = "cmd.exe" },
+    unix = { shell = hollow.platform.default_shell },
   },
 })
 

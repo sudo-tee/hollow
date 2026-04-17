@@ -1933,11 +1933,43 @@ fn applyDomainsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
         const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
-        if (value_type != .string) continue;
+        if (value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            try cfg.setDomainShell(key, value_ptr[0..value_len]);
+            continue;
+        }
+
+        if (value_type == .table) {
+            const domain_idx = absoluteIndex(api, state, -1);
+            try applyDomainTable(cfg, api, state, key, domain_idx);
+        }
+    }
+}
+
+fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: []const u8, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
-        try cfg.setDomainShell(key, value_ptr[0..value_len]);
+        const value = value_ptr[0..value_len];
+
+        if (std.mem.eql(u8, key, "shell")) {
+            try cfg.setDomainShell(domain_name, value);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "default_cwd")) {
+            try cfg.setDomainDefaultCwd(domain_name, value);
+            continue;
+        }
     }
 }
 
