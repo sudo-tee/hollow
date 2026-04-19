@@ -221,7 +221,10 @@ pub const PendingMouseEvent = union(enum) {
     close_pane,
     next_tab,
     prev_tab,
-    new_workspace: ?[]const u8,
+    new_workspace: struct {
+        cwd: ?[]const u8,
+        domain_name: ?[]const u8,
+    },
     close_workspace,
     next_workspace,
     prev_workspace,
@@ -601,9 +604,10 @@ pub const App = struct {
                 .prev_tab => {
                     self.prevTab();
                 },
-                .new_workspace => |cwd| {
-                    defer if (cwd) |value| self.allocator.free(value);
-                    self.newWorkspace(cwd);
+                .new_workspace => |payload| {
+                    defer if (payload.cwd) |value| self.allocator.free(value);
+                    defer if (payload.domain_name) |value| self.allocator.free(value);
+                    self.newWorkspace(payload.cwd, payload.domain_name);
                 },
                 .close_workspace => {
                     self.closeWorkspace();
@@ -2540,7 +2544,7 @@ pub const App = struct {
         self.requestLayoutResize(false);
     }
 
-    pub fn newWorkspace(self: *App, cwd: ?[]const u8) void {
+    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -2551,7 +2555,9 @@ pub const App = struct {
             if (pane.cwd.len > 0) pane.cwd else null
         else
             null;
-        const inherited_domain = if (previous) |pane|
+        const inherited_domain = if (domain_name) |value|
+            if (value.len > 0) value else null
+        else if (previous) |pane|
             if (pane.domain_name.len > 0) pane.domain_name else null
         else
             null;
@@ -3558,10 +3564,11 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8) void {
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    const owned = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = owned });
+    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
+    const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain } });
 }
 
 fn luaCloseWorkspaceCallback(app_ptr: *anyopaque) void {

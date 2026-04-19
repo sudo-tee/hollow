@@ -34,10 +34,12 @@ function M.setup(hollow, host_api)
     if type(index) ~= "number" or index < 0 or index >= count then
       return nil
     end
+    local pane = pane_snapshot(host_api.current_pane_id())
     return {
       index = index + 1,
       name = host_api.get_workspace_name and host_api.get_workspace_name(index)
         or ("ws " .. tostring(index + 1)),
+      domain = pane and pane.domain or nil,
       is_active = index
         == (host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0),
     }
@@ -125,6 +127,9 @@ function M.setup(hollow, host_api)
     end
     if opts ~= nil and opts.cwd ~= nil and type(opts.cwd) ~= "string" then
       error("hollow.term.new_workspace(opts) expects opts.cwd to be a string")
+    end
+    if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
+      error("hollow.term.new_workspace(opts) expects opts.domain to be a string")
     end
     host_api.new_workspace(opts)
   end

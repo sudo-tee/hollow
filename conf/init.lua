@@ -179,7 +179,7 @@ hwl.config.set({
   max_fps = 120,
   padding = 0,
   terminal_theme = terminal_theme,
-  ui_theme = ui_theme,
+  -- ui_theme = ui_theme,
   fonts = {
     size = 14.5,
     line_height = 0.9,
@@ -274,16 +274,44 @@ local function cwd_span(ctx)
 end
 
 local function workspace_widget()
-  return hwl.ui.bar.workspace({
-    format = function(workspace)
-      return " " .. workspace.name .. " "
-    end,
-    style = function(workspace)
-      return workspace.is_active and ui_theme.workspace.active or ui_theme.workspace.inactive
+  return hwl.ui.workspace.topbar_button({
+    style = function()
+      local workspace = hwl.term.current_workspace()
+      local is_active = workspace == nil or workspace.is_active ~= false
+      return is_active and ui_theme.workspace.active or ui_theme.workspace.inactive
     end,
   })
 end
 
+hollow.ui.workspace.configure({
+  -- known_workspaces = function()
+  --   return {
+  --     { name = "proj-a", cwd = "/home/francis/Projects/replicad_objects" },
+  --     { name = "proj-b", cwd = "/home/francis/Projects/dotfiles" },
+  --   }
+  -- end,
+  -- filter_item = function(workspace)
+  --   return workspace.name ~= "dotfiles"
+  -- end,
+  -- format_item = function(workspace)
+  --   local marker = workspace.is_active and "• " or "  "
+  --   local path = workspace.cwd or ""
+  --   return {
+  --     hwl.ui.span(marker .. workspace.name, { fg = workspace.is_open and "#7fb4ca" or "#dcd7ba" }),
+  --     hwl.ui.span("  " .. path, { fg = "#5f5b53" }),
+  --   }
+  -- end,
+  sources = {
+    {
+      resolver = "wsl",
+      name = "Ubuntu",
+      domain = "wsl",
+      roots = {
+        "/home/francis/Projects",
+      },
+    },
+  },
+})
 local function tabs_widget()
   return hwl.ui.bar.tabs({
     fit = "content",

@@ -925,11 +925,19 @@ function select.close() end
 ---@field id string
 ---@field name string
 ---@field cwd? string
+---@field domain? string
 ---@field source "open"|"user"
 ---@field is_active boolean
 ---@field is_open boolean
 ---@field open_index? integer
 ---@field last_opened_at? integer
+
+---@class HollowUiWorkspaceSource
+---@field resolver? "local"|"wsl"
+---@field name? string
+---@field domain? string
+---@field roots? string[]
+---@field items? fun(): HollowUiWorkspaceItem[]|table[]|nil
 
 ---@class HollowUiWorkspaceSwitcherOptions
 ---@field prompt? string
@@ -940,10 +948,15 @@ function select.close() end
 ---@field chrome? HollowUiChrome|boolean
 ---@field theme? HollowUiTheme
 ---@field known_workspaces? fun(): HollowUiWorkspaceItem[]|table[]|nil
+---@field sources? HollowUiWorkspaceSource[]|fun(): HollowUiWorkspaceSource[]|nil
 ---@field format_item? fun(workspace: HollowUiWorkspaceItem): HollowUiInlineNode|HollowUiInlineNode[]
+---@field filter_item? fun(workspace: HollowUiWorkspaceItem): boolean|nil
 ---@field cache_ttl_ms? integer
 ---@field force_refresh? boolean
 ---@field project_roots? string[]
+---@field status_column_width? integer
+---@field name_column_width? integer
+---@field column_gap? integer
 ---@field rename_key? string
 ---@field rename_desc? string
 ---@field close_key? string

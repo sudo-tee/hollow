@@ -79,13 +79,18 @@ function M.new(host_api)
       notifications = {},
       workspace_switcher = {
         known_workspaces = nil,
+        sources = nil,
         format_item = nil,
+        filter_item = nil,
         cache_ttl_ms = 5000,
         cache_loaded_at_ms = 0,
         cached_items = nil,
         last_opened = {},
         listeners_registered = false,
         project_roots = nil,
+        status_column_width = nil,
+        name_column_width = nil,
+        column_gap = nil,
       },
     },
   }

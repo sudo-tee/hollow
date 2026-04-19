@@ -130,7 +130,7 @@ pub const AppCallbacks = struct {
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8) void,
     close_workspace: *const fn (app: *anyopaque) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -2479,6 +2479,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var cwd: ?[]const u8 = null;
+    var domain_name: ?[]const u8 = null;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -2487,11 +2488,12 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
         },
         .table => {
             cwd = luaStringField(api, state, absoluteIndex(api, state, 1), "cwd");
+            domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd);
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name);
     return 0;
 }
 

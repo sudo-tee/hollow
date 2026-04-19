@@ -12,6 +12,10 @@ local DEFAULT_CACHE_TTL_MS = 5000
 local DEFAULT_PROMPT = "Workspace"
 local DEFAULT_SELECT_WIDTH = 96
 local DEFAULT_SELECT_MAX_HEIGHT = 18
+local ACTIVE_WORKSPACE_MARKER = "•"
+local DEFAULT_STATUS_COLUMN_WIDTH = 2
+local DEFAULT_NAME_COLUMN_WIDTH = 24
+local DEFAULT_COLUMN_GAP = 2
 local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-w>"
 local DEFAULT_CREATE_KEY = "<C-n>"
@@ -20,6 +24,7 @@ local ui_theme = {
   accent = "#e6c384",
   fg = "#dcd7ba",
   muted = "#727169",
+  subtle = "#5f5b53",
   open = "#98bb6c",
   user = "#7fb4ca",
 }
@@ -62,6 +67,11 @@ local function path_join(base, name)
   local trimmed_base = base:gsub("[\\/]+$", "")
   local trimmed_name = name:gsub("^[\\/]+", "")
   return trimmed_base .. separator .. trimmed_name
+end
+
+local function shell_escape(value)
+  value = tostring(value or "")
+  return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
 local function default_project_roots()
@@ -128,8 +138,72 @@ local function scan_projects_in_root(root)
   return items
 end
 
+local function scan_projects_in_wsl_root(source_name, root)
+  source_name = trim_string(source_name)
+  if source_name == "" or type(root) ~= "string" or root == "" then
+    return {}
+  end
+
+  local escaped_name = source_name:gsub('"', '\\"')
+  local escaped_root = root:gsub('"', '\\"')
+  local command = 'cmd.exe /c "wsl.exe -d ' .. escaped_name .. ' -- ls -1A \"' .. escaped_root .. '\" 2>nul"'
+  local pipe = io.popen(command)
+  if pipe == nil then
+    if ui.notify and ui.notify.warn then
+      ui.notify.warn("Workspace source failed: wsl " .. source_name, { ttl = 1800 })
+    end
+    return {}
+  end
+
+  local items = {}
+  for line in pipe:lines() do
+    local name = trim_string(line)
+    local cwd = name ~= "" and path_join(root, name) or ""
+    if name ~= "" and cwd ~= "" then
+      items[#items + 1] = {
+        name = name,
+        cwd = cwd,
+      }
+    end
+  end
+  pipe:close()
+  if #items == 0 and ui.notify and ui.notify.warn then
+    ui.notify.warn("Workspace source returned no folders: wsl " .. source_name, { ttl = 1800 })
+  end
+  return items
+end
+
 local function normalize_workspace_id(name)
   return trim_string(name):lower()
+end
+
+local function normalize_domain(value)
+  local domain = trim_string(value)
+  if domain == "" then
+    return nil
+  end
+  return domain
+end
+
+local function current_domain_name()
+  local pane = hollow.term.current_pane()
+  if pane and type(pane.domain) == "string" and pane.domain ~= "" then
+    return pane.domain
+  end
+  return nil
+end
+
+local function workspace_identity(name, cwd, domain)
+  local normalized_domain = normalize_domain(domain) or current_domain_name() or "default"
+  local normalized_cwd = trim_string(cwd)
+  if normalized_cwd ~= "" then
+    return normalized_domain .. ":" .. normalized_cwd
+  end
+  local normalized_name = normalize_workspace_id(name)
+  if normalized_name ~= "" then
+    return normalized_domain .. ":name:" .. normalized_name
+  end
+  return normalized_domain .. ":workspace"
 end
 
 local function default_known_workspaces()
@@ -137,12 +211,14 @@ local function default_known_workspaces()
   local roots = switcher.project_roots or default_project_roots()
   local merged = {}
   local seen = {}
+  local domain = current_domain_name()
 
   for _, root in ipairs(roots) do
     for _, item in ipairs(scan_projects_in_root(root)) do
-      local id = normalize_workspace_id(item.name)
+      local id = workspace_identity(item.name, item.cwd, domain)
       if id ~= "" and not seen[id] then
         seen[id] = true
+        item.domain = domain
         merged[#merged + 1] = item
       end
     end
@@ -275,6 +351,55 @@ local function configured_known_workspaces()
   return items
 end
 
+local function configured_sources()
+  local sources = switcher_state().sources
+  if type(sources) == "function" then
+    local ok, result = pcall(sources)
+    if ok and type(result) == "table" then
+      return result
+    end
+    return {}
+  end
+  if type(sources) == "table" then
+    return sources
+  end
+  return {}
+end
+
+local function workspace_filter()
+  local filter = switcher_state().filter_item
+  if type(filter) == "function" then
+    return filter
+  end
+  return nil
+end
+
+local function include_workspace_item(item)
+  local filter = workspace_filter()
+  if filter == nil then
+    return true
+  end
+
+  local ok, allowed = pcall(filter, util.clone_value(item))
+  if not ok then
+    return true
+  end
+
+  return allowed ~= false
+end
+
+local function source_domain_name(source)
+  return normalize_domain(source.domain) or current_domain_name()
+end
+
+local function source_resolver(source)
+  local resolver = trim_string(source.resolver)
+  if resolver == "" then
+    return "local"
+  end
+  return resolver
+end
+
 local function normalize_possible_workspace(item)
   if type(item) == "string" then
     local name = trim_string(item)
@@ -282,9 +407,10 @@ local function normalize_possible_workspace(item)
       return nil
     end
     return {
-      id = normalize_workspace_id(name),
+      id = workspace_identity(name, nil, nil),
       name = name,
       cwd = nil,
+      domain = nil,
       source = "user",
       is_active = false,
       is_open = false,
@@ -305,10 +431,13 @@ local function normalize_possible_workspace(item)
     cwd = nil
   end
 
+  local domain = normalize_domain(item.domain)
+
   return {
-    id = normalize_workspace_id(item.id or name),
+    id = trim_string(item.id) ~= "" and trim_string(item.id) or workspace_identity(name, cwd, domain),
     name = name,
     cwd = cwd,
+    domain = domain,
     source = "user",
     is_active = false,
     is_open = false,
@@ -329,9 +458,49 @@ local function cached_known_workspaces(force_refresh)
 
   local seen = {}
   local items = {}
+  for _, source in ipairs(configured_sources()) do
+    local resolved_domain = source_domain_name(source)
+    local resolver = source_resolver(source)
+    if type(source.items) == "function" then
+      local ok, result = pcall(source.items)
+      if ok and type(result) == "table" then
+        for _, raw in ipairs(result) do
+          if type(raw) == "table" and raw.domain == nil then
+            raw = util.clone_value(raw)
+            raw.domain = resolved_domain
+          end
+          local item = normalize_possible_workspace(raw)
+          if item ~= nil and item.id ~= "" and include_workspace_item(item) and not seen[item.id] then
+            seen[item.id] = true
+            items[#items + 1] = item
+          end
+        end
+      end
+    end
+
+    if type(source.roots) == "table" then
+      for _, root in ipairs(source.roots) do
+        local scanned
+        if resolver == "wsl" then
+          scanned = scan_projects_in_wsl_root(source.name or source.domain or "", root)
+        else
+          scanned = scan_projects_in_root(root)
+        end
+        for _, raw in ipairs(scanned) do
+          raw.domain = resolved_domain
+          local item = normalize_possible_workspace(raw)
+          if item ~= nil and item.id ~= "" and include_workspace_item(item) and not seen[item.id] then
+            seen[item.id] = true
+            items[#items + 1] = item
+          end
+        end
+      end
+    end
+  end
+
   for _, raw in ipairs(configured_known_workspaces()) do
     local item = normalize_possible_workspace(raw)
-    if item ~= nil and item.id ~= "" and not seen[item.id] then
+    if item ~= nil and item.id ~= "" and include_workspace_item(item) and not seen[item.id] then
       seen[item.id] = true
       items[#items + 1] = item
     end
@@ -345,19 +514,24 @@ end
 local function open_workspace_items()
   local items = {}
   for _, workspace in ipairs(hollow.term.workspaces()) do
-    local id = normalize_workspace_id(workspace.name)
+    local domain = workspace.domain or current_domain_name()
+    local id = workspace_identity(workspace.name, first_pane_cwd(workspace), domain)
     if id ~= "" then
       ensure_last_opened(workspace.name)
-      items[#items + 1] = {
+      local item = {
         id = id,
         name = workspace.name,
         cwd = first_pane_cwd(workspace),
+        domain = domain,
         source = "open",
         is_active = workspace.is_active == true,
         is_open = true,
         open_index = workspace.index,
         last_opened_at = switcher_state().last_opened[id],
       }
+      if include_workspace_item(item) then
+        items[#items + 1] = item
+      end
     end
   end
 
@@ -394,7 +568,7 @@ local function merged_workspace_items(force_refresh)
       return a.is_open
     end
     if a.is_active ~= b.is_active then
-      return a.is_active
+      return not a.is_active
     end
 
     local a_time = tonumber(a.last_opened_at) or 0
@@ -409,12 +583,67 @@ local function merged_workspace_items(force_refresh)
 end
 
 local function default_format_item(workspace)
+  local switcher = switcher_state()
   local name_color = workspace.is_active and ui_theme.open
     or (workspace.is_open and ui_theme.user or ui_theme.muted)
+  local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
+  local status_width = math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
+  local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
+  local cwd_width = math.max(12, total_width - status_width - name_width - (gap_width * 2) - 10)
+
+  local function pad_right(value, width)
+    value = tostring(value or "")
+    if #value >= width then
+      return value
+    end
+    return value .. string.rep(" ", width - #value)
+  end
+
+  local function truncate_end(value, width)
+    value = tostring(value or "")
+    if #value <= width then
+      return value
+    end
+    if width <= 3 then
+      return value:sub(1, width)
+    end
+    return value:sub(1, width - 3) .. "..."
+  end
+
+  local function truncate_start(value, width)
+    value = tostring(value or "")
+    if #value <= width then
+      return value
+    end
+    if width <= 3 then
+      return value:sub(#value - width + 1)
+    end
+    return "..." .. value:sub(#value - width + 4)
+  end
+
+  local name_text = pad_right(truncate_end(workspace.name, name_width), name_width)
+  local status_text = workspace.is_active and ACTIVE_WORKSPACE_MARKER or " "
+  local cwd_text = trim_string(workspace.cwd)
+  if cwd_text == "" then
+    cwd_text = workspace.is_active and "Current workspace"
+      or (workspace.is_open and "Open workspace" or "Known workspace")
+  end
+
+  local domain = normalize_domain(workspace.domain)
+  local current_domain = normalize_domain(current_domain_name())
+  if domain ~= nil and domain ~= current_domain then
+    cwd_text = "[" .. domain .. "] " .. cwd_text
+  end
+
+  cwd_text = truncate_start(cwd_text, cwd_width)
 
   return {
-    ui.span(workspace.name, { fg = name_color, bold = workspace.is_active }),
-    ui.span("  " .. (workspace.cwd or ""), { fg = ui_theme.muted }),
+    ui.span(pad_right(status_text, status_width), { fg = workspace.is_active and ui_theme.open or ui_theme.subtle, bold = workspace.is_active }),
+    ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),
+    ui.span(name_text, { fg = name_color, bold = workspace.is_active }),
+    ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),
+    ui.span(cwd_text, { fg = ui_theme.subtle }),
   }
 end
 
@@ -451,14 +680,16 @@ local function switch_to_workspace(workspace)
   open_new_workspace_from_item({
     name = workspace.name,
     cwd = workspace.cwd or current_pane_cwd(),
+    domain = workspace.domain,
   })
 end
 
 open_new_workspace_from_item = function(item)
   local name = item and item.name or nil
   local cwd = item and item.cwd or nil
+  local domain = item and item.domain or nil
 
-  hollow.term.new_workspace({ cwd = cwd })
+  hollow.term.new_workspace({ cwd = cwd, domain = domain })
   if type(name) == "string" and name ~= "" then
     hollow.term.set_workspace_name(name)
     ensure_last_opened(name)
@@ -547,8 +778,16 @@ function ui.workspace.configure(opts)
     switcher.cached_items = nil
     switcher.cache_loaded_at_ms = 0
   end
+  if opts.sources ~= nil then
+    switcher.sources = opts.sources
+    switcher.cached_items = nil
+    switcher.cache_loaded_at_ms = 0
+  end
   if opts.format_item ~= nil then
     switcher.format_item = opts.format_item
+  end
+  if opts.filter_item ~= nil then
+    switcher.filter_item = opts.filter_item
   end
   if opts.cache_ttl_ms ~= nil then
     switcher.cache_ttl_ms = opts.cache_ttl_ms
@@ -563,6 +802,15 @@ function ui.workspace.configure(opts)
   end
   if opts.width ~= nil then
     switcher.width = opts.width
+  end
+  if opts.name_column_width ~= nil then
+    switcher.name_column_width = opts.name_column_width
+  end
+  if opts.status_column_width ~= nil then
+    switcher.status_column_width = opts.status_column_width
+  end
+  if opts.column_gap ~= nil then
+    switcher.column_gap = opts.column_gap
   end
   if opts.height ~= nil then
     switcher.height = opts.height
