@@ -55,6 +55,52 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 hollow.keymap.set("<C-S-n>", hollow.term.new_tab)
 ```
 
+## SSH Domains
+
+Hollow supports first-class SSH domains in addition to plain shell domains.
+
+Example:
+
+```lua
+hollow.config.set({
+    default_domain = "wsl",
+    domains = {
+        wsl = {
+            shell = "C:\\Windows\\System32\\wsl.exe",
+            default_cwd = "/home/me",
+        },
+        tower = {
+            ssh = {
+                host = "10.0.0.8",
+                user = "root",
+                backend = "wsl", -- "native" or "wsl"
+                reuse = "auto", -- "none" or "auto"
+            },
+        },
+    },
+})
+```
+
+Fields:
+
+- `host`: remote hostname or IP
+- `user`: optional SSH user
+- `alias`: optional SSH config host alias; used when `host` is omitted
+- `backend`: `"native"` uses the host SSH client, `"wsl"` uses `wsl.exe ssh ...` on Windows
+- `reuse`: `"auto"` enables OpenSSH multiplexing where supported
+
+Behavior:
+
+- New tabs and split panes inherit the current domain, including SSH domains.
+- When `host` is set, Hollow prefers `user@host` over `alias`.
+- `backend = "wsl"` is the best choice on Windows if you want Linux-side SSH config and connection reuse.
+
+Connection reuse:
+
+- `reuse = "auto"` enables OpenSSH multiplexing flags for WSL-backed SSH domains on Windows and for native SSH on Linux/macOS.
+- Native Windows `ssh.exe` does not reliably support the same multiplexing flow, so Hollow intentionally falls back to normal SSH launches there.
+- If you want passwordless repeated connections on native Windows, use SSH keys and `ssh-agent`.
+
 ## UI widgets
 
 Widgets use shared primitives:

@@ -173,7 +173,17 @@
 
 ---@class HollowDomainConfig
 ---@field shell? string
+---@field ssh? HollowSshDomainConfig
 ---@field default_cwd? string
+
+---@alias HollowSshBackend "native"|"wsl"
+---@alias HollowSshReuse "none"|"auto"
+---@class HollowSshDomainConfig
+---@field host? string
+---@field user? string
+---@field alias? string
+---@field backend? HollowSshBackend
+---@field reuse? HollowSshReuse
 
 ---@class HollowPane
 ---@field id integer
@@ -1145,6 +1155,9 @@ function process.exec(opts) end
 ---@field current_pane_id fun(): integer|nil
 ---@field reload_config fun(): boolean
 ---@field strftime fun(fmt: string): string
+---@field read_dir fun(path: string): string[]
+---@field run_child_process fun(args: string[]): boolean, string, string
+---@field run_domain_process fun(args: string[], domain?: string): boolean, string, string
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
@@ -1176,6 +1189,9 @@ function process.exec(opts) end
 ---@field htp HollowHtpNamespace
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
+---@field read_dir fun(path: string): string[]
+---@field run_child_process fun(args: string[]): boolean, string, string
+---@field run_domain_process fun(args: string[], domain?: string): boolean, string, string
 
 ---@type Hollow
 hollow = {}

@@ -20,6 +20,12 @@ Primary namespaces:
 - `hollow.htp`
 - `hollow.process`
 
+Additional top-level helpers:
+
+- `hollow.read_dir(path)`
+- `hollow.run_child_process(args)`
+- `hollow.run_domain_process(args, domain?)`
+
 Returned tab, pane, and workspace objects are snapshots. Treat them as read-only.
 
 ## `hollow.config`
@@ -45,7 +51,13 @@ hollow.config.set({
     },
     pwsh = { shell = "pwsh.exe" },
     cmd = { shell = "cmd.exe" },
-    ssh = { shell = "ssh user@example.com" },
+    ssh = {
+      ssh = {
+        alias = "user@example.com",
+        backend = "wsl",
+        reuse = "auto",
+      },
+    },
     unix = { shell = "/bin/zsh" },
   },
 })
@@ -54,6 +66,26 @@ hollow.config.set({
 `default_domain` picks the shell used for normal tab/pane creation when no domain is passed explicitly.
 `domains` maps a domain name to either a shell string or an object with per-domain options.
 `default_cwd` is used when a pane starts in that domain without an explicit cwd.
+
+SSH domain options:
+
+```lua
+domains = {
+  tower = {
+    ssh = {
+      host = "10.0.0.8",
+      user = "root",
+      alias = "tower",
+      backend = "native", -- or "wsl"
+      reuse = "none", -- or "auto"
+    },
+  },
+}
+```
+
+`alias` uses an SSH config host directly when `host` is not provided. When `host` is set, Hollow prefers `user@host`.
+`backend = "wsl"` launches the SSH client through `wsl.exe`, which is useful on Windows when you want Linux-side SSH config and multiplexing behavior.
+`reuse = "auto"` enables OpenSSH multiplexing flags for WSL/Linux-backed SSH domains. Native Windows OpenSSH falls back safely without extra reuse flags.
 
 ## `hollow.term`
 
@@ -191,6 +223,32 @@ Built-in events currently include:
 - `window:blurred`
 
 Built-in events cannot be emitted from Lua.
+
+## Filesystem And Process Helpers
+
+```lua
+hollow.read_dir(path)
+hollow.run_child_process(args)
+hollow.run_domain_process(args, domain?)
+```
+
+`read_dir(path)` returns an array of absolute entry paths for the given absolute directory path.
+
+`run_child_process(args)` runs a child process with the provided argv array and returns:
+
+```lua
+success, stdout, stderr
+```
+
+This mirrors the simple tuple style used by WezTerm-style config APIs, but is implemented by Hollow.
+
+`run_domain_process(args, domain?)` resolves the configured Hollow domain shell and runs the argv through that domain.
+If `domain` is omitted, Hollow uses the current pane domain.
+It returns the same tuple:
+
+```lua
+success, stdout, stderr
+```
 
 ## `hollow.keymap`
 

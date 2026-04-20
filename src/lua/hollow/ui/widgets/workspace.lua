@@ -69,9 +69,14 @@ local function path_join(base, name)
   return trimmed_base .. separator .. trimmed_name
 end
 
-local function shell_escape(value)
-  value = tostring(value or "")
-  return "'" .. value:gsub("'", "'\\''") .. "'"
+local function path_basename(path)
+  path = trim_string(path)
+  if path == "" then
+    return ""
+  end
+
+  local normalized = path:gsub("[\\/]+$", "")
+  return normalized:match("([^\\/]+)$") or normalized
 end
 
 local function default_project_roots()
@@ -115,26 +120,23 @@ local function scan_projects_in_root(root)
     return {}
   end
 
-  local command = string.format('ls -1A "%s" 2>/dev/null', root:gsub('"', '\\"'))
-  local pipe = io.popen(command)
-  if pipe == nil then
+  local ok, entries = pcall(hollow.read_dir, root)
+  if not ok or type(entries) ~= "table" then
     return {}
   end
 
   local items = {}
-  for entry in pipe:lines() do
-    local name = trim_string(entry)
-    if name ~= "" and name:sub(1, 1) ~= "." then
-      local cwd = path_join(root, name)
-      if path_exists(cwd) then
-        items[#items + 1] = {
-          name = name,
-          cwd = cwd,
-        }
-      end
+  for _, entry in ipairs(entries) do
+    local cwd = trim_string(entry)
+    local name = path_basename(cwd)
+    if name ~= "" and name:sub(1, 1) ~= "." and path_exists(cwd) then
+      items[#items + 1] = {
+        name = name,
+        cwd = cwd,
+      }
     end
   end
-  pipe:close()
+
   return items
 end
 
@@ -146,7 +148,11 @@ local function scan_projects_in_wsl_root(source_name, root)
 
   local escaped_name = source_name:gsub('"', '\\"')
   local escaped_root = root:gsub('"', '\\"')
-  local command = 'cmd.exe /c "wsl.exe -d ' .. escaped_name .. ' -- ls -1A \"' .. escaped_root .. '\" 2>nul"'
+  local command = 'cmd.exe /c "wsl.exe -d '
+    .. escaped_name
+    .. ' -- ls -1A "'
+    .. escaped_root
+    .. '" 2>nul"'
   local pipe = io.popen(command)
   if pipe == nil then
     if ui.notify and ui.notify.warn then
@@ -400,6 +406,54 @@ local function source_resolver(source)
   return resolver
 end
 
+local function wsl_unc_to_linux_path(path)
+  local normalized = trim_string(path):gsub("\\", "/")
+  if normalized == "" then
+    return nil
+  end
+
+  local linux_path = normalized:match("^//wsl%$/[^/]+(/.*)$")
+    or normalized:match("^//wsl%.localhost/[^/]+(/.*)$")
+  return linux_path
+end
+
+local function resolve_source_item_cwd(source, item)
+  if type(source) ~= "table" or type(item) ~= "table" then
+    return item
+  end
+
+  local resolver = source.cwd_resolver
+  local cwd = trim_string(item.cwd)
+  if resolver == nil or cwd == "" then
+    return item
+  end
+
+  local clone = util.clone_value(item)
+
+  if resolver == "wsl_unc" then
+    clone.cwd = wsl_unc_to_linux_path(cwd) or cwd
+    return clone
+  end
+
+  if type(resolver) ~= "function" then
+    return item
+  end
+
+  local ok, resolved = pcall(resolver, cwd, util.clone_value(clone), util.clone_value(source))
+  if not ok then
+    return item
+  end
+
+  if type(resolved) == "string" then
+    resolved = trim_string(resolved)
+    clone.cwd = resolved ~= "" and resolved or nil
+  elseif resolved == nil then
+    clone.cwd = nil
+  end
+
+  return clone
+end
+
 local function normalize_possible_workspace(item)
   if type(item) == "string" then
     local name = trim_string(item)
@@ -434,7 +488,8 @@ local function normalize_possible_workspace(item)
   local domain = normalize_domain(item.domain)
 
   return {
-    id = trim_string(item.id) ~= "" and trim_string(item.id) or workspace_identity(name, cwd, domain),
+    id = trim_string(item.id) ~= "" and trim_string(item.id)
+      or workspace_identity(name, cwd, domain),
     name = name,
     cwd = cwd,
     domain = domain,
@@ -442,6 +497,18 @@ local function normalize_possible_workspace(item)
     is_active = false,
     is_open = false,
   }
+end
+
+local function source_workspace_item(raw, source, resolved_domain)
+  if type(raw) == "table" then
+    raw = util.clone_value(raw)
+    if raw.domain == nil then
+      raw.domain = resolved_domain
+    end
+    raw = resolve_source_item_cwd(source, raw)
+  end
+
+  return normalize_possible_workspace(raw)
 end
 
 local function cached_known_workspaces(force_refresh)
@@ -465,12 +532,13 @@ local function cached_known_workspaces(force_refresh)
       local ok, result = pcall(source.items)
       if ok and type(result) == "table" then
         for _, raw in ipairs(result) do
-          if type(raw) == "table" and raw.domain == nil then
-            raw = util.clone_value(raw)
-            raw.domain = resolved_domain
-          end
-          local item = normalize_possible_workspace(raw)
-          if item ~= nil and item.id ~= "" and include_workspace_item(item) and not seen[item.id] then
+          local item = source_workspace_item(raw, source, resolved_domain)
+          if
+            item ~= nil
+            and item.id ~= ""
+            and include_workspace_item(item)
+            and not seen[item.id]
+          then
             seen[item.id] = true
             items[#items + 1] = item
           end
@@ -487,9 +555,13 @@ local function cached_known_workspaces(force_refresh)
           scanned = scan_projects_in_root(root)
         end
         for _, raw in ipairs(scanned) do
-          raw.domain = resolved_domain
-          local item = normalize_possible_workspace(raw)
-          if item ~= nil and item.id ~= "" and include_workspace_item(item) and not seen[item.id] then
+          local item = source_workspace_item(raw, source, resolved_domain)
+          if
+            item ~= nil
+            and item.id ~= ""
+            and include_workspace_item(item)
+            and not seen[item.id]
+          then
             seen[item.id] = true
             items[#items + 1] = item
           end
@@ -587,7 +659,8 @@ local function default_format_item(workspace)
   local name_color = workspace.is_active and ui_theme.open
     or (workspace.is_open and ui_theme.user or ui_theme.muted)
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
-  local status_width = math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local status_width =
+    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local cwd_width = math.max(12, total_width - status_width - name_width - (gap_width * 2) - 10)
@@ -639,7 +712,10 @@ local function default_format_item(workspace)
   cwd_text = truncate_start(cwd_text, cwd_width)
 
   return {
-    ui.span(pad_right(status_text, status_width), { fg = workspace.is_active and ui_theme.open or ui_theme.subtle, bold = workspace.is_active }),
+    ui.span(
+      pad_right(status_text, status_width),
+      { fg = workspace.is_active and ui_theme.open or ui_theme.subtle, bold = workspace.is_active }
+    ),
     ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),
     ui.span(name_text, { fg = name_color, bold = workspace.is_active }),
     ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),

@@ -49,6 +49,31 @@ function hollow._emit_builtin_event(name, payload)
   events_runtime.emit_event(name, adapted, true)
 end
 
+function hollow.read_dir(path)
+  return host_api.read_dir(path)
+end
+
+function hollow.run_child_process(args)
+  return host_api.run_child_process(args)
+end
+
+function hollow.run_domain_process(args, domain)
+  if type(args) ~= "table" then
+    error("hollow.run_domain_process(args, domain?) expects args to be a table")
+  end
+
+  if domain == nil then
+    local pane = hollow.term.current_pane()
+    domain = pane and pane.domain or nil
+  end
+
+  if type(domain) ~= "string" or domain == "" then
+    error("hollow.run_domain_process(args, domain?) could not resolve a domain")
+  end
+
+  return host_api.run_domain_process(domain, args)
+end
+
 function hollow.process.spawn(opts)
   util.unsupported("hollow.process.spawn")
 end

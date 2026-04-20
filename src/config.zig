@@ -17,10 +17,44 @@ pub const RendererBackend = enum {
 };
 
 pub const Config = struct {
+    pub const DomainSshBackend = enum {
+        native,
+        wsl,
+    };
+
+    pub const DomainSshReuse = enum {
+        none,
+        auto,
+    };
+
+    pub const DomainSshSpec = struct {
+        host: ?[]const u8 = null,
+        user: ?[]const u8 = null,
+        alias: ?[]const u8 = null,
+        backend: DomainSshBackend = .native,
+        reuse: DomainSshReuse = .none,
+    };
+
+    pub const DomainSsh = struct {
+        host: ?[]u8 = null,
+        user: ?[]u8 = null,
+        alias: ?[]u8 = null,
+        backend: DomainSshBackend = .native,
+        reuse: DomainSshReuse = .none,
+
+        pub fn deinit(self: *DomainSsh, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.host);
+            freeOwned(allocator, &self.user);
+            freeOwned(allocator, &self.alias);
+            self.* = .{};
+        }
+    };
+
     pub const Domain = struct {
         name: []u8,
         shell: ?[]u8 = null,
         default_cwd: ?[]u8 = null,
+        ssh: ?DomainSsh = null,
     };
 
     pub const TerminalTheme = struct {
@@ -253,6 +287,7 @@ pub const Config = struct {
             self.allocator.free(domain.name);
             freeOwned(self.allocator, &domain.shell);
             freeOwned(self.allocator, &domain.default_cwd);
+            if (domain.ssh) |*ssh| ssh.deinit(self.allocator);
         }
         self.domains.deinit(self.allocator);
         freeOwned(self.allocator, &self.htp_transport);
@@ -333,27 +368,93 @@ pub const Config = struct {
     }
 
     pub fn setDomainShell(self: *Config, name: []const u8, shell_value: []const u8) !void {
-        if (self.domainByNamePtr(name)) |domain| {
-            try replaceOwned(self.allocator, &domain.shell, shell_value);
-            return;
+        const domain = try self.ensureDomain(name);
+        if (domain.ssh) |*ssh| {
+            ssh.deinit(self.allocator);
+            domain.ssh = null;
         }
-
-        try self.domains.append(self.allocator, .{
-            .name = try self.allocator.dupe(u8, name),
-            .shell = try self.allocator.dupe(u8, shell_value),
-        });
+        try replaceOwned(self.allocator, &domain.shell, shell_value);
     }
 
     pub fn setDomainDefaultCwd(self: *Config, name: []const u8, cwd_value: []const u8) !void {
-        if (self.domainByNamePtr(name)) |domain| {
-            try replaceOwned(self.allocator, &domain.default_cwd, cwd_value);
-            return;
+        const domain = try self.ensureDomain(name);
+        try replaceOwned(self.allocator, &domain.default_cwd, cwd_value);
+    }
+
+    pub fn setDomainSsh(self: *Config, name: []const u8, spec: DomainSshSpec) !void {
+        const domain = try self.ensureDomain(name);
+
+        if (domain.ssh) |*ssh| {
+            ssh.deinit(self.allocator);
         }
+
+        domain.ssh = .{
+            .host = if (spec.host) |value| try self.allocator.dupe(u8, value) else null,
+            .user = if (spec.user) |value| try self.allocator.dupe(u8, value) else null,
+            .alias = if (spec.alias) |value| try self.allocator.dupe(u8, value) else null,
+            .backend = spec.backend,
+            .reuse = spec.reuse,
+        };
+
+        const shell_value = try self.buildSshDomainShell(domain.ssh.?);
+        defer self.allocator.free(shell_value);
+        try replaceOwned(self.allocator, &domain.shell, shell_value);
+    }
+
+    fn ensureDomain(self: *Config, name: []const u8) !*Domain {
+        if (self.domainByNamePtr(name)) |domain| return domain;
 
         try self.domains.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
-            .default_cwd = try self.allocator.dupe(u8, cwd_value),
         });
+        return &self.domains.items[self.domains.items.len - 1];
+    }
+
+    fn buildSshDomainShell(self: *Config, ssh: DomainSsh) ![]u8 {
+        const target = if (ssh.host) |host|
+            if (host.len > 0) blk: {
+                if (ssh.user) |user| {
+                    break :blk try std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ user, host });
+                }
+                break :blk try self.allocator.dupe(u8, host);
+            } else null
+        else if (ssh.alias) |alias|
+            if (alias.len > 0) try self.allocator.dupe(u8, alias) else null
+        else
+            null;
+
+        const destination = target orelse return error.InvalidSshDomain;
+        defer self.allocator.free(destination);
+
+        const reuse_flags = try self.sshReuseFlags(ssh);
+        defer self.allocator.free(reuse_flags);
+
+        if (ssh.backend == .wsl and platform.isWindows()) {
+            if (reuse_flags.len > 0) {
+                return std.fmt.allocPrint(self.allocator, "wsl.exe ssh {s} {s}", .{ reuse_flags, destination });
+            }
+            return std.fmt.allocPrint(self.allocator, "wsl.exe ssh {s}", .{destination});
+        }
+
+        if (reuse_flags.len > 0) {
+            return std.fmt.allocPrint(self.allocator, "ssh {s} {s}", .{ reuse_flags, destination });
+        }
+        return std.fmt.allocPrint(self.allocator, "ssh {s}", .{destination});
+    }
+
+    fn sshReuseFlags(self: *Config, ssh: DomainSsh) ![]u8 {
+        if (ssh.reuse != .auto) return self.allocator.dupe(u8, "");
+
+        if (ssh.backend == .wsl and platform.isWindows()) {
+            return std.fmt.allocPrint(self.allocator, "-o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/hollow-ssh-%C", .{});
+        }
+
+        if (!platform.isWindows()) {
+            return std.fmt.allocPrint(self.allocator, "-o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/hollow-ssh-%C", .{});
+        }
+
+        // Windows native OpenSSH does not reliably support Unix-socket based multiplexing.
+        return self.allocator.dupe(u8, "");
     }
 
     fn domainByName(self: Config, name: []const u8) ?Domain {

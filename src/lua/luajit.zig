@@ -1059,6 +1059,18 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "strftime");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_read_dir, 1);
+        api.set_field(self.state, -2, "read_dir");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_run_child_process, 1);
+        api.set_field(self.state, -2, "run_child_process");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_run_domain_process, 1);
+        api.set_field(self.state, -2, "run_domain_process");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_split_pane, 1);
         api.set_field(self.state, -2, "split_pane");
 
@@ -1560,6 +1572,424 @@ fn l_strftime(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_read_dir(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "read_dir expects a string path");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "read_dir expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
+        std.log.warn("lua: read_dir failed path={s} err={s}", .{ path, @errorName(err) });
+        return api.raise_error(state, "read_dir failed");
+    };
+    defer dir.close();
+
+    api.create_table(state, 0, 0);
+    var it = dir.iterate();
+    var index: c_int = 1;
+    while (true) {
+        const entry = it.next() catch |err| {
+            std.log.warn("lua: read_dir iterate failed path={s} err={s}", .{ path, @errorName(err) });
+            return api.raise_error(state, "read_dir failed");
+        };
+        const item = entry orelse break;
+        if (std.mem.eql(u8, item.name, ".") or std.mem.eql(u8, item.name, "..")) continue;
+
+        const joined = std.fs.path.join(std.heap.page_allocator, &.{ path, item.name }) catch {
+            return api.raise_error(state, "read_dir failed");
+        };
+        defer std.heap.page_allocator.free(joined);
+
+        const zjoined = std.heap.page_allocator.dupeZ(u8, joined) catch {
+            return api.raise_error(state, "read_dir failed");
+        };
+        defer std.heap.page_allocator.free(zjoined);
+
+        api.push_string(state, zjoined);
+        api.rawseti(state, -2, index);
+        index += 1;
+    }
+
+    return 1;
+}
+
+fn l_run_child_process(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
+        return api.raise_error(state, "run_child_process expects an argv table");
+    }
+
+    const argv_idx = absoluteIndex(api, state, 1);
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(std.heap.page_allocator);
+
+    var arg_index: c_int = 1;
+    while (true) : (arg_index += 1) {
+        api.push_number(state, @floatFromInt(arg_index));
+        api.get_table(state, argv_idx);
+        defer pop(api, state, 1);
+
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+            return api.raise_error(state, "run_child_process argv items must be strings");
+        }
+
+        var item_len: usize = 0;
+        const item_ptr = api.to_lstring(state, -1, &item_len) orelse {
+            return api.raise_error(state, "run_child_process argv items must be strings");
+        };
+        argv.append(std.heap.page_allocator, item_ptr[0..item_len]) catch {
+            return api.raise_error(state, "run_child_process failed");
+        };
+    }
+
+    if (argv.items.len == 0) {
+        return api.raise_error(state, "run_child_process expects at least one argv item");
+    }
+
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = argv.items,
+    }) catch |err| {
+        std.log.warn("lua: run_child_process failed err={s}", .{@errorName(err)});
+        api.push_boolean(state, 0);
+        api.push_string(state, "");
+        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        defer std.heap.page_allocator.free(zerr);
+        api.push_string(state, zerr);
+        return 3;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    const success = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+
+    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, "run_child_process failed");
+    defer std.heap.page_allocator.free(zstdout);
+    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, "run_child_process failed");
+    defer std.heap.page_allocator.free(zstderr);
+
+    api.push_boolean(state, if (success) 1 else 0);
+    api.push_string(state, zstdout);
+    api.push_string(state, zstderr);
+    return 3;
+}
+
+fn l_run_domain_process(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "run_domain_process expects a domain string");
+    }
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .table) {
+        return api.raise_error(state, "run_domain_process expects an argv table");
+    }
+
+    var domain_len: usize = 0;
+    const domain_ptr = api.to_lstring(state, 1, &domain_len) orelse {
+        return api.raise_error(state, "run_domain_process expects a domain string");
+    };
+    const domain = domain_ptr[0..domain_len];
+
+    const argv_idx = absoluteIndex(api, state, 2);
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(std.heap.page_allocator);
+
+    var arg_index: c_int = 1;
+    while (true) : (arg_index += 1) {
+        api.push_number(state, @floatFromInt(arg_index));
+        api.get_table(state, argv_idx);
+        defer pop(api, state, 1);
+
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+            return api.raise_error(state, "run_domain_process argv items must be strings");
+        }
+
+        var item_len: usize = 0;
+        const item_ptr = api.to_lstring(state, -1, &item_len) orelse {
+            return api.raise_error(state, "run_domain_process argv items must be strings");
+        };
+        args.append(std.heap.page_allocator, item_ptr[0..item_len]) catch {
+            return api.raise_error(state, "run_domain_process failed");
+        };
+    }
+
+    if (args.items.len == 0) {
+        return api.raise_error(state, "run_domain_process expects at least one argv item");
+    }
+
+    const shell = ctx.cfg.shellForDomain(domain) catch |err| {
+        std.log.warn("lua: run_domain_process unknown shell domain={s} err={s}", .{ domain, @errorName(err) });
+        api.push_boolean(state, 0);
+        api.push_string(state, "");
+        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        defer std.heap.page_allocator.free(zerr);
+        api.push_string(state, zerr);
+        return 3;
+    };
+
+    const result = runDomainProcess(shell, ctx.cfg.defaultCwdForDomain(domain), args.items) catch |err| {
+        std.log.warn("lua: run_domain_process failed domain={s} err={s}", .{ domain, @errorName(err) });
+        api.push_boolean(state, 0);
+        api.push_string(state, "");
+        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        defer std.heap.page_allocator.free(zerr);
+        api.push_string(state, zerr);
+        return 3;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    const success = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+
+    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, "run_domain_process failed");
+    defer std.heap.page_allocator.free(zstdout);
+    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, "run_domain_process failed");
+    defer std.heap.page_allocator.free(zstderr);
+
+    api.push_boolean(state, if (success) 1 else 0);
+    api.push_string(state, zstdout);
+    api.push_string(state, zstderr);
+    return 3;
+}
+
+fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u8) !std.process.Child.RunResult {
+    const parsed_shell = try parseCommandString(shell);
+    defer freeOwnedArgv(parsed_shell);
+
+    if (parsed_shell.len == 0) return error.InvalidExe;
+
+    const shell_program = parsed_shell[0];
+    const shell_name = std.fs.path.basename(shell_program);
+    const command = if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))
+        try cmdCommandFromArgv(args)
+    else if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell"))
+        try powershellCommandFromArgv(args)
+    else if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe"))
+        try remoteShellCommandFromArgv(args, cwd)
+    else
+        try shellCommandFromArgv(args);
+    defer std.heap.page_allocator.free(command);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(std.heap.page_allocator);
+
+    try argv.appendSlice(std.heap.page_allocator, parsed_shell);
+
+    if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
+        if (cwd) |dir| {
+            if (dir.len > 0) {
+                try argv.append(std.heap.page_allocator, "--cd");
+                try argv.append(std.heap.page_allocator, dir);
+            }
+        }
+        try argv.append(std.heap.page_allocator, "sh");
+        try argv.append(std.heap.page_allocator, "-lc");
+        try argv.append(std.heap.page_allocator, command);
+        return try std.process.Child.run(.{
+            .allocator = std.heap.page_allocator,
+            .argv = argv.items,
+        });
+    }
+
+    if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe")) {
+        try argv.append(std.heap.page_allocator, "sh");
+        try argv.append(std.heap.page_allocator, "-lc");
+        try argv.append(std.heap.page_allocator, command);
+        return try std.process.Child.run(.{
+            .allocator = std.heap.page_allocator,
+            .argv = argv.items,
+        });
+    }
+
+    if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
+        try argv.append(std.heap.page_allocator, "-Command");
+        try argv.append(std.heap.page_allocator, command);
+    } else if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
+        try argv.append(std.heap.page_allocator, "/C");
+        try argv.append(std.heap.page_allocator, command);
+    } else {
+        try argv.append(std.heap.page_allocator, "-lc");
+        try argv.append(std.heap.page_allocator, command);
+    }
+
+    return try std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = argv.items,
+        .cwd = if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) null else cwd,
+    });
+}
+
+fn parseCommandString(command: []const u8) ![]const []const u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    errdefer freeOwnedArgv(parts.items);
+
+    var current = std.ArrayList(u8).empty;
+    defer current.deinit(std.heap.page_allocator);
+
+    var quote: ?u8 = null;
+    var escaped = false;
+
+    for (command) |ch| {
+        if (escaped) {
+            try current.append(std.heap.page_allocator, ch);
+            escaped = false;
+            continue;
+        }
+
+        if (ch == '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (quote) |q| {
+            if (ch == q) {
+                quote = null;
+            } else {
+                try current.append(std.heap.page_allocator, ch);
+            }
+            continue;
+        }
+
+        if (ch == '\'' or ch == '"') {
+            quote = ch;
+            continue;
+        }
+
+        if (std.ascii.isWhitespace(ch)) {
+            if (current.items.len == 0) continue;
+            try parts.append(std.heap.page_allocator, try current.toOwnedSlice(std.heap.page_allocator));
+            current = std.ArrayList(u8).empty;
+            continue;
+        }
+
+        try current.append(std.heap.page_allocator, ch);
+    }
+
+    if (escaped) try current.append(std.heap.page_allocator, '\\');
+    if (quote != null) return error.InvalidCharacter;
+    if (current.items.len > 0) {
+        try parts.append(std.heap.page_allocator, try current.toOwnedSlice(std.heap.page_allocator));
+    }
+
+    return try parts.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn freeOwnedArgv(argv: []const []const u8) void {
+    for (argv) |item| std.heap.page_allocator.free(item);
+    std.heap.page_allocator.free(argv);
+}
+
+fn shellCommandFromArgv(args: []const []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(std.heap.page_allocator);
+
+    for (args, 0..) |arg, index| {
+        if (index != 0) try buffer.append(std.heap.page_allocator, ' ');
+        try appendShellQuoted(&buffer, arg);
+    }
+
+    return try buffer.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn remoteShellCommandFromArgv(args: []const []const u8, cwd: ?[]const u8) ![]u8 {
+    const command = try shellCommandFromArgv(args);
+    errdefer std.heap.page_allocator.free(command);
+    if (cwd) |dir| {
+        if (dir.len > 0) {
+            const dir_command = try shellCommandFromArgv(&.{ "cd", dir });
+            defer std.heap.page_allocator.free(dir_command);
+            return try std.fmt.allocPrint(std.heap.page_allocator, "{s} && {s}", .{ dir_command, command });
+        }
+    }
+    return command;
+}
+
+fn powershellCommandFromArgv(args: []const []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(std.heap.page_allocator);
+
+    for (args, 0..) |arg, index| {
+        if (index != 0) try buffer.append(std.heap.page_allocator, ' ');
+        try appendPowershellQuoted(&buffer, arg);
+    }
+
+    return try buffer.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn appendPowershellQuoted(buffer: *std.ArrayList(u8), value: []const u8) !void {
+    try buffer.append(std.heap.page_allocator, '\'');
+    for (value) |ch| {
+        if (ch == '\'') {
+            try buffer.appendSlice(std.heap.page_allocator, "''");
+        } else {
+            try buffer.append(std.heap.page_allocator, ch);
+        }
+    }
+    try buffer.append(std.heap.page_allocator, '\'');
+}
+
+fn cmdCommandFromArgv(args: []const []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(std.heap.page_allocator);
+
+    for (args, 0..) |arg, index| {
+        if (index != 0) try buffer.append(std.heap.page_allocator, ' ');
+        try appendCmdQuoted(&buffer, arg);
+    }
+
+    return try buffer.toOwnedSlice(std.heap.page_allocator);
+}
+
+fn appendCmdQuoted(buffer: *std.ArrayList(u8), value: []const u8) !void {
+    const needs_quotes = value.len == 0 or std.mem.indexOfAny(u8, value, " \t\n\"&|<>^()%!") != null;
+    if (!needs_quotes) {
+        try buffer.appendSlice(std.heap.page_allocator, value);
+        return;
+    }
+
+    try buffer.append(std.heap.page_allocator, '"');
+    for (value) |ch| {
+        switch (ch) {
+            '"' => try buffer.appendSlice(std.heap.page_allocator, "\\\""),
+            '%', '^', '&', '|', '<', '>', '(', ')', '!' => {
+                try buffer.append(std.heap.page_allocator, '^');
+                try buffer.append(std.heap.page_allocator, ch);
+            },
+            else => try buffer.append(std.heap.page_allocator, ch),
+        }
+    }
+    try buffer.append(std.heap.page_allocator, '"');
+}
+
+fn appendShellQuoted(buffer: *std.ArrayList(u8), value: []const u8) !void {
+    try buffer.append(std.heap.page_allocator, '\'');
+    for (value) |ch| {
+        if (ch == '\'') {
+            try buffer.appendSlice(std.heap.page_allocator, "'\\''");
+        } else {
+            try buffer.append(std.heap.page_allocator, ch);
+        }
+    }
+    try buffer.append(std.heap.page_allocator, '\'');
+}
+
 fn monthName(month: u8) []const u8 {
     return switch (month) {
         1 => "January",
@@ -1966,7 +2396,16 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (std.mem.eql(u8, key, "ssh") and value_type == .table) {
+            const ssh_idx = absoluteIndex(api, state, -1);
+            try applyDomainSshTable(cfg, api, state, domain_name, ssh_idx);
+            continue;
+        }
+
+        if (value_type != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -1982,6 +2421,59 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
             continue;
         }
     }
+}
+
+fn applyDomainSshTable(cfg: *config.Config, api: Api, state: *State, domain_name: []const u8, table_idx: c_int) !void {
+    var spec: config.Config.DomainSshSpec = .{};
+
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const value = value_ptr[0..value_len];
+
+        if (std.mem.eql(u8, key, "host")) {
+            spec.host = value;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "user")) {
+            spec.user = value;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "alias")) {
+            spec.alias = value;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "backend")) {
+            if (std.mem.eql(u8, value, "wsl")) {
+                spec.backend = .wsl;
+            } else {
+                spec.backend = .native;
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "reuse")) {
+            if (std.mem.eql(u8, value, "auto")) {
+                spec.reuse = .auto;
+            } else {
+                spec.reuse = .none;
+            }
+            continue;
+        }
+    }
+
+    try cfg.setDomainSsh(domain_name, spec);
 }
 
 fn luaStringField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?[]const u8 {

@@ -170,8 +170,18 @@ hwl.config.set({
     pwsh = { shell = "pwsh.exe" },
     powershell = { shell = "powershell.exe" },
     cmd = { shell = "cmd.exe" },
-    ssh = { shell = "ssh" },
     unix = { shell = hwl.platform.default_shell },
+    tower = {
+      ssh = {
+        host = "10.0.0.8",
+        user = "root",
+        alias = "tower", -- optional, use ssh config host if present
+        backend = "wsl", -- "native" | "wsl"
+        reuse = "auto", -- "none" | "auto"
+        -- remote_mux = "tmux", -- nil | "tmux"
+        -- tmux_session = "hollow", -- optional
+      },
+    },
   },
   debug_overlay = false,
   backend = "sokol",
@@ -302,13 +312,20 @@ hollow.ui.workspace.configure({
   --   }
   -- end,
   sources = {
+    -- {
+    --   resolver = "wsl",
+    --   name = "Ubuntu",
+    --   domain = "wsl",
+    --   roots = {
+    --     "/home/francis/Projects",
+    --   },
+    -- },
     {
-      resolver = "wsl",
-      name = "Ubuntu",
       domain = "wsl",
       roots = {
-        "/home/francis/Projects",
+        "\\\\wsl$\\Ubuntu\\home\\francis\\Projects",
       },
+      cwd_resolver = "wsl_unc",
     },
   },
 })
@@ -379,6 +396,14 @@ hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
 hwl.keymap.set("<leader>uu", function()
   hwl.config.reload()
 end, { desc = "reload config" })
+
+hwl.keymap.set("<leader>x", function()
+  hwl.term.new_tab({ domain = "tower" })
+  hwl.ui.notify.info("Running ls -la in tower domain", { ttl = 1200 })
+  -- hwl.term.new_tab({ domain = "pwsh" })
+  -- local d = hwl.run_domain_process({ "ls", "-la" })
+  -- hwl.ui.notify.info("Started tower process : " .. d, { ttl = 1200 })
+end, { desc = "placeholder tower" })
 
 hwl.keymap.set("<leader>r", function()
   local tab = hwl.term.current_tab()

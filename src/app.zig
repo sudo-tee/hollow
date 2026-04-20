@@ -219,6 +219,7 @@ pub const PendingMouseEvent = union(enum) {
     new_tab: ?[]const u8,
     close_tab,
     close_pane,
+    reload_config,
     next_tab,
     prev_tab,
     new_workspace: struct {
@@ -597,6 +598,9 @@ pub const App = struct {
                 },
                 .close_pane => {
                     self.closeActivePane();
+                },
+                .reload_config => {
+                    _ = self.reloadConfig();
                 },
                 .next_tab => {
                     self.nextTab();
@@ -3793,7 +3797,8 @@ fn luaSetTabTitleByIdCallback(app_ptr: *anyopaque, tab_id: usize, title: []const
 
 fn luaReloadConfigCallback(app_ptr: *anyopaque) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    return app.reloadConfig();
+    _ = app.enqueueMouse(.reload_config);
+    return true;
 }
 
 fn luaSendTextToPaneCallback(app_ptr: *anyopaque, pane_id: usize, text: []const u8) bool {

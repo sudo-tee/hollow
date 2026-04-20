@@ -22,6 +22,7 @@ extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.wina
 extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 extern "kernel32" fn CreatePipe(hReadPipe: *windows.HANDLE, hWritePipe: *windows.HANDLE, lpPipeAttributes: ?*windows.SECURITY_ATTRIBUTES, nSize: windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn CreateProcessW(lpApplicationName: ?windows.LPWSTR, lpCommandLine: ?windows.LPWSTR, lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES, lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES, bInheritHandles: windows.BOOL, dwCreationFlags: windows.DWORD, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?windows.LPWSTR, lpStartupInfo: *windows.STARTUPINFOW, lpProcessInformation: *windows.PROCESS_INFORMATION) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn SearchPathW(lpPath: ?windows.LPCWSTR, lpFileName: windows.LPCWSTR, lpExtension: ?windows.LPCWSTR, nBufferLength: windows.DWORD, lpBuffer: ?windows.LPWSTR, lpFilePart: ?*windows.LPWSTR) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: windows.DWORD, dwFlags: windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn InitializeProcThreadAttributeList(lpAttributeList: ?*anyopaque, dwAttributeCount: windows.DWORD, dwFlags: windows.DWORD, lpSize: *usize) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn UpdateProcThreadAttribute(lpAttributeList: ?*anyopaque, dwFlags: windows.DWORD, attribute: usize, lpValue: ?*const anyopaque, cbSize: usize, lpPreviousValue: ?*anyopaque, lpReturnSize: ?*usize) callconv(.winapi) windows.BOOL;
@@ -418,9 +419,11 @@ fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]c
 
     const command_line = try windowsCreateCommandLine(allocator, argv);
     errdefer freeSentinelU8(allocator, command_line);
+    const application = try resolveWindowsProgram(allocator, shell_program);
+    defer allocator.free(application);
 
     return .{
-        .application_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, shell_program),
+        .application_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, application),
         .command_line_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, command_line),
         .cwd_utf16 = if (cwd) |value|
             if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) or value.len == 0) null else try std.unicode.utf8ToUtf16LeAllocZ(allocator, value)
@@ -437,29 +440,33 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
         argv.deinit(allocator);
     }
 
-    try argv.append(allocator, shell);
+    const shell_argv = try parseCommandString(allocator, shell);
+    defer allocator.free(shell_argv);
+    if (shell_argv.len == 0) return error.InvalidCharacter;
+
+    try argv.appendSlice(allocator, shell_argv);
 
     if (launch_command) |cmd| {
         const trimmed = std.mem.trimRight(u8, cmd.command, "\r\n");
         if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
-            try argv.append(allocator, "/Q");
-            try argv.append(allocator, if (cmd.close_on_exit) "/C" else "/K");
+            try argv.append(allocator, try allocator.dupe(u8, "/Q"));
+            try argv.append(allocator, try allocator.dupe(u8, if (cmd.close_on_exit) "/C" else "/K"));
             const wrapped = try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
-            if (!cmd.close_on_exit) try argv.append(allocator, "-NoExit");
-            try argv.append(allocator, "-Command");
+            if (!cmd.close_on_exit) try argv.append(allocator, try allocator.dupe(u8, "-NoExit"));
+            try argv.append(allocator, try allocator.dupe(u8, "-Command"));
             const wrapped = try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
             if (cwd) |dir| {
                 if (dir.len > 0) {
-                    try argv.append(allocator, "--cd");
-                    try argv.append(allocator, dir);
+                    try argv.append(allocator, try allocator.dupe(u8, "--cd"));
+                    try argv.append(allocator, try allocator.dupe(u8, dir));
                 }
             }
-            try argv.append(allocator, "sh");
-            try argv.append(allocator, "-lc");
+            try argv.append(allocator, try allocator.dupe(u8, "sh"));
+            try argv.append(allocator, try allocator.dupe(u8, "-lc"));
             const wrapped = if (cmd.close_on_exit)
                 try std.fmt.allocPrint(allocator, "{s}; exit", .{trimmed})
             else
@@ -473,12 +480,12 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, wrapped);
         }
     } else if ((std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))) {
-        try argv.append(allocator, "/Q");
-        try argv.append(allocator, "/K");
-        try argv.append(allocator, "echo [hollow] child started");
+        try argv.append(allocator, try allocator.dupe(u8, "/Q"));
+        try argv.append(allocator, try allocator.dupe(u8, "/K"));
+        try argv.append(allocator, try allocator.dupe(u8, "echo [hollow] child started"));
     } else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and cwd != null and cwd.?.len > 0) {
-        try argv.append(allocator, "--cd");
-        try argv.append(allocator, cwd.?);
+        try argv.append(allocator, try allocator.dupe(u8, "--cd"));
+        try argv.append(allocator, try allocator.dupe(u8, cwd.?));
     }
 
     return try argv.toOwnedSlice(allocator);
@@ -490,21 +497,127 @@ fn freeArgv(allocator: std.mem.Allocator, argv: []const []const u8) void {
 }
 
 fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const []const u8) void {
-    if (argv.len < 2) return;
-    const shell_name = std.fs.path.basename(argv[0]);
-    if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
-        if (argv.len > 3 and !std.mem.eql(u8, argv[3], "echo [hollow] child started")) allocator.free(argv[3]);
-        return;
+    for (argv) |arg| allocator.free(arg);
+}
+
+fn parseCommandString(allocator: std.mem.Allocator, command: []const u8) ![]const []const u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (parts.items) |item| allocator.free(item);
+        parts.deinit(allocator);
     }
-    if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
-        if (argv.len > 2 and std.mem.eql(u8, argv[argv.len - 2], "-Command")) allocator.free(argv[argv.len - 1]);
-        return;
+
+    var current = std.ArrayList(u8).empty;
+    defer current.deinit(allocator);
+
+    var quote: ?u8 = null;
+
+    for (command) |ch| {
+        if (quote) |q| {
+            if (ch == q) {
+                quote = null;
+            } else {
+                try current.append(allocator, ch);
+            }
+            continue;
+        }
+
+        if (ch == '\'' or ch == '"') {
+            quote = ch;
+            continue;
+        }
+
+        if (std.ascii.isWhitespace(ch)) {
+            if (current.items.len == 0) continue;
+            try parts.append(allocator, try current.toOwnedSlice(allocator));
+            current = std.ArrayList(u8).empty;
+            continue;
+        }
+
+        try current.append(allocator, ch);
     }
-    if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
-        if (argv.len > 0 and std.mem.eql(u8, argv[argv.len - 2], "-lc")) allocator.free(argv[argv.len - 1]);
-        return;
+
+    if (quote != null) return error.InvalidCharacter;
+    if (current.items.len > 0) {
+        try parts.append(allocator, try current.toOwnedSlice(allocator));
     }
-    if (argv.len > 1) allocator.free(argv[1]);
+
+    return try parts.toOwnedSlice(allocator);
+}
+
+fn resolveWindowsProgram(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
+    if (program.len == 0) return allocator.dupe(u8, program);
+    if (std.fs.path.isAbsolute(program) or std.mem.indexOfAny(u8, program, "\\/") != null) {
+        return allocator.dupe(u8, program);
+    }
+
+    if (searchWindowsPath(allocator, program)) |resolved| return resolved else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    if (std.fs.path.extension(program).len == 0) {
+        const exe_name = try std.fmt.allocPrint(allocator, "{s}.exe", .{program});
+        defer allocator.free(exe_name);
+        if (searchWindowsPath(allocator, exe_name)) |resolved| return resolved else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+    }
+
+    if (resolveSystemTool(allocator, program)) |resolved| return resolved else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    return allocator.dupe(u8, program);
+}
+
+fn searchWindowsPath(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
+    const wide_program = try std.unicode.utf8ToUtf16LeAllocZ(allocator, program);
+    defer allocator.free(wide_program);
+
+    const required = SearchPathW(null, wide_program.ptr, null, 0, null, null);
+    if (required == 0) return error.FileNotFound;
+
+    const buf = try allocator.allocSentinel(u16, required, 0);
+    defer allocator.free(buf);
+
+    const actual = SearchPathW(null, wide_program.ptr, null, required, buf.ptr, null);
+    if (actual == 0) return error.FileNotFound;
+
+    return std.unicode.utf16LeToUtf8Alloc(allocator, buf[0..actual]);
+}
+
+fn resolveSystemTool(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
+    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.FileNotFound;
+    defer allocator.free(system_root);
+
+    const base = std.fs.path.basename(program);
+    const tool_name = if (std.fs.path.extension(base).len == 0)
+        try std.fmt.allocPrint(allocator, "{s}.exe", .{base})
+    else
+        try allocator.dupe(u8, base);
+    defer allocator.free(tool_name);
+
+    if (std.ascii.eqlIgnoreCase(tool_name, "ssh.exe") or
+        std.ascii.eqlIgnoreCase(tool_name, "scp.exe") or
+        std.ascii.eqlIgnoreCase(tool_name, "sftp.exe"))
+    {
+        return std.fs.path.join(allocator, &.{ system_root, "System32", "OpenSSH", tool_name });
+    }
+
+    if (std.ascii.eqlIgnoreCase(tool_name, "wsl.exe") or
+        std.ascii.eqlIgnoreCase(tool_name, "cmd.exe"))
+    {
+        return std.fs.path.join(allocator, &.{ system_root, "System32", tool_name });
+    }
+
+    if (std.ascii.eqlIgnoreCase(tool_name, "powershell.exe")) {
+        return std.fs.path.join(allocator, &.{ system_root, "System32", "WindowsPowerShell", "v1.0", tool_name });
+    }
+
+    return error.FileNotFound;
 }
 
 fn shellProgram(shell_command: []const u8) []const u8 {
