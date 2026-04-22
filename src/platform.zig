@@ -127,6 +127,11 @@ pub const LocalTime = struct {
     year: u16,
 };
 
+const OpenExternalArgs = struct {
+    target: []u8,
+    opener: ?[]u8,
+};
+
 pub fn getLocalTime() LocalTime {
     return switch (comptime current()) {
         .windows => getLocalTimeWindows(),
@@ -185,6 +190,40 @@ pub fn openExternal(target: []const u8) !void {
     };
 }
 
+pub fn openExternalAsync(target: []const u8) !void {
+    const owned_target = try std.heap.page_allocator.dupe(u8, target);
+    errdefer std.heap.page_allocator.free(owned_target);
+
+    const thread = try std.Thread.spawn(.{}, openExternalThread, .{OpenExternalArgs{ .target = owned_target, .opener = null }});
+    thread.detach();
+}
+
+pub fn openExternalWithOpenerAsync(target: []const u8, opener: ?[]const u8) !void {
+    const owned_target = try std.heap.page_allocator.dupe(u8, target);
+    errdefer std.heap.page_allocator.free(owned_target);
+    const owned_opener = if (opener) |value| try std.heap.page_allocator.dupe(u8, value) else null;
+    errdefer if (owned_opener) |value| std.heap.page_allocator.free(value);
+
+    const thread = try std.Thread.spawn(.{}, openExternalThread, .{OpenExternalArgs{ .target = owned_target, .opener = owned_opener }});
+    thread.detach();
+}
+
+fn openExternalThread(args: OpenExternalArgs) void {
+    defer std.heap.page_allocator.free(args.target);
+    defer if (args.opener) |value| std.heap.page_allocator.free(value);
+
+    if (args.opener) |opener| {
+        openWithCommand(opener, args.target) catch |err| {
+            std.log.err("open external failed: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
+    openExternal(args.target) catch |err| {
+        std.log.err("open external failed: {s}", .{@errorName(err)});
+    };
+}
+
 fn openExternalWindows(target: []const u8) !void {
     const wide_target = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, target);
     defer std.heap.page_allocator.free(wide_target);
@@ -200,6 +239,14 @@ fn openExternalPosix(target: []const u8, argv: []const []const u8) !void {
     try child_args.append(target);
 
     var child = std.process.Child.init(child_args.items, std.heap.page_allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+}
+
+fn openWithCommand(opener: []const u8, target: []const u8) !void {
+    var child = std.process.Child.init(&.{ opener, target }, std.heap.page_allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;

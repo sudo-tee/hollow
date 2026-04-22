@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const success = 0;
+pub const out_of_space = -3;
 
 pub const TerminalOptions = extern struct {
     cols: u16,
@@ -99,6 +100,35 @@ pub const DeviceAttributes = extern struct {
 pub const String = extern struct {
     ptr: ?[*]const u8,
     len: usize,
+};
+
+pub const PointCoordinate = extern struct {
+    x: u16,
+    y: u32,
+};
+
+pub const PointTag = enum(u32) {
+    active = 0,
+    viewport = 1,
+    screen = 2,
+    history = 3,
+};
+
+pub const PointValue = extern union {
+    coordinate: PointCoordinate,
+    _padding: [2]u64,
+};
+
+pub const Point = extern struct {
+    tag: PointTag,
+    value: PointValue,
+};
+
+pub const GridRef = extern struct {
+    size: usize,
+    node: ?*anyopaque,
+    x: u16,
+    y: u16,
 };
 
 pub const ScrollViewport = extern struct {
@@ -392,6 +422,7 @@ extern fn ghostty_terminal_vt_write(?*anyopaque, [*]const u8, usize) callconv(.c
 extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) void;
 extern fn ghostty_terminal_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) void;
+extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
 extern fn ghostty_terminal_mode_get(?*anyopaque, u32, *bool) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
 extern fn ghostty_render_state_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
@@ -410,6 +441,7 @@ extern fn ghostty_render_state_row_cells_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_row_cells_next(?*anyopaque) callconv(.c) bool;
 extern fn ghostty_render_state_row_cells_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_cell_get(u64, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_grid_ref_hyperlink_uri(*const GridRef, ?[*]u8, usize, *usize) callconv(.c) i32;
 extern fn ghostty_key_encoder_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_key_encoder_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_key_encoder_setopt_from_terminal(?*anyopaque, ?*anyopaque) callconv(.c) void;
@@ -458,6 +490,7 @@ pub const Runtime = struct {
     terminal_resize: *const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void,
     terminal_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
     terminal_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void,
+    terminal_grid_ref: *const fn (?*anyopaque, Point, *GridRef) callconv(.c) i32,
     terminal_mode_get: *const fn (?*anyopaque, u32, *bool) callconv(.c) i32,
     terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
 
@@ -482,6 +515,7 @@ pub const Runtime = struct {
     /// Pure value function: extracts typed data from a raw GhosttyCell u64.
     /// Does not go through the iterator — safe to call with just the cell value.
     cell_get: *const fn (u64, u32, ?*anyopaque) callconv(.c) i32,
+    grid_ref_hyperlink_uri: *const fn (*const GridRef, ?[*]u8, usize, *usize) callconv(.c) i32,
 
     key_encoder_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     key_encoder_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -523,6 +557,7 @@ pub const Runtime = struct {
             .terminal_resize = ghostty_terminal_resize,
             .terminal_get = ghostty_terminal_get,
             .terminal_set = ghostty_terminal_set,
+            .terminal_grid_ref = ghostty_terminal_grid_ref,
             .terminal_mode_get = ghostty_terminal_mode_get,
             .terminal_scroll_viewport = ghostty_terminal_scroll_viewport,
             .render_state_new = ghostty_render_state_new,
@@ -541,6 +576,7 @@ pub const Runtime = struct {
             .row_cells_next = ghostty_render_state_row_cells_next,
             .row_cells_get = ghostty_render_state_row_cells_get,
             .cell_get = ghostty_cell_get,
+            .grid_ref_hyperlink_uri = ghostty_grid_ref_hyperlink_uri,
             .key_encoder_new = ghostty_key_encoder_new,
             .key_encoder_free = ghostty_key_encoder_free,
             .key_encoder_setopt_from_terminal = ghostty_key_encoder_setopt_from_terminal,

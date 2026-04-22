@@ -326,10 +326,10 @@ hollow.ui.workspace.configure({
     -- },
     {
       domain = "wsl",
+      cwd_resolver = "wsl_unc",
       roots = {
         "\\\\wsl$\\Ubuntu\\home\\francis\\Projects",
       },
-      cwd_resolver = "wsl_unc",
     },
     {
       default = false,

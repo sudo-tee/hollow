@@ -2127,6 +2127,7 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "font_smoothing")) return cfg.setFontSmoothing(value);
     if (std.mem.eql(u8, key, "font_hinting")) return cfg.setFontHinting(value);
     if (std.mem.eql(u8, key, "hyperlink_prefixes")) return cfg.setHyperlinkPrefixes(value);
+    if (std.mem.eql(u8, key, "hyperlink_opener")) return cfg.setHyperlinkOpener(value);
     if (std.mem.eql(u8, key, "hyperlink_delimiters")) return cfg.setHyperlinkDelimiters(value);
     if (std.mem.eql(u8, key, "hyperlink_trim_trailing")) return cfg.setHyperlinkTrimTrailing(value);
     if (std.mem.eql(u8, key, "hyperlink_trim_leading")) return cfg.setHyperlinkTrimLeading(value);
@@ -2354,6 +2355,10 @@ fn applyHyperlinksTable(cfg: *config.Config, api: Api, state: *State, table_idx:
 
         if (std.mem.eql(u8, key, "prefixes")) {
             try cfg.setHyperlinkPrefixes(value);
+            continue;
+        }
+        if (std.mem.eql(u8, key, "opener")) {
+            try cfg.setHyperlinkOpener(value);
             continue;
         }
         if (std.mem.eql(u8, key, "delimiters")) {

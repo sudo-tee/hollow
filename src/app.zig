@@ -1777,6 +1777,33 @@ pub const App = struct {
         return null;
     }
 
+    fn hyperlinkUriAt(self: *App, pane: *Pane, point: selection.CellPoint, out: []u8) ?[]const u8 {
+        const rt = self.ghostty orelse return null;
+        const terminal = pane.terminal orelse return null;
+
+        var ref = ghostty.GridRef{
+            .size = @sizeOf(ghostty.GridRef),
+            .node = null,
+            .x = 0,
+            .y = 0,
+        };
+        const lookup_point = ghostty.Point{
+            .tag = .viewport,
+            .value = .{ .coordinate = .{
+                .x = @intCast(point.col),
+                .y = @intCast(point.row),
+            } },
+        };
+        if (rt.terminal_grid_ref(terminal, lookup_point, &ref) != ghostty.success) return null;
+
+        var uri_len: usize = 0;
+        const probe_result = rt.grid_ref_hyperlink_uri(&ref, null, 0, &uri_len);
+        if (probe_result == ghostty.success) return null;
+        if (probe_result != ghostty.out_of_space or uri_len == 0 or uri_len > out.len) return null;
+        if (rt.grid_ref_hyperlink_uri(&ref, out.ptr, out.len, &uri_len) != ghostty.success or uri_len == 0) return null;
+        return out[0..uri_len];
+    }
+
     fn hyperlinkTokenAt(self: *App, pane: *Pane, point: selection.CellPoint, out: []u8) ?HyperlinkToken {
         const runtime = if (self.ghostty) |*rt| rt else return null;
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
@@ -1785,6 +1812,34 @@ pub const App = struct {
             if (row_index != point.row) continue;
             if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) return null;
 
+            // OSC 8 hyperlinks are tracked by URI in the terminal grid.
+            if (self.hyperlinkUriAt(pane, point, out)) |url| {
+                var compare_buf: [8192]u8 = undefined;
+                var start_col = point.col;
+                while (start_col > 0) {
+                    const prev_url = self.hyperlinkUriAt(pane, .{ .row = point.row, .col = start_col - 1 }, &compare_buf) orelse break;
+                    if (!std.mem.eql(u8, prev_url, url)) break;
+                    start_col -= 1;
+                }
+
+                var end_col = point.col + 1;
+                const cols = @as(usize, pane.cols);
+                while (end_col < cols) {
+                    const next_url = self.hyperlinkUriAt(pane, .{ .row = point.row, .col = end_col }, &compare_buf) orelse break;
+                    if (!std.mem.eql(u8, next_url, url)) break;
+                    end_col += 1;
+                }
+
+                return .{
+                    .text = "",
+                    .start_col = start_col,
+                    .end_col = end_col,
+                    .open_text = url,
+                };
+            }
+
+            // Fallback: manual pattern matching
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) return null;
             var ascii_cols: [4096]u8 = [_]u8{0} ** 4096;
             var col_count: usize = 0;
             while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
@@ -1793,6 +1848,7 @@ pub const App = struct {
                 appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
                 ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
             }
+
 
             if (point.col >= col_count) return null;
             const cfg = self.config.hyperlinks;
@@ -1872,7 +1928,7 @@ pub const App = struct {
         if (!self.config.hyperlinks.enabled) return;
         var row_buf: [8192]u8 = undefined;
         const token = self.hyperlinkTokenAt(pane, point, &row_buf) orelse return;
-        platform.openExternal(token.open_text) catch |err| {
+        platform.openExternalWithOpenerAsync(token.open_text, self.config.hyperlinks.opener) catch |err| {
             std.log.err("open hyperlink failed: {s}", .{@errorName(err)});
         };
     }

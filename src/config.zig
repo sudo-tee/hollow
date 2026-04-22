@@ -196,12 +196,14 @@ pub const Config = struct {
         enabled: bool = true,
         shift_click_only: bool = true,
         match_www: bool = true,
+        opener: ?[]u8 = null,
         prefixes: ?[]u8 = null,
         delimiters: ?[]u8 = null,
         trim_trailing: ?[]u8 = null,
         trim_leading: ?[]u8 = null,
 
         pub fn deinit(self: *Hyperlinks, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.opener);
             freeOwned(allocator, &self.prefixes);
             freeOwned(allocator, &self.delimiters);
             freeOwned(allocator, &self.trim_trailing);
@@ -512,6 +514,10 @@ pub const Config = struct {
         try replaceOwned(self.allocator, &self.hyperlinks.prefixes, value);
     }
 
+    pub fn setHyperlinkOpener(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.hyperlinks.opener, value);
+    }
+
     pub fn setHyperlinkDelimiters(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.hyperlinks.delimiters, value);
     }
@@ -619,16 +625,19 @@ test "hyperlink defaults and overrides stay stable" {
     var cfg = Config.init(std.testing.allocator);
     defer cfg.deinit();
 
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.hyperlinks.opener);
     try std.testing.expectEqualStrings("https:// http:// file:// ftp:// mailto:", cfg.hyperlinks.prefixesOrDefault());
     try std.testing.expectEqualStrings(" \t\r\n\"'<>[]{}|\\^`", cfg.hyperlinks.delimitersOrDefault());
     try std.testing.expectEqualStrings(".,;:!?)]}", cfg.hyperlinks.trimTrailingOrDefault());
     try std.testing.expectEqualStrings("([{", cfg.hyperlinks.trimLeadingOrDefault());
 
+    try cfg.setHyperlinkOpener("wslview");
     try cfg.setHyperlinkPrefixes("custom://");
     try cfg.setHyperlinkDelimiters(" |");
     try cfg.setHyperlinkTrimTrailing("?!");
     try cfg.setHyperlinkTrimLeading("<(");
 
+    try std.testing.expectEqualStrings("wslview", cfg.hyperlinks.opener.?);
     try std.testing.expectEqualStrings("custom://", cfg.hyperlinks.prefixesOrDefault());
     try std.testing.expectEqualStrings(" |", cfg.hyperlinks.delimitersOrDefault());
     try std.testing.expectEqualStrings("?!", cfg.hyperlinks.trimTrailingOrDefault());
