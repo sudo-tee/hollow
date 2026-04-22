@@ -76,6 +76,8 @@ pub const Pane = struct {
     htp_osc_len: usize = 0,
     htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
+    pending_startup_input: []u8 = &.{},
+    startup_input_quiet_ticks: u8 = 0,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
     /// this tick.  Cleared by tickPanes after updateRenderState is called.
     /// Used to avoid calling updateRenderState on idle panes — ghostty marks
@@ -106,6 +108,8 @@ pub const Pane = struct {
     width_px: u32 = 0,
     height_px: u32 = 0,
     domain_name: []u8 = &.{},
+    is_remote: bool = false,
+    cwd_dirty: bool = false,
     is_floating: bool = false,
     floating_x: f32 = 0.15,
     floating_y: f32 = 0.1,
@@ -133,6 +137,7 @@ pub const Pane = struct {
         if (self.pty) |*pty| pty.deinit();
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
+        if (self.pending_startup_input.len > 0) self.allocator.free(self.pending_startup_input);
         if (self.domain_name.len > 0) self.allocator.free(self.domain_name);
         self.* = Pane.init(self.allocator);
     }
@@ -217,6 +222,15 @@ pub const Pane = struct {
         try env_block.append(self.allocator, 0); // double-null terminator
 
         const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name);
+        
+        var is_remote = false;
+        if (domain_name) |name| {
+            if (cfg.domainByName(name)) |domain| {
+                if (domain.ssh != null) is_remote = true;
+            }
+        }
+        self.is_remote = is_remote;
+
         var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, launch_command);
         errdefer pty.deinit();
 
@@ -229,6 +243,15 @@ pub const Pane = struct {
         self.mouse_encoder = mouse_encoder;
         self.mouse_event = mouse_event;
         self.pty = pty;
+
+        if (self.is_remote and launch_command == null) {
+            if (inherited_cwd) |cwd| {
+                const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
+                defer self.allocator.free(quoted_cwd);
+                self.pending_startup_input = try std.fmt.allocPrint(self.allocator, "cd -- {s} && clear\r", .{quoted_cwd});
+                self.startup_input_quiet_ticks = 0;
+            }
+        }
 
         // If anything below fails, null out fields so deinit() doesn't double-free.
         errdefer {
@@ -250,6 +273,22 @@ pub const Pane = struct {
         self.title = &.{};
         if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
         if (launch_cwd) |cwd| self.setCwd(cwd);
+    }
+
+    fn shellQuoteSingle(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+        var quoted = std.ArrayList(u8).empty;
+        errdefer quoted.deinit(allocator);
+
+        try quoted.append(allocator, '\'');
+        for (value) |ch| {
+            if (ch == '\'') {
+                try quoted.appendSlice(allocator, "'\\''");
+            } else {
+                try quoted.append(allocator, ch);
+            }
+        }
+        try quoted.append(allocator, '\'');
+        return quoted.toOwnedSlice(allocator);
     }
 
     pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
@@ -287,6 +326,21 @@ pub const Pane = struct {
                         self.pty_received_data = true;
                         self.pty_wrote_this_frame = true;
                     }
+                }
+            }
+            if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
+                if (total_read == 0) {
+                    self.startup_input_quiet_ticks +|= 1;
+                } else {
+                    self.startup_input_quiet_ticks = 0;
+                }
+                if (self.startup_input_quiet_ticks >= 1) {
+                    pty.writeAll(self.pending_startup_input) catch |err| {
+                        std.log.warn("pane: failed to send deferred startup input: {}", .{err});
+                    };
+                    self.allocator.free(self.pending_startup_input);
+                    self.pending_startup_input = &.{};
+                    self.startup_input_quiet_ticks = 0;
                 }
             }
             // Only sync encoders once the pane is fully initialised — these
@@ -334,16 +388,26 @@ pub const Pane = struct {
     }
 
     pub fn refreshCwd(self: *Pane) bool {
-        if (is_windows) return false;
+        var changed = false;
+        if (self.cwd_dirty) {
+            changed = true;
+            self.cwd_dirty = false;
+        }
+
+        if (self.is_remote) return changed;
+        if (is_windows) return changed;
+
         const pid = self.childPid();
-        if (pid == 0) return false;
+        if (pid == 0) return changed;
 
         var proc_path_buf: [64]u8 = undefined;
-        const proc_path = std.fmt.bufPrint(&proc_path_buf, "/proc/{d}/cwd", .{pid}) catch return false;
+        const proc_path = std.fmt.bufPrint(&proc_path_buf, "/proc/{d}/cwd", .{pid}) catch return changed;
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.readlink(proc_path, &cwd_buf) catch return false;
-        const changed = !std.mem.eql(u8, self.cwd, cwd);
-        self.setCwd(cwd);
+        const cwd = std.posix.readlink(proc_path, &cwd_buf) catch return changed;
+        if (!std.mem.eql(u8, self.cwd, cwd)) {
+            self.setCwd(cwd);
+            changed = true;
+        }
         return changed;
     }
 
@@ -509,7 +573,19 @@ pub const Pane = struct {
         } else if (!is_windows) {
             self.title = self.allocator.dupe(u8, fallback_title) catch &.{};
         }
+        self.syncRemoteCwdFromTitle();
         self.title_dirty = false;
+    }
+
+    fn syncRemoteCwdFromTitle(self: *Pane) void {
+        if (!self.is_remote or self.title.len == 0) return;
+
+        const trimmed = std.mem.trim(u8, self.title, " \t\r\n");
+        const derived = deriveRemotePathFromTitle(trimmed) orelse return;
+        if (std.mem.eql(u8, self.cwd, derived)) return;
+
+        self.setCwd(derived);
+        self.cwd_dirty = true;
     }
 
     fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8) bool {
@@ -551,6 +627,29 @@ pub const Pane = struct {
             std.ascii.eqlIgnoreCase(title, "powershell.exe") or
             std.ascii.eqlIgnoreCase(title, "cmd") or
             std.ascii.eqlIgnoreCase(title, "cmd.exe");
+    }
+
+    fn looksLikeAbsolutePath(value: []const u8) bool {
+        if (value.len == 0) return false;
+        if (value[0] == '/') return true;
+        if (value.len >= 3 and std.ascii.isAlphabetic(value[0]) and value[1] == ':' and (value[2] == '\\' or value[2] == '/')) return true;
+        if (std.mem.startsWith(u8, value, "\\\\")) return true;
+        return false;
+    }
+
+    fn deriveRemotePathFromTitle(title: []const u8) ?[]const u8 {
+        if (looksLikeAbsolutePath(title)) return title;
+
+        const colon_idx = std.mem.lastIndexOfScalar(u8, title, ':') orelse return null;
+        const suffix = std.mem.trim(u8, title[colon_idx + 1 ..], " \t\r\n");
+        if (!looksLikeAbsolutePath(suffix)) return null;
+
+        // Only accept a host prefix when it looks like the common ssh title form
+        // user@host:/path, so regular titles with colons are ignored.
+        const prefix = std.mem.trim(u8, title[0..colon_idx], " \t\r\n");
+        if (prefix.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, prefix, '@') == null) return null;
+        return suffix;
     }
 
     pub fn hasLiveChild(self: *Pane) bool {
@@ -884,6 +983,7 @@ pub const Pane = struct {
         }
         std.log.info("pane: received OSC 7 cwd: {s}", .{path});
         self.setCwd(path);
+        self.cwd_dirty = true;
     }
 };
 

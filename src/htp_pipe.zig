@@ -95,13 +95,56 @@ pub const Server = struct {
         const ok = windows.kernel32.ReadFile(h_pipe, &buf, buf.len, &read_count, null);
         if (ok == windows.FALSE or read_count == 0) return;
 
-        const payload = buf[0..read_count];
-        if (self.handler_fn) |handler| {
-            if (handler(self.app, payload, self.allocator)) |response| {
-                var written: windows.DWORD = 0;
-                _ = windows.kernel32.WriteFile(h_pipe, response.ptr, @intCast(response.len), &written, null);
-                self.allocator.free(response);
-            }
+        if (self.handlePayload(buf[0..read_count])) |response| {
+            defer self.allocator.free(response);
+            var written: windows.DWORD = 0;
+            _ = windows.kernel32.WriteFile(h_pipe, response.ptr, @intCast(response.len), &written, null);
         }
     }
+
+    fn handlePayload(self: *Server, payload: []const u8) ?[]const u8 {
+        const handler = self.handler_fn orelse return null;
+        return handler(self.app, payload, self.allocator);
+    }
 };
+
+const TestHandlerContext = struct {
+    last_payload: ?[]u8 = null,
+    respond: bool,
+};
+
+fn testHandler(ctx_ptr: *anyopaque, payload: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+    const ctx: *TestHandlerContext = @ptrCast(@alignCast(ctx_ptr));
+    if (ctx.last_payload) |previous| allocator.free(previous);
+    ctx.last_payload = allocator.dupe(u8, payload) catch @panic("oom");
+    if (!ctx.respond) return null;
+    return allocator.dupe(u8, "{\"ok\":true}") catch @panic("oom");
+}
+
+test "handlePayload returns null when no handler is configured" {
+    var app_value: u8 = 0;
+    var server = Server.init(std.testing.allocator, &app_value, null);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), server.handlePayload("ping"));
+}
+
+test "handlePayload forwards payload to handler and returns response" {
+    var ctx = TestHandlerContext{ .respond = true };
+    defer if (ctx.last_payload) |payload| std.testing.allocator.free(payload);
+    var server = Server.init(std.testing.allocator, &ctx, testHandler);
+
+    const response = server.handlePayload("{\"name\":\"ping\"}").?;
+    defer std.testing.allocator.free(response);
+
+    try std.testing.expectEqualStrings("{\"name\":\"ping\"}", ctx.last_payload.?);
+    try std.testing.expectEqualStrings("{\"ok\":true}", response);
+}
+
+test "handlePayload preserves handler no-response behavior" {
+    var ctx = TestHandlerContext{ .respond = false };
+    defer if (ctx.last_payload) |payload| std.testing.allocator.free(payload);
+    var server = Server.init(std.testing.allocator, &ctx, testHandler);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), server.handlePayload("noop"));
+    try std.testing.expectEqualStrings("noop", ctx.last_payload.?);
+}

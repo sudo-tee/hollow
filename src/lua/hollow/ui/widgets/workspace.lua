@@ -9,7 +9,7 @@ local ui = hollow.ui
 ui.workspace = ui.workspace or {}
 
 local DEFAULT_CACHE_TTL_MS = 5000
-local DEFAULT_PROMPT = "Workspace"
+local DEFAULT_PROMPT = "Workspaces"
 local DEFAULT_SELECT_WIDTH = 96
 local DEFAULT_SELECT_MAX_HEIGHT = 18
 local ACTIVE_WORKSPACE_MARKER = "•"
@@ -55,54 +55,6 @@ local function trim_string(value)
   return value:match("^%s*(.-)%s*$") or ""
 end
 
-local function path_join(base, name)
-  if type(base) ~= "string" or base == "" then
-    return name
-  end
-  if type(name) ~= "string" or name == "" then
-    return base
-  end
-
-  local separator = base:find("\\", 1, true) and "\\" or "/"
-  local trimmed_base = base:gsub("[\\/]+$", "")
-  local trimmed_name = name:gsub("^[\\/]+", "")
-  return trimmed_base .. separator .. trimmed_name
-end
-
-local function path_basename(path)
-  path = trim_string(path)
-  if path == "" then
-    return ""
-  end
-
-  local normalized = path:gsub("[\\/]+$", "")
-  return normalized:match("([^\\/]+)$") or normalized
-end
-
-local function default_project_roots()
-  local roots = {}
-  local home = os.getenv("HOME")
-  local userprofile = os.getenv("USERPROFILE")
-
-  if type(home) == "string" and home ~= "" then
-    roots[#roots + 1] = path_join(home, "src")
-    roots[#roots + 1] = path_join(home, "code")
-    roots[#roots + 1] = path_join(home, "projects")
-    roots[#roots + 1] = path_join(home, "work")
-    roots[#roots + 1] = path_join(home, "dev")
-  end
-
-  if type(userprofile) == "string" and userprofile ~= "" then
-    roots[#roots + 1] = path_join(userprofile, "src")
-    roots[#roots + 1] = path_join(userprofile, "code")
-    roots[#roots + 1] = path_join(userprofile, "projects")
-    roots[#roots + 1] = path_join(userprofile, "work")
-    roots[#roots + 1] = path_join(userprofile, "dev")
-  end
-
-  return roots
-end
-
 local function path_exists(path)
   if type(path) ~= "string" or path == "" then
     return false
@@ -128,7 +80,7 @@ local function scan_projects_in_root(root)
   local items = {}
   for _, entry in ipairs(entries) do
     local cwd = trim_string(entry)
-    local name = path_basename(cwd)
+    local name = util.basename(cwd)
     if name ~= "" and name:sub(1, 1) ~= "." and path_exists(cwd) then
       items[#items + 1] = {
         name = name,
@@ -164,7 +116,7 @@ local function scan_projects_in_wsl_root(source_name, root)
   local items = {}
   for line in pipe:lines() do
     local name = trim_string(line)
-    local cwd = name ~= "" and path_join(root, name) or ""
+    local cwd = name ~= "" and util.join_path(root, name) or ""
     if name ~= "" and cwd ~= "" then
       items[#items + 1] = {
         name = name,
@@ -176,6 +128,54 @@ local function scan_projects_in_wsl_root(source_name, root)
   if #items == 0 and ui.notify and ui.notify.warn then
     ui.notify.warn("Workspace source returned no folders: wsl " .. source_name, { ttl = 1800 })
   end
+  return items
+end
+
+local function shell_quote(value)
+  value = trim_string(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function scan_projects_in_ssh_root(domain, root)
+  domain = trim_string(domain)
+  root = trim_string(root)
+  if domain == "" or root == "" then
+    return {}
+  end
+
+  local ok, stdout, stderr = hollow.term.run_domain_process({ "ls", "-1Ap", root }, domain)
+  if not ok then
+    if ui.notify and ui.notify.warn then
+      local detail = trim_string(stderr)
+      ui.notify.warn(
+        detail ~= "" and ("Workspace source failed: " .. detail)
+          or ("Workspace source failed: ssh " .. domain),
+        { ttl = 1800 }
+      )
+    end
+    return {}
+  end
+
+  local items = {}
+  for line in stdout:gmatch("[^\r\n]+") do
+    local raw_name = trim_string(line)
+    local is_dir = raw_name:sub(-1) == "/"
+    local name = is_dir and raw_name:sub(1, -2) or raw_name
+    local cwd = name ~= "" and util.join_path(root, name) or ""
+    local basename = util.basename(cwd)
+    if is_dir and basename ~= "" and basename:sub(1, 1) ~= "." then
+      items[#items + 1] = {
+        name = basename,
+        cwd = cwd,
+        domain = domain,
+      }
+    end
+  end
+
+  if #items == 0 and ui.notify and ui.notify.warn then
+    ui.notify.warn("Workspace source returned no folders: ssh " .. domain, { ttl = 1800 })
+  end
+
   return items
 end
 
@@ -214,7 +214,7 @@ end
 
 local function default_known_workspaces()
   local switcher = switcher_state()
-  local roots = switcher.project_roots or default_project_roots()
+  local roots = switcher.project_roots or {}
   local merged = {}
   local seen = {}
   local domain = current_domain_name()
@@ -280,8 +280,15 @@ local function send_cwd_to_active_workspace(cwd)
     return
   end
 
-  local escaped = cwd:gsub('"', '\\"')
-  hollow.term.send_text('cd "' .. escaped .. '"\r')
+  hollow.term.send_text("cd -- " .. shell_quote(cwd) .. "\r")
+end
+
+local function ssh_workspace_command(cwd)
+  cwd = trim_string(cwd)
+  if cwd == "" then
+    return nil
+  end
+  return "cd -- " .. shell_quote(cwd) .. "\r"
 end
 
 local function ensure_last_opened(name, timestamp)
@@ -493,7 +500,7 @@ local function normalize_possible_workspace(item)
     name = name,
     cwd = cwd,
     domain = domain,
-    source = "user",
+    source = trim_string(item.source) ~= "" and trim_string(item.source) or "user",
     is_active = false,
     is_open = false,
   }
@@ -504,6 +511,9 @@ local function source_workspace_item(raw, source, resolved_domain)
     raw = util.clone_value(raw)
     if raw.domain == nil then
       raw.domain = resolved_domain
+    end
+    if raw.source == nil then
+      raw.source = source_resolver(source)
     end
     raw = resolve_source_item_cwd(source, raw)
   end
@@ -551,6 +561,8 @@ local function cached_known_workspaces(force_refresh)
         local scanned
         if resolver == "wsl" then
           scanned = scan_projects_in_wsl_root(source.name or source.domain or "", root)
+        elseif resolver == "ssh" then
+          scanned = scan_projects_in_ssh_root(resolved_domain, root)
         else
           scanned = scan_projects_in_root(root)
         end
@@ -757,6 +769,7 @@ local function switch_to_workspace(workspace)
     name = workspace.name,
     cwd = workspace.cwd or current_pane_cwd(),
     domain = workspace.domain,
+    source = workspace.source,
   })
 end
 
@@ -764,8 +777,11 @@ open_new_workspace_from_item = function(item)
   local name = item and item.name or nil
   local cwd = item and item.cwd or nil
   local domain = item and item.domain or nil
+  local source = item and item.source or nil
+  local launch_cwd = source == "ssh" and nil or cwd
+  local command = source == "ssh" and ssh_workspace_command(cwd) or nil
 
-  hollow.term.new_workspace({ cwd = cwd, domain = domain })
+  hollow.term.new_workspace({ cwd = launch_cwd, domain = domain, command = command })
   if type(name) == "string" and name ~= "" then
     hollow.term.set_workspace_name(name)
     ensure_last_opened(name)
@@ -774,9 +790,6 @@ open_new_workspace_from_item = function(item)
     if current_name then
       ensure_last_opened(current_name)
     end
-  end
-  if type(cwd) == "string" and cwd ~= "" then
-    send_cwd_to_active_workspace(cwd)
   end
 end
 
@@ -846,80 +859,13 @@ local function close_workspace(workspace)
 end
 
 function ui.workspace.configure(opts)
-  local switcher = switcher_state()
   opts = opts or {}
-
-  if opts.known_workspaces ~= nil then
-    switcher.known_workspaces = opts.known_workspaces
+  local switcher = switcher_state()
+  local invalidate = util.has_any_key(opts, { "known_workspaces", "sources", "project_roots" })
+  util.merge_tables(switcher, opts)
+  if invalidate then
     switcher.cached_items = nil
     switcher.cache_loaded_at_ms = 0
-  end
-  if opts.sources ~= nil then
-    switcher.sources = opts.sources
-    switcher.cached_items = nil
-    switcher.cache_loaded_at_ms = 0
-  end
-  if opts.format_item ~= nil then
-    switcher.format_item = opts.format_item
-  end
-  if opts.filter_item ~= nil then
-    switcher.filter_item = opts.filter_item
-  end
-  if opts.cache_ttl_ms ~= nil then
-    switcher.cache_ttl_ms = opts.cache_ttl_ms
-  end
-  if opts.project_roots ~= nil then
-    switcher.project_roots = opts.project_roots
-    switcher.cached_items = nil
-    switcher.cache_loaded_at_ms = 0
-  end
-  if opts.prompt ~= nil then
-    switcher.prompt = opts.prompt
-  end
-  if opts.width ~= nil then
-    switcher.width = opts.width
-  end
-  if opts.name_column_width ~= nil then
-    switcher.name_column_width = opts.name_column_width
-  end
-  if opts.status_column_width ~= nil then
-    switcher.status_column_width = opts.status_column_width
-  end
-  if opts.column_gap ~= nil then
-    switcher.column_gap = opts.column_gap
-  end
-  if opts.height ~= nil then
-    switcher.height = opts.height
-  end
-  if opts.max_height ~= nil then
-    switcher.max_height = opts.max_height
-  end
-  if opts.backdrop ~= nil then
-    switcher.backdrop = opts.backdrop
-  end
-  if opts.chrome ~= nil then
-    switcher.chrome = opts.chrome
-  end
-  if opts.theme ~= nil then
-    switcher.theme = opts.theme
-  end
-  if opts.rename_key ~= nil then
-    switcher.rename_key = opts.rename_key
-  end
-  if opts.rename_desc ~= nil then
-    switcher.rename_desc = opts.rename_desc
-  end
-  if opts.close_key ~= nil then
-    switcher.close_key = opts.close_key
-  end
-  if opts.close_desc ~= nil then
-    switcher.close_desc = opts.close_desc
-  end
-  if opts.create_key ~= nil then
-    switcher.create_key = opts.create_key
-  end
-  if opts.create_desc ~= nil then
-    switcher.create_desc = opts.create_desc
   end
 end
 

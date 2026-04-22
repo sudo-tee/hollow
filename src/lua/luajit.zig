@@ -95,7 +95,6 @@ const LuaModule = struct {
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("hollow/state.lua") },
     .{ .name = "hollow.util", .source = @embedFile("hollow/util.lua") },
-    .{ .name = "hollow.utils", .source = @embedFile("hollow/utils.lua") },
     .{ .name = "hollow.term", .source = @embedFile("hollow/term.lua") },
     .{ .name = "hollow.config", .source = @embedFile("hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("hollow/events.lua") },
@@ -130,7 +129,7 @@ pub const AppCallbacks = struct {
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void,
     close_workspace: *const fn (app: *anyopaque) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -1777,11 +1776,14 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
 
     const shell_program = parsed_shell[0];
     const shell_name = std.fs.path.basename(shell_program);
+    const shell_is_wsl = std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl");
+    const wrapped_program = if (shell_is_wsl and parsed_shell.len > 1) std.fs.path.basename(parsed_shell[1]) else "";
+    const shell_is_ssh = std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe") or std.mem.eql(u8, wrapped_program, "ssh") or std.mem.eql(u8, wrapped_program, "ssh.exe");
     const command = if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))
         try cmdCommandFromArgv(args)
     else if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell"))
         try powershellCommandFromArgv(args)
-    else if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe"))
+    else if (shell_is_ssh)
         try remoteShellCommandFromArgv(args, cwd)
     else
         try shellCommandFromArgv(args);
@@ -1792,7 +1794,15 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
 
     try argv.appendSlice(std.heap.page_allocator, parsed_shell);
 
-    if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
+    if (shell_is_wsl and shell_is_ssh) {
+        try argv.append(std.heap.page_allocator, command);
+        return try std.process.Child.run(.{
+            .allocator = std.heap.page_allocator,
+            .argv = argv.items,
+        });
+    }
+
+    if (shell_is_wsl) {
         if (cwd) |dir| {
             if (dir.len > 0) {
                 try argv.append(std.heap.page_allocator, "--cd");
@@ -1808,7 +1818,7 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
         });
     }
 
-    if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe")) {
+    if (shell_is_ssh) {
         try argv.append(std.heap.page_allocator, "sh");
         try argv.append(std.heap.page_allocator, "-lc");
         try argv.append(std.heap.page_allocator, command);
@@ -2972,6 +2982,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     var cwd: ?[]const u8 = null;
     var domain_name: ?[]const u8 = null;
+    var command: ?[]const u8 = null;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -2981,11 +2992,12 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
         .table => {
             cwd = luaStringField(api, state, absoluteIndex(api, state, 1), "cwd");
             domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
+            command = luaStringField(api, state, absoluteIndex(api, state, 1), "command");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name);
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command);
     return 0;
 }
 
@@ -4112,4 +4124,116 @@ fn l_get_system_metrics(state: *State) callconv(.c) c_int {
     api.set_field(state, -2, "gpu_memory_total_mb");
 
     return 1;
+}
+
+test "absoluteIndex keeps positive and registry indexes stable" {
+    const api = Api{
+        .new_state = undefined,
+        .close = undefined,
+        .open_libs = undefined,
+        .load_file = undefined,
+        .load_buffer = undefined,
+        .pcall = undefined,
+        .get_top = struct {
+            fn f(_: *State) callconv(.c) c_int {
+                return 5;
+            }
+        }.f,
+        .set_top = undefined,
+        .create_table = undefined,
+        .set_field = undefined,
+        .get_field = undefined,
+        .push_string = undefined,
+        .push_number = undefined,
+        .push_boolean = undefined,
+        .push_nil = undefined,
+        .push_light_userdata = undefined,
+        .push_value = undefined,
+        .push_cclosure = undefined,
+        .push_integer = undefined,
+        .rawseti = undefined,
+        .set_table = undefined,
+        .get_table = undefined,
+        .to_lstring = undefined,
+        .to_number = undefined,
+        .to_boolean = undefined,
+        .to_userdata = undefined,
+        .value_type = undefined,
+        .next = undefined,
+        .ref = undefined,
+        .rawgeti = undefined,
+        .unref = undefined,
+        .raise_error = undefined,
+    };
+
+    const fake_state: *State = @ptrFromInt(1);
+    try std.testing.expectEqual(@as(c_int, 2), absoluteIndex(api, fake_state, 2));
+    try std.testing.expectEqual(@as(c_int, LUA_REGISTRYINDEX), absoluteIndex(api, fake_state, LUA_REGISTRYINDEX));
+    try std.testing.expectEqual(@as(c_int, 5), absoluteIndex(api, fake_state, -1));
+    try std.testing.expectEqual(@as(c_int, 4), absoluteIndex(api, fake_state, -2));
+}
+
+test "parseCommandString handles whitespace quotes and escapes" {
+    const argv = try parseCommandString("cmd  'two words' \"three four\" escaped\\ space");
+    defer freeOwnedArgv(argv);
+
+    try std.testing.expectEqual(@as(usize, 4), argv.len);
+    try std.testing.expectEqualStrings("cmd", argv[0]);
+    try std.testing.expectEqualStrings("two words", argv[1]);
+    try std.testing.expectEqualStrings("three four", argv[2]);
+    try std.testing.expectEqualStrings("escaped space", argv[3]);
+}
+
+test "parseCommandString rejects unterminated quotes" {
+    try std.testing.expectError(error.InvalidCharacter, parseCommandString("cmd 'unterminated"));
+}
+
+test "shellCommandFromArgv and remoteShellCommandFromArgv quote safely" {
+    const shell = try shellCommandFromArgv(&.{ "echo", "a'b", "two words" });
+    defer std.heap.page_allocator.free(shell);
+    try std.testing.expectEqualStrings("'echo' 'a'\\''b' 'two words'", shell);
+
+    const remote = try remoteShellCommandFromArgv(&.{ "printf", "%s", "ok" }, "/tmp/work dir");
+    defer std.heap.page_allocator.free(remote);
+    try std.testing.expectEqualStrings("'cd' '/tmp/work dir' && 'printf' '%s' 'ok'", remote);
+}
+
+test "powershell and cmd quoting escape shell metacharacters" {
+    const powershell = try powershellCommandFromArgv(&.{ "Write-Host", "it's fine" });
+    defer std.heap.page_allocator.free(powershell);
+    try std.testing.expectEqualStrings("'Write-Host' 'it''s fine'", powershell);
+
+    const cmd = try cmdCommandFromArgv(&.{ "echo", "hello & goodbye" });
+    defer std.heap.page_allocator.free(cmd);
+    try std.testing.expectEqualStrings("echo \"hello ^& goodbye\"", cmd);
+}
+
+test "monthName and parseHexColor stay stable" {
+    try std.testing.expectEqualStrings("January", monthName(1));
+    try std.testing.expectEqualStrings("December", monthName(12));
+    try std.testing.expectEqualStrings("", monthName(0));
+
+    try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 0x12, .g = 0x34, .b = 0xAB }, parseHexColor("#1234AB").?);
+    try std.testing.expectEqual(@as(?ghostty.ColorRgb, null), parseHexColor("1234AB"));
+    try std.testing.expectEqual(@as(?ghostty.ColorRgb, null), parseHexColor("#12GGAB"));
+}
+
+test "deinitJsonValue and htp query result deinit release owned values" {
+    var array = std.json.Array.init(std.testing.allocator);
+    try array.append(.{ .string = try std.testing.allocator.dupe(u8, "alpha") });
+    try array.append(.{ .integer = 5 });
+    var object = std.json.ObjectMap.init(std.testing.allocator);
+    try object.put(try std.testing.allocator.dupe(u8, "items"), .{ .array = array });
+
+    const value = std.json.Value{ .object = object };
+    deinitJsonValue(std.testing.allocator, value);
+
+    const error_message = try std.testing.allocator.dupe(u8, "boom");
+    const json_text = try std.testing.allocator.dupe(u8, "payload");
+    const result = HtpQueryResult{
+        .success = false,
+        .value = .{ .string = json_text },
+        .error_message = error_message,
+    };
+    result.deinit(std.testing.allocator);
 }

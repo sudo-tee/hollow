@@ -85,7 +85,7 @@ local palette = {
 local ui_theme = {
   widgets = {
     all = {
-      panel_bg = hwl.utils.brighten_hex_color(palette.bg, 0.2, palette.gray),
+      panel_bg = hwl.util.brighten_hex_color(palette.bg, 0.2, palette.gray),
       panel_border = palette.blue,
       title = palette.bright_blue,
       fg = palette.fg,
@@ -160,6 +160,10 @@ local ui_theme = {
     },
   },
 }
+
+local h = hollow.events.on("term:cwd_changed", function(e)
+  print(e.pane.id, e.old_cwd, e.new_cwd)
+end)
 
 -- g.log("loading native rewrite config")
 
@@ -327,6 +331,13 @@ hollow.ui.workspace.configure({
       },
       cwd_resolver = "wsl_unc",
     },
+    {
+      domain = "tower",
+      resolver = "ssh",
+      roots = {
+        "/mnt/user0/appdata",
+      },
+    },
   },
 })
 local function tabs_widget()
@@ -401,8 +412,8 @@ hwl.keymap.set("<leader>x", function()
   hwl.term.new_tab({ domain = "tower" })
   hwl.ui.notify.info("Running ls -la in tower domain", { ttl = 1200 })
   -- hwl.term.new_tab({ domain = "pwsh" })
-  -- local d = hwl.run_domain_process({ "ls", "-la" })
-  -- hwl.ui.notify.info("Started tower process : " .. d, { ttl = 1200 })
+  local ok, stdout, stderr = hwl.term.run_domain_process({ "ls", "-la" }, "tower")
+  hwl.ui.notify.info((ok and stdout or stderr), { ttl = 1200 })
 end, { desc = "placeholder tower" })
 
 hwl.keymap.set("<leader>r", function()

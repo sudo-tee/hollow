@@ -21,9 +21,11 @@ end
 
 local state = require("hollow.state").new(host_api)
 local util = require("hollow.util")
-local public_utils = require("hollow.utils")
 
-hollow.utils = public_utils
+-- Expose util on the global `hollow` table. Keep `hollow.utils` as an
+-- alias for backward compatibility.
+hollow.util = util
+hollow.utils = util
 
 require("hollow.config").setup(hollow, host_api, state, util)
 local term_helpers = require("hollow.term").setup(hollow, host_api)
@@ -53,13 +55,13 @@ function hollow.read_dir(path)
   return host_api.read_dir(path)
 end
 
-function hollow.run_child_process(args)
+function hollow.process.run_child_process(args)
   return host_api.run_child_process(args)
 end
 
-function hollow.run_domain_process(args, domain)
+function hollow.term.run_domain_process(args, domain)
   if type(args) ~= "table" then
-    error("hollow.run_domain_process(args, domain?) expects args to be a table")
+    error("hollow.term.run_domain_process(args, domain?) expects args to be a table")
   end
 
   if domain == nil then
@@ -68,7 +70,7 @@ function hollow.run_domain_process(args, domain)
   end
 
   if type(domain) ~= "string" or domain == "" then
-    error("hollow.run_domain_process(args, domain?) could not resolve a domain")
+    error("hollow.term.run_domain_process(args, domain?) could not resolve a domain")
   end
 
   return host_api.run_domain_process(domain, args)

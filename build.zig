@@ -1,12 +1,24 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
-    const ghostty_optimize: std.builtin.OptimizeMode = switch (optimize) {
+fn ghosttyOptimizeMode(optimize: std.builtin.OptimizeMode) std.builtin.OptimizeMode {
+    return switch (optimize) {
         .Debug => .ReleaseFast,
         else => optimize,
     };
+}
+
+fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
+    return switch (os_tag) {
+        .windows => &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi" },
+        .linux => &.{ "X11", "Xi", "Xcursor", "GL", "asound" },
+        else => &.{},
+    };
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const ghostty_optimize = ghosttyOptimizeMode(optimize);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
         .optimize = ghostty_optimize,
@@ -94,20 +106,8 @@ pub fn build(b: *std.Build) void {
             "-Ithird_party/fontstash",
         },
     });
-    if (target.result.os.tag == .windows) {
-        exe.root_module.linkSystemLibrary("gdi32", .{});
-        exe.root_module.linkSystemLibrary("dxgi", .{});
-        exe.root_module.linkSystemLibrary("d3d11", .{});
-        exe.root_module.linkSystemLibrary("user32", .{});
-        exe.root_module.linkSystemLibrary("shell32", .{});
-        exe.root_module.linkSystemLibrary("winmm", .{});
-        exe.root_module.linkSystemLibrary("dwmapi", .{});
-    } else if (target.result.os.tag == .linux) {
-        exe.root_module.linkSystemLibrary("X11", .{});
-        exe.root_module.linkSystemLibrary("Xi", .{});
-        exe.root_module.linkSystemLibrary("Xcursor", .{});
-        exe.root_module.linkSystemLibrary("GL", .{});
-        exe.root_module.linkSystemLibrary("asound", .{});
+    for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
+        exe.root_module.linkSystemLibrary(lib_name, .{});
     }
     b.installArtifact(exe);
 
@@ -123,4 +123,23 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+}
+
+test "ghostty optimize mode keeps release builds and upgrades debug" {
+    try std.testing.expectEqual(std.builtin.OptimizeMode.ReleaseFast, ghosttyOptimizeMode(.Debug));
+    try std.testing.expectEqual(std.builtin.OptimizeMode.ReleaseFast, ghosttyOptimizeMode(.ReleaseFast));
+    try std.testing.expectEqual(std.builtin.OptimizeMode.ReleaseSafe, ghosttyOptimizeMode(.ReleaseSafe));
+    try std.testing.expectEqual(std.builtin.OptimizeMode.ReleaseSmall, ghosttyOptimizeMode(.ReleaseSmall));
+}
+
+test "platform system libraries remain stable by target OS" {
+    try std.testing.expectEqualDeep(
+        &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi" },
+        platformSystemLibraries(.windows),
+    );
+    try std.testing.expectEqualDeep(
+        &.{ "X11", "Xi", "Xcursor", "GL", "asound" },
+        platformSystemLibraries(.linux),
+    );
+    try std.testing.expectEqual(@as(usize, 0), platformSystemLibraries(.macos).len);
 }

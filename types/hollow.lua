@@ -685,6 +685,11 @@ function term.tab_by_id(id) end
 ---@param opts? HollowNewTabOpts
 function term.new_tab(opts) end
 
+---@param args string[]
+---@param domain? string
+---@return boolean, string, string
+function term.run_domain_process(args, domain) end
+
 ---@param direction? "horizontal"|"vertical"|HollowSplitPaneOpts
 ---@param opts? HollowSplitPaneOpts
 function term.split_pane(direction, opts) end
@@ -1100,6 +1105,10 @@ function process.spawn(opts) end
 ---@return HollowExecResult
 function process.exec(opts) end
 
+---@param args string[]
+---@return boolean, string, string
+function process.run_child_process(args) end
+
 ---@class HollowPlatformInfo
 ---@field os string
 ---@field is_windows boolean
@@ -1156,8 +1165,6 @@ function process.exec(opts) end
 ---@field reload_config fun(): boolean
 ---@field strftime fun(fmt: string): string
 ---@field read_dir fun(path: string): string[]
----@field run_child_process fun(args: string[]): boolean, string, string
----@field run_domain_process fun(args: string[], domain?: string): boolean, string, string
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
@@ -1190,8 +1197,6 @@ function process.exec(opts) end
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
 ---@field read_dir fun(path: string): string[]
----@field run_child_process fun(args: string[]): boolean, string, string
----@field run_domain_process fun(args: string[], domain?: string): boolean, string, string
 
 ---@type Hollow
 hollow = {}

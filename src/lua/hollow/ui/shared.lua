@@ -1,6 +1,5 @@
 local state = require("hollow.state").get()
 local util = require("hollow.util")
-local public_utils = require("hollow.utils")
 
 local hollow = _G.hollow
 local host_api = state.host_api
@@ -222,7 +221,7 @@ end
 ---@param fallback HollowHexColor|nil
 ---@return HollowHexColor|nil
 local function normalize_hex_color(value, fallback)
-  return public_utils.normalize_hex_color(value, fallback)
+  return util.normalize_hex_color(value, fallback)
 end
 
 ---@param rendered any
@@ -395,7 +394,7 @@ end
 function M.style_to_segment(text, style)
   local segment = { text = text }
 
-  if public_utils.is_hex_color(style) then
+  if util.is_hex_color(style) then
     segment.fg = style
     return segment
   end
@@ -406,10 +405,10 @@ function M.style_to_segment(text, style)
     if type(style.id) == "string" and style.id ~= "" then
       segment.id = style.id
     end
-    if public_utils.is_hex_color(style.fg) then
+    if util.is_hex_color(style.fg) then
       segment.fg = style.fg
     end
-    if public_utils.is_hex_color(style.bg) then
+    if util.is_hex_color(style.bg) then
       segment.bg = style.bg
     end
   end
@@ -672,7 +671,7 @@ function M.normalize_overlay_backdrop(value)
     return { color = "#000000", alpha = DEFAULT_THEME.backdrop.alpha }
   end
 
-  if public_utils.is_hex_color(value) then
+  if util.is_hex_color(value) then
     return { color = value, alpha = DEFAULT_THEME.backdrop.alpha }
   end
 
@@ -810,7 +809,7 @@ function M.resolve_widget_theme(kind)
   local split = ui_theme.split or status.fg
 
   local resolved = {
-    panel_bg = public_utils.brighten_hex_color(terminal_theme.background, 0.2, nil),
+    panel_bg = util.brighten_hex_color(terminal_theme.background, 0.2, nil),
     panel_border = normalize_hex_color(accent, nil),
     divider = normalize_hex_color(split, nil),
     title = normalize_hex_color(accent, nil),

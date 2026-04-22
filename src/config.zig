@@ -457,7 +457,7 @@ pub const Config = struct {
         return self.allocator.dupe(u8, "");
     }
 
-    fn domainByName(self: Config, name: []const u8) ?Domain {
+    pub fn domainByName(self: Config, name: []const u8) ?Domain {
         for (self.domains.items) |domain| {
             if (std.mem.eql(u8, domain.name, name)) return domain;
         }
@@ -584,4 +584,153 @@ test "terminal theme default palette fills xterm 256 colors" {
     try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 255, .g = 255, .b = 255 }, palette[231]);
     try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 8, .g = 8, .b = 8 }, palette[232]);
     try std.testing.expectEqualDeep(ghostty.ColorRgb{ .r = 238, .g = 238, .b = 238 }, palette[255]);
+}
+
+test "domain shell and cwd resolution honor explicit and default domains" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setShell("/bin/fallback");
+    try cfg.setDomainShell("local", "/bin/zsh");
+    try cfg.setDomainDefaultCwd("local", "/tmp/local");
+    try cfg.setDomainDefaultCwd("cwd-only", "/tmp/cwd-only");
+    try cfg.setDefaultDomain("local");
+
+    try std.testing.expectEqualStrings("/bin/zsh", try cfg.shellForDomain("local"));
+    try std.testing.expectEqualStrings("/bin/zsh", try cfg.shellForDomain(null));
+    try std.testing.expectError(error.DomainShellMissing, cfg.shellForDomain("cwd-only"));
+    try std.testing.expectError(error.UnknownDomain, cfg.shellForDomain("missing"));
+    try std.testing.expectEqualStrings("/tmp/local", cfg.defaultCwdForDomain(null).?);
+    try std.testing.expectEqualStrings("/tmp/cwd-only", cfg.defaultCwdForDomain("cwd-only").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.defaultCwdForDomain("missing"));
+}
+
+test "shellForDomain reports unknown and missing-shell domains distinctly" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setDomainDefaultCwd("cwd-only", "/tmp/cwd-only");
+
+    try std.testing.expectError(error.UnknownDomain, cfg.shellForDomain("missing"));
+    try std.testing.expectError(error.DomainShellMissing, cfg.shellForDomain("cwd-only"));
+}
+
+test "hyperlink defaults and overrides stay stable" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("https:// http:// file:// ftp:// mailto:", cfg.hyperlinks.prefixesOrDefault());
+    try std.testing.expectEqualStrings(" \t\r\n\"'<>[]{}|\\^`", cfg.hyperlinks.delimitersOrDefault());
+    try std.testing.expectEqualStrings(".,;:!?)]}", cfg.hyperlinks.trimTrailingOrDefault());
+    try std.testing.expectEqualStrings("([{", cfg.hyperlinks.trimLeadingOrDefault());
+
+    try cfg.setHyperlinkPrefixes("custom://");
+    try cfg.setHyperlinkDelimiters(" |");
+    try cfg.setHyperlinkTrimTrailing("?!");
+    try cfg.setHyperlinkTrimLeading("<(");
+
+    try std.testing.expectEqualStrings("custom://", cfg.hyperlinks.prefixesOrDefault());
+    try std.testing.expectEqualStrings(" |", cfg.hyperlinks.delimitersOrDefault());
+    try std.testing.expectEqualStrings("?!", cfg.hyperlinks.trimTrailingOrDefault());
+    try std.testing.expectEqualStrings("<(", cfg.hyperlinks.trimLeadingOrDefault());
+}
+
+test "scrollbar gutter width includes margins only when enabled" {
+    const enabled = Config.Scrollbar{ .enabled = true, .width = 12, .margin = 3 };
+    const disabled = Config.Scrollbar{ .enabled = false, .width = 12, .margin = 3 };
+
+    try std.testing.expectEqual(@as(u32, 18), enabled.gutterWidth());
+    try std.testing.expectEqual(@as(u32, 0), disabled.gutterWidth());
+}
+
+test "setDomainSsh builds shell command from ssh spec" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setDomainSsh("remote", .{
+        .host = "example.com",
+        .user = "alice",
+        .backend = if (platform.isWindows()) .wsl else .native,
+        .reuse = .auto,
+    });
+
+    const domain = cfg.domainByName("remote").?;
+    const shell = domain.shell.?;
+
+    if (platform.isWindows()) {
+        try std.testing.expectEqualStrings("wsl.exe ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/hollow-ssh-%C alice@example.com", shell);
+    } else {
+        try std.testing.expectEqualStrings("ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/hollow-ssh-%C alice@example.com", shell);
+    }
+}
+
+test "setDomainSsh accepts alias-only specs without reuse flags" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setDomainSsh("alias-only", .{ .alias = "prod", .reuse = .none });
+
+    const shell = cfg.domainByName("alias-only").?.shell.?;
+    if (platform.isWindows()) {
+        try std.testing.expectEqualStrings("ssh prod", shell);
+    } else {
+        try std.testing.expectEqualStrings("ssh prod", shell);
+    }
+}
+
+test "window title shell and default domain helpers fall back safely" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("hollow", cfg.windowTitle());
+    try std.testing.expectEqualStrings(platform.defaultShell(), cfg.shellOrDefault());
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.defaultDomainName());
+
+    try cfg.setWindowTitle("custom title");
+    try cfg.setShell("/bin/custom-shell");
+    try cfg.setDefaultDomain("missing-domain");
+
+    try std.testing.expectEqualStrings("custom title", cfg.windowTitle());
+    try std.testing.expectEqualStrings("/bin/custom-shell", cfg.shellOrDefault());
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.defaultDomainName());
+
+    try cfg.setDomainShell("actual-domain", "/bin/domain-shell");
+    try cfg.setDefaultDomain("actual-domain");
+    try std.testing.expectEqualStrings("actual-domain", cfg.defaultDomainName().?);
+}
+
+test "font smoothing and hinting parse accepted values and reject invalid ones" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setFontSmoothing("grayscale");
+    try std.testing.expectEqual(Config.Fonts.Smoothing.grayscale, cfg.fonts.smoothing);
+
+    try cfg.setFontSmoothing("lcd");
+    try std.testing.expectEqual(Config.Fonts.Smoothing.subpixel, cfg.fonts.smoothing);
+
+    try cfg.setFontHinting("none");
+    try std.testing.expectEqual(Config.Fonts.Hinting.none, cfg.fonts.hinting);
+
+    try cfg.setFontHinting("light");
+    try std.testing.expectEqual(Config.Fonts.Hinting.light, cfg.fonts.hinting);
+
+    try cfg.setFontHinting("normal");
+    try std.testing.expectEqual(Config.Fonts.Hinting.normal, cfg.fonts.hinting);
+
+    try std.testing.expectError(error.InvalidFontSmoothing, cfg.setFontSmoothing("sharp"));
+    try std.testing.expectError(error.InvalidFontHinting, cfg.setFontHinting("heavy"));
+}
+
+test "replaceOwned and freeOwned manage owned string slots" {
+    var slot: ?[]u8 = null;
+
+    try replaceOwned(std.testing.allocator, &slot, "alpha");
+    try std.testing.expectEqualStrings("alpha", slot.?);
+
+    try replaceOwned(std.testing.allocator, &slot, "beta");
+    try std.testing.expectEqualStrings("beta", slot.?);
+
+    freeOwned(std.testing.allocator, &slot);
+    try std.testing.expectEqual(@as(?[]u8, null), slot);
 }

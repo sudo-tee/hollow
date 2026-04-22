@@ -101,6 +101,24 @@ Connection reuse:
 - Native Windows `ssh.exe` does not reliably support the same multiplexing flow, so Hollow intentionally falls back to normal SSH launches there.
 - If you want passwordless repeated connections on native Windows, use SSH keys and `ssh-agent`.
 
+SSH workspace sources:
+
+```lua
+hollow.ui.workspace.configure({
+    sources = {
+        {
+            domain = "tower",
+            resolver = "ssh",
+            roots = {
+                "/home/root/projects",
+            },
+        },
+    },
+})
+```
+
+This scans the listed remote roots by running a non-interactive `find` command through the configured SSH domain. In practice that means the domain must already support non-interactive auth, such as SSH keys, `ssh-agent`, or WSL-backed multiplexing.
+
 ## UI widgets
 
 Widgets use shared primitives:

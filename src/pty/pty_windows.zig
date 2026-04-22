@@ -443,6 +443,12 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     const shell_argv = try parseCommandString(allocator, shell);
     defer allocator.free(shell_argv);
     if (shell_argv.len == 0) return error.InvalidCharacter;
+    const wrapped_program = if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and shell_argv.len > 1)
+        std.fs.path.basename(shell_argv[1])
+    else
+        "";
+    const shell_wraps_ssh = std.mem.eql(u8, wrapped_program, "ssh") or std.mem.eql(u8, wrapped_program, "ssh.exe");
+    const shell_is_ssh = std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe");
 
     try argv.appendSlice(allocator, shell_argv);
 
@@ -459,6 +465,19 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             const wrapped = try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
+            if (shell_wraps_ssh) {
+                if (argv.items.len >= 3) {
+                    try argv.insert(allocator, 2, try allocator.dupe(u8, "-tt"));
+                } else {
+                    try argv.append(allocator, try allocator.dupe(u8, "-tt"));
+                }
+                const wrapped = if (cmd.close_on_exit)
+                    try std.fmt.allocPrint(allocator, "{s}; exit", .{trimmed})
+                else
+                    try allocator.dupe(u8, trimmed);
+                try argv.append(allocator, wrapped);
+                return try argv.toOwnedSlice(allocator);
+            }
             if (cwd) |dir| {
                 if (dir.len > 0) {
                     try argv.append(allocator, try allocator.dupe(u8, "--cd"));
@@ -473,6 +492,9 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
                 try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
         } else {
+            if (shell_is_ssh) {
+                try argv.append(allocator, try allocator.dupe(u8, "-tt"));
+            }
             const wrapped = if (cmd.close_on_exit)
                 try std.fmt.allocPrint(allocator, "{s} & exit", .{trimmed})
             else
@@ -483,7 +505,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
         try argv.append(allocator, try allocator.dupe(u8, "/Q"));
         try argv.append(allocator, try allocator.dupe(u8, "/K"));
         try argv.append(allocator, try allocator.dupe(u8, "echo [hollow] child started"));
-    } else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and cwd != null and cwd.?.len > 0) {
+    } else if ((std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) and !shell_wraps_ssh and cwd != null and cwd.?.len > 0) {
         try argv.append(allocator, try allocator.dupe(u8, "--cd"));
         try argv.append(allocator, try allocator.dupe(u8, cwd.?));
     }

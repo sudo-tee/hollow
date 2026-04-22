@@ -23,8 +23,6 @@ Primary namespaces:
 Additional top-level helpers:
 
 - `hollow.read_dir(path)`
-- `hollow.run_child_process(args)`
-- `hollow.run_domain_process(args, domain?)`
 
 Returned tab, pane, and workspace objects are snapshots. Treat them as read-only.
 
@@ -87,6 +85,25 @@ domains = {
 `backend = "wsl"` launches the SSH client through `wsl.exe`, which is useful on Windows when you want Linux-side SSH config and multiplexing behavior.
 `reuse = "auto"` enables OpenSSH multiplexing flags for WSL/Linux-backed SSH domains. Native Windows OpenSSH falls back safely without extra reuse flags.
 
+Workspace picker sources can also use SSH-backed discovery:
+
+```lua
+hollow.ui.workspace.configure({
+  sources = {
+    {
+      domain = "tower",
+      resolver = "ssh",
+      roots = {
+        "/home/root/projects",
+      },
+    },
+  },
+})
+```
+
+`resolver = "ssh"` runs a remote `find` command through `hollow.term.run_domain_process(...)` and turns the resulting directories into workspace candidates.
+This requires the SSH domain to work non-interactively, for example with SSH keys, an agent, or WSL-backed multiplexing.
+
 ## `hollow.term`
 
 ```lua
@@ -112,6 +129,7 @@ hollow.term.focus_tab(id)
 hollow.term.close_tab(id)
 hollow.term.set_title(title, tab_id?)
 hollow.term.send_text(text, pane_id?)
+hollow.term.run_domain_process(args, domain?)
 ```
 
 `split_pane` accepts either `(direction, opts?)` or a single options table with:
@@ -228,13 +246,13 @@ Built-in events cannot be emitted from Lua.
 
 ```lua
 hollow.read_dir(path)
-hollow.run_child_process(args)
-hollow.run_domain_process(args, domain?)
+hollow.process.run_child_process(args)
+hollow.term.run_domain_process(args, domain?)
 ```
 
 `read_dir(path)` returns an array of absolute entry paths for the given absolute directory path.
 
-`run_child_process(args)` runs a child process with the provided argv array and returns:
+`hollow.process.run_child_process(args)` runs a child process with the provided argv array and returns:
 
 ```lua
 success, stdout, stderr
@@ -242,7 +260,7 @@ success, stdout, stderr
 
 This mirrors the simple tuple style used by WezTerm-style config APIs, but is implemented by Hollow.
 
-`run_domain_process(args, domain?)` resolves the configured Hollow domain shell and runs the argv through that domain.
+`hollow.term.run_domain_process(args, domain?)` resolves the configured Hollow domain shell and runs the argv through that domain.
 If `domain` is omitted, Hollow uses the current pane domain.
 It returns the same tuple:
 

@@ -241,3 +241,142 @@ pub const Server = struct {
         try reply_out.writeAll(out.written());
     }
 };
+
+const TestQueryMode = enum {
+    ok,
+    fail,
+};
+
+const TestQueryContext = struct {
+    mode: TestQueryMode,
+    saw_pane_id: usize = 0,
+    saw_expected_channel: bool = false,
+    saw_expected_param: bool = false,
+};
+
+fn testQueryHandler(ctx_ptr: *anyopaque, pane_id: usize, channel: []const u8, params: ?std.json.Value) !luajit.HtpQueryResult {
+    const ctx: *TestQueryContext = @ptrCast(@alignCast(ctx_ptr));
+    ctx.saw_pane_id = pane_id;
+    ctx.saw_expected_channel = std.mem.eql(u8, channel, "ping");
+    ctx.saw_expected_param = false;
+
+    if (params) |value| {
+        if (value == .object) {
+            if (value.object.get("answer")) |answer| {
+                ctx.saw_expected_param = answer == .integer and answer.integer == 42;
+            }
+        }
+    }
+
+    if (ctx.mode == .fail) return error.TestQueryFailure;
+
+    return .{
+        .success = true,
+        .value = .{ .integer = 99 },
+    };
+}
+
+fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    const file = try openFileShared(allocator, path);
+    defer file.close();
+    return try file.readToEndAlloc(allocator, max_bytes);
+}
+
+test "wslToWindowsPath converts mounted drive paths only" {
+    const converted = try wslToWindowsPath(std.testing.allocator, "/mnt/c/Users/test/file.txt");
+    defer std.testing.allocator.free(converted);
+    try std.testing.expectEqualStrings("C:\\Users\\test\\file.txt", converted);
+
+    const unchanged = try wslToWindowsPath(std.testing.allocator, "/tmp/hollow/request.json");
+    defer std.testing.allocator.free(unchanged);
+    try std.testing.expectEqualStrings("/tmp/hollow/request.json", unchanged);
+}
+
+test "handleRequestFile writes success reply and removes request" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    const request_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "query.request.json" });
+    defer std.testing.allocator.free(request_path);
+    const reply_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "query.reply.json" });
+    defer std.testing.allocator.free(reply_path);
+
+    const request_file = try createFileShared(std.testing.allocator, request_path);
+    defer request_file.close();
+
+    var request_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer request_out.deinit();
+    try std.json.Stringify.value(.{
+        .reply_file = reply_path,
+        .pane_id = 7,
+        .name = "ping",
+        .params = .{ .answer = 42 },
+    }, .{}, &request_out.writer);
+    try request_file.writeAll(request_out.written());
+
+    var ctx = TestQueryContext{ .mode = .ok };
+    var server = Server.init(std.testing.allocator, &ctx, testQueryHandler);
+
+    try server.handleRequestFile(dir_path, "query.request.json");
+
+    try std.testing.expectEqual(@as(usize, 7), ctx.saw_pane_id);
+    try std.testing.expect(ctx.saw_expected_channel);
+    try std.testing.expect(ctx.saw_expected_param);
+
+    const reply_data = try readFileAlloc(std.testing.allocator, reply_path, 4096);
+    defer std.testing.allocator.free(reply_data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, reply_data, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("result", root.get("kind").?.string);
+    try std.testing.expectEqualStrings("ok", root.get("status").?.string);
+    try std.testing.expectEqual(@as(i64, 99), root.get("payload").?.integer);
+
+    try std.testing.expectError(error.FileNotFound, openFileShared(std.testing.allocator, request_path));
+}
+
+test "handleRequestFile writes error reply when handler fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    const request_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "query.request.json" });
+    defer std.testing.allocator.free(request_path);
+    const reply_path = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "query.reply.json" });
+    defer std.testing.allocator.free(reply_path);
+
+    const request_file = try createFileShared(std.testing.allocator, request_path);
+    defer request_file.close();
+
+    var request_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer request_out.deinit();
+    try std.json.Stringify.value(.{
+        .reply_file = reply_path,
+        .pane_id = 3,
+        .name = "ping",
+    }, .{}, &request_out.writer);
+    try request_file.writeAll(request_out.written());
+
+    var ctx = TestQueryContext{ .mode = .fail };
+    var server = Server.init(std.testing.allocator, &ctx, testQueryHandler);
+
+    try server.handleRequestFile(dir_path, "query.request.json");
+
+    const reply_data = try readFileAlloc(std.testing.allocator, reply_path, 4096);
+    defer std.testing.allocator.free(reply_data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, reply_data, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("error", root.get("kind").?.string);
+    try std.testing.expectEqualStrings("error", root.get("status").?.string);
+    try std.testing.expectEqualStrings("TestQueryFailure", root.get("error").?.string);
+
+    try std.testing.expectError(error.FileNotFound, openFileShared(std.testing.allocator, request_path));
+}

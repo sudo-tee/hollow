@@ -73,13 +73,12 @@ fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
     return hasher.final();
 }
 
-fn titleCString(text: []const u8) [*:0]const u8 {
+fn titleCString(text: []const u8) [256:0]u8 {
     const max_len = 255;
-    var buf: [max_len + 1]u8 = undefined;
+    var buf: [max_len + 1:0]u8 = [_:0]u8{0} ** (max_len + 1);
     const trimmed = if (text.len > max_len) text[0..max_len] else text;
     @memcpy(buf[0..trimmed.len], trimmed);
-    buf[trimmed.len] = 0;
-    return @ptrCast(&buf);
+    return buf;
 }
 
 fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -225,6 +224,7 @@ pub const PendingMouseEvent = union(enum) {
     new_workspace: struct {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
+        command: ?[]const u8,
     },
     close_workspace,
     next_workspace,
@@ -611,7 +611,8 @@ pub const App = struct {
                 .new_workspace => |payload| {
                     defer if (payload.cwd) |value| self.allocator.free(value);
                     defer if (payload.domain_name) |value| self.allocator.free(value);
-                    self.newWorkspace(payload.cwd, payload.domain_name);
+                    defer if (payload.command) |value| self.allocator.free(value);
+                    self.newWorkspace(payload.cwd, payload.domain_name, payload.command);
                 },
                 .close_workspace => {
                     self.closeWorkspace();
@@ -2449,7 +2450,8 @@ pub const App = struct {
             self.requestLayoutResize(true);
         }
 
-        sapp_set_window_title(titleCString(self.activeTitle()));
+        const window_title = titleCString(self.activeTitle());
+        sapp_set_window_title(&window_title);
 
         if (self.lua) |*lua| self.registerLuaCallbacks(lua);
         self.emitLuaBuiltInEvent("config:reloaded", .none);
@@ -2548,29 +2550,32 @@ pub const App = struct {
         self.requestLayoutResize(false);
     }
 
-    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8) void {
+    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
         const previous = mux.activePane();
-        const inherited_cwd = if (cwd) |value|
-            if (value.len > 0) value else null
-        else if (previous) |pane|
-            if (pane.cwd.len > 0) pane.cwd else null
-        else
-            null;
         const inherited_domain = if (domain_name) |value|
             if (value.len > 0) value else null
         else if (previous) |pane|
             if (pane.domain_name.len > 0) pane.domain_name else null
         else
             null;
-        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain) catch |err| {
+        const inherited_cwd = if (cwd) |value|
+            if (value.len > 0) value else null
+        else if (previous) |pane|
+            if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, inherited_domain orelse "")) pane.cwd else null
+        else
+            null;
+        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null) catch |err| {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
             return;
         };
         self.bindHtpHandlers();
         self.syncActivePaneChange(previous, mux.activePane());
+        if (command) |value| {
+            if (mux.activePane()) |pane| pane.sendText(value);
+        }
         self.requestLayoutResize(false);
         std.log.info("app: created new workspace", .{});
     }
@@ -3568,11 +3573,12 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8) void {
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain } });
+    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command } });
 }
 
 fn luaCloseWorkspaceCallback(app_ptr: *anyopaque) void {
@@ -3864,4 +3870,119 @@ fn luaScrollActiveTopCallback(app_ptr: *anyopaque) void {
 fn luaScrollActiveBottomCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.scroll_active_bottom);
+}
+
+test "app helpers count utf8 codepoints by leading byte" {
+    try std.testing.expectEqual(@as(usize, 0), countUtf8Codepoints(""));
+    try std.testing.expectEqual(@as(usize, 5), countUtf8Codepoints("hello"));
+    try std.testing.expectEqual(@as(usize, 3), countUtf8Codepoints("A\xc3\xa9\xe2\x82\xac"));
+    try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xf0\x9f\x98\x80"));
+    try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xe2\x82"));
+}
+
+test "titleCString truncates and null terminates window titles" {
+    var input: [300]u8 = undefined;
+    @memset(&input, 'x');
+
+    const title = titleCString(input[0..]);
+
+    try std.testing.expectEqual(@as(u8, 'x'), title[0]);
+    try std.testing.expectEqual(@as(u8, 'x'), title[254]);
+    try std.testing.expectEqual(@as(u8, 0), title[255]);
+}
+
+test "jsonObjectIndex accepts non-negative integers and whole floats" {
+    var object = std.json.ObjectMap.init(std.testing.allocator);
+    defer object.deinit();
+
+    try object.put("int", .{ .integer = 7 });
+    try object.put("float", .{ .float = 3.0 });
+    try object.put("negative", .{ .integer = -1 });
+    try object.put("fraction", .{ .float = 2.5 });
+    try object.put("text", .{ .string = "4" });
+
+    try std.testing.expectEqual(@as(?usize, 7), jsonObjectIndex(object, "int"));
+    try std.testing.expectEqual(@as(?usize, 3), jsonObjectIndex(object, "float"));
+    try std.testing.expectEqual(@as(?usize, null), jsonObjectIndex(object, "negative"));
+    try std.testing.expectEqual(@as(?usize, null), jsonObjectIndex(object, "fraction"));
+    try std.testing.expectEqual(@as(?usize, null), jsonObjectIndex(object, "text"));
+    try std.testing.expectEqual(@as(?usize, null), jsonObjectIndex(object, "missing"));
+}
+
+test "chunkPayloadObject stores chunk metadata and owned payload" {
+    const object = try chunkPayloadObject(std.testing.allocator, "payload", 2, 5);
+    defer {
+        const value = std.json.Value{ .object = object };
+        deinitJsonValue(std.testing.allocator, value);
+    }
+
+    try std.testing.expectEqual(@as(?usize, 2), jsonObjectIndex(object, "index"));
+    try std.testing.expectEqual(@as(?usize, 5), jsonObjectIndex(object, "total"));
+    try std.testing.expectEqualStrings("payload", jsonObjectString(object, "data").?);
+}
+
+test "cloneJsonValue deep copies nested JSON values" {
+    var source = std.json.ObjectMap.init(std.testing.allocator);
+    defer {
+        const source_value = std.json.Value{ .object = source };
+        deinitJsonValue(std.testing.allocator, source_value);
+    }
+
+    var nested = std.json.Array.init(std.testing.allocator);
+    try nested.append(.{ .string = try std.testing.allocator.dupe(u8, "alpha") });
+    try nested.append(.{ .integer = 9 });
+    try source.put(try std.testing.allocator.dupe(u8, "list"), .{ .array = nested });
+
+    const clone = try cloneJsonValue(std.testing.allocator, .{ .object = source });
+    defer deinitJsonValue(std.testing.allocator, clone);
+
+    const cloned_object = clone.object;
+    const cloned_array = cloned_object.get("list").?.array;
+    try std.testing.expectEqual(@as(usize, 2), cloned_array.items.len);
+    try std.testing.expectEqualStrings("alpha", cloned_array.items[0].string);
+    try std.testing.expectEqual(@as(i64, 9), cloned_array.items[1].integer);
+
+    const original_array = source.get("list").?.array;
+    try std.testing.expect(cloned_array.items.ptr != original_array.items.ptr);
+    try std.testing.expect(cloned_array.items[0].string.ptr != original_array.items[0].string.ptr);
+}
+
+test "firstCodepoint handles ascii utf8 and invalid prefixes" {
+    try std.testing.expectEqual(@as(u32, 0), firstCodepoint(""));
+    try std.testing.expectEqual(@as(u32, 'A'), firstCodepoint("ABC"));
+    try std.testing.expectEqual(@as(u32, 0x20AC), firstCodepoint("\xe2\x82\xac rest"));
+    try std.testing.expectEqual(@as(u32, 0xF0), firstCodepoint("\xf0\x9f"));
+    try std.testing.expectEqual(@as(u32, 0xFF), firstCodepoint("\xffbad"));
+}
+
+test "encodeCodepointInto emits utf8 byte sequences" {
+    var buf: [4]u8 = undefined;
+
+    try std.testing.expectEqual(@as(?usize, null), encodeCodepointInto(0, &buf));
+    try std.testing.expectEqual(@as(?usize, 1), encodeCodepointInto('A', &buf));
+    try std.testing.expectEqualStrings("A", buf[0..1]);
+
+    try std.testing.expectEqual(@as(?usize, 2), encodeCodepointInto(0x00E9, &buf));
+    try std.testing.expectEqualSlices(u8, "\xc3\xa9", buf[0..2]);
+
+    try std.testing.expectEqual(@as(?usize, 3), encodeCodepointInto(0x20AC, &buf));
+    try std.testing.expectEqualSlices(u8, "\xe2\x82\xac", buf[0..3]);
+
+    try std.testing.expectEqual(@as(?usize, 4), encodeCodepointInto(0x1F600, &buf));
+    try std.testing.expectEqualSlices(u8, "\xf0\x9f\x98\x80", buf[0..4]);
+}
+
+test "legacyPrintableKeyText maps printable keys and shifted symbols" {
+    var out: [4]u8 = undefined;
+
+    try std.testing.expectEqualStrings("a", legacyPrintableKeyText(.a, 0, &out).?);
+    try std.testing.expectEqualStrings("A", legacyPrintableKeyText(.a, ghostty.Mods.shift, &out).?);
+    try std.testing.expectEqualStrings("1", legacyPrintableKeyText(.digit_1, 0, &out).?);
+    try std.testing.expectEqualStrings("!", legacyPrintableKeyText(.digit_1, ghostty.Mods.shift, &out).?);
+    try std.testing.expectEqualStrings("/", legacyPrintableKeyText(.slash, 0, &out).?);
+    try std.testing.expectEqualStrings("?", legacyPrintableKeyText(.slash, ghostty.Mods.shift, &out).?);
+    try std.testing.expectEqualStrings("\r", legacyPrintableKeyText(.enter, 0, &out).?);
+    try std.testing.expectEqualStrings("\x7f", legacyPrintableKeyText(.backspace, 0, &out).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), legacyPrintableKeyText(.tab, ghostty.Mods.shift, &out));
+    try std.testing.expectEqual(@as(?[]const u8, null), legacyPrintableKeyText(.escape, 0, &out));
 }

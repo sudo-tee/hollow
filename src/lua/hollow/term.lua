@@ -131,6 +131,9 @@ function M.setup(hollow, host_api)
     if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
       error("hollow.term.new_workspace(opts) expects opts.domain to be a string")
     end
+    if opts ~= nil and opts.command ~= nil and type(opts.command) ~= "string" then
+      error("hollow.term.new_workspace(opts) expects opts.command to be a string")
+    end
     host_api.new_workspace(opts)
   end
 

@@ -806,19 +806,19 @@ pub const Mux = struct {
     pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         if (self.workspaces.items.len != 0) return error.MuxAlreadyBootstrapped;
 
-        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, null);
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, null, null, null);
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
     }
 
-    pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !void {
-        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name);
+    pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
+        const workspace = try self.createBootstrappedWorkspace(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command);
         try workspace.setDefaultCwd(inherited_cwd);
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
     }
 
-    fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8) !*Workspace {
+    fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !*Workspace {
         const workspace = try self.createWorkspace();
         var workspace_owned_by_mux = false;
         defer if (!workspace_owned_by_mux) {
@@ -834,7 +834,7 @@ pub const Mux = struct {
         };
 
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, null);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, launch_command);
         var pane_owned_by_tab = false;
         defer if (!pane_owned_by_tab) {
             pane.deinit(runtime);
