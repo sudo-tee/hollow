@@ -243,4 +243,5 @@ fn parseArgs(allocator: std.mem.Allocator) !Cli {
 test {
     _ = @import("config.zig");
     _ = @import("platform.zig");
+    _ = @import("lua_bridge.zig");
 }

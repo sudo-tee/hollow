@@ -4,11 +4,12 @@ const builtin = @import("builtin");
 const Config = @import("config.zig").Config;
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
-const LuaRuntime = @import("lua/luajit.zig").Runtime;
-const AppCallbacks = @import("lua/luajit.zig").AppCallbacks;
-const SidebarLayout = @import("lua/luajit.zig").SidebarLayout;
-const BottomBarLayout = @import("lua/luajit.zig").BottomBarLayout;
-const HtpQueryResult = @import("lua/luajit.zig").HtpQueryResult;
+const lua_mod = @import("lua_bridge.zig");
+const LuaRuntime = lua_mod.Runtime;
+const AppCallbacks = lua_mod.AppCallbacks;
+const SidebarLayout = lua_mod.SidebarLayout;
+const BottomBarLayout = lua_mod.BottomBarLayout;
+const HtpQueryResult = lua_mod.HtpQueryResult;
 const HtpFs = @import("htp_fs.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
@@ -886,7 +887,7 @@ pub const App = struct {
         if (self.lua) |*lua| lua.fireGuiReady();
     }
 
-    pub fn emitLuaBuiltInEvent(self: *App, name: []const u8, payload: @import("lua/luajit.zig").BuiltInPayload) void {
+    pub fn emitLuaBuiltInEvent(self: *App, name: []const u8, payload: lua_mod.BuiltInPayload) void {
         if (self.lua) |*lua| lua.emitBuiltInEvent(name, payload);
     }
 

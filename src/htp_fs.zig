@@ -1,5 +1,5 @@
 const std = @import("std");
-const luajit = @import("lua/luajit.zig");
+const luajit = @import("lua_bridge.zig");
 const platform = @import("platform.zig");
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;

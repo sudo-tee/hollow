@@ -1,8 +1,8 @@
 const std = @import("std");
-const config = @import("../config.zig");
-const platform = @import("../platform.zig");
-const ghostty = @import("../term/ghostty.zig");
-const bar = @import("../ui/bar.zig");
+const config = @import("config.zig");
+const platform = @import("platform.zig");
+const ghostty = @import("term/ghostty.zig");
+const bar = @import("ui/bar.zig");
 
 extern fn luaL_newstate() callconv(.c) ?*State;
 extern fn lua_close(*State) callconv(.c) void;
@@ -93,26 +93,26 @@ const LuaModule = struct {
 };
 
 const embedded_lua_modules = [_]LuaModule{
-    .{ .name = "hollow.state", .source = @embedFile("hollow/state.lua") },
-    .{ .name = "hollow.util", .source = @embedFile("hollow/util.lua") },
-    .{ .name = "hollow.term", .source = @embedFile("hollow/term.lua") },
-    .{ .name = "hollow.config", .source = @embedFile("hollow/config.lua") },
-    .{ .name = "hollow.events", .source = @embedFile("hollow/events.lua") },
-    .{ .name = "hollow.actions", .source = @embedFile("hollow/actions.lua") },
-    .{ .name = "hollow.defaults", .source = @embedFile("hollow/defaults.lua") },
-    .{ .name = "hollow.htp", .source = @embedFile("hollow/htp.lua") },
-    .{ .name = "hollow.keymap", .source = @embedFile("hollow/keymap.lua") },
-    .{ .name = "hollow.ui.shared", .source = @embedFile("hollow/ui/shared.lua") },
-    .{ .name = "hollow.ui.primitives", .source = @embedFile("hollow/ui/primitives.lua") },
-    .{ .name = "hollow.ui.widgets.core", .source = @embedFile("hollow/ui/widgets/core.lua") },
-    .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("hollow/ui/widgets/bars.lua") },
-    .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("hollow/ui/widgets/overlay.lua") },
-    .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("hollow/ui/widgets/notify.lua") },
-    .{ .name = "hollow.ui.widgets.input", .source = @embedFile("hollow/ui/widgets/input.lua") },
-    .{ .name = "hollow.ui.widgets.select", .source = @embedFile("hollow/ui/widgets/select.lua") },
-    .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("hollow/ui/widgets/workspace.lua") },
-    .{ .name = "hollow.ui.runtime", .source = @embedFile("hollow/ui/runtime.lua") },
-    .{ .name = "hollow.ui", .source = @embedFile("hollow/ui.lua") },
+    .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
+    .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
+    .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
+    .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
+    .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
+    .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
+    .{ .name = "hollow.defaults", .source = @embedFile("lua/hollow/defaults.lua") },
+    .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
+    .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
+    .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
+    .{ .name = "hollow.ui.primitives", .source = @embedFile("lua/hollow/ui/primitives.lua") },
+    .{ .name = "hollow.ui.widgets.core", .source = @embedFile("lua/hollow/ui/widgets/core.lua") },
+    .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("lua/hollow/ui/widgets/bars.lua") },
+    .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("lua/hollow/ui/widgets/overlay.lua") },
+    .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("lua/hollow/ui/widgets/notify.lua") },
+    .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
+    .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
+    .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
+    .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
 };
 
 /// Callbacks from Lua into the App layer.
@@ -1496,10 +1496,6 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
 fn bridgeContext(state: *State) *BridgeContext {
     _ = state;
     return active_context orelse @panic("missing bridge context");
-}
-
-fn upvalueIndex(i: c_int) c_int {
-    return -10002 - i;
 }
 
 fn l_log(state: *State) callconv(.c) c_int {
