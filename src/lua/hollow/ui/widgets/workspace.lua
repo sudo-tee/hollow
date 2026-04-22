@@ -33,20 +33,6 @@ local function switcher_state()
   return state.ui.workspace_switcher
 end
 
-local function now_ms()
-  local ok, value = pcall(hollow.now_ms)
-  if ok and type(value) == "number" then
-    return value
-  end
-
-  local ok_host, host_value = pcall(state.host_api.now_ms)
-  if ok_host and type(host_value) == "number" then
-    return host_value
-  end
-
-  return math.floor(os.time() * 1000)
-end
-
 local function trim_string(value)
   if type(value) ~= "string" then
     return ""
@@ -298,7 +284,7 @@ local function ensure_last_opened(name, timestamp)
   end
 
   local switcher = switcher_state()
-  local value = tonumber(timestamp) or now_ms()
+  local value = tonumber(timestamp) or util.host_now_ms(state.host_api)
   local existing = switcher.last_opened[id]
   if existing == nil or value >= existing then
     switcher.last_opened[id] = value
@@ -524,7 +510,7 @@ end
 local function cached_known_workspaces(force_refresh)
   local switcher = switcher_state()
   local ttl = tonumber(switcher.cache_ttl_ms) or DEFAULT_CACHE_TTL_MS
-  local current = now_ms()
+  local current = util.host_now_ms(state.host_api)
   local fresh = switcher.cached_items ~= nil
     and ttl >= 0
     and (current - (switcher.cache_loaded_at_ms or 0)) <= ttl
@@ -535,7 +521,15 @@ local function cached_known_workspaces(force_refresh)
 
   local seen = {}
   local items = {}
-  for _, source in ipairs(configured_sources()) do
+  local sources = configured_sources()
+  local filtered_sources = {}
+  for _, s in ipairs(sources) do
+    if s.default ~= false then
+      filtered_sources[#filtered_sources + 1] = s
+    end
+  end
+
+  for _, source in ipairs(filtered_sources) do
     local resolved_domain = source_domain_name(source)
     local resolver = source_resolver(source)
     if type(source.items) == "function" then
@@ -632,7 +626,7 @@ local function merged_workspace_items(force_refresh)
   for _, workspace in ipairs(open_workspace_items()) do
     workspace.last_opened_at = workspace.last_opened_at
       or switcher.last_opened[workspace.id]
-      or now_ms()
+      or util.host_now_ms(state.host_api)
     merged[#merged + 1] = workspace
     seen[workspace.id] = workspace
   end
@@ -745,7 +739,7 @@ local function workspace_badge_text()
   return " ws: " .. name .. " "
 end
 
-local function detail_for_item(workspace)
+local function detail_for_item(_workspace)
   return nil
 end
 
@@ -892,8 +886,56 @@ function ui.workspace.rename(workspace, opts)
 end
 
 function ui.workspace.close(workspace)
-  close_workspace(workspace)
+  local target = workspace or hollow.term.current_workspace()
+  if type(target) ~= "table" or target.is_open == false then
+    return
+  end
+
+  local current = hollow.term.current_workspace()
+  if current == nil or current.name ~= target.name then
+    ui.notify.warn("Close works on the active workspace", { ttl = 1400 })
+    return
+  end
+
+  hollow.term.close_workspace()
 end
+
+function ui.workspace.open(opts)
+  opts = opts or {}
+  local source_name = trim_string(opts.source)
+  if source_name == "" then
+    open_new_workspace_from_item(opts)
+    return
+  end
+
+  local source = nil
+  for _, s in ipairs(configured_sources()) do
+    if trim_string(s.name) == source_name or trim_string(s.domain) == source_name then
+      source = s
+      break
+    end
+  end
+
+  if source == nil then
+    if ui.notify and ui.notify.warn then
+      ui.notify.warn("Workspace source not found: " .. source_name, { ttl = 1800 })
+    end
+    return
+  end
+
+  local resolved_domain = source_domain_name(source)
+  local item = source_workspace_item(opts.item or opts, source, resolved_domain)
+  
+  if item == nil then
+    if ui.notify and ui.notify.warn then
+      ui.notify.warn("Could not resolve workspace from source: " .. source_name, { ttl = 1800 })
+    end
+    return
+  end
+
+  open_new_workspace_from_item(item)
+end
+
 
 function ui.workspace.open_switcher(opts)
   opts = opts or {}

@@ -1,5 +1,5 @@
 ---@type HollowHostBridge
-local host_api = host_api
+local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missing")
 
 ---@type Hollow
 local hollow = {
@@ -11,6 +11,7 @@ local hollow = {
   htp = {},
   process = {},
   platform = host_api.platform or {},
+  util = {},
 }
 
 _G.hollow = hollow
@@ -19,21 +20,29 @@ if package ~= nil and package.loaded ~= nil then
   package.loaded.hollow = hollow
 end
 
+local actions = require("hollow.actions")
+local config = require("hollow.config")
+local defaults = require("hollow.defaults")
+local events = require("hollow.events")
+local htp = require("hollow.htp")
+local keymap = require("hollow.keymap")
 local state = require("hollow.state").new(host_api)
+local term = require("hollow.term")
 local util = require("hollow.util")
 
--- Expose util on the global `hollow` table. Keep `hollow.utils` as an
 -- alias for backward compatibility.
 hollow.util = util
-hollow.utils = util
 
-require("hollow.config").setup(hollow, host_api, state, util)
-local term_helpers = require("hollow.term").setup(hollow, host_api)
-require("hollow.ui")
-require("hollow.actions").setup(hollow, host_api)
-require("hollow.keymap").setup(hollow, host_api, state)
-local events_runtime = require("hollow.events").setup(hollow, state, term_helpers)
-require("hollow.htp").setup(hollow, host_api, state, util, term_helpers)
+config.setup(hollow, host_api, state)
+local term_helpers = term.setup(hollow, host_api)
+local ui_exports = require("hollow.ui")
+for name, value in pairs(ui_exports) do
+  hollow.ui[name] = value
+end
+actions.setup(hollow, host_api)
+keymap.setup(hollow, host_api, state)
+local events_runtime = events.setup(hollow, state, term_helpers)
+htp.setup(hollow, host_api, state, util, term_helpers)
 
 function hollow._emit_builtin_event(name, payload)
   local adapted = events_runtime.adapt_builtin_payload(name, payload)
@@ -76,12 +85,12 @@ function hollow.term.run_domain_process(args, domain)
   return host_api.run_domain_process(domain, args)
 end
 
-function hollow.process.spawn(opts)
+function hollow.process.spawn(_opts)
   util.unsupported("hollow.process.spawn")
 end
 
-function hollow.process.exec(opts)
+function hollow.process.exec(_opts)
   util.unsupported("hollow.process.exec")
 end
 
-require("hollow.defaults").setup(hollow)
+defaults.setup(hollow)

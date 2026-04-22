@@ -332,6 +332,7 @@ hollow.ui.workspace.configure({
       cwd_resolver = "wsl_unc",
     },
     {
+      default = false,
       domain = "tower",
       resolver = "ssh",
       roots = {

@@ -352,8 +352,8 @@ function M.setup(hollow, host_api)
 
   function hollow.term.move_pane(direction_or_opts, opts)
     local pane_id = nil
-    local direction = nil
     local amount = nil
+    local direction
 
     if type(direction_or_opts) == "table" then
       pane_id = direction_or_opts.pane_id or direction_or_opts.id

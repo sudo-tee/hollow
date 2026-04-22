@@ -1,4 +1,5 @@
 local M = {}
+local util = require("hollow.util")
 
 local MODS_SHIFT = 0x01
 local MODS_CTRL = 0x02
@@ -10,11 +11,7 @@ local function bor(a, b)
 end
 
 local time_now_ms = function()
-  return math.floor(os.time() * 1000)
-end
-
-local function now_ms()
-  return time_now_ms()
+  return util.host_now_ms(nil)
 end
 
 local function normalize_key_name(key)
@@ -366,7 +363,7 @@ local function set_sequence_state(keymap_state, node, prefix, steps)
   keymap_state.sequence_active_node = node
   keymap_state.sequence_prefix = prefix
   keymap_state.sequence_steps = steps or {}
-  keymap_state.sequence_pending_until = now_ms() + keymap_state.sequence_timeout_ms
+  keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
 end
 
 local function set_leader_binding(keymap_state, chord, style, action, opts)
@@ -508,7 +505,7 @@ local function is_sequence_active(keymap_state)
     return false
   end
 
-  if now_ms() > keymap_state.sequence_pending_until then
+  if time_now_ms() > keymap_state.sequence_pending_until then
     reset_sequence_state(keymap_state)
     return false
   end
@@ -546,13 +543,7 @@ function M.setup(hollow, host_api, state)
   local keymap_state = state.keymap
 
   time_now_ms = function()
-    if type(host_api.now_ms) == "function" then
-      local ok, value = pcall(host_api.now_ms)
-      if ok and type(value) == "number" then
-        return math.floor(value)
-      end
-    end
-    return math.floor(os.time() * 1000)
+    return util.host_now_ms(host_api)
   end
 
   hollow.keymap.format_mods = format_mods
@@ -655,7 +646,7 @@ function M.setup(hollow, host_api, state)
       next = next_items,
       next_display = format_next_items(next_items),
       desc = node.desc,
-      remaining_ms = math.max(0, keymap_state.sequence_pending_until - now_ms()),
+      remaining_ms = math.max(0, keymap_state.sequence_pending_until - time_now_ms()),
       timeout_ms = keymap_state.sequence_timeout_ms,
       complete = node.action ~= nil,
     }
@@ -671,7 +662,7 @@ function M.setup(hollow, host_api, state)
       if node ~= nil then
         keymap_state.sequence_active_node = node
         table.insert(keymap_state.sequence_steps, format_chord(key, mods))
-        keymap_state.sequence_pending_until = now_ms() + keymap_state.sequence_timeout_ms
+        keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
         if node.action ~= nil and not has_sequence_children(node) then
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)

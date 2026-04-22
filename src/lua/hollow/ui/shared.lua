@@ -251,18 +251,6 @@ end
 -- ---------------------------------------------------------------------------
 
 ---@return integer
-function M.monotonic_now_ms()
-  if type(host_api.now_ms) == "function" then
-    local ok, value = pcall(host_api.now_ms)
-    if ok and type(value) == "number" then
-      return math.floor(value)
-    end
-  end
-
-  return math.floor(os.time() * 1000)
-end
-
----@return integer
 function M.epoch_now_ms()
   return math.floor(os.time() * 1000)
 end

@@ -347,7 +347,7 @@ local function render_hint_rows(opts, theme)
   local tags = ui.tags
   local hint_nodes = {}
 
-  for index, action in ipairs(opts.actions or {}) do
+  for _, action in ipairs(opts.actions or {}) do
     local key_hint = action.key
       or (action.name == (opts.actions[1] and opts.actions[1].name) and "<CR>" or nil)
     if key_hint then

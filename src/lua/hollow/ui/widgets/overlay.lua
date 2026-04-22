@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
 local widget_core = require("hollow.ui.widgets.core")
 
 ---@type Hollow
@@ -55,7 +56,7 @@ local function serialize_overlay_widget(widget)
 end
 
 local function expire_timed_overlays()
-  local now = shared.monotonic_now_ms()
+  local now = util.host_now_ms(state.host_api)
 
   for index = #overlay_stack, 1, -1 do
     local widget = overlay_stack[index]

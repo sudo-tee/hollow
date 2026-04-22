@@ -83,7 +83,7 @@ function ui.notify.show(message, opts)
   ui.overlay.push(widget)
 
   if type(opts.ttl) == "number" and opts.ttl > 0 then
-    widget._expires_at = shared.monotonic_now_ms() + opts.ttl
+    widget._expires_at = util.host_now_ms(state.host_api) + opts.ttl
   end
 
   return widget

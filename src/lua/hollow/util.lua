@@ -38,6 +38,19 @@ function M.unsupported(name)
   error(name .. " is not implemented yet")
 end
 
+---@param host_api HollowHostBridge|table|nil
+---@return integer
+function M.host_now_ms(host_api)
+  if type(host_api) == "table" and type(host_api.now_ms) == "function" then
+    local ok, value = pcall(host_api.now_ms)
+    if ok and type(value) == "number" then
+      return math.floor(value)
+    end
+  end
+
+  return math.floor(os.time() * 1000)
+end
+
 -- Path utilities
 local function current_platform()
   local hollow = _G.hollow

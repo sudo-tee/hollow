@@ -3,13 +3,12 @@ local M = {}
 ---@param hollow Hollow
 ---@param host_api HollowHostBridge
 ---@param state HollowState
----@param util table
-function M.setup(hollow, host_api, state, util)
+function M.setup(hollow, host_api, state)
   function hollow.config.set(opts)
     if type(opts) ~= "table" then
       error("hollow.config.set(opts) expects a table")
     end
-    util.merge_tables(state.config.values, util.clone_value(opts))
+    hollow.util.merge_tables(state.config.values, hollow.util.clone_value(opts))
     host_api.set_config(opts)
   end
 
@@ -18,7 +17,7 @@ function M.setup(hollow, host_api, state, util)
   end
 
   function hollow.config.snapshot()
-    return util.clone_value(state.config.values)
+    return hollow.util.clone_value(state.config.values)
   end
 
   function hollow.config.reload()

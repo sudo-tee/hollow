@@ -125,7 +125,15 @@ local function serialize_custom(node, ctx)
   return segment
 end
 
----@param node HollowUiRenderableNode|HollowUiBarTabsNode|HollowUiBarWorkspaceNode|HollowUiBarTimeNode|HollowUiBarKeyLegendNode|HollowUiBarCustomNode|nil
+---@alias HollowUiBarSerializableNode
+---| HollowUiRenderableNode
+---| HollowUiBarTabsNode
+---| HollowUiBarWorkspaceNode
+---| HollowUiBarTimeNode
+---| HollowUiBarKeyLegendNode
+---| HollowUiBarCustomNode
+
+---@param node HollowUiBarSerializableNode|nil
 ---@param ctx HollowWidgetCtx
 ---@return HollowUiSegment|HollowUiTabsLayout|{kind:"spacer"}|nil
 local function serialize_bar_item(node, ctx)

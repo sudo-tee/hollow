@@ -45,10 +45,7 @@ local function serializable_error(value, path, seen)
   return nil
 end
 
-function M.setup(hollow, host_api, state, util, term_helpers)
-  local _ = host_api
-  local __ = state
-
+function M.setup(hollow, _host_api, _state, util, term_helpers)
   local query_handlers = {}
   local emit_handlers = {}
 
