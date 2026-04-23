@@ -4,9 +4,13 @@
     <img src="assets/banner.png" alt="Hollow demo" width="600"/>
 </div>
 
+## What Hollow Is
+
 Hollow is a Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core.
 The current build is usable today, highly configurable through Lua, and
 validated primarily on Windows and WSL.
+
+I see it as a spiritual successor to WezTerm. WezTerm is a fantastic terminal emulator, but Wezterm development has slowed down and the project is not as active as it once was. Hollow is an attempt to create a new terminal emulator that builds on the strengths of WezTerm while also providing a more modern and flexible architecture.
 
 If you are new to the repo, start with [the docs index](docs/README.md). The
 root README is the product overview; the rest of `docs/` is the actual guide
@@ -15,34 +19,35 @@ set.
 ## Table Of Contents
 
 - [What Hollow Is](#what-hollow-is)
-- [At A Glance](#at-a-glance)
 - [Getting Started](#getting-started)
 - [Documentation Map](#documentation-map)
 - [What Ships Today](#what-ships-today)
+- [Default Keymaps](#default-keymaps)
 - [Project Status](#project-status)
+- [Project Docs](docs/README.md)
 
-## What Hollow Is
+## Why "Hollow"?
 
-Hollow is a programmable terminal, not just a terminal with a config file.
-The shipped build combines:
-
-- a native Zig app and renderer
-- Ghostty's VT core for terminal behavior
-- a LuaJIT runtime for configuration, keymaps, widgets, overlays, and host integration
-- a bundled default config in `conf/init.lua` that users can override instead of copy-pasting wholesale
-
-The documentation is organized so it can grow into a site later without having to
-rethink the information architecture.
-
-## At A Glance
-
-- Product: programmable terminal emulator
-- Core stack: Zig, Ghostty VT core, LuaJIT
-- Primary target: Windows and WSL
-- Main customization model: Lua config and runtime APIs
-- Best entrypoint after this page: [docs/README.md](docs/README.md)
+The name "Hollow" is meant to evoke the idea of a container or vessel that can be filled with different contents. In this case, the "hollow" is the terminal emulator itself, which can be customized and extended with different configurations, scripts, and plugins to suit the user's needs. The name also has a certain simplicity and elegance to it, which reflects the design philosophy of the project.
 
 ## Getting Started
+
+### Download a release
+
+The latest release is available on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases)
+
+### Customize the config
+
+Copy the default config `conf/init.lua` to the user config location:
+
+- Windows: `%APPDATA%\hollow\init.lua`
+- Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.
+
+Refer to [the configuration docs](docs/configuration.md) for details on the config model, defaults and overrides
+
+### Development builds
+
+#### Build from source (Windows/WSL)
 
 First-time setup:
 
@@ -68,57 +73,38 @@ Debug build:
 ./launch.sh --debug
 ```
 
-List discoverable font families:
+#### Build from source (other platforms)
+
+First-time setup:
 
 ```bash
-./launch.sh --list-fonts
+./scripts/setup.sh
 ```
 
-Filter the font list:
+Build and run:
 
 ```bash
-./launch.sh --match-font mono
+zig build run
+## Or build a release binary:
+zig build -Doptimize=ReleaseFast
 ```
-
-Emit the font list as JSON:
-
-```bash
-./launch.sh --list-fonts --json
-```
-
-Forward native app arguments through the wrapper:
-
-```bash
-./launch.sh --app-arg=--snapshot-dump --app-arg=out.txt
-```
-
-The wrapper cross-builds `x86_64-windows-gnu` and produces
-`zig-out/bin/hollow-native.exe`.
 
 ## Documentation Map
 
 Start with [the docs index](docs/README.md).
 
-| File                         | Purpose                                         | Read this when                                              |
-| ---------------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
-| [docs/README.md](docs/README.md) | Documentation hub and structure | you want the full map of guides and references |
-| [docs/configuration.md](docs/configuration.md) | Config model, defaults, overrides, packaging | you want to customize Hollow or ship a default config |
-| [docs/windows-wsl.md](docs/windows-wsl.md) | Windows-first setup, WSL usage, troubleshooting | you are running Hollow in its primary validated environment |
-| [docs/hollow-lua-api.md](docs/hollow-lua-api.md) | Lua runtime API reference | you are scripting Hollow or building custom UI/automation |
-| [docs/htp-shell-examples.md](docs/htp-shell-examples.md) | Shell-side HTP helpers and examples | you want shells or scripts to talk back to the host |
+| File                                                     | Purpose                                         | Read this when                                              |
+| -------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
+| [docs/README.md](docs/README.md)                         | Documentation hub and structure                 | you want the full map of guides and references              |
+| [docs/configuration.md](docs/configuration.md)           | Config model, defaults, overrides, packaging    | you want to customize Hollow or ship a default config       |
+| [docs/windows-wsl.md](docs/windows-wsl.md)               | Windows-first setup, WSL usage, troubleshooting | you are running Hollow in its primary validated environment |
+| [docs/hollow-lua-api.md](docs/hollow-lua-api.md)         | Lua runtime API reference                       | you are scripting Hollow or building custom UI/automation   |
+| [docs/htp-shell-examples.md](docs/htp-shell-examples.md) | Shell-side HTP helpers and examples             | you want shells or scripts to talk back to the host         |
 
 Companion reference files outside `docs/`:
 
 - `conf/init.lua`: the shipped default configuration
 - `types/hollow.lua`: LuaLS typings for the runtime API
-
-Suggested reading order:
-
-1. [docs/README.md](docs/README.md)
-2. [docs/configuration.md](docs/configuration.md)
-3. [docs/windows-wsl.md](docs/windows-wsl.md)
-4. [docs/hollow-lua-api.md](docs/hollow-lua-api.md)
-5. [docs/htp-shell-examples.md](docs/htp-shell-examples.md)
 
 ## What Ships Today
 
@@ -161,7 +147,6 @@ shipped config (key → action):
 - `<C-S-Up>`: `focus_pane_up`
 - `<C-S-Down>`: `focus_pane_down`
 - `<C-S-m>`: `maximize_pane`
-- `<C-A-S-m>`: `maximize_pane_background`
 - `<C-S-f>`: `float_pane`
 - `<C-A-S-f>`: `tile_pane`
 - `<C-A-h>`: `move_pane_left`

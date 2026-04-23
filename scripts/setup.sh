@@ -15,8 +15,8 @@ git -C "$ROOT" submodule update --init --recursive
 
 # ── 2. Patches ───────────────────────────────────────────────────────────────
 apply_patch() {
-    local submodule_path="$1"   # relative to project root, e.g. third_party/sokol
-    local patch_file="$2"       # absolute path to .patch file
+    local submodule_path="$1" # relative to project root, e.g. third_party/sokol
+    local patch_file="$2"     # absolute path to .patch file
     local abs_path="$ROOT/$submodule_path"
 
     if [[ ! -f "$patch_file" ]]; then
@@ -42,23 +42,3 @@ apply_patch() {
 }
 
 apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
-
-# ── 3. Windows DLLs ──────────────────────────────────────────────────────────
-is_windows_or_wsl() {
-    case "$(uname -s)" in
-        MINGW*|CYGWIN*|MSYS*) return 0 ;;
-        Linux)
-            # WSL exposes /proc/version with "Microsoft" or "WSL"
-            grep -qi "microsoft\|wsl" /proc/version 2>/dev/null && return 0 ;;
-    esac
-    return 1
-}
-
-if is_windows_or_wsl; then
-    echo "[setup] fetching Windows DLLs..."
-    bash "$SCRIPT_DIR/fetch-windows-dlls.sh"
-else
-    echo "[setup] skipping DLL fetch (not Windows/WSL)"
-fi
-
-echo "[setup] done."

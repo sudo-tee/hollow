@@ -11,9 +11,6 @@ function M.setup(hollow, host_api)
     maximize_pane = function()
       host_api.toggle_pane_maximized(nil, false)
     end,
-    maximize_pane_background = function()
-      host_api.toggle_pane_maximized(nil, true)
-    end,
     float_pane = function()
       host_api.set_pane_floating(nil, true)
     end,

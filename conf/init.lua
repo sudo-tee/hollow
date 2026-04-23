@@ -1,10 +1,6 @@
 local hollow = require("hollow")
 
 local is_windows = hollow.platform.is_windows == true
-local is_macos = hollow.platform.is_macos == true
-
-local default_font_family = is_windows and "Consolas"
-  or (is_macos and "Menlo" or "DejaVu Sans Mono")
 
 local wave = {
   foreground = "#dcd7ba",
@@ -138,7 +134,7 @@ hollow.config.set({
     smoothing = "grayscale",
     hinting = "light",
     ligatures = true,
-    family = default_font_family,
+    family = "JetBrains Mono",
   },
   cols = 120,
   rows = 34,
@@ -222,7 +218,6 @@ hollow.keymap.set("<C-S-Right>", "focus_pane_right")
 hollow.keymap.set("<C-S-Up>", "focus_pane_up")
 hollow.keymap.set("<C-S-Down>", "focus_pane_down")
 hollow.keymap.set("<C-S-m>", "maximize_pane")
-hollow.keymap.set("<C-A-S-m>", "maximize_pane_background")
 hollow.keymap.set("<C-S-f>", "float_pane")
 hollow.keymap.set("<C-A-S-f>", "tile_pane")
 hollow.keymap.set("<C-A-h>", "move_pane_left")

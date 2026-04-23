@@ -16,6 +16,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Apply sokol patch (run setup script)
+        run: bash scripts/setup.sh
+
       - name: Set up Zig
         uses: mlugg/setup-zig@v1
         with:
@@ -29,13 +32,8 @@ jobs:
 
       - name: Stage release bundle
         run: |
-          mkdir -p release/hollow/conf release/hollow/fonts
           cp zig-out/bin/hollow-native.exe release/hollow/
           cp conf/init.lua release/hollow/conf/
-          cp fonts/RecMonoDuotone-Regular-1.085.ttf release/hollow/fonts/
-          cp fonts/RecMonoLinear-Bold-1.085.ttf release/hollow/fonts/
-          cp fonts/RecMonoDuotone-Italic-1.085.ttf release/hollow/fonts/
-          cp fonts/RecMonoDuotone-BoldItalic-1.085.ttf release/hollow/fonts/
 
       - name: Archive release bundle
         run: |
