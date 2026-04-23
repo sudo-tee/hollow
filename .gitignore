@@ -34,6 +34,8 @@ test_fallback.lua
 # Vendored dependencies may contain local Zig caches
 vendor/.zig-cache/
 
+examples/__pycache__/
+
 
 # Local archive/checksum outputs
 *.zip

@@ -1,3 +1,11 @@
 [submodule "third_party/sokol"]
 	path = third_party/sokol
 	url = https://github.com/floooh/sokol
+
+[submodule "third_party/lua-zluajit"]
+	path = third_party/lua-zluajit
+	url = https://github.com/negrel/zluajit.git
+
+[submodule "third_party/luajit-upstream"]
+	path = third_party/luajit-upstream
+	url = https://github.com/LuaJIT/LuaJIT.git
