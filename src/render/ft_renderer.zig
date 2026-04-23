@@ -23,6 +23,20 @@ const selection = @import("../selection.zig");
 const fonts = @import("fonts");
 const glyph_shader = @import("shaders/glyph_shader.zig");
 
+const dwrite = if (builtin.os.tag == .windows) struct {
+    const HollowDWriteFontMatch = extern struct {
+        face_index: u32,
+        path: [1024]u8,
+    };
+
+    const HollowDWriteFontFamilyCallback = *const fn (family_utf8: [*:0]const u8, ctx: ?*anyopaque) callconv(.c) c_int;
+    const HollowDWriteFontFaceCallback = *const fn (family_utf8: [*:0]const u8, style_utf8: [*:0]const u8, ctx: ?*anyopaque) callconv(.c) c_int;
+
+    extern fn hollow_dwrite_match_font(family_utf8: [*:0]const u8, want_bold: c_int, want_italic: c_int, out_match: *HollowDWriteFontMatch) c_int;
+    extern fn hollow_dwrite_list_font_families(callback: HollowDWriteFontFamilyCallback, ctx: ?*anyopaque) c_int;
+    extern fn hollow_dwrite_list_font_faces(callback: HollowDWriteFontFaceCallback, ctx: ?*anyopaque) c_int;
+} else struct {};
+
 // ── Atlas constants ───────────────────────────────────────────────────────────
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
@@ -275,11 +289,177 @@ pub const FtRendererConfig = struct {
     /// Produces gamma-correct text blending without requiring an sRGB framebuffer.
     /// Disabled by default — simple fg*coverage matches WezTerm on dark backgrounds.
     use_linear_correction: bool = false,
+    family: ?[]const u8 = null,
     regular_path: ?[]const u8 = null,
     bold_path: ?[]const u8 = null,
     italic_path: ?[]const u8 = null,
     bold_italic_path: ?[]const u8 = null,
     fallback_paths: []const []const u8 = &.{},
+};
+
+const RequestedFontStyle = enum {
+    regular,
+    bold,
+    italic,
+    bold_italic,
+};
+
+const FontDiscoveryMatch = struct {
+    path: []u8,
+    face_index: c_long,
+    score: i32,
+};
+
+pub const FontFaceInfo = struct {
+    style: []u8,
+};
+
+pub const FontFamilyInfo = struct {
+    family: []u8,
+    styles: []FontFaceInfo,
+
+    pub fn deinit(self: *FontFamilyInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.family);
+        for (self.styles) |style| allocator.free(style.style);
+        allocator.free(self.styles);
+        self.* = undefined;
+    }
+};
+
+const SeenFontFamilies = struct {
+    allocator: std.mem.Allocator,
+    names: std.ArrayListUnmanaged([]u8) = .empty,
+    normalized: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn deinit(self: *SeenFontFamilies) void {
+        for (self.names.items) |name| self.allocator.free(name);
+        self.names.deinit(self.allocator);
+        var it = self.normalized.iterator();
+        while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.normalized.deinit(self.allocator);
+    }
+
+    fn add(self: *SeenFontFamilies, name: []const u8) !void {
+        if (name.len == 0) return;
+
+        var normalized_buf: [256]u8 = undefined;
+        const normalized_name = normalizeFontToken(&normalized_buf, name);
+        if (normalized_name.len == 0) return;
+        if (self.normalized.contains(normalized_name)) return;
+
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_key = try self.allocator.dupe(u8, normalized_name);
+        errdefer self.allocator.free(owned_key);
+
+        try self.names.append(self.allocator, owned_name);
+        errdefer _ = self.names.pop();
+        try self.normalized.put(self.allocator, owned_key, {});
+    }
+};
+
+const SeenFontFamilyDetails = struct {
+    allocator: std.mem.Allocator,
+    families: std.ArrayListUnmanaged(FontFamilyInfoBuilder) = .empty,
+    normalized_map: std.StringHashMapUnmanaged(usize) = .empty,
+
+    fn deinit(self: *SeenFontFamilyDetails) void {
+        for (self.families.items) |*family| family.deinit(self.allocator);
+        self.families.deinit(self.allocator);
+        var it = self.normalized_map.iterator();
+        while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.normalized_map.deinit(self.allocator);
+    }
+
+    fn add(self: *SeenFontFamilyDetails, family_name: []const u8, style_name: []const u8) !void {
+        if (family_name.len == 0) return;
+
+        var normalized_buf: [256]u8 = undefined;
+        const normalized = normalizeFontToken(&normalized_buf, family_name);
+        if (normalized.len == 0) return;
+
+        if (self.normalized_map.get(normalized)) |index| {
+            try self.families.items[index].addStyle(self.allocator, style_name);
+            return;
+        }
+
+        const owned_key = try self.allocator.dupe(u8, normalized);
+        errdefer self.allocator.free(owned_key);
+
+        try self.families.append(self.allocator, try FontFamilyInfoBuilder.init(self.allocator, family_name, style_name));
+        errdefer _ = self.families.pop();
+
+        try self.normalized_map.put(self.allocator, owned_key, self.families.items.len - 1);
+    }
+
+    fn toOwnedSlice(self: *SeenFontFamilyDetails, allocator: std.mem.Allocator) ![]FontFamilyInfo {
+        std.mem.sort(FontFamilyInfoBuilder, self.families.items, {}, struct {
+            fn lessThan(_: void, a: FontFamilyInfoBuilder, b: FontFamilyInfoBuilder) bool {
+                return std.ascii.lessThanIgnoreCase(a.family, b.family);
+            }
+        }.lessThan);
+
+        const result = try allocator.alloc(FontFamilyInfo, self.families.items.len);
+        for (self.families.items, 0..) |*family, i| result[i] = try family.toOwnedInfo(allocator);
+        return result;
+    }
+};
+
+const FontFamilyInfoBuilder = struct {
+    family: []u8,
+    styles: std.ArrayListUnmanaged([]u8) = .empty,
+    normalized_styles: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn init(allocator: std.mem.Allocator, family_name: []const u8, style_name: []const u8) !FontFamilyInfoBuilder {
+        var builder = FontFamilyInfoBuilder{ .family = try allocator.dupe(u8, family_name) };
+        errdefer allocator.free(builder.family);
+        try builder.addStyle(allocator, style_name);
+        return builder;
+    }
+
+    fn deinit(self: *FontFamilyInfoBuilder, allocator: std.mem.Allocator) void {
+        allocator.free(self.family);
+        for (self.styles.items) |style| allocator.free(style);
+        self.styles.deinit(allocator);
+        var it = self.normalized_styles.iterator();
+        while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+        self.normalized_styles.deinit(allocator);
+    }
+
+    fn addStyle(self: *FontFamilyInfoBuilder, allocator: std.mem.Allocator, style_name: []const u8) !void {
+        const style = if (style_name.len == 0) "Regular" else style_name;
+
+        var normalized_buf: [256]u8 = undefined;
+        const normalized = normalizeFontToken(&normalized_buf, style);
+        if (normalized.len == 0) return;
+        if (self.normalized_styles.contains(normalized)) return;
+
+        const owned_style = try allocator.dupe(u8, style);
+        errdefer allocator.free(owned_style);
+        const owned_key = try allocator.dupe(u8, normalized);
+        errdefer allocator.free(owned_key);
+
+        try self.styles.append(allocator, owned_style);
+        errdefer _ = self.styles.pop();
+        try self.normalized_styles.put(allocator, owned_key, {});
+    }
+
+    fn toOwnedInfo(self: *FontFamilyInfoBuilder, allocator: std.mem.Allocator) !FontFamilyInfo {
+        std.mem.sort([]u8, self.styles.items, {}, struct {
+            fn lessThan(_: void, a: []u8, b: []u8) bool {
+                return std.ascii.lessThanIgnoreCase(a, b);
+            }
+        }.lessThan);
+
+        const family = try allocator.dupe(u8, self.family);
+        errdefer allocator.free(family);
+        const styles = try allocator.alloc(FontFaceInfo, self.styles.items.len);
+        errdefer allocator.free(styles);
+        for (self.styles.items, 0..) |style, i| {
+            styles[i] = .{ .style = try allocator.dupe(u8, style) };
+        }
+        return .{ .family = family, .styles = styles };
+    }
 };
 
 pub const FtRenderer = struct {
@@ -421,13 +601,13 @@ pub const FtRenderer = struct {
             _ = ft.FT_Library_SetLcdFilter(ft_lib, ft.FT_LCD_FILTER_LIGHT);
         }
 
-        const face_regular = try loadConfiguredFace(allocator, ft_lib, cfg.regular_path, fonts.regular, font_size_px);
+        const face_regular = try loadConfiguredFace(allocator, ft_lib, cfg.family, cfg.regular_path, .regular, fonts.regular, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_regular);
-        const face_bold = try loadConfiguredFace(allocator, ft_lib, cfg.bold_path, fonts.bold, font_size_px);
+        const face_bold = try loadConfiguredFace(allocator, ft_lib, cfg.family, cfg.bold_path, .bold, fonts.bold, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_bold);
-        const face_italic = try loadConfiguredFace(allocator, ft_lib, cfg.italic_path, fonts.italic, font_size_px);
+        const face_italic = try loadConfiguredFace(allocator, ft_lib, cfg.family, cfg.italic_path, .italic, fonts.italic, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_italic);
-        const face_bold_italic = try loadConfiguredFace(allocator, ft_lib, cfg.bold_italic_path, fonts.bold_italic, font_size_px);
+        const face_bold_italic = try loadConfiguredFace(allocator, ft_lib, cfg.family, cfg.bold_italic_path, .bold_italic, fonts.bold_italic, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_bold_italic);
         const face_nerd = try loadFace(ft_lib, fonts.nerd, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_nerd);
@@ -444,7 +624,7 @@ pub const FtRenderer = struct {
             while (i < loaded_fallback_faces) : (i += 1) _ = ft.FT_Done_Face(fallback_faces[i]);
         }
         for (cfg.fallback_paths, 0..) |path, i| {
-            fallback_faces[i] = try loadFaceFromPath(allocator, ft_lib, path, font_size_px);
+            fallback_faces[i] = try loadFaceFromSpec(allocator, ft_lib, path, .regular, font_size_px);
             loaded_fallback_faces += 1;
         }
 
@@ -2531,25 +2711,513 @@ fn loadFace(lib: ft.FT_Library, data: []const u8, size_px: f32) !ft.FT_Face {
     return face;
 }
 
-fn loadConfiguredFace(allocator: std.mem.Allocator, lib: ft.FT_Library, path: ?[]const u8, embedded: []const u8, size_px: f32) !ft.FT_Face {
-    if (path) |p| {
-        return loadFaceFromPath(allocator, lib, p, size_px) catch loadFace(lib, embedded, size_px);
+fn loadConfiguredFace(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    family: ?[]const u8,
+    spec: ?[]const u8,
+    style: RequestedFontStyle,
+    embedded: []const u8,
+    size_px: f32,
+) !ft.FT_Face {
+    if (spec) |value| {
+        return loadFaceFromSpec(allocator, lib, value, style, size_px) catch loadFace(lib, embedded, size_px);
+    }
+    if (family) |value| {
+        return loadFaceByName(allocator, lib, value, style, size_px) catch loadFace(lib, embedded, size_px);
     }
     return loadFace(lib, embedded, size_px);
 }
 
 fn loadFaceFromPath(allocator: std.mem.Allocator, lib: ft.FT_Library, path: []const u8, size_px: f32) !ft.FT_Face {
+    return loadFaceFromPathIndex(allocator, lib, path, 0, size_px);
+}
+
+fn loadFaceFromPathIndex(allocator: std.mem.Allocator, lib: ft.FT_Library, path: []const u8, face_index: c_long, size_px: f32) !ft.FT_Face {
     const zpath = try allocator.dupeZ(u8, path);
     defer allocator.free(zpath);
 
     var face: ft.FT_Face = null;
-    const err = ft.FT_New_Face(lib, zpath.ptr, 0, &face);
+    const err = ft.FT_New_Face(lib, zpath.ptr, face_index, &face);
     if (err != 0 or face == null) return error.FtLoadFaceFailed;
     errdefer _ = ft.FT_Done_Face(face);
 
     const px: c_uint = @intFromFloat(@round(size_px));
     if (ft.FT_Set_Pixel_Sizes(face, 0, px) != 0) return error.FtSetSizeFailed;
     return face;
+}
+
+fn loadFaceFromSpec(allocator: std.mem.Allocator, lib: ft.FT_Library, spec: []const u8, style: RequestedFontStyle, size_px: f32) !ft.FT_Face {
+    return loadFaceFromPath(allocator, lib, spec, size_px) catch loadFaceByName(allocator, lib, spec, style, size_px);
+}
+
+fn loadFaceByName(allocator: std.mem.Allocator, lib: ft.FT_Library, name: []const u8, style: RequestedFontStyle, size_px: f32) !ft.FT_Face {
+    const match = try discoverSystemFont(allocator, lib, name, style);
+    defer allocator.free(match.path);
+    return loadFaceFromPathIndex(allocator, lib, match.path, match.face_index, size_px);
+}
+
+fn discoverSystemFont(allocator: std.mem.Allocator, lib: ft.FT_Library, name: []const u8, style: RequestedFontStyle) !FontDiscoveryMatch {
+    if (builtin.os.tag == .windows) {
+        return discoverWindowsFontWithDirectWrite(allocator, name, style);
+    }
+
+    var best: ?FontDiscoveryMatch = null;
+    errdefer if (best) |match| allocator.free(match.path);
+
+    switch (builtin.os.tag) {
+        .windows => unreachable,
+        .macos => {
+            try searchFontDir(allocator, lib, "/System/Library/Fonts", name, style, &best);
+            try searchFontDir(allocator, lib, "/Library/Fonts", name, style, &best);
+            if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                defer allocator.free(home);
+                const user_fonts = try std.fs.path.join(allocator, &.{ home, "Library", "Fonts" });
+                defer allocator.free(user_fonts);
+                try searchFontDir(allocator, lib, user_fonts, name, style, &best);
+            } else |_| {}
+        },
+        else => {
+            try searchFontDir(allocator, lib, "/usr/share/fonts", name, style, &best);
+            try searchFontDir(allocator, lib, "/usr/local/share/fonts", name, style, &best);
+            if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                defer allocator.free(home);
+                const local_share_fonts = try std.fs.path.join(allocator, &.{ home, ".local", "share", "fonts" });
+                defer allocator.free(local_share_fonts);
+                try searchFontDir(allocator, lib, local_share_fonts, name, style, &best);
+                const dot_fonts = try std.fs.path.join(allocator, &.{ home, ".fonts" });
+                defer allocator.free(dot_fonts);
+                try searchFontDir(allocator, lib, dot_fonts, name, style, &best);
+            } else |_| {}
+        },
+    }
+
+    return best orelse error.FontNotFound;
+}
+
+pub fn listAvailableFontFamilies(allocator: std.mem.Allocator) ![][]u8 {
+    const detailed = try listAvailableFontsDetailed(allocator);
+    defer {
+        for (detailed) |*family| family.deinit(allocator);
+        allocator.free(detailed);
+    }
+
+    const result = try allocator.alloc([]u8, detailed.len);
+    errdefer allocator.free(result);
+    for (detailed, 0..) |family, i| result[i] = try allocator.dupe(u8, family.family);
+    return result;
+}
+
+pub fn listAvailableFontsDetailed(allocator: std.mem.Allocator) ![]FontFamilyInfo {
+    var seen = SeenFontFamilyDetails{ .allocator = allocator };
+    errdefer seen.deinit();
+
+    if (builtin.os.tag == .windows) {
+        try collectWindowsFontFaces(&seen);
+    } else {
+        var ft_lib: ft.FT_Library = null;
+        if (ft.FT_Init_FreeType(&ft_lib) != 0) return error.FtInitFailed;
+        defer _ = ft.FT_Done_FreeType(ft_lib);
+
+        switch (builtin.os.tag) {
+            .macos => {
+                try collectFontFaceDetailsFromDir(allocator, ft_lib, "/System/Library/Fonts", &seen);
+                try collectFontFaceDetailsFromDir(allocator, ft_lib, "/Library/Fonts", &seen);
+                if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                    defer allocator.free(home);
+                    const user_fonts = try std.fs.path.join(allocator, &.{ home, "Library", "Fonts" });
+                    defer allocator.free(user_fonts);
+                    try collectFontFaceDetailsFromDir(allocator, ft_lib, user_fonts, &seen);
+                } else |_| {}
+            },
+            else => {
+                try collectFontFaceDetailsFromDir(allocator, ft_lib, "/usr/share/fonts", &seen);
+                try collectFontFaceDetailsFromDir(allocator, ft_lib, "/usr/local/share/fonts", &seen);
+                if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                    defer allocator.free(home);
+                    const local_share_fonts = try std.fs.path.join(allocator, &.{ home, ".local", "share", "fonts" });
+                    defer allocator.free(local_share_fonts);
+                    try collectFontFaceDetailsFromDir(allocator, ft_lib, local_share_fonts, &seen);
+                    const dot_fonts = try std.fs.path.join(allocator, &.{ home, ".fonts" });
+                    defer allocator.free(dot_fonts);
+                    try collectFontFaceDetailsFromDir(allocator, ft_lib, dot_fonts, &seen);
+                } else |_| {}
+            },
+        }
+    }
+
+    return try seen.toOwnedSlice(allocator);
+}
+
+fn discoverWindowsFontWithDirectWrite(allocator: std.mem.Allocator, name: []const u8, style: RequestedFontStyle) !FontDiscoveryMatch {
+    if (builtin.os.tag != .windows) return error.FontNotFound;
+
+    const family_z = try allocator.dupeZ(u8, name);
+    defer allocator.free(family_z);
+
+    var match: dwrite.HollowDWriteFontMatch = std.mem.zeroes(dwrite.HollowDWriteFontMatch);
+    const result = dwrite.hollow_dwrite_match_font(
+        family_z.ptr,
+        if (style == .bold or style == .bold_italic) 1 else 0,
+        if (style == .italic or style == .bold_italic) 1 else 0,
+        &match,
+    );
+    if (result == 0) return error.FontNotFound;
+
+    const path_len = std.mem.indexOfScalar(u8, &match.path, 0) orelse match.path.len;
+    if (path_len == 0) return error.FontNotFound;
+
+    return .{
+        .path = try allocator.dupe(u8, match.path[0..path_len]),
+        .face_index = @intCast(match.face_index),
+        .score = 1,
+    };
+}
+
+fn collectWindowsFontFamilies(seen: *SeenFontFamilies) !void {
+    if (builtin.os.tag != .windows) return;
+
+    const CallbackState = struct {
+        seen: *SeenFontFamilies,
+        failed: ?anyerror = null,
+    };
+
+    const callback = struct {
+        fn run(family_utf8: [*:0]const u8, ctx: ?*anyopaque) callconv(.c) c_int {
+            const state: *CallbackState = @ptrCast(@alignCast(ctx orelse return 0));
+            const family = std.mem.span(family_utf8);
+            state.seen.add(family) catch |err| {
+                state.failed = err;
+                return 0;
+            };
+            return 1;
+        }
+    }.run;
+
+    var state = CallbackState{ .seen = seen };
+    const ok = dwrite.hollow_dwrite_list_font_families(callback, &state);
+    if (state.failed) |err| return err;
+    if (ok == 0) return error.FontEnumerationFailed;
+}
+
+fn collectWindowsFontFaces(seen: *SeenFontFamilyDetails) !void {
+    if (builtin.os.tag != .windows) return;
+
+    const CallbackState = struct {
+        seen: *SeenFontFamilyDetails,
+        failed: ?anyerror = null,
+    };
+
+    const callback = struct {
+        fn run(family_utf8: [*:0]const u8, style_utf8: [*:0]const u8, ctx: ?*anyopaque) callconv(.c) c_int {
+            const state: *CallbackState = @ptrCast(@alignCast(ctx orelse return 0));
+            state.seen.add(std.mem.span(family_utf8), std.mem.span(style_utf8)) catch |err| {
+                state.failed = err;
+                return 0;
+            };
+            return 1;
+        }
+    }.run;
+
+    var state = CallbackState{ .seen = seen };
+    const ok = dwrite.hollow_dwrite_list_font_faces(callback, &state);
+    if (state.failed) |err| return err;
+    if (ok == 0) return error.FontEnumerationFailed;
+}
+
+fn searchFontDir(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    root_path: []const u8,
+    name: []const u8,
+    style: RequestedFontStyle,
+    best: *?FontDiscoveryMatch,
+) !void {
+    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => return,
+        else => return err,
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        switch (entry.kind) {
+            .directory => {
+                const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(child_path);
+                try searchFontDir(allocator, lib, child_path, name, style, best);
+            },
+            .file, .sym_link => {
+                if (!isFontFile(entry.name)) continue;
+
+                const file_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(file_path);
+
+                if (try scoreFontFile(allocator, lib, file_path, name, style)) |candidate| {
+                    if (best.*) |*current| {
+                        if (candidate.score <= current.score) {
+                            allocator.free(candidate.path);
+                            continue;
+                        }
+                        allocator.free(current.path);
+                    }
+                    best.* = candidate;
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn collectFontFamiliesFromDir(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    root_path: []const u8,
+    seen: *SeenFontFamilies,
+) !void {
+    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => return,
+        else => return err,
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        switch (entry.kind) {
+            .directory => {
+                const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(child_path);
+                try collectFontFamiliesFromDir(allocator, lib, child_path, seen);
+            },
+            .file, .sym_link => {
+                if (!isFontFile(entry.name)) continue;
+
+                const file_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(file_path);
+                try collectFontFamiliesFromFile(allocator, lib, file_path, seen);
+            },
+            else => {},
+        }
+    }
+}
+
+fn collectFontFaceDetailsFromDir(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    root_path: []const u8,
+    seen: *SeenFontFamilyDetails,
+) !void {
+    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => return,
+        else => return err,
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        switch (entry.kind) {
+            .directory => {
+                const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(child_path);
+                try collectFontFaceDetailsFromDir(allocator, lib, child_path, seen);
+            },
+            .file, .sym_link => {
+                if (!isFontFile(entry.name)) continue;
+
+                const file_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
+                defer allocator.free(file_path);
+                try collectFontFaceDetailsFromFile(allocator, lib, file_path, seen);
+            },
+            else => {},
+        }
+    }
+}
+
+fn collectFontFaceDetailsFromFile(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    file_path: []const u8,
+    seen: *SeenFontFamilyDetails,
+) !void {
+    const zpath = try allocator.dupeZ(u8, file_path);
+    defer allocator.free(zpath);
+
+    var probe_face: ft.FT_Face = null;
+    const probe_err = ft.FT_New_Face(lib, zpath.ptr, 0, &probe_face);
+    if (probe_err != 0 or probe_face == null) return;
+    const face_count: usize = @intCast(@max(probe_face.*.num_faces, 1));
+    _ = ft.FT_Done_Face(probe_face);
+
+    var face_index: usize = 0;
+    while (face_index < face_count) : (face_index += 1) {
+        var face: ft.FT_Face = null;
+        const err = ft.FT_New_Face(lib, zpath.ptr, @intCast(face_index), &face);
+        if (err != 0 or face == null) continue;
+        defer _ = ft.FT_Done_Face(face);
+
+        const family = faceFamilyName(face);
+        const style = faceStyleName(face);
+        if (family.len > 0) try seen.add(family, style);
+    }
+}
+
+fn collectFontFamiliesFromFile(allocator: std.mem.Allocator, lib: ft.FT_Library, file_path: []const u8, seen: *SeenFontFamilies) !void {
+    const zpath = try allocator.dupeZ(u8, file_path);
+    defer allocator.free(zpath);
+
+    var probe_face: ft.FT_Face = null;
+    const probe_err = ft.FT_New_Face(lib, zpath.ptr, 0, &probe_face);
+    if (probe_err != 0 or probe_face == null) return;
+    const face_count: usize = @intCast(@max(probe_face.*.num_faces, 1));
+    _ = ft.FT_Done_Face(probe_face);
+
+    var face_index: usize = 0;
+    while (face_index < face_count) : (face_index += 1) {
+        var face: ft.FT_Face = null;
+        const err = ft.FT_New_Face(lib, zpath.ptr, @intCast(face_index), &face);
+        if (err != 0 or face == null) continue;
+        defer _ = ft.FT_Done_Face(face);
+
+        const family = faceFamilyName(face);
+        if (family.len > 0) try seen.add(family);
+    }
+}
+
+fn scoreFontFile(
+    allocator: std.mem.Allocator,
+    lib: ft.FT_Library,
+    file_path: []const u8,
+    name: []const u8,
+    style: RequestedFontStyle,
+) !?FontDiscoveryMatch {
+    const zpath = try allocator.dupeZ(u8, file_path);
+    defer allocator.free(zpath);
+
+    var probe_face: ft.FT_Face = null;
+    const probe_err = ft.FT_New_Face(lib, zpath.ptr, 0, &probe_face);
+    if (probe_err != 0 or probe_face == null) return null;
+    const face_count: usize = @intCast(@max(probe_face.*.num_faces, 1));
+    _ = ft.FT_Done_Face(probe_face);
+
+    var best_score: i32 = std.math.minInt(i32);
+    var best_index: c_long = 0;
+    var face_index: usize = 0;
+    while (face_index < face_count) : (face_index += 1) {
+        var face: ft.FT_Face = null;
+        const err = ft.FT_New_Face(lib, zpath.ptr, @intCast(face_index), &face);
+        if (err != 0 or face == null) continue;
+        defer _ = ft.FT_Done_Face(face);
+
+        const score = scoreDiscoveredFace(face, file_path, name, style);
+        if (score > best_score) {
+            best_score = score;
+            best_index = @intCast(face_index);
+        }
+    }
+
+    if (best_score == std.math.minInt(i32)) return null;
+    return .{
+        .path = try allocator.dupe(u8, file_path),
+        .face_index = best_index,
+        .score = best_score,
+    };
+}
+
+fn scoreDiscoveredFace(face: ft.FT_Face, file_path: []const u8, name: []const u8, style: RequestedFontStyle) i32 {
+    var wanted_buf: [256]u8 = undefined;
+    const wanted = normalizeFontToken(&wanted_buf, name);
+    if (wanted.len == 0) return std.math.minInt(i32);
+
+    var family_buf: [256]u8 = undefined;
+    const family = normalizeFontToken(&family_buf, faceFamilyName(face));
+
+    var style_buf: [256]u8 = undefined;
+    const style_name = normalizeFontToken(&style_buf, faceStyleName(face));
+
+    var basename_buf: [256]u8 = undefined;
+    const basename = normalizeFontToken(&basename_buf, std.fs.path.stem(std.fs.path.basename(file_path)));
+
+    const family_match = family.len > 0 and std.mem.eql(u8, family, wanted);
+    const basename_match = basename.len > 0 and std.mem.eql(u8, basename, wanted);
+    const loose_match = (family.len > 0 and (containsToken(family, wanted) or containsToken(wanted, family))) or
+        (basename.len > 0 and (containsToken(basename, wanted) or containsToken(wanted, basename)));
+
+    if (!family_match and !basename_match and !loose_match) return std.math.minInt(i32);
+
+    var score: i32 = 0;
+    if (family_match) score += 1000;
+    if (basename_match) score += 900;
+    if (!family_match and !basename_match and loose_match) score += 700;
+    if ((face.*.face_flags & ft.FT_FACE_FLAG_SCALABLE) != 0) score += 25;
+    score += styleMatchScore(face, style_name, style);
+    return score;
+}
+
+fn styleMatchScore(face: ft.FT_Face, style_name: []const u8, style: RequestedFontStyle) i32 {
+    const bold = faceIsBold(face, style_name);
+    const italic = faceIsItalic(face, style_name);
+
+    return switch (style) {
+        .regular => 220 - boolPenalty(bold) - boolPenalty(italic) + regularNameBonus(style_name),
+        .bold => 170 + boolBonus(bold) - boolPenalty(italic),
+        .italic => 170 - boolPenalty(bold) + boolBonus(italic),
+        .bold_italic => 120 + boolBonus(bold) + boolBonus(italic),
+    };
+}
+
+fn boolBonus(value: bool) i32 {
+    return if (value) 60 else -80;
+}
+
+fn boolPenalty(value: bool) i32 {
+    return if (value) 80 else 0;
+}
+
+fn regularNameBonus(style_name: []const u8) i32 {
+    if (style_name.len == 0) return 0;
+    if (containsToken(style_name, "regular") or containsToken(style_name, "book") or containsToken(style_name, "roman")) return 20;
+    return 0;
+}
+
+fn faceIsBold(face: ft.FT_Face, style_name: []const u8) bool {
+    return (face.*.style_flags & ft.FT_STYLE_FLAG_BOLD) != 0 or containsToken(style_name, "bold") or containsToken(style_name, "semibold") or containsToken(style_name, "demibold");
+}
+
+fn faceIsItalic(face: ft.FT_Face, style_name: []const u8) bool {
+    return (face.*.style_flags & ft.FT_STYLE_FLAG_ITALIC) != 0 or containsToken(style_name, "italic") or containsToken(style_name, "oblique");
+}
+
+fn faceFamilyName(face: ft.FT_Face) []const u8 {
+    if (face.*.family_name) |ptr| return std.mem.span(ptr);
+    return "";
+}
+
+fn faceStyleName(face: ft.FT_Face) []const u8 {
+    if (face.*.style_name) |ptr| return std.mem.span(ptr);
+    return "";
+}
+
+fn containsToken(haystack: []const u8, needle: []const u8) bool {
+    return needle.len > 0 and std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+fn normalizeFontToken(buf: []u8, input: []const u8) []const u8 {
+    var len: usize = 0;
+    for (input) |ch| {
+        if (!std.ascii.isAlphanumeric(ch)) continue;
+        if (len == buf.len) break;
+        buf[len] = std.ascii.toLower(ch);
+        len += 1;
+    }
+    return buf[0..len];
+}
+
+fn isFontFile(path: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    return std.ascii.eqlIgnoreCase(ext, ".ttf") or
+        std.ascii.eqlIgnoreCase(ext, ".otf") or
+        std.ascii.eqlIgnoreCase(ext, ".ttc") or
+        std.ascii.eqlIgnoreCase(ext, ".otc");
 }
 
 fn fontLikelySupportsText(face: ft.FT_Face, utf8: []const u8) bool {

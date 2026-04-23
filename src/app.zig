@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const Config = @import("config.zig").Config;
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
+const build_options = @import("build_options");
 const lua_mod = @import("lua_bridge.zig");
 const LuaRuntime = lua_mod.Runtime;
 const AppCallbacks = lua_mod.AppCallbacks;
@@ -32,6 +33,8 @@ const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const bar = @import("ui/bar.zig");
 const selection = @import("selection.zig");
+
+const embedded_base_config: []const u8 = build_options.embedded_base_config;
 
 const SplitCommandMode = enum {
     send,
@@ -408,7 +411,9 @@ pub const App = struct {
     ghostty: ?GhosttyRuntime = null,
     renderer: ?Backend = null,
     mux: ?Mux = null,
-    loaded_config_path: ?[]u8 = null,
+    using_embedded_base_config: bool = false,
+    base_config_path: ?[]u8 = null,
+    override_config_path: ?[]u8 = null,
     frame_count: usize = 0,
     logged_first_render_update: bool = false,
     cell_width_px: u32 = 8,
@@ -809,9 +814,13 @@ pub const App = struct {
             self.lua = null;
         }
 
-        if (self.loaded_config_path) |path| {
+        if (self.base_config_path) |path| {
             self.allocator.free(path);
-            self.loaded_config_path = null;
+            self.base_config_path = null;
+        }
+        if (self.override_config_path) |path| {
+            self.allocator.free(path);
+            self.override_config_path = null;
         }
         if (self.snapshot_dump_file) |file| {
             file.close();
@@ -848,7 +857,10 @@ pub const App = struct {
     }
 
     pub fn bootstrap(self: *App, config_override: ?[]const u8) !void {
-        self.loaded_config_path = try self.resolveConfigPath(config_override);
+        const config_paths = try self.resolveConfigPaths(config_override);
+        self.using_embedded_base_config = config_paths.use_embedded_base;
+        self.base_config_path = config_paths.base;
+        self.override_config_path = config_paths.override;
 
         self.tryInitLua();
 
@@ -970,11 +982,19 @@ pub const App = struct {
             std.log.warn("failed to bootstrap lua core, scripting may be broken: {s}", .{@errorName(err)});
         };
 
-        if (self.loaded_config_path) |path| {
+        if (self.using_embedded_base_config) {
+            lua.runString(embedded_base_config) catch |err| {
+                std.log.warn("embedded base config load failed, continuing with compiled defaults: {s}", .{@errorName(err)});
+            };
+        } else if (self.base_config_path) |path| {
             lua.runFile(path) catch |err| {
-                std.log.warn("config load failed, continuing with compiled defaults: {s}", .{@errorName(err)});
-                lua.deinit();
-                return;
+                std.log.warn("base config load failed, continuing with compiled defaults: {s}", .{@errorName(err)});
+            };
+        }
+
+        if (self.override_config_path) |path| {
+            lua.runFile(path) catch |err| {
+                std.log.warn("override config load failed, continuing with base config: {s}", .{@errorName(err)});
             };
         }
 
@@ -1368,7 +1388,9 @@ pub const App = struct {
         std.log.info("renderer_safe_mode={}", .{self.config.renderer_safe_mode});
         std.log.info("renderer_disable_swapchain_glyphs={}", .{self.config.renderer_disable_swapchain_glyphs});
         std.log.info("renderer_disable_multi_pane_cache={}", .{self.config.renderer_disable_multi_pane_cache});
-        if (self.loaded_config_path) |path| std.log.info("config={s}", .{path});
+        std.log.info("embedded_base_config={}", .{self.using_embedded_base_config});
+        if (self.base_config_path) |path| std.log.info("base_config={s}", .{path});
+        if (self.override_config_path) |path| std.log.info("override_config={s}", .{path});
     }
 
     pub fn sendText(self: *App, text: []const u8) void {
@@ -2471,7 +2493,7 @@ pub const App = struct {
     }
 
     pub fn reloadConfig(self: *App) bool {
-        if (self.loaded_config_path == null) return false;
+        if (!self.using_embedded_base_config and self.base_config_path == null and self.override_config_path == null) return false;
 
         const old_window_width = self.config.window_width;
         const old_window_height = self.config.window_height;
@@ -3034,24 +3056,48 @@ pub const App = struct {
         return true;
     }
 
-    fn resolveConfigPath(self: *App, override: ?[]const u8) !?[]u8 {
-        if (override) |path| return try self.allocator.dupe(u8, path);
+    const ConfigPaths = struct {
+        base: ?[]u8 = null,
+        override: ?[]u8 = null,
+        use_embedded_base: bool = false,
+    };
+
+    fn resolveConfigPaths(self: *App, override: ?[]const u8) !ConfigPaths {
+        var result = ConfigPaths{};
+
+        const fallback = platform.projectFallbackConfigPath();
+        if (try platform.resolveRelativeToExe(self.allocator, fallback)) |exe_relative| {
+            errdefer self.allocator.free(exe_relative);
+            if (pathExists(exe_relative)) {
+                result.base = exe_relative;
+            } else {
+                self.allocator.free(exe_relative);
+                if (pathExists(fallback)) {
+                    result.base = try self.allocator.dupe(u8, fallback);
+                } else {
+                    result.use_embedded_base = true;
+                }
+            }
+        } else if (pathExists(fallback)) {
+            result.base = try self.allocator.dupe(u8, fallback);
+        } else {
+            result.use_embedded_base = true;
+        }
+
+        if (override) |path| {
+            result.override = try self.allocator.dupe(u8, path);
+            return result;
+        }
 
         const user_path = try platform.defaultConfigPath(self.allocator);
         errdefer self.allocator.free(user_path);
-        if (pathExists(user_path)) return user_path;
+        if (pathExists(user_path) and (result.base == null or !std.mem.eql(u8, user_path, result.base.?))) {
+            result.override = user_path;
+            return result;
+        }
         self.allocator.free(user_path);
 
-        const fallback = platform.projectFallbackConfigPath();
-        if (pathExists(fallback)) return try self.allocator.dupe(u8, fallback);
-
-        if (try platform.resolveRelativeToExe(self.allocator, fallback)) |exe_relative| {
-            errdefer self.allocator.free(exe_relative);
-            if (pathExists(exe_relative)) return exe_relative;
-            self.allocator.free(exe_relative);
-        }
-
-        return null;
+        return result;
     }
 
     fn flushPendingResize(self: *App) void {

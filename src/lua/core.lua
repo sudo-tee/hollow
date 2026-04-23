@@ -5,6 +5,7 @@ local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missi
 local hollow = {
   keymap = {},
   config = {},
+  fonts = {},
   term = {},
   events = {},
   ui = {},
@@ -22,7 +23,6 @@ end
 
 local actions = require("hollow.actions")
 local config = require("hollow.config")
-local defaults = require("hollow.defaults")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
 local keymap = require("hollow.keymap")
@@ -64,6 +64,75 @@ function hollow.read_dir(path)
   return host_api.read_dir(path)
 end
 
+function hollow.fonts.list()
+  return host_api.list_fonts()
+end
+
+local function normalize_font_query(value)
+  return (tostring(value or ""):lower():gsub("[^%w]", ""))
+end
+
+function hollow.fonts.find(query)
+  local normalized_query = normalize_font_query(query)
+  if normalized_query == "" then
+    return hollow.fonts.list()
+  end
+
+  local matches = {}
+  for _, font in ipairs(hollow.fonts.list()) do
+    local family_match = normalize_font_query(font.family):find(normalized_query, 1, true) ~= nil
+    local style_match = false
+    if not family_match then
+      for _, style in ipairs(font.styles or {}) do
+        if normalize_font_query(style):find(normalized_query, 1, true) ~= nil then
+          style_match = true
+          break
+        end
+      end
+    end
+    if family_match or style_match then
+      matches[#matches + 1] = font
+    end
+  end
+  return matches
+end
+
+function hollow.fonts.has(family, style)
+  local family_query = normalize_font_query(family)
+  if family_query == "" then
+    return false
+  end
+
+  local style_query = style ~= nil and normalize_font_query(style) or nil
+  for _, font in ipairs(hollow.fonts.list()) do
+    if normalize_font_query(font.family) == family_query then
+      if style_query == nil or style_query == "" then
+        return true
+      end
+      for _, font_style in ipairs(font.styles or {}) do
+        if normalize_font_query(font_style) == style_query then
+          return true
+        end
+      end
+      return false
+    end
+  end
+  return false
+end
+
+function hollow.fonts.pick(candidates, style)
+  if type(candidates) ~= "table" then
+    error("hollow.fonts.pick(candidates, style?) expects candidates to be a table")
+  end
+
+  for _, family in ipairs(candidates) do
+    if hollow.fonts.has(family, style) then
+      return family
+    end
+  end
+  return nil
+end
+
 function hollow.process.run_child_process(args)
   return host_api.run_child_process(args)
 end
@@ -92,5 +161,3 @@ end
 function hollow.process.exec(_opts)
   util.unsupported("hollow.process.exec")
 end
-
-defaults.setup(hollow)

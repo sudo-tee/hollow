@@ -80,6 +80,13 @@ local function make_host_api()
     return {}
   end
 
+  function host_api.list_fonts()
+    return {
+      { family = "Consolas", styles = { "Regular", "Bold" } },
+      { family = "Cascadia Mono", styles = { "Regular", "Italic", "Bold" } },
+    }
+  end
+
   function host_api.run_child_process(args)
     return { ok = true, args = args }
   end
@@ -352,7 +359,6 @@ local actions = require("hollow.actions")
 local keymap = require("hollow.keymap")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
-local defaults = require("hollow.defaults")
 local ui = require("hollow.ui")
 local ui_runtime = require("hollow.ui.runtime")
 local ui_primitives = require("hollow.ui.primitives")
@@ -373,7 +379,6 @@ assert_true(type(actions.setup) == "function", "actions module should load")
 assert_true(type(keymap.setup) == "function", "keymap module should load")
 assert_true(type(events.setup) == "function", "events module should load")
 assert_true(type(htp.setup) == "function", "htp module should load")
-assert_true(type(defaults.setup) == "function", "defaults module should load")
 assert_true(type(ui.dispatch_widget_event) == "function", "ui exports should be merged onto hollow.ui")
 assert_true(ui_runtime == true, "ui runtime should be loadable")
 assert_true(ui_primitives == true, "ui primitives should be loadable")
@@ -403,6 +408,16 @@ assert_equal(hollow.term.current_workspace().name, "main", "current_workspace sh
 local process_result = hollow.term.run_domain_process({ "echo", "ok" })
 assert_equal(process_result.domain, "main", "run_domain_process should infer the current domain")
 assert_equal(recorded.domain_process.args[1], "echo", "run_domain_process should pass through arguments")
+
+local font_list = hollow.fonts.list()
+assert_equal(font_list[1].family, "Consolas", "fonts.list should return host-provided families")
+assert_equal(font_list[2].styles[2], "Italic", "fonts.list should preserve style arrays")
+assert_equal(hollow.fonts.find("mono")[1].family, "Consolas", "fonts.find should match normalized family names")
+assert_true(hollow.fonts.has("Cascadia Mono"), "fonts.has should detect installed families")
+assert_true(hollow.fonts.has("Cascadia Mono", "Italic"), "fonts.has should detect installed styles")
+assert_true(not hollow.fonts.has("Cascadia Mono", "Black"), "fonts.has should reject missing styles")
+assert_equal(hollow.fonts.pick({ "Missing Font", "Cascadia Mono", "Consolas" }), "Cascadia Mono", "fonts.pick should return the first available family")
+assert_equal(hollow.fonts.pick({ "Missing Font" }), nil, "fonts.pick should return nil when no candidate exists")
 
 local on_key = get_key_handler()
 assert_true(type(on_key) == "function", "keymap setup should register a key handler")

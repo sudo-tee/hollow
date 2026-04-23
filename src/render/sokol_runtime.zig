@@ -1756,6 +1756,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
         },
         .ligatures = app.config.fonts.ligatures,
         .embolden = app.config.fonts.embolden,
+        .family = app.config.fonts.family,
         .regular_path = app.config.fonts.regular,
         .bold_path = app.config.fonts.bold,
         .italic_path = app.config.fonts.italic,

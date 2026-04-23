@@ -95,6 +95,16 @@
 ---@alias HollowFontSmoothing "grayscale"|"subpixel"
 ---@alias HollowFontHinting "none"|"light"|"normal"
 
+---@class HollowFontInfo
+---@field family string
+---@field styles string[]
+
+---@class HollowFontsNamespace
+---@field list fun(): HollowFontInfo[]
+---@field find fun(query: string): HollowFontInfo[]
+---@field has fun(family: string, style?: string): boolean
+---@field pick fun(candidates: string[], style?: string): string|nil
+
 ---@class HollowFontsConfig
 ---@field size number
 ---@field line_height? number
@@ -104,6 +114,7 @@
 ---@field hinting? HollowFontHinting
 ---@field ligatures? boolean
 ---@field embolden? number
+---@field family? string
 ---@field regular? string
 ---@field bold? string
 ---@field italic? string
@@ -948,11 +959,13 @@ function select.close() end
 ---@field last_opened_at? integer
 
 ---@class HollowUiWorkspaceSource
----@field resolver? "local"|"wsl"
+---@field resolver? "local"|"wsl"|"ssh"
 ---@field name? string
 ---@field domain? string
 ---@field roots? string[]
 ---@field items? fun(): HollowUiWorkspaceItem[]|table[]|nil
+---@field cwd_resolver? "wsl_unc"|fun(cwd: string, item: HollowUiWorkspaceItem, source: HollowUiWorkspaceSource): string|nil
+---@field default? boolean
 
 ---@class HollowUiWorkspaceSwitcherOptions
 ---@field prompt? string
@@ -1118,6 +1131,7 @@ function process.run_child_process(args) end
 
 ---@class HollowHostBridge
 ---@field set_config fun(opts: table)
+---@field list_fonts fun(): HollowFontInfo[]
 ---@field new_tab fun(opts?: table)
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
@@ -1189,6 +1203,7 @@ function process.run_child_process(args) end
 
 ---@class Hollow
 ---@field config HollowConfigNamespace
+---@field fonts HollowFontsNamespace
 ---@field term HollowTermNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
@@ -1202,6 +1217,7 @@ function process.run_child_process(args) end
 hollow = {}
 
 hollow.config = config
+hollow.fonts = {}
 hollow.term = term
 hollow.events = events
 hollow.keymap = keymap

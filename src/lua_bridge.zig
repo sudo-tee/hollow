@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config.zig");
 const platform = @import("platform.zig");
+const ft_renderer = @import("render/ft_renderer.zig");
 const ghostty = @import("term/ghostty.zig");
 const bar = @import("ui/bar.zig");
 
@@ -16,6 +17,7 @@ extern fn lua_createtable(*State, c_int, c_int) callconv(.c) void;
 extern fn lua_setfield(*State, c_int, [*:0]const u8) callconv(.c) void;
 extern fn lua_getfield(*State, c_int, [*:0]const u8) callconv(.c) void;
 extern fn lua_pushstring(*State, [*:0]const u8) callconv(.c) void;
+extern fn lua_pushlstring(*State, [*]const u8, usize) callconv(.c) void;
 extern fn lua_pushnumber(*State, f64) callconv(.c) void;
 extern fn lua_pushboolean(*State, c_int) callconv(.c) void;
 extern fn lua_pushnil(*State) callconv(.c) void;
@@ -65,6 +67,7 @@ pub const Api = struct {
     set_field: *const fn (*State, c_int, [*:0]const u8) callconv(.c) void,
     get_field: *const fn (*State, c_int, [*:0]const u8) callconv(.c) void,
     push_string: *const fn (*State, [*:0]const u8) callconv(.c) void,
+    push_lstring: *const fn (*State, [*]const u8, usize) callconv(.c) void,
     push_number: *const fn (*State, f64) callconv(.c) void,
     push_boolean: *const fn (*State, c_int) callconv(.c) void,
     push_nil: *const fn (*State) callconv(.c) void,
@@ -99,7 +102,6 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
-    .{ .name = "hollow.defaults", .source = @embedFile("lua/hollow/defaults.lua") },
     .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
     .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
     .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
@@ -448,6 +450,7 @@ pub const Runtime = struct {
             .set_field = lua_setfield,
             .get_field = lua_getfield,
             .push_string = lua_pushstring,
+            .push_lstring = lua_pushlstring,
             .push_number = lua_pushnumber,
             .push_boolean = lua_pushboolean,
             .push_nil = lua_pushnil,
@@ -502,7 +505,7 @@ pub const Runtime = struct {
         self.allocator.destroy(self.context);
     }
 
-    pub fn runString(self: *Runtime, code: [:0]const u8) !void {
+    pub fn runString(self: *Runtime, code: []const u8) !void {
         if (self.context.api.load_buffer(self.state, code.ptr, code.len, "core.lua") != 0) {
             logLuaError(self.context.api, self.state, "load_string");
             return error.LuaLoadFailed;
@@ -1062,6 +1065,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "read_dir");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_list_fonts, 1);
+        api.set_field(self.state, -2, "list_fonts");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_run_child_process, 1);
         api.set_field(self.state, -2, "run_child_process");
 
@@ -1616,6 +1623,40 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_list_fonts(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    const allocator = std.heap.page_allocator;
+    const families = ft_renderer.listAvailableFontsDetailed(allocator) catch {
+        api.create_table(state, 0, 0);
+        return 1;
+    };
+    defer {
+        for (families) |*family| family.deinit(allocator);
+        allocator.free(families);
+    }
+
+    api.create_table(state, 0, @intCast(families.len));
+    for (families, 0..) |family, family_index| {
+        api.create_table(state, 0, 2);
+
+        api.push_lstring(state, family.family.ptr, family.family.len);
+        api.set_field(state, -2, "family");
+
+        api.create_table(state, 0, @intCast(family.styles.len));
+        for (family.styles, 0..) |style, style_index| {
+            api.push_lstring(state, style.style.ptr, style.style.len);
+            api.rawseti(state, -2, @intCast(style_index + 1));
+        }
+        api.set_field(state, -2, "styles");
+
+        api.rawseti(state, -2, @intCast(family_index + 1));
+    }
+
+    return 1;
+}
+
 fn l_run_child_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -2120,6 +2161,7 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (std.mem.eql(u8, key, "htp_transport")) return cfg.setHtpTransport(value);
     if (std.mem.eql(u8, key, "window_title")) return cfg.setWindowTitle(value);
     if (std.mem.eql(u8, key, "lib_dir")) return cfg.setLibDir(value);
+    if (std.mem.eql(u8, key, "font_family")) return cfg.setFontFamily(value);
     if (std.mem.eql(u8, key, "font_path")) return cfg.setFontRegular(value);
     if (std.mem.eql(u8, key, "font_bold_path")) return cfg.setFontBold(value);
     if (std.mem.eql(u8, key, "font_italic_path")) return cfg.setFontItalic(value);
@@ -2519,6 +2561,10 @@ fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
             const value = value_ptr[0..value_len];
 
+            if (std.mem.eql(u8, key, "family")) {
+                try cfg.setFontFamily(value);
+                continue;
+            }
             if (std.mem.eql(u8, key, "regular")) {
                 try cfg.setFontRegular(value);
                 continue;
@@ -4145,6 +4191,7 @@ test "absoluteIndex keeps positive and registry indexes stable" {
         .set_field = undefined,
         .get_field = undefined,
         .push_string = undefined,
+        .push_lstring = undefined,
         .push_number = undefined,
         .push_boolean = undefined,
         .push_nil = undefined,

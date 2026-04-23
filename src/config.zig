@@ -142,6 +142,7 @@ pub const Config = struct {
         hinting: Hinting = .normal,
         ligatures: bool = true,
         embolden: f32 = 0.0,
+        family: ?[]u8 = null,
         regular: ?[]u8 = null,
         bold: ?[]u8 = null,
         italic: ?[]u8 = null,
@@ -149,6 +150,7 @@ pub const Config = struct {
         fallback_paths: std.ArrayListUnmanaged([]u8) = .{},
 
         pub fn deinit(self: *Fonts, allocator: std.mem.Allocator) void {
+            freeOwned(allocator, &self.family);
             freeOwned(allocator, &self.regular);
             freeOwned(allocator, &self.bold);
             freeOwned(allocator, &self.italic);
@@ -485,6 +487,10 @@ pub const Config = struct {
         try replaceOwned(self.allocator, &self.lib_dir, value);
     }
 
+    pub fn setFontFamily(self: *Config, value: []const u8) !void {
+        try replaceOwned(self.allocator, &self.fonts.family, value);
+    }
+
     pub fn setFontRegular(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.fonts.regular, value);
     }
@@ -729,6 +735,17 @@ test "font smoothing and hinting parse accepted values and reject invalid ones" 
 
     try std.testing.expectError(error.InvalidFontSmoothing, cfg.setFontSmoothing("sharp"));
     try std.testing.expectError(error.InvalidFontHinting, cfg.setFontHinting("heavy"));
+}
+
+test "font family setter stores owned value" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setFontFamily("Consolas");
+    try std.testing.expectEqualStrings("Consolas", cfg.fonts.family.?);
+
+    try cfg.setFontFamily("JetBrains Mono");
+    try std.testing.expectEqualStrings("JetBrains Mono", cfg.fonts.family.?);
 }
 
 test "replaceOwned and freeOwned manage owned string slots" {

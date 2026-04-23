@@ -9,7 +9,7 @@ fn ghosttyOptimizeMode(optimize: std.builtin.OptimizeMode) std.builtin.OptimizeM
 
 fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
     return switch (os_tag) {
-        .windows => &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi" },
+        .windows => &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi", "dwrite" },
         .linux => &.{ "X11", "Xi", "Xcursor", "GL", "asound" },
         else => &.{},
     };
@@ -59,8 +59,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
+    root_module.addOptions("build_options", build_options);
     root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
 
@@ -93,6 +96,9 @@ pub fn build(b: *std.Build) void {
         .name = "hollow-native",
         .root_module = root_module,
     });
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
     exe.linkLibC();
     exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
     exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
@@ -105,6 +111,10 @@ pub fn build(b: *std.Build) void {
             "-Ithird_party/stb",
             "-Ithird_party/fontstash",
         },
+    });
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("src/render/dwrite_resolver.c"),
+        .flags = &.{},
     });
     for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
         exe.root_module.linkSystemLibrary(lib_name, .{});

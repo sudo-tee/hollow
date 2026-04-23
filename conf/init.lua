@@ -1,4 +1,10 @@
-local hwl = hollow
+local hollow = require("hollow")
+
+local is_windows = hollow.platform.is_windows == true
+local is_macos = hollow.platform.is_macos == true
+
+local default_font_family = is_windows and "Consolas"
+  or (is_macos and "Menlo" or "DejaVu Sans Mono")
 
 local wave = {
   foreground = "#dcd7ba",
@@ -29,63 +35,26 @@ local wave = {
   },
 }
 
-local dragon = {
-  foreground = "#c5c9c5",
-  background = "#181616",
-  cursor_bg = "#c8c093",
-  cursor_fg = "#181616",
-  selection_bg = "#2d4f67",
-  selection_fg = "#c8c093",
-  ansi = {
-    "#0d0c0c",
-    "#c4746e",
-    "#8a9a7b",
-    "#c4b28a",
-    "#8ba4b0",
-    "#a292a3",
-    "#8ea4a2",
-    "#c8c093",
-  },
-  brights = {
-    "#a6a69c",
-    "#e46876",
-    "#87a987",
-    "#e6c384",
-    "#7fb4ca",
-    "#938aa9",
-    "#7aa89f",
-    "#c5c9c5",
-  },
-}
-
-local terminal_theme = dragon
+local terminal_theme = wave
 
 local palette = {
   bg = terminal_theme.background,
   fg = terminal_theme.foreground,
   black = terminal_theme.ansi[1],
-  red = terminal_theme.ansi[2],
-  green = terminal_theme.ansi[3],
-  yellow = terminal_theme.ansi[4],
   blue = terminal_theme.ansi[5],
   magenta = terminal_theme.ansi[6],
-  cyan = terminal_theme.ansi[7],
   gray = terminal_theme.brights[1],
-  bright_red = terminal_theme.brights[2],
   bright_green = terminal_theme.brights[3],
   bright_yellow = terminal_theme.brights[4],
   bright_blue = terminal_theme.brights[5],
-  bright_magenta = terminal_theme.brights[6],
-  bright_cyan = terminal_theme.brights[7],
   bright_white = terminal_theme.brights[8],
-  orange = terminal_theme.brights[4],
   error = terminal_theme.brights[2],
 }
 
 local ui_theme = {
   widgets = {
     all = {
-      panel_bg = hwl.util.brighten_hex_color(palette.bg, 0.2, palette.gray),
+      panel_bg = hollow.util.brighten_hex_color(palette.bg, 0.2, palette.gray),
       panel_border = palette.blue,
       title = palette.bright_blue,
       fg = palette.fg,
@@ -128,12 +97,6 @@ local ui_theme = {
       bg = palette.black,
       fg = palette.bright_white,
     },
-    badge = {
-      fg = palette.bright_yellow,
-      bg = palette.black,
-      bold = true,
-    },
-    hover_close_bg = palette.red,
   },
   scrollbar = {
     track = palette.black,
@@ -149,89 +112,50 @@ local ui_theme = {
     bg = palette.black,
     fg = palette.blue,
   },
-  workspace = {
-    active = {
-      fg = palette.bg,
-      bg = palette.blue,
-    },
-    inactive = {
-      fg = palette.fg,
-      bg = palette.black,
-    },
-  },
 }
 
-local h = hollow.events.on("term:cwd_changed", function(e)
-  print(e.pane.id, e.old_cwd, e.new_cwd)
-end)
+local default_domain = is_windows and "pwsh" or "unix"
+local domains = {
+  unix = { shell = hollow.platform.default_shell },
+}
 
--- g.log("loading native rewrite config")
+if is_windows then
+  domains.wsl = { shell = "C:\\Windows\\System32\\wsl.exe" }
+  domains.pwsh = { shell = "pwsh.exe" }
+  domains.powershell = { shell = "powershell.exe" }
+  domains.cmd = { shell = "cmd.exe" }
+end
 
-hwl.config.set({
-  default_domain = "wsl",
-  domains = {
-    wsl = { shell = "C:\\Windows\\System32\\wsl.exe", default_cwd = "/home/francis" },
-    pwsh = { shell = "pwsh.exe" },
-    powershell = { shell = "powershell.exe" },
-    cmd = { shell = "cmd.exe" },
-    unix = { shell = hwl.platform.default_shell },
-    tower = {
-      ssh = {
-        host = "10.0.0.8",
-        user = "root",
-        alias = "tower", -- optional, use ssh config host if present
-        backend = "wsl", -- "native" | "wsl"
-        reuse = "auto", -- "none" | "auto"
-        -- remote_mux = "tmux", -- nil | "tmux"
-        -- tmux_session = "hollow", -- optional
-      },
-    },
-  },
-  debug_overlay = false,
+hollow.config.set({
   backend = "sokol",
-  vsync = false,
-  max_fps = 120,
-  padding = 0,
+  default_domain = default_domain,
+  domains = domains,
   terminal_theme = terminal_theme,
-  -- ui_theme = ui_theme,
+  ui_theme = ui_theme,
   fonts = {
     size = 14.5,
-    line_height = 0.9,
-    padding_x = 0,
-    padding_y = 0,
+    line_height = 0.95,
     smoothing = "grayscale",
     hinting = "light",
     ligatures = true,
-    -- coverage_boost = 1.0,
-    -- coverage_add = 0,
-    embolden = 0.33,
-    regular = "fonts/RecMonoDuotone-Regular-1.085.ttf",
-    bold = "fonts/RecMonoLinear-Bold-1.085.ttf",
-    italic = "fonts/RecMonoDuotone-Italic-1.085.ttf",
-    bold_italic = "fonts/RecMonoDuotone-BoldItalic-1.085.ttf",
-    fallbacks = {
-      -- Extra user fallbacks can be added here; native also bundles
-      -- Symbols Nerd Font Mono and Noto Sans Symbols 2 by default.
-    },
+    family = default_font_family,
   },
   cols = 120,
   rows = 34,
-  -- Scrollback is measured in bytes, not lines.
-  -- 64 MB retains far more history for wide terminals.
+  scrollback = 64000000,
+  padding = 0,
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,
-  window_titlebar_show = false,
   top_bar_show = true,
   top_bar_show_when_single_tab = true,
   top_bar_height = 20,
   top_bar_bg = ui_theme.tab_bar.background,
   top_bar_draw_tabs = true,
   top_bar_draw_status = true,
-  scrollback = 64000000,
   scrollbar = {
-    enabled = false,
-    width = 14,
+    enabled = true,
+    width = 12,
     min_thumb_size = 24,
     margin = 2,
     jump_to_click = true,
@@ -252,251 +176,119 @@ hwl.config.set({
   },
 })
 
-hwl.term.set_workspace_name("default")
-
-local _metrics_cache = nil
-local _metrics_last_t = 0
-
-local function leader_or_terminal()
-  local leader_state = hwl.keymap.get_leader_state()
-  if leader_state and leader_state.active then
-    return hwl.ui.button({
-      id = "leader-state",
-      text = " " .. leader_state.display .. " ",
-      style = {
-        fg = ui_theme.workspace.active.fg,
-        bg = ui_theme.warm,
-        bold = true,
-      },
-      on_click = function()
-        hwl.ui.notify.info("Leader active: " .. leader_state.display, { ttl = 1200 })
-      end,
-    })
-  end
-  return hwl.ui.button({
-    id = "terminal-badge",
-    text = "  ",
-    style = ui_theme.tab_bar.badge,
-    on_click = function()
-      hwl.term.new_tab()
-    end,
-  })
-end
-
-local function cwd_span(ctx)
-  return hwl.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " ", ui_theme.status)
-end
-
-local function workspace_widget()
-  return hwl.ui.workspace.topbar_button({
-    style = function()
-      local workspace = hwl.term.current_workspace()
-      local is_active = workspace == nil or workspace.is_active ~= false
-      return is_active and ui_theme.workspace.active or ui_theme.workspace.inactive
-    end,
-  })
-end
-
-hollow.ui.workspace.configure({
-  -- known_workspaces = function()
-  --   return {
-  --     { name = "proj-a", cwd = "/home/francis/Projects/replicad_objects" },
-  --     { name = "proj-b", cwd = "/home/francis/Projects/dotfiles" },
-  --   }
-  -- end,
-  -- filter_item = function(workspace)
-  --   return workspace.name ~= "dotfiles"
-  -- end,
-  -- format_item = function(workspace)
-  --   local marker = workspace.is_active and "• " or "  "
-  --   local path = workspace.cwd or ""
-  --   return {
-  --     hwl.ui.span(marker .. workspace.name, { fg = workspace.is_open and "#7fb4ca" or "#dcd7ba" }),
-  --     hwl.ui.span("  " .. path, { fg = "#5f5b53" }),
-  --   }
-  -- end,
-  sources = {
-    -- {
-    --   resolver = "wsl",
-    --   name = "Ubuntu",
-    --   domain = "wsl",
-    --   roots = {
-    --     "/home/francis/Projects",
-    --   },
-    -- },
-    {
-      domain = "wsl",
-      cwd_resolver = "wsl_unc",
-      roots = {
-        "\\\\wsl$\\Ubuntu\\home\\francis\\Projects",
-      },
-    },
-    {
-      default = false,
-      domain = "tower",
-      resolver = "ssh",
-      roots = {
-        "/mnt/user0/appdata",
-      },
-    },
-  },
-})
-local function tabs_widget()
-  return hwl.ui.bar.tabs({
-    fit = "content",
-    format = function(tab)
-      local pane = tab.pane
-      local maximized = pane and pane.is_maximized and " [M]" or ""
-      if pane then
-        if pane.title and pane.title ~= "" then
-          return " " .. pane.title .. maximized .. " "
-        end
-        if pane.cwd and pane.cwd ~= "" then
-          return " " .. pane.cwd .. " " .. maximized .. " "
-        end
-      end
-
-      return " " .. (tab.title ~= "" and tab.title or "shell") .. " " .. maximized
-    end,
-    style = function(tab)
-      if tab.is_active then
-        return ui_theme.tab_bar.active_tab
-      end
-
-      return tab.is_hovered and ui_theme.tab_bar.hover_tab or ui_theme.tab_bar.inactive_tab
-    end,
-  })
-end
--- hollow.ui.bottombar.mount(hollow.ui.bottombar.new({
---   height = 20,
---   render = function(ctx)
---     return {
---       hollow.ui.bar.workspace(),
---       hollow.ui.bar.tabs({ fit = "content" }),
---       hollow.ui.spacer(),
---       hollow.ui.bar.key_legend(),
---       hwl.ui.bar.time("%H:%M", { style = ui_theme.status }),
---     }
---   end,
--- }))
-
-hwl.ui.topbar.mount(hwl.ui.topbar.new({
+hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function(ctx)
+    local pane = ctx.term.pane
+    local cwd = pane and pane.cwd or ""
+
     return {
-      leader_or_terminal(),
-      workspace_widget(),
-      tabs_widget(),
-      hwl.ui.spacer(),
-      hwl.ui.bar.key_legend({ style = ui_theme.status }),
-      cwd_span(ctx),
-      hwl.ui.bar.time("%H:%M:%S", { style = ui_theme.status }),
-    }
+      hollow.ui.bar.workspace({
+        format = function(workspace)
+          return " " .. workspace.name .. " "
+        end,
+      }),
+      hollow.ui.bar.tabs({ fit = "content" }),
+      hollow.ui.spacer(),
+      hollow.ui.span(cwd ~= "" and (" " .. cwd .. " ") or " ", ui_theme.status),
+      hollow.ui.bar.key_legend({ style = ui_theme.status }),
+      hollow.ui.bar.time("%H:%M:%S", { style = ui_theme.status }),
+    } --[[@as HollowWidgetRenderResult]]
   end,
 }))
 
-hwl.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
-hwl.keymap.set("<leader>v", "split_vertical", { desc = "split vertical" })
-hwl.keymap.set("<leader>sd", "split_horizontal", { desc = "split horizontal" })
-hwl.keymap.set("<leader>sf", function()
-  hwl.term.split_pane({
-    floating = true,
-    command = "lazygit",
-    close_on_exit = true,
+hollow.events.on("config:reloaded", function()
+  hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
+end)
+
+hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
+hollow.keymap.set("<C-S-c>", "copy_selection")
+hollow.keymap.set("<C-S-v>", "paste_clipboard")
+hollow.keymap.set("<S-Insert>", "paste_clipboard")
+hollow.keymap.set("<C-\\>", "split_vertical")
+hollow.keymap.set("<C-S-\\>", "split_horizontal")
+hollow.keymap.set("<C-t>", "new_tab")
+hollow.keymap.set("<C-w>", "close_tab")
+hollow.keymap.set("<C-S-w>", "close_pane")
+hollow.keymap.set("<C-Tab>", "next_tab")
+hollow.keymap.set("<C-S-Tab>", "prev_tab")
+hollow.keymap.set("<C-A-n>", "new_workspace")
+hollow.keymap.set("<C-A-p>", "workspace_switcher")
+hollow.keymap.set("<C-A-r>", "rename_workspace")
+hollow.keymap.set("<C-A-w>", "close_workspace")
+hollow.keymap.set("<C-A-Right>", "next_workspace")
+hollow.keymap.set("<C-A-Left>", "prev_workspace")
+hollow.keymap.set("<C-S-Left>", "focus_pane_left")
+hollow.keymap.set("<C-S-Right>", "focus_pane_right")
+hollow.keymap.set("<C-S-Up>", "focus_pane_up")
+hollow.keymap.set("<C-S-Down>", "focus_pane_down")
+hollow.keymap.set("<C-S-m>", "maximize_pane")
+hollow.keymap.set("<C-A-S-m>", "maximize_pane_background")
+hollow.keymap.set("<C-S-f>", "float_pane")
+hollow.keymap.set("<C-A-S-f>", "tile_pane")
+hollow.keymap.set("<C-A-h>", "move_pane_left")
+hollow.keymap.set("<C-A-l>", "move_pane_right")
+hollow.keymap.set("<C-A-k>", "move_pane_up")
+hollow.keymap.set("<C-A-j>", "move_pane_down")
+hollow.keymap.set("<C-A-S-Left>", "resize_pane_left")
+hollow.keymap.set("<C-A-S-Right>", "resize_pane_right")
+hollow.keymap.set("<C-A-Up>", "resize_pane_up")
+hollow.keymap.set("<C-A-Down>", "resize_pane_down")
+hollow.keymap.set("<A-S-PageUp>", "scrollback_page_up")
+hollow.keymap.set("<A-S-PageDown>", "scrollback_page_down")
+hollow.keymap.set("<C-S-Home>", "scrollback_top")
+hollow.keymap.set("<C-S-End>", "scrollback_bottom")
+
+hollow.keymap.set("<leader>r", function()
+  local tab = hollow.term.current_tab()
+  if not tab then
+    return
+  end
+
+  hollow.ui.input.open({
+    prompt = "Rename tab",
+    default = tab.title,
+    on_confirm = function(new_title)
+      hollow.term.set_title(new_title, tab.id)
+    end,
   })
-end, { desc = "split horizontal" })
-hwl.keymap.set("<leader>c", "close_pane", { desc = "close pane" })
-hwl.keymap.set("<leader>uu", function()
-  hwl.config.reload()
+end, { desc = "rename tab" })
+
+hollow.keymap.set("<leader>uu", function()
+  hollow.config.reload()
 end, { desc = "reload config" })
 
-hwl.keymap.set("<leader>x", function()
-  hwl.term.new_tab({ domain = "tower" })
-  hwl.ui.notify.info("Running ls -la in tower domain", { ttl = 1200 })
-  -- hwl.term.new_tab({ domain = "pwsh" })
-  local ok, stdout, stderr = hwl.term.run_domain_process({ "ls", "-la" }, "tower")
-  hwl.ui.notify.info((ok and stdout or stderr), { ttl = 1200 })
-end, { desc = "placeholder tower" })
-
-hwl.keymap.set("<leader>r", function()
-  local tab = hwl.term.current_tab()
-  if tab then
-    hwl.ui.input.open({
-      prompt = "New tab name",
-      default = tab.title,
-      on_confirm = function(new_title)
-        hwl.term.set_title(new_title, tab.id)
-      end,
-    })
-  end
-end, { desc = "rename tab" })
-hwl.keymap.set("<leader>e", function()
-  hwl.ui.select.open({
-    prompt = "Choose an option",
-    width = 65,
-    -- max_height = 50,
-    items = {
-      { name = "Option 1", kind = "ok" },
-      { name = "Option 2", kind = "warn" },
-      { name = "Option 3", kind = "err" },
-      { name = "Option 4", kind = "err" },
-      { name = "Option 5", kind = "err" },
-      { name = "Option 6", kind = "err" },
-      { name = "Option 7", kind = "err" },
-      { name = "Option 8", kind = "err" },
-      { name = "Option 9", kind = "err" },
-      { name = "Option 10", kind = "err" },
-      { name = "Option 11", kind = "err" },
-      { name = "Option 12", kind = "err" },
-      { name = "Option 13", kind = "err" },
-      { name = "Option 14", kind = "err" },
-      { name = "Option 15", kind = "err" },
-      { name = "Option 16", kind = "err" },
-      { name = "Option 17", kind = "err" },
-      { name = "Option 18", kind = "err" },
-      { name = "Option 19", kind = "err" },
-      { name = "Option 20", kind = "err" },
-      { name = "Option 21", kind = "err" },
-      { name = "Option 22", kind = "err" },
-      { name = "Option 23", kind = "err" },
-      { name = "Option 24", kind = "err" },
-      { name = "Option 25", kind = "err" },
-      { name = "Option 26", kind = "err" },
-      { name = "Option 27", kind = "err" },
-      { name = "Option 28", kind = "err" },
-    },
-    label = function(item)
-      local color = ({
-        ok = "#c8d9f5",
-        warn = "#e0af68",
-        err = "#ff5d62",
-      })[item.kind] or "#dcd7ba"
-
-      return {
-        hwl.ui.span(item.name, { fg = color, bold = true }),
-        hwl.ui.span("  [" .. item.kind .. "]", { fg = "#7e9cd8" }),
-      }
-    end,
-    actions = {
-      {
-        name = "select",
-        fn = function(item)
-          hwl.ui.notify.info("You selected: " .. item.name, { ttl = 1200, align = "top_right" })
-        end,
-      },
-    },
-  })
-end, { desc = "test Custom" })
--- Example of user overriding or adding keys:
-hwl.keymap.set("<C-t>", "new_tab")
-hwl.keymap.set("<C-w>", "close_tab")
-hwl.keymap.set("<C-Tab>", "next_tab")
-hwl.keymap.set("<C-S-Tab>", "prev_tab")
--- hollow.keymap.set("<C-S-m>", function()
---   hwl.ui.notify.info("Maximize pane toggled", { ttl = 1200 })
---   hwl.term.toggle_pane_maximized(hwl.term.current_pane().id)
--- end, { desc = "toggle maximize pane" })
-
--- g.keymap.set("<A-S-PageUp>", "scrollback_page_up", { desc = "scrollback page up" })
--- g.keymap.set("<A-S-PageDown>", "scrollback_page_down", { desc = "scrollback page down" })
--- g.keymap.set("<C-S-Home>", "scrollback_top", { desc = "scrollback top" })
--- g.keymap.set("<C-S-End>", "scrollback_bottom", { desc = "scrollback bottom" })
+-- User config files are loaded after this bundled config, so you can override
+-- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or
+-- `$XDG_CONFIG_HOME/hollow/init.lua` / `$HOME/.config/hollow/init.lua` elsewhere.
+--
+-- Example user overrides:
+--
+-- hollow.config.set({
+--   default_domain = "pwsh",
+--   window_titlebar_show = false,
+--   fonts = { size = 16, family = "Consolas" },
+-- })
+--
+-- hollow.config.set({
+--   domains = {
+--     devbox = {
+--       ssh = {
+--         alias = "devbox",
+--         backend = "wsl",
+--         reuse = "auto",
+--       },
+--     },
+--   },
+-- })
+--
+-- hollow.ui.workspace.configure({
+--   sources = {
+--     {
+--       domain = "wsl",
+--       cwd_resolver = "wsl_unc",
+--       roots = {
+--         "\\\\wsl$\\Ubuntu\\home\\me\\Projects",
+--       },
+--     },
+--   },
+-- })

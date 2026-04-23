@@ -13,9 +13,18 @@ OPTIMIZE=""
 SAFE_RENDER=0
 DISABLE_SWAPCHAIN_GLYPHS=0
 DISABLE_MULTI_PANE_CACHE=0
+LIST_FONTS=0
+LIST_FONTS_JSON=0
+MATCH_FONT=""
 FORWARD_ARGS=()
 
+EXPECT_MATCH_FONT=0
 for arg in "$@"; do
+	if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
+		MATCH_FONT="$arg"
+		EXPECT_MATCH_FONT=0
+		continue
+	fi
 	case "$arg" in
 	--no-build) BUILD=0 ;;
 	--build-only) RUN=0 ;;
@@ -23,13 +32,21 @@ for arg in "$@"; do
 	--safe-render) SAFE_RENDER=1 ;;
 	--no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
 	--no-multi-pane-cache) DISABLE_MULTI_PANE_CACHE=1 ;;
+	--list-fonts) LIST_FONTS=1 ;;
+	--json) LIST_FONTS_JSON=1 ;;
+	--match-font) EXPECT_MATCH_FONT=1 ;;
 	--app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
 	--help | -h)
-		echo "Usage: $0 [--no-build] [--build-only] [--debug] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--app-arg=ARG]"
+		echo "Usage: $0 [--no-build] [--build-only] [--debug] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
 		exit 0
 		;;
 	esac
 done
+
+if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
+	echo "[launch] --match-font requires a query" >&2
+	exit 1
+fi
 
 if [[ $BUILD -eq 1 ]]; then
 	echo "[launch] building Windows target"
@@ -90,6 +107,15 @@ if [[ $RUN -eq 1 ]]; then
 	fi
 	if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then
 		RUN_ARGS+=("${FORWARD_ARGS[@]}")
+	fi
+	if [[ $LIST_FONTS -eq 1 ]]; then
+		RUN_ARGS+=("--list-fonts")
+	fi
+	if [[ -n "$MATCH_FONT" ]]; then
+		RUN_ARGS+=("--match-font" "$MATCH_FONT")
+	fi
+	if [[ $LIST_FONTS_JSON -eq 1 ]]; then
+		RUN_ARGS+=("--json")
 	fi
 	echo "[launch] running $EXE_PATH"
 	exec "$EXE_PATH" "${RUN_ARGS[@]}"

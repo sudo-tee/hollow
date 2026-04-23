@@ -6,6 +6,7 @@
 .zig-cache-global/
 zig-out/
 release/
+.desloppify/
 
 # Build outputs
 *.exe
