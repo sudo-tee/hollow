@@ -200,6 +200,12 @@ pub const Pane = struct {
         try env_block.appendSlice(self.allocator, "HOLLOW_TRANSPORT=auto");
         try env_block.append(self.allocator, 0);
 
+        try env_block.appendSlice(self.allocator, "TERM=xterm-256color");
+        try env_block.append(self.allocator, 0);
+
+        try env_block.appendSlice(self.allocator, "COLORTERM=truecolor");
+        try env_block.append(self.allocator, 0);
+
         const base_dir = platform.ensureHollowRuntimeDir(self.allocator) catch null;
         if (base_dir) |dir| {
             defer self.allocator.free(dir);
@@ -222,7 +228,7 @@ pub const Pane = struct {
         try env_block.append(self.allocator, 0); // double-null terminator
 
         const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name);
-        
+
         var is_remote = false;
         if (domain_name) |name| {
             if (cfg.domainByName(name)) |domain| {
@@ -445,7 +451,7 @@ pub const Pane = struct {
             // its terminal state corrupted from the rapid resize churn during
             // the drag.  Force a real reflow by briefly resizing to a
             // neighbouring size first.
-            if (cols == prev_cols and rows == prev_rows and (cols > 1 or rows > 1)) {
+            if (is_windows and cols == prev_cols and rows == prev_rows and (cols > 1 or rows > 1)) {
                 const bump_cols: u16 = if (cols > 1) cols - 1 else cols + 1;
                 std.log.info("pane.resize: forcing reflow via bump resize pane={x} bump_cols={d}", .{ @intFromPtr(self), bump_cols });
                 runtime.resizeTerminal(terminal, bump_cols, rows, cell_width_px, cell_height_px);

@@ -682,6 +682,7 @@ pub const App = struct {
                 },
                 .key => |k| {
                     var text: ?[]const u8 = null;
+                    var fallback_buf: [4]u8 = undefined;
                     if (k.action != .release) {
                         const next = (head + 1) % cap;
                         if (next != tail) {
@@ -697,8 +698,14 @@ pub const App = struct {
                         }
                     }
 
-                    if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
-                        if (text) |bytes| self.sendText(bytes);
+                    const printable_fallback = legacyPrintableKeyText(k.key, k.mods, &fallback_buf);
+                    const use_char_text_only = builtin.os.tag != .windows and k.action != .release and text != null and (k.mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0;
+                    if (!use_char_text_only) {
+                        if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
+                            if (printable_fallback == null) {
+                                if (text) |bytes| self.sendText(bytes);
+                            }
+                        }
                     }
                 },
                 .char => |ch| {
@@ -1870,7 +1877,6 @@ pub const App = struct {
                 appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
                 ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] < 128) cell_buf[0] else 0;
             }
-
 
             if (point.col >= col_count) return null;
             const cfg = self.config.hyperlinks;
@@ -3212,6 +3218,16 @@ pub const App = struct {
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
+                    }
+                    if (builtin.os.tag != .windows and pane.logged_first_pty_read and pane.title.len == 0) {
+                        if (runtime.cursorPos(pane.render_state)) |cp| {
+                            std.log.info("linux startup cursor row={d} col={d} render_rows={d} render_cols={d}", .{
+                                cp.y,
+                                cp.x,
+                                runtime.renderStateRows(pane.render_state) orelse 0,
+                                runtime.renderStateCols(pane.render_state) orelse 0,
+                            });
+                        }
                     }
                 }
                 _ = self.refreshPaneScrollbar(runtime, pane);

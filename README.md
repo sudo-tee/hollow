@@ -89,6 +89,18 @@ zig build run
 zig build -Doptimize=ReleaseFast
 ```
 
+**Linux build prerequisites**
+
+> **Error:** The linux build is currently broken.
+
+To build on Linux you need the X11, Xi, Xcursor, OpenGL and ALSA development packages:
+
+```bash
+sudo apt install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev pkg-config
+```
+
+These provide the `-lX11 -lXi -lXcursor -lGL -lasound` libraries required by the linker.
+
 ## Documentation Map
 
 Start with [the docs index](docs/README.md).

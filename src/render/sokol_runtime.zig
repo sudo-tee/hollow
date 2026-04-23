@@ -132,6 +132,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.c) c_uint;
     extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.c) c_uint;
 } else struct {};
+const WinLongPtr = if (builtin.os.tag == .windows) win32.LONG_PTR else isize;
+const WinHwnd = if (builtin.os.tag == .windows) win32.HWND else *anyopaque;
 
 var g_app: ?*App = null;
 var g_title_buf: [256]u8 = [_]u8{0} ** 256;
@@ -141,8 +143,8 @@ var g_frame_index: usize = 0;
 var g_ft_renderer: ?FtRenderer = null;
 var g_gui_ready_fired = false;
 var g_window_chrome_applied = false;
-var g_prev_wnd_proc: win32.LONG_PTR = 0;
-var g_subclassed_hwnd: ?win32.HWND = null;
+var g_prev_wnd_proc: WinLongPtr = 0;
+var g_subclassed_hwnd: ?WinHwnd = null;
 var g_window_iconified = false;
 var g_restore_pending = false;
 var g_ignore_resize_frames: usize = 0;
@@ -1741,6 +1743,13 @@ pub fn run(app: *App) !void {
     desc.enable_clipboard = true;
     desc.window_title = titleCString(app.config.windowTitle());
     desc.no_vsync = !app.config.vsync;
+    desc.logger.func = c.slog_func;
+    if (builtin.os.tag == .linux) {
+        // Sokol defaults to a GL 4.3 core context on Linux. Some GLX drivers
+        // reject that request even though they can run a 3.3 core context.
+        desc.gl.major_version = 3;
+        desc.gl.minor_version = 3;
+    }
     std.log.info("sokol: vsync={s}", .{if (app.config.vsync) "on" else "off"});
     std.log.info("sokol: max_fps={d}", .{app.config.max_fps});
     std.log.info("sokol: renderer_single_pane_direct={s} (default=false, false=cached RT path)", .{
@@ -1791,6 +1800,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     var sg_desc = std.mem.zeroes(c.sg_desc);
     sg_desc.environment = c.sglue_environment();
+    sg_desc.logger.func = c.slog_func;
     // The cached multi-pane renderer allocates per-pane images, views, samplers,
     // buffers, pipelines, and commit listeners. The sokol defaults are tuned for
     // simple demos and start failing once a realistic multi-project workspace has
@@ -1815,6 +1825,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // sokol_gl is required by sokol_fontstash for glyph rendering.
     var sgl_desc = std.mem.zeroes(c.sgl_desc_t);
+    sgl_desc.logger.func = c.slog_func;
     sgl_desc.max_vertices = 1 << 20;
     sgl_desc.max_commands = 1 << 18;
     // Each pane cache owns its own sokol_gl context, plus the default context
@@ -2122,7 +2133,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
                     const pty_active = pane.pty_wrote_this_frame;
-                    const ghostty_dirty = dirty_level != .false_value;
+                    const ghostty_dirty = dirty_level == .full;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
@@ -2894,15 +2905,15 @@ fn applyWindowChrome(app: *App) bool {
 
     if (g_subclassed_hwnd == null) {
         const new_proc: win32.WNDPROC = &windowProc;
-        const new_proc_raw: win32.LONG_PTR = @bitCast(@intFromPtr(new_proc));
+        const new_proc_raw: WinLongPtr = @bitCast(@intFromPtr(new_proc));
         const prev_proc_raw = win32.SetWindowLongPtrW(hwnd, win32.GWLP_WNDPROC, new_proc_raw);
         if (prev_proc_raw == 0) return false;
         g_prev_wnd_proc = prev_proc_raw;
         g_subclassed_hwnd = hwnd;
     }
     var style = win32.GetWindowLongPtrW(hwnd, win32.GWL_STYLE);
-    style &= ~@as(win32.LONG_PTR, @intCast(win32.WS_CAPTION));
-    style |= @as(win32.LONG_PTR, @intCast(win32.WS_THICKFRAME));
+    style &= ~@as(WinLongPtr, @intCast(win32.WS_CAPTION));
+    style |= @as(WinLongPtr, @intCast(win32.WS_THICKFRAME));
     _ = win32.SetWindowLongPtrW(hwnd, win32.GWL_STYLE, style);
     _ = win32.SetWindowPos(
         hwnd,

@@ -72,14 +72,14 @@ const GlyphVertex = extern struct {
 const VsParams = extern struct {
     mvp: [16]f32 align(16), // column-major orthographic projection
     atlas_size: [2]f32 align(8), // ATLAS_W, ATLAS_H (for potential future use)
-    use_linear_correction: u32 align(4),
+    vs_use_linear_correction: u32 align(4),
     _pad: u32 = 0,
 };
 
 // Fragment-shader uniform block (binding 1, std140).
 const FsParams = extern struct {
     bg_linear: [4]f32 align(16), // linear-premultiplied background colour
-    use_linear_correction: u32 align(4),
+    fs_use_linear_correction: u32 align(4),
     _pad0: u32 = 0,
     _pad1: u32 = 0,
     _pad2: u32 = 0,
@@ -732,24 +732,24 @@ pub const FtRenderer = struct {
         shd_desc.attrs[0].glsl_name = "in_pos";
         shd_desc.attrs[0].hlsl_sem_name = "TEXCOORD";
         shd_desc.attrs[0].hlsl_sem_index = 0;
+        shd_desc.attrs[0].base_type = c.SG_SHADERATTRBASETYPE_FLOAT;
         shd_desc.attrs[1].glsl_name = "in_uv";
         shd_desc.attrs[1].hlsl_sem_name = "TEXCOORD";
         shd_desc.attrs[1].hlsl_sem_index = 1;
+        shd_desc.attrs[1].base_type = c.SG_SHADERATTRBASETYPE_FLOAT;
         shd_desc.attrs[2].glsl_name = "in_fg_rgba";
         shd_desc.attrs[2].hlsl_sem_name = "TEXCOORD";
         shd_desc.attrs[2].hlsl_sem_index = 2;
+        shd_desc.attrs[2].base_type = c.SG_SHADERATTRBASETYPE_FLOAT;
 
         // Vertex-shader uniform block (binding 0): mvp + atlas_size + flag.
         shd_desc.uniform_blocks[0].stage = c.SG_SHADERSTAGE_VERTEX;
         shd_desc.uniform_blocks[0].size = @sizeOf(VsParams);
         shd_desc.uniform_blocks[0].layout = c.SG_UNIFORMLAYOUT_STD140;
         shd_desc.uniform_blocks[0].hlsl_register_b_n = 0;
-        shd_desc.uniform_blocks[0].glsl_uniforms[0].type = c.SG_UNIFORMTYPE_MAT4;
-        shd_desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "vs_params.mvp";
-        shd_desc.uniform_blocks[0].glsl_uniforms[1].type = c.SG_UNIFORMTYPE_FLOAT2;
-        shd_desc.uniform_blocks[0].glsl_uniforms[1].glsl_name = "vs_params.atlas_size";
-        shd_desc.uniform_blocks[0].glsl_uniforms[2].type = c.SG_UNIFORMTYPE_INT;
-        shd_desc.uniform_blocks[0].glsl_uniforms[2].glsl_name = "vs_params.use_linear_correction";
+        shd_desc.uniform_blocks[0].glsl_uniforms[0].type = c.SG_UNIFORMTYPE_FLOAT4;
+        shd_desc.uniform_blocks[0].glsl_uniforms[0].array_count = 5;
+        shd_desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "vs_params";
 
         // Fragment-shader uniform block (binding 1): bg colour + flag.
         shd_desc.uniform_blocks[1].stage = c.SG_SHADERSTAGE_FRAGMENT;
@@ -757,9 +757,8 @@ pub const FtRenderer = struct {
         shd_desc.uniform_blocks[1].layout = c.SG_UNIFORMLAYOUT_STD140;
         shd_desc.uniform_blocks[1].hlsl_register_b_n = 1;
         shd_desc.uniform_blocks[1].glsl_uniforms[0].type = c.SG_UNIFORMTYPE_FLOAT4;
-        shd_desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = "fs_params.bg_linear";
-        shd_desc.uniform_blocks[1].glsl_uniforms[1].type = c.SG_UNIFORMTYPE_INT;
-        shd_desc.uniform_blocks[1].glsl_uniforms[1].glsl_name = "fs_params.use_linear_correction";
+        shd_desc.uniform_blocks[1].glsl_uniforms[0].array_count = 2;
+        shd_desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = "fs_params";
 
         // Atlas texture (view slot 0, fragment stage).
         shd_desc.views[0].texture.stage = c.SG_SHADERSTAGE_FRAGMENT;
@@ -1520,7 +1519,11 @@ pub const FtRenderer = struct {
                 }
 
                 if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
-                const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const row_y_px = if (builtin.os.tag == .linux and row_count > 0)
+                    @as(f32, @floatFromInt((row_count - 1) - @as(u16, @intCast(row_y)))) * self.cell_h
+                else
+                    @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const py = self.padding_y + row_y_px;
                 const row_has_selection = if (selection_range) |range|
                     selection.rowIntersects(range, row_y)
                 else
@@ -1762,7 +1765,11 @@ pub const FtRenderer = struct {
                     if (!force_full) runtime.clearRowDirty(row_iterator.*);
                     continue;
                 }
-                const py = self.padding_y + @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const row_y_px = if (builtin.os.tag == .linux and row_count > 0)
+                    @as(f32, @floatFromInt((row_count - 1) - @as(u16, @intCast(row_y)))) * self.cell_h
+                else
+                    @as(f32, @floatFromInt(row_y)) * self.cell_h;
+                const py = self.padding_y + row_y_px;
                 const row_has_selection = if (selection_range) |range|
                     selection.rowIntersects(range, row_y)
                 else
@@ -1871,7 +1878,11 @@ pub const FtRenderer = struct {
                             }
                             if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                const col_x_px = if (builtin.os.tag == .linux and col_count > 0)
+                                    @as(f32, @floatFromInt((col_count - 1) - @as(u16, @intCast(col_x)))) * self.cell_w
+                                else
+                                    @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                const px = self.padding_x + col_x_px;
                                 self.last_glyph_runs += 1;
                                 self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                 continue;
@@ -2035,7 +2046,11 @@ pub const FtRenderer = struct {
         if (is_focused and runtime.cursorVisible(render_state)) {
             if (runtime.cursorPos(render_state)) |pos| {
                 const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
-                const cy = self.padding_y + @as(f32, @floatFromInt(pos.y)) * self.cell_h;
+                const cursor_y_px = if (builtin.os.tag == .linux and row_count > 0)
+                    @as(f32, @floatFromInt((row_count - 1) - pos.y)) * self.cell_h
+                else
+                    @as(f32, @floatFromInt(pos.y)) * self.cell_h;
+                const cy = self.padding_y + cursor_y_px;
                 // Reset to default pipeline so cursor quads are not rendered
                 // through the atlas texture-blend pipeline (which would make
                 // them invisible by multiplying vertex colour by the texture).
@@ -2255,7 +2270,7 @@ pub const FtRenderer = struct {
         const vs_params = VsParams{
             .mvp = mvp,
             .atlas_size = .{ @as(f32, ATLAS_W), @as(f32, ATLAS_H) },
-            .use_linear_correction = if (self.use_linear_correction) 1 else 0,
+            .vs_use_linear_correction = if (self.use_linear_correction) 1 else 0,
             ._pad = 0,
         };
 
@@ -2277,7 +2292,7 @@ pub const FtRenderer = struct {
         // Callers convert from sRGB before passing.  Zero alpha falls back gracefully.
         const fs_params = FsParams{
             .bg_linear = bg_linear,
-            .use_linear_correction = if (self.use_linear_correction) 1 else 0,
+            .fs_use_linear_correction = if (self.use_linear_correction) 1 else 0,
             ._pad0 = 0,
             ._pad1 = 0,
             ._pad2 = 0,

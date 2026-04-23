@@ -44,15 +44,15 @@ pub const glsl_vs: [:0]const u8 =
     \\out vec2 v_uv;
     \\out vec4 v_fg;
     \\
-    \\layout(std140) uniform vs_params {
-    \\    mat4  mvp;
-    \\    vec2  atlas_size;
-    \\    uint  use_linear_correction;
-    \\    uint  _pad;
-    \\};
+    \\uniform vec4 vs_params[5];
     \\
     \\void main() {
-    \\    gl_Position = mvp * vec4(in_pos, 0.0, 1.0);
+    \\    gl_Position = mat4(
+    \\        vec4(vs_params[0].x, vs_params[1].x, vs_params[2].x, vs_params[3].x),
+    \\        vec4(vs_params[0].y, vs_params[1].y, vs_params[2].y, vs_params[3].y),
+    \\        vec4(vs_params[0].z, vs_params[1].z, vs_params[2].z, vs_params[3].z),
+    \\        vec4(vs_params[0].w, vs_params[1].w, vs_params[2].w, vs_params[3].w)
+    \\    ) * vec4(in_pos, 0.0, 1.0);
     \\    v_uv = in_uv;
     \\    // Pass fg colour as-is (sRGB, straight alpha).
     \\    // All linearization is done in the fragment shader.
@@ -70,13 +70,7 @@ pub const glsl_fs: [:0]const u8 =
     \\
     \\uniform sampler2D atlas;
     \\
-    \\layout(std140) uniform fs_params {
-    \\    vec4  bg_linear;            // linear-space background colour (premultiplied)
-    \\    uint  use_linear_correction;
-    \\    uint  _pad0;
-    \\    uint  _pad1;
-    \\    uint  _pad2;
-    \\};
+    \\uniform vec4 fs_params[2];
     \\
     \\// Rec.709 luminance from linear RGB.
     \\float luminance(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -97,7 +91,8 @@ pub const glsl_fs: [:0]const u8 =
     \\    // fg is sRGB straight-alpha from vertex.
     \\    vec3 fg_srgb = v_fg.rgb;
     \\
-    \\    if (use_linear_correction != 0u) {
+    \\    vec4 bg_linear = fs_params[0];
+    \\    if (fs_params[1].x != 0.0) {
     \\        // Perceptual alpha remap (Ghostty USE_LINEAR_CORRECTION).
     \\        vec3 bg_lin  = (bg_linear.a > 0.0) ? bg_linear.rgb / bg_linear.a : vec3(0.0);
     \\        vec3 bg_srgb = vec3(unlinearize(bg_lin.r),
@@ -133,7 +128,7 @@ pub const hlsl_vs: [:0]const u8 =
     \\cbuffer vs_params : register(b0) {
     \\    float4x4 mvp;
     \\    float2 atlas_size;
-    \\    uint   use_linear_correction;
+    \\    uint   vs_use_linear_correction;
     \\    uint   _pad;
     \\};
     \\
@@ -165,7 +160,7 @@ pub const hlsl_fs: [:0]const u8 =
     \\
     \\cbuffer fs_params : register(b1) {
     \\    float4 bg_linear;             // linear-space background colour (premultiplied)
-    \\    uint   use_linear_correction;
+    \\    uint   fs_use_linear_correction;
     \\    uint   _pad0;
     \\    uint   _pad1;
     \\    uint   _pad2;
@@ -194,7 +189,7 @@ pub const hlsl_fs: [:0]const u8 =
     \\    // fg is sRGB straight-alpha from vertex (UBYTE4N normalised 0..1).
     \\    float3 fg_srgb = In.fg.rgb;
     \\
-    \\    if (use_linear_correction != 0u) {
+    \\    if (fs_use_linear_correction != 0u) {
     \\        // Ghostty-style perceptual alpha remap.
     \\        // Simulate blending in sRGB space (perceptual), then solve for the
     \\        // alpha that achieves the same luminance in linear-light blending.

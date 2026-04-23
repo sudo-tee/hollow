@@ -386,7 +386,7 @@ fn writeConsoleText(text: []const u8) !void {
 }
 
 fn ensureConsoleStdOut() ?std.fs.File {
-    if (builtin.os.tag != .windows) return std.io.getStdOut();
+    if (builtin.os.tag != .windows) return std.fs.File.stdout();
 
     _ = win32.AttachConsole(win32.ATTACH_PARENT_PROCESS);
     const handle = win32.GetStdHandle(win32.STD_OUTPUT_HANDLE) orelse return null;

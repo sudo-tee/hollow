@@ -233,10 +233,10 @@ fn openExternalWindows(target: []const u8) !void {
 }
 
 fn openExternalPosix(target: []const u8, argv: []const []const u8) !void {
-    var child_args = std.ArrayList([]const u8).init(std.heap.page_allocator);
-    defer child_args.deinit();
-    try child_args.appendSlice(argv);
-    try child_args.append(target);
+    var child_args: std.ArrayList([]const u8) = .empty;
+    defer child_args.deinit(std.heap.page_allocator);
+    try child_args.appendSlice(std.heap.page_allocator, argv);
+    try child_args.append(std.heap.page_allocator, target);
 
     var child = std.process.Child.init(child_args.items, std.heap.page_allocator);
     child.stdin_behavior = .Ignore;

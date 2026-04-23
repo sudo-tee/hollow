@@ -21,6 +21,11 @@ pub const PosixPty = struct {
     closed: bool = false,
 
     pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !PosixPty {
+        std.log.info("pty_posix.spawn shell={s} cwd={s} launch_command={}", .{
+            shell,
+            cwd orelse "<null>",
+            launch_command != null,
+        });
         var winsize = std.mem.zeroes(c.struct_winsize);
         winsize.ws_col = cols;
         winsize.ws_row = rows;
@@ -29,17 +34,15 @@ pub const PosixPty = struct {
         const pid = c.forkpty(&master, null, null, &winsize);
         if (pid == 0) {
             if (cwd) |dir| {
-                const dir_z = std.cstr.addNullByte(std.heap.page_allocator, dir) catch c._exit(1);
+                const dir_z = std.heap.page_allocator.dupeZ(u8, dir) catch c._exit(1);
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
             const argv = try buildArgv(std.heap.page_allocator, shell, launch_command);
             defer freeArgv(std.heap.page_allocator, argv);
-            const envp = if (env_block) |env| tryParseEnvBlock(std.heap.page_allocator, env) catch null else null;
-            defer if (envp) |items| {
-                for (items) |item| std.heap.page_allocator.free(item);
-                std.heap.page_allocator.free(items);
-            };
+            var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer env_arena.deinit();
+            const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch null else null;
             _ = c.execve(shell.ptr, @ptrCast(@constCast(argv.ptr)), if (envp) |items| @ptrCast(items.ptr) else null);
             c._exit(1);
         }
@@ -55,18 +58,25 @@ pub const PosixPty = struct {
         };
     }
 
-    fn tryParseEnvBlock(allocator: std.mem.Allocator, env_block: []const u8) ![][:0]u8 {
-        var list: std.ArrayListUnmanaged([:0]u8) = .empty;
-        errdefer {
-            for (list.items) |item| allocator.free(item);
-            list.deinit(allocator);
+    fn buildEnvp(allocator: std.mem.Allocator, env_block: []const u8) ![:null]?[*:0]u8 {
+        var env_map = try std.process.getEnvMap(allocator);
+        defer env_map.deinit();
+
+        var i: usize = 0;
+        while (i < env_block.len) {
+            const entry_start = i;
+            while (i < env_block.len and env_block[i] != 0) : (i += 1) {}
+            if (i > entry_start) {
+                const entry = env_block[entry_start..i];
+                if (std.mem.indexOfScalar(u8, entry, '=')) |eq_pos| {
+                    try env_map.put(entry[0..eq_pos], entry[eq_pos + 1 ..]);
+                }
+            }
+            i += 1;
+            if (i < env_block.len and env_block[i] == 0) break;
         }
-        var it = std.mem.splitScalar(u8, env_block, '\n');
-        while (it.next()) |line| {
-            if (line.len == 0) continue;
-            try list.append(allocator, try allocator.dupeZ(u8, line));
-        }
-        return try list.toOwnedSlice(allocator);
+
+        return try std.process.createNullDelimitedEnvMap(allocator, &env_map);
     }
 
     fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand) ![]?[*:0]const u8 {
@@ -82,7 +92,7 @@ pub const PosixPty = struct {
             if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
                 try argv.append(allocator, "-lc");
                 const wrapped = if (cmd.close_on_exit)
-                    try std.fmt.allocPrintZ(allocator, "{s}; exit", .{std.mem.trimRight(u8, cmd.command, "\r\n")})
+                    try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimRight(u8, cmd.command, "\r\n")}, 0)
                 else
                     try allocator.dupeZ(u8, cmd.command);
                 try argv.append(allocator, wrapped.ptr);
@@ -99,7 +109,9 @@ pub const PosixPty = struct {
     }
 
     fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]const u8) void {
-        if (argv.len > 2 and argv[2]) |ptr| allocator.free(std.mem.span(ptr));
+        if (argv.len > 2) {
+            if (argv[2]) |ptr| allocator.free(std.mem.span(ptr));
+        }
     }
 
     pub fn deinit(self: *PosixPty) void {
@@ -110,7 +122,16 @@ pub const PosixPty = struct {
         if (self.closed or !self.alive) return false;
         var status: c_int = 0;
         const result = c.waitpid(self.pid, &status, c.WNOHANG);
-        if (result == self.pid) self.alive = false;
+        if (result == self.pid) {
+            self.alive = false;
+            if (c.WIFEXITED(status)) {
+                std.log.info("pty_posix child exited pid={} status={}", .{ self.pid, c.WEXITSTATUS(status) });
+            } else if (c.WIFSIGNALED(status)) {
+                std.log.warn("pty_posix child signaled pid={} signal={}", .{ self.pid, c.WTERMSIG(status) });
+            } else {
+                std.log.warn("pty_posix child ended pid={} raw_status={}", .{ self.pid, status });
+            }
+        }
         return self.alive;
     }
 
