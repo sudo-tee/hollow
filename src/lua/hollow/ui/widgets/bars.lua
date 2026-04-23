@@ -39,7 +39,10 @@ local function serialize_tabs(node, ctx)
       end
     end
 
-    tabs[#tabs + 1] = shared.bar_value_to_segment(label, tab_state.title, style)
+    local segments = shared.bar_value_to_segments(label, tab_state.title, style)
+    local segment = shared.style_to_segment(shared.segments_plain_text(segments), style)
+    segment.segments = segments
+    tabs[#tabs + 1] = segment
   end
 
   return {
@@ -65,7 +68,7 @@ local function serialize_workspace(node, ctx)
   local text = workspace_state.name
   if type(node.format) == "function" then
     local ok, result = pcall(node.format, workspace_state, ctx)
-    if ok and type(result) == "string" then
+    if ok then
       text = result
     end
   end
@@ -76,7 +79,9 @@ local function serialize_workspace(node, ctx)
     style = ok and result or nil
   end
 
-  local segment = shared.bar_value_to_segment(text, workspace_state.name, style)
+  local segments = shared.bar_value_to_segments(text, workspace_state.name, style)
+  local segment = shared.style_to_segment(shared.segments_plain_text(segments), style)
+  segment.segments = segments
   segment.kind = "segment"
   return segment
 end
@@ -114,11 +119,11 @@ local function serialize_custom(node, ctx)
   end
 
   local segment
-  if type(rendered) == "string" then
-    segment = { kind = "segment", text = rendered, id = node.id }
-  elseif type(rendered) == "table" then
-    segment = shared.style_to_segment(rendered.text or "", rendered.style or rendered)
+  if type(rendered) == "string" or type(rendered) == "table" then
+    local segments = shared.bar_value_to_segments(rendered, "", nil)
+    segment = shared.style_to_segment(shared.segments_plain_text(segments), nil)
     segment.kind = "segment"
+    segment.segments = segments
     segment.id = segment.id or node.id
   end
 

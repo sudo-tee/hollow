@@ -404,6 +404,68 @@ function M.style_to_segment(text, style)
   return segment
 end
 
+---@param segments HollowUiSegment[]
+---@return string
+function M.segments_plain_text(segments)
+  local parts = {}
+
+  for _, segment in ipairs(segments or {}) do
+    if type(segment.text) == "string" and segment.text ~= "" then
+      parts[#parts + 1] = segment.text
+    end
+  end
+
+  return table.concat(parts)
+end
+
+---@param value any
+---@param fallback_text string
+---@param style HollowUiNodeStyle|nil
+---@return HollowUiSegment[]
+function M.bar_value_to_segments(value, fallback_text, style)
+  if type(value) == "string" then
+    return { M.style_to_segment(value, style) }
+  end
+
+  if type(value) == "table" then
+    if value._type == "span" then
+      return {
+        M.style_to_segment(
+          value.text or fallback_text,
+          M.merge_style_tables(style, value.style)
+        ),
+      }
+    end
+
+    if M.is_span_node(value) or value[1] ~= nil then
+      local flattened = M.flatten_span_nodes(M.normalize_inline_nodes(value), style)
+      local segments = {}
+
+      for _, node in ipairs(flattened) do
+        if type(node.text) == "string" and node.text ~= "" then
+          segments[#segments + 1] = M.style_to_segment(node.text, node.style)
+        end
+      end
+
+      if #segments > 0 then
+        return segments
+      end
+    end
+
+    if value.text ~= nil or value.fg ~= nil or value.bg ~= nil or value.bold ~= nil then
+      local merged_style = M.merge_style_tables(style, {
+        fg = value.fg,
+        bg = value.bg,
+        bold = value.bold,
+      })
+      local text = type(value.text) == "string" and value.text or fallback_text
+      return { M.style_to_segment(text, merged_style) }
+    end
+  end
+
+  return { M.style_to_segment(fallback_text, style) }
+end
+
 ---@param base HollowUiNodeStyle|nil
 ---@param overlay_style HollowUiNodeStyle|nil
 ---@return HollowUiNodeStyle
@@ -437,30 +499,12 @@ end
 ---@param style HollowUiNodeStyle|nil
 ---@return HollowUiSegment
 function M.bar_value_to_segment(value, fallback_text, style)
-  if type(value) == "string" then
-    return M.style_to_segment(value, style)
+  local segments = M.bar_value_to_segments(value, fallback_text, style)
+  if #segments == 1 then
+    return segments[1]
   end
 
-  if type(value) == "table" then
-    if value._type == "span" then
-      return M.style_to_segment(
-        value.text or fallback_text,
-        M.merge_style_tables(style, value.style)
-      )
-    end
-
-    if value.text ~= nil or value.fg ~= nil or value.bg ~= nil or value.bold ~= nil then
-      local merged_style = M.merge_style_tables(style, {
-        fg = value.fg,
-        bg = value.bg,
-        bold = value.bold,
-      })
-      local text = type(value.text) == "string" and value.text or fallback_text
-      return M.style_to_segment(text, merged_style)
-    end
-  end
-
-  return M.style_to_segment(fallback_text, style)
+  return M.style_to_segment(M.segments_plain_text(segments), style)
 end
 
 -- ---------------------------------------------------------------------------

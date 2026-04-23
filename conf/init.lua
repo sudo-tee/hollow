@@ -183,7 +183,16 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           return " " .. workspace.name .. " "
         end,
       }),
-      hollow.ui.bar.tabs({ fit = "content" }),
+      hollow.ui.bar.tabs({
+        fit = "content",
+        format = function(tab)
+          local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
+          return {
+            hollow.ui.span(is_maximized, { fg = palette.magenta }),
+            hollow.ui.span(" " .. tab.title .. " "),
+          }
+        end,
+      }),
       hollow.ui.spacer(),
       hollow.ui.span(cwd ~= "" and (" " .. cwd .. " ") or " ", ui_theme.status),
       hollow.ui.bar.key_legend({ style = ui_theme.status }),

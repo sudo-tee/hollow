@@ -71,6 +71,9 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const WM_GETMINMAXINFO: u32 = 0x0024;
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
     const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const MONITOR_DEFAULTTONEAREST: u32 = 0x00000002;
     const SWP_NOSIZE: u32 = 0x0001;
@@ -425,6 +428,40 @@ const CachedTopBarTab = struct {
     node_id: ?[]const u8 = null,
 };
 
+fn segmentArrayTextLen(segments: []const bar.Segment) usize {
+    var total: usize = 0;
+    for (segments) |seg| total += seg.text.len;
+    return total;
+}
+
+fn segmentArrayCodepoints(segments: []const bar.Segment) usize {
+    var total: usize = 0;
+    for (segments) |seg| total += countCodepoints(seg.text);
+    return total;
+}
+
+fn segmentArrayFieldIndex(api: Api, state: *State, item_idx: c_int) ?c_int {
+    api.get_field(state, item_idx, "segments");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        return absoluteIndex(api, state, -1);
+    }
+    pop(api, state, 1);
+    return null;
+}
+
+fn drawSegmentArray(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment, default_fg: ghostty.ColorRgb) void {
+    var cursor_x = x;
+    for (segments) |seg| {
+        if (seg.text.len == 0) continue;
+        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        if (cursor_x + seg_w > x + max_width) break;
+        const fg = seg.fg orelse default_fg;
+        renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        c.sgl_load_default_pipeline();
+        cursor_x += seg_w;
+    }
+}
+
 fn topBarSegmentFromLuaItem(api: Api, state: *State, item_idx: c_int, text_buf: []u8) bar.Segment {
     var seg = bar.Segment{ .text = "" };
 
@@ -675,6 +712,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 } else if (saw_spacer and std.mem.eql(u8, kind, "tabs")) {
                     api.get_field(state, item_idx, "tabs");
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        var tab_seg_buf: [16]bar.Segment = undefined;
+                        var tab_seg_text_buf: [512]u8 = undefined;
                         const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
                         var tab_i: c_int = 1;
                         while (true) : (tab_i += 1) {
@@ -684,8 +723,15 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 break;
                             }
                             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                                const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
-                                right_reserved += @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
+                                const tab_idx = lua_mod.absoluteIndex(api, state, -1);
+                                const tab_seg = topBarSegmentFromLuaItem(api, state, tab_idx, seg_text_buf[0..]);
+                                const tab_segments = if (segmentArrayFieldIndex(api, state, tab_idx)) |segments_idx|
+                                    lua_mod.parseSegmentArray(api, state, tab_seg_buf[0..], tab_seg_text_buf[0..], segments_idx)
+                                else
+                                    tab_seg_buf[0..0];
+                                const label_chars = if (tab_segments.len > 0) segmentArrayCodepoints(tab_segments) else countCodepoints(tab_seg.text);
+                                if (tab_segments.len > 0) pop(api, state, 1);
+                                right_reserved += @as(f32, @floatFromInt(label_chars)) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
                             }
                             lua_mod.pop(api, state, 1);
                         }
@@ -744,19 +790,28 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
                     var used_width: f32 = 0.0;
                     for (0..tab_count) |ti| {
+                        var tab_seg_buf: [16]bar.Segment = undefined;
+                        var tab_seg_text_buf: [512]u8 = undefined;
                         api.rawgeti(state, tabs_idx, @intCast(ti + 1));
                         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
                             lua_mod.pop(api, state, 1);
                             continue;
                         }
-                        const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                        const tab_idx = lua_mod.absoluteIndex(api, state, -1);
+                        const tab_seg = topBarSegmentFromLuaItem(api, state, tab_idx, seg_text_buf[0..]);
+                        const tab_segments = if (segmentArrayFieldIndex(api, state, tab_idx)) |segments_idx|
+                            lua_mod.parseSegmentArray(api, state, tab_seg_buf[0..], tab_seg_text_buf[0..], segments_idx)
+                        else
+                            tab_seg_buf[0..0];
+                        if (tab_segments.len > 0) pop(api, state, 1);
                         lua_mod.pop(api, state, 1);
 
                         const tx: f32 = cursor_x + used_width;
                         const remaining_w = max_right - tx;
                         if (remaining_w <= close_w) break;
+                        const label_chars = if (tab_segments.len > 0) segmentArrayCodepoints(tab_segments) else countCodepoints(tab_seg.text);
                         const desired_tab_w = if (std.mem.eql(u8, fit, "content"))
-                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
+                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(label_chars)) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
                         else
                             default_tab_w;
                         const tab_w = @min(desired_tab_w, remaining_w);
@@ -787,8 +842,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 .g = if (ti == active_idx) 255 else 185,
                                 .b = if (ti == active_idx) 255 else 185,
                             };
-                            ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
-                            c.sgl_load_default_pipeline();
+                            if (tab_segments.len > 0 and segmentArrayTextLen(tab_segments) == tab_seg.text.len) {
+                                drawSegmentArray(ctx.renderer, @floor(tx + ctx.renderer.cell_w * 0.5), text_y, label_space, tab_segments, fg);
+                            } else {
+                                ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
+                                c.sgl_load_default_pipeline();
+                            }
                         }
 
                         const close_y: f32 = text_y;
@@ -803,7 +862,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     cursor_x += used_width;
                     if (on_right_side) right_reserved -= used_width;
                 } else if (std.mem.eql(u8, kind, "segment")) {
+                    var item_seg_buf: [16]bar.Segment = undefined;
+                    var item_seg_text_buf: [512]u8 = undefined;
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    const seg_segments = if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx|
+                        lua_mod.parseSegmentArray(api, state, item_seg_buf[0..], item_seg_text_buf[0..], segments_idx)
+                    else
+                        item_seg_buf[0..0];
+                    if (seg_segments.len > 0) pop(api, state, 1);
                     const trimmed_text = if (on_right_side)
                         seg.text
                     else blk: {
@@ -821,8 +887,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (seg.id) |id| cacheBarTab(&g_top_bar_cache, g_top_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
                     if (seg.bg) |bg| drawBorderRect(cursor_x, top_y, seg_w, top_h, bg.r, bg.g, bg.b, 255);
                     const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-                    ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
-                    c.sgl_load_default_pipeline();
+                    if (seg_segments.len > 0 and segmentArrayTextLen(seg_segments) == trimmed_text.len and trimmed_text.len == seg.text.len) {
+                        drawSegmentArray(ctx.renderer, cursor_x, text_y, seg_w, seg_segments, fg);
+                    } else {
+                        ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+                        c.sgl_load_default_pipeline();
+                    }
                     cursor_x += seg_w;
                     if (on_right_side) right_reserved -= @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w;
                 }
@@ -859,6 +929,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 } else if (std.mem.eql(u8, kind, "tabs")) {
                     api.get_field(state, item_idx, "tabs");
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                        var tab_seg_buf: [16]bar.Segment = undefined;
+                        var tab_seg_text_buf: [512]u8 = undefined;
                         const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
                         var tab_i: c_int = 1;
                         while (true) : (tab_i += 1) {
@@ -868,8 +940,15 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 break;
                             }
                             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                                const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
-                                right_reserved += @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
+                                const tab_idx = lua_mod.absoluteIndex(api, state, -1);
+                                const tab_seg = topBarSegmentFromLuaItem(api, state, tab_idx, seg_text_buf[0..]);
+                                const tab_segments = if (segmentArrayFieldIndex(api, state, tab_idx)) |segments_idx|
+                                    lua_mod.parseSegmentArray(api, state, tab_seg_buf[0..], tab_seg_text_buf[0..], segments_idx)
+                                else
+                                    tab_seg_buf[0..0];
+                                const label_chars = if (tab_segments.len > 0) segmentArrayCodepoints(tab_segments) else countCodepoints(tab_seg.text);
+                                if (tab_segments.len > 0) pop(api, state, 1);
+                                right_reserved += @as(f32, @floatFromInt(label_chars)) * ctx.renderer.cell_w + (ctx.renderer.cell_w * 2.0 + 10.0);
                             }
                             lua_mod.pop(api, state, 1);
                         }
@@ -928,19 +1007,28 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     const default_tab_w: f32 = if (tab_count > 0) available / @as(f32, @floatFromInt(tab_count)) else available;
                     var used_width: f32 = 0.0;
                     for (0..tab_count) |ti| {
+                        var tab_seg_buf: [16]bar.Segment = undefined;
+                        var tab_seg_text_buf: [512]u8 = undefined;
                         api.rawgeti(state, tabs_idx, @intCast(ti + 1));
                         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
                             lua_mod.pop(api, state, 1);
                             continue;
                         }
-                        const tab_seg = topBarSegmentFromLuaItem(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+                        const tab_idx = lua_mod.absoluteIndex(api, state, -1);
+                        const tab_seg = topBarSegmentFromLuaItem(api, state, tab_idx, seg_text_buf[0..]);
+                        const tab_segments = if (segmentArrayFieldIndex(api, state, tab_idx)) |segments_idx|
+                            lua_mod.parseSegmentArray(api, state, tab_seg_buf[0..], tab_seg_text_buf[0..], segments_idx)
+                        else
+                            tab_seg_buf[0..0];
+                        if (tab_segments.len > 0) pop(api, state, 1);
                         lua_mod.pop(api, state, 1);
 
                         const tx: f32 = cursor_x + used_width;
                         const remaining_w = max_right - tx;
                         if (remaining_w <= close_w) break;
+                        const label_chars = if (tab_segments.len > 0) segmentArrayCodepoints(tab_segments) else countCodepoints(tab_seg.text);
                         const desired_tab_w = if (std.mem.eql(u8, fit, "content"))
-                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(countCodepoints(tab_seg.text))) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
+                            @max(close_w + ctx.renderer.cell_w, @as(f32, @floatFromInt(label_chars)) * ctx.renderer.cell_w + close_w + ctx.renderer.cell_w)
                         else
                             default_tab_w;
                         const tab_w = @min(desired_tab_w, remaining_w);
@@ -971,8 +1059,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 .g = if (ti == active_idx) 255 else 185,
                                 .b = if (ti == active_idx) 255 else 185,
                             };
-                            ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
-                            c.sgl_load_default_pipeline();
+                            if (tab_segments.len > 0 and segmentArrayTextLen(tab_segments) == tab_seg.text.len) {
+                                drawSegmentArray(ctx.renderer, @floor(tx + ctx.renderer.cell_w * 0.5), text_y, label_space, tab_segments, fg);
+                            } else {
+                                ctx.renderer.drawLabelFace(@floor(tx + ctx.renderer.cell_w * 0.5), text_y, display_title, fg.r, fg.g, fg.b, if (tab_seg.bold) 1 else 0);
+                                c.sgl_load_default_pipeline();
+                            }
                         }
 
                         const close_y: f32 = text_y;
@@ -987,7 +1079,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     cursor_x += used_width;
                     if (on_right_side) right_reserved -= used_width;
                 } else if (std.mem.eql(u8, kind, "segment")) {
+                    var item_seg_buf: [16]bar.Segment = undefined;
+                    var item_seg_text_buf: [512]u8 = undefined;
                     const seg = topBarSegmentFromLuaItem(api, state, item_idx, seg_text_buf[0..]);
+                    const seg_segments = if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx|
+                        lua_mod.parseSegmentArray(api, state, item_seg_buf[0..], item_seg_text_buf[0..], segments_idx)
+                    else
+                        item_seg_buf[0..0];
+                    if (seg_segments.len > 0) pop(api, state, 1);
                     const trimmed_text = if (on_right_side)
                         seg.text
                     else blk: {
@@ -1005,8 +1104,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (seg.id) |id| cacheBarTab(&g_bottom_bar_cache, g_bottom_bar_cache.tab_count, cursor_x, seg_w, null, 0.0, id);
                     if (seg.bg) |bg| drawBorderRect(cursor_x, bottom_y, seg_w, bottom_h, bg.r, bg.g, bg.b, 255);
                     const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-                    ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
-                    c.sgl_load_default_pipeline();
+                    if (seg_segments.len > 0 and segmentArrayTextLen(seg_segments) == trimmed_text.len and trimmed_text.len == seg.text.len) {
+                        drawSegmentArray(ctx.renderer, cursor_x, text_y, seg_w, seg_segments, fg);
+                    } else {
+                        ctx.renderer.drawLabelFace(cursor_x, text_y, trimmed_text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+                        c.sgl_load_default_pipeline();
+                    }
                     cursor_x += seg_w;
                     if (on_right_side) right_reserved -= seg_w;
                 }
@@ -2782,10 +2885,13 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
 fn applyWindowChrome(app: *App) bool {
     if (builtin.os.tag != .windows) return false;
 
-    if (app.config.window_titlebar_show) return true;
-
     const hwnd_raw = c.sapp_win32_get_hwnd() orelse return false;
     const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
+
+    applyNativeWindowColors(hwnd, app);
+
+    if (app.config.window_titlebar_show) return true;
+
     if (g_subclassed_hwnd == null) {
         const new_proc: win32.WNDPROC = &windowProc;
         const new_proc_raw: win32.LONG_PTR = @bitCast(@intFromPtr(new_proc));
@@ -2809,6 +2915,36 @@ fn applyWindowChrome(app: *App) bool {
     );
     extendDwmFrame(hwnd);
     return true;
+}
+
+fn applyNativeWindowColors(hwnd: win32.HWND, app: *App) void {
+    if (builtin.os.tag != .windows) return;
+
+    const dark_mode: i32 = 1;
+    _ = win32.DwmSetWindowAttribute(
+        hwnd,
+        win32.DWMWA_USE_IMMERSIVE_DARK_MODE,
+        @ptrCast(&dark_mode),
+        @sizeOf(i32),
+    );
+
+    const caption_color: u32 = @as(u32, app.config.top_bar_bg.r) |
+        (@as(u32, app.config.top_bar_bg.g) << 8) |
+        (@as(u32, app.config.top_bar_bg.b) << 16);
+    _ = win32.DwmSetWindowAttribute(
+        hwnd,
+        win32.DWMWA_CAPTION_COLOR,
+        @ptrCast(&caption_color),
+        @sizeOf(u32),
+    );
+
+    const text_color: u32 = 0x00FFFFFF;
+    _ = win32.DwmSetWindowAttribute(
+        hwnd,
+        win32.DWMWA_TEXT_COLOR,
+        @ptrCast(&text_color),
+        @sizeOf(u32),
+    );
 }
 
 fn extendDwmFrame(hwnd: win32.HWND) void {

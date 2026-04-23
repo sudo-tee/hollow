@@ -279,6 +279,9 @@
 ---@field children HollowUiRenderableNode[]
 ---@field style? HollowUiNodeStyle|HollowHexColor
 
+---@alias HollowUiFormattedNode HollowUiSpanNode|HollowUiGroupNode
+---@alias HollowUiFormattedValue string|HollowUiFormattedNode|HollowUiFormattedNode[]
+
 ---@class HollowUiTextShorthand: HollowStyle
 ---@field [1] string
 
@@ -355,14 +358,14 @@
 
 ---@class HollowUiBarTabsOptions: HollowUiBarNodeOptionsBase
 ---@field fit? "fill"|"content"
----@field format? fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): string|HollowUiSpanNode
+---@field format? fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): HollowUiFormattedValue
 ---@field style? HollowUiNodeStyle|HollowHexColor|fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
 ---@class HollowUiBarTabsNode: HollowUiBarTabsOptions
 ---@field _type "bar_tabs"
 
 ---@class HollowUiBarWorkspaceOptions: HollowUiBarNodeOptionsBase
----@field format? fun(workspace: HollowUiWorkspaceState, ctx?:HollowWidgetCtx): string|HollowUiSpanNode
+---@field format? fun(workspace: HollowUiWorkspaceState, ctx?:HollowWidgetCtx): HollowUiFormattedValue
 ---@field style? HollowUiNodeStyle|HollowHexColor|fun(workspace: HollowUiWorkspaceState, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
 ---@class HollowUiBarWorkspaceNode: HollowUiBarWorkspaceOptions
@@ -384,13 +387,13 @@
 ---@class HollowUiBarCustomNode
 ---@field _type "bar_custom"
 ---@field id? string
----@field render fun(ctx: HollowWidgetCtx): string|HollowUiSpanNode
+---@field render fun(ctx: HollowWidgetCtx): HollowUiFormattedValue
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
 ---@class HollowUiBarCustomOptions
 ---@field id? string
----@field render fun(ctx:HollowWidgetCtx):string|HollowUiSegment|HollowUiNodeStyle|nil
+---@field render fun(ctx:HollowWidgetCtx):HollowUiFormattedValue|HollowUiSegment|HollowUiNodeStyle|nil
 ---@field on_click? fun(payload:HollowUiNodeEventPayload)
 ---@field on_mouse_enter? fun(payload:HollowUiNodeEventPayload)
 ---@field on_mouse_leave? fun(payload:HollowUiNodeEventPayload)
@@ -422,6 +425,7 @@
 ---@field bg? HollowColor
 ---@field bold? boolean
 ---@field id? string
+---@field segments? HollowUiSegment[]
 ---@field kind? string
 
 ---@class HollowUiTabsLayout
