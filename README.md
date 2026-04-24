@@ -41,7 +41,7 @@ The latest release is available on GitHub: [Releases](https://github.com/sudo-te
 Copy the default config `conf/init.lua` to the user config location:
 
 - Windows: `%APPDATA%\hollow\init.lua`
-- Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.
+- Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`
 
 Refer to [the configuration docs](docs/configuration.md) for details on the config model, defaults and overrides
 
