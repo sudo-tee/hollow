@@ -102,6 +102,8 @@ function ui.new_widget(kind, opts)
     align = opts.align,
     backdrop = opts.backdrop,
     chrome = opts.chrome,
+    style = opts.style,
+    layout = opts.layout,
     hidden = opts.hidden,
     reserve = opts.reserve,
   }

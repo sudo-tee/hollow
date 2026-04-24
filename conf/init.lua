@@ -143,9 +143,10 @@ hollow.config.set({
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,
-  top_bar_mode = "tabs",
-  top_bar_height = 22,
+  top_bar_mode = "always",
+  top_bar_height = 0,
   top_bar_bg = ui_theme.tab_bar.background,
+  window_titlebar_show = false,
   scrollbar = {
     enabled = true,
     width = 12,
@@ -170,20 +171,78 @@ hollow.config.set({
 })
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
+  height = 30,
+  style = {
+    bg = ui_theme.tab_bar.background,
+  },
+  layout = {
+    padding = { left = 0, right = 0, top = 1, bottom = 1 },
+  },
   render = function(_ctx)
+    local pill = {
+      bg = ui_theme.tab_bar.background,
+      radius = 8,
+      padding = { left = 3, right = 3, top = 1, bottom = 1 },
+      margin = { right = 1, left = 0, top = 0, bottom = 0 },
+    }
+
+    local group_bg = hollow.util.brighten_hex_color(palette.black, 0.08, palette.bg)
+    local sep_fg = hollow.util.brighten_hex_color(palette.black, 0.08, palette.black)
     return {
       hollow.ui.bar.workspace({
+        style = pill,
         format = function(workspace)
-          return " " .. workspace.name .. " "
+          return {
+            hollow.ui.span(workspace.name, { fg = palette.bright_blue, bold = true }),
+          }
         end,
       }),
+      hollow.ui.span("|", { fg = sep_fg, margin = { left = 3, right = 3 } }),
       hollow.ui.bar.tabs({
         fit = "content",
+        style = function(tab)
+          local tab_bg = tab.is_active and group_bg or ui_theme.tab_bar.background
+          local tab_fg = tab.is_active and palette.bright_white
+            or hollow.util.brighten_hex_color(palette.bg, -0.4, palette.bg)
+          return {
+            bg = tab_bg,
+            fg = tab_fg,
+            radius = 4,
+            padding = { left = 6, right = 3, top = 2, bottom = 2 },
+            margin = { right = 1 },
+            bold = tab.is_active,
+          }
+        end,
         format = function(tab)
           local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
+          local tab_bg = tab.is_active
+              and hollow.util.brighten_hex_color(group_bg, 0.16, palette.bg)
+            or palette.bg
+          local tab_fg = tab.is_active and palette.bright_white
+            or hollow.util.brighten_hex_color(palette.fg, 0.4, palette.bg)
+          local tab_text_id = "tab-text:" .. tostring(tab.id)
+          local close_id = "tab-close:" .. tostring(tab.id)
+          local close_style = {
+            id = close_id,
+            fg = palette.gray,
+            bg = tab_bg,
+            hover = {
+              fg = tab_fg,
+            },
+            on_click = function()
+              hollow.term.close_tab(tab.id)
+            end,
+          }
           return {
             hollow.ui.span(is_maximized, { fg = palette.magenta }),
-            hollow.ui.span(" " .. tab.title .. " "),
+            hollow.ui.span(tab.title, {
+              id = tab_text_id,
+              on_click = function()
+                hollow.term.focus_tab(tab.id)
+              end,
+              hover = { fg = palette.bright_white },
+            }),
+            hollow.ui.span(" ×", close_style),
           }
         end,
       }),

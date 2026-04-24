@@ -71,8 +71,10 @@ function M.new(host_api)
     ui = {
       mounted_topbar = nil,
       topbar_hovered_id = nil,
+      topbar_handlers = {},
       mounted_bottombar = nil,
       bottombar_hovered_id = nil,
+      bottombar_handlers = {},
       mounted_sidebar = nil,
       sidebar_visible = false,
       overlay_stack = {},

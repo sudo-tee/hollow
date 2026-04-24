@@ -1043,6 +1043,55 @@ pub const Runtime = struct {
         return layout;
     }
 
+    pub fn resolveTopBarLayout(self: *Runtime) ?BottomBarLayout {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 1);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "ui");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 2);
+            return null;
+        }
+
+        api.get_field(self.state, -1, "_topbar_layout");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "topbar_layout");
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+            pop(api, self.state, 3);
+            return null;
+        }
+
+        const layout_idx = absoluteIndex(api, self.state, -1);
+        var layout = BottomBarLayout{};
+
+        api.get_field(self.state, layout_idx, "height");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+            const height = api.to_number(self.state, -1);
+            if (height > 0) layout.height_px = asInt(u32, height) catch 0;
+        }
+        pop(api, self.state, 1);
+
+        pop(api, self.state, 3);
+        if (layout.height_px == 0) return null;
+        return layout;
+    }
+
     fn exposeHollowTable(self: *Runtime) !void {
         const api = self.context.api;
 
@@ -2930,6 +2979,14 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
 
         seg.fg = parseColorField(api, state, -1, "fg");
         seg.bg = parseColorField(api, state, -1, "bg");
+        api.get_field(state, -1, "id");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+            var len: usize = 0;
+            if (api.to_lstring(state, -1, &len)) |ptr| {
+                seg.id = ptr[0..len];
+            }
+        }
+        pop(api, state, 1);
 
         if (seg.text.len > 0) {
             seg_buf[seg_count] = seg;

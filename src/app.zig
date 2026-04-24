@@ -9,6 +9,7 @@ const lua_mod = @import("lua_bridge.zig");
 const LuaRuntime = lua_mod.Runtime;
 const AppCallbacks = lua_mod.AppCallbacks;
 const SidebarLayout = lua_mod.SidebarLayout;
+const TopBarLayout = lua_mod.BottomBarLayout;
 const BottomBarLayout = lua_mod.BottomBarLayout;
 const HtpQueryResult = lua_mod.HtpQueryResult;
 const HtpFs = @import("htp_fs.zig");
@@ -2874,6 +2875,7 @@ pub const App = struct {
     /// Height in pixels of the shared top bar. 0 when hidden.
     pub fn tabBarHeight(self: *App) u32 {
         if (!self.shouldShowTopBar()) return 0;
+        if (self.topBarLayout()) |layout| return layout.height_px;
         if (self.config.top_bar_height > 0) return self.config.top_bar_height;
         return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
     }
@@ -2883,6 +2885,15 @@ pub const App = struct {
             .always => true,
             .tabs => self.tabCount() > 1,
         };
+    }
+
+    pub fn topBarLayout(self: *App) ?TopBarLayout {
+        if (!self.shouldShowTopBar()) return null;
+        if (self.lua) |*lua| {
+            if (lua.resolveTopBarLayout()) |layout| return layout;
+        }
+        if (self.config.top_bar_height == 0) return null;
+        return .{ .height_px = self.config.top_bar_height };
     }
 
     pub fn bottomBarLayout(self: *App) ?BottomBarLayout {
@@ -3900,16 +3911,13 @@ fn luaPaneExistsCallback(app_ptr: *anyopaque, pane_id: usize) bool {
 fn luaSwitchTabByIdCallback(app_ptr: *anyopaque, tab_id: usize) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const index = app.tabIndexById(tab_id) orelse return false;
-    app.switchTab(index);
-    return true;
+    return app.enqueueMouse(.{ .switch_tab = index });
 }
 
 fn luaCloseTabByIdCallback(app_ptr: *anyopaque, tab_id: usize) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const index = app.tabIndexById(tab_id) orelse return false;
-    app.switchTab(index);
-    app.closeTab();
-    return true;
+    return app.enqueueMouse(.{ .close_tab_at = index });
 }
 
 fn luaSetTabTitleByIdCallback(app_ptr: *anyopaque, tab_id: usize, title: []const u8) bool {
