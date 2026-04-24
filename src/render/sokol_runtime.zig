@@ -2079,12 +2079,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     if (g_drag_node == null and !app.hasVisualActivity()) {
-        const idle_deadline_ns = frame_start_ns + g_idle_frame_ns;
+        // With vsync on, a long pre-render idle sleep can push a newly-active
+        // frame past the next refresh and make scrolling feel like 30 FPS.
+        const idle_frame_ns = if (app.config.vsync) @as(i128, 8_000_000) else g_idle_frame_ns;
+        const idle_deadline_ns = frame_start_ns + idle_frame_ns;
         var now_ns = after_tick_ns;
-        while (now_ns < idle_deadline_ns) {
+        // Re-check activity in short slices so fresh PTY output does not sit
+        // behind the full idle delay and make interactive apps feel sticky.
+        while (now_ns < idle_deadline_ns and !app.hasVisualActivity()) {
             const remaining_ns = idle_deadline_ns - now_ns;
             if (remaining_ns > 100_000) {
-                std.Thread.sleep(@as(u64, @intCast(remaining_ns)));
+                const sleep_ns = @min(remaining_ns, @as(i128, 1_000_000));
+                std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
             } else {
                 std.Thread.yield() catch {};
             }

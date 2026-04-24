@@ -1051,6 +1051,13 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
+                // Unread PTY bytes should keep the frame loop responsive even
+                // before tickPanes consumes them into ghostty state.
+                if (pane.pty) |*pty| {
+                    if (pty.hasPendingOutput()) {
+                        return true;
+                    }
+                }
                 if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
                     return true;
                 }
@@ -3244,10 +3251,9 @@ pub const App = struct {
                 }
                 const now_ns = std.time.nanoTimestamp();
                 const is_active = (self.activePane() == pane);
-                // Poll the active pane often enough to catch Ghostty-managed
-                // cursor blink and similar idle state changes without burning a
-                // full 60 Hz update loop when the terminal is otherwise idle.
-                const idle_poll_ns: i128 = if (is_active) 250_000_000 else 500_000_000;
+                // Keep the active pane responsive to Ghostty-managed state
+                // changes while leaving background panes on a slower idle poll.
+                const idle_poll_ns: i128 = if (is_active) 16_000_000 else 500_000_000;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);

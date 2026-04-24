@@ -149,8 +149,12 @@ pub const PosixPty = struct {
         }
     }
 
-    pub fn hasPendingOutput(_: *PosixPty) bool {
-        return false;
+    pub fn hasPendingOutput(self: *PosixPty) bool {
+        if (self.closed) return false;
+
+        var pending: c_int = 0;
+        if (c.ioctl(self.fd, c.FIONREAD, &pending) != 0) return false;
+        return pending > 0;
     }
 
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
