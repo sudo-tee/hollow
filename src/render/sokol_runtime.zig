@@ -214,6 +214,7 @@ var g_phase_accum_atlas_stale_frames: usize = 0;
 // Frames since last drag release — used for post-release diagnostics.
 // Set to 0 on release, incremented each frame until > 20.
 var g_frames_since_drag_release: usize = std.math.maxInt(usize);
+var g_idle_frame_ns: i128 = 33_000_000;
 var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
@@ -2075,6 +2076,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (app.pending_quit) {
         c.sapp_request_quit();
         return;
+    }
+
+    if (g_drag_node == null and !app.hasVisualActivity()) {
+        const idle_deadline_ns = frame_start_ns + g_idle_frame_ns;
+        var now_ns = after_tick_ns;
+        while (now_ns < idle_deadline_ns) {
+            const remaining_ns = idle_deadline_ns - now_ns;
+            if (remaining_ns > 100_000) {
+                std.Thread.sleep(@as(u64, @intCast(remaining_ns)));
+            } else {
+                std.Thread.yield() catch {};
+            }
+            now_ns = std.time.nanoTimestamp();
+        }
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;

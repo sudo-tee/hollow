@@ -1029,6 +1029,36 @@ pub const App = struct {
         self.frame_count += 1;
     }
 
+    pub fn hasVisualActivity(self: *App) bool {
+        if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize or self.pending_quit) {
+            return true;
+        }
+        if (self.mouse_queue_head != @atomicLoad(usize, &self.mouse_queue_tail, .acquire)) {
+            return true;
+        }
+        if (self.htp_pending_messages.items.len > 0) {
+            return true;
+        }
+        if (self.selection_drag_active or self.hovered_tab_index != null or self.hovered_close_tab_index != null) {
+            return true;
+        }
+        if (self.isLeaderActive()) {
+            return true;
+        }
+        if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames) {
+            return true;
+        }
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn recordPointerState(self: *App, x: f32, y: f32, mods: u32) void {
         self.pointer_x = x;
         self.pointer_y = y;
@@ -3197,14 +3227,16 @@ pub const App = struct {
                         .new_title = pane.title,
                     } });
                 }
-                const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
-                defer if (old_cwd) |value| self.allocator.free(value);
-                if (pane.refreshCwd()) {
-                    self.emitLuaBuiltInEvent("term:cwd_changed", .{ .pane_cwd_changed = .{
-                        .pane_id = @intFromPtr(pane),
-                        .old_cwd = if (old_cwd) |value| value else "",
-                        .new_cwd = pane.cwd,
-                    } });
+                if (pane.cwd_dirty) {
+                    const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
+                    defer if (old_cwd) |value| self.allocator.free(value);
+                    if (pane.refreshCwd()) {
+                        self.emitLuaBuiltInEvent("term:cwd_changed", .{ .pane_cwd_changed = .{
+                            .pane_id = @intFromPtr(pane),
+                            .old_cwd = if (old_cwd) |value| value else "",
+                            .new_cwd = pane.cwd,
+                        } });
+                    }
                 }
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
@@ -3212,7 +3244,10 @@ pub const App = struct {
                 }
                 const now_ns = std.time.nanoTimestamp();
                 const is_active = (self.activePane() == pane);
-                const idle_poll_ns: i128 = if (is_active) 16_000_000 else 500_000_000;
+                // Poll the active pane often enough to catch Ghostty-managed
+                // cursor blink and similar idle state changes without burning a
+                // full 60 Hz update loop when the terminal is otherwise idle.
+                const idle_poll_ns: i128 = if (is_active) 250_000_000 else 500_000_000;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);

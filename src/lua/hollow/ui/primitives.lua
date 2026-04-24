@@ -338,6 +338,7 @@ function bar.custom(opts)
     _type = "bar_custom",
     id = opts.id,
     render = opts.render,
+    cache_ttl_ms = opts.cache_ttl_ms,
     on_click = opts.on_click,
     on_mouse_enter = opts.on_mouse_enter,
     on_mouse_leave = opts.on_mouse_leave,

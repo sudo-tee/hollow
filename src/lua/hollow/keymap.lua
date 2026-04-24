@@ -1,6 +1,22 @@
 local M = {}
 local util = require("hollow.util")
 
+local function invalidate_topbar()
+  if type(_G.hollow) == "table" and type(_G.hollow.ui) == "table" and type(_G.hollow.ui.topbar) == "table"
+    and type(_G.hollow.ui.topbar.invalidate) == "function"
+  then
+    _G.hollow.ui.topbar.invalidate()
+    return
+  end
+
+  local ok_state, state = pcall(function()
+    return require("hollow.state").get()
+  end)
+  if ok_state and type(state) == "table" and type(state.ui) == "table" then
+    state.ui.topbar_cache_dirty = true
+  end
+end
+
 local MODS_SHIFT = 0x01
 local MODS_CTRL = 0x02
 local MODS_ALT = 0x04
@@ -357,6 +373,7 @@ local function reset_sequence_state(keymap_state)
   keymap_state.sequence_active_node = nil
   keymap_state.sequence_steps = {}
   keymap_state.sequence_prefix = nil
+  invalidate_topbar()
 end
 
 local function set_sequence_state(keymap_state, node, prefix, steps)
@@ -364,6 +381,7 @@ local function set_sequence_state(keymap_state, node, prefix, steps)
   keymap_state.sequence_prefix = prefix
   keymap_state.sequence_steps = steps or {}
   keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
+  invalidate_topbar()
 end
 
 local function set_leader_binding(keymap_state, chord, style, action, opts)

@@ -6,6 +6,145 @@ local hollow = _G.hollow
 local state = require("hollow.state").get()
 ---@type HollowUi
 local ui = hollow.ui
+local util = hollow.util
+
+local BAR_CACHE_NO_EXPIRY = false
+
+local function cache_state_key(surface)
+  if surface == "topbar" then
+    return "topbar_cache_state"
+  end
+  if surface == "bottombar" then
+    return "bottombar_cache_state"
+  end
+  return nil
+end
+
+local function cache_layout_key(surface)
+  if surface == "topbar" then
+    return "topbar_cache_layout"
+  end
+  if surface == "bottombar" then
+    return "bottombar_cache_layout"
+  end
+  return nil
+end
+
+local function cache_dirty_key(surface)
+  if surface == "topbar" then
+    return "topbar_cache_dirty"
+  end
+  if surface == "bottombar" then
+    return "bottombar_cache_dirty"
+  end
+  return nil
+end
+
+local function cache_expires_key(surface)
+  if surface == "topbar" then
+    return "topbar_cache_expires_at"
+  end
+  if surface == "bottombar" then
+    return "bottombar_cache_expires_at"
+  end
+  return nil
+end
+
+local function invalidate_bar_cache(surface)
+  local dirty_key = cache_dirty_key(surface)
+  local state_key = cache_state_key(surface)
+  local layout_key = cache_layout_key(surface)
+  local expires_key = cache_expires_key(surface)
+  if dirty_key == nil then
+    return false
+  end
+
+  state.ui[dirty_key] = true
+  if state_key ~= nil then
+    state.ui[state_key] = nil
+  end
+  if layout_key ~= nil then
+    state.ui[layout_key] = nil
+  end
+  if expires_key ~= nil then
+    state.ui[expires_key] = nil
+  end
+  return true
+end
+
+local function current_time_ms()
+  return util.host_now_ms(state.host_api)
+end
+
+local function cache_is_valid(surface)
+  local dirty_key = cache_dirty_key(surface)
+  local state_key = cache_state_key(surface)
+  local layout_key = cache_layout_key(surface)
+  local expires_key = cache_expires_key(surface)
+  if dirty_key == nil or state_key == nil or layout_key == nil or expires_key == nil then
+    return false
+  end
+  if state.ui[dirty_key] then
+    return false
+  end
+  if state.ui[state_key] == nil or state.ui[layout_key] == nil then
+    return false
+  end
+
+  local expires_at = state.ui[expires_key]
+  return expires_at == BAR_CACHE_NO_EXPIRY or (type(expires_at) == "number" and expires_at > current_time_ms())
+end
+
+local function set_bar_cache(surface, payload, layout, expires_at)
+  local dirty_key = cache_dirty_key(surface)
+  local state_key = cache_state_key(surface)
+  local layout_key = cache_layout_key(surface)
+  local expires_key = cache_expires_key(surface)
+  if dirty_key == nil or state_key == nil or layout_key == nil or expires_key == nil then
+    return payload
+  end
+
+  state.ui[state_key] = payload
+  state.ui[layout_key] = layout
+  state.ui[expires_key] = expires_at == nil and BAR_CACHE_NO_EXPIRY or expires_at
+  state.ui[dirty_key] = false
+  return payload
+end
+
+local function set_bar_layout_cache(surface, layout)
+  local layout_key = cache_layout_key(surface)
+  local dirty_key = cache_dirty_key(surface)
+  local state_key = cache_state_key(surface)
+  if layout_key == nil or dirty_key == nil then
+    return layout
+  end
+
+  state.ui[layout_key] = layout
+  if state_key ~= nil and state.ui[state_key] ~= nil then
+    state.ui[dirty_key] = false
+  end
+  return layout
+end
+
+local function bar_cache_payload(surface)
+  local state_key = cache_state_key(surface)
+  return state_key ~= nil and state.ui[state_key] or nil
+end
+
+local function bar_cache_layout(surface)
+  local layout_key = cache_layout_key(surface)
+  return layout_key ~= nil and state.ui[layout_key] or nil
+end
+
+local function min_expiry(current, candidate)
+  if candidate == nil then
+    return current
+  end
+  if current == nil or candidate < current then
+    return candidate
+  end
+  return current
+end
 
 local BAR_EVENT_FIELDS = {
   "on_click",
@@ -251,6 +390,17 @@ local function serialize_bar_layout(widget)
 end
 
 ---@param widget HollowUiWidget
+---@return {height:integer,padding:{top:integer,right:integer,bottom:integer,left:integer},margin:{top:integer,right:integer,bottom:integer,left:integer}}
+local function serialize_bar_surface_layout(widget)
+  local layout = serialize_bar_layout(widget)
+  return {
+    height = math.max(0, math.floor(tonumber(widget.height) or 0)),
+    padding = layout.padding,
+    margin = layout.margin,
+  }
+end
+
+---@param widget HollowUiWidget
 ---@return table|nil
 local function serialize_bar_widget_style(widget)
   local style = serialize_bar_style(widget.style)
@@ -370,7 +520,8 @@ local function serialize_time(surface, node)
   local segment = shared.style_to_segment(os.date(node.format or "%H:%M"), style)
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
-  return segment
+  local next_tick_ms = (math.floor(current_time_ms() / 1000) + 1) * 1000
+  return segment, next_tick_ms
 end
 
 ---@param surface string|nil
@@ -388,7 +539,10 @@ local function serialize_key_legend(surface, node)
   local segment = shared.style_to_segment(text, style)
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
-  return segment
+  local expires_at = leader_state and leader_state.active
+    and (current_time_ms() + math.max(1, tonumber(leader_state.remaining_ms) or 0))
+    or nil
+  return segment, expires_at
 end
 
 ---@param surface string|nil
@@ -408,7 +562,8 @@ local function serialize_custom(surface, node, ctx)
     segment.id = segment.id or node.id
   end
 
-  return segment
+  local expires_at = type(node.cache_ttl_ms) == "number" and current_time_ms() + math.max(1, math.floor(node.cache_ttl_ms)) or nil
+  return segment, expires_at
 end
 
 ---@alias HollowUiBarSerializableNode
@@ -430,10 +585,10 @@ local function serialize_bar_item(surface, node, ctx, handlers)
   end
 
   if node._type == "bar_tabs" then
-    return serialize_tabs(surface, node, ctx, handlers)
+    return serialize_tabs(surface, node, ctx, handlers), nil
   end
   if node._type == "bar_workspace" then
-    return serialize_workspace(surface, node, ctx)
+    return serialize_workspace(surface, node, ctx), nil
   end
   if node._type == "bar_time" then
     return serialize_time(surface, node)
@@ -445,15 +600,15 @@ local function serialize_bar_item(surface, node, ctx, handlers)
     return serialize_custom(surface, node, ctx)
   end
   if node._type == "spacer" then
-    return { kind = "spacer" }
+    return { kind = "spacer" }, nil
   end
   if shared.is_span_node(node) then
     local segment = serialize_bar_value(surface, node, node.text or node.name or "", node.style)
     segment.kind = "segment"
-    return segment
+    return segment, nil
   end
 
-  return nil
+  return nil, nil
 end
 
 ---@param widget HollowUiWidget|nil
@@ -464,15 +619,23 @@ local function serialize_bar_widget(widget, surface)
     return nil
   end
 
+  if cache_is_valid(surface) then
+    return bar_cache_payload(surface)
+  end
+
   local ctx = shared.widget_ctx()
   local items = shared.normalize_bar_items(shared.render_widget(widget))
   local serialized = {}
   local handlers = {}
+  local expires_at = nil
+  local layout = serialize_bar_layout(widget)
+  local surface_layout = serialize_bar_surface_layout(widget)
 
   for _, item in ipairs(items) do
-    local ok, value = pcall(serialize_bar_item, surface, item, ctx, handlers)
+    local ok, value, item_expires_at = pcall(serialize_bar_item, surface, item, ctx, handlers)
     if ok and value ~= nil then
       serialized[#serialized + 1] = value
+      expires_at = min_expiry(expires_at, item_expires_at)
     end
   end
 
@@ -482,11 +645,11 @@ local function serialize_bar_widget(widget, surface)
     state.ui.bottombar_handlers = handlers
   end
 
-  return {
+  return set_bar_cache(surface, {
     items = serialized,
-    layout = serialize_bar_layout(widget),
+    layout = layout,
     style = serialize_bar_widget_style(widget),
-  }
+  }, surface_layout, expires_at)
 end
 
 ---@param surface string
@@ -604,6 +767,7 @@ local function define_mount_api(namespace, kind, state_key, visibility_key)
       state.ui[visibility_key] = widget.hidden ~= true
     end
     widget_core.mount_widget(widget)
+    invalidate_bar_cache(kind)
   end
 
   function namespace.unmount()
@@ -612,10 +776,16 @@ local function define_mount_api(namespace, kind, state_key, visibility_key)
     if visibility_key ~= nil then
       state.ui[visibility_key] = false
     end
+    invalidate_bar_cache(kind)
   end
 
   function namespace.invalidate()
-    return state.ui[state_key] ~= nil
+    if state.ui[state_key] == nil then
+      return false
+    end
+
+    invalidate_bar_cache(kind)
+    return true
   end
 end
 
@@ -653,6 +823,7 @@ function ui.handle_bar_node_event(kind, payload)
     if state.ui[hovered_key] ~= nil then
       call_bar_node_handler(surface, state.ui[hovered_key], "on_mouse_leave", { id = state.ui[hovered_key] })
       state.ui[hovered_key] = nil
+      invalidate_bar_cache(surface)
     end
     return
   end
@@ -669,6 +840,7 @@ function ui.handle_bar_node_event(kind, payload)
       end
       state.ui[hovered_key] = node_id
       call_bar_node_handler(surface, node_id, "on_mouse_enter", payload)
+      invalidate_bar_cache(surface)
     end
     return
   end
@@ -691,14 +863,12 @@ function ui._bottombar_layout()
     return nil
   end
 
+  if cache_is_valid("bottombar") then
+    return bar_cache_layout("bottombar")
+  end
+
   local widget = state.ui.mounted_bottombar
-  local height = tonumber(widget.height) or 0
-  local layout = serialize_bar_layout(widget)
-  return {
-    height = math.max(0, math.floor(height)),
-    padding = layout.padding,
-    margin = layout.margin,
-  }
+  return set_bar_layout_cache("bottombar", serialize_bar_surface_layout(widget))
 end
 
 function ui._topbar_layout()
@@ -706,14 +876,39 @@ function ui._topbar_layout()
     return nil
   end
 
+  if cache_is_valid("topbar") then
+    return bar_cache_layout("topbar")
+  end
+
   local widget = state.ui.mounted_topbar
-  local height = tonumber(widget.height) or 0
-  local layout = serialize_bar_layout(widget)
-  return {
-    height = math.max(0, math.floor(height)),
-    padding = layout.padding,
-    margin = layout.margin,
-  }
+  return set_bar_layout_cache("topbar", serialize_bar_surface_layout(widget))
+end
+
+function ui._register_bar_invalidation_hooks()
+  if state.ui._bar_invalidation_hooks_registered then
+    return
+  end
+
+  state.ui._bar_invalidation_hooks_registered = true
+  hollow.events.on("config:reloaded", function()
+    ui.topbar.invalidate()
+    ui.bottombar.invalidate()
+  end)
+
+  for _, event_name in ipairs({
+    "term:tab_activated",
+    "term:tab_closed",
+    "term:pane_focused",
+    "term:pane_layout_changed",
+    "term:title_changed",
+    "term:cwd_changed",
+    "window:resized",
+  }) do
+    hollow.events.on(event_name, function()
+      ui.topbar.invalidate()
+      ui.bottombar.invalidate()
+    end)
+  end
 end
 
 function ui._sidebar_state()

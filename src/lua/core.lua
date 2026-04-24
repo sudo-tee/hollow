@@ -42,6 +42,9 @@ end
 actions.setup(hollow, host_api)
 keymap.setup(hollow, host_api, state)
 local events_runtime = events.setup(hollow, state, term_helpers)
+if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
+  hollow.ui._register_bar_invalidation_hooks()
+end
 htp.setup(hollow, host_api, state, util, term_helpers)
 
 function hollow._emit_builtin_event(name, payload)
