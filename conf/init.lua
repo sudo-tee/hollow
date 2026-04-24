@@ -143,12 +143,9 @@ hollow.config.set({
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,
-  top_bar_show = true,
-  top_bar_show_when_single_tab = true,
-  top_bar_height = 20,
+  top_bar_mode = "tabs",
+  top_bar_height = 22,
   top_bar_bg = ui_theme.tab_bar.background,
-  top_bar_draw_tabs = true,
-  top_bar_draw_status = true,
   scrollbar = {
     enabled = true,
     width = 12,
@@ -173,10 +170,7 @@ hollow.config.set({
 })
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
-  render = function(ctx)
-    local pane = ctx.term.pane
-    local cwd = pane and pane.cwd or ""
-
+  render = function(_ctx)
     return {
       hollow.ui.bar.workspace({
         format = function(workspace)
@@ -193,10 +187,6 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           }
         end,
       }),
-      hollow.ui.spacer(),
-      hollow.ui.span(cwd ~= "" and (" " .. cwd .. " ") or " ", ui_theme.status),
-      hollow.ui.bar.key_legend({ style = ui_theme.status }),
-      hollow.ui.bar.time("%H:%M:%S", { style = ui_theme.status }),
     } --[[@as HollowWidgetRenderResult]]
   end,
 }))
@@ -211,17 +201,19 @@ hollow.keymap.set("<C-S-v>", "paste_clipboard")
 hollow.keymap.set("<S-Insert>", "paste_clipboard")
 hollow.keymap.set("<C-\\>", "split_vertical")
 hollow.keymap.set("<C-S-\\>", "split_horizontal")
-hollow.keymap.set("<C-t>", "new_tab")
-hollow.keymap.set("<C-w>", "close_tab")
+hollow.keymap.set("<C-S-t>", "new_tab")
+hollow.keymap.set("<C-S-x>", "close_tab")
 hollow.keymap.set("<C-S-w>", "close_pane")
 hollow.keymap.set("<C-Tab>", "next_tab")
 hollow.keymap.set("<C-S-Tab>", "prev_tab")
-hollow.keymap.set("<C-A-n>", "new_workspace")
-hollow.keymap.set("<C-A-p>", "workspace_switcher")
-hollow.keymap.set("<C-A-r>", "rename_workspace")
-hollow.keymap.set("<C-A-w>", "close_workspace")
-hollow.keymap.set("<C-A-Right>", "next_workspace")
-hollow.keymap.set("<C-A-Left>", "prev_workspace")
+hollow.keymap.set("<C-A-Right>", "next_tab")
+hollow.keymap.set("<C-A-Left>", "prev_tab")
+hollow.keymap.set("<C-S-n>", "new_workspace")
+hollow.keymap.set("<C-S-p>", "workspace_switcher")
+hollow.keymap.set("<C-S-r>", "rename_workspace")
+hollow.keymap.set("<C-S-w>", "close_workspace")
+hollow.keymap.set("<C-S-PageUp>", "next_workspace")
+hollow.keymap.set("<C-S-PageDown>", "prev_workspace")
 hollow.keymap.set("<C-S-Left>", "focus_pane_left")
 hollow.keymap.set("<C-S-Right>", "focus_pane_right")
 hollow.keymap.set("<C-S-Up>", "focus_pane_up")
@@ -269,6 +261,7 @@ end, { desc = "reload config" })
 --
 -- hollow.config.set({
 --   default_domain = "pwsh",
+--   top_bar_mode = "always",
 --   window_titlebar_show = false,
 --   fonts = { size = 16, family = "Consolas" },
 -- })

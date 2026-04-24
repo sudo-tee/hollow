@@ -2155,6 +2155,17 @@ fn l_set_config(state: *State) callconv(.c) c_int {
 
 fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (applyHexColor(cfg, key, value)) return;
+    if (std.mem.eql(u8, key, "top_bar_mode")) {
+        if (std.mem.eql(u8, value, "always")) {
+            cfg.top_bar_mode = .always;
+            return;
+        }
+        if (std.mem.eql(u8, value, "tabs")) {
+            cfg.top_bar_mode = .tabs;
+            return;
+        }
+        return error.InvalidTopBarMode;
+    }
     if (std.mem.eql(u8, key, "backend")) return cfg.setBackend(value);
     if (std.mem.eql(u8, key, "shell")) return cfg.setShell(value);
     if (std.mem.eql(u8, key, "default_domain")) return cfg.setDefaultDomain(value);
@@ -2303,7 +2314,7 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         return;
     }
     if (std.mem.eql(u8, key, "top_bar_show")) {
-        cfg.top_bar_show = value;
+        cfg.top_bar_mode = if (value) .always else .tabs;
         return;
     }
     if (std.mem.eql(u8, key, "bottom_bar_show")) {
@@ -2315,15 +2326,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         return;
     }
     if (std.mem.eql(u8, key, "top_bar_show_when_single_tab")) {
-        cfg.top_bar_show_when_single_tab = value;
+        cfg.top_bar_mode = if (value) .always else .tabs;
         return;
     }
-    if (std.mem.eql(u8, key, "top_bar_draw_tabs")) {
-        cfg.top_bar_draw_tabs = value;
-        return;
-    }
-    if (std.mem.eql(u8, key, "top_bar_draw_status")) {
-        cfg.top_bar_draw_status = value;
+    if (std.mem.eql(u8, key, "top_bar_draw_tabs") or std.mem.eql(u8, key, "top_bar_draw_status")) {
         return;
     }
     if (std.mem.eql(u8, key, "bottom_bar_draw_status")) {

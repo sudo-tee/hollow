@@ -17,6 +17,11 @@ pub const RendererBackend = enum {
 };
 
 pub const Config = struct {
+    pub const TopBarMode = enum {
+        always,
+        tabs,
+    };
+
     pub const DomainSshBackend = enum {
         native,
         wsl,
@@ -250,13 +255,10 @@ pub const Config = struct {
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
     lib_dir: ?[]u8 = null,
-    top_bar_show: bool = true,
+    top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,
-    top_bar_show_when_single_tab: bool = false,
     top_bar_height: u32 = 0,
     top_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
-    top_bar_draw_tabs: bool = true,
-    top_bar_draw_status: bool = true,
     bottom_bar_show: bool = true,
     bottom_bar_height: u32 = 0,
     bottom_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },

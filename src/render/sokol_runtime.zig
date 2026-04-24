@@ -644,6 +644,7 @@ var g_widget_render_ctx: ?WidgetRenderCtx = null;
 var g_rect_pip: c.sgl_pipeline = .{ .id = 0 };
 
 const WidgetPreRasterCtx = struct {
+    app: *App,
     renderer: *FtRenderer,
 };
 
@@ -684,7 +685,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const bottom_y: f32 = ctx.height - bottom_h;
 
     api.get_field(state, -1, "_topbar_state");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (top_h > 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
         const items_idx = lua_mod.absoluteIndex(api, state, -1);
         const top_y: f32 = 0.0;
         const text_y: f32 = top_y + @max(@as(f32, 0.0), @floor((top_h - ctx.renderer.cell_h) * 0.25));
@@ -1395,62 +1396,67 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
         return;
     }
 
-    inline for ([_][:0]const u8{ "_topbar_state", "_bottombar_state" }) |field_name| {
-        api.get_field(state, -1, field_name);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-            const items_idx = lua_mod.absoluteIndex(api, state, -1);
-            var item_i: c_int = 1;
-            while (true) : (item_i += 1) {
-                api.rawgeti(state, items_idx, item_i);
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
-                    lua_mod.pop(api, state, 1);
-                    break;
-                }
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                    const item_idx = lua_mod.absoluteIndex(api, state, -1);
-                    api.get_field(state, item_idx, "kind");
-                    var kind_len: usize = 0;
-                    const kind_ptr = api.to_lstring(state, -1, &kind_len);
-                    const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
-                    lua_mod.pop(api, state, 1);
-
-                    if (std.mem.eql(u8, kind, "segment")) {
-                        api.get_field(state, item_idx, "text");
-                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
-                            var len: usize = 0;
-                            if (api.to_lstring(state, -1, &len)) |ptr| renderer.preRasterizeLabel(ptr[0..len]);
-                        }
-                        lua_mod.pop(api, state, 1);
-                    } else if (std.mem.eql(u8, kind, "tabs")) {
-                        api.get_field(state, item_idx, "tabs");
-                        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                            const tabs_idx = lua_mod.absoluteIndex(api, state, -1);
-                            var tab_i: c_int = 1;
-                            while (true) : (tab_i += 1) {
-                                api.rawgeti(state, tabs_idx, tab_i);
-                                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
-                                    lua_mod.pop(api, state, 1);
-                                    break;
-                                }
-                                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                                    api.get_field(state, -1, "text");
-                                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
-                                        var len: usize = 0;
-                                        if (api.to_lstring(state, -1, &len)) |ptr| renderer.preRasterizeLabel(ptr[0..len]);
-                                    }
-                                    lua_mod.pop(api, state, 1);
-                                }
-                                lua_mod.pop(api, state, 1);
-                            }
-                        }
-                        lua_mod.pop(api, state, 1);
+    const process_bar = struct {
+        fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, field_name: [:0]const u8) void {
+            api_.get_field(state_, -1, field_name);
+            if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .function and api_.pcall(state_, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .table) {
+                const items_idx = lua_mod.absoluteIndex(api_, state_, -1);
+                var item_i: c_int = 1;
+                while (true) : (item_i += 1) {
+                    api_.rawgeti(state_, items_idx, item_i);
+                    if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .nil_type) {
+                        lua_mod.pop(api_, state_, 1);
+                        break;
                     }
+                    if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .table) {
+                        const item_idx = lua_mod.absoluteIndex(api_, state_, -1);
+                        api_.get_field(state_, item_idx, "kind");
+                        var kind_len: usize = 0;
+                        const kind_ptr = api_.to_lstring(state_, -1, &kind_len);
+                        const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+                        lua_mod.pop(api_, state_, 1);
+
+                        if (std.mem.eql(u8, kind, "segment")) {
+                            api_.get_field(state_, item_idx, "text");
+                            if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .string) {
+                                var len: usize = 0;
+                                if (api_.to_lstring(state_, -1, &len)) |ptr| renderer_.preRasterizeLabel(ptr[0..len]);
+                            }
+                            lua_mod.pop(api_, state_, 1);
+                        } else if (std.mem.eql(u8, kind, "tabs")) {
+                            api_.get_field(state_, item_idx, "tabs");
+                            if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .table) {
+                                const tabs_idx = lua_mod.absoluteIndex(api_, state_, -1);
+                                var tab_i: c_int = 1;
+                                while (true) : (tab_i += 1) {
+                                    api_.rawgeti(state_, tabs_idx, tab_i);
+                                    if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .nil_type) {
+                                        lua_mod.pop(api_, state_, 1);
+                                        break;
+                                    }
+                                    if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .table) {
+                                        api_.get_field(state_, -1, "text");
+                                        if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .string) {
+                                            var len: usize = 0;
+                                            if (api_.to_lstring(state_, -1, &len)) |ptr| renderer_.preRasterizeLabel(ptr[0..len]);
+                                        }
+                                        lua_mod.pop(api_, state_, 1);
+                                    }
+                                    lua_mod.pop(api_, state_, 1);
+                                }
+                            }
+                            lua_mod.pop(api_, state_, 1);
+                        }
+                    }
+                    lua_mod.pop(api_, state_, 1);
                 }
-                lua_mod.pop(api, state, 1);
             }
+            lua_mod.pop(api_, state_, 1);
         }
-        lua_mod.pop(api, state, 1);
-    }
+    };
+
+    process_bar.run(api, state, renderer, "_topbar_state");
+    process_bar.run(api, state, renderer, "_bottombar_state");
 
     pop(api, state, 2);
 }
@@ -2415,7 +2421,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
 
         if (app.lua) |*lua| {
-            g_widget_pre_raster_ctx = .{ .renderer = renderer };
+            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
             defer g_widget_pre_raster_ctx = null;
             lua.withLockedState(void, preRasterizeLuaBarWidgets);
         }

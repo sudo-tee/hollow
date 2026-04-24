@@ -2873,11 +2873,16 @@ pub const App = struct {
 
     /// Height in pixels of the shared top bar. 0 when hidden.
     pub fn tabBarHeight(self: *App) u32 {
-        if (!self.config.top_bar_show) return 0;
-        const count = if (self.mux) |*mux| mux.tabCount() else 0;
-        if (count < 2 and !self.config.top_bar_show_when_single_tab) return 0;
+        if (!self.shouldShowTopBar()) return 0;
         if (self.config.top_bar_height > 0) return self.config.top_bar_height;
         return (self.cell_height_px * 3 / 2 + 1) & ~@as(u32, 1);
+    }
+
+    pub fn shouldShowTopBar(self: *App) bool {
+        return switch (self.config.top_bar_mode) {
+            .always => true,
+            .tabs => self.tabCount() > 1,
+        };
     }
 
     pub fn bottomBarLayout(self: *App) ?BottomBarLayout {
@@ -2894,16 +2899,8 @@ pub const App = struct {
         return 0;
     }
 
-    pub fn shouldDrawTopBarTabs(self: *App) bool {
-        return self.config.top_bar_draw_tabs and self.tabCount() > 0;
-    }
-
     pub fn shouldDrawWorkspaceSwitcher(self: *App) bool {
         return self.workspaceCount() > 0;
-    }
-
-    pub fn shouldDrawTopBarStatus(self: *App) bool {
-        return self.config.top_bar_draw_status;
     }
 
     pub fn tabCount(self: *App) usize {

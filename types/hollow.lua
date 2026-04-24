@@ -6,6 +6,7 @@
 
 ---@alias HollowFontStyle "normal"|"italic"|"oblique"
 ---@alias HollowCursorStyle "block"|"bar"|"underline"
+---@alias HollowTopBarMode "always"|"tabs"
 ---@alias HollowSidebarSide "left"|"right"
 ---@alias HollowOverlayAlign "center"|"top_left"|"top_center"|"top_right"|"left_center"|"right_center"|"bottom_left"|"bottom_center"|"bottom_right"|"left"|"right"|"top"|"bottom"
 ---@class HollowUiThemeBackdrop
@@ -164,12 +165,9 @@
 ---@field window_width? integer
 ---@field window_height? integer
 ---@field window_titlebar_show? boolean
----@field top_bar_show? boolean
----@field top_bar_show_when_single_tab? boolean
+---@field top_bar_mode? HollowTopBarMode
 ---@field top_bar_height? integer
 ---@field top_bar_bg? HollowColor
----@field top_bar_draw_tabs? boolean
----@field top_bar_draw_status? boolean
 ---@field bottom_bar_show? boolean
 ---@field bottom_bar_height? integer
 ---@field bottom_bar_bg? HollowColor
