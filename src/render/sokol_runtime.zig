@@ -1777,6 +1777,58 @@ fn windowSizeToPixels(width: f32, height: f32) struct { width: u32, height: u32 
     };
 }
 
+fn rebuildFtRenderer(app: *App) void {
+    if (g_ft_renderer) |*renderer| {
+        renderer.deinit();
+        g_ft_renderer = null;
+    }
+
+    const dpi_scale = c.sapp_dpi_scale();
+    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height });
+
+    g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
+        .font_size = app.config.fonts.size,
+        .dpi_scale = dpi_scale,
+        .line_height = app.config.fonts.line_height,
+        .padding_x = app.config.fonts.padding_x + @as(f32, @floatFromInt(app.config.terminal_padding.left)),
+        .padding_y = app.config.fonts.padding_y + @as(f32, @floatFromInt(app.config.terminal_padding.top)),
+        .coverage_boost = app.config.fonts.coverage_boost,
+        .coverage_add = app.config.fonts.coverage_add,
+        .smoothing = switch (app.config.fonts.smoothing) {
+            .grayscale => .grayscale,
+            .subpixel => .subpixel,
+        },
+        .hinting = switch (app.config.fonts.hinting) {
+            .none => .none,
+            .light => .light,
+            .normal => .normal,
+        },
+        .ligatures = app.config.fonts.ligatures,
+        .embolden = app.config.fonts.embolden,
+        .family = app.config.fonts.family,
+        .regular_path = app.config.fonts.regular,
+        .bold_path = app.config.fonts.bold,
+        .italic_path = app.config.fonts.italic,
+        .bold_italic_path = app.config.fonts.bold_italic,
+        .fallback_paths = app.config.fonts.fallback_paths.items,
+    }) catch |err| blk: {
+        std.log.err("ft_renderer init failed: {}", .{err});
+        break :blk null;
+    };
+
+    invalidateAllPaneCaches();
+    g_renderer_ready = false;
+
+    if (g_ft_renderer) |*renderer| {
+        renderer.warmupAtlas();
+        const cw: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_w)));
+        const ch: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_h)));
+        app.setCellSize(cw, ch);
+        const pixel_size = windowSizeToPixels(c.sapp_widthf(), c.sapp_heightf());
+        app.requestResize(pixel_size.width, pixel_size.height);
+    }
+}
+
 fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128) void {
     if (app.config.vsync or app.config.max_fps == 0) return;
 
@@ -1948,55 +2000,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     rect_pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
-    // Query DPI scale after sg_setup so the GPU context is ready.
-    // On a 2× HiDPI display this returns 2.0; on a 1× display it returns 1.0.
-    const dpi_scale = c.sapp_dpi_scale();
-    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height });
-
     _ = applyWindowChrome(app);
-
-    g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
-        .font_size = app.config.fonts.size,
-        .dpi_scale = dpi_scale,
-        .line_height = app.config.fonts.line_height,
-        .padding_x = app.config.fonts.padding_x + @as(f32, @floatFromInt(app.config.terminal_padding.left)),
-        .padding_y = app.config.fonts.padding_y + @as(f32, @floatFromInt(app.config.terminal_padding.top)),
-        .coverage_boost = app.config.fonts.coverage_boost,
-        .coverage_add = app.config.fonts.coverage_add,
-        .smoothing = switch (app.config.fonts.smoothing) {
-            .grayscale => .grayscale,
-            .subpixel => .subpixel,
-        },
-        .hinting = switch (app.config.fonts.hinting) {
-            .none => .none,
-            .light => .light,
-            .normal => .normal,
-        },
-        .ligatures = app.config.fonts.ligatures,
-        .embolden = app.config.fonts.embolden,
-        .family = app.config.fonts.family,
-        .regular_path = app.config.fonts.regular,
-        .bold_path = app.config.fonts.bold,
-        .italic_path = app.config.fonts.italic,
-        .bold_italic_path = app.config.fonts.bold_italic,
-        .fallback_paths = app.config.fonts.fallback_paths.items,
-    }) catch |err| blk: {
-        std.log.err("ft_renderer init failed: {}", .{err});
-        break :blk null;
-    };
-
-    // Feed measured cell dimensions back to the terminal so ghostty and the
-    // mouse encoder use the correct physical pixel sizes.
-    if (g_ft_renderer) |*renderer| {
-        renderer.warmupAtlas();
-        const cw: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_w)));
-        const ch: u32 = @max(1, @as(u32, @intFromFloat(renderer.cell_h)));
-        app.setCellSize(cw, ch);
-        const pixel_size = windowSizeToPixels(c.sapp_widthf(), c.sapp_heightf());
-        app.requestResize(pixel_size.width, pixel_size.height);
-    }
-
-    g_renderer_ready = false;
+    rebuildFtRenderer(app);
 
     _ = app.enqueueMouse(.{ .focus = true });
 }
@@ -2104,6 +2109,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const width = fb.width;
     const height = fb.height;
     if (width <= 0 or height <= 0) return;
+
+    if (app.pending_renderer_refresh) {
+        app.pending_renderer_refresh = false;
+        rebuildFtRenderer(app);
+    }
 
     // Resolve background color for the clear pass.
     var clear_r: f32 = 0.07;

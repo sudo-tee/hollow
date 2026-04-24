@@ -422,6 +422,7 @@ pub const App = struct {
     pending_resize: bool = false,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
+    pending_renderer_refresh: bool = false,
     /// Set when a split has just been performed; causes tick() to re-layout
     /// all panes on the next frame (safe from the frame callback thread).
     pending_layout_resize: bool = false,
@@ -2569,6 +2570,7 @@ pub const App = struct {
                 }
                 if (mux.activePane()) |active| runtime.registerCallbacks(active.terminal, terminalCallbacks());
             }
+            self.pending_renderer_refresh = self.config.backend == .sokol or self.config.backend == .webgpu;
             self.resize(self.config.window_width, self.config.window_height);
             self.requestLayoutResize(true);
         }

@@ -143,12 +143,15 @@ test "ghostty optimize mode keeps release builds and upgrades debug" {
 }
 
 test "platform system libraries remain stable by target OS" {
+    const windows_libs = [_][]const u8{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi", "dwrite" };
+    const linux_libs = [_][]const u8{ "X11", "Xi", "Xcursor", "GL", "asound" };
+
     try std.testing.expectEqualDeep(
-        &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi" },
+        windows_libs[0..],
         platformSystemLibraries(.windows),
     );
     try std.testing.expectEqualDeep(
-        &.{ "X11", "Xi", "Xcursor", "GL", "asound" },
+        linux_libs[0..],
         platformSystemLibraries(.linux),
     );
     try std.testing.expectEqual(@as(usize, 0), platformSystemLibraries(.macos).len);

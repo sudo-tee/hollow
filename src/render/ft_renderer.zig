@@ -2867,6 +2867,54 @@ pub fn listAvailableFontsDetailed(allocator: std.mem.Allocator) ![]FontFamilyInf
 fn discoverWindowsFontWithDirectWrite(allocator: std.mem.Allocator, name: []const u8, style: RequestedFontStyle) !FontDiscoveryMatch {
     if (builtin.os.tag != .windows) return error.FontNotFound;
 
+    if (try matchWindowsFontWithDirectWrite(allocator, name, style)) |match| {
+        if (isPlausibleWindowsFontPath(match.path)) {
+            return match;
+        }
+        allocator.free(match.path);
+    }
+
+    if (try discoverWindowsFontFromFilesystem(allocator, name, style)) |match| {
+        return match;
+    }
+
+    const resolved_name = try resolveWindowsFontFamilyAlias(allocator, name) orelse return error.FontNotFound;
+    defer allocator.free(resolved_name);
+
+    if (try matchWindowsFontWithDirectWrite(allocator, resolved_name, style)) |match| {
+        if (isPlausibleWindowsFontPath(match.path)) {
+            return match;
+        }
+        allocator.free(match.path);
+    }
+
+    return try discoverWindowsFontFromFilesystem(allocator, resolved_name, style) orelse error.FontNotFound;
+}
+
+fn discoverWindowsFontFromFilesystem(allocator: std.mem.Allocator, name: []const u8, style: RequestedFontStyle) !?FontDiscoveryMatch {
+    if (builtin.os.tag != .windows) return null;
+
+    var ft_lib: ft.FT_Library = null;
+    if (ft.FT_Init_FreeType(&ft_lib) != 0) return error.FtInitFailed;
+    defer _ = ft.FT_Done_FreeType(ft_lib);
+
+    var best: ?FontDiscoveryMatch = null;
+    errdefer if (best) |match| allocator.free(match.path);
+    try searchFontDir(allocator, ft_lib, "C:\\Windows\\Fonts", name, style, &best);
+
+    if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |local_app_data| {
+        defer allocator.free(local_app_data);
+        const user_fonts = try std.fs.path.join(allocator, &.{ local_app_data, "Microsoft", "Windows", "Fonts" });
+        defer allocator.free(user_fonts);
+        try searchFontDir(allocator, ft_lib, user_fonts, name, style, &best);
+    } else |_| {}
+
+    return best;
+}
+
+fn matchWindowsFontWithDirectWrite(allocator: std.mem.Allocator, name: []const u8, style: RequestedFontStyle) !?FontDiscoveryMatch {
+    if (builtin.os.tag != .windows) return null;
+
     const family_z = try allocator.dupeZ(u8, name);
     defer allocator.free(family_z);
 
@@ -2877,16 +2925,84 @@ fn discoverWindowsFontWithDirectWrite(allocator: std.mem.Allocator, name: []cons
         if (style == .italic or style == .bold_italic) 1 else 0,
         &match,
     );
-    if (result == 0) return error.FontNotFound;
+    if (result == 0) return null;
 
     const path_len = std.mem.indexOfScalar(u8, &match.path, 0) orelse match.path.len;
-    if (path_len == 0) return error.FontNotFound;
+    if (path_len == 0) return null;
 
     return .{
         .path = try allocator.dupe(u8, match.path[0..path_len]),
         .face_index = @intCast(match.face_index),
         .score = 1,
     };
+}
+
+fn resolveWindowsFontFamilyAlias(allocator: std.mem.Allocator, requested: []const u8) !?[]u8 {
+    if (builtin.os.tag != .windows) return null;
+
+    var seen = SeenFontFamilies{ .allocator = allocator };
+    defer seen.deinit();
+    try collectWindowsFontFamilies(&seen);
+
+    var best_name: ?[]const u8 = null;
+    var best_score: i32 = std.math.minInt(i32);
+    for (seen.names.items) |family_name| {
+        const score = scoreWindowsFontFamilyName(requested, family_name);
+        if (score > best_score) {
+            best_score = score;
+            best_name = family_name;
+        }
+    }
+
+    if (best_name == null or best_score == std.math.minInt(i32)) return null;
+    return try allocator.dupe(u8, best_name.?);
+}
+
+fn scoreWindowsFontFamilyName(requested: []const u8, candidate: []const u8) i32 {
+    var requested_buf: [256]u8 = undefined;
+    const requested_normalized = normalizeFontToken(&requested_buf, requested);
+    if (requested_normalized.len == 0) return std.math.minInt(i32);
+
+    var candidate_buf: [256]u8 = undefined;
+    const candidate_normalized = normalizeFontToken(&candidate_buf, candidate);
+    if (candidate_normalized.len == 0) return std.math.minInt(i32);
+
+    if (std.mem.eql(u8, requested_normalized, candidate_normalized)) return 1000;
+
+    var score: i32 = std.math.minInt(i32);
+    if (containsToken(candidate_normalized, requested_normalized)) {
+        score = 820;
+    } else if (containsToken(requested_normalized, candidate_normalized)) {
+        score = 760;
+    } else {
+        return std.math.minInt(i32);
+    }
+
+    const prefix_len = sharedPrefixLen(requested_normalized, candidate_normalized);
+    const len_delta: usize = if (candidate_normalized.len > requested_normalized.len)
+        candidate_normalized.len - requested_normalized.len
+    else
+        requested_normalized.len - candidate_normalized.len;
+    score += @as(i32, @intCast(prefix_len * 4));
+    score -= @as(i32, @intCast(@min(len_delta, 64)));
+    return score;
+}
+
+fn sharedPrefixLen(a: []const u8, b: []const u8) usize {
+    const max_len = @min(a.len, b.len);
+    var index: usize = 0;
+    while (index < max_len and a[index] == b[index]) : (index += 1) {}
+    return index;
+}
+
+fn isPlausibleWindowsFontPath(path: []const u8) bool {
+    if (path.len < 7) return false;
+    if (!std.unicode.utf8ValidateSlice(path)) return false;
+    const has_drive = std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/');
+    const has_unc = std.mem.startsWith(u8, path, "\\\\");
+    if (!has_drive and !has_unc) return false;
+    if (!isFontFile(path)) return false;
+    return true;
 }
 
 fn collectWindowsFontFamilies(seen: *SeenFontFamilies) !void {
@@ -3214,6 +3330,14 @@ fn faceStyleName(face: ft.FT_Face) []const u8 {
 
 fn containsToken(haystack: []const u8, needle: []const u8) bool {
     return needle.len > 0 and std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+test "windows font family alias scoring prefers closest superset" {
+    try std.testing.expect(scoreWindowsFontFamilyName("Yu Gothic U", "Yu Gothic UI") > scoreWindowsFontFamilyName("Yu Gothic U", "Yu Gothic"));
+}
+
+test "windows font family alias scoring rejects unrelated families" {
+    try std.testing.expectEqual(std.math.minInt(i32), scoreWindowsFontFamilyName("Yu Gothic U", "Consolas"));
 }
 
 fn normalizeFontToken(buf: []u8, input: []const u8) []const u8 {
