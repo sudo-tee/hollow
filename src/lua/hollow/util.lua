@@ -1,5 +1,27 @@
 local M = {}
 
+---@class HollowUtil
+---@field clone_value fun(value:any, seen:table|nil): any
+---@field merge_tables fun(dst:table, src:table): table
+---@field unsupported fun(name:string)
+---@field host_now_ms fun(host_api:table|nil): integer
+---@field is_hex_color fun(value:string): boolean
+---@field normalize_hex_color fun(value:string, fallback:string|nil): string|nil
+---@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field path_separator fun(path:string|nil): string
+---@field normalize_path fun(path:string, separator:string|nil): string|nil
+---@field join_path fun(...:string): string
+---@field basepath fun(path:string): string|nil
+---@field basename fun(path:string): string|nil
+---@field has_any_key fun(t:table, keys:table): boolean
+
+---@type HollowUtil
+
+---@param value any
+---@param seen table|nil
+---@return any
 function M.clone_value(value, seen)
   if type(value) ~= "table" then
     return value
@@ -18,6 +40,9 @@ function M.clone_value(value, seen)
   return copy
 end
 
+---@param dst table
+---@param src table
+---@return table
 function M.merge_tables(dst, src)
   for k, v in pairs(src) do
     if type(v) == "table" then
@@ -34,6 +59,7 @@ function M.merge_tables(dst, src)
   return dst
 end
 
+---@param name string
 function M.unsupported(name)
   error(name .. " is not implemented yet")
 end
@@ -52,11 +78,14 @@ function M.host_now_ms(host_api)
 end
 
 -- Path utilities
+---@return table
 local function current_platform()
   local hollow = _G.hollow
   return type(hollow) == "table" and type(hollow.platform) == "table" and hollow.platform or {}
 end
 
+---@param path string|nil
+---@return string
 local function choose_separator(path)
   if type(path) == "string" and path:find("\\", 1, true) then
     return "\\"
@@ -69,6 +98,9 @@ local function choose_separator(path)
   return current_platform().is_windows and "\\" or "/"
 end
 
+---@param path string
+---@param separator string|nil
+---@return string|nil
 local function normalize_separators(path, separator)
   if type(path) ~= "string" then
     return nil
@@ -81,6 +113,9 @@ local function normalize_separators(path, separator)
   return (path:gsub("\\", "/"))
 end
 
+---@param path string
+---@param separator string
+---@return string, string
 local function split_root(path, separator)
   if separator == "\\" then
     local drive_root = path:match("^%a:\\")
@@ -101,6 +136,10 @@ local function split_root(path, separator)
   return "", path
 end
 
+---@param path string
+---@param separator string
+---@param root string
+---@return string
 local function trim_trailing_separators(path, separator, root)
   while #path > #root and path:sub(-1) == separator do
     path = path:sub(1, -2)
@@ -108,6 +147,8 @@ local function trim_trailing_separators(path, separator, root)
   return path
 end
 
+---@param separator string
+---@return string
 local function separator_pattern(separator)
   return separator == "\\" and "\\" or "/"
 end
@@ -117,10 +158,14 @@ end
 -- ---------------------------------------------------------------------------
 local HEX_COLOR_PATTERN = "^#%x%x%x%x%x%x$"
 
+---@param value number
+---@return integer
 local function clamp_byte(value)
   return math.max(0, math.min(255, math.floor(value + 0.5)))
 end
 
+---@param value number|string
+---@return number|nil
 local function normalize_amount(value)
   local amount = tonumber(value)
   if amount == nil then
@@ -130,6 +175,8 @@ local function normalize_amount(value)
   return math.max(-1, math.min(1, amount))
 end
 
+---@param color string
+---@return integer|nil, integer|nil, integer|nil
 local function split_hex_channels(color)
   if type(color) ~= "string" or color:match(HEX_COLOR_PATTERN) == nil then
     return nil, nil, nil
@@ -138,10 +185,15 @@ local function split_hex_channels(color)
   return tonumber(color:sub(2, 3), 16), tonumber(color:sub(4, 5), 16), tonumber(color:sub(6, 7), 16)
 end
 
+---@param value string
+---@return boolean
 function M.is_hex_color(value)
   return type(value) == "string" and value:match(HEX_COLOR_PATTERN) ~= nil
 end
 
+---@param value string
+---@param fallback string|nil
+---@return string|nil
 function M.normalize_hex_color(value, fallback)
   if M.is_hex_color(value) then
     return value
@@ -149,6 +201,10 @@ function M.normalize_hex_color(value, fallback)
   return fallback
 end
 
+---@param value string
+---@param amount number|string
+---@param fallback string|nil
+---@return string|nil
 function M.adjust_hex_color(value, amount, fallback)
   local color = M.normalize_hex_color(value, nil)
   local normalized_amount = normalize_amount(amount)
@@ -169,23 +225,38 @@ function M.adjust_hex_color(value, amount, fallback)
   return string.format("#%02x%02x%02x", adjust(red), adjust(green), adjust(blue))
 end
 
+---@param value string
+---@param amount number|string
+---@param fallback string|nil
+---@return string|nil
 function M.brighten_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, math.abs(tonumber(amount) or 0), fallback)
 end
 
+---@param value string
+---@param amount number|string
+---@param fallback string|nil
+---@return string|nil
 function M.darken_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, -math.abs(tonumber(amount) or 0), fallback)
 end
 
+---@param path string|nil
+---@return string
 function M.path_separator(path)
   return choose_separator(path)
 end
 
+---@param path string
+---@param separator string|nil
+---@return string|nil
 function M.normalize_path(path, separator)
   separator = separator or choose_separator(path)
   return normalize_separators(path, separator)
 end
 
+---@vararg string
+---@return string
 function M.join_path(...)
   local parts = { ... }
   local separator = choose_separator(parts[1])
@@ -216,6 +287,8 @@ function M.join_path(...)
   return result
 end
 
+---@param path string
+---@return string|nil
 function M.basepath(path)
   if type(path) ~= "string" or path == "" then
     return nil
@@ -239,6 +312,8 @@ function M.basepath(path)
   return parent == "" and (root ~= "" and root or ".") or (root .. parent)
 end
 
+---@param path string
+---@return string|nil
 function M.basename(path)
   if type(path) ~= "string" or path == "" then
     return nil
@@ -256,6 +331,9 @@ function M.basename(path)
   return (path:gsub("(.*[/\\])(.*)", "%2"))
 end
 
+---@param t table
+---@param keys table
+---@return boolean
 function M.has_any_key(t, keys)
   for _, key in ipairs(keys) do
     if t[key] ~= nil then

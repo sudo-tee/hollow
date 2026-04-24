@@ -1214,6 +1214,7 @@ function process.run_child_process(args) end
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
 ---@field read_dir fun(path: string): string[]
+---@field util HollowUtil
 
 ---@type Hollow
 hollow = {}
@@ -1235,5 +1236,24 @@ hollow.platform = {
   is_macos = false,
   default_shell = "",
 }
+
+---@class HollowUtil
+---@field clone_value fun(value:any, seen:table|nil): any
+---@field merge_tables fun(dst:table, src:table): table
+---@field unsupported fun(name:string)
+---@field host_now_ms fun(host_api:table|nil): integer
+---@field is_hex_color fun(value:string): boolean
+---@field normalize_hex_color fun(value:string, fallback:string|nil): string|nil
+---@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field path_separator fun(path:string|nil): string
+---@field normalize_path fun(path:string, separator:string|nil): string|nil
+---@field join_path fun(...:string): string
+---@field basepath fun(path:string): string|nil
+---@field basename fun(path:string): string|nil
+---@field has_any_key fun(t:table, keys:table): boolean
+
+hollow.util = {}
 
 return hollow

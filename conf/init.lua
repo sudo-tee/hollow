@@ -1,4 +1,5 @@
 local hollow = require("hollow")
+local brighten = hollow.util.brighten_hex_color
 
 local is_windows = hollow.platform.is_windows == true
 
@@ -50,7 +51,7 @@ local palette = {
 local ui_theme = {
   widgets = {
     all = {
-      panel_bg = hollow.util.brighten_hex_color(palette.bg, 0.2, palette.gray),
+      panel_bg = brighten(palette.bg, 0.2, palette.gray),
       panel_border = palette.blue,
       title = palette.bright_blue,
       fg = palette.fg,
@@ -186,8 +187,8 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
       margin = { right = 1, left = 0, top = 0, bottom = 0 },
     }
 
-    local group_bg = hollow.util.brighten_hex_color(palette.black, 0.08, palette.bg)
-    local sep_fg = hollow.util.brighten_hex_color(palette.black, 0.08, palette.black)
+    local group_bg = brighten(palette.black, 0.08, palette.bg)
+    local sep_fg = brighten(palette.black, 0.08, palette.black)
     return {
       hollow.ui.bar.workspace({
         style = pill,
@@ -203,7 +204,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
         style = function(tab)
           local tab_bg = tab.is_active and group_bg or ui_theme.tab_bar.background
           local tab_fg = tab.is_active and palette.bright_white
-            or hollow.util.brighten_hex_color(palette.bg, -0.4, palette.bg)
+            or brighten(palette.bg, -0.4, palette.bg)
           return {
             bg = tab_bg,
             fg = tab_fg,
@@ -219,11 +220,9 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           local tab_title = tab_cwd
             or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
             or tab.title
-          local tab_bg = tab.is_active
-              and hollow.util.brighten_hex_color(group_bg, 0.16, palette.bg)
-            or palette.bg
+          local tab_bg = tab.is_active and brighten(group_bg, 0.16, palette.bg) or palette.bg
           local tab_fg = tab.is_active and palette.bright_white
-            or hollow.util.brighten_hex_color(palette.fg, 0.4, palette.bg)
+            or brighten(palette.fg, 0.4, palette.bg)
           local tab_text_id = "tab-text:" .. tostring(tab.id)
           local close_id = "tab-close:" .. tostring(tab.id)
           local close_style = {
