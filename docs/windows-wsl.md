@@ -1,142 +1,142 @@
-# Windows & WSL Setup Guide
+# Windows And WSL
 
-## Prerequisites
+Windows and WSL are the primary validated environment for Hollow today.
 
-### 1. Love2D for Windows
-Download the **64-bit** installer or zip from https://love2d.org  
-Tested on Love2D 11.4 and 11.5.
+Hollow is a Windows-native app in this workflow. WSL is an optional shell domain
+and integration target, not a separate Linux build path for the main app.
 
-### 2. libghostty-VT.dll
-Build from the ghostty source tree on a Linux/WSL machine, then copy the DLL across:
+## Development
 
-```bash
-# Inside WSL or a Linux VM that has Zig installed
-cd ghostty
-zig build libghostty -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu
-# Output: zig-out/lib/libghostty-VT.dll
-```
-
-Copy `libghostty-VT.dll` **next to `love.exe`** (or next to your `.love` file if
-you've packaged it). That location is what `love.filesystem.getSourceBaseDirectory()`
-returns on Windows, which is where the loader searches first.
-
-### 3. ConPTY requirement
-ConPTY is built into Windows 10 **build 1809** (October 2018 Update) and later,
-including Windows 11. If you're on an older build, upgrade or use WSL2.
-
----
-
-## Running modes
-
-### Mode A – Native Windows shell (PowerShell / cmd)
-
-```lua
--- conf/init.lua
-hollow.set_config({ shell = "pwsh.exe" })        -- PowerShell 7
--- hollow.set_config({ shell = "powershell.exe" }) -- PowerShell 5
--- hollow.set_config({ shell = "cmd.exe" })
-```
-
-Launch:
-```bat
-love.exe C:\path\to\ghostty-love
-```
-
-### Mode B – WSL shell (recommended for dev work)
-
-Install WSL2 first (run in an **elevated** PowerShell):
-```powershell
-wsl --install          # installs Ubuntu by default
-# or
-wsl --install -d Debian
-```
-
-Then in your config:
-```lua
--- conf/init.lua
-
--- Default distro, default shell:
-hollow.set_config({ shell = "wsl.exe" })
-
--- Specific distro + shell:
-hollow.set_config({ shell = "wsl.exe --distribution Ubuntu --exec /bin/fish" })
-
--- Or via the API helper:
-hollow.on("app:ready", function()
-    -- list distros at startup
-    for _, d in ipairs(hollow.wsl.distros()) do
-        hollow.log("distro:", d)
-    end
-end)
-```
-
-The terminal will open directly into your WSL home directory with full colour,
-resize, and mouse support.
-
-### Mode C – Run Love2D *inside* WSL2 (Linux build)
-
-If you have an X server (VcXsrv, WSLg on Windows 11) you can run the Linux
-build of Love2D inside WSL2. The POSIX PTY path is used automatically.
+First-time setup:
 
 ```bash
-# Inside WSL2
-sudo apt install love
-cd /mnt/c/Users/you/ghostty-love
-love .
+./scripts/setup.sh
 ```
 
-WSL2 + WSLg on Windows 11 gives you GPU-accelerated OpenGL with zero extra setup.
+Build and run:
 
----
-
-## Keyboard / Terminal notes
-
-**ConPTY quirks to be aware of:**
-
-- ConPTY translates Win32 VK codes into VT sequences internally. The LuaJIT key
-  encoder in `keymap.lua` only needs to produce VT sequences (same as Linux).
-- `Ctrl+C`, `Ctrl+Z`, `Ctrl+D` work correctly through ConPTY.
-- Mouse reporting (`SET_ANY_EVENT_MOUSE`, `SGR` mode) is forwarded by ConPTY to
-  the child process. The Love2D mouse handler in `app.lua` converts pixel coords
-  to cell coords before sending.
-
-**WSL-specific:**
-
-- ConPTY + `wsl.exe` correctly sets `TERM=xterm-256color` inside the WSL shell.
-- `COLORTERM=truecolor` is **not** set automatically; add it to your `.bashrc` /
-  `.zshrc` if needed by your prompt or tools.
-- Resize events propagate through `wsl.exe` to the inner PTY, so tmux / Neovim
-  resize correctly when you drag the window.
-
----
-
-## Packaging as a .love / .exe
-
-```bat
-rem Create the .love archive
-cd ghostty-love
-powershell Compress-Archive -Path * -DestinationPath ..\ghostty-love.zip
-rename ..\ghostty-love.zip ..\ghostty-love.love
-
-rem Fuse into a standalone exe
-copy /b love.exe+ghostty-love.love ghostty-love.exe
-
-rem Copy the DLL alongside
-copy libghostty-VT.dll .
+```bash
+./launch.sh
 ```
 
-Distribute `ghostty-love.exe` + `libghostty-VT.dll` together (and any Love2D
-runtime DLLs if you're not assuming Love2D is installed).
+Build only:
 
----
+```bash
+./launch.sh --build-only
+```
+
+Debug build:
+
+```bash
+./launch.sh --debug
+```
+
+The wrapper cross-builds `x86_64-windows-gnu` and produces
+`zig-out/bin/hollow-native.exe`.
+
+Useful wrapper-only troubleshooting flags:
+
+- `./launch.sh --safe-render`
+- `./launch.sh --no-swapchain-glyphs`
+- `./launch.sh --no-multi-pane-cache`
+
+## Packaging
+
+For a packaged release, ship at least:
+
+- `hollow-native.exe`
+
+Optional but recommended:
+
+- `conf/init.lua` next to the executable, if you want the packaged defaults to stay editable without rebuilding
+
+## Config On Windows
+
+Hollow resolves config in two layers:
+
+1. a base config
+2. an override config
+
+Base config resolution:
+
+1. `conf/init.lua` next to the executable
+2. otherwise `conf/init.lua` in the project directory
+3. otherwise the embedded fallback in the executable
+
+Override config resolution:
+
+1. the file passed with `--config path`
+2. otherwise `%APPDATA%\hollow\init.lua`, if present
+
+The host process is the Windows app, so the normal personal config path in this
+workflow is the Windows roaming config location:
+
+- `%APPDATA%\hollow\init.lua`
+
+Hollow always loads base first and override second.
+
+## Windows Domains
+
+The shipped Windows config currently defaults to `pwsh`.
+
+Bundled Windows domains:
+
+- `pwsh`
+- `powershell`
+- `cmd`
+- `wsl`
+
+The bundled `wsl` domain points at `C:\Windows\System32\wsl.exe`.
+
+Use WSL as the default instead:
+
+```lua
+local hollow = require("hollow")
+
+hollow.config.set({
+  default_domain = "wsl",
+})
+```
+
+Customize the shipped WSL domain:
+
+```lua
+local hollow = require("hollow")
+
+hollow.config.set({
+  domains = {
+    wsl = {
+      shell = "C:\\Windows\\System32\\wsl.exe",
+    },
+  },
+})
+```
+
+## WSL Workflow
+
+Using `wsl` as the default domain is a good fit when your daily shell,
+toolchain, and SSH setup live inside Linux while Hollow itself remains a Windows
+desktop app.
+
+This is especially useful for:
+
+- Linux-first shell workflows on a Windows machine
+- WSL-backed SSH domains with `backend = "wsl"`
+- workspace discovery rooted in WSL paths or UNC shares
+
+Related docs:
+
+- [configuration.md](configuration.md) for domain and SSH examples
+- [htp-shell-examples.md](htp-shell-examples.md) for shell-to-host integration
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---|---|
-| `Could not load libghostty-VT` | Put `libghostty-VT.dll` next to `love.exe` |
-| `CreatePseudoConsole` error | Windows build < 1809; upgrade or use WSL2 |
-| `wsl.exe not found` | Run `wsl --install` in an elevated PowerShell |
-| Blank terminal on WSL | Check `wsl --status`; ensure default distro is set |
-| Garbled Unicode | Set `LANG=en_US.UTF-8` in your WSL shell's `.profile` |
-| No colour in PowerShell | Add `$env:TERM="xterm-256color"` to your `$PROFILE` |
+| Problem                                            | Fix                                                                                                               |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `wsl.exe not found`                                | Install WSL with `wsl --install` from elevated PowerShell                                                         |
+| config changes are ignored                         | Edit `%APPDATA%\hollow\init.lua` or use `--config path`, then reload with `<leader>uu`                            |
+| packaged build starts without your custom settings | Put your overrides in `%APPDATA%\hollow\init.lua` or launch with `--config path`                                  |
+| packaged build cannot find `conf/init.lua`         | Hollow falls back to the embedded base config; ship `conf/init.lua` only if you want an editable packaged default |
+| rendering glitches from a repo checkout            | Try `./launch.sh --safe-render`                                                                                   |
+| rendering glitches from a packaged build           | Try `hollow-native.exe --renderer-safe-mode`                                                                      |
+| missing glyphs                                     | Set `fonts.family` or `fonts.fallbacks` to fonts installed on that machine                                        |

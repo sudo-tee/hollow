@@ -1,0 +1,42 @@
+# Zig build artifacts
+.zig-cache/
+.zig-local-cache/
+.zig-cache-local/
+.zig-global-cache/
+.zig-cache-global/
+zig-out/
+release/
+.desloppify/
+
+# Build outputs
+*.exe
+*.exe.old
+
+# Runtime DLLs
+*.dll
+
+# Scratch / debug images and logs
+*.png
+err.txt
+error_out.txt
+out.txt
+hollow.log
+
+# Gemini/AI scratch files
+*.sed
+refactor.py
+started.txt
+
+# Scratch Lua test files
+main_test.lua
+test_fallback.lua
+
+# Vendored dependencies may contain local Zig caches
+vendor/.zig-cache/
+
+examples/__pycache__/
+
+
+# Local archive/checksum outputs
+*.zip
+*.sha256

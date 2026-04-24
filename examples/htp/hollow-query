@@ -1,0 +1,295 @@
+#!/usr/bin/env sh
+# hollow-query — pure POSIX sh HTP query client, no Python required.
+#
+# Usage:
+#   hollow-query <name> [params_json] [timeout_seconds] [--id-prefix PREFIX]
+#
+# Transports (selected automatically):
+#   file  — write *.request.json, poll for *.reply.json  (local WSL/Linux)
+#   osc   — OSC 1337 escape sequence over /dev/tty        (SSH + any terminal)
+#
+# Environment:
+#   HOLLOW_REQUEST_DIR  path to htp-requests directory (file transport)
+#   HOLLOW_TRANSPORT    auto (default) | file | osc
+#   HOLLOW_PANE_ID      pane identifier injected by Hollow
+
+set -e
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_hq_next_id() {
+    # prefix-PID-nanoseconds (fallback to seconds if date +%N unsupported)
+    _prefix="${1:-hollowq}"
+    _ns=$(date +%N 2>/dev/null) || _ns=$(date +%s)
+    printf '%s-%s-%s' "$_prefix" "$$" "$_ns"
+}
+
+_hq_json_escape() {
+    # Escape a string for use inside a JSON double-quoted value.
+    # Handles the common cases: backslash, double-quote, newline, tab, CR.
+    printf '%s' "$1" \
+    | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' \
+    | tr '\n' 'N' | sed 's/N/\\n/g' \
+    | tr '\r' 'R' | sed 's/R/\\r/g'
+}
+
+_hq_discover_request_dir() {
+    # WSL auto-discovery: find the most recently modified htp-requests dir
+    # under /mnt/c/Users/*/AppData/Local/hollow/htp-requests
+    _base="/mnt/c/Users"
+    [ -d "$_base" ] || return 1
+    _best=""
+    _best_mtime=0
+    for _dir in "$_base"/*/AppData/Local/hollow/htp-requests; do
+        [ -d "$_dir" ] || continue
+        # Use ls -dt to pick the most recently modified
+        _mtime=$(stat -c %Y "$_dir" 2>/dev/null || stat -f %m "$_dir" 2>/dev/null || echo 0)
+        if [ "$_mtime" -ge "$_best_mtime" ]; then
+            _best_mtime="$_mtime"
+            _best="$_dir"
+        fi
+    done
+    [ -n "$_best" ] && printf '%s' "$_best"
+}
+
+# ---------------------------------------------------------------------------
+# File transport
+# ---------------------------------------------------------------------------
+
+_hq_query_file() {
+    _req_dir="$1"
+    _name="$2"
+    _params="$3"
+    _timeout="$4"
+    _id="$5"
+
+    mkdir -p "$_req_dir"
+
+    _req_file="$_req_dir/${_id}.request.json"
+    _rep_file="$_req_dir/${_id}.reply.json"
+
+    # Remove stale reply if any
+    rm -f "$_rep_file"
+
+    # Build request JSON
+    _pane_id="${HOLLOW_PANE_ID:-0}"
+    _escaped_name=$(_hq_json_escape "$_name")
+    _rep_file_escaped=$(_hq_json_escape "$_rep_file")
+    printf '{"pane_id":%s,"name":"%s","params":%s,"reply_file":"%s"}' \
+        "$_pane_id" "$_escaped_name" "$_params" "$_rep_file_escaped" \
+        > "$_req_file"
+
+    # Poll for reply
+    _deadline=$(( $(date +%s) + ${_timeout%.*} + 1 ))
+    while true; do
+        if [ -f "$_rep_file" ]; then
+            cat "$_rep_file"
+            rm -f "$_rep_file" "$_req_file"
+            printf '\n'
+            return 0
+        fi
+        _now=$(date +%s)
+        if [ "$_now" -ge "$_deadline" ]; then
+            rm -f "$_req_file"
+            printf 'hollow_query: timed out waiting for file reply to %s\n' "$_id" >&2
+            return 1
+        fi
+        sleep 0.02 2>/dev/null || sleep 1
+    done
+}
+
+# ---------------------------------------------------------------------------
+# OSC transport (pure shell, works over SSH)
+# ---------------------------------------------------------------------------
+#
+# Strategy:
+#   1. Open /dev/tty for read+write
+#   2. Save tty state, set raw mode (stty raw -echo)
+#   3. Write the OSC query frame to /dev/tty
+#   4. Read bytes one at a time (dd bs=1 count=1) until ESC \ is seen
+#   5. Restore tty state
+#   6. Parse the payload out of the accumulated bytes
+#
+# The read loop uses a temp file as a byte accumulator since POSIX sh cannot
+# store arbitrary binary in variables cleanly.  The total read is bounded by
+# _timeout (implemented as a max iteration count at ~1ms per byte).
+
+_hq_query_osc() {
+    _name="$1"
+    _params="$2"
+    _timeout="$3"
+    _id="$4"
+
+    # Build frame: ESC ] 1337 ; Hollow ; <json> ESC backslash
+    _escaped_name=$(_hq_json_escape "$_name")
+    _json=$(printf '{"kind":"query","id":"%s","name":"%s","params":%s}' \
+        "$_id" "$_escaped_name" "$_params")
+    # Use printf with octal escapes for the ESC character (\033)
+    _frame=$(printf '\033]1337;Hollow;%s\033\\' "$_json")
+
+    _tty=/dev/tty
+    [ -w "$_tty" ] || { printf 'hollow_query: /dev/tty not available\n' >&2; return 1; }
+
+    # Accumulate raw bytes in a temp file
+    _tmp=$(mktemp)
+    trap 'rm -f "$_tmp"; stty sane 2>/dev/null || true' EXIT INT TERM
+
+    # Save tty settings, go raw
+    _saved_tty=$(stty -g < "$_tty" 2>/dev/null) || _saved_tty=""
+    stty raw -echo < "$_tty" 2>/dev/null || true
+
+    # Send query
+    printf '%s' "$_frame" > "$_tty"
+
+    # Read bytes until ESC \ seen or timeout
+    # Max iterations = timeout * 1000 (rough 1ms per iteration)
+    _max_iter=$(( ${_timeout%.*} * 200 + 200 ))
+    _iter=0
+    _found=0
+    while [ "$_iter" -lt "$_max_iter" ]; do
+        # Read one byte; timeout after 5ms using dd (GNU dd supports iflag=nonblock)
+        if dd bs=1 count=1 < "$_tty" >> "$_tmp" 2>/dev/null; then
+            # Check if accumulated buffer ends with ESC \
+            _tail=$(tail -c 2 "$_tmp" | od -An -tx1 | tr -d ' \n')
+            if [ "$_tail" = "1b5c" ]; then
+                _found=1
+                break
+            fi
+        fi
+        _iter=$(( _iter + 1 ))
+    done
+
+    # Restore tty
+    if [ -n "$_saved_tty" ]; then
+        stty "$_saved_tty" < "$_tty" 2>/dev/null || stty sane < "$_tty" 2>/dev/null || true
+    else
+        stty sane < "$_tty" 2>/dev/null || true
+    fi
+    trap - EXIT INT TERM
+
+    if [ "$_found" -eq 0 ]; then
+        rm -f "$_tmp"
+        printf 'hollow_query: timed out waiting for OSC reply to %s\n' "$_id" >&2
+        return 1
+    fi
+
+    # Extract the JSON payload between the OSC prefix and the ST terminator.
+    # The frame format is: ESC ] 1337 ; Hollow ; <json> ESC \
+    # We hex-dump the file, find the prefix pattern, and extract between it and ST.
+    _hex=$(od -An -tx1 "$_tmp" | tr -d ' \n')
+    rm -f "$_tmp"
+
+    # prefix = \x1b\x5d\x31\x33\x33\x37\x3b\x48\x6f\x6c\x6c\x6f\x77\x3b
+    #         ESC ]  1    3    3    7    ;    H    o    l    l    o    w    ;
+    _prefix_hex="1b5d313333373b486f6c6c6f773b"
+    # ST = \x1b\x5c
+    _st_hex="1b5c"
+
+    # Find prefix in hex string
+    case "$_hex" in
+        *"$_prefix_hex"*)
+            _after="${_hex##*$_prefix_hex}"
+            # Strip the trailing ST
+            _payload_hex="${_after%$_st_hex}"
+            ;;
+        *)
+            printf 'hollow_query: no HTP frame found in OSC reply\n' >&2
+            return 1
+            ;;
+    esac
+
+    # Convert hex payload back to ASCII using printf or xxd/od
+    if command -v xxd >/dev/null 2>&1; then
+        _payload=$(printf '%s' "$_payload_hex" | xxd -r -p)
+    elif command -v python3 >/dev/null 2>&1; then
+        _payload=$(printf '%s' "$_payload_hex" | python3 -c "import sys,binascii; sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))")
+    else
+        # Fallback: decode hex pairs with printf octal escapes
+        _payload=""
+        _h="$_payload_hex"
+        while [ ${#_h} -ge 2 ]; do
+            _byte="${_h%${_h#??}}"
+            _h="${_h#??}"
+            _dec=$(printf '%d' "0x${_byte}")
+            _payload="${_payload}$(printf "\\$(printf '%03o' "$_dec")")"
+        done
+    fi
+
+    # Verify this reply matches our request_id
+    case "$_payload" in
+        *"\"$_id\""*)
+            printf '%s\n' "$_payload"
+            return 0
+            ;;
+        *)
+            printf 'hollow_query: reply id mismatch (got: %s)\n' "$_payload" >&2
+            return 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+_hq_main() {
+    _name=""
+    _params="{}"
+    _timeout="1.5"
+    _id_prefix="hollowq"
+
+    # Parse arguments
+    _positional=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --id-prefix) _id_prefix="$2"; shift 2 ;;
+            --id-prefix=*) _id_prefix="${1#--id-prefix=}"; shift ;;
+            --timeout) _timeout="$2"; shift 2 ;;
+            --transport) HOLLOW_TRANSPORT="$2"; shift 2 ;;
+            -*)
+                printf 'hollow-query: unknown option: %s\n' "$1" >&2; return 1 ;;
+            *)
+                _positional=$(( _positional + 1 ))
+                case "$_positional" in
+                    1) _name="$1" ;;
+                    2) _params="$1" ;;
+                    3) _timeout="$1" ;;
+                esac
+                shift ;;
+        esac
+    done
+
+    [ -n "$_name" ] || { printf 'Usage: hollow-query <name> [params_json] [timeout]\n' >&2; return 1; }
+
+    _id=$(_hq_next_id "$_id_prefix")
+    _transport="${HOLLOW_TRANSPORT:-auto}"
+    _req_dir="${HOLLOW_REQUEST_DIR:-}"
+
+    # Auto-discover WSL request dir if not set
+    if [ -z "$_req_dir" ] && [ -n "${WSL_DISTRO_NAME:-}" ]; then
+        _req_dir=$(_hq_discover_request_dir) || true
+    fi
+
+    # Choose transport
+    if [ "$_transport" = "osc" ]; then
+        _hq_query_osc "$_name" "$_params" "$_timeout" "$_id"
+    elif [ -n "$_req_dir" ] && [ "$_transport" != "osc" ]; then
+        if _hq_query_file "$_req_dir" "$_name" "$_params" "$_timeout" "$_id"; then
+            return 0
+        elif [ "$_transport" = "file" ]; then
+            return 1
+        else
+            printf 'hollow_query: file transport failed, falling back to osc\n' >&2
+            _hq_query_osc "$_name" "$_params" "$_timeout" "$_id"
+        fi
+    else
+        _hq_query_osc "$_name" "$_params" "$_timeout" "$_id"
+    fi
+}
+
+# Run if executed directly (not sourced)
+case "$0" in
+    */hollow-query|hollow-query) _hq_main "$@" ;;
+esac

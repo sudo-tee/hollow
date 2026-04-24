@@ -1,79 +1,120 @@
 #!/usr/bin/env bash
-# launch.sh – run ghostty-love from WSL using the Windows Love2D binary
-#
-# Usage:
-#   ./launch.sh            # normal launch
-#   ./launch.sh --log      # write stderr to /tmp/ghostty-love.log
-#   ./launch.sh --console  # open a Windows console window (shows Lua errors)
-#
-# Requirements:
-#   - Love2D for Windows installed at C:\Program Files\LOVE\love.exe
-#     (override with LOVE_EXE env var)
-#   - ghostty-vt.dll in the project directory (already there)
-
 set -euo pipefail
 
-LOVE_EXE="${LOVE_EXE:-/mnt/c/Program Files/LOVE/love.exe}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BIN_DIR="$SCRIPT_DIR/zig-out/bin"
+TARGET="x86_64-windows-gnu"
+BUILD=1
+RUN=1
+OPTIMIZE=""
+SAFE_RENDER=0
+DISABLE_SWAPCHAIN_GLYPHS=0
+DISABLE_MULTI_PANE_CACHE=0
+LIST_FONTS=0
+LIST_FONTS_JSON=0
+MATCH_FONT=""
+FORWARD_ARGS=()
 
-# Convert the WSL path of the project to a Windows path that love.exe understands
-WIN_PATH="$(wslpath -w "$SCRIPT_DIR")"
-
-LOG=0
-CONSOLE=0
-
+EXPECT_MATCH_FONT=0
 for arg in "$@"; do
-	case "$arg" in
-	--log) LOG=1 ;;
-	--console) CONSOLE=1 ;;
-	--help | -h)
-		echo "Usage: $0 [--log] [--console]"
-		echo "  --log      Write stderr output to /tmp/ghostty-love.log"
-		echo "  --console  Open a Windows console window (shows Lua errors live)"
-		exit 0
-		;;
-	esac
+  if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
+    MATCH_FONT="$arg"
+    EXPECT_MATCH_FONT=0
+    continue
+  fi
+  case "$arg" in
+  --no-build) BUILD=0 ;;
+  --build-only) RUN=0 ;;
+  --debug) OPTIMIZE="Debug" ;;
+  --safe-render) SAFE_RENDER=1 ;;
+  --no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
+  --no-multi-pane-cache) DISABLE_MULTI_PANE_CACHE=1 ;;
+  --list-fonts) LIST_FONTS=1 ;;
+  --json) LIST_FONTS_JSON=1 ;;
+  --match-font) EXPECT_MATCH_FONT=1 ;;
+  --target=*) TARGET="${arg#--target=}" ;;
+  --app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
+  --help | -h)
+    echo "Usage: $0 [--no-build] [--build-only] [--debug] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
+    exit 0
+    ;;
+  esac
 done
 
-# Optionally copy the DLL next to love.exe.
-# Disabled by default because Program Files usually needs elevation.
-LOVE_DIR="$(dirname "$LOVE_EXE")"
-DLL_SRC="$SCRIPT_DIR/ghostty-vt.dll"
-DLL_DST="$LOVE_DIR/ghostty-vt.dll"
-
-if [[ "${COPY_GHOSTTY_DLL:-0}" == "1" && -f "$DLL_SRC" ]]; then
-	if [[ ! -f "$DLL_DST" ]] || ! cmp -s "$DLL_SRC" "$DLL_DST"; then
-		echo "[launch] Copying ghostty-vt.dll → $LOVE_DIR"
-		cp "$DLL_SRC" "$DLL_DST"
-	fi
+if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
+  echo "[launch] --match-font requires a query" >&2
+  exit 1
 fi
 
-# Build the argument list
-LOVE_ARGS=("$WIN_PATH")
-
-# --console opens a Windows cmd window so you can see print() and errors.
-# Omit it for a clean launch once everything is working.
-if [[ $CONSOLE -eq 1 ]]; then
-	LOVE_ARGS+=("--console")
-	export GHOSTTY_LOVE_DEBUG=1
-fi
-
-echo "[launch] Running: \"$LOVE_EXE\" ${LOVE_ARGS[*]}"
-
-if [[ $LOG -eq 1 ]]; then
-	LOG_FILE="/tmp/ghostty-love.log"
-	echo "[launch] Logging stderr → $LOG_FILE"
-	# Run detached so the terminal isn't blocked; stderr goes to the log.
-	"$LOVE_EXE" "${LOVE_ARGS[@]}" 2>"$LOG_FILE" &
-	LOVE_PID=$!
-	echo "[launch] PID $LOVE_PID  –  tail -f $LOG_FILE"
-	# Show the log in this terminal while the app runs
-	tail -f "$LOG_FILE" &
-	TAIL_PID=$!
-	wait $LOVE_PID
-	kill $TAIL_PID 2>/dev/null || true
-	echo "[launch] love.exe exited."
+if [[ "$TARGET" == *"windows"* ]]; then
+  EXE_NAME="hollow-native.exe"
 else
-	# Foreground – stderr goes straight to the WSL terminal
-	exec "$LOVE_EXE" "${LOVE_ARGS[@]}"
+  EXE_NAME="hollow-native"
+fi
+EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
+
+if [[ $BUILD -eq 1 ]]; then
+  echo "[launch] building $TARGET target"
+  if [[ -n "$OPTIMIZE" ]]; then
+    echo "[launch] optimize mode: $OPTIMIZE"
+  fi
+  BUILD_ARGS=("-Dtarget=$TARGET")
+  if [[ -n "$OPTIMIZE" ]]; then
+    BUILD_ARGS+=("-Doptimize=$OPTIMIZE")
+  fi
+  zig build "${BUILD_ARGS[@]}"
+fi
+
+mkdir -p "$SCRIPT_DIR"
+
+copy_if_exists() {
+  local src="$1"
+  local dst="$2"
+  if [[ -f "$src" ]]; then
+    if [[ "$src" == "$dst" ]]; then
+      return
+    fi
+    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+      return
+    fi
+    if [[ -f "$dst" ]]; then
+      rm -f "$dst" 2>/dev/null || true
+    fi
+    cp "$src" "$dst"
+  fi
+}
+
+if [[ $RUN -eq 1 ]]; then
+  copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
+
+  RUN_ARGS=()
+  if [[ $SAFE_RENDER -eq 1 ]]; then
+    echo "[launch] renderer safe mode enabled"
+    RUN_ARGS+=("--renderer-safe-mode")
+    if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 0 ]]; then
+      DISABLE_SWAPCHAIN_GLYPHS=1
+    fi
+  fi
+  if [[ $DISABLE_SWAPCHAIN_GLYPHS -eq 1 ]]; then
+    echo "[launch] swapchain glyph draw disabled"
+    RUN_ARGS+=("--renderer-disable-swapchain-glyphs")
+  fi
+  if [[ $DISABLE_MULTI_PANE_CACHE -eq 1 ]]; then
+    echo "[launch] multi-pane cache disabled"
+    RUN_ARGS+=("--renderer-disable-multi-pane-cache")
+  fi
+  if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then
+    RUN_ARGS+=("${FORWARD_ARGS[@]}")
+  fi
+  if [[ $LIST_FONTS -eq 1 ]]; then
+    RUN_ARGS+=("--list-fonts")
+  fi
+  if [[ -n "$MATCH_FONT" ]]; then
+    RUN_ARGS+=("--match-font" "$MATCH_FONT")
+  fi
+  if [[ $LIST_FONTS_JSON -eq 1 ]]; then
+    RUN_ARGS+=("--json")
+  fi
+  echo "[launch] running $EXE_PATH"
+  exec "$EXE_PATH" "${RUN_ARGS[@]}"
 fi

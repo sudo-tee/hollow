@@ -1,197 +1,188 @@
-# ghostty-love
+# Hollow
 
-A **Love2D / LuaJIT** terminal emulator frontend powered by **libghostty-VT** for VT parsing,
-with a **WezTerm-inspired scriptable Lua API**, full split panes, tabs, workspaces, and a
-customisable status bar.
+<div align="center">
+    <img src="assets/banner.png" alt="Hollow demo" width="600"/>
+</div>
 
----
+## What Hollow Is
 
-## Architecture
+Hollow is a Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core.
+The current build is usable today, highly configurable through Lua, and
+validated primarily on Windows and WSL.
 
-```
-ghostty-love/
-├── main.lua                  # Love2D entry point; wires events → App
-├── conf.lua                  # Love2D window config
-├── conf/
-│   └── init.lua              # Example user config (copy to ~/.config/ghostty-love/)
-└── src/
-    ├── core/
-    │   ├── ghostty_ffi.lua   # LuaJIT FFI bindings for libghostty-VT
-    │   ├── pty.lua           # POSIX forkpty / ConPTY abstraction
-    │   ├── pane.lua          # Terminal pane (surface + PTY)
-    │   ├── split.lua         # Recursive binary split tree
-    │   ├── tab.lua           # Tab (owns a split tree)
-    │   ├── workspace.lua     # Workspace (owns tabs)
-    │   ├── app.lua           # Top-level orchestrator
-    │   ├── config.lua        # Config loader / store
-    │   ├── keymap.lua        # Key binding matcher + VT encoder
-    │   └── event_bus.lua     # Pub/sub event system
-    ├── renderer/
-    │   └── terminal.lua      # Love2D glyph/cell renderer
-    ├── ui/
-    │   ├── tab_bar.lua       # Tab bar (click-to-switch, bell indicator)
-    │   └── status_bar.lua    # Scriptable status bar (left/right segments)
-    └── api/
-        └── init.lua          # `hollow` global - public scripting API
-```
+I see it as a spiritual successor to WezTerm. WezTerm is a fantastic terminal emulator, but Wezterm development has slowed down and the project is not as active as it once was. Hollow is an attempt to create a new terminal emulator that builds on the strengths of WezTerm while also providing a more modern and flexible architecture.
 
-### Object hierarchy
+If you are new to the repo, start with [the docs index](docs/README.md). The
+root README is the product overview; the rest of `docs/` is the actual guide
+set.
 
-```
-App
-└── Workspace[]       (switchable like i3 workspaces)
-    └── Tab[]         (own a split tree each)
-        └── SplitNode (recursive binary tree)
-            └── Leaf  (wraps one Pane)
-                └── Pane  (one libghostty-VT surface + one PTY child)
-```
+## Table Of Contents
 
----
+- [What Hollow Is](#what-hollow-is)
+- [Getting Started](#getting-started)
+- [Documentation Map](#documentation-map)
+- [What Ships Today](#what-ships-today)
+- [Default Keymaps](#default-keymaps)
+- [Project Status](#project-status)
+- [Project Docs](docs/README.md)
 
-## Dependencies
+## Why "Hollow"?
 
-| Dependency | Purpose |
-|---|---|
-| [Love2D](https://love2d.org) ≥ 11.4 | Window, graphics, input, LuaJIT |
-| **libghostty-VT** | VT / ANSI / kitty protocol parsing & terminal state |
+The name "Hollow" is meant to evoke the idea of a container or vessel that can be filled with different contents. In this case, the "hollow" is the terminal emulator itself, which can be customized and extended with different configurations, scripts, and plugins to suit the user's needs. The name also has a certain simplicity and elegance to it, which reflects the design philosophy of the project.
 
-### Getting libghostty-VT
+## Getting Started
 
-Build from the [ghostty](https://github.com/ghostty-org/ghostty) source tree with the
-`libghostty` target, then copy the resulting `.so` / `.dylib` / `.dll` next to `main.lua`:
+### Download a release
+
+The latest release is available on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases)
+
+### Customize the config
+
+Copy the default config `conf/init.lua` to the user config location:
+
+- Windows: `%APPDATA%\hollow\init.lua`
+- Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`
+
+Refer to [the configuration docs](docs/configuration.md) for details on the config model, defaults and overrides
+
+### Development builds
+
+#### Build from source (Windows/WSL)
+
+First-time setup:
 
 ```bash
-# Example (adjust paths to your ghostty checkout)
-cd ghostty
-zig build libghostty -Doptimize=ReleaseFast
-cp zig-out/lib/libghostty-VT.so /path/to/ghostty-love/
+./scripts/setup.sh
 ```
 
----
-
-## Running
+Build and run:
 
 ```bash
-love /path/to/ghostty-love
-# or on Linux if love is in PATH:
-cd ghostty-love && love .
+./launch.sh
 ```
 
----
+Build only:
 
-## User Configuration
-
-Copy `conf/init.lua` to `~/.config/ghostty-love/init.lua` and edit it.
-The `hollow` global is available before the file runs.
-
-### Font
-
-```lua
-hollow.set_config({
-    font_path = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
-    font_size = 15,
-})
+```bash
+./launch.sh --build-only
 ```
 
-### Colours
+Debug build:
 
-```lua
-local c = hollow.color
-hollow.set_config({
-    colors = {
-        background = c.from_hex("#1e1e2e"),
-        cursor     = c.from_hex("#f5e0dc"),
-        -- ... see conf/init.lua for full schema
-    }
-})
+```bash
+./launch.sh --debug
 ```
 
-### Key bindings
+#### Build from source (other platforms)
 
-```lua
--- Bind to a built-in action
-hollow.keys.bind({ ctrl=true, shift=true }, "h", "split_h")
-hollow.keys.bind({ ctrl=true, shift=true }, "v", "split_v")
+First-time setup:
 
--- Bind to a Lua callback
-hollow.keys.bind({ super=true }, "k", function()
-    hollow.actions.new_tab()
-end)
+```bash
+./scripts/setup.sh
 ```
 
-Available built-in actions: `new_tab`, `close_tab`, `next_tab`, `prev_tab`,
-`split_h`, `split_v`, `close_pane`, `focus_next`, `focus_prev`,
-`new_workspace`, `next_workspace`, `prev_workspace`.
+Build and run:
 
-### Status bar
-
-```lua
-hollow.status_bar.set_left(function(workspace, tab, pane)
-    return {
-        { text = "  " .. workspace.name .. "  ", fg={1,1,1,1}, bg={0.4,0.2,0.8,1} },
-        { text = "  " .. (pane and pane.title or "") .. "  " },
-    }
-end)
-
-hollow.status_bar.set_right(function(ws, tab, pane)
-    return {
-        { text = "  " .. os.date("%H:%M") .. "  ", bg={0.1,0.1,0.15,1} },
-    }
-end)
+```bash
+zig build run
+## Or build a release binary:
+zig build -Doptimize=ReleaseFast
 ```
 
-Each segment: `{ text = "...", fg = {r,g,b,a}, bg = {r,g,b,a} }` (all optional except `text`).
+**Linux build prerequisites**
 
-### Event hooks
+> **Error:** The linux build is currently broken.
 
-```lua
-hollow.on("app:ready",        function() end)
-hollow.on("app:update",       function(dt) end)
-hollow.on("app:resize",       function(w, h) end)
-hollow.on("app:quit",         function() end)
-hollow.on("pane:focus",       function(pane) end)
-hollow.on("workspace:switch", function(idx) end)
--- action:NAME fires for any unhandled dispatch action
-hollow.on("action:my_action", function() end)
+To build on Linux you need the X11, Xi, Xcursor, OpenGL and ALSA development packages:
+
+```bash
+sudo apt install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev pkg-config
 ```
 
----
+These provide the `-lX11 -lXi -lXcursor -lGL -lasound` libraries required by the linker.
 
-## Default Key Bindings
+## Documentation Map
 
-| Binding | Action |
-|---|---|
-| `Ctrl+Shift+T` | New tab |
-| `Ctrl+Shift+W` | Close tab |
-| `Ctrl+Tab` | Next tab |
-| `Ctrl+Shift+Tab` | Previous tab |
-| `Ctrl+Shift+D` | Split horizontal |
-| `Ctrl+Shift+E` | Split vertical |
-| `Ctrl+Shift+Q` | Close pane |
-| `Ctrl+]` | Focus next pane |
-| `Ctrl+[` | Focus previous pane |
-| `Ctrl+Shift+N` | New workspace |
-| `Ctrl+Shift+→` | Next workspace |
-| `Ctrl+Shift+←` | Previous workspace |
+Start with [the docs index](docs/README.md).
 
----
+| File                                                     | Purpose                                         | Read this when                                              |
+| -------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
+| [docs/README.md](docs/README.md)                         | Documentation hub and structure                 | you want the full map of guides and references              |
+| [docs/configuration.md](docs/configuration.md)           | Config model, defaults, overrides, packaging    | you want to customize Hollow or ship a default config       |
+| [docs/windows-wsl.md](docs/windows-wsl.md)               | Windows-first setup, WSL usage, troubleshooting | you are running Hollow in its primary validated environment |
+| [docs/hollow-lua-api.md](docs/hollow-lua-api.md)         | Lua runtime API reference                       | you are scripting Hollow or building custom UI/automation   |
+| [docs/htp-shell-examples.md](docs/htp-shell-examples.md) | Shell-side HTP helpers and examples             | you want shells or scripts to talk back to the host         |
 
-## Roadmap / TODO
+Companion reference files outside `docs/`:
 
-- [ ] Windows ConPTY support (winpty binding)
-- [ ] Kitty keyboard protocol full implementation
-- [ ] GPU-accelerated glyph atlas (Love2D SpriteBatch)
-- [ ] Ligature support via HarfBuzz FFI
-- [ ] True-colour image / sixel rendering via iTerm2 protocol
-- [ ] Mouse reporting passthrough to apps
-- [ ] Search / find-in-scrollback
-- [ ] Copy-on-select / OSC 52 clipboard
-- [ ] Session persistence (serialize pane layout)
-- [ ] Multiplexer mode (multiple windows share one server process)
-- [ ] Plugin system (load additional `.lua` files from a plugins/ dir)
+- `conf/init.lua`: the shipped default configuration
+- `types/hollow.lua`: LuaLS typings for the runtime API
 
----
+## What Ships Today
 
-## License
+- tabs, split panes, floating panes, maximized panes, and workspaces
+- scrollback, selection, clipboard, and hyperlink handling
+- a shipped top bar with workspace, tabs, cwd, key legend, and time
+- a Lua API centered on `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keymap`, `hollow.ui`, and `hollow.htp`
+- CLI and Lua font discovery helpers
+- Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
+- a bundled config that users can extend from `%APPDATA%\hollow\init.lua` on Windows or `$XDG_CONFIG_HOME/hollow/init.lua` / `$HOME/.config/hollow/init.lua` on non-Windows hosts
 
-MIT — see `LICENSE`.
+The shipped Windows default domain is currently `pwsh`. `wsl` is available and
+documented because it is an important workflow, but it is not the default in the
+current bundled config.
+
+## Default Keymaps
+
+The default keymaps are defined in `conf/init.lua`. The bundled leader key is
+`<C-Space>` (timeout 1200ms). Below are the default bindings included in the
+shipped config (key → action):
+
+- `<C-S-c>`: `copy_selection`
+- `<C-S-v>`: `paste_clipboard`
+- `<S-Insert>`: `paste_clipboard`
+- `<C-\>`: `split_vertical`
+- `<C-S-\>`: `split_horizontal`
+- `<C-t>`: `new_tab`
+- `<C-w>`: `close_tab`
+- `<C-S-w>`: `close_pane`
+- `<C-Tab>`: `next_tab`
+- `<C-S-Tab>`: `prev_tab`
+- `<C-A-n>`: `new_workspace`
+- `<C-A-p>`: `workspace_switcher`
+- `<C-A-r>`: `rename_workspace`
+- `<C-A-w>`: `close_workspace`
+- `<C-A-Right>`: `next_workspace`
+- `<C-A-Left>`: `prev_workspace`
+- `<C-S-Left>`: `focus_pane_left`
+- `<C-S-Right>`: `focus_pane_right`
+- `<C-S-Up>`: `focus_pane_up`
+- `<C-S-Down>`: `focus_pane_down`
+- `<C-S-m>`: `maximize_pane`
+- `<C-S-f>`: `float_pane`
+- `<C-A-S-f>`: `tile_pane`
+- `<C-A-h>`: `move_pane_left`
+- `<C-A-l>`: `move_pane_right`
+- `<C-A-k>`: `move_pane_up`
+- `<C-A-j>`: `move_pane_down`
+- `<C-A-S-Left>`: `resize_pane_left`
+- `<C-A-S-Right>`: `resize_pane_right`
+- `<C-A-Up>`: `resize_pane_up`
+- `<C-A-Down>`: `resize_pane_down`
+- `<A-S-PageUp>`: `scrollback_page_up`
+- `<A-S-PageDown>`: `scrollback_page_down`
+- `<C-S-Home>`: `scrollback_top`
+- `<C-S-End>`: `scrollback_bottom`
+- `<leader>r`: rename current tab (bound to a small rename prompt; desc: "rename tab")
+- `<leader>uu`: reload the config (desc: "reload config")
+
+You can override any of these in your user config by calling `hollow.keymap.set`
+or `hollow.keymap.set_leader` in `$XDG_CONFIG_HOME/hollow/init.lua` or
+`%APPDATA%\\hollow\\init.lua`.
+
+## Project Status
+
+- Hollow is still an active project and the API surface is still moving.
+- The docs in this repo are meant to describe the current product, not a future roadmap.
+- The current build is suitable for building, running, configuring, and packaging now, with Windows/WSL as the main tested target.
+- If you are planning a docs site, treat [docs/README.md](docs/README.md) as the navigation root.
