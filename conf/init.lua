@@ -215,6 +215,10 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
         end,
         format = function(tab)
           local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
+          local tab_cwd = tab.pane and tab.pane.cwd and hollow.util.basename(tab.pane.cwd)
+          local tab_title = tab_cwd
+            or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
+            or tab.title
           local tab_bg = tab.is_active
               and hollow.util.brighten_hex_color(group_bg, 0.16, palette.bg)
             or palette.bg
@@ -235,7 +239,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           }
           return {
             hollow.ui.span(is_maximized, { fg = palette.magenta }),
-            hollow.ui.span(tab.title, {
+            hollow.ui.span(tab_title, {
               id = tab_text_id,
               on_click = function()
                 hollow.term.focus_tab(tab.id)
