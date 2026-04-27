@@ -741,9 +741,9 @@ pub const Workspace = struct {
         return tab.activeSplitRoot();
     }
 
-    pub fn title(self: *Workspace, out_buf: []u8) []const u8 {
+    pub fn title(self: *Workspace) []const u8 {
         if (self.name) |name| return name;
-        return std.fmt.bufPrint(out_buf, "ws {d}", .{self.id}) catch "ws";
+        return "default";
     }
 
     pub fn setName(self: *Workspace, value: []const u8) !void {

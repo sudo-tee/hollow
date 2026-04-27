@@ -3012,25 +3012,6 @@ pub const App = struct {
         return .{ .text = fallback };
     }
 
-    pub fn workspaceTitle(self: *App, index: usize, out_buf: []u8) []const u8 {
-        const fallback = if (self.mux) |*mux| blk: {
-            if (index < mux.workspaces.items.len) break :blk mux.workspaces.items[index].title(out_buf);
-            break :blk std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch return "ws";
-        } else std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch return "ws";
-        if (self.lua) |*lua| {
-            return lua.resolveWorkspaceTitle(index, index == self.activeWorkspaceIndex(), self.activeWorkspaceIndex(), self.workspaceCount(), fallback, out_buf).text;
-        }
-        return fallback;
-    }
-
-    pub fn workspaceTitleSegment(self: *App, index: usize, out_buf: []u8) bar.Segment {
-        const fallback = self.workspaceName(index, out_buf);
-        if (self.lua) |*lua| {
-            return lua.resolveWorkspaceTitle(index, index == self.activeWorkspaceIndex(), self.activeWorkspaceIndex(), self.workspaceCount(), fallback, out_buf);
-        }
-        const default_text = std.fmt.bufPrint(out_buf, "{s} {d}/{d}", .{ fallback, self.activeWorkspaceIndex() + 1, self.workspaceCount() }) catch fallback;
-        return .{ .text = default_text };
-    }
 
     pub fn setWorkspaceName(self: *App, name: []const u8) void {
         const ws = self.activeWorkspace() orelse return;
@@ -3048,9 +3029,9 @@ pub const App = struct {
 
     pub fn workspaceName(self: *App, index: usize, out_buf: []u8) []const u8 {
         if (self.mux) |*mux| {
-            if (index < mux.workspaces.items.len) return mux.workspaces.items[index].title(out_buf);
+            if (index < mux.workspaces.items.len) return mux.workspaces.items[index].title();
         }
-        return std.fmt.bufPrint(out_buf, "ws {d}", .{index + 1}) catch "ws";
+        return std.fmt.bufPrint(out_buf, "workspace {d}", .{index + 1}) catch "workspace";
     }
 
     pub fn hasCustomTopBarTabs(self: *App) bool {
