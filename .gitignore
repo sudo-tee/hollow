@@ -15,11 +15,6 @@ release/
 # Runtime DLLs
 *.dll
 
-# Scratch / debug images and logs
-*.png
-err.txt
-error_out.txt
-out.txt
 hollow.log
 
 # Gemini/AI scratch files
