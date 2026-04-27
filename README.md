@@ -1,7 +1,12 @@
 # Hollow
 
 <div align="center">
-    <img src="assets/banner.png" alt="Hollow demo" width="600"/>
+    <img src="assets/banner.png" alt="Hollow demo" width="200"/>
+</div>
+
+<div align="center">
+    <img src="assets/hollow.png" alt="Hollow demo" width="400"/>
+    <img src="assets/hollow2.png" alt="Hollow demo" width="400"/>
 </div>
 
 ## What Hollow Is
@@ -29,6 +34,14 @@ set.
 ## Why "Hollow"?
 
 The name "Hollow" is meant to evoke the idea of a container or vessel that can be filled with different contents. In this case, the "hollow" is the terminal emulator itself, which can be customized and extended with different configurations, scripts, and plugins to suit the user's needs. The name also has a certain simplicity and elegance to it, which reflects the design philosophy of the project.
+
+## Features
+
+- A modern terminal emulator built with Zig and LuaJIT
+- A built-in Lua API for interacting with the terminal and building custom UI and automation
+- A VT core based on Ghostty for fast and accurate terminal emulation
+- Support for tabs, panes, workspaces, and a customizable top bar
+- Cross-platform support with a focus on Windows and WSL (Linux and macOS support is planned but not yet validated)
 
 ## Getting Started
 
