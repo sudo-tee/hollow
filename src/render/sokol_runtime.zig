@@ -282,6 +282,10 @@ const PaneCacheEntry = struct {
     /// last render and the pane must do a full redraw (force_full = true) to pick
     /// up the new glyph bitmaps even if the pane's own content is unchanged.
     last_atlas_epoch: u64 = 0,
+    /// Cached terminal background color used for the RT. If this changes we need
+    /// one full clear so the padding and any untouched pixels match the new theme.
+    last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
+    has_bg_color: bool = false,
     /// Open-addressing hash map: GhosttyRow raw value → cell-content hash.
     /// Scroll-stable: the same row's raw value is invariant across screen shifts,
     /// so hashes survive scrolling and only rows with genuinely changed content
@@ -321,6 +325,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     @memset(&entry.row_map_vals, 0);
                     entry.prev_cursor_row = std.math.maxInt(usize);
                     entry.last_atlas_epoch = 0; // size changed — force full redraw next frame
+                    entry.has_bg_color = false;
                 }
                 return entry;
             }
@@ -2042,6 +2047,7 @@ fn invalidateAllPaneCaches() void {
             entry.last_rows = 0;
             entry.validity = .invalid;
             entry.last_atlas_epoch = 0;
+            entry.has_bg_color = false;
             @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
             @memset(&entry.row_map_vals, 0);
             entry.prev_cursor_row = std.math.maxInt(usize);
@@ -2091,7 +2097,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_drag_node == null and !app.hasVisualActivity()) {
         // With vsync on, a long pre-render idle sleep can push a newly-active
         // frame past the next refresh and make scrolling feel like 30 FPS.
-        const idle_frame_ns = if (app.config.vsync) @as(i128, 16_000_000) else g_idle_frame_ns;
+        const idle_frame_ns = if (app.config.vsync) @as(i128, 8_000_000) else g_idle_frame_ns;
         const idle_deadline_ns = frame_start_ns + idle_frame_ns;
         var now_ns = after_tick_ns;
         // Re-check activity in short slices so fresh PTY output does not sit
@@ -2238,33 +2244,39 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     var cr: f32 = 0.0;
                     var cg: f32 = 0.0;
                     var cb: f32 = 0.0;
+                    var bg_color = ghostty.ColorRgb{ .r = 0, .g = 0, .b = 0 };
                     if (cfg.terminal_theme.enabled) {
+                        bg_color = cfg.terminal_theme.background;
                         cr = @as(f32, @floatFromInt(cfg.terminal_theme.background.r)) / 255.0;
                         cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
                     } else if (rt.renderStateColors(pane.render_state)) |colors| {
+                        bg_color = colors.background;
                         cr = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
                         cg = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
                     }
+                    const background_changed = !cache_entry.has_bg_color or
+                        cache_entry.last_bg_color.r != bg_color.r or
+                        cache_entry.last_bg_color.g != bg_color.g or
+                        cache_entry.last_bg_color.b != bg_color.b;
 
                     // atlas stale → full redraw needed (glyph UVs changed under existing pixels).
                     // resize → handled by cache recreation (pw/ph mismatch), so we never see
                     //   a stale RT from a resize here.
                     // .full dirty_level → ghostty uses this for screen switches (alt-screen
-                    //   enter/exit), resize, color-change events, and any other event that
-                    //   invalidates the whole viewport.  All rows are marked dirty by ghostty,
-                    //   but the row map may hold entries from the previous screen (different
+                    //   enter/exit), resize, color-change events, and app-driven scroll.
+                    //   We do NOT automatically clear the whole RT for .full because scroll
+                    //   frames already mark every row dirty and the per-row redraw path is
+                    //   cheaper than a full CLEAR pass. We only force a full redraw when the
+                    //   cache itself is invalid (resize/atlas/layout) or the background color
+                    //   changed and we must repaint padding / untouched pixels.
+                    //   The row map may hold entries from the previous screen (different
                     //   rowRaw keys pointing at now-reused page slots, or same rowRaw key but
-                    //   the slot now holds different content on the new screen).  We must
-                    //   invalidate the row map so the hash skip does not fire for stale entries.
+                    //   the slot now holds different content on the new screen), so .full
+                    //   still invalidates the row map before this frame is rendered.
                     // .true_value dirty_level → normal content update; per-row dirty gives us the
                     //   minimal set of rows to re-render.
-                    //
-                    // For scrolling: ghostty marks dirty_level=.full and (empirically) marks ALL
-                    // rows dirty in rowDirty() after a CSI S, so force_full here doesn't save work
-                    // but does force a slow CLEAR action.  Use atlas_stale as the only trigger for
-                    // force_full so that scroll frames stay as fast as partial updates.
                     const inner_w = if (pw_u > pane_pad_x) pw_u - pane_pad_x else 1;
                     const inner_h = if (ph_u > pane_pad_y) ph_u - pane_pad_y else 1;
                     const expected_cols: u16 = @intCast(@min(1000, @max(1, inner_w / @max(@as(u32, 1), cell_width_px))));
@@ -2272,7 +2284,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
                     const pty_active = pane.pty_wrote_this_frame;
-                    const ghostty_dirty = dirty_level == .full;
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
@@ -2286,7 +2297,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         return .cached_clean;
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
-                    const force_full = g_drag_node != null or dirty_level == .full or pty_active or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled;
+                    const force_full = atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
@@ -2326,23 +2337,21 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     //
                     // dirty_level == .full means every row is dirty (content update, scroll,
                     // resize, alt-screen switch, etc.).  In this case the hash check cannot
-                    // skip ANY row (all are dirty and all will have changed hashes) — but
-                    // we still WANT to write fresh hashes into the map during the .full pass
-                    // so that the very next .true_value frame (cursor blink) can skip all
-                    // unchanged rows.  renderToCache therefore uses force_full to decide
-                    // whether to SKIP rows (never on force_full) vs WRITE hashes (always).
+                    // skip rows this frame, so maintaining the row map would add a second
+                    // full-row scan on top of rendering. That increases frame-time variance
+                    // during heavy app-driven scroll. Reserve row-map work for partial frames.
                     //
                     // force_full (atlas stale or resize) invalidates existing RT pixels, so
                     // any stored hash entry from before the atlas change is stale (the glyph
                     // UVs changed) → zero the map so no false-positive skips happen.
                     // dirty_level == .full from content updates can also invalidate the map
                     // because alt-screen switches / resize-like events may reuse rowRaw keys
-                    // for different content. Clear the map, then let renderToCache write the
-                    // fresh hashes during this frame so the next .true_value frame can skip.
-                    const row_map_skip = g_drag_node == null and dirty_level != .full and !force_full;
-                    if (!row_map_skip) {
-                        // Stored hashes are invalid for this frame; rebuild them as we render.
+                    // for different content. Clear the map and rebuild lazily on later partial
+                    // frames where hash skips can actually pay off.
+                    const use_row_map = g_drag_node == null and dirty_level != .full and !force_full;
+                    if (!use_row_map) {
                         @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
+                        @memset(&cache_entry.row_map_vals, 0);
                     }
 
                     rend.renderToCache(
@@ -2359,9 +2368,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cg,
                         cb,
                         force_full,
-                        &cache_entry.row_map_keys,
-                        &cache_entry.row_map_vals,
-                        row_map_skip,
+                        if (use_row_map) &cache_entry.row_map_keys else null,
+                        if (use_row_map) &cache_entry.row_map_vals else null,
+                        use_row_map,
                         selection_range,
                         hovered_hyperlink,
                         cache_entry.prev_cursor_row,
@@ -2389,22 +2398,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.layout_generation = layout_generation;
                     cache_entry.last_cols = pane.cols;
                     cache_entry.last_rows = pane.rows;
-                    // If PTY data arrived this frame (shell is still writing its
-                    // redraw response to the resize), ghostty's snapshot may be
-                    // a partially-updated screen.  Keep force_full alive and
-                    // needs_clear set so we keep doing CLEAR renders until the
-                    // shell output settles.  Only mark stable / clear needs_clear
-                    // on a quiet frame with no new PTY data.
+                    // Cache invalidation state is now reserved for cases where the
+                    // existing RT pixels are definitely stale (resize, drag-release,
+                    // atlas change, background-color change). Normal PTY output and
+                    // scroll frames redraw the dirty rows without forcing a CLEAR.
                     pane.pty_wrote_this_frame = false; // consumed by renderer
-                    cache_entry.needs_clear = pty_active or ghostty_dirty;
+                    cache_entry.needs_clear = false;
                     const now_stable = !pty_active and dirty_level == .false_value and !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
                     cache_entry.validity = if (cache_entry.stable_after_resize) .valid else .priming;
                     if (cache_entry.force_full_frames > 0 and !pty_active) cache_entry.force_full_frames -= 1;
-                    if (dirty_level == .full) {
-                        @memset(&cache_entry.row_map_keys, ROW_MAP_EMPTY);
-                        @memset(&cache_entry.row_map_vals, 0);
-                    }
+                    cache_entry.last_bg_color = bg_color;
+                    cache_entry.has_bg_color = true;
 
                     // Update prev_cursor_row for the next frame: the current cursor
                     // row becomes the "previous" cursor row so we can erase ghost

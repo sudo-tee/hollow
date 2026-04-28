@@ -124,6 +124,7 @@ if is_windows then
 end
 
 hollow.config.set({
+  max_fps = 120,
   backend = "sokol",
   default_domain = default_domain,
   domains = domains,

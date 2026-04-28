@@ -416,6 +416,7 @@ pub const App = struct {
     base_config_path: ?[]u8 = null,
     override_config_path: ?[]u8 = null,
     frame_count: usize = 0,
+    last_visual_activity_ns: i128 = 0,
     logged_first_render_update: bool = false,
     cell_width_px: u32 = 8,
     cell_height_px: u32 = 16,
@@ -516,6 +517,7 @@ pub const App = struct {
             // Queue full — drop event.
             return false;
         }
+        self.last_visual_activity_ns = std.time.nanoTimestamp();
         self.mouse_queue[self.mouse_queue_tail] = ev;
         @atomicStore(usize, &self.mouse_queue_tail, next_tail, .release);
         return true;
@@ -1036,22 +1038,33 @@ pub const App = struct {
     }
 
     pub fn hasVisualActivity(self: *App) bool {
+        const now_ns = std.time.nanoTimestamp();
+        const recent_activity_grace_ns: i128 = 75_000_000;
+        if (self.last_visual_activity_ns != 0 and now_ns - self.last_visual_activity_ns < recent_activity_grace_ns) {
+            return true;
+        }
         if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize or self.pending_quit) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.mouse_queue_head != @atomicLoad(usize, &self.mouse_queue_tail, .acquire)) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.htp_pending_messages.items.len > 0) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.selection_drag_active or self.hovered_tab_index != null or self.hovered_close_tab_index != null) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.isLeaderActive()) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.startup_command != null and !self.startup_command_sent and self.frame_count >= self.startup_command_delay_frames) {
+            self.last_visual_activity_ns = now_ns;
             return true;
         }
         if (self.mux) |*mux| {
@@ -1061,10 +1074,12 @@ pub const App = struct {
                 // before tickPanes consumes them into ghostty state.
                 if (pane.pty) |*pty| {
                     if (pty.hasPendingOutput()) {
+                        self.last_visual_activity_ns = now_ns;
                         return true;
                     }
                 }
                 if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
+                    self.last_visual_activity_ns = now_ns;
                     return true;
                 }
             }
@@ -1447,6 +1462,7 @@ pub const App = struct {
 
     pub fn sendText(self: *App, text: []const u8) void {
         const pane = self.activePane() orelse return;
+        self.last_visual_activity_ns = std.time.nanoTimestamp();
         self.scrollActiveViewportBottom();
         pane.sendText(text);
     }
