@@ -423,6 +423,10 @@ pub const App = struct {
     pending_width: u32 = 0,
     pending_height: u32 = 0,
     pending_renderer_refresh: bool = false,
+    cached_sidebar_layout: ?SidebarLayout = null,
+    cached_top_bar_layout: ?TopBarLayout = null,
+    cached_bottom_bar_layout: ?BottomBarLayout = null,
+    cached_bar_layouts_dirty: bool = true,
     /// Set when a split has just been performed; causes tick() to re-layout
     /// all panes on the next frame (safe from the frame callback thread).
     pending_layout_resize: bool = false,
@@ -448,6 +452,7 @@ pub const App = struct {
     pointer_x: f32 = 0,
     pointer_y: f32 = 0,
     pointer_mods: u32 = 0,
+    hover_probe_dirty: bool = true,
     selection_pane: ?*Pane = null,
     selection_anchor: ?selection.CellPoint = null,
     selection_head: ?selection.CellPoint = null,
@@ -1068,6 +1073,7 @@ pub const App = struct {
     }
 
     fn recordPointerState(self: *App, x: f32, y: f32, mods: u32) void {
+        if (self.pointer_x != x or self.pointer_y != y) self.hover_probe_dirty = true;
         self.pointer_x = x;
         self.pointer_y = y;
         self.pointer_mods = mods;
@@ -1516,6 +1522,8 @@ pub const App = struct {
         self.pending_width = pixel_width;
         self.pending_height = pixel_height;
         self.pending_resize = true;
+        self.hover_probe_dirty = true;
+        self.invalidateCachedBarLayouts();
     }
 
     fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
@@ -1523,6 +1531,15 @@ pub const App = struct {
         self.pending_layout_recreate_render_helpers = self.pending_layout_recreate_render_helpers or recreate_render_helpers;
         self.layout_generation +%= 1;
         if (self.layout_generation == 0) self.layout_generation = 1;
+        self.hover_probe_dirty = true;
+        self.invalidateCachedBarLayouts();
+    }
+
+    fn invalidateCachedBarLayouts(self: *App) void {
+        self.cached_bar_layouts_dirty = true;
+        self.cached_sidebar_layout = null;
+        self.cached_top_bar_layout = null;
+        self.cached_bottom_bar_layout = null;
     }
 
     fn invalidateFocusedPaneCache(self: *App, previous: ?*Pane, current: ?*Pane) void {
@@ -2011,6 +2028,8 @@ pub const App = struct {
     }
 
     fn updateHoveredHyperlink(self: *App) void {
+        if (!self.hover_probe_dirty) return;
+        self.hover_probe_dirty = false;
         self.hovered_hyperlink = null;
         if (!self.config.hyperlinks.enabled) return;
         if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
@@ -2547,6 +2566,7 @@ pub const App = struct {
 
         self.config.deinit();
         self.config = Config.init(self.allocator);
+        self.invalidateCachedBarLayouts();
 
         if (self.lua) |*lua| {
             lua.deinit();
@@ -2893,7 +2913,8 @@ pub const App = struct {
     }
 
     pub fn sidebarLayout(self: *App) ?SidebarLayout {
-        if (self.lua) |*lua| return lua.resolveSidebarLayout();
+        if (self.cached_bar_layouts_dirty) self.refreshCachedBarLayouts();
+        if (self.cached_sidebar_layout) |layout| return layout;
         return null;
     }
 
@@ -2928,20 +2949,30 @@ pub const App = struct {
 
     pub fn topBarLayout(self: *App) ?TopBarLayout {
         if (!self.shouldShowTopBar()) return null;
-        if (self.lua) |*lua| {
-            if (lua.resolveTopBarLayout()) |layout| return layout;
-        }
+        if (self.cached_bar_layouts_dirty) self.refreshCachedBarLayouts();
+        if (self.cached_top_bar_layout) |layout| return layout;
         if (self.config.top_bar_height == 0) return null;
         return .{ .height_px = self.config.top_bar_height };
     }
 
     pub fn bottomBarLayout(self: *App) ?BottomBarLayout {
         if (!self.config.bottom_bar_show) return null;
-        if (self.lua) |*lua| {
-            if (lua.resolveBottomBarLayout()) |layout| return layout;
-        }
+        if (self.cached_bar_layouts_dirty) self.refreshCachedBarLayouts();
+        if (self.cached_bottom_bar_layout) |layout| return layout;
         if (self.config.bottom_bar_height == 0) return null;
         return .{ .height_px = self.config.bottom_bar_height };
+    }
+
+    fn refreshCachedBarLayouts(self: *App) void {
+        self.cached_bar_layouts_dirty = false;
+        self.cached_sidebar_layout = null;
+        self.cached_top_bar_layout = null;
+        self.cached_bottom_bar_layout = null;
+        if (self.lua) |*lua| {
+            self.cached_sidebar_layout = lua.resolveSidebarLayout();
+            if (self.shouldShowTopBar()) self.cached_top_bar_layout = lua.resolveTopBarLayout();
+            if (self.config.bottom_bar_show) self.cached_bottom_bar_layout = lua.resolveBottomBarLayout();
+        }
     }
 
     pub fn bottomBarHeight(self: *App) u32 {
@@ -3234,9 +3265,10 @@ pub const App = struct {
                 }
                 const now_ns = std.time.nanoTimestamp();
                 const is_active = (self.activePane() == pane);
-                // Keep the active pane responsive to Ghostty-managed state
-                // changes while leaving background panes on a slower idle poll.
-                const idle_poll_ns: i128 = if (is_active) 16_000_000 else 500_000_000;
+                // Ghostty-managed idle state (primarily cursor blink) does not
+                // need a 60 Hz poll. Poll the active pane at a modest cadence so
+                // idle windows do not burn CPU just to discover blink changes.
+                const idle_poll_ns: i128 = if (is_active) 500_000_000 else 1_000_000_000;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
@@ -3261,8 +3293,11 @@ pub const App = struct {
                             });
                         }
                     }
+                    _ = self.refreshPaneScrollbar(runtime, pane);
+                    if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
+                        self.hover_probe_dirty = true;
+                    }
                 }
-                _ = self.refreshPaneScrollbar(runtime, pane);
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }

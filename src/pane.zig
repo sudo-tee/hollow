@@ -99,6 +99,8 @@ pub const Pane = struct {
     /// data we call updateRenderState at most once per ~16 ms so that cursor
     /// blink (managed by ghostty's internal timer) still fires.
     last_render_state_update_ns: i128 = 0,
+    child_alive_cached: bool = true,
+    last_child_alive_check_ns: i128 = 0,
     scrollbar_total: u64 = 0,
     scrollbar_offset: u64 = 0,
     scrollbar_len: u64 = 0,
@@ -306,7 +308,7 @@ pub const Pane = struct {
             }
             var total_read: usize = 0;
             var read_loops: usize = 0;
-            while ((pty.isAlive() or pty.hasPendingOutput()) and read_loops < 64 and total_read < (1024 * 1024)) {
+            while (pty.hasPendingOutput() and read_loops < 64 and total_read < (1024 * 1024)) {
                 const count = pty.read(&self.read_buf) catch |err| {
                     if (err == error.EndOfStream) break;
                     return err;
@@ -334,6 +336,7 @@ pub const Pane = struct {
                     }
                 }
             }
+            self.refreshChildAliveCache();
             if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
                 if (total_read == 0) {
                     self.startup_input_quiet_ticks +|= 1;
@@ -349,10 +352,11 @@ pub const Pane = struct {
                     self.startup_input_quiet_ticks = 0;
                 }
             }
-            // Only sync encoders once the pane is fully initialised — these
-            // read mode flags from the terminal object and can crash on a
-            // terminal that has never been through updateRenderState.
-            if (self.render_state_ready) {
+            // Only sync encoders when PTY activity occurred. Doing this every
+            // idle tick still crosses the Ghostty FFI boundary and adds up.
+            // Fresh terminal mode changes arrive via PTY output, and resize/
+            // focus paths already perform their own explicit syncs.
+            if (self.render_state_ready and total_read > 0) {
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
                 // Log mouse tracking state changes for diagnostics.
@@ -659,8 +663,21 @@ pub const Pane = struct {
     }
 
     pub fn hasLiveChild(self: *Pane) bool {
-        if (self.pty) |*pty| return pty.isAlive();
-        return false;
+        self.refreshChildAliveCache();
+        return self.child_alive_cached;
+    }
+
+    fn refreshChildAliveCache(self: *Pane) void {
+        const pty = if (self.pty) |*value| value else {
+            self.child_alive_cached = false;
+            self.last_child_alive_check_ns = 0;
+            return;
+        };
+        if (!self.child_alive_cached) return;
+        const now_ns = std.time.nanoTimestamp();
+        if (self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutput()) return;
+        self.last_child_alive_check_ns = now_ns;
+        self.child_alive_cached = pty.isAlive();
     }
 
     pub fn scrollbar(self: *const Pane) ghostty.TerminalScrollbar {

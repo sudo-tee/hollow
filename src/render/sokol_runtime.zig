@@ -137,6 +137,7 @@ const WinHwnd = if (builtin.os.tag == .windows) win32.HWND else *anyopaque;
 
 var g_app: ?*App = null;
 var g_title_buf: [256]u8 = [_]u8{0} ** 256;
+var g_last_window_title: [256]u8 = [_]u8{0} ** 256;
 var g_renderer_ready = false;
 var g_logged_first_frame = false;
 var g_frame_index: usize = 0;
@@ -1858,6 +1859,7 @@ pub fn run(app: *App) !void {
     g_logged_first_frame = false;
     g_frame_index = 0;
     g_ft_renderer = null;
+    @memset(g_last_window_title[0..], 0);
     g_gui_ready_fired = false;
     g_window_chrome_applied = false;
     g_prev_wnd_proc = 0;
@@ -2050,7 +2052,10 @@ fn invalidateAllPaneCaches() void {
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const frame_start_ns = std.time.nanoTimestamp();
-    updatePerfCounters(frame_start_ns);
+    const collect_perf = app.config.debug_overlay;
+    if (collect_perf) {
+        updatePerfCounters(frame_start_ns);
+    }
     if (builtin.os.tag == .windows and !g_window_chrome_applied) {
         g_window_chrome_applied = applyWindowChrome(app);
     }
@@ -2086,7 +2091,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (g_drag_node == null and !app.hasVisualActivity()) {
         // With vsync on, a long pre-render idle sleep can push a newly-active
         // frame past the next refresh and make scrolling feel like 30 FPS.
-        const idle_frame_ns = if (app.config.vsync) @as(i128, 8_000_000) else g_idle_frame_ns;
+        const idle_frame_ns = if (app.config.vsync) @as(i128, 16_000_000) else g_idle_frame_ns;
         const idle_deadline_ns = frame_start_ns + idle_frame_ns;
         var now_ns = after_tick_ns;
         // Re-check activity in short slices so fresh PTY output does not sit
@@ -2806,69 +2811,71 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const after_commit_ns = std.time.nanoTimestamp();
     sleepForFrameCap(app, frame_start_ns, after_commit_ns);
 
-    // ── Phase timing accumulation (logged every ~2 s) ─────────────────────
-    g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
-    g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
-    g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
-    g_phase_sample_frames += 1;
+    if (collect_perf) {
+        // ── Phase timing accumulation (logged every ~2 s) ─────────────────
+        g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
+        g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
+        g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
+        g_phase_sample_frames += 1;
 
-    // Update per-frame last values for the debug overlay (no division needed).
-    g_last_frame_tick_ms = @as(f32, @floatFromInt(after_tick_ns - frame_start_ns)) / 1_000_000.0;
-    g_last_frame_offscreen_ms = @as(f32, @floatFromInt(after_offscreen_ns - after_tick_ns)) / 1_000_000.0;
-    g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
-    g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
-    g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
+        // Update per-frame last values for the debug overlay (no division needed).
+        g_last_frame_tick_ms = @as(f32, @floatFromInt(after_tick_ns - frame_start_ns)) / 1_000_000.0;
+        g_last_frame_offscreen_ms = @as(f32, @floatFromInt(after_offscreen_ns - after_tick_ns)) / 1_000_000.0;
+        g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
+        g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
+        g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
 
-    if (g_phase_last_log_ns == 0) g_phase_last_log_ns = frame_start_ns;
-    if (frame_start_ns - g_phase_last_log_ns >= 2_000_000_000) {
-        const n: f32 = @floatFromInt(@max(1, g_phase_sample_frames));
-        const tick_ms = @as(f32, @floatFromInt(g_phase_accum_tick_ns)) / n / 1_000_000.0;
-        const off_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_ns)) / n / 1_000_000.0;
-        const swap_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_ns)) / n / 1_000_000.0;
-        const queue_ms = @as(f32, @floatFromInt(g_phase_accum_queue_ns)) / n / 1_000_000.0;
-        const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
-        const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
-        const pass2_ms = @as(f32, @floatFromInt(g_phase_accum_pass2_ns)) / n / 1_000_000.0;
-        const fps = n / 2.0; // 2-second window → fps = frames/2
-        const dirty = g_phase_accum_dirty_frames;
-        const clean = g_phase_accum_clean_frames;
-        const rows_rendered = g_phase_accum_rows_rendered;
-        const rows_skipped = g_phase_accum_rows_skipped;
-        const cells = g_phase_accum_cells_visited;
-        const gruns = g_phase_accum_glyph_runs;
-        const bgrects = g_phase_accum_bg_rects;
-        const atlas_fl = g_phase_accum_atlas_flushes;
-        const direct_f = g_phase_accum_direct_frames;
-        const cached_f = g_phase_accum_cached_frames;
-        const full_dl = g_phase_accum_full_dl_frames;
-        const true_dl = g_phase_accum_true_dl_frames;
-        const stale_f = g_phase_accum_atlas_stale_frames;
-        std.log.info(
-            "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
-            .{ n, fps, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
-        );
-        g_phase_accum_tick_ns = 0;
-        g_phase_accum_offscreen_ns = 0;
-        g_phase_accum_swapchain_ns = 0;
-        g_phase_accum_queue_ns = 0;
-        g_phase_accum_gpu_ns = 0;
-        g_phase_accum_pass1_ns = 0;
-        g_phase_accum_pass2_ns = 0;
-        g_phase_accum_dirty_frames = 0;
-        g_phase_accum_clean_frames = 0;
-        g_phase_accum_rows_rendered = 0;
-        g_phase_accum_rows_skipped = 0;
-        g_phase_accum_cells_visited = 0;
-        g_phase_accum_glyph_runs = 0;
-        g_phase_accum_bg_rects = 0;
-        g_phase_accum_atlas_flushes = 0;
-        g_phase_accum_direct_frames = 0;
-        g_phase_accum_cached_frames = 0;
-        g_phase_accum_full_dl_frames = 0;
-        g_phase_accum_true_dl_frames = 0;
-        g_phase_accum_atlas_stale_frames = 0;
-        g_phase_sample_frames = 0;
-        g_phase_last_log_ns = frame_start_ns;
+        if (g_phase_last_log_ns == 0) g_phase_last_log_ns = frame_start_ns;
+        if (frame_start_ns - g_phase_last_log_ns >= 2_000_000_000) {
+            const n: f32 = @floatFromInt(@max(1, g_phase_sample_frames));
+            const tick_ms = @as(f32, @floatFromInt(g_phase_accum_tick_ns)) / n / 1_000_000.0;
+            const off_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_ns)) / n / 1_000_000.0;
+            const swap_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_ns)) / n / 1_000_000.0;
+            const queue_ms = @as(f32, @floatFromInt(g_phase_accum_queue_ns)) / n / 1_000_000.0;
+            const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
+            const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
+            const pass2_ms = @as(f32, @floatFromInt(g_phase_accum_pass2_ns)) / n / 1_000_000.0;
+            const fps = n / 2.0; // 2-second window → fps = frames/2
+            const dirty = g_phase_accum_dirty_frames;
+            const clean = g_phase_accum_clean_frames;
+            const rows_rendered = g_phase_accum_rows_rendered;
+            const rows_skipped = g_phase_accum_rows_skipped;
+            const cells = g_phase_accum_cells_visited;
+            const gruns = g_phase_accum_glyph_runs;
+            const bgrects = g_phase_accum_bg_rects;
+            const atlas_fl = g_phase_accum_atlas_flushes;
+            const direct_f = g_phase_accum_direct_frames;
+            const cached_f = g_phase_accum_cached_frames;
+            const full_dl = g_phase_accum_full_dl_frames;
+            const true_dl = g_phase_accum_true_dl_frames;
+            const stale_f = g_phase_accum_atlas_stale_frames;
+            std.log.info(
+                "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
+                .{ n, fps, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
+            );
+            g_phase_accum_tick_ns = 0;
+            g_phase_accum_offscreen_ns = 0;
+            g_phase_accum_swapchain_ns = 0;
+            g_phase_accum_queue_ns = 0;
+            g_phase_accum_gpu_ns = 0;
+            g_phase_accum_pass1_ns = 0;
+            g_phase_accum_pass2_ns = 0;
+            g_phase_accum_dirty_frames = 0;
+            g_phase_accum_clean_frames = 0;
+            g_phase_accum_rows_rendered = 0;
+            g_phase_accum_rows_skipped = 0;
+            g_phase_accum_cells_visited = 0;
+            g_phase_accum_glyph_runs = 0;
+            g_phase_accum_bg_rects = 0;
+            g_phase_accum_atlas_flushes = 0;
+            g_phase_accum_direct_frames = 0;
+            g_phase_accum_cached_frames = 0;
+            g_phase_accum_full_dl_frames = 0;
+            g_phase_accum_true_dl_frames = 0;
+            g_phase_accum_atlas_stale_frames = 0;
+            g_phase_sample_frames = 0;
+            g_phase_last_log_ns = frame_start_ns;
+        }
     }
 
     g_renderer_ready = true;
@@ -2878,7 +2885,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.fireGuiReady();
     }
 
-    c.sapp_set_window_title(titleCString(app.activeTitle()));
+    updateWindowTitle(app.activeTitle());
 }
 
 fn updatePerfCounters(frame_start_ns: i128) void {
@@ -3959,6 +3966,15 @@ fn titleCString(text: []const u8) [*:0]const u8 {
     @memcpy(g_title_buf[0..len], text[0..len]);
     g_title_buf[len] = 0;
     return @ptrCast(&g_title_buf);
+}
+
+fn updateWindowTitle(text: []const u8) void {
+    const len = @min(text.len, g_last_window_title.len - 1);
+    if (std.mem.eql(u8, g_last_window_title[0..len], text) and g_last_window_title[len] == 0) return;
+    @memset(g_last_window_title[0..], 0);
+    @memcpy(g_last_window_title[0..len], text[0..len]);
+    g_last_window_title[len] = 0;
+    c.sapp_set_window_title(titleCString(text));
 }
 
 fn encodeCodepoint(codepoint: u32, buf: *[5]u8) ?[]const u8 {
