@@ -416,6 +416,7 @@ pub const App = struct {
     base_config_path: ?[]u8 = null,
     override_config_path: ?[]u8 = null,
     frame_count: usize = 0,
+    last_input_activity_ns: i128 = 0,
     last_visual_activity_ns: i128 = 0,
     logged_first_render_update: bool = false,
     cell_width_px: u32 = 8,
@@ -517,7 +518,9 @@ pub const App = struct {
             // Queue full — drop event.
             return false;
         }
-        self.last_visual_activity_ns = std.time.nanoTimestamp();
+        const now_ns = std.time.nanoTimestamp();
+        self.last_input_activity_ns = now_ns;
+        self.last_visual_activity_ns = now_ns;
         self.mouse_queue[self.mouse_queue_tail] = ev;
         @atomicStore(usize, &self.mouse_queue_tail, next_tail, .release);
         return true;
@@ -1039,8 +1042,12 @@ pub const App = struct {
 
     pub fn hasVisualActivity(self: *App) bool {
         const now_ns = std.time.nanoTimestamp();
-        const recent_activity_grace_ns: i128 = 75_000_000;
-        if (self.last_visual_activity_ns != 0 and now_ns - self.last_visual_activity_ns < recent_activity_grace_ns) {
+        const recent_input_grace_ns: i128 = 24_000_000;
+        const recent_visual_grace_ns: i128 = 16_000_000;
+        if (self.last_input_activity_ns != 0 and now_ns - self.last_input_activity_ns < recent_input_grace_ns) {
+            return true;
+        }
+        if (self.last_visual_activity_ns != 0 and now_ns - self.last_visual_activity_ns < recent_visual_grace_ns) {
             return true;
         }
         if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize or self.pending_quit) {
@@ -1462,7 +1469,9 @@ pub const App = struct {
 
     pub fn sendText(self: *App, text: []const u8) void {
         const pane = self.activePane() orelse return;
-        self.last_visual_activity_ns = std.time.nanoTimestamp();
+        const now_ns = std.time.nanoTimestamp();
+        self.last_input_activity_ns = now_ns;
+        self.last_visual_activity_ns = now_ns;
         self.scrollActiveViewportBottom();
         pane.sendText(text);
     }

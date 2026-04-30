@@ -128,11 +128,105 @@ const ShapeKey = struct {
     ligatures: bool,
 };
 
+const GlyphCacheContext = struct {
+    pub fn hash(_: @This(), key: GlyphKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&key.glyph_index));
+        hasher.update(std.mem.asBytes(&key.face_index));
+        const mode: u8 = @intFromEnum(key.raster_mode);
+        hasher.update(std.mem.asBytes(&mode));
+        return hasher.final();
+    }
+
+    pub fn eql(_: @This(), a: GlyphKey, b: GlyphKey) bool {
+        return a.glyph_index == b.glyph_index and
+            a.face_index == b.face_index and
+            a.raster_mode == b.raster_mode;
+    }
+};
+
+const ShapeCacheContext = struct {
+    pub fn hash(_: @This(), key: ShapeKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(key.text[0..key.len]);
+        hasher.update(std.mem.asBytes(&key.len));
+        hasher.update(std.mem.asBytes(&key.face_idx));
+        const liga: u8 = @intFromBool(key.ligatures);
+        hasher.update(std.mem.asBytes(&liga));
+        return hasher.final();
+    }
+
+    pub fn eql(_: @This(), a: ShapeKey, b: ShapeKey) bool {
+        return a.len == b.len and
+            a.face_idx == b.face_idx and
+            a.ligatures == b.ligatures and
+            std.mem.eql(u8, a.text[0..a.len], b.text[0..b.len]);
+    }
+};
+
 const GlyphInstance = struct {
     glyph_id: u32,
     x_advance: f32,
     x_offset: f32,
     y_offset: f32,
+};
+
+const PreparedGlyph = struct {
+    inst: GlyphInstance,
+    glyph: Glyph,
+};
+
+const ShapedRunEntry = struct {
+    key: ShapeKey,
+    prepared_start: usize,
+    prepared_len: usize,
+};
+
+const PreparedRun = struct {
+    start: usize,
+    glyphs: []PreparedGlyph,
+};
+
+const PreparedKey = struct {
+    text: [128]u8,
+    len: u8,
+    face_idx: u8,
+    ligatures: bool,
+    raster_mode: RasterMode,
+};
+
+const PreparedCacheEntry = struct {
+    glyphs: []PreparedGlyph,
+};
+
+const RecentPreparedEntry = struct {
+    fingerprint: u64,
+    key: PreparedKey,
+    glyphs: []PreparedGlyph,
+};
+
+const RECENT_PREPARED_CACHE_LEN: usize = 16;
+
+const PreparedCacheContext = struct {
+    pub fn hash(_: @This(), key: PreparedKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(key.text[0..key.len]);
+        hasher.update(std.mem.asBytes(&key.len));
+        hasher.update(std.mem.asBytes(&key.face_idx));
+        const liga: u8 = @intFromBool(key.ligatures);
+        hasher.update(std.mem.asBytes(&liga));
+        const mode: u8 = @intFromEnum(key.raster_mode);
+        hasher.update(std.mem.asBytes(&mode));
+        return hasher.final();
+    }
+
+    pub fn eql(_: @This(), a: PreparedKey, b: PreparedKey) bool {
+        return a.len == b.len and
+            a.face_idx == b.face_idx and
+            a.ligatures == b.ligatures and
+            a.raster_mode == b.raster_mode and
+            std.mem.eql(u8, a.text[0..a.len], b.text[0..b.len]);
+    }
 };
 
 // ── Per-pane render-to-texture cache ─────────────────────────────────────────
@@ -532,10 +626,14 @@ pub const FtRenderer = struct {
     atlas_epoch: u64,
 
     // Glyph cache
-    glyph_cache: std.AutoHashMap(GlyphKey, Glyph),
+    glyph_cache: std.HashMap(GlyphKey, Glyph, GlyphCacheContext, std.hash_map.default_max_load_percentage),
 
     // Shaping cache
-    shape_cache: std.AutoHashMap(ShapeKey, ShapeResult),
+    shape_cache: std.HashMap(ShapeKey, ShapeResult, ShapeCacheContext, std.hash_map.default_max_load_percentage),
+
+    // Prepared run cache
+    prepared_cache: std.HashMap(PreparedKey, PreparedCacheEntry, PreparedCacheContext, std.hash_map.default_max_load_percentage),
+    recent_prepared: [RECENT_PREPARED_CACHE_LEN]?RecentPreparedEntry = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN,
 
     // Metrics (all in physical pixels)
     cell_w: f32,
@@ -570,6 +668,10 @@ pub const FtRenderer = struct {
     /// When rows/cols are unchanged we skip the recompute entirely.
     run_buf_rows: usize = 0,
     run_buf_cols: usize = 0,
+    /// Reused prepared glyph pool for pass1/pass2 shaped-run replay.
+    prepared_glyphs: std.ArrayListUnmanaged(PreparedGlyph) = .empty,
+    shaped_runs: std.ArrayListUnmanaged(ShapedRunEntry) = .empty,
+    shaped_run_read_idx: usize = 0,
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
     last_rows_rendered: usize = 0,
@@ -917,8 +1019,9 @@ pub const FtRenderer = struct {
             .atlas_dirty = false,
             .atlas_uploaded_this_frame = false,
             .atlas_epoch = 0,
-            .glyph_cache = std.AutoHashMap(GlyphKey, Glyph).init(allocator),
-            .shape_cache = std.AutoHashMap(ShapeKey, ShapeResult).init(allocator),
+            .glyph_cache = std.HashMap(GlyphKey, Glyph, GlyphCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
+            .shape_cache = std.HashMap(ShapeKey, ShapeResult, ShapeCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
+            .prepared_cache = std.HashMap(PreparedKey, PreparedCacheEntry, PreparedCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
             .cell_w = cell_w,
             .cell_h = cell_h,
             .ascender = baseline_ascender,
@@ -1061,6 +1164,13 @@ pub const FtRenderer = struct {
 
     pub fn deinit(self: *FtRenderer) void {
         if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
+        self.prepared_glyphs.deinit(self.allocator);
+        self.shaped_runs.deinit(self.allocator);
+        var prepared_it = self.prepared_cache.valueIterator();
+        while (prepared_it.next()) |val| {
+            self.allocator.free(val.glyphs);
+        }
+        self.prepared_cache.deinit();
         var it = self.shape_cache.valueIterator();
         while (it.next()) |val| {
             self.allocator.free(val.glyphs);
@@ -1415,6 +1525,9 @@ pub const FtRenderer = struct {
             self.run_buf_cols = col_count;
         }
         const run_buf = self.run_buf;
+        self.prepared_glyphs.clearRetainingCapacity();
+        self.shaped_runs.clearRetainingCapacity();
+        self.shaped_run_read_idx = 0;
 
         // Per-row hash-skip bitset: tracks rows that matched their stored hash in Pass 1
         // and should be skipped in Pass 2 as well.
@@ -1605,12 +1718,11 @@ pub const FtRenderer = struct {
                     // rows we will draw this frame. raw_cell and content_tag
                     // were already fetched above.
                     //
-                    // Optimisation: use cellStyleIdRaw() (direct bit extraction, no C call)
-                    // instead of cellHasStyling() to fast-check for non-default style.
-                    // Also: fg is UNUSED in Pass 1 (flushRasterRun ignores it), so skip
-                    // resolveStyleColor() entirely — only face_idx is needed for rasterization.
+                    // Use the same face/fg grouping as Pass 2 for ligature runs so we can
+                    // replay the shaped results directly instead of re-looking them up.
                     const p1_sid = runtime.cellStyleIdRaw(raw_cell);
                     var face_idx: u8 = 0;
+                    var fg = default_fg;
                     if (p1_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
                         if (runtime.cellStyle(row_cells.*)) |s| {
                             if (s.bold and s.italic) {
@@ -1620,13 +1732,14 @@ pub const FtRenderer = struct {
                             } else if (s.italic) {
                                 face_idx = 3;
                             }
-                            // fg from cellStyle() is unused in Pass 1; skip resolveStyleColor().
+                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
                         }
                     }
-                    // fg is only needed for ligature run grouping in Pass 1 (colorsEqual check).
-                    // Since flushRasterRun ignores fg, use default_fg always — this is safe
-                    // because ligature runs are re-grouped in Pass 2 with the correct fg.
-                    const fg = default_fg;
+                    if (selection_range) |range| {
+                        if (row_has_selection and selection.cellSelected(range, row_y, col_x)) {
+                            fg = selection_fg;
+                        }
+                    }
 
                     switch (content_tag) {
                         .codepoint => {
@@ -1641,14 +1754,16 @@ pub const FtRenderer = struct {
                                 flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 // Fast-path: if the glyph is already in the ascii cache it is
                                 // guaranteed to be in the atlas — skip preRasterize entirely.
-                                const ascii_cached = (cp >= 0x21 and cp <= 0xFF and
-                                    (cp <= 0x7E or cp >= 0xA0) and
-                                    face_idx <= 3 and
-                                    self.ascii_glyphs[@intCast(face_idx)][cp] != null);
+                                const ascii_fast_path = isAsciiFastPathCandidate(cp, face_idx);
+                                const ascii_cached = ascii_fast_path and self.ascii_glyphs[@intCast(face_idx)][cp] != null;
                                 if (!ascii_cached) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
-                                    self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                                    if (ascii_fast_path) {
+                                        self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                                    } else if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
+                                        self.recordShapedRun(self.glyph_buf[0..glyph_len], face_idx, prepared.start, prepared.glyphs.len);
+                                    }
                                 }
                                 continue;
                             }
@@ -1694,7 +1809,9 @@ pub const FtRenderer = struct {
                             }
                             if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
                                 flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
+                                if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
+                                    self.recordShapedRun(self.glyph_buf[0..glyph_len], face_idx, prepared.start, prepared.glyphs.len);
+                                }
                                 continue;
                             }
                             if (run_len + glyph_len > run_buf.len) {
@@ -1832,6 +1949,12 @@ pub const FtRenderer = struct {
                                 if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg, py, py + self.cell_h)) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
+                                    if (!isAsciiFastPathCandidate(cp, face_idx)) {
+                                        if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
+                                            self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
+                                            continue;
+                                        }
+                                    }
                                     self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                 }
                                 continue;
@@ -1884,7 +2007,11 @@ pub const FtRenderer = struct {
                                     @as(f32, @floatFromInt(col_x)) * self.cell_w;
                                 const px = self.padding_x + col_x_px;
                                 self.last_glyph_runs += 1;
-                                self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
+                                if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
+                                    self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
+                                } else {
+                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
+                                }
                                 continue;
                             }
                             if (run_len + glyph_len > run_buf.len) {
@@ -2080,31 +2207,69 @@ pub const FtRenderer = struct {
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
     fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
+        self.preRasterizeShaped(result, raster_mode);
+    }
+
+    fn preRasterizeShaped(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) void {
         for (result.glyphs) |glyph_inst| {
             _ = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode);
         }
     }
 
+    fn prepareGlyphs(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun {
+        if (self.getPreparedCache(utf8, face_idx, raster_mode)) |prepared| return prepared;
+        const result = self.getOrShape(utf8, face_idx) orelse return null;
+        const prepared = self.prepareShapedGlyphs(result, raster_mode) orelse return null;
+        self.putPreparedCache(utf8, face_idx, raster_mode, prepared.glyphs);
+        return prepared;
+    }
+
+    fn prepareShapedGlyphs(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) ?PreparedRun {
+        const prepared_start = self.prepared_glyphs.items.len;
+        self.prepared_glyphs.ensureUnusedCapacity(self.allocator, result.glyphs.len) catch return null;
+        var prepared_len: usize = 0;
+        for (result.glyphs) |glyph_inst| {
+            const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
+            self.prepared_glyphs.appendAssumeCapacity(.{ .inst = glyph_inst, .glyph = glyph });
+            prepared_len += 1;
+        }
+        self.prepared_glyphs.items.len = prepared_start + prepared_len;
+        return .{ .start = prepared_start, .glyphs = self.prepared_glyphs.items[prepared_start..][0..prepared_len] };
+    }
+
     /// Shape and batch glyphs for one cell at (px, py).
     fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
         const result = self.getOrShape(utf8, face_idx) orelse return;
+        self.batchGlyphsShaped(px, py, result, fg, raster_mode, clip_y0, clip_y1);
+    }
 
+    fn batchGlyphsShaped(self: *FtRenderer, px: f32, py: f32, result: ShapeResult, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
         var x_offset: f32 = 0;
         for (result.glyphs) |glyph_inst| {
             const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
-
-            // Snap to integer pixels to prevent subpixel sampling artifacts.
-            const gx = @round(px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
-            const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
-
-            const w = @as(f32, @floatFromInt(glyph.bw));
-            const h = @as(f32, @floatFromInt(glyph.bh));
-            if (w > 0 and h > 0) {
-                self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
-            }
-
-            x_offset += glyph_inst.x_advance;
+            self.emitPreparedGlyph(px, py, &x_offset, glyph_inst, glyph, fg, clip_y0, clip_y1);
         }
+    }
+
+    fn batchPreparedGlyphs(self: *FtRenderer, px: f32, py: f32, glyphs: []const PreparedGlyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void {
+        var x_offset: f32 = 0;
+        for (glyphs) |prepared| {
+            self.emitPreparedGlyph(px, py, &x_offset, prepared.inst, prepared.glyph, fg, clip_y0, clip_y1);
+        }
+    }
+
+    inline fn emitPreparedGlyph(self: *FtRenderer, px: f32, py: f32, x_offset: *f32, glyph_inst: GlyphInstance, glyph: Glyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void {
+        // Snap to integer pixels to prevent subpixel sampling artifacts.
+        const gx = @round(px + x_offset.* + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
+        const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
+
+        const w = @as(f32, @floatFromInt(glyph.bw));
+        const h = @as(f32, @floatFromInt(glyph.bh));
+        if (w > 0 and h > 0) {
+            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
+        }
+
+        x_offset.* += glyph_inst.x_advance;
     }
 
     /// Fast path for printable ASCII (0x21–0x7E) and Latin-1 supplement (0xA0–0xFF):
@@ -2322,7 +2487,12 @@ pub const FtRenderer = struct {
         _ = fg;
         _ = py;
         if (run_len.* == 0) return;
-        self.preRasterize(run_buf[0..run_len.*], face_idx, .terminal);
+        const run = run_buf[0..run_len.*];
+        if (self.prepareGlyphs(run, face_idx, .terminal)) |prepared| {
+            self.recordShapedRun(run, face_idx, prepared.start, prepared.glyphs.len);
+        } else {
+            self.preRasterize(run, face_idx, .terminal);
+        }
         run_start_col.* = 0;
         run_len.* = 0;
     }
@@ -2331,15 +2501,127 @@ pub const FtRenderer = struct {
         if (run_len.* == 0) return;
         self.last_glyph_runs += 1;
         const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
-        self.batchGlyphs(px, py, run_buf[0..run_len.*], face_idx, fg, .terminal, py, py + self.cell_h);
+        const run = run_buf[0..run_len.*];
+        if (self.consumeShapedRun(run, face_idx)) |prepared| {
+            self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
+        } else {
+            self.batchGlyphs(px, py, run, face_idx, fg, .terminal, py, py + self.cell_h);
+        }
         run_start_col.* = 0;
         run_len.* = 0;
+    }
+
+    fn recordShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8, prepared_start: usize, prepared_len: usize) void {
+        if (utf8.len == 0 or utf8.len > 128) return;
+        var key: ShapeKey = undefined;
+        key.len = @intCast(utf8.len);
+        key.face_idx = face_idx;
+        key.ligatures = self.ligatures;
+        @memcpy(key.text[0..utf8.len], utf8);
+        self.shaped_runs.append(self.allocator, .{ .key = key, .prepared_start = prepared_start, .prepared_len = prepared_len }) catch return;
+    }
+
+    fn getPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun {
+        if (utf8.len == 0 or utf8.len > 128) return null;
+        const fingerprint = preparedFingerprint(utf8, face_idx, self.ligatures, raster_mode);
+        if (self.getRecentPrepared(utf8, face_idx, raster_mode, fingerprint)) |glyphs| {
+            return self.appendPreparedRun(glyphs);
+        }
+        const key = self.makePreparedKey(utf8, face_idx, raster_mode);
+        const entry = self.prepared_cache.get(key) orelse return null;
+        self.putRecentPrepared(key, fingerprint, entry.glyphs);
+        return self.appendPreparedRun(entry.glyphs);
+    }
+
+    fn appendPreparedRun(self: *FtRenderer, glyphs: []const PreparedGlyph) ?PreparedRun {
+        const prepared_start = self.prepared_glyphs.items.len;
+        self.prepared_glyphs.appendSlice(self.allocator, glyphs) catch return null;
+        return .{ .start = prepared_start, .glyphs = self.prepared_glyphs.items[prepared_start..][0..glyphs.len] };
+    }
+
+    fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, glyphs: []const PreparedGlyph) void {
+        if (utf8.len == 0 or utf8.len > 128) return;
+        const key = self.makePreparedKey(utf8, face_idx, raster_mode);
+        const fingerprint = preparedFingerprint(utf8, face_idx, self.ligatures, raster_mode);
+        if (self.prepared_cache.get(key)) |entry| {
+            self.putRecentPrepared(key, fingerprint, entry.glyphs);
+            return;
+        }
+        const owned = self.allocator.alloc(PreparedGlyph, glyphs.len) catch return;
+        @memcpy(owned, glyphs);
+        self.prepared_cache.put(key, .{ .glyphs = owned }) catch {
+            self.allocator.free(owned);
+            return;
+        };
+        self.putRecentPrepared(key, fingerprint, owned);
+    }
+
+    fn makePreparedKey(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) PreparedKey {
+        var key: PreparedKey = undefined;
+        key.len = @intCast(utf8.len);
+        key.face_idx = face_idx;
+        key.ligatures = self.ligatures;
+        key.raster_mode = raster_mode;
+        @memcpy(key.text[0..utf8.len], utf8);
+        return key;
+    }
+
+    fn getRecentPrepared(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, fingerprint: u64) ?[]PreparedGlyph {
+        const slot_idx: usize = @intCast(fingerprint & (RECENT_PREPARED_CACHE_LEN - 1));
+        const recent = self.recent_prepared[slot_idx] orelse return null;
+        if (recent.fingerprint != fingerprint) return null;
+        if (recent.key.face_idx != face_idx or recent.key.ligatures != self.ligatures or recent.key.raster_mode != raster_mode or recent.key.len != utf8.len) return null;
+        if (!std.mem.eql(u8, recent.key.text[0..utf8.len], utf8)) return null;
+        return recent.glyphs;
+    }
+
+    fn putRecentPrepared(self: *FtRenderer, key: PreparedKey, fingerprint: u64, glyphs: []PreparedGlyph) void {
+        const slot_idx: usize = @intCast(fingerprint & (RECENT_PREPARED_CACHE_LEN - 1));
+        self.recent_prepared[slot_idx] = .{ .fingerprint = fingerprint, .key = key, .glyphs = glyphs };
+    }
+
+    fn preparedFingerprint(utf8: []const u8, face_idx: u8, ligatures: bool, raster_mode: RasterMode) u64 {
+        var fingerprint: u64 = @as(u64, utf8.len) *% 0x9E3779B185EBCA87;
+        fingerprint ^= (@as(u64, face_idx) << 48);
+        fingerprint ^= (@as(u64, @intFromBool(ligatures)) << 40);
+        fingerprint ^= (@as(u64, @intFromEnum(raster_mode)) << 32);
+        if (utf8.len > 0) {
+            fingerprint ^= @as(u64, utf8[0]) << 24;
+            fingerprint ^= @as(u64, utf8[utf8.len - 1]) << 16;
+            fingerprint ^= @as(u64, utf8[utf8.len / 2]) << 8;
+            fingerprint ^= @as(u64, utf8[utf8.len / 4]);
+        }
+        return std.math.rotl(u64, fingerprint, 17) ^ 0xA0761D6478BD642F;
+    }
+
+    fn consumeShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?[]const PreparedGlyph {
+        if (self.shaped_run_read_idx >= self.shaped_runs.items.len) return null;
+        const entry = &self.shaped_runs.items[self.shaped_run_read_idx];
+        if (entry.key.len != utf8.len or
+            entry.key.face_idx != face_idx or
+            entry.key.ligatures != self.ligatures or
+            !std.mem.eql(u8, entry.key.text[0..utf8.len], utf8))
+        {
+            self.shaped_run_read_idx = self.shaped_runs.items.len;
+            return null;
+        }
+        self.shaped_run_read_idx += 1;
+        return self.prepared_glyphs.items[entry.prepared_start..][0..entry.prepared_len];
+    }
+
+    inline fn isAsciiFastPathCandidate(cp: u32, face_idx: u8) bool {
+        if (cp < 0x21 or cp > 0xFF or face_idx > 3) return false;
+        if (cp > 0x7E and cp < 0xA0) return false;
+        return true;
     }
 
     fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult {
         if (utf8.len == 0 or utf8.len > 128) return null;
 
-        var key = ShapeKey{ .text = [_]u8{0} ** 128, .len = @intCast(utf8.len), .face_idx = face_idx, .ligatures = self.ligatures };
+        var key: ShapeKey = undefined;
+        key.len = @intCast(utf8.len);
+        key.face_idx = face_idx;
+        key.ligatures = self.ligatures;
         @memcpy(key.text[0..utf8.len], utf8);
 
         if (self.shape_cache.get(key)) |res| return res;
@@ -2401,7 +2683,8 @@ pub const FtRenderer = struct {
         const use_subpixel = self.smoothing == .subpixel and raster_mode == .terminal;
         const load_flags = self.loadFlagsForRasterMode(use_subpixel);
         if (ft.FT_Load_Glyph(primary_face, glyph_id, load_flags) != 0 or glyph_id == 0) {
-            self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
+            const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+            self.glyph_cache.put(key, miss) catch {};
             return null;
         }
 
@@ -2412,7 +2695,8 @@ pub const FtRenderer = struct {
         }
         if (ft.FT_Render_Glyph(slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
             if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
-                self.glyph_cache.put(key, Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 }) catch {};
+                const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                self.glyph_cache.put(key, miss) catch {};
                 return null;
             }
         }
@@ -2559,6 +2843,12 @@ pub const FtRenderer = struct {
         // are not used.
         self.glyph_cache.clearRetainingCapacity();
         self.shape_cache.clearRetainingCapacity();
+        var prepared_it = self.prepared_cache.valueIterator();
+        while (prepared_it.next()) |val| {
+            self.allocator.free(val.glyphs);
+        }
+        self.prepared_cache.clearRetainingCapacity();
+        self.recent_prepared = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN;
         // Clear ASCII/Latin-1 fast-path cache (UVs are now stale).
         self.ascii_glyphs = [_][256]?Glyph{[_]?Glyph{null} ** 256} ** 4;
     }

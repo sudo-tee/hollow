@@ -843,7 +843,7 @@ pub const Runtime = struct {
 
     pub fn cellStyle(self: *Runtime, row_cells: ?*anyopaque) ?Style {
         if (row_cells) |cells| {
-            var style = std.mem.zeroes(Style);
+            var style: Style = undefined;
             style.size = @sizeOf(Style);
             if (self.row_cells_get(cells, @intFromEnum(CellData.style), &style) == success) return style;
         }

@@ -184,6 +184,12 @@ var g_bottom_bar_cache: BarCache = .{};
 var g_phase_accum_tick_ns: i128 = 0;
 var g_phase_accum_offscreen_ns: i128 = 0;
 var g_phase_accum_swapchain_ns: i128 = 0;
+var g_phase_accum_offscreen_terminal_ns: i128 = 0;
+var g_phase_accum_offscreen_bar_preraster_ns: i128 = 0;
+var g_phase_accum_swapchain_panes_ns: i128 = 0;
+var g_phase_accum_swapchain_ui_ns: i128 = 0;
+var g_phase_accum_swapchain_glyph_ns: i128 = 0;
+var g_phase_accum_swapchain_submit_ns: i128 = 0;
 var g_phase_accum_dirty_frames: usize = 0;
 var g_phase_accum_clean_frames: usize = 0;
 var g_phase_sample_frames: usize = 0;
@@ -241,6 +247,12 @@ var g_last_frame_offscreen_ms: f32 = 0;
 var g_last_frame_queue_ms: f32 = 0;
 var g_last_frame_gpu_ms: f32 = 0;
 var g_last_frame_swap_ms: f32 = 0;
+var g_last_frame_offscreen_terminal_ms: f32 = 0;
+var g_last_frame_offscreen_bar_preraster_ms: f32 = 0;
+var g_last_frame_swapchain_panes_ms: f32 = 0;
+var g_last_frame_swapchain_ui_ms: f32 = 0;
+var g_last_frame_swapchain_glyph_ms: f32 = 0;
+var g_last_frame_swapchain_submit_ms: f32 = 0;
 // Frame-local queue/gpu accumulators, reset at frame start, captured at offscreen end.
 var g_frame_queue_ns: i128 = 0;
 var g_frame_gpu_ns: i128 = 0;
@@ -1198,6 +1210,29 @@ const WidgetPreRasterCtx = struct {
 
 var g_widget_pre_raster_ctx: ?WidgetPreRasterCtx = null;
 
+fn barCacheDirty(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]const u8) bool {
+    api.get_field(state, ui_idx, dirty_field);
+    const dirty = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+    return dirty;
+}
+
+fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]const u8, cache_field: [:0]const u8, producer_field: [:0]const u8) bool {
+    const dirty = barCacheDirty(api, state, ui_idx, dirty_field);
+    if (!dirty) {
+        api.get_field(state, ui_idx, cache_field);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) return true;
+        pop(api, state, 1);
+    }
+
+    api.get_field(state, ui_idx, producer_field);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        return true;
+    }
+    pop(api, state, 1);
+    return false;
+}
+
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_render_ctx orelse return;
     const api = runtime.context.api;
@@ -1212,14 +1247,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         pop(api, state, 2);
         return;
     }
+    const ui_idx = lua_mod.absoluteIndex(api, state, -1);
     var seg_text_buf: [2048]u8 = undefined;
     var reserved_sidebar_width: f32 = 0.0;
     var reserved_sidebar_side_right = false;
     var top_h: f32 = @as(f32, @floatFromInt(ctx.app.config.top_bar_height));
     var bottom_h: f32 = 0.0;
 
-    api.get_field(state, -1, "_topbar_layout");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_layout", "_topbar_layout")) {
         const layout_idx = lua_mod.absoluteIndex(api, state, -1);
         api.get_field(state, layout_idx, "height");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
@@ -1227,11 +1262,10 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             if (height > 0) top_h = @floatCast(height);
         }
         lua_mod.pop(api, state, 1);
+        lua_mod.pop(api, state, 1);
     }
-    lua_mod.pop(api, state, 1);
 
-    api.get_field(state, -1, "_bottombar_layout");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (pushBarCachedTable(api, state, ui_idx, "bottombar_cache_dirty", "bottombar_cache_layout", "_bottombar_layout")) {
         const layout_idx = lua_mod.absoluteIndex(api, state, -1);
         api.get_field(state, layout_idx, "height");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
@@ -1239,24 +1273,22 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             if (height > 0) bottom_h = @as(f32, @floatCast(height));
         }
         lua_mod.pop(api, state, 1);
+        lua_mod.pop(api, state, 1);
     }
-    lua_mod.pop(api, state, 1);
 
     const bottom_y: f32 = ctx.height - bottom_h;
 
-    api.get_field(state, -1, "_topbar_state");
-    if (top_h > 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (top_h > 0 and pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state")) {
         const widget = parseBarWidgetView(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
         renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, 0.0, top_h, widget);
+        lua_mod.pop(api, state, 1);
     }
-    lua_mod.pop(api, state, 1);
 
-    api.get_field(state, -1, "_bottombar_state");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table and bottom_h > 0) {
+    if (bottom_h > 0 and pushBarCachedTable(api, state, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state")) {
         const widget = parseBarWidgetView(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
         renderBarWidgetSurface(.bottom, ctx.renderer, ctx.app, ctx.width, bottom_y, bottom_h, widget);
+        lua_mod.pop(api, state, 1);
     }
-    lua_mod.pop(api, state, 1);
 
     api.get_field(state, -1, "_sidebar_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
@@ -1531,11 +1563,13 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
         pop(api, state, 2);
         return;
     }
+    const ui_idx = lua_mod.absoluteIndex(api, state, -1);
 
     const process_bar = struct {
-        fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, field_name: [:0]const u8) void {
-            api_.get_field(state_, -1, field_name);
-            if (@as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .function and api_.pcall(state_, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api_.value_type(state_, -1))) == .table) {
+        fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, ui_idx_: c_int, dirty_field: [:0]const u8, cache_field: [:0]const u8, producer_field: [:0]const u8) void {
+            const dirty = barCacheDirty(api_, state_, ui_idx_, dirty_field);
+            if (!dirty and !renderer_.atlas_dirty) return;
+            if (pushBarCachedTable(api_, state_, ui_idx_, dirty_field, cache_field, producer_field)) {
                 var text_buf: [2048]u8 = undefined;
                 const view = parseBarWidgetView(api_, state_, lua_mod.absoluteIndex(api_, state_, -1), text_buf[0..]);
                 for (view.items[0..view.len]) |item| {
@@ -1551,13 +1585,13 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
                         .spacer => {},
                     }
                 }
+                lua_mod.pop(api_, state_, 1);
             }
-            lua_mod.pop(api_, state_, 1);
         }
     };
 
-    process_bar.run(api, state, renderer, "_topbar_state");
-    process_bar.run(api, state, renderer, "_bottombar_state");
+    process_bar.run(api, state, renderer, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state");
+    process_bar.run(api, state, renderer, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
 
     pop(api, state, 2);
 }
@@ -1891,6 +1925,30 @@ pub fn run(app: *App) !void {
     g_perf_frame_ms = 0;
     g_perf_window_max_frame_ns = 0;
     g_perf_max_frame_ms = 0;
+    g_phase_accum_tick_ns = 0;
+    g_phase_accum_offscreen_ns = 0;
+    g_phase_accum_swapchain_ns = 0;
+    g_phase_accum_offscreen_terminal_ns = 0;
+    g_phase_accum_offscreen_bar_preraster_ns = 0;
+    g_phase_accum_swapchain_panes_ns = 0;
+    g_phase_accum_swapchain_ui_ns = 0;
+    g_phase_accum_swapchain_glyph_ns = 0;
+    g_phase_accum_swapchain_submit_ns = 0;
+    g_phase_accum_dirty_frames = 0;
+    g_phase_accum_clean_frames = 0;
+    g_phase_sample_frames = 0;
+    g_phase_last_log_ns = 0;
+    g_last_frame_tick_ms = 0;
+    g_last_frame_offscreen_ms = 0;
+    g_last_frame_queue_ms = 0;
+    g_last_frame_gpu_ms = 0;
+    g_last_frame_swap_ms = 0;
+    g_last_frame_offscreen_terminal_ms = 0;
+    g_last_frame_offscreen_bar_preraster_ms = 0;
+    g_last_frame_swapchain_panes_ms = 0;
+    g_last_frame_swapchain_ui_ms = 0;
+    g_last_frame_swapchain_glyph_ms = 0;
+    g_last_frame_swapchain_submit_ms = 0;
     g_drag_node = null;
     g_mouse_button_down = null;
 
@@ -2162,6 +2220,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Compute layout once (used in both phases).
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const leaves = app.computeActiveLayout(&layout_buf);
+    var offscreen_terminal_ns: i128 = 0;
+    var offscreen_bar_preraster_ns: i128 = 0;
 
     // Decide once whether to use direct rendering.
     // renderer_safe_mode forces the simpler direct path for all panes as a
@@ -2182,6 +2242,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Reset frame-local queue/gpu accumulators for the debug overlay.
         g_frame_queue_ns = 0;
         g_frame_gpu_ns = 0;
+        const offscreen_terminal_start_ns = std.time.nanoTimestamp();
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -2557,11 +2618,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             }
         }
+        offscreen_terminal_ns += std.time.nanoTimestamp() - offscreen_terminal_start_ns;
 
         if (app.lua) |*lua| {
+            const offscreen_bar_preraster_start_ns = std.time.nanoTimestamp();
             g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
             defer g_widget_pre_raster_ctx = null;
             lua.withLockedState(void, preRasterizeLuaBarWidgets);
+            offscreen_bar_preraster_ns += std.time.nanoTimestamp() - offscreen_bar_preraster_start_ns;
         }
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
@@ -2588,10 +2652,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
     pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
     c.sg_begin_pass(&pass);
+    var swapchain_panes_ns: i128 = 0;
+    var swapchain_ui_ns: i128 = 0;
+    var swapchain_glyph_ns: i128 = 0;
 
     // Blit each pane's cached RT into the swapchain pass.
     // For single pane without tab bar with direct render enabled, render directly instead.
     // use_direct_render was computed once above before both phases.
+    const swapchain_panes_start_ns = std.time.nanoTimestamp();
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -2656,6 +2724,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             }
         }
     }
+    swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
 
     // Draw split borders as filled 2px quads (only when >1 pane).
     // Floating panes are modal overlays, so any seam covered by a floating pane
@@ -2742,6 +2811,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     // Draw top bar background; Lua widgets render the contents.
+    const swapchain_ui_start_ns = std.time.nanoTimestamp();
     const tbh_u = app.tabBarHeight();
     const bbh_u = app.bottomBarHeight();
     resetBarCache(&g_top_bar_cache, width, 0.0, @floatFromInt(tbh_u));
@@ -2788,6 +2858,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // Flush all queued geometry — exactly once per frame.
     c.sgl_draw();
+    swapchain_ui_ns += std.time.nanoTimestamp() - swapchain_ui_start_ns;
 
     // Draw glyph quads through the custom gamma-correct pipeline.
     // In direct-render mode these are the glyphs accumulated by drawDirect().
@@ -2803,6 +2874,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // D3D11 debug; the real fix is to call drawDirect() before sg_begin_pass too.
     // For now we keep this as a safety net — it will be hit only in direct-render
     // mode which is disabled by default.
+    const swapchain_glyph_start_ns = std.time.nanoTimestamp();
     if (g_ft_renderer) |*renderer| {
         if (app.config.renderer_disable_swapchain_glyphs) {
             renderer.discardGlyphQuads();
@@ -2810,10 +2882,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             renderer.drawGlyphQuads(width, height, false, .{ 0.0, 0.0, 0.0, 1.0 });
         }
     }
+    swapchain_glyph_ns += std.time.nanoTimestamp() - swapchain_glyph_start_ns;
 
+    const swapchain_submit_start_ns = std.time.nanoTimestamp();
     c.sg_end_pass();
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
+    const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;
     sleepForFrameCap(app, frame_start_ns, after_commit_ns);
 
     if (collect_perf) {
@@ -2821,6 +2896,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
         g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
         g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
+        g_phase_accum_offscreen_terminal_ns += offscreen_terminal_ns;
+        g_phase_accum_offscreen_bar_preraster_ns += offscreen_bar_preraster_ns;
+        g_phase_accum_swapchain_panes_ns += swapchain_panes_ns;
+        g_phase_accum_swapchain_ui_ns += swapchain_ui_ns;
+        g_phase_accum_swapchain_glyph_ns += swapchain_glyph_ns;
+        g_phase_accum_swapchain_submit_ns += swapchain_submit_ns;
         g_phase_sample_frames += 1;
 
         // Update per-frame last values for the debug overlay (no division needed).
@@ -2829,6 +2910,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
         g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
         g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
+        g_last_frame_offscreen_terminal_ms = @as(f32, @floatFromInt(offscreen_terminal_ns)) / 1_000_000.0;
+        g_last_frame_offscreen_bar_preraster_ms = @as(f32, @floatFromInt(offscreen_bar_preraster_ns)) / 1_000_000.0;
+        g_last_frame_swapchain_panes_ms = @as(f32, @floatFromInt(swapchain_panes_ns)) / 1_000_000.0;
+        g_last_frame_swapchain_ui_ms = @as(f32, @floatFromInt(swapchain_ui_ns)) / 1_000_000.0;
+        g_last_frame_swapchain_glyph_ms = @as(f32, @floatFromInt(swapchain_glyph_ns)) / 1_000_000.0;
+        g_last_frame_swapchain_submit_ms = @as(f32, @floatFromInt(swapchain_submit_ns)) / 1_000_000.0;
 
         if (g_phase_last_log_ns == 0) g_phase_last_log_ns = frame_start_ns;
         if (frame_start_ns - g_phase_last_log_ns >= 2_000_000_000) {
@@ -2836,6 +2923,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const tick_ms = @as(f32, @floatFromInt(g_phase_accum_tick_ns)) / n / 1_000_000.0;
             const off_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_ns)) / n / 1_000_000.0;
             const swap_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_ns)) / n / 1_000_000.0;
+            const off_term_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_terminal_ns)) / n / 1_000_000.0;
+            const off_bar_ms = @as(f32, @floatFromInt(g_phase_accum_offscreen_bar_preraster_ns)) / n / 1_000_000.0;
+            const swap_panes_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_panes_ns)) / n / 1_000_000.0;
+            const swap_ui_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_ui_ns)) / n / 1_000_000.0;
+            const swap_glyph_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_glyph_ns)) / n / 1_000_000.0;
+            const swap_submit_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_submit_ns)) / n / 1_000_000.0;
             const queue_ms = @as(f32, @floatFromInt(g_phase_accum_queue_ns)) / n / 1_000_000.0;
             const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
             const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
@@ -2855,12 +2948,18 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const true_dl = g_phase_accum_true_dl_frames;
             const stale_f = g_phase_accum_atlas_stale_frames;
             std.log.info(
-                "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
-                .{ n, fps, tick_ms, off_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
+                "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (term={d:.2}ms bars={d:.2}ms queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms (panes={d:.2}ms ui={d:.2}ms glyph={d:.2}ms submit={d:.2}ms)  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
+                .{ n, fps, tick_ms, off_ms, off_term_ms, off_bar_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, swap_panes_ms, swap_ui_ms, swap_glyph_ms, swap_submit_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
             );
             g_phase_accum_tick_ns = 0;
             g_phase_accum_offscreen_ns = 0;
             g_phase_accum_swapchain_ns = 0;
+            g_phase_accum_offscreen_terminal_ns = 0;
+            g_phase_accum_offscreen_bar_preraster_ns = 0;
+            g_phase_accum_swapchain_panes_ns = 0;
+            g_phase_accum_swapchain_ui_ns = 0;
+            g_phase_accum_swapchain_glyph_ns = 0;
+            g_phase_accum_swapchain_submit_ns = 0;
             g_phase_accum_queue_ns = 0;
             g_phase_accum_gpu_ns = 0;
             g_phase_accum_pass1_ns = 0;
@@ -2945,7 +3044,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
 
-    var lines: [11][96]u8 = undefined;
+    var lines: [13][128]u8 = undefined;
     const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
     const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
@@ -2962,7 +3061,17 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
         g_last_frame_queue_ms, g_last_frame_gpu_ms,
         g_last_frame_swap_ms,
     }) catch "timing ?";
-    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10 };
+    const text11 = std.fmt.bufPrint(&lines[11], "off term={d:.2} bars={d:.2}", .{
+        g_last_frame_offscreen_terminal_ms,
+        g_last_frame_offscreen_bar_preraster_ms,
+    }) catch "off detail ?";
+    const text12 = std.fmt.bufPrint(&lines[12], "sw panes={d:.2} ui={d:.2} glyph={d:.2} sub={d:.2}", .{
+        g_last_frame_swapchain_panes_ms,
+        g_last_frame_swapchain_ui_ms,
+        g_last_frame_swapchain_glyph_ms,
+        g_last_frame_swapchain_submit_ms,
+    }) catch "sw detail ?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12 };
 
     var max_chars: usize = 0;
     for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));
