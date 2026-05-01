@@ -125,7 +125,7 @@ end
 
 hollow.config.set({
   max_fps = 120,
-  debug_overlay = false,
+  debug_overlay = true,
   renderer_single_pane_direct = false,
   vsync = false,
   backend = "sokol",
@@ -140,7 +140,7 @@ hollow.config.set({
     hinting = "light",
     ligatures = true,
     embolden = 0.3,
-    family = "Rec Mono Duotone",
+    family = "JetBrains Mono",
   },
   cols = 120,
   rows = 34,
