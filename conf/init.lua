@@ -125,7 +125,7 @@ end
 
 hollow.config.set({
   max_fps = 120,
-  debug_overlay = true,
+  debug_overlay = false,
   renderer_single_pane_direct = false,
   vsync = false,
   backend = "sokol",

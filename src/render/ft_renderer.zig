@@ -1095,11 +1095,15 @@ pub const FtRenderer = struct {
     /// Call this before the sg_begin_pass / flushAtlas cycle so the atlas upload
     /// is not duplicated later when drawLabel is called.
     pub fn preRasterizeLabel(self: *FtRenderer, text: []const u8) void {
+        self.preRasterizeLabelFace(text, 0);
+    }
+
+    pub fn preRasterizeLabelFace(self: *FtRenderer, text: []const u8, face_idx: u8) void {
         var i: usize = 0;
         while (i < text.len) {
             const cp_len = utf8CodepointLen(text[i]);
             const end = @min(i + cp_len, text.len);
-            self.preRasterize(text[i..end], 0, .ui);
+            self.preRasterize(text[i..end], face_idx, .ui);
             i = end;
         }
     }
@@ -2814,6 +2818,7 @@ pub const FtRenderer = struct {
             }
         }
         self.atlas_dirty = true;
+        self.atlas_uploaded_this_frame = false;
         if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
         const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));

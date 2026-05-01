@@ -496,6 +496,7 @@ const BarSegmentView = struct {
     segments: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
     segments_len: usize = 0,
     text_storage: [512]u8 = [_]u8{0} ** 512,
+    id_storage: [128]u8 = [_]u8{0} ** 128,
     segments_text_storage: [1024]u8 = [_]u8{0} ** 1024,
     segments_id_storage: [16][128]u8 = [_][128]u8{[_]u8{0} ** 128} ** 16,
 };
@@ -506,6 +507,7 @@ const BarTabView = struct {
     segments: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
     segments_len: usize = 0,
     text_storage: [512]u8 = [_]u8{0} ** 512,
+    id_storage: [128]u8 = [_]u8{0} ** 128,
     segments_text_storage: [1024]u8 = [_]u8{0} ** 1024,
     segments_id_storage: [16][128]u8 = [_][128]u8{[_]u8{0} ** 128} ** 16,
 };
@@ -620,6 +622,11 @@ fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c
     @memcpy(dst.text_storage[0..text_len], parsed.text[0..text_len]);
     dst.segment = parsed;
     dst.segment.text = dst.text_storage[0..text_len];
+    if (parsed.id) |id| {
+        const id_len = @min(id.len, dst.id_storage.len);
+        @memcpy(dst.id_storage[0..id_len], id[0..id_len]);
+        dst.segment.id = dst.id_storage[0..id_len];
+    }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
         var seg_buf: [16]bar.Segment = undefined;
         var seg_text_buf: [1024]u8 = undefined;
@@ -638,6 +645,11 @@ fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, te
     @memcpy(dst.text_storage[0..text_len], parsed.text[0..text_len]);
     dst.segment = parsed;
     dst.segment.text = dst.text_storage[0..text_len];
+    if (parsed.id) |id| {
+        const id_len = @min(id.len, dst.id_storage.len);
+        @memcpy(dst.id_storage[0..id_len], id[0..id_len]);
+        dst.segment.id = dst.id_storage[0..id_len];
+    }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
         var seg_buf: [16]bar.Segment = undefined;
         var seg_text_buf: [1024]u8 = undefined;
@@ -648,18 +660,18 @@ fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, te
     }
 }
 
-fn parseBarWidgetView(api: Api, state: *State, table_idx: c_int, text_buf: []u8) BarWidgetView {
-    var view = BarWidgetView{};
-    view.layout = topLevelBarLayout(api, state, table_idx);
-    view.style = barStyleField(api, state, table_idx, "style");
+fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c_int, text_buf: []u8) void {
+    dst.* = .{};
+    dst.layout = topLevelBarLayout(api, state, table_idx);
+    dst.style = barStyleField(api, state, table_idx, "style");
 
     api.get_field(state, table_idx, "items");
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return view;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return;
     const items_idx = absoluteIndex(api, state, -1);
 
     var item_i: c_int = 1;
-    while (view.len < view.items.len) : (item_i += 1) {
+    while (dst.len < dst.items.len) : (item_i += 1) {
         api.rawgeti(state, items_idx, item_i);
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
             lua_mod.pop(api, state, 1);
@@ -670,16 +682,23 @@ fn parseBarWidgetView(api: Api, state: *State, table_idx: c_int, text_buf: []u8)
         const item_idx = absoluteIndex(api, state, -1);
 
         api.get_field(state, item_idx, "kind");
+        var item_kind: BarItemKind = .segment;
         var kind_len: usize = 0;
-        const kind_ptr = api.to_lstring(state, -1, &kind_len);
-        const kind = if (kind_ptr) |ptr| ptr[0..kind_len] else "segment";
+        if (api.to_lstring(state, -1, &kind_len)) |ptr| {
+            const kind = ptr[0..kind_len];
+            if (std.mem.eql(u8, kind, "spacer")) {
+                item_kind = .spacer;
+            } else if (std.mem.eql(u8, kind, "tabs")) {
+                item_kind = .tabs;
+            }
+        }
         lua_mod.pop(api, state, 1);
 
-        const item_ptr = &view.items[view.len];
+        const item_ptr = &dst.items[dst.len];
         item_ptr.* = .{};
-        if (std.mem.eql(u8, kind, "spacer")) {
+        if (item_kind == .spacer) {
             item_ptr.kind = .spacer;
-        } else if (std.mem.eql(u8, kind, "tabs")) {
+        } else if (item_kind == .tabs) {
             item_ptr.kind = .tabs;
             item_ptr.tabs.style = barStyleField(api, state, item_idx, "style");
             api.get_field(state, item_idx, "fit");
@@ -711,10 +730,8 @@ fn parseBarWidgetView(api: Api, state: *State, table_idx: c_int, text_buf: []u8)
             fillBarSegmentView(&item_ptr.segment, api, state, item_idx, text_buf);
         }
 
-        view.len += 1;
+        dst.len += 1;
     }
-
-    return view;
 }
 
 fn segmentArrayTextLen(segments: []const bar.Segment) usize {
@@ -1284,13 +1301,15 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const bottom_y: f32 = ctx.height - bottom_h;
 
     if (top_h > 0 and pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state")) {
-        const widget = parseBarWidgetView(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+        var widget = BarWidgetView{};
+        parseBarWidgetView(&widget, api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
         renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, 0.0, top_h, widget);
         lua_mod.pop(api, state, 1);
     }
 
     if (bottom_h > 0 and pushBarCachedTable(api, state, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state")) {
-        const widget = parseBarWidgetView(api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
+        var widget = BarWidgetView{};
+        parseBarWidgetView(&widget, api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
         renderBarWidgetSurface(.bottom, ctx.renderer, ctx.app, ctx.width, bottom_y, bottom_h, widget);
         lua_mod.pop(api, state, 1);
     }
@@ -1308,16 +1327,18 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         pop(api, state, 1);
 
         api.get_field(state, sidebar_idx, "side");
+        var sidebar_on_right = false;
         var side_len: usize = 0;
-        const side_ptr = api.to_lstring(state, -1, &side_len);
-        const side = if (side_ptr) |ptr| ptr[0..side_len] else "left";
+        if (api.to_lstring(state, -1, &side_len)) |ptr| {
+            sidebar_on_right = std.mem.eql(u8, ptr[0..side_len], "right");
+        }
         pop(api, state, 1);
         if (reserve) {
             reserved_sidebar_width = sidebar_width;
-            reserved_sidebar_side_right = std.mem.eql(u8, side, "right");
+            reserved_sidebar_side_right = sidebar_on_right;
         }
 
-        const panel_x: f32 = if (std.mem.eql(u8, side, "right")) ctx.width - sidebar_width else 0.0;
+        const panel_x: f32 = if (sidebar_on_right) ctx.width - sidebar_width else 0.0;
         const panel_y: f32 = top_h;
         const panel_h: f32 = ctx.height - panel_y - bottom_h;
         drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, 22, 27, 34, 235);
@@ -1418,9 +1439,38 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 }
                 const rows_idx = absoluteIndex(api, state, -1);
                 api.get_field(state, overlay_idx, "align");
+                var overlay_align = enum {
+                    center,
+                    top_left,
+                    top_center,
+                    top_right,
+                    left_center,
+                    right_center,
+                    bottom_left,
+                    bottom_center,
+                    bottom_right,
+                }.center;
                 var align_len: usize = 0;
-                const align_ptr = api.to_lstring(state, -1, &align_len);
-                const overlay_align = if (align_ptr) |ptr| ptr[0..align_len] else "center";
+                if (api.to_lstring(state, -1, &align_len)) |ptr| {
+                    const align_name = ptr[0..align_len];
+                    if (std.mem.eql(u8, align_name, "top_left")) {
+                        overlay_align = .top_left;
+                    } else if (std.mem.eql(u8, align_name, "top_center")) {
+                        overlay_align = .top_center;
+                    } else if (std.mem.eql(u8, align_name, "top_right")) {
+                        overlay_align = .top_right;
+                    } else if (std.mem.eql(u8, align_name, "left_center")) {
+                        overlay_align = .left_center;
+                    } else if (std.mem.eql(u8, align_name, "right_center")) {
+                        overlay_align = .right_center;
+                    } else if (std.mem.eql(u8, align_name, "bottom_left")) {
+                        overlay_align = .bottom_left;
+                    } else if (std.mem.eql(u8, align_name, "bottom_center")) {
+                        overlay_align = .bottom_center;
+                    } else if (std.mem.eql(u8, align_name, "bottom_right")) {
+                        overlay_align = .bottom_right;
+                    }
+                }
                 pop(api, state, 1);
 
                 var max_chars: usize = 0;
@@ -1474,28 +1524,28 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 var panel_x = content_left + (content_width - panel_w) * 0.5;
                 var panel_y = top_h + overlay_margin_y + stack_offset;
 
-                if (std.mem.eql(u8, overlay_align, "top_left")) {
+                if (overlay_align == .top_left) {
                     panel_x = content_left + overlay_margin_x;
                     panel_y = top_h + overlay_margin_y + stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "top_center")) {
+                } else if (overlay_align == .top_center) {
                     panel_x = content_left + (content_width - panel_w) * 0.5;
                     panel_y = top_h + overlay_margin_y + stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "top_right")) {
+                } else if (overlay_align == .top_right) {
                     panel_x = content_right - panel_w - overlay_margin_x;
                     panel_y = top_h + overlay_margin_y + stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "left_center")) {
+                } else if (overlay_align == .left_center) {
                     panel_x = content_left + overlay_margin_x;
                     panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "right_center")) {
+                } else if (overlay_align == .right_center) {
                     panel_x = content_right - panel_w - overlay_margin_x;
                     panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "bottom_left")) {
+                } else if (overlay_align == .bottom_left) {
                     panel_x = content_left + overlay_margin_x;
                     panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "bottom_center")) {
+                } else if (overlay_align == .bottom_center) {
                     panel_x = content_left + (content_width - panel_w) * 0.5;
                     panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
-                } else if (std.mem.eql(u8, overlay_align, "bottom_right")) {
+                } else if (overlay_align == .bottom_right) {
                     panel_x = content_right - panel_w - overlay_margin_x;
                     panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
                 }
@@ -1571,20 +1621,36 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
     const ui_idx = lua_mod.absoluteIndex(api, state, -1);
 
     const process_bar = struct {
+        fn preRasterizeSegments(renderer_: *FtRenderer, segments: []const bar.Segment) void {
+            for (segments) |seg| {
+                if (seg.text.len == 0) continue;
+                renderer_.preRasterizeLabelFace(seg.text, if (seg.bold) 1 else 0);
+            }
+        }
+
         fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, ui_idx_: c_int, dirty_field: [:0]const u8, cache_field: [:0]const u8, producer_field: [:0]const u8) void {
             const dirty = barCacheDirty(api_, state_, ui_idx_, dirty_field);
             if (!dirty and !renderer_.atlas_dirty) return;
             if (pushBarCachedTable(api_, state_, ui_idx_, dirty_field, cache_field, producer_field)) {
                 var text_buf: [2048]u8 = undefined;
-                const view = parseBarWidgetView(api_, state_, lua_mod.absoluteIndex(api_, state_, -1), text_buf[0..]);
+                var view = BarWidgetView{};
+                parseBarWidgetView(&view, api_, state_, lua_mod.absoluteIndex(api_, state_, -1), text_buf[0..]);
                 for (view.items[0..view.len]) |item| {
                     switch (item.kind) {
                         .segment => {
-                            if (item.segment.segment.text.len > 0) renderer_.preRasterizeLabel(item.segment.segment.text);
+                            if (item.segment.segments_len > 0) {
+                                preRasterizeSegments(renderer_, item.segment.segments[0..item.segment.segments_len]);
+                            } else if (item.segment.segment.text.len > 0) {
+                                renderer_.preRasterizeLabelFace(item.segment.segment.text, if (item.segment.segment.bold or item.segment.style.bold) 1 else 0);
+                            }
                         },
                         .tabs => {
                             for (item.tabs.tabs[0..item.tabs.len]) |tab| {
-                                if (tab.segment.text.len > 0) renderer_.preRasterizeLabel(tab.segment.text);
+                                if (tab.segments_len > 0) {
+                                    preRasterizeSegments(renderer_, tab.segments[0..tab.segments_len]);
+                                } else if (tab.segment.text.len > 0) {
+                                    renderer_.preRasterizeLabelFace(tab.segment.text, if (tab.segment.bold or tab.style.bold) 1 else 0);
+                                }
                             }
                         },
                         .spacer => {},

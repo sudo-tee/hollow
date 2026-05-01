@@ -2983,7 +2983,11 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| {
-                seg.id = ptr[0..len];
+                if (text_used + len <= text_buf.len) {
+                    @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                    seg.id = text_buf[text_used .. text_used + len];
+                    text_used += len;
+                }
             }
         }
         pop(api, state, 1);
