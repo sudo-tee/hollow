@@ -435,6 +435,7 @@ pub const App = struct {
     /// all panes on the next frame (safe from the frame callback thread).
     pending_layout_resize: bool = false,
     pending_layout_recreate_render_helpers: bool = false,
+    pending_layout_skip_unchanged_pty: bool = false,
     layout_generation: u32 = 1,
     pending_drag_layout_resize: bool = false,
     pending_split_ratio_node: ?*SplitNode = null,
@@ -1544,7 +1545,7 @@ pub const App = struct {
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
         self.cell_width_px = @max(1, cell_w);
         self.cell_height_px = @max(1, cell_h);
-        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, true, false);
+        if (self.ghostty) |*runtime| self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, true, false, false);
         std.log.info("app: cell_size updated cell={d}x{d}", .{ self.cell_width_px, self.cell_height_px });
     }
 
@@ -1589,7 +1590,7 @@ pub const App = struct {
             // Forcing a PTY/ghostty resize in this case sends an unnecessary
             // SIGWINCH/reflow, which is what causes shell-mode content to come
             // back looking as if `clear` had run after minimize/restore.
-            self.resizeAllPanes(runtime, pixel_width, pixel_height, !grid_unchanged, grid_unchanged);
+            self.resizeAllPanes(runtime, pixel_width, pixel_height, !grid_unchanged, grid_unchanged, false);
         }
 
         _ = size_unchanged;
@@ -1613,6 +1614,15 @@ pub const App = struct {
     fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
         self.pending_layout_resize = true;
         self.pending_layout_recreate_render_helpers = self.pending_layout_recreate_render_helpers or recreate_render_helpers;
+        self.layout_generation +%= 1;
+        if (self.layout_generation == 0) self.layout_generation = 1;
+        self.hover_probe_dirty = true;
+        self.invalidateCachedBarLayouts();
+    }
+
+    fn requestLayoutRefresh(self: *App) void {
+        self.pending_layout_resize = true;
+        self.pending_layout_skip_unchanged_pty = true;
         self.layout_generation +%= 1;
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
@@ -2722,7 +2732,7 @@ pub const App = struct {
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
-        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn closeTabAt(self: *App, index: usize) void {
@@ -2742,7 +2752,7 @@ pub const App = struct {
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
-        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn closeActivePane(self: *App) void {
@@ -2766,7 +2776,7 @@ pub const App = struct {
             self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
-        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn prevTab(self: *App) void {
@@ -2776,7 +2786,7 @@ pub const App = struct {
             self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
-        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void {
@@ -2821,7 +2831,7 @@ pub const App = struct {
         }
         self.syncActivePaneChange(previous, mux.activePane());
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
-        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn nextWorkspace(self: *App) void {
@@ -2829,7 +2839,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.nextWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
-            self.requestLayoutResize(false);
+            self.requestLayoutRefresh();
         }
     }
 
@@ -2838,7 +2848,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.prevWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
-            self.requestLayoutResize(false);
+            self.requestLayoutRefresh();
         }
     }
 
@@ -2858,7 +2868,7 @@ pub const App = struct {
             mux.switchWorkspace(index);
             self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
-            self.requestLayoutResize(false);
+            self.requestLayoutRefresh();
         }
     }
 
@@ -3190,7 +3200,7 @@ pub const App = struct {
             mux.switchTab(index);
             self.syncActivePaneChange(previous, mux.activePane());
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
-            self.requestLayoutResize(false);
+            self.requestLayoutRefresh();
         }
     }
 
@@ -3272,13 +3282,15 @@ pub const App = struct {
         if (self.pending_drag_layout_resize) {
             self.pending_drag_layout_resize = false;
             if (self.ghostty) |*runtime| {
-                self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false, true);
+                self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, false, true, false);
             }
         }
         if (!self.pending_layout_resize) return;
         const recreate_render_helpers = self.pending_layout_recreate_render_helpers;
+        const skip_unchanged_pty = self.pending_layout_skip_unchanged_pty;
         self.pending_layout_resize = false;
         self.pending_layout_recreate_render_helpers = false;
+        self.pending_layout_skip_unchanged_pty = false;
         if (self.pending_split_ratio_node) |node| {
             // Validate the cached node pointer is still in the active tree
             // before dereferencing it.  Tree mutations can free the node.
@@ -3292,7 +3304,7 @@ pub const App = struct {
         }
         if (self.ghostty) |*runtime| {
             std.log.info("flushPendingLayoutResize resizeAllPanes window={d}x{d}", .{ self.config.window_width, self.config.window_height });
-            self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers, false);
+            self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers, false, skip_unchanged_pty);
         }
     }
 
@@ -3470,7 +3482,7 @@ pub const App = struct {
     }
 
 
-    fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool) void {
+    fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
         const mux = if (self.mux) |*m| m else return;
         const ws = mux.activeWorkspace() orelse return;
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
@@ -3532,7 +3544,8 @@ pub const App = struct {
                     leaf.pane.height_px = leaf.bounds.height;
                     leaf.pane.x_px = leaf.bounds.x;
                     leaf.pane.y_px = leaf.bounds.y;
-                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
+                    const pane_skip_pty = skip_pty or (skip_unchanged_pty and leaf.pane.cols == cols and leaf.pane.rows == rows);
+                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
                     std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
                     // using the full surface size plus the pane's outer padding.
@@ -3573,7 +3586,8 @@ pub const App = struct {
                     pane.height_px = pane_h;
                     pane.x_px = left_inset;
                     pane.y_px = tbh;
-                    pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, skip_pty);
+                    const pane_skip_pty = skip_pty or (skip_unchanged_pty and pane.cols == cols and pane.rows == rows);
+                    pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
                     pane.setMouseSize(
                         runtime,
                         layout_width,
