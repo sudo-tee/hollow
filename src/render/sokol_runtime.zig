@@ -2173,7 +2173,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             } else {
                 std.Thread.yield() catch {};
             }
-            now_ns = std.time.nanoTimestamp();
+                now_ns = std.time.nanoTimestamp();
+
         }
     }
 
@@ -2250,7 +2251,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_frame_pass2_ns = 0;
         g_frame_pass2_glyph_ns = 0;
         g_frame_pass2_decoration_ns = 0;
-        const offscreen_terminal_start_ns = std.time.nanoTimestamp();
+        const offscreen_terminal_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -2625,14 +2626,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             }
         }
-        offscreen_terminal_ns += std.time.nanoTimestamp() - offscreen_terminal_start_ns;
+        if (app.config.debug_overlay) offscreen_terminal_ns += std.time.nanoTimestamp() - offscreen_terminal_start_ns;
 
         if (app.lua) |*lua| {
-            const offscreen_bar_preraster_start_ns = std.time.nanoTimestamp();
+            const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
             g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
             defer g_widget_pre_raster_ctx = null;
             lua.withLockedState(void, preRasterizeLuaBarWidgets);
-            offscreen_bar_preraster_ns += std.time.nanoTimestamp() - offscreen_bar_preraster_start_ns;
+            if (app.config.debug_overlay) offscreen_bar_preraster_ns += std.time.nanoTimestamp() - offscreen_bar_preraster_start_ns;
         }
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
@@ -2642,7 +2643,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             renderer.flushAtlasIfDirty();
         }
     }
-    const after_offscreen_ns = std.time.nanoTimestamp();
+    const after_offscreen_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
 
     // ── Phase 2: Swapchain pass ────────────────────────────────────────────
 
@@ -2666,7 +2667,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Blit each pane's cached RT into the swapchain pass.
     // For single pane without tab bar with direct render enabled, render directly instead.
     // use_direct_render was computed once above before both phases.
-    const swapchain_panes_start_ns = std.time.nanoTimestamp();
+    const swapchain_panes_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -2731,7 +2732,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             }
         }
     }
-    swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
+    if (app.config.debug_overlay) swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
 
     // Draw split borders as filled 2px quads (only when >1 pane).
     // Floating panes are modal overlays, so any seam covered by a floating pane
@@ -3059,7 +3060,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
 
-    var lines: [20][128]u8 = undefined;
+    var lines: [21][128]u8 = undefined;
     const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
     const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
@@ -3092,8 +3093,9 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const text16 = std.fmt.bufPrint(&lines[16], "app cl={d:.2} pr={d:.2} ev={d:.2} htp={d:.2}", .{ debug_timing.last_frame_cleanup_ms, debug_timing.last_frame_prune_ms, debug_timing.last_frame_events_ms, debug_timing.last_frame_htp_ms }) catch "app detail ?";
     const text17 = std.fmt.bufPrint(&lines[17], "app rz={d:.2} ly={d:.2} tp={d:.2} ho={d:.2}", .{ debug_timing.last_frame_resize_ms, debug_timing.last_frame_layout_ms, debug_timing.last_frame_tick_panes_ms, debug_timing.last_frame_hover_ms }) catch "app detail 2 ?";
     const text18 = std.fmt.bufPrint(&lines[18], "tp ti={d:.2} cwd={d:.2} sb={d:.2} st={d:.2}", .{ debug_timing.last_frame_title_ms, debug_timing.last_frame_cwd_ms, debug_timing.last_frame_scrollbar_ms, debug_timing.last_frame_startup_ms }) catch "app detail 3 ?";
-    const text19 = std.fmt.bufPrint(&lines[19], "pty hp={d:.2} san={d:.2} ch={d:.2} enc={d:.2}", .{ debug_timing.last_frame_has_pending_ms, debug_timing.last_frame_sanitize_ms, debug_timing.last_frame_child_alive_ms, debug_timing.last_frame_encoder_sync_ms }) catch "pty detail ?";
-    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12, text13, text14, text15, text16, text17, text18, text19 };
+    const text19 = std.fmt.bufPrint(&lines[19], "wt bytes={d} chunks={d}", .{ debug_timing.last_frame_terminal_write_bytes, debug_timing.last_frame_terminal_write_chunks }) catch "wt shape ?";
+    const text20 = std.fmt.bufPrint(&lines[20], "pty hp={d:.2} san={d:.2} ch={d:.2} enc={d:.2}", .{ debug_timing.last_frame_has_pending_ms, debug_timing.last_frame_sanitize_ms, debug_timing.last_frame_child_alive_ms, debug_timing.last_frame_encoder_sync_ms }) catch "pty detail ?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12, text13, text14, text15, text16, text17, text18, text19, text20 };
 
     var max_chars: usize = 0;
     for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));

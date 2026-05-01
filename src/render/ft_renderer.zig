@@ -1342,7 +1342,7 @@ pub const FtRenderer = struct {
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
-        const t_queue_start = std.time.nanoTimestamp();
+        const t_queue_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
         self.queueInViewport(
             runtime,
             cfg,
@@ -1364,7 +1364,7 @@ pub const FtRenderer = struct {
             hovered_hyperlink,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
-        const t_queue_end = std.time.nanoTimestamp();
+        const t_queue_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
 
         // Restore atlas pipeline and default context.
         self.atlas_pip = saved_pip;
@@ -1400,10 +1400,12 @@ pub const FtRenderer = struct {
         self.drawGlyphQuads(pane_w, pane_h, true, srgbToLinearBg(clear_r, clear_g, clear_b));
 
         c.sg_end_pass();
-        const t_gpu_end = std.time.nanoTimestamp();
+        const t_gpu_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
 
-        self.last_queue_ns = t_queue_end - t_queue_start;
-        self.last_gpu_ns = t_gpu_end - t_queue_end;
+        if (cfg.debug_overlay) {
+            self.last_queue_ns = t_queue_end - t_queue_start;
+            self.last_gpu_ns = t_gpu_end - t_queue_end;
+        }
 
         // Restore default context for subsequent draw calls (tab bar, etc.).
         c.sgl_set_context(c.sgl_default_context());
@@ -1594,7 +1596,7 @@ pub const FtRenderer = struct {
         // the next frame.
         //
         // In partial mode (!force_full), skip rows that are not dirty.
-        const t_pass1_start = std.time.nanoTimestamp();
+        const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
         if (runtime.populateRowIterator(render_state, row_iterator)) {
             var row_y: usize = 0;
             var quads_open = false;
@@ -1846,7 +1848,7 @@ pub const FtRenderer = struct {
             self.atlas_dirty = false;
             self.last_atlas_flushed = true;
         }
-        const t_pass2_start = std.time.nanoTimestamp();
+        const t_pass2_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
         var pass2_glyph_ns: i128 = 0;
         var pass2_decoration_ns: i128 = 0;
 
@@ -1897,7 +1899,7 @@ pub const FtRenderer = struct {
                 var run_len: usize = 0;
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
-                const row_glyph_start_ns = std.time.nanoTimestamp();
+                const row_glyph_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
                     // Fetch the raw cell first — pure u64 read, enables cheap
                     // has_text / has_styling checks before heavier calls.
@@ -2030,12 +2032,12 @@ pub const FtRenderer = struct {
                 if (run_len > 0) {
                     flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
-                pass2_glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
+                if (cfg.debug_overlay) pass2_glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
 
                 // ── Decorations (underline / undercurl / strikethrough / overline) ──
                 // Drawn after glyphs so they appear on top.
                 // We batch all decoration rects for this row into one sgl quad batch.
-                const row_decoration_start_ns = std.time.nanoTimestamp();
+                const row_decoration_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
                 if (row_needs_decorations and runtime.populateRowCells(row_iterator.*, row_cells)) {
                     var dec_col_x: usize = 0;
                     var dec_quads_open = false;
@@ -2152,7 +2154,7 @@ pub const FtRenderer = struct {
                     }
                     if (dec_quads_open) c.sgl_end();
                 }
-                pass2_decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
+                if (cfg.debug_overlay) pass2_decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
 
                 // Clear per-row dirty flag after rendering this row.
                 if (!force_full) runtime.clearRowDirty(row_iterator.*);
@@ -2189,9 +2191,13 @@ pub const FtRenderer = struct {
                 self.frame_count, self.glyph_verts_count, self.last_rows_rendered, self.last_bg_rects,
             });
         }
-        const t_pass2_end = std.time.nanoTimestamp();
-        self.last_pass1_ns = t_pass2_start - t_pass1_start;
-        self.last_pass2_ns = t_pass2_end - t_pass2_start;
+        const t_pass2_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+
+        if (cfg.debug_overlay) {
+            self.last_pass1_ns = t_pass2_start - t_pass1_start;
+            self.last_pass2_ns = t_pass2_end - t_pass2_start;
+        }
+
         self.last_pass2_glyph_ns = pass2_glyph_ns;
         self.last_pass2_decoration_ns = pass2_decoration_ns;
     }

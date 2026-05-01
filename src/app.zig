@@ -1040,49 +1040,49 @@ pub const App = struct {
         // the validation in handleMouseMove / flushPendingLayoutResize will
         // detect and discard.
         if (self.ghostty) |*runtime| {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.cleanupDeadPanes(runtime);
-            cleanup_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) cleanup_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.pruneSelectionIfInvalid();
-            prune_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) prune_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.drainMouseQueue();
-            events_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) events_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.processHtpMessages();
-            htp_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) htp_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.flushPendingResize();
-            resize_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) resize_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.flushPendingLayoutResize();
-            layout_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) layout_ns = std.time.nanoTimestamp() - start_ns;
         }
         if (self.ghostty) |*runtime| {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
-            tick_panes_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) tick_panes_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.updateHoveredHyperlink();
-            hover_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) hover_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.maybeRunStartupCommand();
-            startup_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) startup_ns = std.time.nanoTimestamp() - start_ns;
         }
         debug_timing.setTickPhaseTimes(
             @as(f32, @floatFromInt(cleanup_ns)) / 1_000_000.0,
@@ -3333,6 +3333,8 @@ pub const App = struct {
             var pane_idx: usize = 0;
             var total_pty_read_ns: i128 = 0;
             var total_terminal_write_ns: i128 = 0;
+            var total_terminal_write_bytes: usize = 0;
+            var total_terminal_write_chunks: usize = 0;
             var total_renderstate_ns: i128 = 0;
             var total_title_ns: i128 = 0;
             var total_cwd_ns: i128 = 0;
@@ -3345,17 +3347,19 @@ pub const App = struct {
                 const pane_is_active = (self.activePane() == pane);
                 const pty_read_loops: usize = if (pane_is_active) 16 else 2;
                 const pty_read_bytes: usize = if (pane_is_active) 256 * 1024 else 32 * 1024;
-                pane.pollPty(runtime, pty_read_loops, pty_read_bytes) catch |err| {
+                pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
                 total_pty_read_ns += pane.last_pty_read_ns;
                 total_terminal_write_ns += pane.last_terminal_write_ns;
+                total_terminal_write_bytes += pane.last_terminal_write_bytes;
+                total_terminal_write_chunks += pane.last_terminal_write_chunks;
                 total_has_pending_ns += pane.last_has_pending_ns;
                 total_sanitize_ns += pane.last_sanitize_ns;
                 total_child_alive_ns += pane.last_child_alive_ns;
                 total_encoder_sync_ns += pane.last_encoder_sync_ns;
                 if (pane.title_dirty) {
-                    const start_ns = std.time.nanoTimestamp();
+                    const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
@@ -3364,10 +3368,10 @@ pub const App = struct {
                         .old_title = if (old_title) |value| value else "",
                         .new_title = pane.title,
                     } });
-                    total_title_ns += std.time.nanoTimestamp() - start_ns;
+                    if (self.config.debug_overlay) total_title_ns += std.time.nanoTimestamp() - start_ns;
                 }
                 if (pane.cwd_dirty) {
-                    const start_ns = std.time.nanoTimestamp();
+                    const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
                     const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
                     defer if (old_cwd) |value| self.allocator.free(value);
                     if (pane.refreshCwd()) {
@@ -3377,7 +3381,7 @@ pub const App = struct {
                             .new_cwd = pane.cwd,
                         } });
                     }
-                    total_cwd_ns += std.time.nanoTimestamp() - start_ns;
+                    if (self.config.debug_overlay) total_cwd_ns += std.time.nanoTimestamp() - start_ns;
                 }
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
@@ -3396,11 +3400,11 @@ pub const App = struct {
                     pane.pty_received_data = false;
                     pane.last_render_state_update_ns = now_ns;
                     runtime.clearRenderStateDirty(pane.render_state);
-                    const renderstate_start_ns = std.time.nanoTimestamp();
+                    const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
                     runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                         std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                     };
-                    total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
+                    if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
@@ -3415,9 +3419,9 @@ pub const App = struct {
                             });
                         }
                     }
-                    const scrollbar_start_ns = std.time.nanoTimestamp();
+                    const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
                     _ = self.refreshPaneScrollbar(runtime, pane);
-                    total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
+                    if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
@@ -3429,6 +3433,10 @@ pub const App = struct {
                 @as(f32, @floatFromInt(total_pty_read_ns)) / 1_000_000.0,
                 @as(f32, @floatFromInt(total_terminal_write_ns)) / 1_000_000.0,
                 @as(f32, @floatFromInt(total_renderstate_ns)) / 1_000_000.0,
+            );
+            debug_timing.setTickWriteShape(
+                @intCast(@min(total_terminal_write_bytes, std.math.maxInt(u32))),
+                @intCast(@min(total_terminal_write_chunks, std.math.maxInt(u32))),
             );
             debug_timing.setTickPaneDetailTimes(
                 @as(f32, @floatFromInt(total_title_ns)) / 1_000_000.0,

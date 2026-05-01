@@ -1,5 +1,7 @@
 pub var last_frame_pty_read_ms: f32 = 0;
 pub var last_frame_terminal_write_ms: f32 = 0;
+pub var last_frame_terminal_write_bytes: u32 = 0;
+pub var last_frame_terminal_write_chunks: u32 = 0;
 pub var last_frame_renderstate_ms: f32 = 0;
 pub var last_frame_cleanup_ms: f32 = 0;
 pub var last_frame_prune_ms: f32 = 0;
@@ -26,6 +28,11 @@ pub fn setTickDetailTimes(pty_read_ms: f32, terminal_write_ms: f32, renderstate_
     last_frame_pty_read_ms = pty_read_ms;
     last_frame_terminal_write_ms = terminal_write_ms;
     last_frame_renderstate_ms = renderstate_ms;
+}
+
+pub fn setTickWriteShape(bytes: u32, chunks: u32) void {
+    last_frame_terminal_write_bytes = bytes;
+    last_frame_terminal_write_chunks = chunks;
 }
 
 pub fn setTickPhaseTimes(cleanup_ms: f32, prune_ms: f32, events_ms: f32, htp_ms: f32, resize_ms: f32, layout_ms: f32, tick_panes_ms: f32, hover_ms: f32, startup_ms: f32) void {
