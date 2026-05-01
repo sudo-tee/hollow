@@ -1214,7 +1214,7 @@ function process.run_child_process(args) end
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
 ---@field read_dir fun(path: string): string[]
----@field util HollowUtil
+---@field util HollowUtilNamespace
 
 ---@type Hollow
 hollow = {}
@@ -1237,7 +1237,7 @@ hollow.platform = {
   default_shell = "",
 }
 
----@class HollowUtil
+---@class HollowUtilNamespace
 ---@field clone_value fun(value:any, seen:table|nil): any
 ---@field merge_tables fun(dst:table, src:table): table
 ---@field unsupported fun(name:string)

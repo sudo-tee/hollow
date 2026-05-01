@@ -18,6 +18,10 @@ fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const wsl_bypass_target = b.resolveTargetQuery(.{
+        .cpu_arch = target.result.cpu.arch,
+        .os_tag = .linux,
+    });
     const ghostty_optimize = ghosttyOptimizeMode(optimize);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -119,7 +123,28 @@ pub fn build(b: *std.Build) void {
     for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
         exe.root_module.linkSystemLibrary(lib_name, .{});
     }
-    b.installArtifact(exe);
+    const install_exe = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_exe.step);
+
+    const wsl_bypass_module = b.createModule(.{
+        .root_source_file = b.path("src/wsl_bypass.zig"),
+        .target = wsl_bypass_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const wsl_bypass = b.addExecutable(.{
+        .name = "hollow-wsl-bypass",
+        .root_module = wsl_bypass_module,
+    });
+    const install_wsl_bypass = b.addInstallArtifact(wsl_bypass, .{});
+    const wsl_bypass_step = b.step("wsl-bypass", "Build the WSL PTY bypass helper");
+    wsl_bypass_step.dependOn(&install_wsl_bypass.step);
+
+    const install_wsl_bypass_cmd = b.addSystemCommand(&.{"bash"});
+    install_wsl_bypass_cmd.addFileArg(b.path("scripts/install-wsl-bypass.sh"));
+    install_wsl_bypass_cmd.step.dependOn(&install_wsl_bypass.step);
+    const install_wsl_bypass_step = b.step("install-wsl-bypass", "Install the WSL PTY bypass helper into /usr/local/bin");
+    install_wsl_bypass_step.dependOn(&install_wsl_bypass_cmd.step);
 
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| {

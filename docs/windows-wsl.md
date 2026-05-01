@@ -49,6 +49,64 @@ For a packaged release, ship at least:
 Optional but recommended:
 
 - `conf/init.lua` next to the executable, if you want the packaged defaults to stay editable without rebuilding
+- `wsl/hollow-wsl-bypass` and `scripts/install-wsl-bypass.sh` if you want users to enable the WSL PTY bypass from the release bundle
+- `hollow-native.pdb` next to the executable, so Windows crash addresses can be resolved to functions and source lines
+
+## Debug Symbols
+
+Windows builds emit a `hollow-native.pdb` file next to `hollow-native.exe`.
+
+Keep that file with the exact executable that produced a crash. Without the
+matching PDB, Windows stack traces in `hollow.log` will only show raw
+addresses.
+
+For packaged releases, ship both:
+
+- `hollow-native.exe`
+- `hollow-native.pdb`
+
+When diagnosing a crash on Windows, keep these together and then resolve the
+addresses from `hollow.log` with a debugger or symbol-aware stack tool against
+that matching PDB.
+
+## WSL PTY Bypass
+
+Hollow can launch WSL panes through a small Linux-side helper instead of ConPTY.
+This bypass is optional.
+
+How it works:
+
+- Hollow tries the helper only for `wsl.exe`-backed domains
+- if the helper is installed in the WSL distro `PATH`, Hollow uses it
+- if the helper is missing or fails to start, Hollow falls back to the normal ConPTY path automatically
+
+Benefits:
+
+- avoids the extra ConPTY layer for WSL shells
+- improves throughput and interactive latency in WSL-heavy workflows
+
+Install from a source checkout:
+
+```bash
+zig build install-wsl-bypass
+```
+
+That target builds `hollow-wsl-bypass` and installs it to:
+
+- `/usr/local/bin/hollow-wsl-bypass` inside the default WSL distro
+
+Install from a release bundle:
+
+```bash
+wsl sh -lc 'sudo install -d -m 755 /usr/local/bin && sudo install -m 755 /mnt/c/path/to/hollow/wsl/hollow-wsl-bypass /usr/local/bin/hollow-wsl-bypass'
+```
+
+Requirements:
+
+- `/usr/local/bin` must be on the WSL shell `PATH`
+- Hollow must launch WSL through `wsl.exe` as usual
+
+If you do nothing, WSL still works through ConPTY.
 
 ## Config On Windows
 
@@ -134,6 +192,7 @@ Related docs:
 | Problem                                            | Fix                                                                                                               |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `wsl.exe not found`                                | Install WSL with `wsl --install` from elevated PowerShell                                                         |
+| WSL bypass does not activate                       | Install `hollow-wsl-bypass` into WSL `PATH` with `zig build install-wsl-bypass`; otherwise Hollow will use ConPTY |
 | config changes are ignored                         | Edit `%APPDATA%\hollow\init.lua` or use `--config path`, then reload with `<leader>uu`                            |
 | packaged build starts without your custom settings | Put your overrides in `%APPDATA%\hollow\init.lua` or launch with `--config path`                                  |
 | packaged build cannot find `conf/init.lua`         | Hollow falls back to the embedded base config; ship `conf/init.lua` only if you want an editable packaged default |

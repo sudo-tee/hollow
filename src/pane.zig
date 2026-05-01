@@ -54,9 +54,9 @@ pub const Pane = struct {
     render_dirty: ghostty.RenderStateDirty = .false_value,
     read_buf: [65536]u8 = [_]u8{0} ** 65536,
     logged_first_pty_read: bool = false,
-    pty_pending_seq: [8]u8 = [_]u8{0} ** 8,
+    pty_pending_seq: [32]u8 = [_]u8{0} ** 32,
     pty_pending_len: usize = 0,
-    pty_sanitize_buf: [65544]u8 = [_]u8{0} ** 65544,
+    pty_sanitize_buf: [65568]u8 = [_]u8{0} ** 65568,
     osc52_prefix_len: usize = 0,
     osc52_active: bool = false,
     osc52_st_pending: bool = false,
@@ -94,6 +94,12 @@ pub const Pane = struct {
     /// Last known mouse tracking mode (from terminal_get).  Logged on change.
     last_mouse_tracking: u32 = 0,
     mouse_tracking_logged_initial: bool = false,
+    last_has_pending_ns: i128 = 0,
+    last_sanitize_ns: i128 = 0,
+    last_child_alive_ns: i128 = 0,
+    last_encoder_sync_ns: i128 = 0,
+    last_pty_read_ns: i128 = 0,
+    last_terminal_write_ns: i128 = 0,
     /// Monotonic nanosecond timestamp of the last updateRenderState call on this
     /// pane.  Used to throttle the cursor-blink / idle poll: even with no PTY
     /// data we call updateRenderState at most once per ~16 ms so that cursor
@@ -299,20 +305,27 @@ pub const Pane = struct {
         return quoted.toOwnedSlice(allocator);
     }
 
-    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime) !void {
+    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize) !void {
         if (self.pty) |*pty| {
-            if (self.render_state_ready and self.boot_output.items.len > 0) {
-                std.log.info("pollPty: flushing boot_output len={d}", .{self.boot_output.items.len});
-                runtime.terminalWrite(self.terminal, self.boot_output.items);
-                self.boot_output.clearRetainingCapacity();
-            }
+            self.last_pty_read_ns = 0;
+            self.last_terminal_write_ns = 0;
+            self.last_has_pending_ns = 0;
+            self.last_sanitize_ns = 0;
+            self.last_child_alive_ns = 0;
+            self.last_encoder_sync_ns = 0;
             var total_read: usize = 0;
             var read_loops: usize = 0;
-            while (pty.hasPendingOutput() and read_loops < 64 and total_read < (1024 * 1024)) {
+            while (read_loops < max_read_loops and total_read < max_total_read) {
+                const pending_start_ns = std.time.nanoTimestamp();
+                const has_pending = pty.hasPendingOutput();
+                self.last_has_pending_ns += std.time.nanoTimestamp() - pending_start_ns;
+                if (!has_pending) break;
+                const read_start_ns = std.time.nanoTimestamp();
                 const count = pty.read(&self.read_buf) catch |err| {
                     if (err == error.EndOfStream) break;
                     return err;
                 };
+                self.last_pty_read_ns += std.time.nanoTimestamp() - read_start_ns;
                 if (count == 0) break;
                 read_loops += 1;
                 total_read += count;
@@ -321,22 +334,25 @@ pub const Pane = struct {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
+                    const sanitize_start_ns = std.time.nanoTimestamp();
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
-                    if (!self.render_state_ready) {
-                        if (pty_bytes.len > 0) try self.boot_output.appendSlice(self.allocator, pty_bytes);
-                        continue;
-                    }
+                    self.last_sanitize_ns += std.time.nanoTimestamp() - sanitize_start_ns;
                     if (pty_bytes.len > 0) {
-                        std.log.info("pollPty: received bytes len={d} first_byte={x}", .{ pty_bytes.len, pty_bytes[0] });
-                        std.log.info("pollPty: terminalWrite len={d}", .{pty_bytes.len});
-                        runtime.terminalWrite(self.terminal, pty_bytes);
-                        std.log.info("pollPty: terminalWrite done", .{});
-                        self.pty_received_data = true;
-                        self.pty_wrote_this_frame = true;
+                        try self.boot_output.appendSlice(self.allocator, pty_bytes);
                     }
                 }
             }
+            if (self.render_state_ready and self.boot_output.items.len > 0) {
+                const write_start_ns = std.time.nanoTimestamp();
+                runtime.terminalWrite(self.terminal, self.boot_output.items);
+                self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                self.boot_output.clearRetainingCapacity();
+                self.pty_received_data = true;
+                self.pty_wrote_this_frame = true;
+            }
+            const child_alive_start_ns = std.time.nanoTimestamp();
             self.refreshChildAliveCache();
+            self.last_child_alive_ns += std.time.nanoTimestamp() - child_alive_start_ns;
             if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
                 if (total_read == 0) {
                     self.startup_input_quiet_ticks +|= 1;
@@ -357,6 +373,7 @@ pub const Pane = struct {
             // Fresh terminal mode changes arrive via PTY output, and resize/
             // focus paths already perform their own explicit syncs.
             if (self.render_state_ready and total_read > 0) {
+                const encoder_sync_start_ns = std.time.nanoTimestamp();
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
                 // Log mouse tracking state changes for diagnostics.
@@ -370,6 +387,7 @@ pub const Pane = struct {
                     self.mouse_tracking_logged_initial = true;
                     std.log.info("pane initial mouse_tracking={d} (get_result={d})", .{ mouse_tracking, mt_result });
                 }
+                self.last_encoder_sync_ns += std.time.nanoTimestamp() - encoder_sync_start_ns;
             }
         }
     }
@@ -587,6 +605,11 @@ pub const Pane = struct {
         self.title_dirty = false;
     }
 
+    pub fn usesWslBypass(self: *const Pane) bool {
+        if (self.pty) |*pty| return @import("pty/pty.zig").usesWslBypass(pty);
+        return false;
+    }
+
     fn syncRemoteCwdFromTitle(self: *Pane) void {
         if (!self.is_remote or self.title.len == 0) return;
 
@@ -689,8 +712,14 @@ pub const Pane = struct {
     }
 
     fn sanitizePtyOutput(self: *Pane, bytes: []u8) []const u8 {
-        const filtered_len = self.filterOsc52(bytes);
-        if (!platform.isWindows()) return self.pty_sanitize_buf[0..filtered_len];
+        const has_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) != null;
+        const needs_osc_filter = self.osc52_active or self.osc7_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_escape;
+        const filtered: []const u8 = if (needs_osc_filter)
+            self.pty_sanitize_buf[0..self.filterOsc52(bytes)]
+        else
+            bytes;
+        if (!platform.isWindows()) return filtered;
+        if (self.pty_pending_len == 0 and !has_escape and filtered.ptr == bytes.ptr) return filtered;
 
         const enable = "\x1b[?9001h";
         const disable = "\x1b[?9001l";
@@ -698,47 +727,44 @@ pub const Pane = struct {
         if (combined_len > 0) {
             @memcpy(self.pty_sanitize_buf[0..combined_len], self.pty_pending_seq[0..combined_len]);
         }
-        @memmove(self.pty_sanitize_buf[combined_len .. combined_len + filtered_len], self.pty_sanitize_buf[0..filtered_len]);
-        combined_len += filtered_len;
+        if (filtered.len > 0) {
+            if (@intFromPtr(filtered.ptr) == @intFromPtr(&self.pty_sanitize_buf[0])) {
+                @memmove(self.pty_sanitize_buf[combined_len .. combined_len + filtered.len], filtered);
+            } else {
+                @memcpy(self.pty_sanitize_buf[combined_len .. combined_len + filtered.len], filtered);
+            }
+            combined_len += filtered.len;
+        }
 
-        var read_idx: usize = 0;
+        var scan_idx: usize = 0;
         var write_idx: usize = 0;
-        while (read_idx < combined_len) {
-            const remaining = self.pty_sanitize_buf[read_idx..combined_len];
+        while (scan_idx < combined_len) {
+            const esc_idx = std.mem.indexOfScalarPos(u8, self.pty_sanitize_buf[0..combined_len], scan_idx, 0x1b) orelse {
+                const span = self.pty_sanitize_buf[scan_idx..combined_len];
+                @memmove(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                write_idx += span.len;
+                break;
+            };
+            if (esc_idx > scan_idx) {
+                const span = self.pty_sanitize_buf[scan_idx..esc_idx];
+                @memmove(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                write_idx += span.len;
+            }
+
+            const remaining = self.pty_sanitize_buf[esc_idx..combined_len];
             if (std.mem.startsWith(u8, remaining, enable)) {
-                read_idx += enable.len;
+                scan_idx = esc_idx + enable.len;
                 continue;
             }
             if (std.mem.startsWith(u8, remaining, disable)) {
-                read_idx += disable.len;
+                scan_idx = esc_idx + disable.len;
                 continue;
             }
-            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[read_idx];
-            read_idx += 1;
-            write_idx += 1;
-        }
 
-        const tail_len = trailingWin32ModePrefixLen(self.pty_sanitize_buf[0..write_idx]);
-        self.pty_pending_len = tail_len;
-        if (tail_len > 0) {
-            @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
-            write_idx -= tail_len;
-        }
-
-        // Second pass: strip XTWINOPS CSI t sequences (e.g. ESC [ 8 ; rows ; cols t).
-        // Ghostty does not implement these and crashes (null fn-ptr call) when it receives them.
-        // They are sent by the shell in response to ConPTY SIGWINCH after a pane resize.
-        const first_pass_len = write_idx;
-        write_idx = 0;
-        var scan_idx: usize = 0;
-        while (scan_idx < first_pass_len) {
-            if (scan_idx + 1 < first_pass_len and
-                self.pty_sanitize_buf[scan_idx] == 0x1b and
-                self.pty_sanitize_buf[scan_idx + 1] == '[')
-            {
-                var j: usize = scan_idx + 2;
+            if (remaining.len >= 2 and remaining[1] == '[') {
+                var j: usize = esc_idx + 2;
                 var is_csi_t = false;
-                while (j < first_pass_len) : (j += 1) {
+                while (j < combined_len) : (j += 1) {
                     const b = self.pty_sanitize_buf[j];
                     if (b >= 0x30 and b <= 0x3f) {
                         // parameter byte, keep scanning
@@ -755,9 +781,17 @@ pub const Pane = struct {
                     continue;
                 }
             }
-            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[scan_idx];
+
+            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[esc_idx];
             write_idx += 1;
-            scan_idx += 1;
+            scan_idx = esc_idx + 1;
+        }
+
+        const tail_len = trailingAnsiPrefixLen(self.pty_sanitize_buf[0..write_idx]);
+        self.pty_pending_len = tail_len;
+        if (tail_len > 0) {
+            @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
+            write_idx -= tail_len;
         }
 
         return self.pty_sanitize_buf[0..write_idx];
@@ -768,6 +802,21 @@ pub const Pane = struct {
         var write_idx: usize = 0;
 
         while (read_idx < bytes.len) {
+            if (!self.osc52_active and !self.osc7_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+                const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
+                    const span = bytes[read_idx..];
+                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    write_idx += span.len;
+                    break;
+                };
+                if (esc_idx > read_idx) {
+                    const span = bytes[read_idx..esc_idx];
+                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    write_idx += span.len;
+                    read_idx = esc_idx;
+                }
+            }
+
             const byte = bytes[read_idx];
 
             if (self.osc52_active) {
@@ -1024,14 +1073,36 @@ fn decodeOsc52Base64(data: []const u8, out: []u8) ![]u8 {
     return out[0..decoded_len];
 }
 
-fn trailingWin32ModePrefixLen(bytes: []const u8) usize {
-    const enable = "\x1b[?9001h";
-    const disable = "\x1b[?9001l";
-    const max_check = @min(bytes.len, enable.len - 1);
-    var prefix_len = max_check;
-    while (prefix_len > 0) : (prefix_len -= 1) {
-        if (std.mem.eql(u8, bytes[bytes.len - prefix_len ..], enable[0..prefix_len])) return prefix_len;
-        if (std.mem.eql(u8, bytes[bytes.len - prefix_len ..], disable[0..prefix_len])) return prefix_len;
+fn trailingAnsiPrefixLen(bytes: []const u8) usize {
+    const window = @min(bytes.len, 32);
+    var start = bytes.len - window;
+    while (start < bytes.len) : (start += 1) {
+        if (bytes[start] != 0x1b) continue;
+        const suffix = bytes[start..];
+        if (suffix.len == 1) return 1;
+
+        switch (suffix[1]) {
+            '[' => {
+                if (suffix.len == 2) return 2;
+                var i: usize = 2;
+                while (i < suffix.len) : (i += 1) {
+                    const b = suffix[i];
+                    if (b >= 0x40 and b <= 0x7e) break;
+                    if (b < 0x20 or b > 0x3f) return 0;
+                }
+                if (i == suffix.len) return suffix.len;
+            },
+            ']' => {
+                var i: usize = 2;
+                while (i < suffix.len) : (i += 1) {
+                    const b = suffix[i];
+                    if (b == 0x07) return 0;
+                    if (b == 0x1b and i + 1 < suffix.len and suffix[i + 1] == '\\') return 0;
+                }
+                return suffix.len;
+            },
+            else => return 0,
+        }
     }
     return 0;
 }

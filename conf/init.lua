@@ -111,7 +111,7 @@ local ui_theme = {
   },
 }
 
-local default_domain = is_windows and "pwsh" or "unix"
+local default_domain = is_windows and "wsl" or "unix"
 local domains = {
   unix = { shell = hollow.platform.default_shell },
 }
@@ -125,6 +125,9 @@ end
 
 hollow.config.set({
   max_fps = 120,
+  debug_overlay = false,
+  renderer_single_pane_direct = false,
+  vsync = false,
   backend = "sokol",
   default_domain = default_domain,
   domains = domains,
@@ -151,7 +154,7 @@ hollow.config.set({
   top_bar_bg = ui_theme.tab_bar.background,
   window_titlebar_show = true,
   scrollbar = {
-    enabled = true,
+    enabled = false,
     width = 12,
     min_thumb_size = 24,
     margin = 2,
@@ -225,10 +228,9 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           local tab_bg = tab.is_active and brighten(group_bg, 0.16, palette.bg) or palette.bg
           local tab_fg = tab.is_active and palette.bright_white
             or brighten(palette.fg, 0.4, palette.bg)
-          local tab_text_id = "tab-text:" .. tostring(tab.id)
-          local close_id = "tab-close:" .. tostring(tab.id)
+
           local close_style = {
-            id = close_id,
+            id = "tab-text:" .. tostring(tab.id),
             fg = palette.gray,
             bg = tab_bg,
             hover = {
@@ -241,7 +243,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
           return {
             hollow.ui.span(is_maximized, { fg = palette.magenta }),
             hollow.ui.span(tab_title, {
-              id = tab_text_id,
+              id = "tab-text:" .. tostring(tab.id),
               on_click = function()
                 hollow.term.focus_tab(tab.id)
               end,
@@ -316,6 +318,10 @@ end, { desc = "rename tab" })
 hollow.keymap.set("<leader>uu", function()
   hollow.config.reload()
 end, { desc = "reload config" })
+
+hollow.keymap.set("<leader>p", function()
+  hollow.term.split_pane({ domain = "pwsh" })
+end, { desc = "edit workspace config" })
 
 -- User config files are loaded after this bundled config, so you can override
 -- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or

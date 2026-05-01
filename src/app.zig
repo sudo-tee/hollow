@@ -32,10 +32,12 @@ const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
 const Pane = @import("pane.zig").Pane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
+const debug_timing = @import("render/debug_timing.zig");
 const bar = @import("ui/bar.zig");
 const selection = @import("selection.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
+threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 const SplitCommandMode = enum {
     send,
@@ -1021,21 +1023,78 @@ pub const App = struct {
     }
 
     pub fn tick(self: *App) !void {
+        var cleanup_ns: i128 = 0;
+        var prune_ns: i128 = 0;
+        var events_ns: i128 = 0;
+        var htp_ns: i128 = 0;
+        var resize_ns: i128 = 0;
+        var layout_ns: i128 = 0;
+        var tick_panes_ns: i128 = 0;
+        var hover_ns: i128 = 0;
+        var startup_ns: i128 = 0;
+
         // Clean up dead panes BEFORE draining the mouse queue so that mouse
         // events never dispatch to panes whose PTY has already exited.  This
         // also invalidates any cached SplitNode pointers (g_drag_node,
         // pending_split_ratio_node) that referenced freed tree nodes, which
         // the validation in handleMouseMove / flushPendingLayoutResize will
         // detect and discard.
-        if (self.ghostty) |*runtime| self.cleanupDeadPanes(runtime);
-        self.pruneSelectionIfInvalid();
-        self.drainMouseQueue();
-        self.processHtpMessages();
-        self.flushPendingResize();
-        self.flushPendingLayoutResize();
-        if (self.ghostty) |*runtime| try self.tickPanes(runtime);
-        self.updateHoveredHyperlink();
-        self.maybeRunStartupCommand();
+        if (self.ghostty) |*runtime| {
+            const start_ns = std.time.nanoTimestamp();
+            self.cleanupDeadPanes(runtime);
+            cleanup_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.pruneSelectionIfInvalid();
+            prune_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.drainMouseQueue();
+            events_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.processHtpMessages();
+            htp_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.flushPendingResize();
+            resize_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.flushPendingLayoutResize();
+            layout_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        if (self.ghostty) |*runtime| {
+            const start_ns = std.time.nanoTimestamp();
+            try self.tickPanes(runtime);
+            tick_panes_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.updateHoveredHyperlink();
+            hover_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = std.time.nanoTimestamp();
+            self.maybeRunStartupCommand();
+            startup_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        debug_timing.setTickPhaseTimes(
+            @as(f32, @floatFromInt(cleanup_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(prune_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(events_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(htp_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(resize_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(layout_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(tick_panes_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(hover_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(startup_ns)) / 1_000_000.0,
+        );
         if (!self.logged_first_render_update) self.logged_first_render_update = true;
         self.frame_count += 1;
     }
@@ -2952,9 +3011,22 @@ pub const App = struct {
 
     pub fn activeTitle(self: *App) []const u8 {
         if (self.activePane()) |pane| {
+            if (pane.usesWslBypass()) {
+                if (pane.title.len > 0) return prefixedWindowTitle("[wsl-bypass] ", pane.title);
+                return prefixedWindowTitle("[wsl-bypass] ", self.config.windowTitle());
+            }
             if (pane.title.len > 0) return pane.title;
         }
         return self.config.windowTitle();
+    }
+
+    fn prefixedWindowTitle(prefix: []const u8, title: []const u8) []const u8 {
+        const prefix_len = @min(prefix.len, g_prefixed_window_title_buf.len);
+        @memcpy(g_prefixed_window_title_buf[0..prefix_len], prefix[0..prefix_len]);
+        const room = g_prefixed_window_title_buf.len - prefix_len;
+        const title_len = @min(title.len, room);
+        @memcpy(g_prefixed_window_title_buf[prefix_len .. prefix_len + title_len], title[0..title_len]);
+        return g_prefixed_window_title_buf[0 .. prefix_len + title_len];
     }
 
     /// Height in pixels of the shared top bar. 0 when hidden.
@@ -3259,11 +3331,31 @@ pub const App = struct {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
+            var total_pty_read_ns: i128 = 0;
+            var total_terminal_write_ns: i128 = 0;
+            var total_renderstate_ns: i128 = 0;
+            var total_title_ns: i128 = 0;
+            var total_cwd_ns: i128 = 0;
+            var total_scrollbar_ns: i128 = 0;
+            var total_has_pending_ns: i128 = 0;
+            var total_sanitize_ns: i128 = 0;
+            var total_child_alive_ns: i128 = 0;
+            var total_encoder_sync_ns: i128 = 0;
             while (panes.next()) |pane| {
-                pane.pollPty(runtime) catch |err| {
+                const pane_is_active = (self.activePane() == pane);
+                const pty_read_loops: usize = if (pane_is_active) 16 else 2;
+                const pty_read_bytes: usize = if (pane_is_active) 256 * 1024 else 32 * 1024;
+                pane.pollPty(runtime, pty_read_loops, pty_read_bytes) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
+                total_pty_read_ns += pane.last_pty_read_ns;
+                total_terminal_write_ns += pane.last_terminal_write_ns;
+                total_has_pending_ns += pane.last_has_pending_ns;
+                total_sanitize_ns += pane.last_sanitize_ns;
+                total_child_alive_ns += pane.last_child_alive_ns;
+                total_encoder_sync_ns += pane.last_encoder_sync_ns;
                 if (pane.title_dirty) {
+                    const start_ns = std.time.nanoTimestamp();
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
@@ -3272,8 +3364,10 @@ pub const App = struct {
                         .old_title = if (old_title) |value| value else "",
                         .new_title = pane.title,
                     } });
+                    total_title_ns += std.time.nanoTimestamp() - start_ns;
                 }
                 if (pane.cwd_dirty) {
+                    const start_ns = std.time.nanoTimestamp();
                     const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
                     defer if (old_cwd) |value| self.allocator.free(value);
                     if (pane.refreshCwd()) {
@@ -3283,17 +3377,18 @@ pub const App = struct {
                             .new_cwd = pane.cwd,
                         } });
                     }
+                    total_cwd_ns += std.time.nanoTimestamp() - start_ns;
                 }
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
                     continue;
                 }
                 const now_ns = std.time.nanoTimestamp();
-                const is_active = (self.activePane() == pane);
+                const is_active = pane_is_active;
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
-                const idle_poll_ns: i128 = if (is_active) 500_000_000 else 1_000_000_000;
+                const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
@@ -3301,9 +3396,11 @@ pub const App = struct {
                     pane.pty_received_data = false;
                     pane.last_render_state_update_ns = now_ns;
                     runtime.clearRenderStateDirty(pane.render_state);
+                    const renderstate_start_ns = std.time.nanoTimestamp();
                     runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                         std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                     };
+                    total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
@@ -3318,7 +3415,9 @@ pub const App = struct {
                             });
                         }
                     }
+                    const scrollbar_start_ns = std.time.nanoTimestamp();
                     _ = self.refreshPaneScrollbar(runtime, pane);
+                    total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
@@ -3326,6 +3425,22 @@ pub const App = struct {
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }
+            debug_timing.setTickDetailTimes(
+                @as(f32, @floatFromInt(total_pty_read_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_terminal_write_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_renderstate_ns)) / 1_000_000.0,
+            );
+            debug_timing.setTickPaneDetailTimes(
+                @as(f32, @floatFromInt(total_title_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_cwd_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_scrollbar_ns)) / 1_000_000.0,
+            );
+            debug_timing.setPollPtyDetailTimes(
+                @as(f32, @floatFromInt(total_has_pending_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_sanitize_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_child_alive_ns)) / 1_000_000.0,
+                @as(f32, @floatFromInt(total_encoder_sync_ns)) / 1_000_000.0,
+            );
         }
 
         if (has_dead) {
@@ -3345,6 +3460,7 @@ pub const App = struct {
             }
         }
     }
+
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool) void {
         const mux = if (self.mux) |*m| m else return;

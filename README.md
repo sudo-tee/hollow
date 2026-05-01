@@ -49,6 +49,12 @@ The name "Hollow" is meant to evoke the idea of a container or vessel that can b
 
 The latest release is available on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases)
 
+Windows releases also bundle the optional `hollow-wsl-bypass` helper for WSL.
+If you install that helper inside your WSL distro, Hollow uses it for `wsl.exe`
+domains and falls back to ConPTY automatically when the helper is not installed.
+
+Windows builds also emit `hollow-native.pdb` for crash symbolization.
+
 ### Customize the config
 
 Copy the default config `conf/init.lua` to the user config location:
@@ -139,6 +145,7 @@ Companion reference files outside `docs/`:
 - a Lua API centered on `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keymap`, `hollow.ui`, and `hollow.htp`
 - CLI and Lua font discovery helpers
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
+- optional WSL PTY bypass helper with automatic fallback to ConPTY when not installed
 - a bundled config that users can extend from `%APPDATA%\hollow\init.lua` on Windows or `$XDG_CONFIG_HOME/hollow/init.lua` / `$HOME/.config/hollow/init.lua` on non-Windows hosts
 
 The shipped Windows default domain is currently `pwsh`. `wsl` is available and

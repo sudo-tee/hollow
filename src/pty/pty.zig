@@ -8,6 +8,13 @@ pub const Pty = switch (builtin.os.tag) {
     else => @import("pty_posix.zig").PosixPty,
 };
 
+pub fn usesWslBypass(pty: *const Pty) bool {
+    return switch (builtin.os.tag) {
+        .windows => pty.usesWslBypass(),
+        else => false,
+    };
+}
+
 pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !Pty {
     return switch (builtin.os.tag) {
         .windows => Pty.spawnWithFallbacks(allocator, shell, cols, rows, cwd, env_block, launch_command, platform.windowsShellCandidates()),

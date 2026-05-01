@@ -30,10 +30,20 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
           ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
+      - name: Build WSL bypass helper
+        run: zig build wsl-bypass -Doptimize=ReleaseFast
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
       - name: Stage release bundle
         run: |
+          mkdir -p release/hollow/conf release/hollow/wsl release/hollow/scripts
           cp zig-out/bin/hollow-native.exe release/hollow/
+          cp zig-out/bin/hollow-native.pdb release/hollow/
+          cp zig-out/bin/hollow-wsl-bypass release/hollow/wsl/
           cp conf/init.lua release/hollow/conf/
+          cp scripts/install-wsl-bypass.sh release/hollow/scripts/
 
       - name: Archive release bundle
         run: |

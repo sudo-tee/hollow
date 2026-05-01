@@ -37,6 +37,7 @@ These files are the most important companions to the docs:
 - `types/hollow.lua`: LuaLS typings for the public Lua surface
 - `src/main.zig`: native CLI flags and startup flow
 - `src/app.zig`: config resolution, runtime wiring, and host behavior
+- `src/pty/pty_windows.zig`: Windows PTY behavior, including WSL bypass fallback logic
 
 ## Suggested Site Structure
 

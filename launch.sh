@@ -48,8 +48,10 @@ fi
 
 if [[ "$TARGET" == *"windows"* ]]; then
   EXE_NAME="hollow-native.exe"
+  PDB_NAME="hollow-native.pdb"
 else
   EXE_NAME="hollow-native"
+  PDB_NAME=""
 fi
 EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
 
@@ -86,6 +88,9 @@ copy_if_exists() {
 
 if [[ $RUN -eq 1 ]]; then
   copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
+  if [[ -n "$PDB_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$PDB_NAME" "$SCRIPT_DIR/$PDB_NAME"
+  fi
 
   RUN_ARGS=()
   if [[ $SAFE_RENDER -eq 1 ]]; then
@@ -115,6 +120,7 @@ if [[ $RUN -eq 1 ]]; then
   if [[ $LIST_FONTS_JSON -eq 1 ]]; then
     RUN_ARGS+=("--json")
   fi
-  echo "[launch] running $EXE_PATH"
+  echo "[launch] running $EXE_PATH with args: ${RUN_ARGS[*]}"
+
   exec "$EXE_PATH" "${RUN_ARGS[@]}"
 fi

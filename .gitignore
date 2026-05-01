@@ -16,6 +16,7 @@ release/
 *.dll
 
 hollow.log
+*.pdb
 
 # Gemini/AI scratch files
 *.sed
