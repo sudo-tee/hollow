@@ -823,7 +823,7 @@ hollow.ui.workspace.configure({
   sources = {
     {
       name = "Ubuntu",
-      resolver = "wsl",
+      resolver = "local", -- if you put wsl here, it will try to run wsl.exe to list directories, which does not work with UNC paths
       domain = "wsl",
       cwd_resolver = "wsl_unc",
       roots = {
