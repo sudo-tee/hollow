@@ -17,6 +17,7 @@ const Config = @import("../config.zig").Config;
 const PaneCache = @import("ft_renderer.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
+const debug_timing = @import("debug_timing.zig");
 
 const LUA_GLOBALSINDEX: c_int = -10002;
 const Api = lua_mod.Api;
@@ -221,7 +222,7 @@ var g_phase_accum_atlas_stale_frames: usize = 0;
 // Frames since last drag release — used for post-release diagnostics.
 // Set to 0 on release, incremented each frame until > 20.
 var g_frames_since_drag_release: usize = std.math.maxInt(usize);
-var g_idle_frame_ns: i128 = 33_000_000;
+var g_idle_frame_ns: i128 = 8_000_000;
 var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
@@ -256,6 +257,10 @@ var g_last_frame_swapchain_submit_ms: f32 = 0;
 // Frame-local queue/gpu accumulators, reset at frame start, captured at offscreen end.
 var g_frame_queue_ns: i128 = 0;
 var g_frame_gpu_ns: i128 = 0;
+var g_frame_pass1_ns: i128 = 0;
+var g_frame_pass2_ns: i128 = 0;
+var g_frame_pass2_glyph_ns: i128 = 0;
+var g_frame_pass2_decoration_ns: i128 = 0;
 
 // Per-pane render-to-texture caches.
 // Keyed by pane pointer (stable for the lifetime of the pane).
@@ -2226,8 +2231,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Decide once whether to use direct rendering.
     // renderer_safe_mode forces the simpler direct path for all panes as a
     // diagnostic escape hatch from the cached RT pipeline.
-    const use_direct_render = app.config.renderer_single_pane_direct and
-        leaves.len == 0 and app.tabBarHeight() == 0 and app.bottomBarHeight() == 0;
+    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0;
     const use_safe_render = app.config.renderer_safe_mode;
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
@@ -2242,6 +2246,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Reset frame-local queue/gpu accumulators for the debug overlay.
         g_frame_queue_ns = 0;
         g_frame_gpu_ns = 0;
+        g_frame_pass1_ns = 0;
+        g_frame_pass2_ns = 0;
+        g_frame_pass2_glyph_ns = 0;
+        g_frame_pass2_decoration_ns = 0;
         const offscreen_terminal_start_ns = std.time.nanoTimestamp();
 
         if (app.ghostty) |*runtime| {
@@ -2325,17 +2333,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // atlas stale → full redraw needed (glyph UVs changed under existing pixels).
                     // resize → handled by cache recreation (pw/ph mismatch), so we never see
                     //   a stale RT from a resize here.
-                    // .full dirty_level → ghostty uses this for screen switches (alt-screen
-                    //   enter/exit), resize, color-change events, and app-driven scroll.
-                    //   We do NOT automatically clear the whole RT for .full because scroll
-                    //   frames already mark every row dirty and the per-row redraw path is
-                    //   cheaper than a full CLEAR pass. We only force a full redraw when the
-                    //   cache itself is invalid (resize/atlas/layout) or the background color
-                    //   changed and we must repaint padding / untouched pixels.
-                    //   The row map may hold entries from the previous screen (different
-                    //   rowRaw keys pointing at now-reused page slots, or same rowRaw key but
-                    //   the slot now holds different content on the new screen), so .full
-                    //   still invalidates the row map before this frame is rendered.
+                    // .full dirty_level is used for full-screen state transitions such as
+                    // alt-screen enter/exit. Those transitions can replace the entire visible
+                    // buffer without every row being individually dirty, so the cache path must
+                    // redraw the whole pane instead of relying on per-row dirty flags.
+                    // This is a little more expensive for scroll-heavy .full frames, but it
+                    // avoids leaving stale cached rows visible after screen-buffer switches.
                     // .true_value dirty_level → normal content update; per-row dirty gives us the
                     //   minimal set of rows to re-render.
                     const inner_w = if (pw_u > pane_pad_x) pw_u - pane_pad_x else 1;
@@ -2358,7 +2361,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         return .cached_clean;
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
-                    const force_full = atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
+                    const force_full = dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
@@ -2449,6 +2452,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // Frame-local accumulators for the debug overlay.
                     g_frame_queue_ns += rend.last_queue_ns;
                     g_frame_gpu_ns += rend.last_gpu_ns;
+                    g_frame_pass1_ns += rend.last_pass1_ns;
+                    g_frame_pass2_ns += rend.last_pass2_ns;
+                    g_frame_pass2_glyph_ns += rend.last_pass2_glyph_ns;
+                    g_frame_pass2_decoration_ns += rend.last_pass2_decoration_ns;
 
                     // Record the atlas epoch at the time this pane was rendered.
                     // After renderToCache the atlas may have been flushed (epoch advanced)
@@ -2910,6 +2917,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
         g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
         g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
+        debug_timing.setRendererQueueDetailTimes(
+            @as(f32, @floatFromInt(g_frame_pass1_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(g_frame_pass2_ns)) / 1_000_000.0,
+        );
+        debug_timing.setRendererPass2DetailTimes(
+            @as(f32, @floatFromInt(g_frame_pass2_glyph_ns)) / 1_000_000.0,
+            @as(f32, @floatFromInt(g_frame_pass2_decoration_ns)) / 1_000_000.0,
+        );
         g_last_frame_offscreen_terminal_ms = @as(f32, @floatFromInt(offscreen_terminal_ns)) / 1_000_000.0;
         g_last_frame_offscreen_bar_preraster_ms = @as(f32, @floatFromInt(offscreen_bar_preraster_ns)) / 1_000_000.0;
         g_last_frame_swapchain_panes_ms = @as(f32, @floatFromInt(swapchain_panes_ns)) / 1_000_000.0;
@@ -3040,11 +3055,11 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     }
 
     const render_mode: []const u8 = if (app.config.renderer_safe_mode) "safe-direct" else if (app.config.renderer_single_pane_direct and
-        app.activePane() != null and app.tabBarHeight() == 0 and app.bottomBarHeight() == 0) "direct" else "cached";
+        app.activePane() != null) "direct" else "cached";
     const dirty_count = g_phase_accum_dirty_frames;
     const clean_count = g_phase_accum_clean_frames;
 
-    var lines: [13][128]u8 = undefined;
+    var lines: [20][128]u8 = undefined;
     const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
     const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
@@ -3065,13 +3080,20 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
         g_last_frame_offscreen_terminal_ms,
         g_last_frame_offscreen_bar_preraster_ms,
     }) catch "off detail ?";
-    const text12 = std.fmt.bufPrint(&lines[12], "sw panes={d:.2} ui={d:.2} glyph={d:.2} sub={d:.2}", .{
+    const text12 = std.fmt.bufPrint(&lines[12], "q p1={d:.2} p2={d:.2}", .{ debug_timing.last_frame_pass1_ms, debug_timing.last_frame_pass2_ms }) catch "q detail ?";
+    const text13 = std.fmt.bufPrint(&lines[13], "p2 g={d:.2} dec={d:.2}", .{ debug_timing.last_frame_pass2_glyph_ms, debug_timing.last_frame_pass2_decoration_ms }) catch "p2 detail ?";
+    const text14 = std.fmt.bufPrint(&lines[14], "sw panes={d:.2} ui={d:.2} glyph={d:.2} sub={d:.2}", .{
         g_last_frame_swapchain_panes_ms,
         g_last_frame_swapchain_ui_ms,
         g_last_frame_swapchain_glyph_ms,
         g_last_frame_swapchain_submit_ms,
     }) catch "sw detail ?";
-    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12 };
+    const text15 = std.fmt.bufPrint(&lines[15], "tick rd={d:.2} wt={d:.2} rs={d:.2}", .{ debug_timing.last_frame_pty_read_ms, debug_timing.last_frame_terminal_write_ms, debug_timing.last_frame_renderstate_ms }) catch "tick detail ?";
+    const text16 = std.fmt.bufPrint(&lines[16], "app cl={d:.2} pr={d:.2} ev={d:.2} htp={d:.2}", .{ debug_timing.last_frame_cleanup_ms, debug_timing.last_frame_prune_ms, debug_timing.last_frame_events_ms, debug_timing.last_frame_htp_ms }) catch "app detail ?";
+    const text17 = std.fmt.bufPrint(&lines[17], "app rz={d:.2} ly={d:.2} tp={d:.2} ho={d:.2}", .{ debug_timing.last_frame_resize_ms, debug_timing.last_frame_layout_ms, debug_timing.last_frame_tick_panes_ms, debug_timing.last_frame_hover_ms }) catch "app detail 2 ?";
+    const text18 = std.fmt.bufPrint(&lines[18], "tp ti={d:.2} cwd={d:.2} sb={d:.2} st={d:.2}", .{ debug_timing.last_frame_title_ms, debug_timing.last_frame_cwd_ms, debug_timing.last_frame_scrollbar_ms, debug_timing.last_frame_startup_ms }) catch "app detail 3 ?";
+    const text19 = std.fmt.bufPrint(&lines[19], "pty hp={d:.2} san={d:.2} ch={d:.2} enc={d:.2}", .{ debug_timing.last_frame_has_pending_ms, debug_timing.last_frame_sanitize_ms, debug_timing.last_frame_child_alive_ms, debug_timing.last_frame_encoder_sync_ms }) catch "pty detail ?";
+    const overlay_lines = [_][]const u8{ text0, text1, text2, text3, text4, text5, text6, text7, text8, text9, text10, text11, text12, text13, text14, text15, text16, text17, text18, text19 };
 
     var max_chars: usize = 0;
     for (overlay_lines) |line| max_chars = @max(max_chars, countCodepoints(line));

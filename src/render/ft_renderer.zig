@@ -108,6 +108,16 @@ const Glyph = struct {
     advance_x: f32,
 };
 
+const CachedStyleInfo = struct {
+    style_id: u16,
+    selected: bool,
+    face_idx: u8,
+    fg: ghostty.ColorRgb,
+    needs_decorations: bool,
+};
+
+const STYLE_CACHE_SIZE = 64;
+
 const RasterMode = enum {
     terminal,
     ui,
@@ -672,6 +682,7 @@ pub const FtRenderer = struct {
     prepared_glyphs: std.ArrayListUnmanaged(PreparedGlyph) = .empty,
     shaped_runs: std.ArrayListUnmanaged(ShapedRunEntry) = .empty,
     shaped_run_read_idx: usize = 0,
+    style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = [_]?CachedStyleInfo{null} ** STYLE_CACHE_SIZE,
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
     last_rows_rendered: usize = 0,
@@ -682,6 +693,8 @@ pub const FtRenderer = struct {
     /// Sub-timing within queueInViewport: pass1 (bg), pass2 (glyphs).
     last_pass1_ns: i128 = 0,
     last_pass2_ns: i128 = 0,
+    last_pass2_glyph_ns: i128 = 0,
+    last_pass2_decoration_ns: i128 = 0,
     /// Per-call cell/glyph/bg-rect diagnostic counters (set by queueInViewport).
     last_cells_visited: usize = 0,
     last_glyph_runs: usize = 0,
@@ -1528,6 +1541,7 @@ pub const FtRenderer = struct {
         self.prepared_glyphs.clearRetainingCapacity();
         self.shaped_runs.clearRetainingCapacity();
         self.shaped_run_read_idx = 0;
+        self.styleCacheReset();
 
         // Per-row hash-skip bitset: tracks rows that matched their stored hash in Pass 1
         // and should be skipped in Pass 2 as well.
@@ -1571,6 +1585,7 @@ pub const FtRenderer = struct {
         // Cursor row — always render regardless of hash match, since the cursor
         // is overlaid on cells during Pass 2 and is not reflected in cell hashes.
         const cursor_row: usize = if (runtime.cursorPos(render_state)) |cp| cp.y else std.math.maxInt(usize);
+        const hovered_row = if (hovered_hyperlink) |hovered| hovered.row else std.math.maxInt(usize);
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
         // We must always probe/rasterize text for rows we are about to draw.
         // Even when the atlas is currently clean, a newly-seen glyph (for
@@ -1637,10 +1652,10 @@ pub const FtRenderer = struct {
                 else
                     @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 const py = self.padding_y + row_y_px;
-                const row_has_selection = if (selection_range) |range|
-                    selection.rowIntersects(range, row_y)
+                const row_sel = if (selection_range) |range|
+                    rowSelectionBounds(range, row_y)
                 else
-                    false;
+                    null;
 
                 // In partial mode we must first erase the old row pixels by
                 // drawing a full-width background rectangle in the default bg
@@ -1672,13 +1687,11 @@ pub const FtRenderer = struct {
                     self.last_cells_visited += 1;
                     // Fetch the raw cell first: cheap pure read, enables fast-path checks.
                     const raw_cell = runtime.cellRaw(row_cells.*);
+                    const style_id = runtime.cellStyleIdRaw(raw_cell);
                     // Use pure bit-extraction functions (no C call) for content_tag,
                     // has_text, and codepoint — replaces the C ABI dispatch for these.
                     const content_tag = runtime.cellContentTagRaw(raw_cell);
-                    const is_selected = if (selection_range) |range|
-                        row_has_selection and selection.cellSelected(range, row_y, col_x)
-                    else
-                        false;
+                    const is_selected = if (row_sel) |sel| col_x >= sel.start_col and col_x <= sel.end_col else false;
 
                     // Background: skip the cellBackground() C-ABI call for cells with
                     // no styling (default bg) and no bg-color content tag.
@@ -1697,7 +1710,7 @@ pub const FtRenderer = struct {
                         c.sgl_v2f(px + self.cell_w, py);
                         c.sgl_v2f(px + self.cell_w, py + self.cell_h);
                         c.sgl_v2f(px, py + self.cell_h);
-                    } else if (is_bg_tag or runtime.cellStyleIdRaw(raw_cell) != 0) {
+                    } else if (is_bg_tag or style_id != 0) {
                         const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
                         if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
                             self.last_bg_rects += 1;
@@ -1720,25 +1733,14 @@ pub const FtRenderer = struct {
                     //
                     // Use the same face/fg grouping as Pass 2 for ligature runs so we can
                     // replay the shaped results directly instead of re-looking them up.
-                    const p1_sid = runtime.cellStyleIdRaw(raw_cell);
                     var face_idx: u8 = 0;
                     var fg = default_fg;
-                    if (p1_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
-                        if (runtime.cellStyle(row_cells.*)) |s| {
-                            if (s.bold and s.italic) {
-                                face_idx = 2;
-                            } else if (s.bold) {
-                                face_idx = 1;
-                            } else if (s.italic) {
-                                face_idx = 3;
-                            }
-                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
-                        }
-                    }
-                    if (selection_range) |range| {
-                        if (row_has_selection and selection.cellSelected(range, row_y, col_x)) {
-                            fg = selection_fg;
-                        }
+                    if (style_id != 0 and runtime.cellHasTextRaw(raw_cell)) {
+                        const info = self.resolveCachedStyle(runtime, row_cells.*, style_id, is_selected, default_fg, selection_fg, palette) orelse continue;
+                        face_idx = info.face_idx;
+                        fg = info.fg;
+                    } else if (is_selected) {
+                        fg = selection_fg;
                     }
 
                     switch (content_tag) {
@@ -1749,19 +1751,14 @@ pub const FtRenderer = struct {
                                 continue;
                             }
                             // Fast non-ligature path: avoid UTF-8 encoding for the common
-                            // printable-ASCII case when the glyph is already cached.
+                            // single-codepoint case when the selected primary face can
+                            // supply the glyph directly without shaping.
                             if (!self.ligatures or !isLigatureCodepoint(cp)) {
                                 flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                // Fast-path: if the glyph is already in the ascii cache it is
-                                // guaranteed to be in the atlas — skip preRasterize entirely.
-                                const ascii_fast_path = isAsciiFastPathCandidate(cp, face_idx);
-                                const ascii_cached = ascii_fast_path and self.ascii_glyphs[@intCast(face_idx)][cp] != null;
-                                if (!ascii_cached) {
+                                if (self.directGlyph(cp, face_idx) == null) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
-                                    if (ascii_fast_path) {
-                                        self.preRasterize(self.glyph_buf[0..glyph_len], face_idx, .terminal);
-                                    } else if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
+                                    if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
                                         self.recordShapedRun(self.glyph_buf[0..glyph_len], face_idx, prepared.start, prepared.glyphs.len);
                                     }
                                 }
@@ -1850,6 +1847,8 @@ pub const FtRenderer = struct {
             self.last_atlas_flushed = true;
         }
         const t_pass2_start = std.time.nanoTimestamp();
+        var pass2_glyph_ns: i128 = 0;
+        var pass2_decoration_ns: i128 = 0;
 
         // ── Pass 2: Glyph draw pass ────────────────────────────────────────
         // In partial mode, skip clean rows; clear rowDirty on each dirty row
@@ -1887,15 +1886,18 @@ pub const FtRenderer = struct {
                 else
                     @as(f32, @floatFromInt(row_y)) * self.cell_h;
                 const py = self.padding_y + row_y_px;
-                const row_has_selection = if (selection_range) |range|
-                    selection.rowIntersects(range, row_y)
+                const row_sel = if (selection_range) |range|
+                    rowSelectionBounds(range, row_y)
                 else
-                    false;
+                    null;
+                const row_hovered_link = hovered_row == row_y;
+                var row_needs_decorations = row_hovered_link;
                 var col_x: usize = 0;
                 var run_start_col: usize = 0;
                 var run_len: usize = 0;
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
+                const row_glyph_start_ns = std.time.nanoTimestamp();
                 while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
                     // Fetch the raw cell first — pure u64 read, enables cheap
                     // has_text / has_styling checks before heavier calls.
@@ -1914,21 +1916,13 @@ pub const FtRenderer = struct {
                     var face_idx: u8 = 0;
                     var fg = default_fg;
                     if (p2_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
-                        if (runtime.cellStyle(row_cells.*)) |s| {
-                            if (s.bold and s.italic) {
-                                face_idx = 2;
-                            } else if (s.bold) {
-                                face_idx = 1;
-                            } else if (s.italic) {
-                                face_idx = 3;
-                            }
-                            fg = ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
-                        }
-                    }
-                    if (selection_range) |range| {
-                        if (row_has_selection and selection.cellSelected(range, row_y, col_x)) {
-                            fg = selection_fg;
-                        }
+                        const is_selected = if (row_sel) |sel| col_x >= sel.start_col and col_x <= sel.end_col else false;
+                        const info = self.resolveCachedStyle(runtime, row_cells.*, p2_sid, is_selected, default_fg, selection_fg, palette) orelse continue;
+                        face_idx = info.face_idx;
+                        fg = info.fg;
+                        if (info.needs_decorations) row_needs_decorations = true;
+                    } else if (row_sel) |sel| {
+                        if (col_x >= sel.start_col and col_x <= sel.end_col) fg = selection_fg;
                     }
 
                     switch (content_tag) {
@@ -1938,24 +1932,20 @@ pub const FtRenderer = struct {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 continue;
                             }
-                            // Fast non-ligature path: avoid UTF-8 encoding before the ASCII
-                            // glyph fast-path. In the steady-state benchmark this removes one
-                            // encode call from almost every visible cell.
+                            // Fast non-ligature path: avoid shaping when a single codepoint can
+                            // be drawn directly from the selected primary face.
                             if (!self.ligatures or !isLigatureCodepoint(cp)) {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                                // Fast ASCII path: skip HarfBuzz shaping for printable ASCII.
                                 self.last_glyph_runs += 1;
-                                if (!self.drawAsciiGlyph(px, py, cp, face_idx, fg, py, py + self.cell_h)) {
+                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
+                                if (!self.drawDirectGlyph(px, py, cp, face_idx, fg, py, py + self.cell_h)) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
-                                    if (!isAsciiFastPathCandidate(cp, face_idx)) {
-                                        if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
-                                            self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
-                                            continue;
-                                        }
+                                    if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
+                                        self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
+                                    } else {
+                                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                     }
-                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                 }
                                 continue;
                             }
@@ -2040,11 +2030,13 @@ pub const FtRenderer = struct {
                 if (run_len > 0) {
                     flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                 }
+                pass2_glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
 
                 // ── Decorations (underline / undercurl / strikethrough / overline) ──
                 // Drawn after glyphs so they appear on top.
                 // We batch all decoration rects for this row into one sgl quad batch.
-                if (runtime.populateRowCells(row_iterator.*, row_cells)) {
+                const row_decoration_start_ns = std.time.nanoTimestamp();
+                if (row_needs_decorations and runtime.populateRowCells(row_iterator.*, row_cells)) {
                     var dec_col_x: usize = 0;
                     var dec_quads_open = false;
                     while (runtime.nextCell(row_cells.*)) : (dec_col_x += 1) {
@@ -2083,10 +2075,7 @@ pub const FtRenderer = struct {
                         }
 
                         const dec_px = self.padding_x + @as(f32, @floatFromInt(dec_col_x)) * self.cell_w;
-                        const dec_selected = if (selection_range) |range|
-                            selection.cellSelected(range, row_y, dec_col_x)
-                        else
-                            false;
+                        const dec_selected = if (row_sel) |sel| dec_col_x >= sel.start_col and dec_col_x <= sel.end_col else false;
                         const dec_fg = if (dec_selected)
                             selection_fg
                         else
@@ -2163,6 +2152,7 @@ pub const FtRenderer = struct {
                     }
                     if (dec_quads_open) c.sgl_end();
                 }
+                pass2_decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
 
                 // Clear per-row dirty flag after rendering this row.
                 if (!force_full) runtime.clearRowDirty(row_iterator.*);
@@ -2202,6 +2192,8 @@ pub const FtRenderer = struct {
         const t_pass2_end = std.time.nanoTimestamp();
         self.last_pass1_ns = t_pass2_start - t_pass1_start;
         self.last_pass2_ns = t_pass2_end - t_pass2_start;
+        self.last_pass2_glyph_ns = pass2_glyph_ns;
+        self.last_pass2_decoration_ns = pass2_decoration_ns;
     }
 
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.
@@ -2272,43 +2264,12 @@ pub const FtRenderer = struct {
         x_offset.* += glyph_inst.x_advance;
     }
 
-    /// Fast path for printable ASCII (0x21–0x7E) and Latin-1 supplement (0xA0–0xFF):
-    /// skip HarfBuzz shaping entirely.
-    /// On the first call per (cp, face_idx), resolves the glyph via FT_Get_Char_Index
-    /// and getOrRasterize, then caches the full Glyph struct in ascii_glyphs.
-    /// On subsequent calls (the steady-state hot path) it is a single array lookup —
-    /// no hashmap, no C-ABI call.  Returns true if the glyph was drawn (or is
-    /// blank/invisible); false if the caller should fall back to batchGlyphs.
-    inline fn drawAsciiGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) bool {
-        if (cp < 0x21 or cp > 0xFF or face_idx > 3) return false;
-        // Skip C1 control range (0x7F–0x9F) — these are never printable.
-        if (cp > 0x7E and cp < 0xA0) return false;
-
-        const fi: usize = @intCast(face_idx);
-        const glyph: Glyph = self.ascii_glyphs[fi][cp] orelse blk: {
-            // Not yet cached — resolve glyph_id via FT_Get_Char_Index then rasterize.
-            const face = switch (face_idx) {
-                0 => self.face_regular,
-                1 => self.face_bold,
-                2 => self.face_bold_italic,
-                3 => self.face_italic,
-                else => return false,
-            };
-            const glyph_id = ft.FT_Get_Char_Index(face, cp);
-            if (glyph_id == 0) {
-                // Face has no glyph for this codepoint; cache a zero sentinel and fall back.
-                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
-                return false;
-            }
-            const g = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse {
-                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
-                break :blk self.ascii_glyphs[fi][cp].?;
-            };
-            self.ascii_glyphs[fi][cp] = g;
-            break :blk g;
-        };
-        // bw == -1 sentinel means the face has no glyph for this codepoint.
-        if (glyph.bw == -1) return false;
+    /// Fast path for a single codepoint in one of the primary 4 faces:
+    /// skip HarfBuzz shaping entirely when the face directly supports the glyph.
+    /// Printable ASCII / Latin-1 uses the dedicated cached table; other codepoints
+    /// still avoid shaping via direct FT_Get_Char_Index probing.
+    inline fn drawDirectGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) bool {
+        const glyph = self.directGlyph(cp, face_idx) orelse return false;
 
         const w = @as(f32, @floatFromInt(glyph.bw));
         const h = @as(f32, @floatFromInt(glyph.bh));
@@ -2319,6 +2280,36 @@ pub const FtRenderer = struct {
             self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
         }
         return true;
+    }
+
+    inline fn directGlyph(self: *FtRenderer, cp: u32, face_idx: u8) ?Glyph {
+        if (face_idx > 3 or cp == 0) return null;
+        if (cp < 0x100) {
+            // Skip C1 control range (0x7F–0x9F) — these are never printable.
+            if (cp > 0x7E and cp < 0xA0) return null;
+            const fi: usize = @intCast(face_idx);
+            const glyph = self.ascii_glyphs[fi][cp] orelse blk: {
+                const face = self.faceForRasterIndex(face_idx) orelse return null;
+                const glyph_id = ft.FT_Get_Char_Index(face, cp);
+                if (glyph_id == 0) {
+                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                    return null;
+                }
+                const g = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse {
+                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                    break :blk self.ascii_glyphs[fi][cp].?;
+                };
+                self.ascii_glyphs[fi][cp] = g;
+                break :blk g;
+            };
+            if (glyph.bw == -1) return null;
+            return glyph;
+        }
+
+        const face = self.faceForRasterIndex(face_idx) orelse return null;
+        const glyph_id = ft.FT_Get_Char_Index(face, cp);
+        if (glyph_id == 0) return null;
+        return self.getOrRasterize(glyph_id, face_idx, .terminal);
     }
 
     /// Append one glyph quad (4 vertices) to the CPU staging buffer.
@@ -2346,6 +2337,20 @@ pub const FtRenderer = struct {
     ) void {
         if (self.glyph_verts_count + 4 > MAX_GLYPH_VERTS) return;
 
+        const base = self.glyph_verts_count;
+        const verts = self.glyph_verts_cpu;
+
+        // Common case: the glyph quad is already fully contained within the row's
+        // clip bounds, so avoid the extra clipping/interpolation math.
+        if (gy >= clip_y0 and gy + h <= clip_y1) {
+            verts[base + 0] = .{ .x = gx, .y = gy, .u = s0, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+            verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+            verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+            verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+            self.glyph_verts_count += 4;
+            return;
+        }
+
         // Clip the quad vertically to [clip_y0, clip_y1] and adjust UVs.
         const bottom = gy + h;
         const clipped_top = @max(gy, clip_y0);
@@ -2358,8 +2363,6 @@ pub const FtRenderer = struct {
         const tc_top = t0 + (clipped_top - gy) * inv_h * (t1 - t0);
         const tc_bot = t0 + (clipped_bot - gy) * inv_h * (t1 - t0);
 
-        const base = self.glyph_verts_count;
-        const verts = self.glyph_verts_cpu;
         verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
@@ -2537,6 +2540,42 @@ pub const FtRenderer = struct {
         const prepared_start = self.prepared_glyphs.items.len;
         self.prepared_glyphs.appendSlice(self.allocator, glyphs) catch return null;
         return .{ .start = prepared_start, .glyphs = self.prepared_glyphs.items[prepared_start..][0..glyphs.len] };
+    }
+
+    inline fn styleCacheReset(self: *FtRenderer) void {
+        @memset(&self.style_cache, null);
+    }
+
+    inline fn resolveCachedStyle(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, style_id: u16, selected: bool, default_fg: ghostty.ColorRgb, selection_fg: ghostty.ColorRgb, palette: *const [256]ghostty.ColorRgb) ?CachedStyleInfo {
+        const slot = self.styleCacheSlot(style_id, selected);
+        if (self.style_cache[slot]) |cached| {
+            if (cached.style_id == style_id and cached.selected == selected) return cached;
+        }
+
+        const s = runtime.cellStyle(row_cells) orelse return null;
+        var face_idx: u8 = 0;
+        if (s.bold and s.italic) {
+            face_idx = 2;
+        } else if (s.bold) {
+            face_idx = 1;
+        } else if (s.italic) {
+            face_idx = 3;
+        }
+        const info = CachedStyleInfo{
+            .style_id = style_id,
+            .selected = selected,
+            .face_idx = face_idx,
+            .fg = if (selected) selection_fg else ghostty.resolveStyleColor(s.fg_color, default_fg, palette),
+            .needs_decorations = s.underline != 0 or s.strikethrough or s.overline,
+        };
+        self.style_cache[slot] = info;
+        return info;
+    }
+
+    inline fn styleCacheSlot(self: *FtRenderer, style_id: u16, selected: bool) usize {
+        _ = self;
+        const key: u32 = (@as(u32, style_id) << 1) | @intFromBool(selected);
+        return key & (STYLE_CACHE_SIZE - 1);
     }
 
     fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, glyphs: []const PreparedGlyph) void {
@@ -2965,6 +3004,25 @@ inline fn srgbToLinearBg(r: f32, g: f32, b: f32) [4]f32 {
 
 fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+const RowSelectionBounds = struct {
+    start_col: usize,
+    end_col: usize,
+};
+
+inline fn rowSelectionBounds(range: selection.Range, row: usize) ?RowSelectionBounds {
+    if (!selection.rowIntersects(range, row)) return null;
+    if (range.start.row == range.end.row) {
+        return .{ .start_col = range.start.col, .end_col = range.end.col };
+    }
+    if (row == range.start.row) {
+        return .{ .start_col = range.start.col, .end_col = std.math.maxInt(usize) };
+    }
+    if (row == range.end.row) {
+        return .{ .start_col = 0, .end_col = range.end.col };
+    }
+    return .{ .start_col = 0, .end_col = std.math.maxInt(usize) };
 }
 
 fn mixColor(a: ghostty.ColorRgb, b: ghostty.ColorRgb, t: f32) ghostty.ColorRgb {
