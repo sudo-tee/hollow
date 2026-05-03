@@ -3531,14 +3531,8 @@ pub const App = struct {
                     // Cap at sane max to prevent DLL crashes on extreme values.
                     const cols: u16 = @intCast(@min(1000, @max(1, raw_cols)));
                     const rows: u16 = @intCast(@min(500, @max(1, raw_rows)));
-                    std.log.info("resizeAllPanes leaf pane={x} bounds=({d},{d} {d}x{d}) grid={d}x{d}", .{
-                        @intFromPtr(leaf.pane), leaf.bounds.x, leaf.bounds.y, leaf.bounds.width, leaf.bounds.height, cols, rows,
-                    });
-                    std.log.info("resizeAllPanes: calling pane.resize pane={x}", .{@intFromPtr(leaf.pane)});
                     if (recreate_render_helpers) {
-                        std.log.info("resizeAllPanes: recreateRenderHelpers pane={x}", .{@intFromPtr(leaf.pane)});
                         leaf.pane.recreateRenderHelpers(runtime);
-                        std.log.info("resizeAllPanes: recreateRenderHelpers done pane={x}", .{@intFromPtr(leaf.pane)});
                     }
                     leaf.pane.width_px = leaf.bounds.width;
                     leaf.pane.height_px = leaf.bounds.height;
@@ -3546,7 +3540,6 @@ pub const App = struct {
                     leaf.pane.y_px = leaf.bounds.y;
                     const pane_skip_pty = skip_pty or (skip_unchanged_pty and leaf.pane.cols == cols and leaf.pane.rows == rows);
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
-                    std.log.info("resizeAllPanes: pane.resize done pane={x}", .{@intFromPtr(leaf.pane)});
                     // The encoder maps absolute surface pixels into pane-local cells
                     // using the full surface size plus the pane's outer padding.
                     const scrollbar_gutter = self.paneScrollbarGutter(leaf.pane);
@@ -3562,7 +3555,6 @@ pub const App = struct {
                         self.config.terminal_padding.right + scrollbar_gutter,
                     );
                     leaf.pane.render_state_ready = true;
-                    std.log.info("resizeAllPanes: leaf done pane={x} render_state_ready=true", .{@intFromPtr(leaf.pane)});
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
@@ -3576,11 +3568,8 @@ pub const App = struct {
                     const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
-                    std.log.info("resizeAllPanes (fallback): pane={x} grid={d}x{d}", .{ @intFromPtr(pane), cols, rows });
                     if (recreate_render_helpers) {
-                        std.log.info("resizeAllPanes (fallback): recreateRenderHelpers pane={x}", .{@intFromPtr(pane)});
                         pane.recreateRenderHelpers(runtime);
-                        std.log.info("resizeAllPanes (fallback): recreateRenderHelpers done pane={x}", .{@intFromPtr(pane)});
                     }
                     pane.width_px = pixel_width;
                     pane.height_px = pane_h;
@@ -3600,7 +3589,6 @@ pub const App = struct {
                         self.config.terminal_padding.right + scrollbar_gutter,
                     );
                     pane.render_state_ready = true;
-                    std.log.info("resizeAllPanes (fallback): pane done pane={x}", .{@intFromPtr(pane)});
                 }
             }
         }

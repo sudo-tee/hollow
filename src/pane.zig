@@ -8,7 +8,7 @@ const Pty = @import("pty/pty.zig").Pty;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 
-const TERMINAL_WRITE_CHUNK_SIZE: usize = 32 * 1024;
+const TERMINAL_WRITE_CHUNK_SIZE: usize = 64 * 1024;
 
 const is_windows = @import("builtin").os.tag == .windows;
 
@@ -18,6 +18,68 @@ const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC52_SEQUENCE_MAX = 65536;
 const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
 const HTP_OSC_LOG_MAX = 8192;
+
+const CombinedInput = struct {
+    first: []const u8,
+    second: []const u8,
+
+    fn len(self: CombinedInput) usize {
+        return self.first.len + self.second.len;
+    }
+
+    fn byteAt(self: CombinedInput, idx: usize) u8 {
+        if (idx < self.first.len) return self.first[idx];
+        return self.second[idx - self.first.len];
+    }
+
+    fn byteAtOrNull(self: CombinedInput, idx: usize) ?u8 {
+        if (idx >= self.len()) return null;
+        return self.byteAt(idx);
+    }
+
+    fn startsWith(self: CombinedInput, idx: usize, needle: []const u8) bool {
+        if (idx + needle.len > self.len()) return false;
+        for (needle, 0..) |byte, offset| {
+            if (self.byteAt(idx + offset) != byte) return false;
+        }
+        return true;
+    }
+
+    fn indexOfScalarPos(self: CombinedInput, start: usize, value: u8) ?usize {
+        if (start < self.first.len) {
+            if (std.mem.indexOfScalarPos(u8, self.first, start, value)) |idx| return idx;
+            if (std.mem.indexOfScalar(u8, self.second, value)) |idx| return self.first.len + idx;
+            return null;
+        }
+        return if (std.mem.indexOfScalarPos(u8, self.second, start - self.first.len, value)) |idx|
+            self.first.len + idx
+        else
+            null;
+    }
+
+    fn copyRange(self: CombinedInput, start: usize, end: usize, out: []u8, write_idx: *usize) void {
+        if (end <= start) return;
+
+        var remaining_start = start;
+        const remaining_end = end;
+
+        if (remaining_start < self.first.len) {
+            const first_end = @min(remaining_end, self.first.len);
+            const span = self.first[remaining_start..first_end];
+            @memcpy(out[write_idx.* .. write_idx.* + span.len], span);
+            write_idx.* += span.len;
+            remaining_start = first_end;
+        }
+
+        if (remaining_start < remaining_end) {
+            const second_start = remaining_start - self.first.len;
+            const second_end = remaining_end - self.first.len;
+            const span = self.second[second_start..second_end];
+            @memcpy(out[write_idx.* .. write_idx.* + span.len], span);
+            write_idx.* += span.len;
+        }
+    }
+};
 
 fn prefixMatchesKnownOsc(prefix: []const u8) bool {
     return std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
@@ -322,10 +384,6 @@ pub const Pane = struct {
             var total_read: usize = 0;
             var read_loops: usize = 0;
             while (read_loops < max_read_loops and total_read < max_total_read) {
-                const pending_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-                const has_pending = pty.hasPendingOutput();
-                if (debug_overlay) self.last_has_pending_ns += std.time.nanoTimestamp() - pending_start_ns;
-                if (!has_pending) break;
                 const read_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
                 const count = pty.read(&self.read_buf) catch |err| {
                     if (err == error.EndOfStream) break;
@@ -344,7 +402,22 @@ pub const Pane = struct {
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
                     if (debug_overlay) self.last_sanitize_ns += std.time.nanoTimestamp() - sanitize_start_ns;
                     if (pty_bytes.len > 0) {
-                        try self.boot_output.appendSlice(self.allocator, pty_bytes);
+                        if (self.render_state_ready) {
+                            var offset: usize = 0;
+                            while (offset < pty_bytes.len) {
+                                const end = @min(offset + TERMINAL_WRITE_CHUNK_SIZE, pty_bytes.len);
+                                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                                runtime.terminalWrite(self.terminal, pty_bytes[offset..end]);
+                                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                                self.last_terminal_write_bytes += end - offset;
+                                self.last_terminal_write_chunks += 1;
+                                offset = end;
+                            }
+                            self.pty_received_data = true;
+                            self.pty_wrote_this_frame = true;
+                        } else {
+                            try self.boot_output.appendSlice(self.allocator, pty_bytes);
+                        }
                     }
                 }
             }
@@ -471,39 +544,22 @@ pub const Pane = struct {
             // Drag-preview: just mark dirty so the renderer redraws in the new
             // pixel bounds.  No ghostty reflow, no SIGWINCH.
             self.render_dirty = .full;
-            std.log.info("pane.resize (drag-preview): pane={x} cols={d} rows={d} — PTY/ghostty frozen", .{ @intFromPtr(self), cols, rows });
             return;
         }
 
         // Guard against null terminal — can happen if bootstrap partially failed
         // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
         if (self.terminal) |terminal| {
-            std.log.info("pane.resize: resizeTerminal pane={x} cols={d} rows={d}", .{ @intFromPtr(self), cols, rows });
-            // If the dimensions haven't changed from ghostty's perspective
-            // (e.g. divider_commit after a drag that ended on the same grid
-            // boundary as the last drag-frame resize), ghostty treats
-            // terminal_resize as a no-op and does NOT reflow.  This leaves
-            // its terminal state corrupted from the rapid resize churn during
-            // the drag.  Force a real reflow by briefly resizing to a
-            // neighbouring size first.
             if (is_windows and cols == prev_cols and rows == prev_rows and (cols > 1 or rows > 1)) {
                 const bump_cols: u16 = if (cols > 1) cols - 1 else cols + 1;
-                std.log.info("pane.resize: forcing reflow via bump resize pane={x} bump_cols={d}", .{ @intFromPtr(self), bump_cols });
                 runtime.resizeTerminal(terminal, bump_cols, rows, cell_width_px, cell_height_px);
             }
             runtime.resizeTerminal(terminal, cols, rows, cell_width_px, cell_height_px);
-            std.log.info("pane.resize: resizeTerminal done", .{});
         }
-        std.log.info("pane.resize: updateRenderState pane={x}", .{@intFromPtr(self)});
         runtime.updateRenderState(self.render_state, self.terminal) catch {};
-        std.log.info("pane.resize: updateRenderState done", .{});
-        // A resize always requires a full redraw (all rows change).
         self.render_dirty = .full;
-        std.log.info("pane.resize: syncKeyEncoder pane={x}", .{@intFromPtr(self)});
         runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-        std.log.info("pane.resize: syncMouseEncoder pane={x}", .{@intFromPtr(self)});
         runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
-        std.log.info("pane.resize: done pane={x}", .{@intFromPtr(self)});
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
                 pty.resize(cols, rows);
@@ -538,7 +594,6 @@ pub const Pane = struct {
         padding_left: u32,
         padding_right: u32,
     ) void {
-        std.log.info("pane.setMouseSize: pane={x} screen={d}x{d} cell={d}x{d}", .{ @intFromPtr(self), screen_width, screen_height, cell_width_px, cell_height_px });
         runtime.setMouseEncoderSize(self.mouse_encoder, .{
             .size = @sizeOf(ghostty.MouseEncoderSize),
             .screen_width = screen_width,
@@ -550,9 +605,7 @@ pub const Pane = struct {
             .padding_left = padding_left,
             .padding_right = padding_right,
         });
-        std.log.info("pane.setMouseSize: setMouseEncoderSize done", .{});
         runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, false);
-        std.log.info("pane.setMouseSize: done", .{});
     }
 
     pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {
@@ -599,7 +652,6 @@ pub const Pane = struct {
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
-        std.log.info("refreshTitle start title.len={d}", .{self.title.len});
         if (self.title.len > 0) {
             self.allocator.free(self.title);
             self.title = &.{};
@@ -725,86 +777,219 @@ pub const Pane = struct {
     }
 
     fn sanitizePtyOutput(self: *Pane, bytes: []u8) []const u8 {
-        const has_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) != null;
-        const needs_osc_filter = self.osc52_active or self.osc7_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_escape;
-        const filtered: []const u8 = if (needs_osc_filter)
-            self.pty_sanitize_buf[0..self.filterOsc52(bytes)]
-        else
-            bytes;
-        if (!platform.isWindows()) return filtered;
-        if (self.pty_pending_len == 0 and !has_escape and filtered.ptr == bytes.ptr) return filtered;
+        return self.sanitizePtyOutputForPlatform(bytes, platform.isWindows());
+    }
 
+    fn sanitizePtyOutputForPlatform(self: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
+        const has_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) != null;
+        const has_pending = windows_mode and self.pty_pending_len > 0;
+        const needs_filter = self.osc52_active or self.osc7_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_pending or has_escape;
+        if (!needs_filter) return bytes;
+
+        const pending = if (windows_mode) self.pty_pending_seq[0..self.pty_pending_len] else "";
+        const input = CombinedInput{ .first = pending, .second = bytes };
         const enable = "\x1b[?9001h";
         const disable = "\x1b[?9001l";
-        var combined_len: usize = self.pty_pending_len;
-        if (combined_len > 0) {
-            @memcpy(self.pty_sanitize_buf[0..combined_len], self.pty_pending_seq[0..combined_len]);
-        }
-        if (filtered.len > 0) {
-            if (@intFromPtr(filtered.ptr) == @intFromPtr(&self.pty_sanitize_buf[0])) {
-                @memmove(self.pty_sanitize_buf[combined_len .. combined_len + filtered.len], filtered);
-            } else {
-                @memcpy(self.pty_sanitize_buf[combined_len .. combined_len + filtered.len], filtered);
-            }
-            combined_len += filtered.len;
-        }
-
-        var scan_idx: usize = 0;
+        var read_idx: usize = 0;
         var write_idx: usize = 0;
-        while (scan_idx < combined_len) {
-            const esc_idx = std.mem.indexOfScalarPos(u8, self.pty_sanitize_buf[0..combined_len], scan_idx, 0x1b) orelse {
-                const span = self.pty_sanitize_buf[scan_idx..combined_len];
-                @memmove(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
-                write_idx += span.len;
-                break;
-            };
-            if (esc_idx > scan_idx) {
-                const span = self.pty_sanitize_buf[scan_idx..esc_idx];
-                @memmove(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
-                write_idx += span.len;
-            }
 
-            const remaining = self.pty_sanitize_buf[esc_idx..combined_len];
-            if (std.mem.startsWith(u8, remaining, enable)) {
-                scan_idx = esc_idx + enable.len;
-                continue;
-            }
-            if (std.mem.startsWith(u8, remaining, disable)) {
-                scan_idx = esc_idx + disable.len;
-                continue;
-            }
+        self.pty_pending_len = 0;
 
-            if (remaining.len >= 2 and remaining[1] == '[') {
-                var j: usize = esc_idx + 2;
-                var is_csi_t = false;
-                while (j < combined_len) : (j += 1) {
-                    const b = self.pty_sanitize_buf[j];
-                    if (b >= 0x30 and b <= 0x3f) {
-                        // parameter byte, keep scanning
-                    } else if (b == 't') {
-                        is_csi_t = true;
-                        j += 1; // advance past 't'
-                        break;
+        while (read_idx < input.len()) {
+            const byte = input.byteAt(read_idx);
+
+            if (self.osc52_active) {
+                if (self.osc52_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc52Sequence();
                     } else {
-                        break; // different final byte — not a CSI t, keep the sequence
+                        self.appendOsc52Byte(0x1b);
+                        self.appendOsc52Byte(byte);
                     }
-                }
-                if (is_csi_t) {
-                    scan_idx = j;
+                    self.osc52_st_pending = false;
+                    read_idx += 1;
                     continue;
                 }
+
+                if (byte == 0x07) {
+                    self.finishOsc52Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc52_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc52Byte(byte);
+                read_idx += 1;
+                continue;
             }
 
-            self.pty_sanitize_buf[write_idx] = self.pty_sanitize_buf[esc_idx];
+            if (self.osc7_active) {
+                if (self.osc7_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc7Sequence();
+                    } else {
+                        self.appendOsc7Byte(0x1b);
+                        self.appendOsc7Byte(byte);
+                    }
+                    self.osc7_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc7Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc7_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc7Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.htp_osc_active) {
+                if (self.htp_osc_st_pending) {
+                    if (byte == '\\') {
+                        self.finishHtpOscSequence();
+                    } else {
+                        self.appendHtpOscByte(0x1b);
+                        self.appendHtpOscByte(byte);
+                    }
+                    self.htp_osc_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishHtpOscSequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.htp_osc_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendHtpOscByte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc_prefix_len > 0) {
+                if (self.osc_prefix_len < self.osc_prefix_buf.len) {
+                    self.osc_prefix_buf[self.osc_prefix_len] = byte;
+                    self.osc_prefix_len += 1;
+                    read_idx += 1;
+                } else {
+                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
+                    write_idx += self.osc_prefix_len;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+
+                const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
+                if (std.mem.eql(u8, prefix, OSC52_PREFIX)) {
+                    self.osc52_active = true;
+                    self.osc52_st_pending = false;
+                    self.osc52_overflow = false;
+                    self.osc52_len = 0;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+                if (std.mem.eql(u8, prefix, OSC7_PREFIX)) {
+                    self.osc7_active = true;
+                    self.osc7_st_pending = false;
+                    self.osc7_len = 0;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+                if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) {
+                    self.htp_osc_active = true;
+                    self.htp_osc_st_pending = false;
+                    self.htp_osc_overflow = false;
+                    self.htp_osc_len = 0;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+
+                if (prefixMatchesKnownOsc(prefix)) continue;
+
+                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                write_idx += prefix.len;
+                self.osc_prefix_len = 0;
+                continue;
+            }
+
+            const esc_idx = input.indexOfScalarPos(read_idx, 0x1b) orelse {
+                input.copyRange(read_idx, input.len(), self.pty_sanitize_buf[0..], &write_idx);
+                break;
+            };
+            if (esc_idx > read_idx) {
+                input.copyRange(read_idx, esc_idx, self.pty_sanitize_buf[0..], &write_idx);
+                read_idx = esc_idx;
+            }
+
+            const next = input.byteAtOrNull(read_idx + 1);
+            if (next == null or next.? == ']') {
+                self.osc_prefix_buf[0] = 0x1b;
+                self.osc_prefix_len = 1;
+                read_idx += 1;
+                continue;
+            }
+
+            if (windows_mode) {
+                if (input.startsWith(read_idx, enable)) {
+                    read_idx += enable.len;
+                    continue;
+                }
+                if (input.startsWith(read_idx, disable)) {
+                    read_idx += disable.len;
+                    continue;
+                }
+                if (next.? == '[') {
+                    var j = read_idx + 2;
+                    var is_csi_t = false;
+                    while (j < input.len()) : (j += 1) {
+                        const b = input.byteAt(j);
+                        if (b >= 0x30 and b <= 0x3f) {
+                            // parameter byte, keep scanning
+                        } else if (b == 't') {
+                            is_csi_t = true;
+                            j += 1;
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (is_csi_t) {
+                        read_idx = j;
+                        continue;
+                    }
+                }
+            }
+
+            self.pty_sanitize_buf[write_idx] = 0x1b;
             write_idx += 1;
-            scan_idx = esc_idx + 1;
+            read_idx += 1;
         }
 
-        const tail_len = trailingAnsiPrefixLen(self.pty_sanitize_buf[0..write_idx]);
-        self.pty_pending_len = tail_len;
-        if (tail_len > 0) {
-            @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
-            write_idx -= tail_len;
+        if (windows_mode) {
+            const tail_len = trailingAnsiPrefixLen(self.pty_sanitize_buf[0..write_idx]);
+            self.pty_pending_len = tail_len;
+            if (tail_len > 0) {
+                @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
+                write_idx -= tail_len;
+            }
         }
 
         return self.pty_sanitize_buf[0..write_idx];
@@ -1118,4 +1303,50 @@ fn trailingAnsiPrefixLen(bytes: []const u8) usize {
         }
     }
     return 0;
+}
+
+test "sanitizePtyOutput windows strips split 9001 mode sequence" {
+    var pane = Pane.init(std.testing.allocator);
+    defer if (pane.cwd.len > 0) std.testing.allocator.free(pane.cwd);
+
+    var part1 = [_]u8{ 0x1b, '[', '?', '9' };
+    const out1 = pane.sanitizePtyOutputForPlatform(part1[0..], true);
+    try std.testing.expectEqual(@as(usize, 0), out1.len);
+    try std.testing.expectEqual(@as(usize, 4), pane.pty_pending_len);
+
+    var part2 = [_]u8{ '0', '0', '1', 'h', 'A' };
+    const out2 = pane.sanitizePtyOutputForPlatform(part2[0..], true);
+    try std.testing.expectEqualStrings("A", out2);
+    try std.testing.expectEqual(@as(usize, 0), pane.pty_pending_len);
+}
+
+test "sanitizePtyOutput windows strips split csi t sequence" {
+    var pane = Pane.init(std.testing.allocator);
+    defer if (pane.cwd.len > 0) std.testing.allocator.free(pane.cwd);
+
+    var part1 = [_]u8{ 'x', 0x1b, '[', '8', ';' };
+    const out1 = pane.sanitizePtyOutputForPlatform(part1[0..], true);
+    try std.testing.expectEqualStrings("x", out1);
+    try std.testing.expectEqual(@as(usize, 4), pane.pty_pending_len);
+
+    var part2 = [_]u8{ '2', '4', 't', 'y' };
+    const out2 = pane.sanitizePtyOutputForPlatform(part2[0..], true);
+    try std.testing.expectEqualStrings("y", out2);
+    try std.testing.expectEqual(@as(usize, 0), pane.pty_pending_len);
+}
+
+test "sanitizePtyOutput preserves split OSC 7 state across chunks" {
+    var pane = Pane.init(std.testing.allocator);
+    defer if (pane.cwd.len > 0) std.testing.allocator.free(pane.cwd);
+
+    var part1 = [_]u8{ 0x1b, ']', '7', ';', 'f', 'i', 'l', 'e', ':', '/', '/' };
+    const out1 = pane.sanitizePtyOutputForPlatform(part1[0..], false);
+    try std.testing.expectEqual(@as(usize, 0), out1.len);
+    try std.testing.expect(pane.osc7_active);
+
+    var part2 = [_]u8{ '/', 't', 'm', 'p', 0x07, 'Z' };
+    const out2 = pane.sanitizePtyOutputForPlatform(part2[0..], false);
+    try std.testing.expectEqualStrings("Z", out2);
+    try std.testing.expectEqualStrings("/tmp", pane.cwd);
+    try std.testing.expect(pane.cwd_dirty);
 }

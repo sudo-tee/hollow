@@ -114,6 +114,10 @@ const CachedStyleInfo = struct {
     face_idx: u8,
     fg: ghostty.ColorRgb,
     needs_decorations: bool,
+    underline_color: ghostty.StyleColor,
+    underline: i32,
+    strikethrough: bool,
+    overline: bool,
 };
 
 const STYLE_CACHE_SIZE = 64;
@@ -1685,11 +1689,15 @@ pub const FtRenderer = struct {
                 }
 
                 var col_x: usize = 0;
+                var col_px = self.padding_x;
                 var run_start_col: usize = 0;
                 var run_len: usize = 0;
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
-                while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
+                while (runtime.nextCell(row_cells.*)) : ({
+                    col_x += 1;
+                    col_px += self.cell_w;
+                }) {
                     self.last_cells_visited += 1;
                     // Fetch the raw cell first: cheap pure read, enables fast-path checks.
                     const raw_cell = runtime.cellRaw(row_cells.*);
@@ -1710,12 +1718,11 @@ pub const FtRenderer = struct {
                             c.sgl_begin_quads();
                             quads_open = true;
                         }
-                        const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                         c.sgl_c4b(selection_bg.r, selection_bg.g, selection_bg.b, 255);
-                        c.sgl_v2f(px, py);
-                        c.sgl_v2f(px + self.cell_w, py);
-                        c.sgl_v2f(px + self.cell_w, py + self.cell_h);
-                        c.sgl_v2f(px, py + self.cell_h);
+                        c.sgl_v2f(col_px, py);
+                        c.sgl_v2f(col_px + self.cell_w, py);
+                        c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+                        c.sgl_v2f(col_px, py + self.cell_h);
                     } else if (is_bg_tag or style_id != 0) {
                         const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
                         if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
@@ -1724,12 +1731,11 @@ pub const FtRenderer = struct {
                                 c.sgl_begin_quads();
                                 quads_open = true;
                             }
-                            const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
                             c.sgl_c4b(bg.r, bg.g, bg.b, 255);
-                            c.sgl_v2f(px, py);
-                            c.sgl_v2f(px + self.cell_w, py);
-                            c.sgl_v2f(px + self.cell_w, py + self.cell_h);
-                            c.sgl_v2f(px, py + self.cell_h);
+                            c.sgl_v2f(col_px, py);
+                            c.sgl_v2f(col_px + self.cell_w, py);
+                            c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+                            c.sgl_v2f(col_px, py + self.cell_h);
                         }
                     }
 
@@ -1899,12 +1905,16 @@ pub const FtRenderer = struct {
                 const row_hovered_link = hovered_row == row_y;
                 var row_needs_decorations = row_hovered_link;
                 var col_x: usize = 0;
+                var col_px = self.padding_x;
                 var run_start_col: usize = 0;
                 var run_len: usize = 0;
                 var run_face_idx: u8 = 0;
                 var run_fg = default_fg;
                 const row_glyph_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
-                while (runtime.nextCell(row_cells.*)) : (col_x += 1) {
+                while (runtime.nextCell(row_cells.*)) : ({
+                    col_x += 1;
+                    col_px += self.cell_w;
+                }) {
                     // Fetch the raw cell first — pure u64 read, enables cheap
                     // has_text / has_styling checks before heavier calls.
                     const raw_cell = runtime.cellRaw(row_cells.*);
@@ -1943,14 +1953,13 @@ pub const FtRenderer = struct {
                             if (!self.ligatures or !isLigatureCodepoint(cp)) {
                                 flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
                                 self.last_glyph_runs += 1;
-                                const px = self.padding_x + @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                                if (!self.drawDirectGlyph(px, py, cp, face_idx, fg, py, py + self.cell_h)) {
+                                if (!self.drawDirectGlyph(col_px, py, cp, face_idx, fg, py, py + self.cell_h)) {
                                     const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
                                     if (glyph_len == 0) continue;
                                     if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
-                                        self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
+                                        self.batchPreparedGlyphs(col_px, py, prepared, fg, py, py + self.cell_h);
                                     } else {
-                                        self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
+                                        self.batchGlyphs(col_px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
                                     }
                                 }
                                 continue;
@@ -2044,8 +2053,12 @@ pub const FtRenderer = struct {
                 const row_decoration_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
                 if (row_needs_decorations and runtime.populateRowCells(row_iterator.*, row_cells)) {
                     var dec_col_x: usize = 0;
+                    var dec_px = self.padding_x;
                     var dec_quads_open = false;
-                    while (runtime.nextCell(row_cells.*)) : (dec_col_x += 1) {
+                    while (runtime.nextCell(row_cells.*)) : ({
+                        dec_col_x += 1;
+                        dec_px += self.cell_w;
+                    }) {
                         const raw_cell2 = runtime.cellRaw(row_cells.*);
                         const hovered_link_visual = if (hovered_hyperlink) |hovered|
                             hovered.row == row_y and dec_col_x >= hovered.start_col and dec_col_x < hovered.end_col
@@ -2053,25 +2066,17 @@ pub const FtRenderer = struct {
                             false;
                         const style_id = runtime.cellStyleIdRaw(raw_cell2);
                         if (style_id == 0 and !hovered_link_visual) continue;
-                        const s_opt = runtime.cellStyle(row_cells.*);
-                        if (style_id != 0 and s_opt == null) continue;
-                        const s = s_opt orelse ghostty.Style{
-                            .size = @sizeOf(ghostty.Style),
-                            .fg_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
-                            .bg_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
-                            .underline_color = .{ .tag = .none, .value = .{ ._padding = 0 } },
-                            .bold = false,
-                            .italic = false,
-                            .faint = false,
-                            .blink = false,
-                            .inverse = false,
-                            .invisible = false,
-                            .strikethrough = false,
-                            .overline = false,
-                            .underline = 0,
-                        };
+                        const dec_selected = if (row_sel) |sel| dec_col_x >= sel.start_col and dec_col_x <= sel.end_col else false;
+                        const cached_style = if (style_id != 0)
+                            self.resolveCachedStyle(runtime, row_cells.*, style_id, dec_selected, default_fg, selection_fg, palette)
+                        else
+                            null;
+                        if (style_id != 0 and cached_style == null) continue;
 
-                        const has_decoration = s.underline != 0 or s.strikethrough or s.overline or hovered_link_visual;
+                        const underline = if (cached_style) |info| info.underline else 0;
+                        const strikethrough = if (cached_style) |info| info.strikethrough else false;
+                        const overline = if (cached_style) |info| info.overline else false;
+                        const has_decoration = underline != 0 or strikethrough or overline or hovered_link_visual;
                         if (!has_decoration) continue;
 
                         if (!dec_quads_open) {
@@ -2080,13 +2085,12 @@ pub const FtRenderer = struct {
                             dec_quads_open = true;
                         }
 
-                        const dec_px = self.padding_x + @as(f32, @floatFromInt(dec_col_x)) * self.cell_w;
-                        const dec_selected = if (row_sel) |sel| dec_col_x >= sel.start_col and dec_col_x <= sel.end_col else false;
-                        const dec_fg = if (dec_selected)
-                            selection_fg
-                        else
-                            ghostty.resolveStyleColor(s.fg_color, default_fg, palette);
-                        const dec_color = ghostty.resolveStyleColor(s.underline_color, dec_fg, palette);
+                        const dec_fg = if (cached_style) |info| info.fg else selection_fg;
+                        const dec_color = ghostty.resolveStyleColor(
+                            if (cached_style) |info| info.underline_color else .{ .tag = .none, .value = .{ ._padding = 0 } },
+                            dec_fg,
+                            palette,
+                        );
                         // Use underline_color if set, otherwise fall back to fg.
                         const ul_r = dec_color.r;
                         const ul_g = dec_color.g;
@@ -2096,7 +2100,7 @@ pub const FtRenderer = struct {
                         const ul_thickness: f32 = 1.0;
                         const ul_y = py + self.cell_h - ul_thickness - 1.0;
 
-                        const effective_underline: i32 = if (hovered_link_visual and s.underline == 0) 1 else s.underline;
+                        const effective_underline: i32 = if (hovered_link_visual and underline == 0) 1 else underline;
 
                         switch (effective_underline) {
                             0 => {}, // GHOSTTY_SGR_UNDERLINE_NONE
@@ -2147,12 +2151,12 @@ pub const FtRenderer = struct {
                             },
                         }
 
-                        if (s.strikethrough) {
+                        if (strikethrough) {
                             const st_y = py + self.cell_h * 0.5 - 0.5;
                             emitRect(dec_px, st_y, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
                         }
 
-                        if (s.overline) {
+                        if (overline) {
                             emitRect(dec_px, py, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
                         }
                     }
@@ -2496,7 +2500,7 @@ pub const FtRenderer = struct {
         self.drawGlyphQuads(pane_w, pane_h, offscreen, bg_linear);
     }
 
-    fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+    inline fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
         _ = fg;
         _ = py;
         if (run_len.* == 0) return;
@@ -2510,7 +2514,7 @@ pub const FtRenderer = struct {
         run_len.* = 0;
     }
 
-    fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+    inline fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
         if (run_len.* == 0) return;
         self.last_glyph_runs += 1;
         const px = self.padding_x + @as(f32, @floatFromInt(run_start_col.*)) * self.cell_w;
@@ -2577,6 +2581,10 @@ pub const FtRenderer = struct {
             .face_idx = face_idx,
             .fg = if (selected) selection_fg else ghostty.resolveStyleColor(s.fg_color, default_fg, palette),
             .needs_decorations = s.underline != 0 or s.strikethrough or s.overline,
+            .underline_color = s.underline_color,
+            .underline = s.underline,
+            .strikethrough = s.strikethrough,
+            .overline = s.overline,
         };
         self.style_cache[slot] = info;
         return info;
@@ -3013,7 +3021,7 @@ inline fn srgbToLinearBg(r: f32, g: f32, b: f32) [4]f32 {
     return .{ srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), 1.0 };
 }
 
-fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
+inline fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b;
 }
 
@@ -3051,7 +3059,7 @@ fn lerpByte(a: u8, b: u8, t: f32) u8 {
     return @intFromFloat(@round(af + (bf - af) * t));
 }
 
-fn isLigatureCandidate(cps: []const u32) bool {
+inline fn isLigatureCandidate(cps: []const u32) bool {
     if (cps.len == 0) return false;
     for (cps) |cp| {
         if (cp == 0) break;
@@ -3060,7 +3068,7 @@ fn isLigatureCandidate(cps: []const u32) bool {
     return true;
 }
 
-fn isLigatureCodepoint(cp: u32) bool {
+inline fn isLigatureCodepoint(cp: u32) bool {
     return switch (cp) {
         '!', '#', '$', '%', '&', '*', '+', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '\\', '^', '|', '~' => true,
         else => false,

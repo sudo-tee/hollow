@@ -538,6 +538,46 @@ const BarWidgetView = struct {
     len: usize = 0,
 };
 
+const BarWidgetScratch = struct {
+    widget: BarWidgetView = .{},
+    text_buf: [2048]u8 = [_]u8{0} ** 2048,
+    seg_buf_16: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
+    seg_text_buf_1024: [1024]u8 = [_]u8{0} ** 1024,
+    seg_buf_32: [32]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 32,
+};
+
+threadlocal var g_bar_widget_scratch: BarWidgetScratch = .{};
+
+fn resetBarSegmentView(dst: *BarSegmentView) void {
+    dst.segment = .{ .text = "" };
+    dst.style = .{};
+    dst.segments_len = 0;
+}
+
+fn resetBarTabView(dst: *BarTabView) void {
+    dst.segment = .{ .text = "" };
+    dst.style = .{};
+    dst.segments_len = 0;
+}
+
+fn resetBarTabsView(dst: *BarTabsView) void {
+    dst.fit_content = false;
+    dst.style = .{};
+    dst.len = 0;
+}
+
+fn resetBarItemView(dst: *BarItemView) void {
+    dst.kind = .spacer;
+    resetBarSegmentView(&dst.segment);
+    resetBarTabsView(&dst.tabs);
+}
+
+fn resetBarWidgetView(dst: *BarWidgetView) void {
+    dst.layout = .{};
+    dst.style = .{};
+    dst.len = 0;
+}
+
 fn barBoxField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) BarBox {
     var box = BarBox{};
     api.get_field(state, table_idx, field);
@@ -614,8 +654,8 @@ fn copySegmentArray(parsed: []const bar.Segment, dst: []bar.Segment, text_storag
     return .{ .len = seg_count, .used = text_used };
 }
 
-fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c_int, text_buf: []u8) void {
-    dst.* = .{};
+fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c_int, text_buf: []u8, scratch: *BarWidgetScratch) void {
+    resetBarSegmentView(dst);
     dst.style = barStyleField(api, state, item_idx, "style");
     const parsed = topBarSegmentFromLuaItem(api, state, item_idx, text_buf);
     const text_len = @min(parsed.text.len, dst.text_storage.len);
@@ -628,17 +668,15 @@ fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c
         dst.segment.id = dst.id_storage[0..id_len];
     }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
-        var seg_buf: [16]bar.Segment = undefined;
-        var seg_text_buf: [1024]u8 = undefined;
-        const parsed_segments = lua_mod.parseSegmentArray(api, state, seg_buf[0..], seg_text_buf[0..], segments_idx);
+        const parsed_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_16[0..], scratch.seg_text_buf_1024[0..], segments_idx);
         const copied = copySegmentArray(parsed_segments, dst.segments[0..], dst.segments_text_storage[0..], dst.segments_id_storage[0..]);
         dst.segments_len = copied.len;
         pop(api, state, 1);
     }
 }
 
-fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, text_buf: []u8) void {
-    dst.* = .{};
+fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, text_buf: []u8, scratch: *BarWidgetScratch) void {
+    resetBarTabView(dst);
     dst.style = barStyleField(api, state, item_idx, "style");
     const parsed = topBarSegmentFromLuaItem(api, state, item_idx, text_buf);
     const text_len = @min(parsed.text.len, dst.text_storage.len);
@@ -651,17 +689,15 @@ fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, te
         dst.segment.id = dst.id_storage[0..id_len];
     }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
-        var seg_buf: [16]bar.Segment = undefined;
-        var seg_text_buf: [1024]u8 = undefined;
-        const parsed_segments = lua_mod.parseSegmentArray(api, state, seg_buf[0..], seg_text_buf[0..], segments_idx);
+        const parsed_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_16[0..], scratch.seg_text_buf_1024[0..], segments_idx);
         const copied = copySegmentArray(parsed_segments, dst.segments[0..], dst.segments_text_storage[0..], dst.segments_id_storage[0..]);
         dst.segments_len = copied.len;
         pop(api, state, 1);
     }
 }
 
-fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c_int, text_buf: []u8) void {
-    dst.* = .{};
+fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c_int, text_buf: []u8, scratch: *BarWidgetScratch) void {
+    resetBarWidgetView(dst);
     dst.layout = topLevelBarLayout(api, state, table_idx);
     dst.style = barStyleField(api, state, table_idx, "style");
 
@@ -695,7 +731,7 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
         lua_mod.pop(api, state, 1);
 
         const item_ptr = &dst.items[dst.len];
-        item_ptr.* = .{};
+        resetBarItemView(item_ptr);
         if (item_kind == .spacer) {
             item_ptr.kind = .spacer;
         } else if (item_kind == .tabs) {
@@ -720,14 +756,14 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
                     defer lua_mod.pop(api, state, 1);
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
                     const tab_idx = absoluteIndex(api, state, -1);
-                    fillBarTabView(&item_ptr.tabs.tabs[item_ptr.tabs.len], api, state, tab_idx, text_buf);
+                    fillBarTabView(&item_ptr.tabs.tabs[item_ptr.tabs.len], api, state, tab_idx, text_buf, scratch);
                     item_ptr.tabs.len += 1;
                 }
             }
             lua_mod.pop(api, state, 1);
         } else {
             item_ptr.kind = .segment;
-            fillBarSegmentView(&item_ptr.segment, api, state, item_idx, text_buf);
+            fillBarSegmentView(&item_ptr.segment, api, state, item_idx, text_buf, scratch);
         }
 
         dst.len += 1;
@@ -1000,7 +1036,7 @@ fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
     }
 }
 
-fn drawBarSegmentText(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, view: BarSegmentView, default_fg: ghostty.ColorRgb) void {
+fn drawBarSegmentText(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, view: *const BarSegmentView, default_fg: ghostty.ColorRgb) void {
     const fg = view.style.fg orelse view.segment.fg orelse default_fg;
     if (view.segments_len > 0) {
         drawSegmentArray(renderer, x, y, max_width, view.segments[0..view.segments_len], fg);
@@ -1017,34 +1053,34 @@ fn drawBarSegmentText(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, vie
     c.sgl_load_default_pipeline();
 }
 
-fn segmentViewCodepoints(view: BarSegmentView) usize {
+fn segmentViewCodepoints(view: *const BarSegmentView) usize {
     if (view.segments_len > 0) return segmentArrayCodepoints(view.segments[0..view.segments_len]);
     return countCodepoints(view.segment.text);
 }
 
-fn segmentViewTextLen(view: BarSegmentView) usize {
+fn segmentViewTextLen(view: *const BarSegmentView) usize {
     if (view.segments_len > 0) return segmentArrayTextLen(view.segments[0..view.segments_len]);
     return view.segment.text.len;
 }
 
-fn tabViewTextLen(view: BarTabView) usize {
+fn tabViewTextLen(view: *const BarTabView) usize {
     if (view.segments_len > 0) return segmentArrayTextLen(view.segments[0..view.segments_len]);
     return view.segment.text.len;
 }
 
-fn segmentViewShowsFullSegments(view: BarSegmentView, display: []const u8) bool {
+fn segmentViewShowsFullSegments(view: *const BarSegmentView, display: []const u8) bool {
     return view.segments_len > 0 and display.len == view.segment.text.len and segmentViewTextLen(view) == view.segment.text.len;
 }
 
-fn tabViewShowsFullSegments(view: BarTabView, display: []const u8) bool {
+fn tabViewShowsFullSegments(view: *const BarTabView, display: []const u8) bool {
     return view.segments_len > 0 and display.len == view.segment.text.len and tabViewTextLen(view) == view.segment.text.len;
 }
 
-fn segmentViewFullWidth(renderer: *FtRenderer, view: BarSegmentView) f32 {
+fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
     return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
 }
 
-fn tabViewFullWidth(renderer: *FtRenderer, view: BarTabView) f32 {
+fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
     return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(countCodepoints(view.segment.text))) * renderer.cell_w;
 }
 
@@ -1052,7 +1088,7 @@ fn barItemHeight(renderer: *FtRenderer, style: BarStyle) f32 {
     return renderer.cell_h + style.padding.top + style.padding.bottom;
 }
 
-fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: BarWidgetView) void {
+fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App, width: f32, bar_y: f32, bar_h: f32, widget: *const BarWidgetView) void {
     if (bar_h <= 0) return;
     const cache = if (surface == .top) &g_top_bar_cache else &g_bottom_bar_cache;
     const default_fg = ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
@@ -1073,14 +1109,14 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
 
     var right_reserved: f32 = 0.0;
     var saw_spacer = false;
-    for (widget.items[0..widget.len]) |item| {
+    for (widget.items[0..widget.len]) |*item| {
         switch (item.kind) {
             .spacer => saw_spacer = true,
             .segment => if (saw_spacer) {
-                right_reserved += segmentViewFullWidth(renderer, item.segment);
+                right_reserved += segmentViewFullWidth(renderer, &item.segment);
             },
             .tabs => if (saw_spacer) {
-                for (item.tabs.tabs[0..item.tabs.len]) |tab| {
+                for (item.tabs.tabs[0..item.tabs.len]) |*tab| {
                     right_reserved += tabViewFullWidth(renderer, tab);
                 }
             },
@@ -1090,14 +1126,14 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
     var cursor_x = content_x;
     var on_right_side = false;
     const active_idx = app.activeTabIndex();
-    for (widget.items[0..widget.len]) |item| {
+    for (widget.items[0..widget.len]) |*item| {
         switch (item.kind) {
             .spacer => {
                 cursor_x = @max(content_x, content_right - right_reserved);
                 on_right_side = true;
             },
             .segment => {
-                const view = item.segment;
+                const view = &item.segment;
                 const full_w = segmentViewFullWidth(renderer, view);
                 const available_w = if (on_right_side)
                     full_w
@@ -1149,7 +1185,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                 const available = @max(@as(f32, 1.0), content_right - cursor_x - right_reserved);
                 const default_tab_w = if (item.tabs.len > 0) available / @as(f32, @floatFromInt(item.tabs.len)) else available;
                 var used_width: f32 = 0.0;
-                for (item.tabs.tabs[0..item.tabs.len], 0..) |tab, ti| {
+                for (item.tabs.tabs[0..item.tabs.len], 0..) |*tab, ti| {
                     const full_w = tabViewFullWidth(renderer, tab);
                     const tx = cursor_x + used_width;
                     const remaining_w = content_right - right_reserved - tx;
@@ -1257,6 +1293,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
 
 fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_render_ctx orelse return;
+    const scratch = &g_bar_widget_scratch;
     const api = runtime.context.api;
     const state = runtime.state;
     api.get_field(state, LUA_GLOBALSINDEX, "hollow");
@@ -1270,7 +1307,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         return;
     }
     const ui_idx = lua_mod.absoluteIndex(api, state, -1);
-    var seg_text_buf: [2048]u8 = undefined;
     var reserved_sidebar_width: f32 = 0.0;
     var reserved_sidebar_side_right = false;
     var top_h: f32 = @as(f32, @floatFromInt(ctx.app.config.top_bar_height));
@@ -1301,16 +1337,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const bottom_y: f32 = ctx.height - bottom_h;
 
     if (top_h > 0 and pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state")) {
-        var widget = BarWidgetView{};
-        parseBarWidgetView(&widget, api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
-        renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, 0.0, top_h, widget);
+        parseBarWidgetView(&scratch.widget, api, state, lua_mod.absoluteIndex(api, state, -1), scratch.text_buf[0..], scratch);
+        renderBarWidgetSurface(.top, ctx.renderer, ctx.app, ctx.width, 0.0, top_h, &scratch.widget);
         lua_mod.pop(api, state, 1);
     }
 
     if (bottom_h > 0 and pushBarCachedTable(api, state, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state")) {
-        var widget = BarWidgetView{};
-        parseBarWidgetView(&widget, api, state, lua_mod.absoluteIndex(api, state, -1), seg_text_buf[0..]);
-        renderBarWidgetSurface(.bottom, ctx.renderer, ctx.app, ctx.width, bottom_y, bottom_h, widget);
+        parseBarWidgetView(&scratch.widget, api, state, lua_mod.absoluteIndex(api, state, -1), scratch.text_buf[0..], scratch);
+        renderBarWidgetSurface(.bottom, ctx.renderer, ctx.app, ctx.width, bottom_y, bottom_h, &scratch.widget);
         lua_mod.pop(api, state, 1);
     }
 
@@ -1346,7 +1380,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
         api.get_field(state, sidebar_idx, "rows");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-            var sidebar_seg_buf: [32]bar.Segment = undefined;
             const rows_idx = absoluteIndex(api, state, -1);
             var row_i: c_int = 1;
             while (true) : (row_i += 1) {
@@ -1356,7 +1389,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     break;
                 }
                 if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                    const row_segments = lua_mod.parseSegmentArray(api, state, sidebar_seg_buf[0..], seg_text_buf[0..], absoluteIndex(api, state, -1));
+                    const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], absoluteIndex(api, state, -1));
                     const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
                     drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments);
                 }
@@ -1369,7 +1402,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-        var overlay_seg_buf: [32]bar.Segment = undefined;
         const stacks_idx = absoluteIndex(api, state, -1);
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
@@ -1485,7 +1517,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
-                        const row_segments = lua_mod.parseSegmentArray(api, state, overlay_seg_buf[0..], seg_text_buf[0..], row_segments_idx);
+                        const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
                         var row_chars: usize = 0;
                         for (row_segments) |seg| row_chars += countCodepoints(seg.text);
                         if (row_chars > max_chars) max_chars = row_chars;
@@ -1570,7 +1602,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
-                        const row_segments = lua_mod.parseSegmentArray(api, state, overlay_seg_buf[0..], seg_text_buf[0..], row_segments_idx);
+                        const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
                         const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
                         const row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
                         const row_divider = overlayRowColorField(api, state, row_idx, "divider");
@@ -1605,6 +1637,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
 fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
     const ctx = g_widget_pre_raster_ctx orelse return;
+    const scratch = &g_bar_widget_scratch;
     const renderer = ctx.renderer;
     const api = runtime.context.api;
     const state = runtime.state;
@@ -1628,14 +1661,12 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
             }
         }
 
-        fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, ui_idx_: c_int, dirty_field: [:0]const u8, cache_field: [:0]const u8, producer_field: [:0]const u8) void {
+        fn run(api_: Api, state_: *lua_mod.State, renderer_: *FtRenderer, scratch_: *BarWidgetScratch, ui_idx_: c_int, dirty_field: [:0]const u8, cache_field: [:0]const u8, producer_field: [:0]const u8) void {
             const dirty = barCacheDirty(api_, state_, ui_idx_, dirty_field);
             if (!dirty and !renderer_.atlas_dirty) return;
             if (pushBarCachedTable(api_, state_, ui_idx_, dirty_field, cache_field, producer_field)) {
-                var text_buf: [2048]u8 = undefined;
-                var view = BarWidgetView{};
-                parseBarWidgetView(&view, api_, state_, lua_mod.absoluteIndex(api_, state_, -1), text_buf[0..]);
-                for (view.items[0..view.len]) |item| {
+                parseBarWidgetView(&scratch_.widget, api_, state_, lua_mod.absoluteIndex(api_, state_, -1), scratch_.text_buf[0..], scratch_);
+                for (scratch_.widget.items[0..scratch_.widget.len]) |item| {
                     switch (item.kind) {
                         .segment => {
                             if (item.segment.segments_len > 0) {
@@ -1661,8 +1692,8 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
         }
     };
 
-    process_bar.run(api, state, renderer, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state");
-    process_bar.run(api, state, renderer, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
+    process_bar.run(api, state, renderer, scratch, ui_idx, "topbar_cache_dirty", "topbar_cache_state", "_topbar_state");
+    process_bar.run(api, state, renderer, scratch, ui_idx, "bottombar_cache_dirty", "bottombar_cache_state", "_bottombar_state");
 
     pop(api, state, 2);
 }
