@@ -117,7 +117,7 @@ local domains = {
 }
 
 if is_windows then
-  domains.wsl = { shell = "C:\\Windows\\System32\\wsl.exe" }
+  domains.wsl = { shell = "wsl.exe" }
   domains.pwsh = { shell = "pwsh.exe" }
   domains.powershell = { shell = "powershell.exe" }
   domains.cmd = { shell = "cmd.exe" }
