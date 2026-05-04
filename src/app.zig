@@ -15,6 +15,13 @@ const HtpQueryResult = lua_mod.HtpQueryResult;
 const HtpFs = @import("htp_fs.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
+extern fn hollow_decode_png(
+    userdata: ?*anyopaque,
+    allocator: ?*const ghostty.Allocator,
+    data: [*]const u8,
+    data_len: usize,
+    out: *ghostty.SysImage,
+) callconv(.c) bool;
 const mux_mod = @import("mux.zig");
 const Mux = mux_mod.Mux;
 const Workspace = mux_mod.Workspace;
@@ -888,6 +895,8 @@ pub const App = struct {
 
         var runtime = try GhosttyRuntime.init(self.allocator, null);
         errdefer runtime.deinit();
+        _ = runtime.setSysUserdata(null);
+        _ = runtime.setSysDecodePng(hollow_decode_png);
 
         var mux = Mux.init(self.allocator);
         errdefer mux.deinit(&runtime);

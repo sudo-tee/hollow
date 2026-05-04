@@ -14,9 +14,11 @@ const is_windows = @import("builtin").os.tag == .windows;
 
 const OSC52_PREFIX = "\x1b]52;";
 const OSC7_PREFIX = "\x1b]7;";
+const OSC1337_PREFIX = "\x1b]1337;";
 const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC52_SEQUENCE_MAX = 65536;
 const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
+const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
 const HTP_OSC_LOG_MAX = 8192;
 
 const CombinedInput = struct {
@@ -84,6 +86,7 @@ const CombinedInput = struct {
 fn prefixMatchesKnownOsc(prefix: []const u8) bool {
     return std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC7_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
         std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix);
 }
 
@@ -133,6 +136,11 @@ pub const Pane = struct {
     osc7_st_pending: bool = false,
     osc7_buf: [1024]u8 = [_]u8{0} ** 1024,
     osc7_len: usize = 0,
+    osc1337_active: bool = false,
+    osc1337_st_pending: bool = false,
+    osc1337_overflow: bool = false,
+    osc1337_buf: std.ArrayListUnmanaged(u8) = .empty,
+    pending_terminal_inject: std.ArrayListUnmanaged(u8) = .empty,
     htp_osc_active: bool = false,
     htp_osc_st_pending: bool = false,
     htp_osc_overflow: bool = false,
@@ -200,6 +208,8 @@ pub const Pane = struct {
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
         self.boot_output.deinit(self.allocator);
+        self.osc1337_buf.deinit(self.allocator);
+        self.pending_terminal_inject.deinit(self.allocator);
         runtime.freeMouseEvent(self.mouse_event);
         runtime.freeMouseEncoder(self.mouse_encoder);
         runtime.freeKeyEvent(self.key_event);
@@ -227,6 +237,13 @@ pub const Pane = struct {
             .max_scrollback = cfg.scrollback,
         });
         errdefer runtime.freeTerminal(terminal);
+
+        runtime.setKittyImageStorageLimit(terminal, 64 * 1024 * 1024);
+        runtime.setKittyImageMediumFile(terminal, true);
+        runtime.setKittyImageMediumTempFile(terminal, true);
+        runtime.setKittyImageMediumSharedMem(terminal, true);
+        runtime.setApcMaxBytes(terminal, 64 * 1024 * 1024);
+        runtime.setApcMaxBytesKitty(terminal, 64 * 1024 * 1024);
 
         // Register callbacks immediately — before any ghostty call that might
         // invoke them (resizeTerminal, updateRenderState).  A freshly created
@@ -418,6 +435,25 @@ pub const Pane = struct {
                         } else {
                             try self.boot_output.appendSlice(self.allocator, pty_bytes);
                         }
+                    }
+                    if (self.pending_terminal_inject.items.len > 0) {
+                        if (self.render_state_ready) {
+                            var offset: usize = 0;
+                            while (offset < self.pending_terminal_inject.items.len) {
+                                const end = @min(offset + TERMINAL_WRITE_CHUNK_SIZE, self.pending_terminal_inject.items.len);
+                                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                                runtime.terminalWrite(self.terminal, self.pending_terminal_inject.items[offset..end]);
+                                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                                self.last_terminal_write_bytes += end - offset;
+                                self.last_terminal_write_chunks += 1;
+                                offset = end;
+                            }
+                            self.pty_received_data = true;
+                            self.pty_wrote_this_frame = true;
+                        } else {
+                            self.boot_output.appendSlice(self.allocator, self.pending_terminal_inject.items) catch {};
+                        }
+                        self.pending_terminal_inject.clearRetainingCapacity();
                     }
                 }
             }
@@ -783,7 +819,7 @@ pub const Pane = struct {
     fn sanitizePtyOutputForPlatform(self: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
         const has_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) != null;
         const has_pending = windows_mode and self.pty_pending_len > 0;
-        const needs_filter = self.osc52_active or self.osc7_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_pending or has_escape;
+        const needs_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_pending or has_escape;
         if (!needs_filter) return bytes;
 
         const pending = if (windows_mode) self.pty_pending_seq[0..self.pty_pending_len] else "";
@@ -885,6 +921,35 @@ pub const Pane = struct {
                 continue;
             }
 
+            if (self.osc1337_active) {
+                if (self.osc1337_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc1337Sequence();
+                    } else {
+                        self.appendOsc1337Byte(0x1b);
+                        self.appendOsc1337Byte(byte);
+                    }
+                    self.osc1337_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc1337Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc1337_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc1337Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
             if (self.osc_prefix_len > 0) {
                 if (self.osc_prefix_len < self.osc_prefix_buf.len) {
                     self.osc_prefix_buf[self.osc_prefix_len] = byte;
@@ -918,6 +983,23 @@ pub const Pane = struct {
                     self.htp_osc_st_pending = false;
                     self.htp_osc_overflow = false;
                     self.htp_osc_len = 0;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+
+                if (prefix.len >= OSC1337_PREFIX.len and
+                    std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
+                    !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
+                {
+                    self.osc1337_active = true;
+                    self.osc1337_st_pending = false;
+                    self.osc1337_overflow = false;
+                    self.osc1337_buf.clearRetainingCapacity();
+                    if (prefix.len > OSC1337_PREFIX.len) {
+                        self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
+                            self.osc1337_overflow = true;
+                        };
+                    }
                     self.osc_prefix_len = 0;
                     continue;
                 }
@@ -1000,7 +1082,7 @@ pub const Pane = struct {
         var write_idx: usize = 0;
 
         while (read_idx < bytes.len) {
-            if (!self.osc52_active and !self.osc7_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+        if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
                 const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
                     const span = bytes[read_idx..];
                     @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
@@ -1104,6 +1186,35 @@ pub const Pane = struct {
                 continue;
             }
 
+            if (self.osc1337_active) {
+                if (self.osc1337_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc1337Sequence();
+                    } else {
+                        self.appendOsc1337Byte(0x1b);
+                        self.appendOsc1337Byte(byte);
+                    }
+                    self.osc1337_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc1337Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc1337_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc1337Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
             if (self.osc_prefix_len > 0 or byte == 0x1b) {
                 if (self.osc_prefix_len == 0 and byte == 0x1b) {
                     self.osc_prefix_buf[0] = byte;
@@ -1144,6 +1255,23 @@ pub const Pane = struct {
                     self.htp_osc_st_pending = false;
                     self.htp_osc_overflow = false;
                     self.htp_osc_len = 0;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+
+                if (prefix.len >= OSC1337_PREFIX.len and
+                    std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
+                    !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
+                {
+                    self.osc1337_active = true;
+                    self.osc1337_st_pending = false;
+                    self.osc1337_overflow = false;
+                    self.osc1337_buf.clearRetainingCapacity();
+                    if (prefix.len > OSC1337_PREFIX.len) {
+                        self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
+                            self.osc1337_overflow = true;
+                        };
+                    }
                     self.osc_prefix_len = 0;
                     continue;
                 }
@@ -1193,6 +1321,16 @@ pub const Pane = struct {
         self.htp_osc_len += 1;
     }
 
+    fn appendOsc1337Byte(self: *Pane, byte: u8) void {
+        if (self.osc1337_buf.items.len >= OSC1337_SEQUENCE_MAX) {
+            self.osc1337_overflow = true;
+            return;
+        }
+        self.osc1337_buf.append(self.allocator, byte) catch {
+            self.osc1337_overflow = true;
+        };
+    }
+
     fn finishOsc52Sequence(self: *Pane) void {
         if (!self.osc52_overflow and self.osc52_len > 0) {
             self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
@@ -1226,6 +1364,16 @@ pub const Pane = struct {
         self.htp_osc_len = 0;
     }
 
+    fn finishOsc1337Sequence(self: *Pane) void {
+        if (!self.osc1337_overflow and self.osc1337_buf.items.len > 0) {
+            self.applyOsc1337Sequence(self.osc1337_buf.items);
+        }
+        self.osc1337_active = false;
+        self.osc1337_st_pending = false;
+        self.osc1337_overflow = false;
+        self.osc1337_buf.clearRetainingCapacity();
+    }
+
     fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
         _ = self;
         const sep = std.mem.indexOfScalar(u8, payload, ';') orelse return;
@@ -1255,7 +1403,56 @@ pub const Pane = struct {
         self.setCwd(path);
         self.cwd_dirty = true;
     }
+
+    fn applyOsc1337Sequence(self: *Pane, payload: []const u8) void {
+        if (!std.mem.startsWith(u8, payload, "File=")) return;
+
+        const colon_idx = std.mem.indexOfScalar(u8, payload, ':') orelse return;
+        const meta = payload[0..colon_idx];
+        const data = payload[colon_idx + 1 ..];
+        if (data.len == 0) return;
+        if (std.mem.indexOf(u8, meta, "inline=1") == null) return;
+
+        var width_cells: ?u32 = null;
+        var height_cells: ?u32 = null;
+        var iter = std.mem.splitScalar(u8, meta, ';');
+        while (iter.next()) |part| {
+            if (std.mem.startsWith(u8, part, "width=")) {
+                width_cells = parseOsc1337CellSize(part[6..]);
+            } else if (std.mem.startsWith(u8, part, "height=")) {
+                height_cells = parseOsc1337CellSize(part[7..]);
+            }
+        }
+
+        self.pending_terminal_inject.clearRetainingCapacity();
+        self.pending_terminal_inject.appendSlice(self.allocator, "\x1b_Ga=T,f=100,q=2") catch return;
+        if (width_cells) |cols| {
+            const value = std.fmt.allocPrint(self.allocator, ",c={d}", .{cols}) catch return;
+            defer self.allocator.free(value);
+            self.pending_terminal_inject.appendSlice(self.allocator, value) catch return;
+        }
+        if (height_cells) |rows| {
+            const value = std.fmt.allocPrint(self.allocator, ",r={d}", .{rows}) catch return;
+            defer self.allocator.free(value);
+            self.pending_terminal_inject.appendSlice(self.allocator, value) catch return;
+        }
+        self.pending_terminal_inject.append(self.allocator, ';') catch return;
+        self.pending_terminal_inject.appendSlice(self.allocator, data) catch return;
+        self.pending_terminal_inject.appendSlice(self.allocator, "\x1b\\") catch return;
+    }
 };
+
+fn parseOsc1337CellSize(value: []const u8) ?u32 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    for (trimmed, 0..) |ch, idx| {
+        if (ch < '0' or ch > '9') {
+            if (idx == 0) return null;
+            return std.fmt.parseInt(u32, trimmed[0..idx], 10) catch null;
+        }
+    }
+    return std.fmt.parseInt(u32, trimmed, 10) catch null;
+}
 
 fn decodeOsc52Base64(data: []const u8, out: []u8) ![]u8 {
     if (std.mem.indexOfScalar(u8, data, '=')) |_| {

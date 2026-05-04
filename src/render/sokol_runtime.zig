@@ -2520,6 +2520,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         &cache_entry.cache,
                         rt,
                         cfg,
+                        pane.terminal,
                         pane.render_state,
                         &pane.row_iterator,
                         &pane.row_cells,
@@ -2659,6 +2660,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
+                            leaf.pane.terminal,
                             leaf.pane.render_state,
                             &leaf.pane.row_iterator,
                             &leaf.pane.row_cells,
@@ -2693,6 +2695,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
+                            pane.terminal,
                             pane.render_state,
                             &pane.row_iterator,
                             &pane.row_cells,
@@ -2783,6 +2786,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
                     if (getOrCreatePaneCacheEntry(leaf.pane, pw_u, ph_u)) |entry| {
                         renderer.blitCache(&entry.cache, ox, oy, pw, ph, width, height);
+                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_bg, ox, oy, pw, ph, width, height);
+                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_text, ox, oy, pw, ph, width, height);
+                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .above_text, ox, oy, pw, ph, width, height);
                     }
                 }
             } else if (app.activePane()) |pane| {
@@ -2792,6 +2798,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.drawDirect(
                             runtime,
                             &app.config,
+                            pane.terminal,
                             pane.render_state,
                             &pane.row_iterator,
                             &pane.row_cells,
@@ -2823,6 +2830,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
                         if (getOrCreatePaneCacheEntry(pane, pw_u, ph_u)) |entry| {
                             renderer.blitCache(&entry.cache, 0, 0, width, height, width, height);
+                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_bg, 0, 0, width, height, width, height);
+                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_text, 0, 0, width, height, width, height);
+                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .above_text, 0, 0, width, height, width, height);
                         }
                     }
                 }

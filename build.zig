@@ -120,6 +120,13 @@ pub fn build(b: *std.Build) void {
         .file = b.path("src/render/dwrite_resolver.c"),
         .flags = &.{},
     });
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("src/render/png_decode.c"),
+        .flags = &.{
+            "-Ithird_party/stb",
+            "-DGHOSTTY_STATIC",
+        },
+    });
     for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
         exe.root_module.linkSystemLibrary(lib_name, .{});
     }

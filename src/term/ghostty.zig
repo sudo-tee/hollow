@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const success = 0;
 pub const out_of_space = -3;
+pub const no_value = -4;
 
 pub const TerminalOptions = extern struct {
     cols: u16,
@@ -166,12 +167,146 @@ pub const TerminalOpt = enum(u32) {
     size = 6,
     color_scheme = 7,
     device_attributes = 8,
+    title = 9,
+    pwd = 10,
+    color_foreground = 11,
+    color_background = 12,
+    color_cursor = 13,
+    color_palette = 14,
+    kitty_image_storage_limit = 15,
+    kitty_image_medium_file = 16,
+    kitty_image_medium_temp_file = 17,
+    kitty_image_medium_shared_mem = 18,
+    apc_max_bytes = 19,
+    apc_max_bytes_kitty = 20,
 };
 
 pub const TerminalData = enum(u32) {
-    title = 12,
+    invalid = 0,
+    cols = 1,
+    rows = 2,
+    cursor_x = 3,
+    cursor_y = 4,
+    cursor_pending_wrap = 5,
+    active_screen = 6,
+    cursor_visible = 7,
+    kitty_keyboard_flags = 8,
     scrollbar = 9,
+    cursor_style = 10,
     mouse_tracking = 11,
+    title = 12,
+    pwd = 13,
+    total_rows = 14,
+    scrollback_rows = 15,
+    width_px = 16,
+    height_px = 17,
+    color_foreground = 18,
+    color_background = 19,
+    color_cursor = 20,
+    color_palette = 21,
+    color_foreground_default = 22,
+    color_background_default = 23,
+    color_cursor_default = 24,
+    color_palette_default = 25,
+    kitty_image_storage_limit = 26,
+    kitty_image_medium_file = 27,
+    kitty_image_medium_temp_file = 28,
+    kitty_image_medium_shared_mem = 29,
+    kitty_graphics = 30,
+};
+
+pub const SysOpt = enum(u32) {
+    userdata = 0,
+    decode_png = 1,
+    log = 2,
+};
+
+pub const KittyGraphicsData = enum(u32) {
+    invalid = 0,
+    placement_iterator = 1,
+};
+
+pub const KittyGraphicsPlacementData = enum(u32) {
+    invalid = 0,
+    image_id = 1,
+    placement_id = 2,
+    is_virtual = 3,
+    x_offset = 4,
+    y_offset = 5,
+    source_x = 6,
+    source_y = 7,
+    source_width = 8,
+    source_height = 9,
+    columns = 10,
+    rows = 11,
+    z = 12,
+};
+
+pub const KittyPlacementLayer = enum(u32) {
+    all = 0,
+    below_bg = 1,
+    below_text = 2,
+    above_text = 3,
+};
+
+pub const KittyGraphicsPlacementIteratorOption = enum(u32) {
+    layer = 0,
+};
+
+pub const KittyImageFormat = enum(u32) {
+    rgb = 0,
+    rgba = 1,
+    png = 2,
+    gray_alpha = 3,
+    gray = 4,
+};
+
+pub const KittyImageData = enum(u32) {
+    invalid = 0,
+    id = 1,
+    number = 2,
+    width = 3,
+    height = 4,
+    format = 5,
+    compression = 6,
+    data_ptr = 7,
+    data_len = 8,
+};
+
+pub const SysImage = extern struct {
+    width: u32,
+    height: u32,
+    data: ?[*]u8,
+    data_len: usize,
+};
+
+pub const AllocatorVtable = extern struct {
+    alloc: *const fn (?*anyopaque, usize, u8, usize) callconv(.c) ?*anyopaque,
+    resize: *const fn (?*anyopaque, ?*anyopaque, usize, u8, usize, usize) callconv(.c) bool,
+    remap: *const fn (?*anyopaque, ?*anyopaque, usize, u8, usize, usize) callconv(.c) ?*anyopaque,
+    free: *const fn (?*anyopaque, ?*anyopaque, usize, u8, usize) callconv(.c) void,
+};
+
+pub const Allocator = extern struct {
+    ctx: ?*anyopaque,
+    vtable: ?*const AllocatorVtable,
+};
+
+pub const DecodePngFn = *const fn (?*anyopaque, ?*const Allocator, [*]const u8, usize, *SysImage) callconv(.c) bool;
+
+pub const KittyGraphicsPlacementRenderInfo = extern struct {
+    size: usize,
+    pixel_width: u32,
+    pixel_height: u32,
+    grid_cols: u32,
+    grid_rows: u32,
+    viewport_col: i32,
+    viewport_row: i32,
+    viewport_visible: bool,
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
 };
 
 pub const Mode = enum(u32) {
@@ -425,6 +560,17 @@ extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c)
 extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
 extern fn ghostty_terminal_mode_get(?*anyopaque, u32, *bool) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
+extern fn ghostty_sys_set(u32, ?*const anyopaque) callconv(.c) i32;
+extern fn ghostty_alloc(?*const Allocator, usize) callconv(.c) ?[*]u8;
+extern fn ghostty_kitty_graphics_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_image(?*anyopaque, u32) callconv(.c) ?*const anyopaque;
+extern fn ghostty_kitty_graphics_image_get(?*const anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_placement_iterator_new(?*const Allocator, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_placement_iterator_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_kitty_graphics_placement_iterator_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_placement_next(?*anyopaque) callconv(.c) bool;
+extern fn ghostty_kitty_graphics_placement_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_placement_render_info(?*anyopaque, ?*const anyopaque, ?*anyopaque, *KittyGraphicsPlacementRenderInfo) callconv(.c) i32;
 extern fn ghostty_render_state_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_update(?*anyopaque, ?*anyopaque) callconv(.c) i32;
@@ -493,6 +639,17 @@ pub const Runtime = struct {
     terminal_grid_ref: *const fn (?*anyopaque, Point, *GridRef) callconv(.c) i32,
     terminal_mode_get: *const fn (?*anyopaque, u32, *bool) callconv(.c) i32,
     terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
+    sys_set: *const fn (u32, ?*const anyopaque) callconv(.c) i32,
+    alloc: *const fn (?*const Allocator, usize) callconv(.c) ?[*]u8,
+    kitty_graphics_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
+    kitty_graphics_image: *const fn (?*anyopaque, u32) callconv(.c) ?*const anyopaque,
+    kitty_graphics_image_get: *const fn (?*const anyopaque, u32, ?*anyopaque) callconv(.c) i32,
+    kitty_graphics_placement_iterator_new: *const fn (?*const Allocator, *?*anyopaque) callconv(.c) i32,
+    kitty_graphics_placement_iterator_free: *const fn (?*anyopaque) callconv(.c) void,
+    kitty_graphics_placement_iterator_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32,
+    kitty_graphics_placement_next: *const fn (?*anyopaque) callconv(.c) bool,
+    kitty_graphics_placement_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
+    kitty_graphics_placement_render_info: *const fn (?*anyopaque, ?*const anyopaque, ?*anyopaque, *KittyGraphicsPlacementRenderInfo) callconv(.c) i32,
 
     render_state_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     render_state_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -560,6 +717,17 @@ pub const Runtime = struct {
             .terminal_grid_ref = ghostty_terminal_grid_ref,
             .terminal_mode_get = ghostty_terminal_mode_get,
             .terminal_scroll_viewport = ghostty_terminal_scroll_viewport,
+            .sys_set = ghostty_sys_set,
+            .alloc = ghostty_alloc,
+            .kitty_graphics_get = ghostty_kitty_graphics_get,
+            .kitty_graphics_image = ghostty_kitty_graphics_image,
+            .kitty_graphics_image_get = ghostty_kitty_graphics_image_get,
+            .kitty_graphics_placement_iterator_new = ghostty_kitty_graphics_placement_iterator_new,
+            .kitty_graphics_placement_iterator_free = ghostty_kitty_graphics_placement_iterator_free,
+            .kitty_graphics_placement_iterator_set = ghostty_kitty_graphics_placement_iterator_set,
+            .kitty_graphics_placement_next = ghostty_kitty_graphics_placement_next,
+            .kitty_graphics_placement_get = ghostty_kitty_graphics_placement_get,
+            .kitty_graphics_placement_render_info = ghostty_kitty_graphics_placement_render_info,
             .render_state_new = ghostty_render_state_new,
             .render_state_free = ghostty_render_state_free,
             .render_state_update = ghostty_render_state_update,
@@ -711,6 +879,56 @@ pub const Runtime = struct {
 
     pub fn setTitleChangedCallback(self: *Runtime, handle: ?*anyopaque, callback: TitleChangedCallback) void {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.title_changed), @ptrCast(callback));
+    }
+
+    pub fn setKittyImageStorageLimit(self: *Runtime, handle: ?*anyopaque, bytes: u64) void {
+        if (handle) |terminal| {
+            var copy = bytes;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_storage_limit), &copy);
+        }
+    }
+
+    pub fn setKittyImageMediumFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
+        if (handle) |terminal| {
+            var copy = enabled;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_file), &copy);
+        }
+    }
+
+    pub fn setKittyImageMediumTempFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
+        if (handle) |terminal| {
+            var copy = enabled;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_temp_file), &copy);
+        }
+    }
+
+    pub fn setKittyImageMediumSharedMem(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
+        if (handle) |terminal| {
+            var copy = enabled;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_shared_mem), &copy);
+        }
+    }
+
+    pub fn setApcMaxBytes(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
+        if (handle) |terminal| {
+            var copy = bytes;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes), &copy);
+        }
+    }
+
+    pub fn setApcMaxBytesKitty(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
+        if (handle) |terminal| {
+            var copy = bytes;
+            self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes_kitty), &copy);
+        }
+    }
+
+    pub fn setSysDecodePng(self: *Runtime, callback: ?DecodePngFn) i32 {
+        return self.sys_set(@intFromEnum(SysOpt.decode_png), if (callback) |cb| @ptrCast(cb) else null);
+    }
+
+    pub fn setSysUserdata(self: *Runtime, value: ?*anyopaque) i32 {
+        return self.sys_set(@intFromEnum(SysOpt.userdata), value);
     }
 
     /// Register all terminal callbacks on `handle` in one call. Must be called
@@ -955,6 +1173,69 @@ pub const Runtime = struct {
         var cp: u32 = 0;
         _ = self.cell_get(cell, @intFromEnum(CellDataV.codepoint), &cp);
         return cp;
+    }
+
+    pub fn terminalKittyGraphics(self: *Runtime, handle: ?*anyopaque) ?*anyopaque {
+        if (handle) |terminal| {
+            var graphics: ?*anyopaque = null;
+            const result = self.terminal_get(terminal, @intFromEnum(TerminalData.kitty_graphics), @ptrCast(&graphics));
+            if (result == success and graphics != null) return graphics;
+        }
+        return null;
+    }
+
+    pub fn createKittyPlacementIterator(self: *Runtime) !?*anyopaque {
+        var handle: ?*anyopaque = null;
+        if (self.kitty_graphics_placement_iterator_new(null, &handle) != success or handle == null) return error.KittyPlacementIteratorCreateFailed;
+        return handle;
+    }
+
+    pub fn freeKittyPlacementIterator(self: *Runtime, handle: ?*anyopaque) void {
+        if (handle) |iterator| self.kitty_graphics_placement_iterator_free(iterator);
+    }
+
+    pub fn populateKittyPlacementIterator(self: *Runtime, graphics: ?*anyopaque, iterator: ?*anyopaque) bool {
+        if (graphics == null or iterator == null) return false;
+        var handle = iterator;
+        const result = self.kitty_graphics_get(graphics, @intFromEnum(KittyGraphicsData.placement_iterator), @ptrCast(&handle));
+        return result == success;
+    }
+
+    pub fn setKittyPlacementLayer(self: *Runtime, iterator: ?*anyopaque, layer: KittyPlacementLayer) bool {
+        if (iterator) |it| {
+            var copy = layer;
+            return self.kitty_graphics_placement_iterator_set(it, @intFromEnum(KittyGraphicsPlacementIteratorOption.layer), &copy) == success;
+        }
+        return false;
+    }
+
+    pub fn nextKittyPlacement(self: *Runtime, iterator: ?*anyopaque) bool {
+        if (iterator) |it| return self.kitty_graphics_placement_next(it);
+        return false;
+    }
+
+    pub fn kittyPlacementData(self: *Runtime, iterator: ?*anyopaque, data: KittyGraphicsPlacementData, out: ?*anyopaque) bool {
+        if (iterator) |it| return self.kitty_graphics_placement_get(it, @intFromEnum(data), out) == success;
+        return false;
+    }
+
+    pub fn kittyGraphicsImage(self: *Runtime, graphics: ?*anyopaque, image_id: u32) ?*const anyopaque {
+        if (graphics) |value| return self.kitty_graphics_image(value, image_id);
+        return null;
+    }
+
+    pub fn kittyImageData(self: *Runtime, image: ?*const anyopaque, data: KittyImageData, out: ?*anyopaque) bool {
+        if (image) |value| return self.kitty_graphics_image_get(value, @intFromEnum(data), out) == success;
+        return false;
+    }
+
+    pub fn kittyPlacementRenderInfo(self: *Runtime, iterator: ?*anyopaque, image: ?*const anyopaque, terminal: ?*anyopaque) ?KittyGraphicsPlacementRenderInfo {
+        if (iterator == null or image == null or terminal == null) return null;
+        var info = std.mem.zeroes(KittyGraphicsPlacementRenderInfo);
+        info.size = @sizeOf(KittyGraphicsPlacementRenderInfo);
+        const result = self.kitty_graphics_placement_render_info(iterator, image, terminal, &info);
+        if (result == success) return info;
+        return null;
     }
 
     pub fn cursorPos(self: *Runtime, render_state: ?*anyopaque) ?struct { x: u16, y: u16 } {
