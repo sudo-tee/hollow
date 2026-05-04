@@ -127,6 +127,7 @@ pub const AppCallbacks = struct {
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
+    set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
     new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8) void,
     close_tab: *const fn (app: *anyopaque) void,
@@ -161,6 +162,7 @@ pub const AppCallbacks = struct {
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -1139,12 +1141,17 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_set_pane_floating, 1);
         api.set_field(self.state, -2, "set_pane_floating");
 
-        api.push_light_userdata(self.state, self.context);
-        api.push_cclosure(self.state, l_set_floating_pane_bounds, 1);
-        api.set_field(self.state, -2, "set_floating_pane_bounds");
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_set_floating_pane_bounds, 1);
+    api.set_field(self.state, -2, "set_floating_pane_bounds");
 
-        api.push_light_userdata(self.state, self.context);
-        api.push_cclosure(self.state, l_move_pane, 1);
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_set_pane_foreground_process, 1);
+    api.set_field(self.state, -2, "set_pane_foreground_process");
+
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_move_pane, 1);
+
         api.set_field(self.state, -2, "move_pane");
 
         api.push_light_userdata(self.state, self.context);
@@ -1319,12 +1326,17 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_get_pane_title, 1);
         api.set_field(self.state, -2, "get_pane_title");
 
-        api.push_light_userdata(self.state, self.context);
-        api.push_cclosure(self.state, l_get_pane_cwd, 1);
-        api.set_field(self.state, -2, "get_pane_cwd");
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_get_pane_cwd, 1);
+    api.set_field(self.state, -2, "get_pane_cwd");
 
-        api.push_light_userdata(self.state, self.context);
-        api.push_cclosure(self.state, l_get_pane_rows, 1);
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_get_pane_foreground_process, 1);
+    api.set_field(self.state, -2, "get_pane_foreground_process");
+
+    api.push_light_userdata(self.state, self.context);
+    api.push_cclosure(self.state, l_get_pane_rows, 1);
+
         api.set_field(self.state, -2, "get_pane_rows");
 
         api.push_light_userdata(self.state, self.context);
@@ -3840,6 +3852,46 @@ fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
     defer std.heap.page_allocator.free(zcwd);
     api.push_string(state, zcwd);
     return 1;
+}
+
+fn l_get_pane_foreground_process(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var out_buf: [512]u8 = undefined;
+    const proc = cbs.get_pane_foreground_process(cbs.app, pane_id, &out_buf);
+    const zproc = std.heap.page_allocator.dupeZ(u8, proc) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(zproc);
+    api.push_string(state, zproc);
+    return 1;
+}
+
+fn l_set_pane_foreground_process(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var len: usize = 0;
+    const proc_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+        api.to_lstring(state, 2, &len)
+    else
+        null;
+    const process = if (proc_ptr) |p| p[0..len] else "";
+    cbs.set_pane_foreground_process(cbs.app, pane_id, process);
+    return 0;
 }
 
 fn l_get_pane_domain(state: *State) callconv(.c) c_int {

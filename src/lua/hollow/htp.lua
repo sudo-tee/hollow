@@ -14,7 +14,12 @@ end
 
 local function serializable_error(value, path, seen)
   local value_type = type(value)
-  if value == nil or value_type == "boolean" or value_type == "number" or value_type == "string" then
+  if
+    value == nil
+    or value_type == "boolean"
+    or value_type == "number"
+    or value_type == "string"
+  then
     return nil
   end
   if value_type ~= "table" then
@@ -187,6 +192,18 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       y = payload.y,
       width = payload.width,
       height = payload.height,
+      -- accept either `command` or shorthand `cmd` from HTP payloads
+      command = payload.command or payload.cmd,
+    })
+  end)
+
+  hollow.htp.on_emit("new_tab", function(ctx)
+    local payload = event_payload(ctx)
+    -- support opening a new tab and running a command (useful for floating panes)
+    hollow.term.new_tab({
+      domain = payload.domain,
+      -- accept either `command` or shorthand `cmd`
+      command = payload.command or payload.cmd,
     })
   end)
 
@@ -223,6 +240,16 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       direction = payload.direction,
       amount = payload.amount,
     })
+  end)
+
+  hollow.htp.on_emit("command_started", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.set_pane_foreground_process(target_pane_id(ctx, payload), payload.command)
+  end)
+
+  hollow.htp.on_emit("command_ended", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.set_pane_foreground_process(target_pane_id(ctx, payload), nil)
   end)
 end
 

@@ -941,6 +941,7 @@ pub const App = struct {
             .toggle_pane_maximized = luaTogglePaneMaximizedCallback,
             .set_pane_floating = luaSetPaneFloatingCallback,
             .set_floating_pane_bounds = luaSetFloatingPaneBoundsCallback,
+            .set_pane_foreground_process = luaSetPaneForegroundProcessCallback,
             .move_pane = luaMovePaneCallback,
             .new_tab = luaNewTabCallback,
             .close_tab = luaCloseTabCallback,
@@ -975,6 +976,7 @@ pub const App = struct {
             .get_pane_pid = luaGetPanePidCallback,
             .get_pane_title = luaGetPaneTitleCallback,
             .get_pane_cwd = luaGetPaneCwdCallback,
+            .get_pane_foreground_process = luaGetPaneForegroundProcessCallback,
             .get_pane_rows = luaGetPaneRowsCallback,
             .get_pane_cols = luaGetPaneColsCallback,
             .get_pane_x = luaGetPaneXCallback,
@@ -1364,15 +1366,6 @@ pub const App = struct {
             self.sendHtpProtocolError(pane, message_id, "handler_error", ok.error_message orelse "event handler failed");
             return;
         }
-
-        const envelope = HtpEnvelope{
-            .id = self.nextHtpMessageId(),
-            .kind = "event_ack",
-            .status = "ok",
-            .channel = channel,
-            .request_id = if (message_id) |value| .{ .string = value } else null,
-        };
-        self.sendHtpEnvelope(pane, envelope);
     }
 
     fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, channel: []const u8, params: ?std.json.Value) void {
@@ -2192,6 +2185,21 @@ pub const App = struct {
             }
         }
         return null;
+    }
+
+    pub fn setPaneForegroundProcess(self: *App, pane_id: usize, process: []const u8) void {
+        if (self.findPaneById(pane_id)) |pane| {
+            if (pane.foreground_process) |old_process| {
+                self.allocator.free(old_process);
+            }
+            pane.foreground_process = self.allocator.dupe(u8, process) catch null;
+        }
+    }
+
+    pub fn getPaneForegroundProcess(self: *App, pane_id: usize, out_buf: []u8) []const u8 {
+        _ = out_buf;
+        const pane = self.findPaneById(pane_id) orelse return "";
+        return pane.foreground_process orelse "";
     }
 
     pub fn isPaneVisible(self: *App, needle: *const Pane) bool {
@@ -3694,8 +3702,19 @@ fn luaSetFloatingPaneBoundsCallback(app_ptr: *anyopaque, pane_id: usize, x: f32,
 fn luaMovePaneCallback(app_ptr: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
-    _ = app.enqueueMouse(.{ .move_pane = .{ .pane_id = pane_id, .direction = dir, .amount = amount } });
+    app.movePaneById(pane_id, dir, amount);
 }
+
+fn luaSetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, process: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.setPaneForegroundProcess(pane_id, process);
+}
+
+fn luaGetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.getPaneForegroundProcess(pane_id, out_buf);
+}
+
 
 fn pathExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {

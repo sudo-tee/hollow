@@ -1615,35 +1615,39 @@ pub const FtRenderer = struct {
         const render_colors = runtime.renderStateColors(render_state) orelse return;
         const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.background;
         const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.foreground;
-        const palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.palette;
         const selection_bg = if (cfg.terminal_theme.enabled)
             (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
         else
             mixColor(default_bg, default_fg, 0.35);
-        const selection_fg = if (cfg.terminal_theme.enabled)
-            (cfg.terminal_theme.selection_fg orelse default_fg)
-        else
-            default_fg;
+        const queue = QueueContext{
+            .cfg = cfg,
+            .render_state = render_state,
+            .row_iterator = row_iterator,
+            .row_cells = row_cells,
+            .row_count = @intCast(runtime.renderStateRows(render_state) orelse 0),
+            .col_count = @intCast(runtime.renderStateCols(render_state) orelse 0),
+            .force_full = force_full,
+            .selection_range = selection_range,
+            .hovered_hyperlink = hovered_hyperlink,
+            .prev_cursor_row = prev_cursor_row,
+            .cursor_row = if (runtime.cursorPos(render_state)) |cp| @intCast(cp.y) else std.math.maxInt(usize),
+            .hovered_row = if (hovered_hyperlink) |hovered| hovered.row else std.math.maxInt(usize),
+            .row_map_keys = row_map_keys,
+            .row_map_vals = row_map_vals,
+            .row_map_skip = row_map_skip,
+            .colors = .{
+                .default_bg = default_bg,
+                .default_fg = default_fg,
+                .selection_bg = selection_bg,
+                .selection_fg = if (cfg.terminal_theme.enabled)
+                    (cfg.terminal_theme.selection_fg orelse default_fg)
+                else
+                    default_fg,
+                .palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.palette,
+            },
+        };
 
-        c.sgl_defaults();
-        // Set viewport and scissor to this pane's sub-rect.
-        c.sgl_viewport(
-            @as(c_int, @intFromFloat(offset_x)),
-            @as(c_int, @intFromFloat(offset_y)),
-            @as(c_int, @intFromFloat(pane_w)),
-            @as(c_int, @intFromFloat(pane_h)),
-            true,
-        );
-        c.sgl_scissor_rect(
-            @as(c_int, @intFromFloat(offset_x)),
-            @as(c_int, @intFromFloat(offset_y)),
-            @as(c_int, @intFromFloat(pane_w)),
-            @as(c_int, @intFromFloat(pane_h)),
-            true,
-        );
-        c.sgl_matrix_mode_projection();
-        c.sgl_load_identity();
-        c.sgl_ortho(0.0, pane_w, pane_h, 0.0, -1.0, 1.0);
+        self.setupViewport(offset_x, offset_y, pane_w, pane_h);
 
         if (!self.logged_first_draw) {
             std.log.info("ft_renderer first draw: screen={d:.0}x{d:.0} cell={d:.1}x{d:.1}", .{
@@ -1651,67 +1655,12 @@ pub const FtRenderer = struct {
             });
         }
 
-        const row_count = runtime.renderStateRows(render_state) orelse 0;
-        const col_count = runtime.renderStateCols(render_state) orelse 0;
-        // Only reallocate run_buf when the grid dimensions actually change.
-        if (row_count != self.run_buf_rows or col_count != self.run_buf_cols) {
-            const run_buf_needed = @max(@as(usize, 1), @as(usize, row_count) * @as(usize, col_count) * 4);
-            if (run_buf_needed > self.run_buf.len) {
-                if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
-                self.run_buf = self.allocator.alloc(u8, run_buf_needed) catch return;
-            }
-            self.run_buf_rows = row_count;
-            self.run_buf_cols = col_count;
-        }
+        if (!self.ensureRunBufferCapacity(queue.row_count, queue.col_count)) return;
         const run_buf = self.run_buf;
-        self.prepared_glyphs.clearRetainingCapacity();
-        self.shaped_runs.clearRetainingCapacity();
-        self.shaped_run_read_idx = 0;
-        self.styleCacheReset();
+        self.resetQueueState();
 
-        // Per-row hash-skip bitset: tracks rows that matched their stored hash in Pass 1
-        // and should be skipped in Pass 2 as well.
-        // Stack-allocated: 512 bits = 64 bytes — negligible stack cost.
-        const MAX_SKIP_ROWS = 512;
-        var hash_skip_bits = [_]u64{0} ** (MAX_SKIP_ROWS / 64);
-        const use_row_map = row_map_keys != null and row_map_vals != null;
+        var hash_skip_bits: HashSkipBits = [_]u64{0} ** HASH_SKIP_WORDS;
 
-        // Inline helpers for the skip bitset.
-        const SkipSet = struct {
-            fn set(bits: *[MAX_SKIP_ROWS / 64]u64, row: usize) void {
-                if (row >= MAX_SKIP_ROWS) return;
-                bits[row / 64] |= @as(u64, 1) << @intCast(row % 64);
-            }
-            fn get(bits: *const [MAX_SKIP_ROWS / 64]u64, row: usize) bool {
-                if (row >= MAX_SKIP_ROWS) return false;
-                return (bits[row / 64] >> @intCast(row % 64)) & 1 != 0;
-            }
-        };
-
-        // Open-addressing map helpers (power-of-2 capacity, linear probe).
-        // Key sentinel: 0 means empty slot.
-        const MapLookup = struct {
-            /// Look up `key` in the map.  Returns the index of the matching slot
-            /// (key == key) or the first empty slot if not found.
-            fn probe(keys: []u64, key: u64) usize {
-                const cap = keys.len;
-                const mask = cap - 1;
-                var idx = @as(usize, @truncate(key)) & mask;
-                var i: usize = 0;
-                while (i < cap) : (i += 1) {
-                    const k = keys[idx];
-                    if (k == 0 or k == key) return idx;
-                    idx = (idx + 1) & mask;
-                }
-                // Map full (should not happen at 2048 cap for ~200 rows) — return 0.
-                return 0;
-            }
-        };
-
-        // Cursor row — always render regardless of hash match, since the cursor
-        // is overlaid on cells during Pass 2 and is not reflected in cell hashes.
-        const cursor_row: usize = if (runtime.cursorPos(render_state)) |cp| cp.y else std.math.maxInt(usize);
-        const hovered_row = if (hovered_hyperlink) |hovered| hovered.row else std.math.maxInt(usize);
         // ── Pass 1: Background & Rasterisation ──────────────────────────────
         // We must always probe/rasterize text for rows we are about to draw.
         // Even when the atlas is currently clean, a newly-seen glyph (for
@@ -1721,253 +1670,7 @@ pub const FtRenderer = struct {
         //
         // In partial mode (!force_full), skip rows that are not dirty.
         const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
-        if (runtime.populateRowIterator(render_state, row_iterator)) {
-            var row_y: usize = 0;
-            var quads_open = false;
-            if (force_full) {
-                c.sgl_begin_quads();
-                quads_open = true;
-                c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
-                c.sgl_v2f(0.0, 0.0);
-                c.sgl_v2f(pane_w, 0.0);
-                c.sgl_v2f(pane_w, pane_h);
-                c.sgl_v2f(0.0, pane_h);
-            }
-            while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
-                // Per-row dirty skip (partial updates only).
-                // Exception: prev_cursor_row must always be re-rendered to erase
-                // any ghost cursor pixels left from the previous frame, even if
-                // ghostty doesn't mark it dirty (text content unchanged, only the
-                // cursor moved away).
-                if (!force_full and !runtime.rowDirty(row_iterator.*) and row_y != prev_cursor_row) continue;
-
-                // Row-hash optimisation: look up this row's GhosttyRow raw value in the
-                // scroll-stable map.  If the stored content hash matches AND this is not
-                // the cursor row (current or previous), the RT already has correct pixels
-                // — skip both passes.  The cursor row is always rendered because the
-                // cursor overlay is not reflected in cell content hashes.  The previous
-                // cursor row is always rendered to clear any lingering cursor pixels.
-                //
-                // When force_full is true (atlas stale / resize) we must redraw the row
-                // regardless of hash match (the RT was cleared and glyph UVs changed), but
-                // we still WRITE the fresh hash into the map so the very next cursor-blink
-                // frame (.true_value dirty) can skip rows that didn't change.
-                if (use_row_map and row_y != cursor_row and row_y != prev_cursor_row) {
-                    const row_raw = runtime.rowRaw(row_iterator.*);
-                    if (row_raw != 0) {
-                        const keys = row_map_keys.?;
-                        const vals = row_map_vals.?;
-                        const slot = MapLookup.probe(keys, row_raw);
-                        if (runtime.rowHashCells(row_iterator.*, row_cells)) |new_hash| {
-                            if (row_map_skip and new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
-                                // Unchanged row — skip render, mark for Pass 2 skip too.
-                                SkipSet.set(&hash_skip_bits, row_y);
-                                continue;
-                            }
-                            // Hash changed (or new entry, or skip disabled): update map and render.
-                            keys[slot] = row_raw;
-                            vals[slot] = new_hash;
-                        }
-                        // Fall through to normal render below.
-                    }
-                }
-
-                if (!runtime.populateRowCells(row_iterator.*, row_cells)) continue;
-                const row_y_px = if (builtin.os.tag == .linux and row_count > 0)
-                    @as(f32, @floatFromInt((row_count - 1) - @as(u16, @intCast(row_y)))) * self.cell_h
-                else
-                    @as(f32, @floatFromInt(row_y)) * self.cell_h;
-                const py = self.padding_y + row_y_px;
-                const row_sel = if (selection_range) |range|
-                    rowSelectionBounds(range, row_y)
-                else
-                    null;
-
-                // In partial mode we must first erase the old row pixels by
-                // drawing a full-width background rectangle in the default bg
-                // color, then overlay any per-cell custom backgrounds below.
-                //
-                // Start from x=0 (not padding_x) so that glyphs at column 0
-                // with a negative bear_x that draw left of the text margin are
-                // fully covered.  Without this, each partial re-render blends
-                // new glyph coverage onto un-erased pixels from a prior frame,
-                // causing anti-aliased edges to accumulate ("ghost glyphs").
-                if (!force_full) {
-                    if (!quads_open) {
-                        c.sgl_begin_quads();
-                        quads_open = true;
-                    }
-                    c.sgl_c4b(default_bg.r, default_bg.g, default_bg.b, 255);
-                    c.sgl_v2f(0.0, py);
-                    c.sgl_v2f(pane_w, py);
-                    c.sgl_v2f(pane_w, py + self.cell_h);
-                    c.sgl_v2f(0.0, py + self.cell_h);
-                }
-
-                var col_x: usize = 0;
-                var col_px = self.padding_x;
-                var run_start_col: usize = 0;
-                var run_len: usize = 0;
-                var run_face_idx: u8 = 0;
-                var run_fg = default_fg;
-                while (runtime.nextCell(row_cells.*)) : ({
-                    col_x += 1;
-                    col_px += self.cell_w;
-                }) {
-                    self.last_cells_visited += 1;
-                    // Fetch the raw cell first: cheap pure read, enables fast-path checks.
-                    const raw_cell = runtime.cellRaw(row_cells.*);
-                    const style_id = runtime.cellStyleIdRaw(raw_cell);
-                    // Use pure bit-extraction functions (no C call) for content_tag,
-                    // has_text, and codepoint — replaces the C ABI dispatch for these.
-                    const content_tag = runtime.cellContentTagRaw(raw_cell);
-                    const is_selected = if (row_sel) |sel| col_x >= sel.start_col and col_x <= sel.end_col else false;
-
-                    // Background: skip the cellBackground() C-ABI call for cells with
-                    // no styling (default bg) and no bg-color content tag.
-                    // bg_color_palette/rgb cells always need the call; styled cells may have
-                    // a style-based bg; unstyled codepoint/grapheme cells always use default bg.
-                    const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
-                    if (is_selected) {
-                        self.last_bg_rects += 1;
-                        if (!quads_open) {
-                            c.sgl_begin_quads();
-                            quads_open = true;
-                        }
-                        c.sgl_c4b(selection_bg.r, selection_bg.g, selection_bg.b, 255);
-                        c.sgl_v2f(col_px, py);
-                        c.sgl_v2f(col_px + self.cell_w, py);
-                        c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
-                        c.sgl_v2f(col_px, py + self.cell_h);
-                    } else if (is_bg_tag or style_id != 0) {
-                        const bg: ghostty.ColorRgb = runtime.cellBackground(row_cells.*) orelse default_bg;
-                        if (bg.r != default_bg.r or bg.g != default_bg.g or bg.b != default_bg.b) {
-                            self.last_bg_rects += 1;
-                            if (!quads_open) {
-                                c.sgl_begin_quads();
-                                quads_open = true;
-                            }
-                            c.sgl_c4b(bg.r, bg.g, bg.b, 255);
-                            c.sgl_v2f(col_px, py);
-                            c.sgl_v2f(col_px + self.cell_w, py);
-                            c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
-                            c.sgl_v2f(col_px, py + self.cell_h);
-                        }
-                    }
-
-                    // Rasterisation / atlas population for any glyphs needed by
-                    // rows we will draw this frame. raw_cell and content_tag
-                    // were already fetched above.
-                    //
-                    // Use the same face/fg grouping as Pass 2 for ligature runs so we can
-                    // replay the shaped results directly instead of re-looking them up.
-                    var face_idx: u8 = 0;
-                    var fg = default_fg;
-                    if (style_id != 0 and runtime.cellHasTextRaw(raw_cell)) {
-                        const info = self.resolveCachedStyle(runtime, row_cells.*, style_id, is_selected, default_fg, selection_fg, palette) orelse continue;
-                        face_idx = info.face_idx;
-                        fg = info.fg;
-                    } else if (is_selected) {
-                        fg = selection_fg;
-                    }
-
-                    switch (content_tag) {
-                        .codepoint => {
-                            const cp = runtime.cellCodepointRaw(raw_cell);
-                            if (cp == 0) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                                continue;
-                            }
-                            // Fast non-ligature path: avoid UTF-8 encoding for the common
-                            // single-codepoint case when the selected primary face can
-                            // supply the glyph directly without shaping.
-                            if (!self.ligatures or !isLigatureCodepoint(cp)) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                if (self.directGlyph(cp, face_idx) == null) {
-                                    const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                                    if (glyph_len == 0) continue;
-                                    if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
-                                        self.recordShapedRun(self.glyph_buf[0..glyph_len], face_idx, prepared.start, prepared.glyphs.len);
-                                    }
-                                }
-                                continue;
-                            }
-                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                            if (glyph_len == 0) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                                continue;
-                            }
-                            if (run_len + glyph_len > run_buf.len) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                            }
-                            if (run_len == 0) {
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                            run_len += glyph_len;
-                        },
-                        .codepoint_grapheme => {
-                            // Multi-codepoint grapheme cluster — must use the graphemes buf API.
-                            const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                            if (grapheme_len == 0) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                                continue;
-                            }
-                            var cps: [16]u32 = [_]u32{0} ** 16;
-                            runtime.cellGraphemes(row_cells.*, &cps);
-                            var glyph_len: usize = 0;
-                            for (cps[0..grapheme_len]) |cp| {
-                                if (cp == 0) break;
-                                glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                            }
-                            if (glyph_len == 0) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                                continue;
-                            }
-                            if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                if (self.prepareGlyphs(self.glyph_buf[0..glyph_len], face_idx, .terminal)) |prepared| {
-                                    self.recordShapedRun(self.glyph_buf[0..glyph_len], face_idx, prepared.start, prepared.glyphs.len);
-                                }
-                                continue;
-                            }
-                            if (run_len + glyph_len > run_buf.len) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                            }
-                            if (run_len == 0) {
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                            run_len += glyph_len;
-                        },
-                        else => {
-                            // BG_COLOR_PALETTE / BG_COLOR_RGB: no text to rasterize.
-                            flushRasterRun(self, run_buf, &run_start_col, &run_len, face_idx, fg, py);
-                        },
-                    }
-                }
-                if (run_len > 0) {
-                    flushRasterRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                }
-            }
-            if (quads_open) c.sgl_end();
-        }
+        self.queueBackgroundAndRasterPass(runtime, &queue, pane_w, pane_h, &hash_skip_bits, run_buf);
 
         if (self.atlas_dirty) {
             self.flushAtlas();
@@ -1981,316 +1684,16 @@ pub const FtRenderer = struct {
         // ── Pass 2: Glyph draw pass ────────────────────────────────────────
         // In partial mode, skip clean rows; clear rowDirty on each dirty row
         // after rendering so the flag is reset for the next updateRenderState.
-        if (runtime.populateRowIterator(render_state, row_iterator)) {
-            var row_y: usize = 0;
-            while (runtime.nextRow(row_iterator.*)) : (row_y += 1) {
-                // Per-row dirty skip (partial updates only).
-                // Exception: prev_cursor_row is always re-rendered to clear ghost
-                // cursor pixels even when ghostty doesn't mark it dirty.
-                const row_is_dirty = force_full or runtime.rowDirty(row_iterator.*) or row_y == prev_cursor_row;
-                if (!row_is_dirty) {
-                    self.last_rows_skipped += 1;
-                    continue;
-                }
-                // Row-hash skip: this row had a matching hash in Pass 1 — RT already
-                // has correct pixels, no need to redraw.  Do NOT skip if this is the
-                // previous cursor row: the hash reflects text content, not the cursor
-                // overlay, so the hash may match while ghost cursor pixels remain.
-                if (SkipSet.get(&hash_skip_bits, row_y) and row_y != prev_cursor_row) {
-                    self.last_rows_skipped += 1;
-                    // Don't clear rowDirty here — ghostty will keep marking it dirty
-                    // each frame; we rely on hash comparison to skip it.
-                    continue;
-                }
-                self.last_rows_rendered += 1;
-
-                if (!runtime.populateRowCells(row_iterator.*, row_cells)) {
-                    // Still clear rowDirty even if cells couldn't be populated.
-                    if (!force_full) runtime.clearRowDirty(row_iterator.*);
-                    continue;
-                }
-                const row_y_px = if (builtin.os.tag == .linux and row_count > 0)
-                    @as(f32, @floatFromInt((row_count - 1) - @as(u16, @intCast(row_y)))) * self.cell_h
-                else
-                    @as(f32, @floatFromInt(row_y)) * self.cell_h;
-                const py = self.padding_y + row_y_px;
-                const row_sel = if (selection_range) |range|
-                    rowSelectionBounds(range, row_y)
-                else
-                    null;
-                const row_hovered_link = hovered_row == row_y;
-                var row_needs_decorations = row_hovered_link;
-                var col_x: usize = 0;
-                var col_px = self.padding_x;
-                var run_start_col: usize = 0;
-                var run_len: usize = 0;
-                var run_face_idx: u8 = 0;
-                var run_fg = default_fg;
-                const row_glyph_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
-                while (runtime.nextCell(row_cells.*)) : ({
-                    col_x += 1;
-                    col_px += self.cell_w;
-                }) {
-                    // Fetch the raw cell first — pure u64 read, enables cheap
-                    // has_text / has_styling checks before heavier calls.
-                    const raw_cell = runtime.cellRaw(row_cells.*);
-                    // Use pure bit-extraction functions (no C call) for content_tag.
-                    const content_tag = runtime.cellContentTagRaw(raw_cell);
-
-                    // Skip cellStyle() for cells with no text (blank/space cells
-                    // can't be bold/italic and their fg color doesn't matter for
-                    // rendering). For cells with text, only fetch style when the
-                    // cell actually has non-default styling.
-                    //
-                    // Optimisation: use cellStyleIdRaw() + cellHasTextRaw() (direct bit extraction,
-                    // no C calls) instead of cellHasStyling() + cellHasText() C ABI calls.
-                    const p2_sid = runtime.cellStyleIdRaw(raw_cell);
-                    var face_idx: u8 = 0;
-                    var fg = default_fg;
-                    if (p2_sid != 0 and runtime.cellHasTextRaw(raw_cell)) {
-                        const is_selected = if (row_sel) |sel| col_x >= sel.start_col and col_x <= sel.end_col else false;
-                        const info = self.resolveCachedStyle(runtime, row_cells.*, p2_sid, is_selected, default_fg, selection_fg, palette) orelse continue;
-                        face_idx = info.face_idx;
-                        fg = info.fg;
-                        if (info.needs_decorations) row_needs_decorations = true;
-                    } else if (row_sel) |sel| {
-                        if (col_x >= sel.start_col and col_x <= sel.end_col) fg = selection_fg;
-                    }
-
-                    switch (content_tag) {
-                        .codepoint => {
-                            const cp = runtime.cellCodepointRaw(raw_cell);
-                            if (cp == 0) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                continue;
-                            }
-                            // Fast non-ligature path: avoid shaping when a single codepoint can
-                            // be drawn directly from the selected primary face.
-                            if (!self.ligatures or !isLigatureCodepoint(cp)) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                self.last_glyph_runs += 1;
-                                if (!self.drawDirectGlyph(col_px, py, cp, face_idx, fg, py, py + self.cell_h)) {
-                                    const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                                    if (glyph_len == 0) continue;
-                                    if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
-                                        self.batchPreparedGlyphs(col_px, py, prepared, fg, py, py + self.cell_h);
-                                    } else {
-                                        self.batchGlyphs(col_px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
-                                    }
-                                }
-                                continue;
-                            }
-                            const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
-                            if (glyph_len == 0) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                continue;
-                            }
-                            if (run_len + glyph_len > run_buf.len) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                            }
-                            if (run_len == 0) {
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                            run_len += glyph_len;
-                        },
-                        .codepoint_grapheme => {
-                            // Multi-codepoint grapheme cluster.
-                            const grapheme_len = runtime.cellGraphemeLen(row_cells.*);
-                            if (grapheme_len == 0) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                continue;
-                            }
-                            var cps: [16]u32 = [_]u32{0} ** 16;
-                            runtime.cellGraphemes(row_cells.*, &cps);
-                            var glyph_len: usize = 0;
-                            for (cps[0..grapheme_len]) |cp| {
-                                if (cp == 0) break;
-                                glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
-                            }
-                            if (glyph_len == 0) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                continue;
-                            }
-                            if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                const col_x_px = if (builtin.os.tag == .linux and col_count > 0)
-                                    @as(f32, @floatFromInt((col_count - 1) - @as(u16, @intCast(col_x)))) * self.cell_w
-                                else
-                                    @as(f32, @floatFromInt(col_x)) * self.cell_w;
-                                const px = self.padding_x + col_x_px;
-                                self.last_glyph_runs += 1;
-                                if (self.consumeShapedRun(self.glyph_buf[0..glyph_len], face_idx)) |prepared| {
-                                    self.batchPreparedGlyphs(px, py, prepared, fg, py, py + self.cell_h);
-                                } else {
-                                    self.batchGlyphs(px, py, self.glyph_buf[0..glyph_len], face_idx, fg, .terminal, py, py + self.cell_h);
-                                }
-                                continue;
-                            }
-                            if (run_len + glyph_len > run_buf.len) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                            }
-                            if (run_len == 0) {
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            if (run_len > 0 and (run_face_idx != face_idx or !colorsEqual(run_fg, fg))) {
-                                flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                                run_start_col = col_x;
-                                run_face_idx = face_idx;
-                                run_fg = fg;
-                            }
-                            @memcpy(run_buf[run_len .. run_len + glyph_len], self.glyph_buf[0..glyph_len]);
-                            run_len += glyph_len;
-                        },
-                        else => {
-                            // BG_COLOR_PALETTE / BG_COLOR_RGB: no text.
-                            flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                        },
-                    }
-                }
-                if (run_len > 0) {
-                    flushDrawRun(self, run_buf, &run_start_col, &run_len, run_face_idx, run_fg, py);
-                }
-                if (cfg.debug_overlay) pass2_glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
-
-                // ── Decorations (underline / undercurl / strikethrough / overline) ──
-                // Drawn after glyphs so they appear on top.
-                // We batch all decoration rects for this row into one sgl quad batch.
-                const row_decoration_start_ns = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
-                if (row_needs_decorations and runtime.populateRowCells(row_iterator.*, row_cells)) {
-                    var dec_col_x: usize = 0;
-                    var dec_px = self.padding_x;
-                    var dec_quads_open = false;
-                    while (runtime.nextCell(row_cells.*)) : ({
-                        dec_col_x += 1;
-                        dec_px += self.cell_w;
-                    }) {
-                        const raw_cell2 = runtime.cellRaw(row_cells.*);
-                        const hovered_link_visual = if (hovered_hyperlink) |hovered|
-                            hovered.row == row_y and dec_col_x >= hovered.start_col and dec_col_x < hovered.end_col
-                        else
-                            false;
-                        const style_id = runtime.cellStyleIdRaw(raw_cell2);
-                        if (style_id == 0 and !hovered_link_visual) continue;
-                        const dec_selected = if (row_sel) |sel| dec_col_x >= sel.start_col and dec_col_x <= sel.end_col else false;
-                        const cached_style = if (style_id != 0)
-                            self.resolveCachedStyle(runtime, row_cells.*, style_id, dec_selected, default_fg, selection_fg, palette)
-                        else
-                            null;
-                        if (style_id != 0 and cached_style == null) continue;
-
-                        const underline = if (cached_style) |info| info.underline else 0;
-                        const strikethrough = if (cached_style) |info| info.strikethrough else false;
-                        const overline = if (cached_style) |info| info.overline else false;
-                        const has_decoration = underline != 0 or strikethrough or overline or hovered_link_visual;
-                        if (!has_decoration) continue;
-
-                        if (!dec_quads_open) {
-                            c.sgl_load_default_pipeline();
-                            c.sgl_begin_quads();
-                            dec_quads_open = true;
-                        }
-
-                        const dec_fg = if (cached_style) |info| info.fg else selection_fg;
-                        const dec_color = ghostty.resolveStyleColor(
-                            if (cached_style) |info| info.underline_color else .{ .tag = .none, .value = .{ ._padding = 0 } },
-                            dec_fg,
-                            palette,
-                        );
-                        // Use underline_color if set, otherwise fall back to fg.
-                        const ul_r = dec_color.r;
-                        const ul_g = dec_color.g;
-                        const ul_b = dec_color.b;
-
-                        // Underline position: 1px above cell bottom, thickness 1px.
-                        const ul_thickness: f32 = 1.0;
-                        const ul_y = py + self.cell_h - ul_thickness - 1.0;
-
-                        const effective_underline: i32 = if (hovered_link_visual and underline == 0) 1 else underline;
-
-                        switch (effective_underline) {
-                            0 => {}, // GHOSTTY_SGR_UNDERLINE_NONE
-                            1 => { // SINGLE
-                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                            },
-                            2 => { // DOUBLE
-                                emitRect(dec_px, ul_y - 2.0, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                            },
-                            3 => { // CURLY (undercurl)
-                                // Approximate a sine wave with 8 segments per cell.
-                                const n_segs: usize = 8;
-                                const seg_w = self.cell_w / @as(f32, @floatFromInt(n_segs));
-                                const amp: f32 = 1.0; // amplitude in pixels
-                                const base_y = ul_y + amp; // center of wave
-                                var seg: usize = 0;
-                                while (seg < n_segs) : (seg += 1) {
-                                    const t = @as(f32, @floatFromInt(seg)) / @as(f32, @floatFromInt(n_segs));
-                                    const t1 = @as(f32, @floatFromInt(seg + 1)) / @as(f32, @floatFromInt(n_segs));
-                                    const sx0 = dec_px + t * self.cell_w;
-                                    const sy0 = base_y - amp * @sin(t * std.math.tau);
-                                    const sy1 = base_y - amp * @sin(t1 * std.math.tau);
-                                    const seg_h = @abs(sy1 - sy0) + ul_thickness;
-                                    const seg_y = @min(sy0, sy1);
-                                    emitRect(sx0, seg_y, seg_w, seg_h, ul_r, ul_g, ul_b, 255);
-                                }
-                            },
-                            4 => { // DOTTED
-                                var dot_x = dec_px;
-                                const dot_w: f32 = 1.0;
-                                const gap: f32 = 2.0;
-                                while (dot_x + dot_w <= dec_px + self.cell_w) : (dot_x += dot_w + gap) {
-                                    emitRect(dot_x, ul_y, dot_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                                }
-                            },
-                            5 => { // DASHED
-                                var dash_x = dec_px;
-                                const dash_w: f32 = 4.0;
-                                const dash_gap: f32 = 2.0;
-                                while (dash_x + dash_w <= dec_px + self.cell_w) : (dash_x += dash_w + dash_gap) {
-                                    emitRect(dash_x, ul_y, dash_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                                }
-                            },
-                            else => {
-                                // Unknown underline style — fall back to single.
-                                emitRect(dec_px, ul_y, self.cell_w, ul_thickness, ul_r, ul_g, ul_b, 255);
-                            },
-                        }
-
-                        if (strikethrough) {
-                            const st_y = py + self.cell_h * 0.5 - 0.5;
-                            emitRect(dec_px, st_y, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
-                        }
-
-                        if (overline) {
-                            emitRect(dec_px, py, self.cell_w, ul_thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
-                        }
-                    }
-                    if (dec_quads_open) c.sgl_end();
-                }
-                if (cfg.debug_overlay) pass2_decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
-
-                // Clear per-row dirty flag after rendering this row.
-                if (!force_full) runtime.clearRowDirty(row_iterator.*);
-            }
-        }
+        const pass2_stats = self.queueGlyphPass(runtime, &queue, &hash_skip_bits, run_buf);
+        pass2_glyph_ns = pass2_stats.glyph_ns;
+        pass2_decoration_ns = pass2_stats.decoration_ns;
 
         // ── Cursor overlay ─────────────────────────────────────────────────
         if (is_focused and runtime.cursorVisible(render_state)) {
             if (runtime.cursorPos(render_state)) |pos| {
                 const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
-                const cursor_y_px = if (builtin.os.tag == .linux and row_count > 0)
-                    @as(f32, @floatFromInt((row_count - 1) - pos.y)) * self.cell_h
+                const cursor_y_px = if (builtin.os.tag == .linux and queue.row_count > 0)
+                    @as(f32, @floatFromInt((queue.row_count - 1) - @as(usize, @intCast(pos.y)))) * self.cell_h
                 else
                     @as(f32, @floatFromInt(pos.y)) * self.cell_h;
                 const cy = self.padding_y + cursor_y_px;
@@ -2324,6 +1727,645 @@ pub const FtRenderer = struct {
 
         self.last_pass2_glyph_ns = pass2_glyph_ns;
         self.last_pass2_decoration_ns = pass2_decoration_ns;
+    }
+
+    const HASH_SKIP_MAX_ROWS = 512;
+    const HASH_SKIP_WORDS = HASH_SKIP_MAX_ROWS / 64;
+    const HashSkipBits = [HASH_SKIP_WORDS]u64;
+
+    const QueueColors = struct {
+        default_bg: ghostty.ColorRgb,
+        default_fg: ghostty.ColorRgb,
+        selection_bg: ghostty.ColorRgb,
+        selection_fg: ghostty.ColorRgb,
+        palette: *const [256]ghostty.ColorRgb,
+    };
+
+    const QueueContext = struct {
+        cfg: *const Config,
+        render_state: ?*anyopaque,
+        row_iterator: *?*anyopaque,
+        row_cells: *?*anyopaque,
+        row_count: usize,
+        col_count: usize,
+        force_full: bool,
+        selection_range: ?selection.Range,
+        hovered_hyperlink: ?App.HoveredHyperlink,
+        prev_cursor_row: usize,
+        cursor_row: usize,
+        hovered_row: usize,
+        row_map_keys: ?[]u64,
+        row_map_vals: ?[]u64,
+        row_map_skip: bool,
+        colors: QueueColors,
+
+        inline fn useRowMap(self: @This()) bool {
+            return self.row_map_keys != null and self.row_map_vals != null;
+        }
+    };
+
+    const RowRenderInfo = struct {
+        row_y: usize,
+        py: f32,
+        selection: ?RowSelectionBounds,
+    };
+
+    const CellTextStyle = struct {
+        face_idx: u8,
+        fg: ghostty.ColorRgb,
+        needs_decorations: bool = false,
+    };
+
+    const GlyphRunMode = enum {
+        raster,
+        draw,
+    };
+
+    const GlyphRunState = struct {
+        start_col: usize = 0,
+        len: usize = 0,
+        face_idx: u8 = 0,
+        fg: ghostty.ColorRgb,
+    };
+
+    const Pass2Stats = struct {
+        glyph_ns: i128 = 0,
+        decoration_ns: i128 = 0,
+    };
+
+    fn setupViewport(self: *FtRenderer, offset_x: f32, offset_y: f32, pane_w: f32, pane_h: f32) void {
+        _ = self;
+        c.sgl_defaults();
+        c.sgl_viewport(
+            @as(c_int, @intFromFloat(offset_x)),
+            @as(c_int, @intFromFloat(offset_y)),
+            @as(c_int, @intFromFloat(pane_w)),
+            @as(c_int, @intFromFloat(pane_h)),
+            true,
+        );
+        c.sgl_scissor_rect(
+            @as(c_int, @intFromFloat(offset_x)),
+            @as(c_int, @intFromFloat(offset_y)),
+            @as(c_int, @intFromFloat(pane_w)),
+            @as(c_int, @intFromFloat(pane_h)),
+            true,
+        );
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, pane_w, pane_h, 0.0, -1.0, 1.0);
+    }
+
+    fn ensureRunBufferCapacity(self: *FtRenderer, row_count: usize, col_count: usize) bool {
+        if (row_count != self.run_buf_rows or col_count != self.run_buf_cols) {
+            const run_buf_needed = @max(@as(usize, 1), row_count * col_count * 4);
+            if (run_buf_needed > self.run_buf.len) {
+                if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
+                self.run_buf = self.allocator.alloc(u8, run_buf_needed) catch return false;
+            }
+            self.run_buf_rows = row_count;
+            self.run_buf_cols = col_count;
+        }
+        return true;
+    }
+
+    fn resetQueueState(self: *FtRenderer) void {
+        self.prepared_glyphs.clearRetainingCapacity();
+        self.shaped_runs.clearRetainingCapacity();
+        self.shaped_run_read_idx = 0;
+        self.styleCacheReset();
+    }
+
+    fn queueBackgroundAndRasterPass(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        pane_w: f32,
+        pane_h: f32,
+        hash_skip_bits: *HashSkipBits,
+        run_buf: []u8,
+    ) void {
+        if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return;
+
+        var row_y: usize = 0;
+        var quads_open = false;
+        if (queue.force_full) {
+            c.sgl_begin_quads();
+            quads_open = true;
+            c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
+            c.sgl_v2f(0.0, 0.0);
+            c.sgl_v2f(pane_w, 0.0);
+            c.sgl_v2f(pane_w, pane_h);
+            c.sgl_v2f(0.0, pane_h);
+        }
+        while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
+            if (!queue.force_full and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row) continue;
+            if (self.shouldSkipRowByHash(runtime, queue, row_y, hash_skip_bits)) continue;
+
+            const row = self.makeRowRenderInfo(queue, row_y);
+            self.queueBackgroundAndRasterRow(runtime, queue, row, pane_w, &quads_open, run_buf);
+        }
+        if (quads_open) c.sgl_end();
+    }
+
+    fn queueBackgroundAndRasterRow(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        row: RowRenderInfo,
+        pane_w: f32,
+        quads_open: *bool,
+        run_buf: []u8,
+    ) void {
+        if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return;
+
+        if (!queue.force_full) {
+            if (!quads_open.*) {
+                c.sgl_begin_quads();
+                quads_open.* = true;
+            }
+            c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
+            c.sgl_v2f(0.0, row.py);
+            c.sgl_v2f(pane_w, row.py);
+            c.sgl_v2f(pane_w, row.py + self.cell_h);
+            c.sgl_v2f(0.0, row.py + self.cell_h);
+        }
+
+        var col_x: usize = 0;
+        var col_px = self.padding_x;
+        var run = GlyphRunState{ .fg = queue.colors.default_fg };
+        while (runtime.nextCell(queue.row_cells.*)) : ({
+            col_x += 1;
+            col_px += self.cell_w;
+        }) {
+            self.last_cells_visited += 1;
+            const raw_cell = runtime.cellRaw(queue.row_cells.*);
+            const style_id = runtime.cellStyleIdRaw(raw_cell);
+            const content_tag = runtime.cellContentTagRaw(raw_cell);
+            const is_selected = isSelectedCell(row.selection, col_x);
+
+            self.queueCellBackground(runtime, queue, content_tag, style_id, is_selected, col_px, row.py, quads_open);
+
+            const text_style = self.resolveCellTextStyle(runtime, queue, raw_cell, style_id, is_selected) orelse continue;
+            switch (content_tag) {
+                .codepoint => {
+                    const cp = runtime.cellCodepointRaw(raw_cell);
+                    if (cp == 0) {
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        continue;
+                    }
+                    if (!self.ligatures or !isLigatureCodepoint(cp)) {
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        if (self.directGlyph(cp, text_style.face_idx) == null) {
+                            const glyph_utf8 = self.encodeCodepointUtf8(cp);
+                            if (glyph_utf8.len == 0) continue;
+                            if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
+                                self.recordShapedRun(glyph_utf8, text_style.face_idx, prepared.start, prepared.glyphs.len);
+                            }
+                        }
+                        continue;
+                    }
+                    self.appendQueuedRun(.raster, run_buf, self.encodeCodepointUtf8(cp), col_x, text_style.face_idx, text_style.fg, &run, row.py);
+                },
+                .codepoint_grapheme => {
+                    var cps: [16]u32 = [_]u32{0} ** 16;
+                    const glyph_utf8 = self.encodeCurrentCellGraphemeUtf8(runtime, queue.row_cells.*, &cps) orelse {
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        continue;
+                    };
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
+                            self.recordShapedRun(glyph_utf8, text_style.face_idx, prepared.start, prepared.glyphs.len);
+                        }
+                        continue;
+                    }
+                    self.appendQueuedRun(.raster, run_buf, glyph_utf8, col_x, text_style.face_idx, text_style.fg, &run, row.py);
+                },
+                else => self.flushQueuedRun(.raster, run_buf, &run, row.py),
+            }
+        }
+        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+    }
+
+    fn queueGlyphPass(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        hash_skip_bits: *const HashSkipBits,
+        run_buf: []u8,
+    ) Pass2Stats {
+        var stats = Pass2Stats{};
+        if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return stats;
+
+        var row_y: usize = 0;
+        while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
+            const row_is_dirty = queue.force_full or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row;
+            if (!row_is_dirty) {
+                self.last_rows_skipped += 1;
+                continue;
+            }
+            if (skipSetGet(hash_skip_bits, row_y) and row_y != queue.prev_cursor_row) {
+                self.last_rows_skipped += 1;
+                continue;
+            }
+
+            self.last_rows_rendered += 1;
+            if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) {
+                if (!queue.force_full) runtime.clearRowDirty(queue.row_iterator.*);
+                continue;
+            }
+
+            const row = self.makeRowRenderInfo(queue, row_y);
+            self.queueGlyphRow(runtime, queue, row, run_buf, &stats);
+            if (!queue.force_full) runtime.clearRowDirty(queue.row_iterator.*);
+        }
+
+        return stats;
+    }
+
+    fn queueGlyphRow(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        row: RowRenderInfo,
+        run_buf: []u8,
+        stats: *Pass2Stats,
+    ) void {
+        const row_glyph_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+        var row_needs_decorations = queue.hovered_row == row.row_y;
+        var col_x: usize = 0;
+        var col_px = self.padding_x;
+        var run = GlyphRunState{ .fg = queue.colors.default_fg };
+        while (runtime.nextCell(queue.row_cells.*)) : ({
+            col_x += 1;
+            col_px += self.cell_w;
+        }) {
+            const raw_cell = runtime.cellRaw(queue.row_cells.*);
+            const content_tag = runtime.cellContentTagRaw(raw_cell);
+            const style_id = runtime.cellStyleIdRaw(raw_cell);
+            const is_selected = isSelectedCell(row.selection, col_x);
+            const text_style = self.resolveCellTextStyle(runtime, queue, raw_cell, style_id, is_selected) orelse continue;
+            if (text_style.needs_decorations) row_needs_decorations = true;
+
+            switch (content_tag) {
+                .codepoint => {
+                    const cp = runtime.cellCodepointRaw(raw_cell);
+                    if (cp == 0) {
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        continue;
+                    }
+                    if (!self.ligatures or !isLigatureCodepoint(cp)) {
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        self.last_glyph_runs += 1;
+                        if (!self.drawDirectGlyph(col_px, row.py, cp, text_style.face_idx, text_style.fg, row.py, row.py + self.cell_h)) {
+                            const glyph_utf8 = self.encodeCodepointUtf8(cp);
+                            if (glyph_utf8.len == 0) continue;
+                            if (self.consumeShapedRun(glyph_utf8, text_style.face_idx)) |prepared| {
+                                self.batchPreparedGlyphs(col_px, row.py, prepared, text_style.fg, row.py, row.py + self.cell_h);
+                            } else {
+                                self.batchGlyphs(col_px, row.py, glyph_utf8, text_style.face_idx, text_style.fg, .terminal, row.py, row.py + self.cell_h);
+                            }
+                        }
+                        continue;
+                    }
+                    self.appendQueuedRun(.draw, run_buf, self.encodeCodepointUtf8(cp), col_x, text_style.face_idx, text_style.fg, &run, row.py);
+                },
+                .codepoint_grapheme => {
+                    var cps: [16]u32 = [_]u32{0} ** 16;
+                    const glyph_utf8 = self.encodeCurrentCellGraphemeUtf8(runtime, queue.row_cells.*, &cps) orelse {
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        continue;
+                    };
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        const px = self.columnPixelX(col_x, queue.col_count);
+                        self.last_glyph_runs += 1;
+                        if (self.consumeShapedRun(glyph_utf8, text_style.face_idx)) |prepared| {
+                            self.batchPreparedGlyphs(px, row.py, prepared, text_style.fg, row.py, row.py + self.cell_h);
+                        } else {
+                            self.batchGlyphs(px, row.py, glyph_utf8, text_style.face_idx, text_style.fg, .terminal, row.py, row.py + self.cell_h);
+                        }
+                        continue;
+                    }
+                    self.appendQueuedRun(.draw, run_buf, glyph_utf8, col_x, text_style.face_idx, text_style.fg, &run, row.py);
+                },
+                else => self.flushQueuedRun(.draw, run_buf, &run, row.py),
+            }
+        }
+        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+        if (queue.cfg.debug_overlay) stats.glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
+
+        const row_decoration_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+        if (row_needs_decorations) self.drawRowDecorations(runtime, queue, row);
+        if (queue.cfg.debug_overlay) stats.decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
+    }
+
+    fn drawRowDecorations(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        row: RowRenderInfo,
+    ) void {
+        if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return;
+
+        var dec_col_x: usize = 0;
+        var dec_px = self.padding_x;
+        var dec_quads_open = false;
+        while (runtime.nextCell(queue.row_cells.*)) : ({
+            dec_col_x += 1;
+            dec_px += self.cell_w;
+        }) {
+            const raw_cell = runtime.cellRaw(queue.row_cells.*);
+            const hovered_link_visual = if (queue.hovered_hyperlink) |hovered|
+                hovered.row == row.row_y and dec_col_x >= hovered.start_col and dec_col_x < hovered.end_col
+            else
+                false;
+            const style_id = runtime.cellStyleIdRaw(raw_cell);
+            if (style_id == 0 and !hovered_link_visual) continue;
+
+            const is_selected = isSelectedCell(row.selection, dec_col_x);
+            const cached_style = if (style_id != 0)
+                self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette)
+            else
+                null;
+            if (style_id != 0 and cached_style == null) continue;
+
+            const underline = if (cached_style) |info| info.underline else 0;
+            const strikethrough = if (cached_style) |info| info.strikethrough else false;
+            const overline = if (cached_style) |info| info.overline else false;
+            if (underline == 0 and !strikethrough and !overline and !hovered_link_visual) continue;
+
+            if (!dec_quads_open) {
+                c.sgl_load_default_pipeline();
+                c.sgl_begin_quads();
+                dec_quads_open = true;
+            }
+
+            const dec_fg = if (cached_style) |info| info.fg else queue.colors.selection_fg;
+            const dec_color = ghostty.resolveStyleColor(
+                if (cached_style) |info| info.underline_color else .{ .tag = .none, .value = .{ ._padding = 0 } },
+                dec_fg,
+                queue.colors.palette,
+            );
+            const effective_underline: i32 = if (hovered_link_visual and underline == 0) 1 else underline;
+            self.emitUnderlineDecoration(dec_px, row.py, effective_underline, dec_color.r, dec_color.g, dec_color.b);
+
+            if (strikethrough) {
+                const thickness: f32 = 1.0;
+                const st_y = row.py + self.cell_h * 0.5 - 0.5;
+                emitRect(dec_px, st_y, self.cell_w, thickness, dec_fg.r, dec_fg.g, dec_fg.b, 255);
+            }
+
+            if (overline) {
+                emitRect(dec_px, row.py, self.cell_w, 1.0, dec_fg.r, dec_fg.g, dec_fg.b, 255);
+            }
+        }
+        if (dec_quads_open) c.sgl_end();
+    }
+
+    fn emitUnderlineDecoration(self: *FtRenderer, x: f32, y: f32, underline: i32, r: u8, g: u8, b: u8) void {
+        const thickness: f32 = 1.0;
+        const ul_y = y + self.cell_h - thickness - 1.0;
+        switch (underline) {
+            0 => {},
+            1 => emitRect(x, ul_y, self.cell_w, thickness, r, g, b, 255),
+            2 => {
+                emitRect(x, ul_y - 2.0, self.cell_w, thickness, r, g, b, 255);
+                emitRect(x, ul_y, self.cell_w, thickness, r, g, b, 255);
+            },
+            3 => {
+                const n_segs: usize = 8;
+                const seg_w = self.cell_w / @as(f32, @floatFromInt(n_segs));
+                const amp: f32 = 1.0;
+                const base_y = ul_y + amp;
+                var seg: usize = 0;
+                while (seg < n_segs) : (seg += 1) {
+                    const t = @as(f32, @floatFromInt(seg)) / @as(f32, @floatFromInt(n_segs));
+                    const t1 = @as(f32, @floatFromInt(seg + 1)) / @as(f32, @floatFromInt(n_segs));
+                    const sx0 = x + t * self.cell_w;
+                    const sy0 = base_y - amp * @sin(t * std.math.tau);
+                    const sy1 = base_y - amp * @sin(t1 * std.math.tau);
+                    const seg_h = @abs(sy1 - sy0) + thickness;
+                    const seg_y = @min(sy0, sy1);
+                    emitRect(sx0, seg_y, seg_w, seg_h, r, g, b, 255);
+                }
+            },
+            4 => {
+                var dot_x = x;
+                const dot_w: f32 = 1.0;
+                const gap: f32 = 2.0;
+                while (dot_x + dot_w <= x + self.cell_w) : (dot_x += dot_w + gap) {
+                    emitRect(dot_x, ul_y, dot_w, thickness, r, g, b, 255);
+                }
+            },
+            5 => {
+                var dash_x = x;
+                const dash_w: f32 = 4.0;
+                const dash_gap: f32 = 2.0;
+                while (dash_x + dash_w <= x + self.cell_w) : (dash_x += dash_w + dash_gap) {
+                    emitRect(dash_x, ul_y, dash_w, thickness, r, g, b, 255);
+                }
+            },
+            else => emitRect(x, ul_y, self.cell_w, thickness, r, g, b, 255),
+        }
+    }
+
+    fn shouldSkipRowByHash(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        row_y: usize,
+        hash_skip_bits: *HashSkipBits,
+    ) bool {
+        _ = self;
+        if (!queue.useRowMap() or row_y == queue.cursor_row or row_y == queue.prev_cursor_row) return false;
+
+        const row_raw = runtime.rowRaw(queue.row_iterator.*);
+        if (row_raw == 0) return false;
+
+        const keys = queue.row_map_keys.?;
+        const vals = queue.row_map_vals.?;
+        const slot = rowMapProbe(keys, row_raw);
+        if (runtime.rowHashCells(queue.row_iterator.*, queue.row_cells)) |new_hash| {
+            if (queue.row_map_skip and new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
+                skipSetSet(hash_skip_bits, row_y);
+                return true;
+            }
+            keys[slot] = row_raw;
+            vals[slot] = new_hash;
+        }
+        return false;
+    }
+
+    fn queueCellBackground(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        content_tag: ghostty.CellContentTag,
+        style_id: u16,
+        is_selected: bool,
+        col_px: f32,
+        py: f32,
+        quads_open: *bool,
+    ) void {
+        const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
+        if (is_selected) {
+            self.last_bg_rects += 1;
+            self.openQuadBatch(quads_open);
+            c.sgl_c4b(queue.colors.selection_bg.r, queue.colors.selection_bg.g, queue.colors.selection_bg.b, 255);
+            c.sgl_v2f(col_px, py);
+            c.sgl_v2f(col_px + self.cell_w, py);
+            c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+            c.sgl_v2f(col_px, py + self.cell_h);
+            return;
+        }
+
+        if (!is_bg_tag and style_id == 0) return;
+        const bg: ghostty.ColorRgb = runtime.cellBackground(queue.row_cells.*) orelse queue.colors.default_bg;
+        if (colorsEqual(bg, queue.colors.default_bg)) return;
+
+        self.last_bg_rects += 1;
+        self.openQuadBatch(quads_open);
+        c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+        c.sgl_v2f(col_px, py);
+        c.sgl_v2f(col_px + self.cell_w, py);
+        c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+        c.sgl_v2f(col_px, py + self.cell_h);
+    }
+
+    fn resolveCellTextStyle(
+        self: *FtRenderer,
+        runtime: *ghostty.Runtime,
+        queue: *const QueueContext,
+        raw_cell: u64,
+        style_id: u16,
+        is_selected: bool,
+    ) ?CellTextStyle {
+        var resolved = CellTextStyle{ .face_idx = 0, .fg = queue.colors.default_fg };
+        if (style_id != 0 and runtime.cellHasTextRaw(raw_cell)) {
+            const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette) orelse return null;
+            resolved.face_idx = info.face_idx;
+            resolved.fg = info.fg;
+            resolved.needs_decorations = info.needs_decorations;
+        } else if (is_selected) {
+            resolved.fg = queue.colors.selection_fg;
+        }
+        return resolved;
+    }
+
+    fn makeRowRenderInfo(self: *FtRenderer, queue: *const QueueContext, row_y: usize) RowRenderInfo {
+        const row_y_px = if (builtin.os.tag == .linux and queue.row_count > 0)
+            @as(f32, @floatFromInt((queue.row_count - 1) - row_y)) * self.cell_h
+        else
+            @as(f32, @floatFromInt(row_y)) * self.cell_h;
+        return .{
+            .row_y = row_y,
+            .py = self.padding_y + row_y_px,
+            .selection = if (queue.selection_range) |range| rowSelectionBounds(range, row_y) else null,
+        };
+    }
+
+    fn encodeCodepointUtf8(self: *FtRenderer, cp: u32) []const u8 {
+        const glyph_len: usize = encodeUtf8(cp, &self.glyph_buf) catch 0;
+        return self.glyph_buf[0..glyph_len];
+    }
+
+    fn encodeCurrentCellGraphemeUtf8(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, cps: *[16]u32) ?[]const u8 {
+        const grapheme_len = runtime.cellGraphemeLen(row_cells);
+        if (grapheme_len == 0) return null;
+
+        cps.* = [_]u32{0} ** 16;
+        runtime.cellGraphemes(row_cells, cps);
+        var glyph_len: usize = 0;
+        for (cps[0..grapheme_len]) |cp| {
+            if (cp == 0) break;
+            glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+        }
+        if (glyph_len == 0) return null;
+        return self.glyph_buf[0..glyph_len];
+    }
+
+    fn appendQueuedRun(
+        self: *FtRenderer,
+        mode: GlyphRunMode,
+        run_buf: []u8,
+        utf8: []const u8,
+        col_x: usize,
+        face_idx: u8,
+        fg: ghostty.ColorRgb,
+        run: *GlyphRunState,
+        py: f32,
+    ) void {
+        if (utf8.len == 0) {
+            self.flushQueuedRun(mode, run_buf, run, py);
+            return;
+        }
+        if (run.len + utf8.len > run_buf.len) self.flushQueuedRun(mode, run_buf, run, py);
+        if (run.len == 0) {
+            run.start_col = col_x;
+            run.face_idx = face_idx;
+            run.fg = fg;
+        }
+        if (run.len > 0 and (run.face_idx != face_idx or !colorsEqual(run.fg, fg))) {
+            self.flushQueuedRun(mode, run_buf, run, py);
+            run.start_col = col_x;
+            run.face_idx = face_idx;
+            run.fg = fg;
+        }
+        @memcpy(run_buf[run.len .. run.len + utf8.len], utf8);
+        run.len += utf8.len;
+    }
+
+    fn flushQueuedRun(self: *FtRenderer, mode: GlyphRunMode, run_buf: []u8, run: *GlyphRunState, py: f32) void {
+        switch (mode) {
+            .raster => flushRasterRun(self, run_buf, &run.start_col, &run.len, run.face_idx, run.fg, py),
+            .draw => flushDrawRun(self, run_buf, &run.start_col, &run.len, run.face_idx, run.fg, py),
+        }
+    }
+
+    fn columnPixelX(self: *FtRenderer, col_x: usize, col_count: usize) f32 {
+        const col_x_px = if (builtin.os.tag == .linux and col_count > 0)
+            @as(f32, @floatFromInt((col_count - 1) - col_x)) * self.cell_w
+        else
+            @as(f32, @floatFromInt(col_x)) * self.cell_w;
+        return self.padding_x + col_x_px;
+    }
+
+    inline fn openQuadBatch(self: *FtRenderer, quads_open: *bool) void {
+        _ = self;
+        if (quads_open.*) return;
+        c.sgl_begin_quads();
+        quads_open.* = true;
+    }
+
+    inline fn isSelectedCell(row_selection: ?RowSelectionBounds, col_x: usize) bool {
+        return if (row_selection) |selection_bounds|
+            col_x >= selection_bounds.start_col and col_x <= selection_bounds.end_col
+        else
+            false;
+    }
+
+    inline fn skipSetSet(bits: *HashSkipBits, row: usize) void {
+        if (row >= HASH_SKIP_MAX_ROWS) return;
+        bits[row / 64] |= @as(u64, 1) << @intCast(row % 64);
+    }
+
+    inline fn skipSetGet(bits: *const HashSkipBits, row: usize) bool {
+        if (row >= HASH_SKIP_MAX_ROWS) return false;
+        return (bits[row / 64] >> @intCast(row % 64)) & 1 != 0;
+    }
+
+    fn rowMapProbe(keys: []u64, key: u64) usize {
+        const cap = keys.len;
+        const mask = cap - 1;
+        var idx = @as(usize, @truncate(key)) & mask;
+        var i: usize = 0;
+        while (i < cap) : (i += 1) {
+            const existing = keys[idx];
+            if (existing == 0 or existing == key) return idx;
+            idx = (idx + 1) & mask;
+        }
+        return 0;
     }
 
     /// Pre-rasterize glyphs for a cell to ensure they are in the atlas.

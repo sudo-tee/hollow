@@ -98,6 +98,7 @@ pub const Pane = struct {
     terminal: ?*anyopaque = null,
     render_state: ?*anyopaque = null,
     row_iterator: ?*anyopaque = null,
+    foreground_process: ?[]u8 = null,
     row_cells: ?*anyopaque = null,
     key_encoder: ?*anyopaque = null,
     key_event: ?*anyopaque = null,

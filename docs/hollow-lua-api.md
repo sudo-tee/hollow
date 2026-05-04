@@ -169,10 +169,11 @@ hollow.term.set_floating_pane_bounds(pane_id, opts)
 hollow.term.move_pane(direction_or_opts, opts?)
 hollow.term.focus_tab(id)
 hollow.term.close_tab(id)
-hollow.term.set_title(title, tab_id?)
-hollow.term.send_text(text, pane_id?)
-hollow.term.run_domain_process(args, domain?)
-```
+ hollow.term.set_title(title, tab_id?)
+ hollow.term.send_text(text, pane_id?)
+ hollow.term.set_pane_foreground_process(pane_id, process)
+ hollow.term.run_domain_process(args, domain?)
+ ```
 
 `split_pane` accepts either `(direction, opts?)` or a single options table with:
 
@@ -231,6 +232,7 @@ When creating a floating pane, `x`, `y`, `width`, and `height` set the initial n
   is_focused = boolean,
   is_floating = boolean,
   is_maximized = boolean,
+  foreground_process = string|nil,
   frame = { x = integer, y = integer, width = integer, height = integer },
   size = { rows = integer, cols = integer, width = integer, height = integer },
 }
@@ -890,17 +892,32 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 }))
 ```
 
-## `hollow.htp`
-
-`hollow.htp` is implemented and is the Lua-facing entrypoint for shell-to-host
-integration.
-
-```lua
-hollow.htp.on_query(channel, handler)
-hollow.htp.on_emit(channel, handler)
-hollow.htp.off_query(channel)
-hollow.htp.off_emit(channel)
-```
+ ## `hollow.htp`
+ 
+ `hollow.htp` is implemented and is the Lua-facing entrypoint for shell-to-host
+ integration.
+ 
+ ### Shell Integration
+ 
+ Hollow supports a proprietary protocol (HTP) that allows shells to communicate
+ metadata (like CWD changes or command execution) back to the host. 
+ 
+ This integration allows the host to:
+ - Automatically update the pane title/status based on the running process
+ - Trigger UI updates when the shell changes directories
+ - Orchestrate complex layout changes from within the shell
+ 
+ To enable this, add the corresponding script from the `shell-integration/` folder to your shell's rc file (e.g., `.zshrc` or `.bashrc`) on your system.
+ 
+ For detailed implementation examples for Zsh, Bash, and others, see
+ `htp-shell-examples.md`.
+ 
+ ```lua
+ hollow.htp.on_query(channel, handler)
+ hollow.htp.on_emit(channel, handler)
+ hollow.htp.off_query(channel)
+ hollow.htp.off_emit(channel)
+ ```
 
 Built-in queries currently include:
 

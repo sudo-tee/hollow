@@ -11,6 +11,9 @@ function M.setup(hollow, host_api)
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
+      foreground_process = host_api.get_pane_foreground_process
+          and host_api.get_pane_foreground_process(pane_id)
+        or nil,
       is_focused = host_api.pane_is_focused(pane_id),
       is_floating = host_api.pane_is_floating and host_api.pane_is_floating(pane_id) or false,
       is_maximized = host_api.pane_is_maximized and host_api.pane_is_maximized(pane_id) or false,
@@ -172,93 +175,50 @@ function M.setup(hollow, host_api)
     if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
       error("hollow.term.new_tab(opts) expects opts.domain to be a string")
     end
+    if opts ~= nil and opts.command ~= nil and type(opts.command) ~= "string" then
+      error("hollow.term.new_tab(opts) expects opts.command to be a string")
+    end
     host_api.new_tab(opts)
     return nil
   end
 
   function hollow.term.split_pane(direction, opts)
     if type(direction) == "table" then
-      if direction.ratio ~= nil and type(direction.ratio) ~= "number" then
-        error("hollow.term.split_pane(opts) expects opts.ratio to be a number")
-      end
-      if direction.domain ~= nil and type(direction.domain) ~= "string" then
-        error("hollow.term.split_pane(opts) expects opts.domain to be a string")
-      end
-      if direction.cwd ~= nil and type(direction.cwd) ~= "string" then
-        error("hollow.term.split_pane(opts) expects opts.cwd to be a string")
-      end
-      if direction.floating ~= nil and type(direction.floating) ~= "boolean" then
-        error("hollow.term.split_pane(opts) expects opts.floating to be a boolean")
-      end
-      if direction.fullscreen ~= nil and type(direction.fullscreen) ~= "boolean" then
-        error("hollow.term.split_pane(opts) expects opts.fullscreen to be a boolean")
-      end
-      if direction.x ~= nil and type(direction.x) ~= "number" then
-        error("hollow.term.split_pane(opts) expects opts.x to be a number")
-      end
-      if direction.y ~= nil and type(direction.y) ~= "number" then
-        error("hollow.term.split_pane(opts) expects opts.y to be a number")
-      end
-      if direction.width ~= nil and type(direction.width) ~= "number" then
-        error("hollow.term.split_pane(opts) expects opts.width to be a number")
-      end
-      if direction.height ~= nil and type(direction.height) ~= "number" then
-        error("hollow.term.split_pane(opts) expects opts.height to be a number")
-      end
-      host_api.split_pane(direction)
-      return nil
+      opts, direction = direction, direction.direction
     end
 
     if direction ~= nil and type(direction) ~= "string" then
-      error("hollow.term.split_pane(direction, opts) expects a string or table")
+      error("hollow.term.split_pane: direction must be a string")
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.split_pane: opts must be a table")
     end
 
-    if opts ~= nil and type(opts) ~= "table" then
-      error("hollow.term.split_pane(direction, opts) expects opts to be a table")
-    end
+    local fields = {
+      ratio = "number",
+      domain = "string",
+      cwd = "string",
+      floating = "boolean",
+      fullscreen = "boolean",
+      x = "number",
+      y = "number",
+      width = "number",
+      height = "number",
+      command = "string",
+    }
 
     local payload = { direction = direction }
+
     if opts ~= nil then
-      if opts.ratio ~= nil and type(opts.ratio) ~= "number" then
-        error("hollow.term.split_pane(direction, opts) expects opts.ratio to be a number")
+      for field, expected in pairs(fields) do
+        if opts[field] ~= nil and type(opts[field]) ~= expected then
+          error(("hollow.term.split_pane: opts.%s must be a %s"):format(field, expected))
+        end
+        payload[field] = opts[field]
       end
-      if opts.domain ~= nil and type(opts.domain) ~= "string" then
-        error("hollow.term.split_pane(direction, opts) expects opts.domain to be a string")
-      end
-      if opts.cwd ~= nil and type(opts.cwd) ~= "string" then
-        error("hollow.term.split_pane(direction, opts) expects opts.cwd to be a string")
-      end
-      if opts.floating ~= nil and type(opts.floating) ~= "boolean" then
-        error("hollow.term.split_pane(direction, opts) expects opts.floating to be a boolean")
-      end
-      if opts.fullscreen ~= nil and type(opts.fullscreen) ~= "boolean" then
-        error("hollow.term.split_pane(direction, opts) expects opts.fullscreen to be a boolean")
-      end
-      if opts.x ~= nil and type(opts.x) ~= "number" then
-        error("hollow.term.split_pane(direction, opts) expects opts.x to be a number")
-      end
-      if opts.y ~= nil and type(opts.y) ~= "number" then
-        error("hollow.term.split_pane(direction, opts) expects opts.y to be a number")
-      end
-      if opts.width ~= nil and type(opts.width) ~= "number" then
-        error("hollow.term.split_pane(direction, opts) expects opts.width to be a number")
-      end
-      if opts.height ~= nil and type(opts.height) ~= "number" then
-        error("hollow.term.split_pane(direction, opts) expects opts.height to be a number")
-      end
-      payload.ratio = opts.ratio
-      payload.domain = opts.domain
-      payload.cwd = opts.cwd
-      payload.floating = opts.floating
-      payload.fullscreen = opts.fullscreen
-      payload.x = opts.x
-      payload.y = opts.y
-      payload.width = opts.width
-      payload.height = opts.height
     end
 
     host_api.split_pane(payload)
-    return nil
   end
 
   function hollow.term.focus_tab(id)
@@ -290,6 +250,10 @@ function M.setup(hollow, host_api)
       return
     end
     host_api.set_tab_title(title)
+  end
+
+  function hollow.term.set_pane_foreground_process(pane_id, process)
+    host_api.set_pane_foreground_process(pane_id, process)
   end
 
   function hollow.term.send_text(text, pane_id)
