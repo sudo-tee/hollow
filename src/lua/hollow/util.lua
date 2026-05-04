@@ -16,8 +16,10 @@ local M = {}
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
 ---@field has_any_key fun(t:table, keys:table): boolean
-
----@type HollowUtil
+---@field utf8_len fun(s:string): integer
+---@field pad_right fun(value:string, width:integer): string
+---@field truncate_end fun(value:string, width:integer): string
+---@field truncate_start fun(value:string, width:integer): string
 
 ---@param value any
 ---@param seen table|nil
@@ -341,6 +343,56 @@ function M.has_any_key(t, keys)
     end
   end
   return false
+end
+
+---@param s string
+---@return integer
+function M.utf8_len(s)
+  if type(s) ~= "string" then
+    return 0
+  end
+  local _, count = s:gsub("[^\128-\193]", "")
+  return count
+end
+
+---@param value any
+---@param width integer
+---@return string
+function M.pad_right(value, width)
+  value = tostring(value or "")
+  if M.utf8_len(value) >= width then
+    return value
+  end
+  return value .. string.rep(" ", width - #value)
+end
+
+---@param value any
+---@param width integer
+---@return string
+function M.truncate_end(value, width)
+  value = tostring(value or "")
+  if M.utf8_len(value) <= width then
+    return value
+  end
+  if width <= 3 then
+    return value:sub(1, width)
+  end
+  return value:sub(1, width - 3) .. "..."
+end
+
+---@param value any
+---@param width integer
+---@return string
+function M.truncate_start(value, width)
+  value = tostring(value or "")
+  local len = M.utf8_len(value)
+  if len <= width then
+    return value
+  end
+  if width <= 3 then
+    return value:sub(len - width + 1)
+  end
+  return "..." .. value:sub(len - width + 4)
 end
 
 return M

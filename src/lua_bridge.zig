@@ -113,6 +113,8 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
+    .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
+    .{ .name = "hollow.ui.workspace.source", .source = @embedFile("lua/hollow/ui/workspace/source.lua") },
     .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
 };
