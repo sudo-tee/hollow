@@ -3375,8 +3375,11 @@ pub const App = struct {
             var total_encoder_sync_ns: i128 = 0;
             while (panes.next()) |pane| {
                 const pane_is_active = (self.activePane() == pane);
-                const pty_read_loops: usize = if (pane_is_active) 16 else 2;
-                const pty_read_bytes: usize = if (pane_is_active) 256 * 1024 else 32 * 1024;
+                // Let the active pane drain a larger PTY backlog per tick so VT
+                // parsing tracks the producer more like Ghostty's dedicated read
+                // path instead of spreading one burst across many frame ticks.
+                const pty_read_loops: usize = if (pane_is_active) 64 else 2;
+                const pty_read_bytes: usize = if (pane_is_active) 1024 * 1024 else 32 * 1024;
                 pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
@@ -3427,13 +3430,18 @@ pub const App = struct {
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
-                    pane.pty_received_data = false;
-                    pane.last_render_state_update_ns = now_ns;
-                    runtime.clearRenderStateDirty(pane.render_state);
                     const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-                    runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
-                        std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
-                    };
+                    if (pane.render_state_fresh) {
+                        pane.render_state_fresh = false;
+                        pane.pty_received_data = false;
+                    } else {
+                        pane.pty_received_data = false;
+                        pane.last_render_state_update_ns = now_ns;
+                        runtime.clearRenderStateDirty(pane.render_state);
+                        runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
+                            std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
+                        };
+                    }
                     if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {

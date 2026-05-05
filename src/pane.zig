@@ -207,6 +207,9 @@ pub const Pane = struct {
     /// data we call updateRenderState at most once per ~16 ms so that cursor
     /// blink (managed by ghostty's internal timer) still fires.
     last_render_state_update_ns: i128 = 0,
+    /// Set when pollPty already refreshed render_state after draining PTY data.
+    /// tickPanes consumes this to avoid doing the same update twice.
+    render_state_fresh: bool = false,
     child_alive_cached: bool = true,
     last_child_alive_check_ns: i128 = 0,
     scrollbar_total: u64 = 0,
@@ -532,6 +535,15 @@ pub const Pane = struct {
                     std.log.info("pane initial mouse_tracking={d} (get_result={d})", .{ mouse_tracking, mt_result });
                 }
                 if (debug_overlay) self.last_encoder_sync_ns += std.time.nanoTimestamp() - encoder_sync_start_ns;
+
+                const now_ns = std.time.nanoTimestamp();
+                runtime.clearRenderStateDirty(self.render_state);
+                runtime.updateRenderState(self.render_state, self.terminal) catch |err| {
+                    std.log.err("pane updateRenderState after PTY drain failed: {s}", .{@errorName(err)});
+                    return;
+                };
+                self.last_render_state_update_ns = now_ns;
+                self.render_state_fresh = true;
             }
         }
     }
@@ -839,10 +851,7 @@ pub const Pane = struct {
     }
 
     fn sanitizePtyOutputForPlatform(self: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
-        const has_escape = std.mem.indexOfScalar(u8, bytes, 0x1b) != null;
         const has_pending = windows_mode and self.pty_pending_len > 0;
-        const needs_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_pending or has_escape;
-        if (!needs_filter) return bytes;
 
         if (!has_pending) {
             return self.sanitizePtyOutputBytesForPlatform(bytes, windows_mode);
@@ -1106,8 +1115,19 @@ pub const Pane = struct {
         const disable = "\x1b[?9001l";
         var read_idx: usize = 0;
         var write_idx: usize = 0;
+        const has_active_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
 
         self.pty_pending_len = 0;
+
+        if (!has_active_filter) {
+            const first_esc = std.mem.indexOfScalar(u8, bytes, 0x1b) orelse return bytes;
+            read_idx = first_esc;
+            if (first_esc > 0) {
+                const prefix = bytes[0..first_esc];
+                fastmem.copy(u8, self.pty_sanitize_buf[0..prefix.len], prefix);
+                write_idx = prefix.len;
+            }
+        }
 
         while (read_idx < bytes.len) {
             if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
