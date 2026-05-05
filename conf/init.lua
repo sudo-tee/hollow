@@ -230,7 +230,7 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
             or brighten(palette.fg, 0.4, palette.bg)
 
           local close_style = {
-            id = "tab-text:" .. tostring(tab.id),
+            id = "tab-close:" .. tostring(tab.id),
             fg = palette.gray,
             bg = tab_bg,
             hover = {
