@@ -1663,6 +1663,17 @@ pub const App = struct {
         }
     }
 
+    fn refreshActivePaneDisplay(self: *App) void {
+        const pane = self.activePane() orelse return;
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        runtime.terminalScrollBottom(pane.terminal);
+        pane.render_dirty = .full;
+        pane.last_render_state_update_ns = 0;
+        pane.pty_received_data = true;
+        self.scroll_accum = 0;
+        _ = self.refreshPaneScrollbar(runtime, pane);
+    }
+
     fn maybeRunStartupCommand(self: *App) void {
         if (self.startup_command_sent) return;
         const command = self.startup_command orelse return;
@@ -2792,6 +2803,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.nextTab();
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.requestLayoutRefresh();
@@ -2802,6 +2814,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.prevTab();
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.requestLayoutRefresh();
@@ -2848,6 +2861,7 @@ pub const App = struct {
             return;
         }
         self.syncActivePaneChange(previous, mux.activePane());
+        self.refreshActivePaneDisplay();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         self.requestLayoutRefresh();
     }
@@ -2857,6 +2871,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.nextWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             self.requestLayoutRefresh();
         }
     }
@@ -2866,6 +2881,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.prevWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             self.requestLayoutRefresh();
         }
     }
@@ -2885,6 +2901,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.switchWorkspace(index);
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutRefresh();
         }
@@ -3217,6 +3234,7 @@ pub const App = struct {
             const previous = mux.activePane();
             mux.switchTab(index);
             self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
             self.requestLayoutRefresh();
         }
@@ -3511,6 +3529,7 @@ pub const App = struct {
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
         const mux = if (self.mux) |*m| m else return;
         const ws = mux.activeWorkspace() orelse return;
+        const active_tab = ws.activeTab();
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
 
         // How many pixels the tab bar steals from the top.  We compute this
@@ -3534,11 +3553,12 @@ pub const App = struct {
         else
             1;
 
-        // Resize panes on every tab so that background tabs get
-        // render_state_ready = true even when they are not visible.
-        // Without this, tickPanes would call ghostty on uninitialised state
-        // the moment a new tab is created and the old tab's panes are iterated.
-        for (ws.tabs.items) |tab| {
+        // Only resize the active tab. Hidden tabs keep their last good render
+        // state until activation, where they get an authoritative resize.
+        // Updating hidden tabs here can wipe prompt rows until fresh PTY
+        // activity arrives when the tab becomes active again.
+        const tab = active_tab orelse return;
+        {
             const bounds = PaneBounds{
                 .x = left_inset,
                 .y = tbh,
@@ -3585,7 +3605,7 @@ pub const App = struct {
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
                 // the full window size minus the tab bar.
-                if (pixel_width == 0 or pane_h == 0) continue;
+                if (pixel_width == 0 or pane_h == 0) return;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
                     const scrollbar_gutter = self.paneScrollbarGutter(pane);
