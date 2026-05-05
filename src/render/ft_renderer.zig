@@ -16,6 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
+const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
@@ -132,7 +133,7 @@ const CachedStyleInfo = struct {
     overline: bool,
 };
 
-const STYLE_CACHE_SIZE = 64;
+const STYLE_CACHE_SIZE = 256;
 
 const RasterMode = enum {
     terminal,
@@ -721,6 +722,8 @@ pub const FtRenderer = struct {
     shaped_runs: std.ArrayListUnmanaged(ShapedRunEntry) = .empty,
     shaped_run_read_idx: usize = 0,
     style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = [_]?CachedStyleInfo{null} ** STYLE_CACHE_SIZE,
+    render_colors_scratch: ghostty.RenderStateColors = undefined,
+    offscreen_pass_scratch: c.sg_pass = std.mem.zeroes(c.sg_pass),
 
     /// Diagnostic counters — set by the last renderToCache call, readable by caller.
     last_rows_rendered: usize = 0,
@@ -1439,15 +1442,15 @@ pub const FtRenderer = struct {
         // Begin the offscreen pass targeting this pane's RT.
         // - force_full → CLEAR: need a fresh background (resize, scroll, etc.)
         // - partial     → LOAD: keep existing pixel content; only dirty rows were redrawn.
-        var pass = std.mem.zeroes(c.sg_pass);
-        pass.attachments.colors[0] = cache.rt_att_view;
+        self.offscreen_pass_scratch = std.mem.zeroes(c.sg_pass);
+        self.offscreen_pass_scratch.attachments.colors[0] = cache.rt_att_view;
         if (force_full) {
-            pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-            pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+            self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+            self.offscreen_pass_scratch.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
         } else {
-            pass.action.colors[0].load_action = c.SG_LOADACTION_LOAD;
+            self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_LOAD;
         }
-        c.sg_begin_pass(&pass);
+        c.sg_begin_pass(&self.offscreen_pass_scratch);
 
         // Flush the pane's sgl context into the offscreen pass.
         c.sgl_context_draw(cache.sgl_ctx);
@@ -1612,9 +1615,12 @@ pub const FtRenderer = struct {
         _ = fb_w;
         _ = fb_h;
         _ = terminal;
-        const render_colors = runtime.renderStateColors(render_state) orelse return;
-        const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.background;
-        const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.foreground;
+        const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
+            if (!runtime.renderStateColorsInto(render_state, &self.render_colors_scratch)) return;
+            break :blk &self.render_colors_scratch;
+        };
+        const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.?.background;
+        const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.?.foreground;
         const selection_bg = if (cfg.terminal_theme.enabled)
             (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
         else
@@ -1643,7 +1649,7 @@ pub const FtRenderer = struct {
                     (cfg.terminal_theme.selection_fg orelse default_fg)
                 else
                     default_fg,
-                .palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.palette,
+                .palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.?.palette,
             },
         };
 
@@ -1704,8 +1710,8 @@ pub const FtRenderer = struct {
                 // Fall back to white when no explicit cursor color is configured.
                 const cursor_color: ghostty.ColorRgb = if (cfg.terminal_theme.enabled)
                     (cfg.terminal_theme.cursor orelse .{ .r = 220, .g = 220, .b = 220 })
-                else if (render_colors.cursor_has_value)
-                    render_colors.cursor
+                else if (render_colors.?.cursor_has_value)
+                    render_colors.?.cursor
                 else
                     .{ .r = 220, .g = 220, .b = 220 };
                 drawCursor(cx, cy, self.cell_w, self.cell_h, cursor_color, runtime.cursorVisualStyle(render_state));
@@ -1893,19 +1899,21 @@ pub const FtRenderer = struct {
         var col_x: usize = 0;
         var col_px = self.padding_x;
         var run = GlyphRunState{ .fg = queue.colors.default_fg };
+        const has_selection = row.selection != null;
         while (runtime.nextCell(queue.row_cells.*)) : ({
             col_x += 1;
             col_px += self.cell_w;
         }) {
             self.last_cells_visited += 1;
             const raw_cell = runtime.cellRaw(queue.row_cells.*);
-            const style_id = runtime.cellStyleIdRaw(raw_cell);
             const content_tag = runtime.cellContentTagRaw(raw_cell);
-            const is_selected = isSelectedCell(row.selection, col_x);
+            const style_id = runtime.cellStyleIdRaw(raw_cell);
+            const is_selected = has_selection and isSelectedCell(row.selection, col_x);
+            const needs_background = is_selected or style_id != 0 or content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
+            if (needs_background) {
+                self.queueCellBackground(runtime, queue, content_tag, style_id, is_selected, col_px, row.py, quads_open);
+            }
 
-            self.queueCellBackground(runtime, queue, content_tag, style_id, is_selected, col_px, row.py, quads_open);
-
-            const text_style = self.resolveCellTextStyle(runtime, queue, raw_cell, style_id, is_selected) orelse continue;
             switch (content_tag) {
                 .codepoint => {
                     const cp = runtime.cellCodepointRaw(raw_cell);
@@ -1913,6 +1921,16 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
                     }
+                    const text_style = if (style_id == 0)
+                        CellTextStyle{
+                            .face_idx = 0,
+                            .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
+                        }
+                    else
+                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                            self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                            continue;
+                        };
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         if (self.directGlyph(cp, text_style.face_idx) == null) {
@@ -1932,6 +1950,16 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
                     };
+                    const text_style = if (style_id == 0)
+                        CellTextStyle{
+                            .face_idx = 0,
+                            .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
+                        }
+                    else
+                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                            self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                            continue;
+                        };
                     if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
@@ -1996,16 +2024,13 @@ pub const FtRenderer = struct {
         var col_x: usize = 0;
         var col_px = self.padding_x;
         var run = GlyphRunState{ .fg = queue.colors.default_fg };
+        const has_selection = row.selection != null;
         while (runtime.nextCell(queue.row_cells.*)) : ({
             col_x += 1;
             col_px += self.cell_w;
         }) {
             const raw_cell = runtime.cellRaw(queue.row_cells.*);
             const content_tag = runtime.cellContentTagRaw(raw_cell);
-            const style_id = runtime.cellStyleIdRaw(raw_cell);
-            const is_selected = isSelectedCell(row.selection, col_x);
-            const text_style = self.resolveCellTextStyle(runtime, queue, raw_cell, style_id, is_selected) orelse continue;
-            if (text_style.needs_decorations) row_needs_decorations = true;
 
             switch (content_tag) {
                 .codepoint => {
@@ -2014,6 +2039,19 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     }
+                    const style_id = runtime.cellStyleIdRaw(raw_cell);
+                    const is_selected = has_selection and isSelectedCell(row.selection, col_x);
+                    const text_style = if (style_id == 0)
+                        CellTextStyle{
+                            .face_idx = 0,
+                            .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
+                        }
+                    else
+                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                            self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                            continue;
+                        };
+                    if (text_style.needs_decorations) row_needs_decorations = true;
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         self.last_glyph_runs += 1;
@@ -2036,6 +2074,19 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     };
+                    const style_id = runtime.cellStyleIdRaw(raw_cell);
+                    const is_selected = has_selection and isSelectedCell(row.selection, col_x);
+                    const text_style = if (style_id == 0)
+                        CellTextStyle{
+                            .face_idx = 0,
+                            .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
+                        }
+                    else
+                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                            self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                            continue;
+                        };
+                    if (text_style.needs_decorations) row_needs_decorations = true;
                     if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         const px = self.columnPixelX(col_x, queue.col_count);
@@ -2233,22 +2284,26 @@ pub const FtRenderer = struct {
         c.sgl_v2f(col_px, py + self.cell_h);
     }
 
-    fn resolveCellTextStyle(
+    inline fn resolveCellTextStyle(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         queue: *const QueueContext,
-        raw_cell: u64,
         style_id: u16,
         is_selected: bool,
     ) ?CellTextStyle {
+        if (style_id == 0) {
+            return .{
+                .face_idx = 0,
+                .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
+            };
+        }
+
         var resolved = CellTextStyle{ .face_idx = 0, .fg = queue.colors.default_fg };
-        if (style_id != 0 and runtime.cellHasTextRaw(raw_cell)) {
+        {
             const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette) orelse return null;
             resolved.face_idx = info.face_idx;
             resolved.fg = info.fg;
             resolved.needs_decorations = info.needs_decorations;
-        } else if (is_selected) {
-            resolved.fg = queue.colors.selection_fg;
         }
         return resolved;
     }
@@ -2285,7 +2340,7 @@ pub const FtRenderer = struct {
         return self.glyph_buf[0..glyph_len];
     }
 
-    fn appendQueuedRun(
+    inline fn appendQueuedRun(
         self: *FtRenderer,
         mode: GlyphRunMode,
         run_buf: []u8,
@@ -2300,23 +2355,29 @@ pub const FtRenderer = struct {
             self.flushQueuedRun(mode, run_buf, run, py);
             return;
         }
-        if (run.len + utf8.len > run_buf.len) self.flushQueuedRun(mode, run_buf, run, py);
+
+        const next_len = run.len + utf8.len;
+        const same_style = run.face_idx == face_idx and colorsEqual(run.fg, fg);
+        if (run.len != 0 and same_style and next_len <= run_buf.len) {
+            fastmem.copy(u8, run_buf[run.len..next_len], utf8);
+            run.len = next_len;
+            return;
+        }
+
+        if (next_len > run_buf.len) self.flushQueuedRun(mode, run_buf, run, py);
+        if (run.len > 0 and !same_style) {
+            self.flushQueuedRun(mode, run_buf, run, py);
+        }
         if (run.len == 0) {
             run.start_col = col_x;
             run.face_idx = face_idx;
             run.fg = fg;
         }
-        if (run.len > 0 and (run.face_idx != face_idx or !colorsEqual(run.fg, fg))) {
-            self.flushQueuedRun(mode, run_buf, run, py);
-            run.start_col = col_x;
-            run.face_idx = face_idx;
-            run.fg = fg;
-        }
-        @memcpy(run_buf[run.len .. run.len + utf8.len], utf8);
+        fastmem.copy(u8, run_buf[run.len .. run.len + utf8.len], utf8);
         run.len += utf8.len;
     }
 
-    fn flushQueuedRun(self: *FtRenderer, mode: GlyphRunMode, run_buf: []u8, run: *GlyphRunState, py: f32) void {
+    inline fn flushQueuedRun(self: *FtRenderer, mode: GlyphRunMode, run_buf: []u8, run: *GlyphRunState, py: f32) void {
         switch (mode) {
             .raster => flushRasterRun(self, run_buf, &run.start_col, &run.len, run.face_idx, run.fg, py),
             .draw => flushDrawRun(self, run_buf, &run.start_col, &run.len, run.face_idx, run.fg, py),
@@ -2692,7 +2753,7 @@ pub const FtRenderer = struct {
         key.len = @intCast(utf8.len);
         key.face_idx = face_idx;
         key.ligatures = self.ligatures;
-        @memcpy(key.text[0..utf8.len], utf8);
+        fastmem.copy(u8, key.text[0..utf8.len], utf8);
         self.shaped_runs.append(self.allocator, .{ .key = key, .prepared_start = prepared_start, .prepared_len = prepared_len }) catch return;
     }
 
@@ -2718,25 +2779,18 @@ pub const FtRenderer = struct {
         @memset(&self.style_cache, null);
     }
 
-    inline fn resolveCachedStyle(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, style_id: u16, selected: bool, default_fg: ghostty.ColorRgb, selection_fg: ghostty.ColorRgb, palette: *const [256]ghostty.ColorRgb) ?CachedStyleInfo {
+    inline fn resolveCachedStyle(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, style_id: u16, selected: bool, default_fg: ghostty.ColorRgb, selection_fg: ghostty.ColorRgb, palette: *const [256]ghostty.ColorRgb) ?*const CachedStyleInfo {
         const slot = self.styleCacheSlot(style_id, selected);
-        if (self.style_cache[slot]) |cached| {
+        if (self.style_cache[slot]) |*cached| {
             if (cached.style_id == style_id and cached.selected == selected) return cached;
         }
 
-        const s = runtime.cellStyle(row_cells) orelse return null;
-        var face_idx: u8 = 0;
-        if (s.bold and s.italic) {
-            face_idx = 2;
-        } else if (s.bold) {
-            face_idx = 1;
-        } else if (s.italic) {
-            face_idx = 3;
-        }
+        var s: ghostty.Style = undefined;
+        if (!runtime.cellStyleInto(row_cells, &s)) return null;
         const info = CachedStyleInfo{
             .style_id = style_id,
             .selected = selected,
-            .face_idx = face_idx,
+            .face_idx = if (s.bold and s.italic) 2 else if (s.bold) 1 else if (s.italic) 3 else 0,
             .fg = if (selected) selection_fg else ghostty.resolveStyleColor(s.fg_color, default_fg, palette),
             .needs_decorations = s.underline != 0 or s.strikethrough or s.overline,
             .underline_color = s.underline_color,
@@ -2745,7 +2799,7 @@ pub const FtRenderer = struct {
             .overline = s.overline,
         };
         self.style_cache[slot] = info;
-        return info;
+        return &self.style_cache[slot].?;
     }
 
     inline fn styleCacheSlot(self: *FtRenderer, style_id: u16, selected: bool) usize {
@@ -2763,7 +2817,7 @@ pub const FtRenderer = struct {
             return;
         }
         const owned = self.allocator.alloc(PreparedGlyph, glyphs.len) catch return;
-        @memcpy(owned, glyphs);
+        fastmem.copy(PreparedGlyph, owned, glyphs);
         self.prepared_cache.put(key, .{ .glyphs = owned }) catch {
             self.allocator.free(owned);
             return;
@@ -2777,7 +2831,7 @@ pub const FtRenderer = struct {
         key.face_idx = face_idx;
         key.ligatures = self.ligatures;
         key.raster_mode = raster_mode;
-        @memcpy(key.text[0..utf8.len], utf8);
+        fastmem.copy(u8, key.text[0..utf8.len], utf8);
         return key;
     }
 
@@ -2837,7 +2891,7 @@ pub const FtRenderer = struct {
         key.len = @intCast(utf8.len);
         key.face_idx = face_idx;
         key.ligatures = self.ligatures;
-        @memcpy(key.text[0..utf8.len], utf8);
+        fastmem.copy(u8, key.text[0..utf8.len], utf8);
 
         if (self.shape_cache.get(key)) |res| return res;
 
@@ -3232,7 +3286,7 @@ fn expandKittyPixels(allocator: std.mem.Allocator, format: ghostty.KittyImageFor
     switch (format) {
         .rgba => {
             if (pixels.len != out_len) return null;
-            @memcpy(out, pixels);
+            fastmem.copy(u8, out, pixels);
         },
         .rgb => {
             if (pixels.len != pixel_count * 3) return null;

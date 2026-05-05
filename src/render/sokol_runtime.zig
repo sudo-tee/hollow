@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const icon_data = @import("icon_data");
+const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
 const lua_mod = @import("../lua_bridge.zig");
 const ghostty = @import("../term/ghostty.zig");
@@ -149,6 +150,8 @@ var g_prev_wnd_proc: WinLongPtr = 0;
 var g_subclassed_hwnd: ?WinHwnd = null;
 var g_window_iconified = false;
 var g_restore_pending = false;
+var g_render_state_colors_scratch: ghostty.RenderStateColors = undefined;
+var g_swapchain_pass: c.sg_pass = std.mem.zeroes(c.sg_pass);
 var g_ignore_resize_frames: usize = 0;
 var g_last_frame_time_ns: i128 = 0;
 var g_last_perf_sample_ns: i128 = 0;
@@ -396,7 +399,7 @@ fn releaseAllPaneCaches() void {
 
 fn prunePaneCachesToVisible(leaves: []const LayoutLeaf, single_visible_pane: ?*Pane) void {
     for (&g_pane_caches) |*slot| {
-        const entry = slot.* orelse continue;
+        const entry = if (slot.*) |*entry| entry else continue;
         var keep = false;
         if (single_visible_pane) |pane| {
             if (entry.pane == pane) keep = true;
@@ -410,7 +413,7 @@ fn prunePaneCachesToVisible(leaves: []const LayoutLeaf, single_visible_pane: ?*P
             }
         }
         if (!keep) {
-            slot.*.?.cache.deinit();
+            entry.cache.deinit();
             slot.* = null;
         }
     }
@@ -640,12 +643,12 @@ fn copySegmentArray(parsed: []const bar.Segment, dst: []bar.Segment, text_storag
     for (parsed) |seg| {
         if (seg_count >= dst.len or seg.text.len == 0) break;
         if (text_used + seg.text.len > text_storage.len) break;
-        @memcpy(text_storage[text_used .. text_used + seg.text.len], seg.text);
+        fastmem.copy(u8, text_storage[text_used .. text_used + seg.text.len], seg.text);
         dst[seg_count] = seg;
         dst[seg_count].text = text_storage[text_used .. text_used + seg.text.len];
         if (seg.id) |id| {
             const id_len = @min(id.len, id_storage[seg_count].len);
-            @memcpy(id_storage[seg_count][0..id_len], id[0..id_len]);
+            fastmem.copy(u8, id_storage[seg_count][0..id_len], id[0..id_len]);
             dst[seg_count].id = id_storage[seg_count][0..id_len];
         }
         seg_count += 1;
@@ -659,12 +662,12 @@ fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c
     dst.style = barStyleField(api, state, item_idx, "style");
     const parsed = topBarSegmentFromLuaItem(api, state, item_idx, text_buf);
     const text_len = @min(parsed.text.len, dst.text_storage.len);
-    @memcpy(dst.text_storage[0..text_len], parsed.text[0..text_len]);
+    fastmem.copy(u8, dst.text_storage[0..text_len], parsed.text[0..text_len]);
     dst.segment = parsed;
     dst.segment.text = dst.text_storage[0..text_len];
     if (parsed.id) |id| {
         const id_len = @min(id.len, dst.id_storage.len);
-        @memcpy(dst.id_storage[0..id_len], id[0..id_len]);
+        fastmem.copy(u8, dst.id_storage[0..id_len], id[0..id_len]);
         dst.segment.id = dst.id_storage[0..id_len];
     }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
@@ -680,12 +683,12 @@ fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, te
     dst.style = barStyleField(api, state, item_idx, "style");
     const parsed = topBarSegmentFromLuaItem(api, state, item_idx, text_buf);
     const text_len = @min(parsed.text.len, dst.text_storage.len);
-    @memcpy(dst.text_storage[0..text_len], parsed.text[0..text_len]);
+    fastmem.copy(u8, dst.text_storage[0..text_len], parsed.text[0..text_len]);
     dst.segment = parsed;
     dst.segment.text = dst.text_storage[0..text_len];
     if (parsed.id) |id| {
         const id_len = @min(id.len, dst.id_storage.len);
-        @memcpy(dst.id_storage[0..id_len], id[0..id_len]);
+        fastmem.copy(u8, dst.id_storage[0..id_len], id[0..id_len]);
         dst.segment.id = dst.id_storage[0..id_len];
     }
     if (segmentArrayFieldIndex(api, state, item_idx)) |segments_idx| {
@@ -825,7 +828,7 @@ fn topBarSegmentFromLuaItem(api: Api, state: *State, item_idx: c_int, text_buf: 
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             const n = @min(len, text_buf.len);
-            @memcpy(text_buf[0..n], ptr[0..n]);
+            fastmem.copy(u8, text_buf[0..n], ptr[0..n]);
             seg.text = text_buf[0..n];
         }
     }
@@ -914,7 +917,7 @@ fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
 
     if (max_chars <= ellipsis.len) {
         const n = @min(max_chars, out_buf.len);
-        @memcpy(out_buf[0..n], ellipsis[0..n]);
+        fastmem.copy(u8, out_buf[0..n], ellipsis[0..n]);
         return out_buf[0..n];
     }
 
@@ -924,8 +927,8 @@ fn fitTabLabel(text: []const u8, max_chars: usize, out_buf: []u8) []const u8 {
         return takeCodepoints(text, max_chars);
     }
 
-    @memcpy(out_buf[0..prefix.len], prefix);
-    @memcpy(out_buf[prefix.len..total], ellipsis);
+    fastmem.copy(u8, out_buf[0..prefix.len], prefix);
+    fastmem.copy(u8, out_buf[prefix.len..total], ellipsis);
     return out_buf[0..total];
 }
 
@@ -1723,7 +1726,7 @@ fn computeCustomTabLayouts(app: *App, renderer: *FtRenderer, start_x: f32, max_r
         const remaining_storage = title_storage.len - text_used;
         if (remaining_storage == 0) break;
         const copy_len = @min(title.len, remaining_storage);
-        @memcpy(title_storage[text_used .. text_used + copy_len], title[0..copy_len]);
+        fastmem.copy(u8, title_storage[text_used .. text_used + copy_len], title[0..copy_len]);
         const stored_title = title_storage[text_used .. text_used + copy_len];
 
         layouts[layout_count] = .{
@@ -2178,7 +2181,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
 /// O(MAX_PANE_CACHES × live_pane_count) — negligible cost.
 fn evictStalePaneCaches(app: *App) void {
     for (&g_pane_caches) |*slot| {
-        const entry = slot.* orelse continue;
+        const entry = if (slot.*) |*entry| entry else continue;
         // Check if this pane pointer is still alive in the mux.
         var found = false;
         var iter = app.mux.?.paneIterator();
@@ -2190,7 +2193,7 @@ fn evictStalePaneCaches(app: *App) void {
         }
         if (!found) {
             std.log.info("evictStalePaneCaches: releasing cache for dead pane={x}", .{@intFromPtr(entry.pane)});
-            slot.*.?.cache.deinit();
+            entry.cache.deinit();
             slot.* = null;
         }
     }
@@ -2300,10 +2303,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         if (app.activePane()) |pane| {
             if (pane.render_state_ready) {
                 if (!app.config.terminal_theme.enabled) {
-                    if (runtime.renderStateColors(pane.render_state)) |colors| {
-                        clear_r = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
-                        clear_g = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
-                        clear_b = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                    if (runtime.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                        clear_r = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
+                        clear_g = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
+                        clear_b = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
                     }
                 }
             }
@@ -2417,11 +2420,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cr = @as(f32, @floatFromInt(cfg.terminal_theme.background.r)) / 255.0;
                         cg = @as(f32, @floatFromInt(cfg.terminal_theme.background.g)) / 255.0;
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
-                    } else if (rt.renderStateColors(pane.render_state)) |colors| {
-                        bg_color = colors.background;
-                        cr = @as(f32, @floatFromInt(colors.background.r)) / 255.0;
-                        cg = @as(f32, @floatFromInt(colors.background.g)) / 255.0;
-                        cb = @as(f32, @floatFromInt(colors.background.b)) / 255.0;
+                    } else {
+                        if (rt.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
+                        bg_color = g_render_state_colors_scratch.background;
+                        cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
+                        cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
+                        cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
+                        }
                     }
                     const background_changed = !cache_entry.has_bg_color or
                         cache_entry.last_bg_color.r != bg_color.r or
@@ -2755,11 +2760,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         _ = renderer.uploadGlyphVerts();
     }
 
-    var pass = std.mem.zeroes(c.sg_pass);
-    pass.swapchain = c.sglue_swapchain();
-    pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
-    pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
-    c.sg_begin_pass(&pass);
+    g_swapchain_pass = std.mem.zeroes(c.sg_pass);
+    g_swapchain_pass.swapchain = c.sglue_swapchain();
+    g_swapchain_pass.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
+    g_swapchain_pass.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
+    c.sg_begin_pass(&g_swapchain_pass);
     var swapchain_panes_ns: i128 = 0;
     var swapchain_ui_ns: i128 = 0;
     var swapchain_glyph_ns: i128 = 0;
@@ -4208,7 +4213,7 @@ fn setTextSelectionCursor(cursor: SelectionCursor) void {
 fn titleCString(text: []const u8) [*:0]const u8 {
     const len = @min(text.len, g_title_buf.len - 1);
     @memset(g_title_buf[0..], 0);
-    @memcpy(g_title_buf[0..len], text[0..len]);
+    fastmem.copy(u8, g_title_buf[0..len], text[0..len]);
     g_title_buf[len] = 0;
     return @ptrCast(&g_title_buf);
 }
@@ -4217,7 +4222,7 @@ fn updateWindowTitle(text: []const u8) void {
     const len = @min(text.len, g_last_window_title.len - 1);
     if (std.mem.eql(u8, g_last_window_title[0..len], text) and g_last_window_title[len] == 0) return;
     @memset(g_last_window_title[0..], 0);
-    @memcpy(g_last_window_title[0..len], text[0..len]);
+    fastmem.copy(u8, g_last_window_title[0..len], text[0..len]);
     g_last_window_title[len] = 0;
     c.sapp_set_window_title(titleCString(text));
 }

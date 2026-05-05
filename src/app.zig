@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("sokol_c");
 const builtin = @import("builtin");
 const Config = @import("config.zig").Config;
+const fastmem = @import("fastmem.zig");
 const Backend = @import("render/backend.zig").Backend;
 const FrameSnapshot = @import("render/debug_backend.zig").FrameSnapshot;
 const build_options = @import("build_options");
@@ -91,7 +92,7 @@ fn titleCString(text: []const u8) [256:0]u8 {
     const max_len = 255;
     var buf: [max_len + 1:0]u8 = [_:0]u8{0} ** (max_len + 1);
     const trimmed = if (text.len > max_len) text[0..max_len] else text;
-    @memcpy(buf[0..trimmed.len], trimmed);
+    fastmem.copy(u8, buf[0..trimmed.len], trimmed);
     return buf;
 }
 
@@ -548,7 +549,7 @@ pub const App = struct {
     pub fn enqueueChar(self: *App, bytes: []const u8) bool {
         if (bytes.len == 0 or bytes.len > 4) return false;
         var ev: PendingMouseEvent = .{ .char = .{ .bytes = [_]u8{0} ** 5, .len = @intCast(bytes.len) } };
-        @memcpy(ev.char.bytes[0..bytes.len], bytes);
+        fastmem.copy(u8, ev.char.bytes[0..bytes.len], bytes);
         return self.enqueueMouse(ev);
     }
 
@@ -2075,8 +2076,8 @@ pub const App = struct {
 
             const open_text = if (cfg.match_www and std.mem.startsWith(u8, token, "www.")) blk: {
                 if (out.len < token.len + "https://".len) return null;
-                @memcpy(out[0..8], "https://");
-                @memcpy(out[8 .. 8 + token.len], token);
+                fastmem.copy(u8, out[0..8], "https://");
+                fastmem.copy(u8, out[8 .. 8 + token.len], token);
                 break :blk out[0 .. 8 + token.len];
             } else token;
 
@@ -3049,10 +3050,10 @@ pub const App = struct {
 
     fn prefixedWindowTitle(prefix: []const u8, title: []const u8) []const u8 {
         const prefix_len = @min(prefix.len, g_prefixed_window_title_buf.len);
-        @memcpy(g_prefixed_window_title_buf[0..prefix_len], prefix[0..prefix_len]);
+        fastmem.copy(u8, g_prefixed_window_title_buf[0..prefix_len], prefix[0..prefix_len]);
         const room = g_prefixed_window_title_buf.len - prefix_len;
         const title_len = @min(title.len, room);
-        @memcpy(g_prefixed_window_title_buf[prefix_len .. prefix_len + title_len], title[0..title_len]);
+        fastmem.copy(u8, g_prefixed_window_title_buf[prefix_len .. prefix_len + title_len], title[0..title_len]);
         return g_prefixed_window_title_buf[0 .. prefix_len + title_len];
     }
 
@@ -3748,7 +3749,7 @@ fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, l
         var utf8_buf: [4]u8 = undefined;
         const encoded_len = encodeCodepointInto(cps[cp_index], &utf8_buf) orelse continue;
         if (len.* + encoded_len > out.len) return;
-        @memcpy(out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
+        fastmem.copy(u8, out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
         len.* += encoded_len;
     }
 }

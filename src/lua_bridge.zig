@@ -1,5 +1,6 @@
 const std = @import("std");
 const config = @import("config.zig");
+const fastmem = @import("fastmem.zig");
 const platform = @import("platform.zig");
 const ft_renderer = @import("render/ft_renderer.zig");
 const ghostty = @import("term/ghostty.zig");
@@ -910,7 +911,7 @@ pub const Runtime = struct {
                 var len: usize = 0;
                 if (api.to_lstring(self.state, -1, &len)) |ptr| {
                     if (text_used + len <= text_buf.len) {
-                        @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                        fastmem.copy(u8, text_buf[text_used .. text_used + len], ptr[0..len]);
                         seg.text = text_buf[text_used .. text_used + len];
                         text_used += len;
                     }
@@ -2979,7 +2980,7 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| {
                 if (text_used + len <= text_buf.len) {
-                    @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                    fastmem.copy(u8, text_buf[text_used .. text_used + len], ptr[0..len]);
                     seg.text = text_buf[text_used .. text_used + len];
                     text_used += len;
                 }
@@ -2998,7 +2999,7 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| {
                 if (text_used + len <= text_buf.len) {
-                    @memcpy(text_buf[text_used .. text_used + len], ptr[0..len]);
+                    fastmem.copy(u8, text_buf[text_used .. text_used + len], ptr[0..len]);
                     seg.id = text_buf[text_used .. text_used + len];
                     text_used += len;
                 }
@@ -3021,7 +3022,7 @@ fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             const n = @min(len, out_buf.len);
-            @memcpy(out_buf[0..n], ptr[0..n]);
+            fastmem.copy(u8, out_buf[0..n], ptr[0..n]);
             return .{ .text = out_buf[0..n] };
         }
         return .{ .text = fallback };
@@ -3036,7 +3037,7 @@ fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             const n = @min(len, out_buf.len);
-            @memcpy(out_buf[0..n], ptr[0..n]);
+            fastmem.copy(u8, out_buf[0..n], ptr[0..n]);
             seg.text = out_buf[0..n];
         }
     }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("sokol_c");
 const Config = @import("config.zig").Config;
+const fastmem = @import("fastmem.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 const TerminalCallbacks = ghostty.TerminalCallbacks;
@@ -8,7 +9,10 @@ const Pty = @import("pty/pty.zig").Pty;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 
-const TERMINAL_WRITE_CHUNK_SIZE: usize = 64 * 1024;
+const PTY_READ_BUFFER_SIZE: usize = 256 * 1024;
+const PTY_PENDING_SEQUENCE_MAX: usize = 32;
+const TERMINAL_WRITE_CHUNK_SIZE: usize = PTY_READ_BUFFER_SIZE;
+const PTY_SANITIZE_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE + PTY_PENDING_SEQUENCE_MAX;
 
 const is_windows = @import("builtin").os.tag == .windows;
 
@@ -68,7 +72,7 @@ const CombinedInput = struct {
         if (remaining_start < self.first.len) {
             const first_end = @min(remaining_end, self.first.len);
             const span = self.first[remaining_start..first_end];
-            @memcpy(out[write_idx.* .. write_idx.* + span.len], span);
+            fastmem.copy(u8, out[write_idx.* .. write_idx.* + span.len], span);
             write_idx.* += span.len;
             remaining_start = first_end;
         }
@@ -77,7 +81,7 @@ const CombinedInput = struct {
             const second_start = remaining_start - self.first.len;
             const second_end = remaining_end - self.first.len;
             const span = self.second[second_start..second_end];
-            @memcpy(out[write_idx.* .. write_idx.* + span.len], span);
+            fastmem.copy(u8, out[write_idx.* .. write_idx.* + span.len], span);
             write_idx.* += span.len;
         }
     }
@@ -120,11 +124,11 @@ pub const Pane = struct {
     ///                   clear RT and re-render all rows
     /// Cleared (set back to .false_value) by the renderer after re-rendering.
     render_dirty: ghostty.RenderStateDirty = .false_value,
-    read_buf: [65536]u8 = [_]u8{0} ** 65536,
+    read_buf: [PTY_READ_BUFFER_SIZE]u8 = [_]u8{0} ** PTY_READ_BUFFER_SIZE,
     logged_first_pty_read: bool = false,
-    pty_pending_seq: [32]u8 = [_]u8{0} ** 32,
+    pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = [_]u8{0} ** PTY_PENDING_SEQUENCE_MAX,
     pty_pending_len: usize = 0,
-    pty_sanitize_buf: [65568]u8 = [_]u8{0} ** 65568,
+    pty_sanitize_buf: [PTY_SANITIZE_BUFFER_SIZE]u8 = [_]u8{0} ** PTY_SANITIZE_BUFFER_SIZE,
     osc52_prefix_len: usize = 0,
     osc52_active: bool = false,
     osc52_st_pending: bool = false,
@@ -957,7 +961,7 @@ pub const Pane = struct {
                     self.osc_prefix_len += 1;
                     read_idx += 1;
                 } else {
-                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
                     write_idx += self.osc_prefix_len;
                     self.osc_prefix_len = 0;
                     continue;
@@ -1007,7 +1011,7 @@ pub const Pane = struct {
 
                 if (prefixMatchesKnownOsc(prefix)) continue;
 
-                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
                 write_idx += prefix.len;
                 self.osc_prefix_len = 0;
                 continue;
@@ -1070,7 +1074,7 @@ pub const Pane = struct {
             const tail_len = trailingAnsiPrefixLen(self.pty_sanitize_buf[0..write_idx]);
             self.pty_pending_len = tail_len;
             if (tail_len > 0) {
-                @memcpy(self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
+                fastmem.copy(u8, self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
                 write_idx -= tail_len;
             }
         }
@@ -1086,13 +1090,13 @@ pub const Pane = struct {
         if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
                 const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
                     const span = bytes[read_idx..];
-                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
                     write_idx += span.len;
                     break;
                 };
                 if (esc_idx > read_idx) {
                     const span = bytes[read_idx..esc_idx];
-                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
                     write_idx += span.len;
                     read_idx = esc_idx;
                 }
@@ -1229,7 +1233,7 @@ pub const Pane = struct {
                     self.osc_prefix_len += 1;
                     read_idx += 1;
                 } else {
-                    @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
                     write_idx += self.osc_prefix_len;
                     self.osc_prefix_len = 0;
                     continue;
@@ -1281,7 +1285,7 @@ pub const Pane = struct {
                     continue;
                 }
 
-                @memcpy(self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
                 write_idx += prefix.len;
                 self.osc_prefix_len = 0;
                 continue;

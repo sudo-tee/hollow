@@ -1,4 +1,5 @@
 const std = @import("std");
+const fastmem = @import("../fastmem.zig");
 const windows = std.os.windows;
 const kernel32 = windows.kernel32;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
@@ -279,14 +280,14 @@ pub const WindowsPty = struct {
         if (pending == 0) return 0;
 
         const count = @min(buffer.len, pending);
-        @memcpy(buffer[0..count], self.reader_state.buf.items[self.reader_state.start .. self.reader_state.start + count]);
+        fastmem.copy(u8, buffer[0..count], self.reader_state.buf.items[self.reader_state.start .. self.reader_state.start + count]);
         self.reader_state.start += count;
         if (self.reader_state.start == self.reader_state.buf.items.len) {
             self.reader_state.buf.items.len = 0;
             self.reader_state.start = 0;
         } else if (self.reader_state.start >= 65536 and self.reader_state.start * 2 >= self.reader_state.buf.items.len) {
             const remaining = self.reader_state.buf.items.len - self.reader_state.start;
-            std.mem.copyForwards(u8, self.reader_state.buf.items[0..remaining], self.reader_state.buf.items[self.reader_state.start..]);
+            fastmem.move(u8, self.reader_state.buf.items[0..remaining], self.reader_state.buf.items[self.reader_state.start..]);
             self.reader_state.buf.items.len = remaining;
             self.reader_state.start = 0;
         }
@@ -661,7 +662,7 @@ fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) void {
     reader_state.saw_read = true;
     if (reader_state.start > 0 and reader_state.start + bytes.len > reader_state.buf.capacity) {
         const remaining = reader_state.buf.items.len - reader_state.start;
-        std.mem.copyForwards(u8, reader_state.buf.items[0..remaining], reader_state.buf.items[reader_state.start..]);
+        fastmem.move(u8, reader_state.buf.items[0..remaining], reader_state.buf.items[reader_state.start..]);
         reader_state.buf.items.len = remaining;
         reader_state.start = 0;
     }

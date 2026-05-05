@@ -975,12 +975,17 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn renderStateColors(self: *Runtime, render_state: ?*anyopaque) ?RenderStateColors {
+    pub fn renderStateColorsInto(self: *Runtime, render_state: ?*anyopaque, out: *RenderStateColors) bool {
         if (render_state) |state| {
-            var colors = std.mem.zeroes(RenderStateColors);
-            colors.size = @sizeOf(RenderStateColors);
-            if (self.render_state_colors_get(state, &colors) == success) return colors;
+            out.size = @sizeOf(RenderStateColors);
+            return self.render_state_colors_get(state, out) == success;
         }
+        return false;
+    }
+
+    pub fn renderStateColors(self: *Runtime, render_state: ?*anyopaque) ?RenderStateColors {
+        var colors: RenderStateColors = undefined;
+        if (self.renderStateColorsInto(render_state, &colors)) return colors;
         return null;
     }
 
@@ -1059,12 +1064,18 @@ pub const Runtime = struct {
         return false;
     }
 
-    pub fn cellStyle(self: *Runtime, row_cells: ?*anyopaque) ?Style {
+    pub fn cellStyleInto(self: *Runtime, row_cells: ?*anyopaque, out: *Style) bool {
         if (row_cells) |cells| {
-            var style: Style = undefined;
-            style.size = @sizeOf(Style);
-            if (self.row_cells_get(cells, @intFromEnum(CellData.style), &style) == success) return style;
+            out.* = undefined;
+            out.size = @sizeOf(Style);
+            return self.row_cells_get(cells, @intFromEnum(CellData.style), out) == success;
         }
+        return false;
+    }
+
+    pub fn cellStyle(self: *Runtime, row_cells: ?*anyopaque) ?Style {
+        var style: Style = undefined;
+        if (self.cellStyleInto(row_cells, &style)) return style;
         return null;
     }
 
