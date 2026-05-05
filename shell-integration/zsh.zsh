@@ -49,7 +49,6 @@ _hollow_preexec() {
 
 _hollow_precmd() {
   local exit_code=$?
-  print "$exit_code"
   hollow_htp_emit "command_ended" "{\"exit_code\":$exit_code}"
   __hollow_osc7
 }
