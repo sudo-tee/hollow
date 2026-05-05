@@ -126,6 +126,7 @@ const CachedStyleInfo = struct {
     selected: bool,
     face_idx: u8,
     fg: ghostty.ColorRgb,
+    has_non_default_bg: bool,
     needs_decorations: bool,
     underline_color: ghostty.StyleColor,
     underline: i32,
@@ -133,7 +134,7 @@ const CachedStyleInfo = struct {
     overline: bool,
 };
 
-const STYLE_CACHE_SIZE = 256;
+const STYLE_CACHE_SIZE = 1024;
 
 const RasterMode = enum {
     terminal,
@@ -224,6 +225,7 @@ const PreparedGlyph = struct {
 };
 
 const ShapedRunEntry = struct {
+    fingerprint: u64,
     key: ShapeKey,
     prepared_start: usize,
     prepared_len: usize,
@@ -252,7 +254,7 @@ const RecentPreparedEntry = struct {
     glyphs: []PreparedGlyph,
 };
 
-const RECENT_PREPARED_CACHE_LEN: usize = 16;
+const RECENT_PREPARED_CACHE_LEN: usize = 128;
 
 const PreparedCacheContext = struct {
     pub fn hash(_: @This(), key: PreparedKey) u64 {
@@ -1900,6 +1902,10 @@ pub const FtRenderer = struct {
         var col_px = self.padding_x;
         var run = GlyphRunState{ .fg = queue.colors.default_fg };
         const has_selection = row.selection != null;
+        var last_style_id: u16 = 0;
+        var last_style_selected = false;
+        var last_style_valid = false;
+        var last_style_info: CachedStyleInfo = undefined;
         while (runtime.nextCell(queue.row_cells.*)) : ({
             col_x += 1;
             col_px += self.cell_w;
@@ -1909,7 +1915,28 @@ pub const FtRenderer = struct {
             const content_tag = runtime.cellContentTagRaw(raw_cell);
             const style_id = runtime.cellStyleIdRaw(raw_cell);
             const is_selected = has_selection and isSelectedCell(row.selection, col_x);
-            const needs_background = is_selected or style_id != 0 or content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
+            const cached_style = if (style_id != 0)
+                blk: {
+                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
+                        break :blk &last_style_info;
+                    }
+                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                    last_style_info = info.*;
+                    last_style_id = style_id;
+                    last_style_selected = is_selected;
+                    last_style_valid = true;
+                    break :blk &last_style_info;
+                }
+            else
+                null;
+            const needs_background = if (is_selected)
+                true
+            else if (content_tag == .bg_color_palette or content_tag == .bg_color_rgb)
+                true
+            else if (style_id != 0)
+                if (cached_style) |style| style.has_non_default_bg else true
+            else
+                false;
             if (needs_background) {
                 self.queueCellBackground(runtime, queue, content_tag, style_id, is_selected, col_px, row.py, quads_open);
             }
@@ -1926,23 +1953,31 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
                         }
-                    else
-                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                    else if (cached_style) |info|
+                        CellTextStyle{
+                            .face_idx = info.face_idx,
+                            .fg = info.fg,
+                            .needs_decorations = info.needs_decorations,
+                        }
+                    else {
                             self.flushQueuedRun(.raster, run_buf, &run, row.py);
                             continue;
                         };
+                    const glyph_utf8 = self.encodeCodepointUtf8(cp);
+                    if (glyph_utf8.len == 0) {
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        continue;
+                    }
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         if (self.directGlyph(cp, text_style.face_idx) == null) {
-                            const glyph_utf8 = self.encodeCodepointUtf8(cp);
-                            if (glyph_utf8.len == 0) continue;
                             if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
                                 self.recordShapedRun(glyph_utf8, text_style.face_idx, prepared.start, prepared.glyphs.len);
                             }
                         }
                         continue;
                     }
-                    self.appendQueuedRun(.raster, run_buf, self.encodeCodepointUtf8(cp), col_x, text_style.face_idx, text_style.fg, &run, row.py);
+                    self.appendQueuedRun(.raster, run_buf, glyph_utf8, col_x, text_style.face_idx, text_style.fg, &run, row.py);
                 },
                 .codepoint_grapheme => {
                     var cps: [16]u32 = [_]u32{0} ** 16;
@@ -1955,8 +1990,13 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
                         }
-                    else
-                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                    else if (cached_style) |info|
+                        CellTextStyle{
+                            .face_idx = info.face_idx,
+                            .fg = info.fg,
+                            .needs_decorations = info.needs_decorations,
+                        }
+                    else {
                             self.flushQueuedRun(.raster, run_buf, &run, row.py);
                             continue;
                         };
@@ -2025,12 +2065,32 @@ pub const FtRenderer = struct {
         var col_px = self.padding_x;
         var run = GlyphRunState{ .fg = queue.colors.default_fg };
         const has_selection = row.selection != null;
+        var last_style_id: u16 = 0;
+        var last_style_selected = false;
+        var last_style_valid = false;
+        var last_style_info: CachedStyleInfo = undefined;
         while (runtime.nextCell(queue.row_cells.*)) : ({
             col_x += 1;
             col_px += self.cell_w;
         }) {
             const raw_cell = runtime.cellRaw(queue.row_cells.*);
             const content_tag = runtime.cellContentTagRaw(raw_cell);
+            const style_id = runtime.cellStyleIdRaw(raw_cell);
+            const is_selected = has_selection and isSelectedCell(row.selection, col_x);
+            const cached_style = if (style_id != 0)
+                blk: {
+                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
+                        break :blk &last_style_info;
+                    }
+                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                    last_style_info = info.*;
+                    last_style_id = style_id;
+                    last_style_selected = is_selected;
+                    last_style_valid = true;
+                    break :blk &last_style_info;
+                }
+            else
+                null;
 
             switch (content_tag) {
                 .codepoint => {
@@ -2039,15 +2099,18 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     }
-                    const style_id = runtime.cellStyleIdRaw(raw_cell);
-                    const is_selected = has_selection and isSelectedCell(row.selection, col_x);
                     const text_style = if (style_id == 0)
                         CellTextStyle{
                             .face_idx = 0,
                             .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
                         }
-                    else
-                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                    else if (cached_style) |info|
+                        CellTextStyle{
+                            .face_idx = info.face_idx,
+                            .fg = info.fg,
+                            .needs_decorations = info.needs_decorations,
+                        }
+                    else {
                             self.flushQueuedRun(.draw, run_buf, &run, row.py);
                             continue;
                         };
@@ -2074,15 +2137,18 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     };
-                    const style_id = runtime.cellStyleIdRaw(raw_cell);
-                    const is_selected = has_selection and isSelectedCell(row.selection, col_x);
                     const text_style = if (style_id == 0)
                         CellTextStyle{
                             .face_idx = 0,
                             .fg = if (is_selected) queue.colors.selection_fg else queue.colors.default_fg,
                         }
-                    else
-                        self.resolveCellTextStyle(runtime, queue, style_id, is_selected) orelse {
+                    else if (cached_style) |info|
+                        CellTextStyle{
+                            .face_idx = info.face_idx,
+                            .fg = info.fg,
+                            .needs_decorations = info.needs_decorations,
+                        }
+                    else {
                             self.flushQueuedRun(.draw, run_buf, &run, row.py);
                             continue;
                         };
@@ -2122,6 +2188,10 @@ pub const FtRenderer = struct {
         var dec_col_x: usize = 0;
         var dec_px = self.padding_x;
         var dec_quads_open = false;
+        var last_style_id: u16 = 0;
+        var last_style_selected = false;
+        var last_style_valid = false;
+        var last_style_info: CachedStyleInfo = undefined;
         while (runtime.nextCell(queue.row_cells.*)) : ({
             dec_col_x += 1;
             dec_px += self.cell_w;
@@ -2136,7 +2206,17 @@ pub const FtRenderer = struct {
 
             const is_selected = isSelectedCell(row.selection, dec_col_x);
             const cached_style = if (style_id != 0)
-                self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette)
+                blk: {
+                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
+                        break :blk &last_style_info;
+                    }
+                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                    last_style_info = info.*;
+                    last_style_id = style_id;
+                    last_style_selected = is_selected;
+                    last_style_valid = true;
+                    break :blk &last_style_info;
+                }
             else
                 null;
             if (style_id != 0 and cached_style == null) continue;
@@ -2359,7 +2439,7 @@ pub const FtRenderer = struct {
         const next_len = run.len + utf8.len;
         const same_style = run.face_idx == face_idx and colorsEqual(run.fg, fg);
         if (run.len != 0 and same_style and next_len <= run_buf.len) {
-            fastmem.copy(u8, run_buf[run.len..next_len], utf8);
+            copyUtf8Inline(run_buf[run.len..next_len], utf8);
             run.len = next_len;
             return;
         }
@@ -2373,8 +2453,31 @@ pub const FtRenderer = struct {
             run.face_idx = face_idx;
             run.fg = fg;
         }
-        fastmem.copy(u8, run_buf[run.len .. run.len + utf8.len], utf8);
+        copyUtf8Inline(run_buf[run.len .. run.len + utf8.len], utf8);
         run.len += utf8.len;
+    }
+
+    inline fn copyUtf8Inline(dst: []u8, src: []const u8) void {
+        switch (src.len) {
+            0 => {},
+            1 => dst[0] = src[0],
+            2 => {
+                dst[0] = src[0];
+                dst[1] = src[1];
+            },
+            3 => {
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+            },
+            4 => {
+                dst[0] = src[0];
+                dst[1] = src[1];
+                dst[2] = src[2];
+                dst[3] = src[3];
+            },
+            else => fastmem.copy(u8, dst, src),
+        }
     }
 
     inline fn flushQueuedRun(self: *FtRenderer, mode: GlyphRunMode, run_buf: []u8, run: *GlyphRunState, py: f32) void {
@@ -2754,7 +2857,12 @@ pub const FtRenderer = struct {
         key.face_idx = face_idx;
         key.ligatures = self.ligatures;
         fastmem.copy(u8, key.text[0..utf8.len], utf8);
-        self.shaped_runs.append(self.allocator, .{ .key = key, .prepared_start = prepared_start, .prepared_len = prepared_len }) catch return;
+        self.shaped_runs.append(self.allocator, .{
+            .fingerprint = preparedFingerprint(utf8, face_idx, self.ligatures, .terminal),
+            .key = key,
+            .prepared_start = prepared_start,
+            .prepared_len = prepared_len,
+        }) catch return;
     }
 
     fn getPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun {
@@ -2792,6 +2900,7 @@ pub const FtRenderer = struct {
             .selected = selected,
             .face_idx = if (s.bold and s.italic) 2 else if (s.bold) 1 else if (s.italic) 3 else 0,
             .fg = if (selected) selection_fg else ghostty.resolveStyleColor(s.fg_color, default_fg, palette),
+            .has_non_default_bg = !selected and s.bg_color.tag != .none and !colorsEqual(ghostty.resolveStyleColor(s.bg_color, default_fg, palette), default_fg),
             .needs_decorations = s.underline != 0 or s.strikethrough or s.overline,
             .underline_color = s.underline_color,
             .underline = s.underline,
@@ -2866,7 +2975,9 @@ pub const FtRenderer = struct {
     fn consumeShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?[]const PreparedGlyph {
         if (self.shaped_run_read_idx >= self.shaped_runs.items.len) return null;
         const entry = &self.shaped_runs.items[self.shaped_run_read_idx];
-        if (entry.key.len != utf8.len or
+        const fingerprint = preparedFingerprint(utf8, face_idx, self.ligatures, .terminal);
+        if (entry.fingerprint != fingerprint or
+            entry.key.len != utf8.len or
             entry.key.face_idx != face_idx or
             entry.key.ligatures != self.ligatures or
             !std.mem.eql(u8, entry.key.text[0..utf8.len], utf8))

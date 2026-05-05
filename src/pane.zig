@@ -87,11 +87,33 @@ const CombinedInput = struct {
     }
 };
 
-fn prefixMatchesKnownOsc(prefix: []const u8) bool {
-    return std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
+const OscPrefixMatch = enum {
+    none,
+    partial,
+    osc52,
+    osc7,
+    osc1337,
+    htp,
+};
+
+fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
+    if (std.mem.eql(u8, prefix, OSC52_PREFIX)) return .osc52;
+    if (std.mem.eql(u8, prefix, OSC7_PREFIX)) return .osc7;
+    if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) return .htp;
+    if (prefix.len >= OSC1337_PREFIX.len and
+        std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
+        !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
+    {
+        return .osc1337;
+    }
+    if (std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC7_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
-        std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix);
+        std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
+    {
+        return .partial;
+    }
+    return .none;
 }
 
 pub const Pane = struct {
@@ -153,6 +175,7 @@ pub const Pane = struct {
     htp_osc_len: usize = 0,
     htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
+    terminal_write_batch: std.ArrayListUnmanaged(u8) = .empty,
     pending_startup_input: []u8 = &.{},
     startup_input_quiet_ticks: u8 = 0,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
@@ -213,6 +236,7 @@ pub const Pane = struct {
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
         self.boot_output.deinit(self.allocator);
+        self.terminal_write_batch.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
         runtime.freeMouseEvent(self.mouse_event);
@@ -403,6 +427,9 @@ pub const Pane = struct {
             self.last_encoder_sync_ns = 0;
             self.last_terminal_write_bytes = 0;
             self.last_terminal_write_chunks = 0;
+            if (self.render_state_ready) {
+                self.terminal_write_batch.clearRetainingCapacity();
+            }
             var total_read: usize = 0;
             var read_loops: usize = 0;
             while (read_loops < max_read_loops and total_read < max_total_read) {
@@ -425,15 +452,16 @@ pub const Pane = struct {
                     if (debug_overlay) self.last_sanitize_ns += std.time.nanoTimestamp() - sanitize_start_ns;
                     if (pty_bytes.len > 0) {
                         if (self.render_state_ready) {
-                            var offset: usize = 0;
-                            while (offset < pty_bytes.len) {
-                                const end = @min(offset + TERMINAL_WRITE_CHUNK_SIZE, pty_bytes.len);
+                            const has_deferred_output = self.pending_terminal_inject.items.len > 0 or self.boot_output.items.len > 0;
+                            const has_more_output = pty.hasPendingOutput();
+                            if (self.terminal_write_batch.items.len == 0 and !has_deferred_output and !has_more_output) {
                                 const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-                                runtime.terminalWrite(self.terminal, pty_bytes[offset..end]);
+                                runtime.terminalWrite(self.terminal, pty_bytes);
                                 if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
-                                self.last_terminal_write_bytes += end - offset;
+                                self.last_terminal_write_bytes += pty_bytes.len;
                                 self.last_terminal_write_chunks += 1;
-                                offset = end;
+                            } else {
+                                try self.terminal_write_batch.appendSlice(self.allocator, pty_bytes);
                             }
                             self.pty_received_data = true;
                             self.pty_wrote_this_frame = true;
@@ -443,16 +471,7 @@ pub const Pane = struct {
                     }
                     if (self.pending_terminal_inject.items.len > 0) {
                         if (self.render_state_ready) {
-                            var offset: usize = 0;
-                            while (offset < self.pending_terminal_inject.items.len) {
-                                const end = @min(offset + TERMINAL_WRITE_CHUNK_SIZE, self.pending_terminal_inject.items.len);
-                                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-                                runtime.terminalWrite(self.terminal, self.pending_terminal_inject.items[offset..end]);
-                                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
-                                self.last_terminal_write_bytes += end - offset;
-                                self.last_terminal_write_chunks += 1;
-                                offset = end;
-                            }
+                            try self.terminal_write_batch.appendSlice(self.allocator, self.pending_terminal_inject.items);
                             self.pty_received_data = true;
                             self.pty_wrote_this_frame = true;
                         } else {
@@ -463,19 +482,17 @@ pub const Pane = struct {
                 }
             }
             if (self.render_state_ready and self.boot_output.items.len > 0) {
-                var offset: usize = 0;
-                while (offset < self.boot_output.items.len) {
-                    const end = @min(offset + TERMINAL_WRITE_CHUNK_SIZE, self.boot_output.items.len);
-                    const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-                    runtime.terminalWrite(self.terminal, self.boot_output.items[offset..end]);
-                    if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
-                    self.last_terminal_write_bytes += end - offset;
-                    self.last_terminal_write_chunks += 1;
-                    offset = end;
-                }
+                try self.terminal_write_batch.appendSlice(self.allocator, self.boot_output.items);
                 self.boot_output.clearRetainingCapacity();
                 self.pty_received_data = true;
                 self.pty_wrote_this_frame = true;
+            }
+            if (self.render_state_ready and self.terminal_write_batch.items.len > 0) {
+                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                runtime.terminalWrite(self.terminal, self.terminal_write_batch.items);
+                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                self.last_terminal_write_bytes += self.terminal_write_batch.items.len;
+                self.last_terminal_write_chunks += 1;
             }
             const child_alive_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
             self.refreshChildAliveCache();
@@ -827,6 +844,10 @@ pub const Pane = struct {
         const needs_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0 or has_pending or has_escape;
         if (!needs_filter) return bytes;
 
+        if (!has_pending) {
+            return self.sanitizePtyOutputBytesForPlatform(bytes, windows_mode);
+        }
+
         const pending = if (windows_mode) self.pty_pending_seq[0..self.pty_pending_len] else "";
         const input = CombinedInput{ .first = pending, .second = bytes };
         const enable = "\x1b[?9001h";
@@ -968,53 +989,51 @@ pub const Pane = struct {
                 }
 
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
-                if (std.mem.eql(u8, prefix, OSC52_PREFIX)) {
-                    self.osc52_active = true;
-                    self.osc52_st_pending = false;
-                    self.osc52_overflow = false;
-                    self.osc52_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
+                switch (classifyOscPrefix(prefix)) {
+                    .osc52 => {
+                        self.osc52_active = true;
+                        self.osc52_st_pending = false;
+                        self.osc52_overflow = false;
+                        self.osc52_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc7 => {
+                        self.osc7_active = true;
+                        self.osc7_st_pending = false;
+                        self.osc7_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .htp => {
+                        self.htp_osc_active = true;
+                        self.htp_osc_st_pending = false;
+                        self.htp_osc_overflow = false;
+                        self.htp_osc_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc1337 => {
+                        self.osc1337_active = true;
+                        self.osc1337_st_pending = false;
+                        self.osc1337_overflow = false;
+                        self.osc1337_buf.clearRetainingCapacity();
+                        if (prefix.len > OSC1337_PREFIX.len) {
+                            self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
+                                self.osc1337_overflow = true;
+                            };
+                        }
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .partial => continue,
+                    .none => {
+                        fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                        write_idx += prefix.len;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
                 }
-                if (std.mem.eql(u8, prefix, OSC7_PREFIX)) {
-                    self.osc7_active = true;
-                    self.osc7_st_pending = false;
-                    self.osc7_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-                if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) {
-                    self.htp_osc_active = true;
-                    self.htp_osc_st_pending = false;
-                    self.htp_osc_overflow = false;
-                    self.htp_osc_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-
-                if (prefix.len >= OSC1337_PREFIX.len and
-                    std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
-                    !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
-                {
-                    self.osc1337_active = true;
-                    self.osc1337_st_pending = false;
-                    self.osc1337_overflow = false;
-                    self.osc1337_buf.clearRetainingCapacity();
-                    if (prefix.len > OSC1337_PREFIX.len) {
-                        self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
-                            self.osc1337_overflow = true;
-                        };
-                    }
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-
-                if (prefixMatchesKnownOsc(prefix)) continue;
-
-                fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
-                write_idx += prefix.len;
-                self.osc_prefix_len = 0;
-                continue;
             }
 
             const esc_idx = input.indexOfScalarPos(read_idx, 0x1b) orelse {
@@ -1066,6 +1085,266 @@ pub const Pane = struct {
             }
 
             self.pty_sanitize_buf[write_idx] = 0x1b;
+            write_idx += 1;
+            read_idx += 1;
+        }
+
+        if (windows_mode) {
+            const tail_len = trailingAnsiPrefixLen(self.pty_sanitize_buf[0..write_idx]);
+            self.pty_pending_len = tail_len;
+            if (tail_len > 0) {
+                fastmem.copy(u8, self.pty_pending_seq[0..tail_len], self.pty_sanitize_buf[write_idx - tail_len .. write_idx]);
+                write_idx -= tail_len;
+            }
+        }
+
+        return self.pty_sanitize_buf[0..write_idx];
+    }
+
+    fn sanitizePtyOutputBytesForPlatform(self: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
+        const enable = "\x1b[?9001h";
+        const disable = "\x1b[?9001l";
+        var read_idx: usize = 0;
+        var write_idx: usize = 0;
+
+        self.pty_pending_len = 0;
+
+        while (read_idx < bytes.len) {
+            if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+                const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
+                    const span = bytes[read_idx..];
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    write_idx += span.len;
+                    break;
+                };
+                if (esc_idx > read_idx) {
+                    const span = bytes[read_idx..esc_idx];
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
+                    write_idx += span.len;
+                    read_idx = esc_idx;
+                }
+            }
+
+            const byte = bytes[read_idx];
+
+            if (self.osc52_active) {
+                if (self.osc52_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc52Sequence();
+                    } else {
+                        self.appendOsc52Byte(0x1b);
+                        self.appendOsc52Byte(byte);
+                    }
+                    self.osc52_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc52Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc52_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc52Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc7_active) {
+                if (self.osc7_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc7Sequence();
+                    } else {
+                        self.appendOsc7Byte(0x1b);
+                        self.appendOsc7Byte(byte);
+                    }
+                    self.osc7_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc7Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc7_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc7Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.htp_osc_active) {
+                if (self.htp_osc_st_pending) {
+                    if (byte == '\\') {
+                        self.finishHtpOscSequence();
+                    } else {
+                        self.appendHtpOscByte(0x1b);
+                        self.appendHtpOscByte(byte);
+                    }
+                    self.htp_osc_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishHtpOscSequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.htp_osc_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendHtpOscByte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc1337_active) {
+                if (self.osc1337_st_pending) {
+                    if (byte == '\\') {
+                        self.finishOsc1337Sequence();
+                    } else {
+                        self.appendOsc1337Byte(0x1b);
+                        self.appendOsc1337Byte(byte);
+                    }
+                    self.osc1337_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishOsc1337Sequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc1337_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc1337Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc_prefix_len > 0) {
+                if (self.osc_prefix_len < self.osc_prefix_buf.len) {
+                    self.osc_prefix_buf[self.osc_prefix_len] = byte;
+                    self.osc_prefix_len += 1;
+                    read_idx += 1;
+                } else {
+                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
+                    write_idx += self.osc_prefix_len;
+                    self.osc_prefix_len = 0;
+                    continue;
+                }
+
+                const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
+                switch (classifyOscPrefix(prefix)) {
+                    .osc52 => {
+                        self.osc52_active = true;
+                        self.osc52_st_pending = false;
+                        self.osc52_overflow = false;
+                        self.osc52_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc7 => {
+                        self.osc7_active = true;
+                        self.osc7_st_pending = false;
+                        self.osc7_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .htp => {
+                        self.htp_osc_active = true;
+                        self.htp_osc_st_pending = false;
+                        self.htp_osc_overflow = false;
+                        self.htp_osc_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc1337 => {
+                        self.osc1337_active = true;
+                        self.osc1337_st_pending = false;
+                        self.osc1337_overflow = false;
+                        self.osc1337_buf.clearRetainingCapacity();
+                        if (prefix.len > OSC1337_PREFIX.len) {
+                            self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
+                                self.osc1337_overflow = true;
+                            };
+                        }
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .partial => continue,
+                    .none => {
+                        fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                        write_idx += prefix.len;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                }
+            }
+
+            if (byte == 0x1b) {
+                const next = if (read_idx + 1 < bytes.len) bytes[read_idx + 1] else null;
+                if (next == null or next.? == ']') {
+                    self.osc_prefix_buf[0] = 0x1b;
+                    self.osc_prefix_len = 1;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (windows_mode) {
+                    if (std.mem.startsWith(u8, bytes[read_idx..], enable)) {
+                        read_idx += enable.len;
+                        continue;
+                    }
+                    if (std.mem.startsWith(u8, bytes[read_idx..], disable)) {
+                        read_idx += disable.len;
+                        continue;
+                    }
+                    if (next.? == '[') {
+                        var j = read_idx + 2;
+                        var is_csi_t = false;
+                        while (j < bytes.len) : (j += 1) {
+                            const b = bytes[j];
+                            if (b >= 0x30 and b <= 0x3f) {
+                                // parameter byte, keep scanning
+                            } else if (b == 't') {
+                                is_csi_t = true;
+                                j += 1;
+                                break;
+                            } else {
+                                break;
+                            }
+                        }
+                        if (is_csi_t) {
+                            read_idx = j;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            self.pty_sanitize_buf[write_idx] = byte;
             write_idx += 1;
             read_idx += 1;
         }
@@ -1240,55 +1519,51 @@ pub const Pane = struct {
                 }
 
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
-                if (std.mem.eql(u8, prefix, OSC52_PREFIX)) {
-                    self.osc52_active = true;
-                    self.osc52_st_pending = false;
-                    self.osc52_overflow = false;
-                    self.osc52_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
+                switch (classifyOscPrefix(prefix)) {
+                    .osc52 => {
+                        self.osc52_active = true;
+                        self.osc52_st_pending = false;
+                        self.osc52_overflow = false;
+                        self.osc52_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc7 => {
+                        self.osc7_active = true;
+                        self.osc7_st_pending = false;
+                        self.osc7_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .htp => {
+                        self.htp_osc_active = true;
+                        self.htp_osc_st_pending = false;
+                        self.htp_osc_overflow = false;
+                        self.htp_osc_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc1337 => {
+                        self.osc1337_active = true;
+                        self.osc1337_st_pending = false;
+                        self.osc1337_overflow = false;
+                        self.osc1337_buf.clearRetainingCapacity();
+                        if (prefix.len > OSC1337_PREFIX.len) {
+                            self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
+                                self.osc1337_overflow = true;
+                            };
+                        }
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .partial => continue,
+                    .none => {
+                        fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
+                        write_idx += prefix.len;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
                 }
-                if (std.mem.eql(u8, prefix, OSC7_PREFIX)) {
-                    self.osc7_active = true;
-                    self.osc7_st_pending = false;
-                    self.osc7_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-                if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) {
-                    self.htp_osc_active = true;
-                    self.htp_osc_st_pending = false;
-                    self.htp_osc_overflow = false;
-                    self.htp_osc_len = 0;
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-
-                if (prefix.len >= OSC1337_PREFIX.len and
-                    std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
-                    !std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
-                {
-                    self.osc1337_active = true;
-                    self.osc1337_st_pending = false;
-                    self.osc1337_overflow = false;
-                    self.osc1337_buf.clearRetainingCapacity();
-                    if (prefix.len > OSC1337_PREFIX.len) {
-                        self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
-                            self.osc1337_overflow = true;
-                        };
-                    }
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-
-                if (prefixMatchesKnownOsc(prefix)) {
-                    continue;
-                }
-
-                fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
-                write_idx += prefix.len;
-                self.osc_prefix_len = 0;
-                continue;
             }
 
             self.pty_sanitize_buf[write_idx] = byte;
