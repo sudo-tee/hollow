@@ -1,4 +1,5 @@
 const std = @import("std");
+const app = @import("../app.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const c = @cImport({
     @cInclude("errno.h");
@@ -13,10 +14,21 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
+const ReaderState = struct {
+    mutex: std.Thread.Mutex = .{},
+    buf: std.ArrayListUnmanaged(u8) = .empty,
+    start: usize = 0,
+    eof: bool = false,
+    saw_read: bool = false,
+    closing: bool = false,
+};
+
 pub const PosixPty = struct {
     allocator: std.mem.Allocator,
     fd: c_int,
     pid: c.pid_t,
+    reader_state: *ReaderState,
+    reader_thread: ?std.Thread = null,
     alive: bool = true,
     closed: bool = false,
 
@@ -48,14 +60,19 @@ pub const PosixPty = struct {
         }
         if (pid < 0) return error.ForkPtyFailed;
 
-        const flags = c.fcntl(master, c.F_GETFL, @as(c_int, 0));
-        if (flags >= 0) _ = c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK);
+        const reader_state = try allocator.create(ReaderState);
+        reader_state.* = .{};
+        errdefer allocator.destroy(reader_state);
 
-        return .{
+        var pty = PosixPty{
             .allocator = allocator,
             .fd = master,
             .pid = pid,
+            .reader_state = reader_state,
         };
+        pty.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{ pty.fd, pty.reader_state });
+
+        return pty;
     }
 
     fn buildEnvp(allocator: std.mem.Allocator, env_block: []const u8) ![:null]?[*:0]u8 {
@@ -120,6 +137,16 @@ pub const PosixPty = struct {
 
     pub fn isAlive(self: *PosixPty) bool {
         if (self.closed or !self.alive) return false;
+        self.reader_state.mutex.lock();
+        const eof = self.reader_state.eof;
+        const saw_read = self.reader_state.saw_read;
+        const pending = self.reader_state.buf.items.len - self.reader_state.start;
+        self.reader_state.mutex.unlock();
+        if (eof) {
+            self.alive = false;
+            return false;
+        }
+        if (saw_read and pending > 0) return true;
         var status: c_int = 0;
         const result = c.waitpid(self.pid, &status, c.WNOHANG);
         if (result == self.pid) {
@@ -137,24 +164,32 @@ pub const PosixPty = struct {
 
     pub fn read(self: *PosixPty, buffer: []u8) !usize {
         if (buffer.len == 0) return 0;
-        const result = c.read(self.fd, buffer.ptr, buffer.len);
-        if (result > 0) return @intCast(result);
-        if (result == 0) {
-            self.alive = false;
-            return 0;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+
+        const pending = self.reader_state.buf.items.len - self.reader_state.start;
+        if (pending == 0) return 0;
+
+        const count = @min(buffer.len, pending);
+        @memcpy(buffer[0..count], self.reader_state.buf.items[self.reader_state.start .. self.reader_state.start + count]);
+        self.reader_state.start += count;
+        if (self.reader_state.start == self.reader_state.buf.items.len) {
+            self.reader_state.buf.items.len = 0;
+            self.reader_state.start = 0;
+        } else if (self.reader_state.start >= 65536 and self.reader_state.start * 2 >= self.reader_state.buf.items.len) {
+            const remaining = self.reader_state.buf.items.len - self.reader_state.start;
+            std.mem.copyForwards(u8, self.reader_state.buf.items[0..remaining], self.reader_state.buf.items[self.reader_state.start..]);
+            self.reader_state.buf.items.len = remaining;
+            self.reader_state.start = 0;
         }
-        switch (std.posix.errno(-1)) {
-            .AGAIN => return 0,
-            else => return error.ReadFailed,
-        }
+        return count;
     }
 
     pub fn hasPendingOutput(self: *PosixPty) bool {
         if (self.closed) return false;
-
-        var pending: c_int = 0;
-        if (c.ioctl(self.fd, c.FIONREAD, &pending) != 0) return false;
-        return pending > 0;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.buf.items.len > self.reader_state.start;
     }
 
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
@@ -184,9 +219,45 @@ pub const PosixPty = struct {
 
     pub fn close(self: *PosixPty) void {
         if (self.closed) return;
+        self.reader_state.mutex.lock();
+        self.reader_state.closing = true;
+        self.reader_state.mutex.unlock();
         if (self.isAlive()) _ = c.kill(self.pid, c.SIGTERM);
         _ = c.close(self.fd);
+        if (self.reader_thread) |thread| thread.join();
+        self.reader_state.buf.deinit(std.heap.page_allocator);
+        self.allocator.destroy(self.reader_state);
         self.closed = true;
         self.alive = false;
     }
 };
+
+fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
+    var temp: [4096]u8 = undefined;
+    while (true) {
+        const result = c.read(fd, &temp, temp.len);
+        if (result > 0) {
+            reader_state.mutex.lock();
+            reader_state.saw_read = true;
+            reader_state.buf.appendSlice(std.heap.page_allocator, temp[0..@intCast(result)]) catch {};
+            reader_state.mutex.unlock();
+            app.signalExternalWake();
+            continue;
+        }
+        if (result == 0) {
+            reader_state.mutex.lock();
+            reader_state.eof = true;
+            reader_state.mutex.unlock();
+            return;
+        }
+        switch (std.posix.errno(-1)) {
+            .INTR => {},
+            else => {
+                reader_state.mutex.lock();
+                if (!reader_state.closing) reader_state.eof = true;
+                reader_state.mutex.unlock();
+                return;
+            },
+        }
+    }
+}

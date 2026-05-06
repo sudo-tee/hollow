@@ -1,5 +1,6 @@
 const std = @import("std");
 const fastmem = @import("../fastmem.zig");
+const app = @import("../app.zig");
 const windows = std.os.windows;
 const kernel32 = windows.kernel32;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
@@ -556,6 +557,7 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
         reader_state.saw_read = true;
         reader_state.buf.appendSlice(std.heap.page_allocator, temp[0..read_count]) catch {};
         reader_state.mutex.unlock();
+        app.signalExternalWake();
     }
 }
 
@@ -667,6 +669,7 @@ fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) void {
         reader_state.start = 0;
     }
     reader_state.buf.appendSlice(std.heap.page_allocator, bytes) catch {};
+    app.signalExternalWake();
 }
 
 fn markReaderEof(reader_state: *ReaderState) void {

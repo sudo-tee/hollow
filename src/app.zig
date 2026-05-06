@@ -59,6 +59,11 @@ const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const HTP_ST = "\x1b\\";
 const HTP_MAX_CHUNK_PAYLOAD = 3072;
 
+const BarSurface = enum {
+    topbar,
+    bottombar,
+};
+
 fn countUtf8Codepoints(text: []const u8) usize {
     var i: usize = 0;
     var count: usize = 0;
@@ -362,6 +367,7 @@ var size_bridge: ?*App = null;
 var attrs_bridge: ?*App = null;
 var title_bridge: ?*App = null;
 var htp_bridge: ?*App = null;
+var wake_bridge: ?*App = null;
 
 fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
     const app = htp_bridge orelse return;
@@ -372,6 +378,11 @@ fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 fn htpIpcQueryCallback(ctx: *anyopaque, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
     const app: *App = @ptrCast(@alignCast(ctx));
     return app.dispatchHtpQuerySync(pane_id, channel, params);
+}
+
+pub fn signalExternalWake() void {
+    const app = wake_bridge orelse return;
+    app.signalWake();
 }
 
 fn terminalCallbacks() ghostty.TerminalCallbacks {
@@ -476,6 +487,14 @@ pub const App = struct {
     htp_chunk_assemblies: std.ArrayListUnmanaged(HtpChunkAssembly) = .empty,
     htp_next_message_id: u64 = 1,
     htp_fs: ?HtpFs.Server = null,
+    leader_visual_active: bool = false,
+    leader_visual_expires_at_ns: i128 = 0,
+    topbar_cache_dirty: bool = true,
+    topbar_cache_expires_at_ns: i128 = 0,
+    bottombar_cache_dirty: bool = true,
+    bottombar_cache_expires_at_ns: i128 = 0,
+    next_idle_render_poll_ns: i128 = 0,
+    wake_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     // ── Pending mouse event queue ─────────────────────────────────────────────
     // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
@@ -534,6 +553,7 @@ pub const App = struct {
         self.last_visual_activity_ns = now_ns;
         self.mouse_queue[self.mouse_queue_tail] = ev;
         @atomicStore(usize, &self.mouse_queue_tail, next_tail, .release);
+        self.signalWake();
         return true;
     }
 
@@ -559,7 +579,11 @@ pub const App = struct {
         self.htp_pending_messages.append(self.allocator, .{
             .pane_id = @intFromPtr(pane),
             .payload = owned,
-        }) catch self.allocator.free(owned);
+        }) catch {
+            self.allocator.free(owned);
+            return;
+        };
+        self.signalWake();
     }
 
     fn bindHtpHandlers(self: *App) void {
@@ -809,6 +833,7 @@ pub const App = struct {
         attrs_bridge = null;
         title_bridge = null;
         htp_bridge = null;
+        wake_bridge = null;
 
         if (self.htp_fs) |*server| {
             server.deinit();
@@ -910,6 +935,7 @@ pub const App = struct {
         attrs_bridge = self;
         title_bridge = self;
         htp_bridge = self;
+        wake_bridge = self;
         self.startHtpTransport();
         const cbs = terminalCallbacks();
         try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
@@ -996,6 +1022,8 @@ pub const App = struct {
             .send_text_to_pane = luaSendTextToPaneCallback,
             .get_pane_domain = luaGetPaneDomainCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
+            .set_leader_state = luaSetLeaderStateCallback,
+            .set_bar_cache_state = luaSetBarCacheStateCallback,
             .copy_selection = luaCopySelectionCallback,
             .paste_clipboard = luaPasteClipboardCallback,
             .scroll_active = luaScrollActiveCallback,
@@ -1006,6 +1034,13 @@ pub const App = struct {
     }
 
     fn tryInitLua(self: *App) void {
+        self.leader_visual_active = false;
+        self.leader_visual_expires_at_ns = 0;
+        self.topbar_cache_dirty = true;
+        self.topbar_cache_expires_at_ns = 0;
+        self.bottombar_cache_dirty = true;
+        self.bottombar_cache_expires_at_ns = 0;
+        self.next_idle_render_poll_ns = 0;
         var lua = LuaRuntime.init(self.allocator, &self.config) catch |err| {
             std.log.warn("LuaJIT unavailable, continuing without scripting: {s}", .{@errorName(err)});
             return;
@@ -1113,7 +1148,10 @@ pub const App = struct {
     }
 
     pub fn hasVisualActivity(self: *App) bool {
-        const now_ns = std.time.nanoTimestamp();
+        return self.hasVisualActivityAt(std.time.nanoTimestamp(), true);
+    }
+
+    fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         const recent_input_grace_ns: i128 = 24_000_000;
         const recent_visual_grace_ns: i128 = 16_000_000;
         if (self.last_input_activity_ns != 0 and now_ns - self.last_input_activity_ns < recent_input_grace_ns) {
@@ -1138,7 +1176,7 @@ pub const App = struct {
             self.last_visual_activity_ns = now_ns;
             return true;
         }
-        if (self.isLeaderActive()) {
+        if (self.leaderVisualActive(now_ns)) {
             self.last_visual_activity_ns = now_ns;
             return true;
         }
@@ -1146,24 +1184,96 @@ pub const App = struct {
             self.last_visual_activity_ns = now_ns;
             return true;
         }
-        if (self.mux) |*mux| {
-            var panes = mux.paneIterator();
-            while (panes.next()) |pane| {
-                // Unread PTY bytes should keep the frame loop responsive even
-                // before tickPanes consumes them into ghostty state.
-                if (pane.pty) |*pty| {
-                    if (pty.hasPendingOutput()) {
+        if (self.barCacheNeedsRefresh(.topbar, now_ns) or self.barCacheNeedsRefresh(.bottombar, now_ns)) {
+            self.last_visual_activity_ns = now_ns;
+            return true;
+        }
+        if (self.next_idle_render_poll_ns != 0 and now_ns >= self.next_idle_render_poll_ns) {
+            self.last_visual_activity_ns = now_ns;
+            return true;
+        }
+        if (check_panes) {
+            if (self.mux) |*mux| {
+                var panes = mux.paneIterator();
+                while (panes.next()) |pane| {
+                    if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
                         self.last_visual_activity_ns = now_ns;
                         return true;
                     }
                 }
-                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
-                    self.last_visual_activity_ns = now_ns;
-                    return true;
-                }
             }
         }
         return false;
+    }
+
+    fn leaderVisualActive(self: *App, now_ns: i128) bool {
+        if (!self.leader_visual_active) return false;
+        if (self.leader_visual_expires_at_ns != 0 and now_ns > self.leader_visual_expires_at_ns) {
+            self.leader_visual_active = false;
+            self.leader_visual_expires_at_ns = 0;
+            return false;
+        }
+        return true;
+    }
+
+    pub fn setLeaderState(self: *App, active: bool, expires_at_ms: i64) void {
+        if (!active or expires_at_ms <= 0) {
+            self.leader_visual_active = false;
+            self.leader_visual_expires_at_ns = 0;
+            return;
+        }
+        self.leader_visual_active = true;
+        self.leader_visual_expires_at_ns = @as(i128, expires_at_ms) * std.time.ns_per_ms;
+    }
+
+    pub fn setBarCacheState(self: *App, surface: BarSurface, dirty: bool, expires_at_ms: i64) void {
+        const expires_at_ns: i128 = if (expires_at_ms > 0) @as(i128, expires_at_ms) * std.time.ns_per_ms else 0;
+        switch (surface) {
+            .topbar => {
+                self.topbar_cache_dirty = dirty;
+                self.topbar_cache_expires_at_ns = expires_at_ns;
+            },
+            .bottombar => {
+                self.bottombar_cache_dirty = dirty;
+                self.bottombar_cache_expires_at_ns = expires_at_ns;
+            },
+        }
+    }
+
+    pub fn barCacheNeedsRefresh(self: *App, surface: BarSurface, now_ns: i128) bool {
+        return switch (surface) {
+            .topbar => self.topbar_cache_dirty or (self.topbar_cache_expires_at_ns != 0 and now_ns >= self.topbar_cache_expires_at_ns),
+            .bottombar => self.bottombar_cache_dirty or (self.bottombar_cache_expires_at_ns != 0 and now_ns >= self.bottombar_cache_expires_at_ns),
+        };
+    }
+
+    pub fn nextIdleWakeNs(self: *const App) i128 {
+        var next_wake_ns = self.next_idle_render_poll_ns;
+        if (self.leader_visual_active and self.leader_visual_expires_at_ns != 0) {
+            next_wake_ns = minWakeNs(next_wake_ns, self.leader_visual_expires_at_ns);
+        }
+        if (self.topbar_cache_expires_at_ns != 0) {
+            next_wake_ns = minWakeNs(next_wake_ns, self.topbar_cache_expires_at_ns);
+        }
+        if (self.bottombar_cache_expires_at_ns != 0) {
+            next_wake_ns = minWakeNs(next_wake_ns, self.bottombar_cache_expires_at_ns);
+        }
+        return next_wake_ns;
+    }
+
+    pub fn signalWake(self: *App) void {
+        _ = self.wake_generation.fetchAdd(1, .release);
+        self.last_visual_activity_ns = std.time.nanoTimestamp();
+    }
+
+    pub fn currentWakeGeneration(self: *const App) u32 {
+        return self.wake_generation.load(.acquire);
+    }
+
+    fn minWakeNs(current: i128, candidate: i128) i128 {
+        if (candidate == 0) return current;
+        if (current == 0 or candidate < current) return candidate;
+        return current;
     }
 
     fn recordPointerState(self: *App, x: f32, y: f32, mods: u32) void {
@@ -1612,6 +1722,7 @@ pub const App = struct {
         self.pending_resize = true;
         self.hover_probe_dirty = true;
         self.invalidateCachedBarLayouts();
+        self.signalWake();
     }
 
     fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
@@ -1621,6 +1732,7 @@ pub const App = struct {
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
         self.invalidateCachedBarLayouts();
+        self.signalWake();
     }
 
     fn requestLayoutRefresh(self: *App) void {
@@ -1630,6 +1742,7 @@ pub const App = struct {
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
         self.invalidateCachedBarLayouts();
+        self.signalWake();
     }
 
     fn invalidateCachedBarLayouts(self: *App) void {
@@ -2356,6 +2469,7 @@ pub const App = struct {
     pub fn previewSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
         node.ratio = std.math.clamp(ratio, 0.1, 0.9);
         self.pending_drag_layout_resize = true;
+        self.signalWake();
     }
 
     fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
@@ -3376,6 +3490,7 @@ pub const App = struct {
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
         var has_dead = false;
+        var next_idle_render_poll_ns: i128 = 0;
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
@@ -3444,6 +3559,7 @@ pub const App = struct {
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
+                const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
@@ -3480,6 +3596,10 @@ pub const App = struct {
                     if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
+                    }
+                } else if (pane.last_render_state_update_ns != 0) {
+                    if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
+                        next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
                 }
                 if (!pane.hasLiveChild()) has_dead = true;
@@ -3523,6 +3643,7 @@ pub const App = struct {
                 self.requestLayoutResize(false);
             }
         }
+        self.next_idle_render_poll_ns = next_idle_render_poll_ns;
     }
 
 
@@ -4231,6 +4352,17 @@ fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8)
 fn luaIsLeaderActiveCallback(app_ptr: *anyopaque) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.isLeaderActive();
+}
+
+fn luaSetLeaderStateCallback(app_ptr: *anyopaque, active: bool, expires_at_ms: i64) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.setLeaderState(active, expires_at_ms);
+}
+
+fn luaSetBarCacheStateCallback(app_ptr: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const bar_surface: BarSurface = if (std.mem.eql(u8, surface, "bottombar")) .bottombar else .topbar;
+    app.setBarCacheState(bar_surface, dirty, expires_at_ms);
 }
 
 fn luaCopySelectionCallback(app_ptr: *anyopaque) void {

@@ -182,6 +182,8 @@ pub const AppCallbacks = struct {
     close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
+    set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
+    set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64) void,
     copy_selection: *const fn (app: *anyopaque) void,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
@@ -1222,6 +1224,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_is_leader_active, 1);
         api.set_field(self.state, -2, "is_leader_active");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_leader_state, 1);
+        api.set_field(self.state, -2, "set_leader_state");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_bar_cache_state, 1);
+        api.set_field(self.state, -2, "set_bar_cache_state");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_switch_tab, 1);
@@ -2368,6 +2378,10 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
 
     if (std.mem.eql(u8, key, "max_fps")) {
         cfg.max_fps = try asInt(u32, value);
+        return;
+    }
+    if (std.mem.eql(u8, key, "idle_max_fps")) {
+        cfg.idle_max_fps = try asInt(u32, value);
         return;
     }
 }
@@ -3553,6 +3567,36 @@ fn l_is_leader_active(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
     api.push_boolean(state, if (cbs.is_leader_active(cbs.app)) 1 else 0);
     return 1;
+}
+
+fn l_set_leader_state(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    const active = api.to_boolean(state, 1) != 0;
+    const expires_at_ms: i64 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @intFromFloat(api.to_number(state, 2))
+    else
+        0;
+    cbs.set_leader_state(cbs.app, active, expires_at_ms);
+    return 0;
+}
+
+fn l_set_bar_cache_state(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    var surface_len: usize = 0;
+    const surface = api.to_lstring(state, 1, &surface_len) orelse return 0;
+    const dirty = api.to_boolean(state, 2) != 0;
+    const expires_at_ms: i64 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+        @intFromFloat(api.to_number(state, 3))
+    else
+        0;
+    cbs.set_bar_cache_state(cbs.app, surface[0..surface_len], dirty, expires_at_ms);
+    return 0;
 }
 
 /// hollow.set_workspace_name(title)  — override the active workspace name

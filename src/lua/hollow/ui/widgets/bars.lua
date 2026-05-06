@@ -69,6 +69,9 @@ local function invalidate_bar_cache(surface)
   if expires_key ~= nil then
     state.ui[expires_key] = nil
   end
+  if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+    state.host_api.set_bar_cache_state(surface, true, 0)
+  end
   return true
 end
 
@@ -108,6 +111,9 @@ local function set_bar_cache(surface, payload, layout, expires_at)
   state.ui[layout_key] = layout
   state.ui[expires_key] = expires_at == nil and BAR_CACHE_NO_EXPIRY or expires_at
   state.ui[dirty_key] = false
+  if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+    state.host_api.set_bar_cache_state(surface, false, type(expires_at) == "number" and math.floor(expires_at) or 0)
+  end
   return payload
 end
 
@@ -122,6 +128,11 @@ local function set_bar_layout_cache(surface, layout)
   state.ui[layout_key] = layout
   if state_key ~= nil and state.ui[state_key] ~= nil then
     state.ui[dirty_key] = false
+    if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+      local expires_key = cache_expires_key(surface)
+      local expires_at = expires_key ~= nil and state.ui[expires_key] or nil
+      state.host_api.set_bar_cache_state(surface, false, type(expires_at) == "number" and math.floor(expires_at) or 0)
+    end
   end
   return layout
 end
@@ -851,15 +862,30 @@ function ui.handle_bar_node_event(kind, payload)
 end
 
 function ui._topbar_state()
+  if state.ui.mounted_topbar == nil then
+    if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+      state.host_api.set_bar_cache_state("topbar", false, 0)
+    end
+    return nil
+  end
   return serialize_bar_widget(state.ui.mounted_topbar, "topbar")
 end
 
 function ui._bottombar_state()
+  if state.ui.mounted_bottombar == nil then
+    if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+      state.host_api.set_bar_cache_state("bottombar", false, 0)
+    end
+    return nil
+  end
   return serialize_bar_widget(state.ui.mounted_bottombar, "bottombar")
 end
 
 function ui._bottombar_layout()
   if state.ui.mounted_bottombar == nil then
+    if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+      state.host_api.set_bar_cache_state("bottombar", false, 0)
+    end
     return nil
   end
 
@@ -873,6 +899,9 @@ end
 
 function ui._topbar_layout()
   if state.ui.mounted_topbar == nil then
+    if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
+      state.host_api.set_bar_cache_state("topbar", false, 0)
+    end
     return nil
   end
 

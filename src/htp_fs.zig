@@ -143,20 +143,25 @@ pub const Server = struct {
     }
 
     fn watchLoop(self: *Server) void {
-        while (!self.stop_flag.load(.acquire)) {
-            self.scanRequests();
-            std.Thread.sleep(20 * std.time.ns_per_ms);
-        }
-    }
-
-    fn scanRequests(self: *Server) void {
         const dir_path = self.request_dir_host orelse return;
         var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch |err| {
             std.log.warn("htp-fs: openDir err={s} path={s}", .{ @errorName(err), dir_path });
             return;
         };
         defer dir.close();
+
+        var idle_sleep_ms: u64 = 20;
+        while (!self.stop_flag.load(.acquire)) {
+            const found_request = self.scanRequests(&dir);
+            idle_sleep_ms = if (found_request) 20 else @min(@as(u64, 200), idle_sleep_ms + 20);
+            std.Thread.sleep(idle_sleep_ms * std.time.ns_per_ms);
+        }
+    }
+
+    fn scanRequests(self: *Server, dir: *std.fs.Dir) bool {
+        const dir_path = self.request_dir_host orelse return false;
         var it = dir.iterate();
+        var found_request = false;
         while (true) {
             const entry = it.next() catch |err| {
                 std.log.warn("htp-fs: iterate err={s}", .{@errorName(err)});
@@ -165,12 +170,14 @@ pub const Server = struct {
             const e = entry orelse break;
             if (e.kind != .file) continue;
             if (!std.mem.endsWith(u8, e.name, ".request.json")) continue;
+            found_request = true;
             self.handleRequestFile(dir_path, e.name) catch |err| switch (err) {
                 // File disappeared between iterate() and open — already handled or shell cleaned up.
                 error.FileNotFound => {},
                 else => std.log.warn("htp-fs: handleRequestFile err={s} file={s}", .{ @errorName(err), e.name }),
             };
         }
+        return found_request;
     }
 
     fn handleRequestFile(self: *Server, dir_path: []const u8, file_name: []const u8) !void {

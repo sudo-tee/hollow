@@ -268,6 +268,9 @@ pub const Config = struct {
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render
     /// loop uncapped.
     max_fps: u32 = 120,
+    /// Optional lower frame cap applied only when the app is visually idle.
+    /// Set to 0 to disable the idle-specific cap.
+    idle_max_fps: u32 = 0,
     /// Allow single-pane mode to skip the offscreen render-target cache and
     /// render directly into the swapchain.  Defaulting to false preserves the
     /// cached-RT path which gives smoother frame pacing.  Set to true to

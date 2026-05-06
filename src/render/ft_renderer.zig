@@ -1203,6 +1203,16 @@ pub const FtRenderer = struct {
     /// so that it does NOT touch glyph_verts_cpu (which is for the custom
     /// gamma-correct pipeline only).
     fn batchGlyphsSgl(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
+        if (utf8.len > 0 and utf8.len <= 4) {
+            const cp_len = utf8CodepointLen(utf8[0]);
+            if (cp_len == utf8.len) {
+                const cp = std.unicode.utf8Decode(utf8) catch 0;
+                if (cp != 0 and isAsciiFastPathCandidate(cp, face_idx)) {
+                    if (self.batchDirectGlyphSgl(px, py, cp, face_idx, fg, raster_mode)) return;
+                }
+            }
+        }
+
         const result = self.getOrShape(utf8, face_idx) orelse return;
 
         c.sgl_c4b(fg.r, fg.g, fg.b, 255);
@@ -2618,11 +2628,38 @@ pub const FtRenderer = struct {
         return true;
     }
 
+    inline fn batchDirectGlyphSgl(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) bool {
+        const glyph = self.directGlyphForMode(cp, face_idx, raster_mode) orelse return false;
+
+        const w = @as(f32, @floatFromInt(glyph.bw));
+        const h = @as(f32, @floatFromInt(glyph.bh));
+        if (w > 0 and h > 0) {
+            const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
+            const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
+            c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+            c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+            c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+            c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+            c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+        }
+        return true;
+    }
+
     inline fn directGlyph(self: *FtRenderer, cp: u32, face_idx: u8) ?Glyph {
+        return self.directGlyphForMode(cp, face_idx, .terminal);
+    }
+
+    inline fn directGlyphForMode(self: *FtRenderer, cp: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph {
         if (face_idx > 3 or cp == 0) return null;
         if (cp < 0x100) {
             // Skip C1 control range (0x7F–0x9F) — these are never printable.
             if (cp > 0x7E and cp < 0xA0) return null;
+            if (raster_mode != .terminal) {
+                const face = self.faceForRasterIndex(face_idx) orelse return null;
+                const glyph_id = ft.FT_Get_Char_Index(face, cp);
+                if (glyph_id == 0) return null;
+                return self.getOrRasterize(glyph_id, face_idx, raster_mode);
+            }
             const fi: usize = @intCast(face_idx);
             const glyph = self.ascii_glyphs[fi][cp] orelse blk: {
                 const face = self.faceForRasterIndex(face_idx) orelse return null;
@@ -2645,7 +2682,7 @@ pub const FtRenderer = struct {
         const face = self.faceForRasterIndex(face_idx) orelse return null;
         const glyph_id = ft.FT_Get_Char_Index(face, cp);
         if (glyph_id == 0) return null;
-        return self.getOrRasterize(glyph_id, face_idx, .terminal);
+        return self.getOrRasterize(glyph_id, face_idx, raster_mode);
     }
 
     /// Append one glyph quad (4 vertices) to the CPU staging buffer.

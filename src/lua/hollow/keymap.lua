@@ -17,6 +17,12 @@ local function invalidate_topbar()
   end
 end
 
+local function push_leader_state(active, expires_at_ms)
+  if type(_G.host_api) == "table" and type(_G.host_api.set_leader_state) == "function" then
+    _G.host_api.set_leader_state(active, expires_at_ms or 0)
+  end
+end
+
 local MODS_SHIFT = 0x01
 local MODS_CTRL = 0x02
 local MODS_ALT = 0x04
@@ -373,6 +379,7 @@ local function reset_sequence_state(keymap_state)
   keymap_state.sequence_active_node = nil
   keymap_state.sequence_steps = {}
   keymap_state.sequence_prefix = nil
+  push_leader_state(false, 0)
   invalidate_topbar()
 end
 
@@ -381,6 +388,7 @@ local function set_sequence_state(keymap_state, node, prefix, steps)
   keymap_state.sequence_prefix = prefix
   keymap_state.sequence_steps = steps or {}
   keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
+  push_leader_state(true, keymap_state.sequence_pending_until)
   invalidate_topbar()
 end
 
@@ -681,6 +689,7 @@ function M.setup(hollow, host_api, state)
         keymap_state.sequence_active_node = node
         table.insert(keymap_state.sequence_steps, format_chord(key, mods))
         keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
+        push_leader_state(true, keymap_state.sequence_pending_until)
         if node.action ~= nil and not has_sequence_children(node) then
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)

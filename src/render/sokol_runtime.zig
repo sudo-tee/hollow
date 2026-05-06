@@ -1974,27 +1974,44 @@ fn rebuildFtRenderer(app: *App) void {
     }
 }
 
-fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128) void {
-    if (app.config.vsync or app.config.max_fps == 0) return;
+fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128, target_fps: u32) void {
+    if (app.config.vsync or target_fps == 0) return;
 
-    const target_frame_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(app.config.max_fps)));
+    const target_frame_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(target_fps)));
     const deadline_ns = frame_start_ns + target_frame_ns;
     if (frame_end_ns >= deadline_ns) return;
 
-    // Windows scheduler granularity commonly overshoots sub-10ms sleeps enough
-    // to turn a 120 FPS cap into ~60 FPS. Sleep most of the gap, then use a
-    // short yield/spin tail so higher caps remain reachable.
-    const spin_tail_ns: i128 = 1_000_000;
+    const wake_generation = app.currentWakeGeneration();
     var now_ns = frame_end_ns;
-    while (now_ns < deadline_ns) {
+    while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
         const remaining_ns = deadline_ns - now_ns;
-        if (remaining_ns > spin_tail_ns) {
-            std.Thread.sleep(@as(u64, @intCast(remaining_ns - spin_tail_ns)));
-        } else if (remaining_ns > 100_000) {
+        const sleep_ns = @min(remaining_ns, @as(i128, 2_000_000));
+        if (sleep_ns > 0) {
+            std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
+        }
+        now_ns = std.time.nanoTimestamp();
+    }
+}
+
+fn sleepUntilWakeOrDeadline(app: *App, deadline_ns: i128) void {
+    const wake_generation = app.currentWakeGeneration();
+    var now_ns = std.time.nanoTimestamp();
+    while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
+        const remaining_ns = deadline_ns - now_ns;
+        if (remaining_ns > 250_000) {
+            const sleep_ns = @min(remaining_ns, @as(i128, 2_000_000));
+            std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
+        } else {
             std.Thread.yield() catch {};
         }
         now_ns = std.time.nanoTimestamp();
     }
+}
+
+fn shouldUseIdleFrameCap(app: *App, visually_active: bool, now_ns: i128) bool {
+    if (app.config.vsync or visually_active or app.config.idle_max_fps == 0) return false;
+    const recent_activity_grace_ns: i128 = 150_000_000;
+    return app.last_visual_activity_ns == 0 or now_ns - app.last_visual_activity_ns >= recent_activity_grace_ns;
 }
 
 pub fn run(app: *App) !void {
@@ -2257,25 +2274,26 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    if (g_drag_node == null and !app.hasVisualActivity()) {
+    var visually_active = true;
+    if (g_drag_node == null) {
+        visually_active = app.hasVisualActivity();
+    }
+    const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
+
+    if (g_drag_node == null and !visually_active) {
         // With vsync on, a long pre-render idle sleep can push a newly-active
         // frame past the next refresh and make scrolling feel like 30 FPS.
-        const idle_frame_ns = if (app.config.vsync) @as(i128, 8_000_000) else g_idle_frame_ns;
-        const idle_deadline_ns = frame_start_ns + idle_frame_ns;
-        var now_ns = after_tick_ns;
-        // Re-check activity in short slices so fresh PTY output does not sit
-        // behind the full idle delay and make interactive apps feel sticky.
-        while (now_ns < idle_deadline_ns and !app.hasVisualActivity()) {
-            const remaining_ns = idle_deadline_ns - now_ns;
-            if (remaining_ns > 100_000) {
-                const sleep_ns = @min(remaining_ns, @as(i128, 1_000_000));
-                std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
-            } else {
-                std.Thread.yield() catch {};
-            }
-                now_ns = std.time.nanoTimestamp();
-
-        }
+        const idle_fps = if (use_idle_frame_cap) app.config.idle_max_fps else 0;
+        const idle_frame_ns = if (idle_fps > 0)
+            @divFloor(std.time.ns_per_s, @as(i128, @intCast(idle_fps)))
+        else if (app.config.vsync)
+            @as(i128, 8_000_000)
+        else
+            g_idle_frame_ns;
+        const fps_deadline_ns = frame_start_ns + idle_frame_ns;
+        const timed_wake_ns = app.nextIdleWakeNs();
+        const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        sleepUntilWakeOrDeadline(app, idle_deadline_ns);
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
@@ -2734,10 +2752,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         if (app.config.debug_overlay) offscreen_terminal_ns += std.time.nanoTimestamp() - offscreen_terminal_start_ns;
 
         if (app.lua) |*lua| {
+            const now_ns = std.time.nanoTimestamp();
+            const needs_topbar = app.barCacheNeedsRefresh(.topbar, now_ns);
+            const needs_bottombar = app.barCacheNeedsRefresh(.bottombar, now_ns);
             const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
-            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
-            defer g_widget_pre_raster_ctx = null;
-            lua.withLockedState(void, preRasterizeLuaBarWidgets);
+            if (needs_topbar or needs_bottombar) {
+                g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
+                defer g_widget_pre_raster_ctx = null;
+                lua.withLockedState(void, preRasterizeLuaBarWidgets);
+            }
             if (app.config.debug_overlay) offscreen_bar_preraster_ns += std.time.nanoTimestamp() - offscreen_bar_preraster_start_ns;
         }
 
@@ -3009,7 +3032,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     c.sg_commit();
     const after_commit_ns = std.time.nanoTimestamp();
     const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;
-    sleepForFrameCap(app, frame_start_ns, after_commit_ns);
+    const frame_cap_fps = if (use_idle_frame_cap)
+        app.config.idle_max_fps
+    else
+        app.config.max_fps;
+    sleepForFrameCap(app, frame_start_ns, after_commit_ns, frame_cap_fps);
 
     if (collect_perf) {
         // ── Phase timing accumulation (logged every ~2 s) ─────────────────
