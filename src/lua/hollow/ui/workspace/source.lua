@@ -192,7 +192,10 @@ local function scan_projects_in_ssh_root(domain, root)
   local ok, stdout, stderr = hollow.term.run_domain_process({ "ls", "-1Ap", root }, domain)
   if not ok then
     local detail = trim_string(stderr)
-    notify_warn(detail ~= "" and ("Workspace source failed: " .. detail) or ("Workspace source failed: ssh " .. domain))
+    notify_warn(
+      detail ~= "" and ("Workspace source failed: " .. detail)
+        or ("Workspace source failed: ssh " .. domain)
+    )
     return {}
   end
 
@@ -266,7 +269,8 @@ local function wsl_unc_to_linux_path(path)
     return nil
   end
 
-  return normalized:match("^//wsl%$/[^/]+(/.*)$") or normalized:match("^//wsl%.localhost/[^/]+(/.*)$")
+  return normalized:match("^//wsl%$/[^/]+(/.*)$")
+    or normalized:match("^//wsl%.localhost/[^/]+(/.*)$")
 end
 
 local function resolve_source_item_cwd(source, item)
@@ -431,7 +435,8 @@ local function cached_known_workspaces(force_refresh)
       end
 
       for _, root in ipairs(normalized_list(source.roots)) do
-        local scanned = resolver == "wsl" and scan_projects_in_wsl_root(source.name or source.domain or "", root)
+        local scanned = resolver == "wsl"
+            and scan_projects_in_wsl_root(source.name or source.domain or "", root)
           or resolver == "ssh" and scan_projects_in_ssh_root(resolved_domain, root)
           or scan_projects_in_root(root)
 

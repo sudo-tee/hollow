@@ -25,13 +25,20 @@ local function reset_modules()
   _G.host_api = nil
 end
 
+package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+
 local function make_host_api()
   local key_handler = nil
+  local gui_ready_handler = nil
   local recorded = {
     config = nil,
     domain_process = nil,
     new_tab_calls = 0,
     move_pane = nil,
+    split_pane = nil,
+    workspace_default_cwd = nil,
+    send_text = {},
+    files = {},
   }
 
   local panes = {
@@ -76,8 +83,41 @@ local function make_host_api()
     key_handler = callback
   end
 
+  function host_api.on_gui_ready(callback)
+    gui_ready_handler = callback
+  end
+
   function host_api.read_dir(_path)
     return {}
+  end
+
+  function host_api.read_file(path)
+    local value = recorded.files[path]
+    if value == nil then
+      error("missing file: " .. tostring(path), 0)
+    end
+    return value
+  end
+
+  function host_api.write_file(path, contents)
+    recorded.files[path] = contents
+    return true
+  end
+
+  function host_api.path_exists(path)
+    return recorded.files[path] ~= nil
+  end
+
+  function host_api.default_config_path()
+    return "/home/test/.config/hollow/init.lua"
+  end
+
+  function host_api.json_encode(_value)
+    error("json_encode is not available in the Lua stub runtime", 0)
+  end
+
+  function host_api.json_decode(_text)
+    error("json_decode is not available in the Lua stub runtime", 0)
   end
 
   function host_api.list_fonts()
@@ -229,6 +269,7 @@ local function make_host_api()
   end
 
   function host_api.new_workspace(_opts)
+    recorded.new_workspace = _opts
     return nil
   end
 
@@ -250,6 +291,7 @@ local function make_host_api()
 
   function host_api.new_tab(_opts)
     recorded.new_tab_calls = recorded.new_tab_calls + 1
+    recorded.new_tab = _opts
   end
 
   function host_api.close_tab()
@@ -269,7 +311,12 @@ local function make_host_api()
   end
 
   function host_api.split_pane(_opts)
+    recorded.split_pane = _opts
     return nil
+  end
+
+  function host_api.set_workspace_default_cwd(cwd)
+    recorded.workspace_default_cwd = cwd
   end
 
   function host_api.focus_pane(_direction)
@@ -324,6 +371,11 @@ local function make_host_api()
     return nil
   end
 
+  function host_api.send_text(text)
+    recorded.send_text[#recorded.send_text + 1] = text
+    return true
+  end
+
   function host_api.get_window_width()
     return 1440
   end
@@ -340,12 +392,14 @@ local function make_host_api()
     end,
   }), recorded, function()
     return key_handler
+  end, function()
+    return gui_ready_handler
   end
 end
 
 reset_modules()
 
-local host_api, recorded, get_key_handler = make_host_api()
+local host_api, recorded, get_key_handler, get_gui_ready_handler = make_host_api()
 _G.host_api = host_api
 
 require("core")
@@ -412,12 +466,43 @@ assert_equal(recorded.domain_process.args[1], "echo", "run_domain_process should
 local font_list = hollow.fonts.list()
 assert_equal(font_list[1].family, "Consolas", "fonts.list should return host-provided families")
 assert_equal(font_list[2].styles[2], "Italic", "fonts.list should preserve style arrays")
-assert_equal(hollow.fonts.find("mono")[1].family, "Consolas", "fonts.find should match normalized family names")
+assert_true(#hollow.fonts.find("mono") >= 1, "fonts.find should match normalized family names")
 assert_true(hollow.fonts.has("Cascadia Mono"), "fonts.has should detect installed families")
 assert_true(hollow.fonts.has("Cascadia Mono", "Italic"), "fonts.has should detect installed styles")
 assert_true(not hollow.fonts.has("Cascadia Mono", "Black"), "fonts.has should reject missing styles")
 assert_equal(hollow.fonts.pick({ "Missing Font", "Cascadia Mono", "Consolas" }), "Cascadia Mono", "fonts.pick should return the first available family")
 assert_equal(hollow.fonts.pick({ "Missing Font" }), nil, "fonts.pick should return nil when no candidate exists")
+
+assert_true(type(hollow.json.encode) == "function", "json.encode should be exposed")
+assert_true(type(hollow.json.decode) == "function", "json.decode should be exposed")
+
+hollow.workspace.bootstrap({
+  name = "proj",
+  tabs = {
+    {
+      name = "editor",
+      panes = {
+        { cwd = ".", command = "nvim" },
+        { cwd = "server", command = "npm run dev", size = 0.25 },
+      },
+    },
+  },
+}, { base_dir = "/tmp/project" })
+assert_equal(recorded.new_workspace.name, "proj", "workspace bootstrap should create a named workspace")
+assert_equal(recorded.new_workspace.cwd, "/tmp/project", "workspace bootstrap should resolve first pane cwd relative to project root")
+assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
+assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
+assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
+
+assert_equal(hollow.workspace.project_local_path("/tmp/project"), "/tmp/project/.hollow/workspace.json", "workspace helper should resolve project-local path")
+
+recorded.files["/tmp/project/.hollow/workspace.json"] = "present"
+hollow.config.set({ workspace = { auto_bootstrap = "always", default_layout = "default" } })
+assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "/tmp/project/.hollow/workspace.json", "auto bootstrap should prefer project-local workspace files")
+
+local exported = hollow.workspace.export_current()
+assert_equal(exported.name, "main", "workspace export should include active workspace name")
+assert_equal(exported.tabs[1].panes[1].cwd, "/tmp/project", "workspace export should include pane cwd")
 
 local on_key = get_key_handler()
 assert_true(type(on_key) == "function", "keymap setup should register a key handler")

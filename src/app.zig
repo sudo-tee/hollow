@@ -245,6 +245,7 @@ pub const PendingMouseEvent = union(enum) {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
         command: ?[]const u8,
+        name: ?[]const u8,
     },
     close_workspace,
     next_workspace,
@@ -665,7 +666,8 @@ pub const App = struct {
                     defer if (payload.cwd) |value| self.allocator.free(value);
                     defer if (payload.domain_name) |value| self.allocator.free(value);
                     defer if (payload.command) |value| self.allocator.free(value);
-                    self.newWorkspace(payload.cwd, payload.domain_name, payload.command);
+                    defer if (payload.name) |value| self.allocator.free(value);
+                    self.newWorkspace(payload.cwd, payload.domain_name, payload.command, payload.name);
                 },
                 .close_workspace => {
                     self.closeWorkspace();
@@ -2473,7 +2475,6 @@ pub const App = struct {
     }
 
     fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
-        std.log.info("encodeMouseForPane: action={s} x={d:.1} y={d:.1} render_state_ready={} mouse_tracking={d}", .{ @tagName(action), x, y, pane.render_state_ready, pane.last_mouse_tracking });
 
         // The DLL's mouse_encoder_encode crashes in several cases we have observed:
         //   - action=press when mouse_tracking == 0
@@ -2934,7 +2935,7 @@ pub const App = struct {
         self.requestLayoutRefresh();
     }
 
-    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void {
+    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -2951,7 +2952,7 @@ pub const App = struct {
             if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, inherited_domain orelse "")) pane.cwd else null
         else
             null;
-        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null) catch |err| {
+        mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2960,6 +2961,8 @@ pub const App = struct {
         if (command) |value| {
             if (mux.activePane()) |pane| pane.sendText(value);
         }
+        self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
         self.requestLayoutResize(false);
         std.log.info("app: created new workspace", .{});
     }
@@ -2977,6 +2980,7 @@ pub const App = struct {
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneDisplay();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
         self.requestLayoutRefresh();
     }
 
@@ -2986,6 +2990,7 @@ pub const App = struct {
             mux.nextWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
             self.refreshActivePaneDisplay();
+            self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
             self.requestLayoutRefresh();
         }
     }
@@ -2996,6 +3001,7 @@ pub const App = struct {
             mux.prevWorkspace();
             self.syncActivePaneChange(previous, mux.activePane());
             self.refreshActivePaneDisplay();
+            self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
             self.requestLayoutRefresh();
         }
     }
@@ -3017,6 +3023,7 @@ pub const App = struct {
             self.syncActivePaneChange(previous, mux.activePane());
             self.refreshActivePaneDisplay();
             if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+            self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
             self.requestLayoutRefresh();
         }
     }
@@ -3304,7 +3311,9 @@ pub const App = struct {
         const ws = self.activeWorkspace() orelse return;
         ws.setName(name) catch |err| {
             std.log.err("app: setWorkspaceName failed: {s}", .{@errorName(err)});
+            return;
         };
+        if (self.mux) |*mux| self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     }
 
     pub fn setWorkspaceDefaultCwd(self: *App, cwd: []const u8) void {
@@ -4088,12 +4097,13 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void {
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command } });
+    const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name } });
 }
 
 fn luaCloseWorkspaceCallback(app_ptr: *anyopaque) void {

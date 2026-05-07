@@ -69,6 +69,13 @@ function M.setup(hollow, state, term_helpers)
     if name == "term:tab_activated" then
       return { tab = hollow.term.tab_by_id(payload.tab_id) }
     end
+    if name == "workspace:new" or name == "workspace:changed" then
+      local workspace = hollow.term.workspaces()[payload.workspace_index + 1]
+      return {
+        workspace = workspace,
+        index = payload.workspace_index + 1,
+      }
+    end
     if name == "term:tab_closed" then
       return { tab_id = payload.tab_id }
     end

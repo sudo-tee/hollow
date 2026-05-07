@@ -124,6 +124,13 @@ function M.setup(hollow, host_api)
     host_api.set_workspace_name(name)
   end
 
+  function hollow.term.set_workspace_default_cwd(cwd)
+    if type(cwd) ~= "string" then
+      error("hollow.term.set_workspace_default_cwd(cwd) expects a string")
+    end
+    host_api.set_workspace_default_cwd(cwd)
+  end
+
   function hollow.term.new_workspace(opts)
     if opts ~= nil and type(opts) ~= "table" then
       error("hollow.term.new_workspace(opts) expects a table or nil")
@@ -136,6 +143,9 @@ function M.setup(hollow, host_api)
     end
     if opts ~= nil and opts.command ~= nil and type(opts.command) ~= "string" then
       error("hollow.term.new_workspace(opts) expects opts.command to be a string")
+    end
+    if opts ~= nil and opts.name ~= nil and type(opts.name) ~= "string" then
+      error("hollow.term.new_workspace(opts) expects opts.name to be a string")
     end
     host_api.new_workspace(opts)
   end
@@ -198,6 +208,8 @@ function M.setup(hollow, host_api)
       ratio = "number",
       domain = "string",
       cwd = "string",
+      command_mode = "string",
+      close_on_exit = "boolean",
       floating = "boolean",
       fullscreen = "boolean",
       x = "number",

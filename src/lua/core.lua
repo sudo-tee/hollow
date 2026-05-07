@@ -25,13 +25,16 @@ local actions = require("hollow.actions")
 local config = require("hollow.config")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
+local json = require("hollow.json")
 local keymap = require("hollow.keymap")
 local state = require("hollow.state").new(host_api)
 local term = require("hollow.term")
 local util = require("hollow.util")
+local workspace = require("hollow.workspace")
 
--- alias for backward compatibility.
 hollow.util = util
+hollow.json = json
+hollow.workspace = workspace
 
 config.setup(hollow, host_api, state)
 local term_helpers = term.setup(hollow, host_api)
@@ -46,6 +49,18 @@ if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
   hollow.ui._register_bar_invalidation_hooks()
 end
 htp.setup(hollow, host_api, state, util, term_helpers)
+
+function hollow.on_gui_ready(handler)
+  return host_api.on_gui_ready(handler)
+end
+
+hollow.on_gui_ready(function()
+  events_runtime.emit_event("gui:ready", {}, true)
+end)
+
+hollow.events.on("workspace:new", function(e)
+  hollow.workspace.auto_bootstrap()
+end)
 
 function hollow._emit_builtin_event(name, payload)
   local adapted = events_runtime.adapt_builtin_payload(name, payload)
@@ -65,6 +80,45 @@ end
 
 function hollow.read_dir(path)
   return host_api.read_dir(path)
+end
+
+local function format_log_value(value, seen, depth)
+  local value_type = type(value)
+  if value_type == "string" then
+    return string.format("%q", value)
+  end
+  if value_type ~= "table" then
+    return tostring(value)
+  end
+
+  seen = seen or {}
+  if seen[value] then
+    return "<cycle>"
+  end
+  if (depth or 0) >= 4 then
+    return "<max-depth>"
+  end
+
+  seen[value] = true
+  local parts = {}
+  for key, item in pairs(value) do
+    parts[#parts + 1] = "["
+      .. format_log_value(key, seen, (depth or 0) + 1)
+      .. "]="
+      .. format_log_value(item, seen, (depth or 0) + 1)
+  end
+  seen[value] = nil
+  table.sort(parts)
+  return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+function hollow.log(...)
+  local parts = {}
+  local values = { ... }
+  for index = 1, select("#", ...) do
+    parts[index] = format_log_value(values[index])
+  end
+  host_api.log(table.concat(parts, " "))
 end
 
 function hollow.fonts.list()

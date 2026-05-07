@@ -57,15 +57,16 @@ local function open_new_workspace_from_item(item)
   local source_name = item.source
   local cwd = item.cwd
 
+  local name = trim_string(item.name)
+
   hollow.term.new_workspace({
+    name = name ~= "" and name or nil,
     cwd = source_name == "ssh" and nil or cwd,
     domain = item.domain,
     command = source_name == "ssh" and ssh_workspace_command(cwd) or nil,
   })
 
-  local name = trim_string(item.name)
   if name ~= "" then
-    hollow.term.set_workspace_name(name)
     source.ensure_last_opened(name)
     return
   end

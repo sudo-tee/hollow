@@ -99,6 +99,8 @@ const LuaModule = struct {
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
+    .{ .name = "hollow.json", .source = @embedFile("lua/hollow/json.lua") },
+    .{ .name = "hollow.workspace", .source = @embedFile("lua/hollow/workspace.lua") },
     .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
@@ -135,7 +137,7 @@ pub const AppCallbacks = struct {
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void,
     close_workspace: *const fn (app: *anyopaque) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -349,6 +351,7 @@ pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
     pane_id: usize,
+    workspace_index: usize,
     pane_layout_changed: struct {
         pane_id: usize,
     },
@@ -1109,6 +1112,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "set_config");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_list_wsl_distros, 1);
+        api.set_field(self.state, -2, "list_wsl_distros");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_log, 1);
         api.set_field(self.state, -2, "log");
 
@@ -1119,6 +1126,30 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_read_dir, 1);
         api.set_field(self.state, -2, "read_dir");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_read_file, 1);
+        api.set_field(self.state, -2, "read_file");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_write_file, 1);
+        api.set_field(self.state, -2, "write_file");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_path_exists, 1);
+        api.set_field(self.state, -2, "path_exists");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_default_config_path, 1);
+        api.set_field(self.state, -2, "default_config_path");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_json_encode, 1);
+        api.set_field(self.state, -2, "json_encode");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_json_decode, 1);
+        api.set_field(self.state, -2, "json_decode");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_list_fonts, 1);
@@ -1515,6 +1546,11 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.push_number(state, @floatFromInt(tab_id));
             api.set_field(state, -2, "tab_id");
         },
+        .workspace_index => |workspace_index| {
+            api.create_table(state, 0, 1);
+            api.push_number(state, @floatFromInt(workspace_index));
+            api.set_field(state, -2, "workspace_index");
+        },
         .pane_id => |pane_id| {
             api.create_table(state, 0, 1);
             api.push_number(state, @floatFromInt(pane_id));
@@ -1577,6 +1613,74 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
 fn bridgeContext(state: *State) *BridgeContext {
     _ = state;
     return active_context orelse @panic("missing bridge context");
+}
+
+fn l_list_wsl_distros(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "wsl.exe", "-l", "-q" },
+    }) catch |err| {
+        std.log.warn("lua: list_wsl_distros failed err={s}", .{@errorName(err)});
+        api.create_table(state, 0, 0);
+        return 1;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    const stdout = result.stdout;
+    if (stdout.len == 0) {
+        api.create_table(state, 0, 0);
+        return 1;
+    }
+
+    var utf8_stdout = stdout;
+    var decoded_utf8: ?[]u8 = null;
+    if (stdout.len % 2 == 0) {
+        var null_count: usize = 0;
+        for (stdout) |b| {
+            if (b == 0) null_count += 1;
+        }
+        if (null_count > stdout.len / 4) {
+            const wide = std.heap.page_allocator.alloc(u16, stdout.len / 2) catch null;
+            if (wide) |owned_wide| {
+                defer std.heap.page_allocator.free(owned_wide);
+                for (owned_wide, 0..) |*code_unit, index| {
+                    const lo = @as(u16, stdout[index * 2]);
+                    const hi = @as(u16, stdout[index * 2 + 1]) << 8;
+                    code_unit.* = lo | hi;
+                }
+                decoded_utf8 = std.unicode.utf16LeToUtf8Alloc(std.heap.page_allocator, owned_wide) catch null;
+            }
+            if (decoded_utf8) |owned| {
+                utf8_stdout = owned;
+            }
+        }
+    }
+    defer if (decoded_utf8) |owned| std.heap.page_allocator.free(owned);
+
+    var distros = std.ArrayList([]const u8).empty;
+    defer distros.deinit(std.heap.page_allocator);
+
+    var iter = std.mem.splitSequence(u8, utf8_stdout, "\n");
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r\t");
+        if (trimmed.len > 0) {
+            distros.append(std.heap.page_allocator, trimmed) catch continue;
+        }
+    }
+
+    api.create_table(state, 0, @intCast(distros.items.len));
+    for (distros.items, 0..) |distro, index| {
+        const zdistro = std.heap.page_allocator.dupeZ(u8, distro) catch continue;
+        defer std.heap.page_allocator.free(zdistro);
+        api.push_string(state, zdistro);
+        api.rawseti(state, -2, @intCast(index + 1));
+    }
+
+    return 1;
 }
 
 fn l_log(state: *State) callconv(.c) c_int {
@@ -1694,6 +1798,149 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
         index += 1;
     }
 
+    return 1;
+}
+
+fn l_read_file(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "read_file expects a string path");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "read_file expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch |err| {
+        std.log.warn("lua: read_file failed path={s} err={s}", .{ path, @errorName(err) });
+        return api.raise_error(state, "read_file failed");
+    };
+    defer std.heap.page_allocator.free(bytes);
+
+    api.push_lstring(state, bytes.ptr, bytes.len);
+    return 1;
+}
+
+fn l_write_file(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "write_file expects a string path");
+    }
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .string) {
+        return api.raise_error(state, "write_file expects string contents");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "write_file expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    var contents_len: usize = 0;
+    const contents_ptr = api.to_lstring(state, 2, &contents_len) orelse {
+        return api.raise_error(state, "write_file expects string contents");
+    };
+    const contents = contents_ptr[0..contents_len];
+
+    if (std.fs.path.dirname(path)) |dir_path| {
+        std.fs.cwd().makePath(dir_path) catch |err| {
+            std.log.warn("lua: write_file makePath failed path={s} err={s}", .{ path, @errorName(err) });
+            return api.raise_error(state, "write_file failed");
+        };
+    }
+
+    std.fs.cwd().writeFile(.{ .sub_path = path, .data = contents }) catch |err| {
+        std.log.warn("lua: write_file failed path={s} err={s}", .{ path, @errorName(err) });
+        return api.raise_error(state, "write_file failed");
+    };
+
+    api.push_boolean(state, 1);
+    return 1;
+}
+
+fn l_path_exists(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "path_exists expects a string path");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "path_exists expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    std.fs.cwd().access(path, .{}) catch {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+
+    api.push_boolean(state, 1);
+    return 1;
+}
+
+fn l_default_config_path(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const path = platform.defaultConfigPath(std.heap.page_allocator) catch {
+        api.push_nil(state);
+        return 1;
+    };
+    defer std.heap.page_allocator.free(path);
+    api.push_lstring(state, path.ptr, path.len);
+    return 1;
+}
+
+fn l_json_encode(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const value = luaValueToJson(std.heap.page_allocator, api, state, 1) catch |err| {
+        std.log.warn("lua: json_encode failed err={s}", .{@errorName(err)});
+        return api.raise_error(state, "json_encode failed");
+    };
+    defer deinitJsonValue(std.heap.page_allocator, value);
+
+    var writer: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+    defer writer.deinit();
+    std.json.Stringify.value(value, .{ .whitespace = .indent_2 }, &writer.writer) catch {
+        return api.raise_error(state, "json_encode failed");
+    };
+    const written = writer.written();
+    api.push_lstring(state, written.ptr, written.len);
+    return 1;
+}
+
+fn l_json_decode(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "json_decode expects a JSON string");
+    }
+
+    var text_len: usize = 0;
+    const text_ptr = api.to_lstring(state, 1, &text_len) orelse {
+        return api.raise_error(state, "json_decode expects a JSON string");
+    };
+    const text = text_ptr[0..text_len];
+
+    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, text, .{ .ignore_unknown_fields = true }) catch |err| {
+        std.log.warn("lua: json_decode failed err={s}", .{@errorName(err)});
+        return api.raise_error(state, "json_decode failed");
+    };
+    defer parsed.deinit();
+
+    pushJsonValue(std.heap.page_allocator, api, state, parsed.value) catch {
+        return api.raise_error(state, "json_decode failed");
+    };
     return 1;
 }
 
@@ -3126,6 +3373,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     var cwd: ?[]const u8 = null;
     var domain_name: ?[]const u8 = null;
     var command: ?[]const u8 = null;
+    var name: ?[]const u8 = null;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -3136,11 +3384,12 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
             cwd = luaStringField(api, state, absoluteIndex(api, state, 1), "cwd");
             domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
             command = luaStringField(api, state, absoluteIndex(api, state, 1), "command");
+            name = luaStringField(api, state, absoluteIndex(api, state, 1), "name");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command);
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command, name);
     return 0;
 }
 

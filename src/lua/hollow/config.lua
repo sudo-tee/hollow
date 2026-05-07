@@ -25,6 +25,20 @@ function M.setup(hollow, host_api, state)
       error("hollow.config.reload() failed")
     end
   end
+
+  function hollow.config.populate_wsl_domains()
+    local distros = host_api.list_wsl_distros()
+    if type(distros) ~= "table" then
+      return
+    end
+    local domains = hollow.config.get("domains") or {}
+    for _, distro in ipairs(distros) do
+      if domains[distro .. "WSL"] == nil then
+        domains[distro .. "WSL"] = { shell = "wsl.exe -d " .. distro, wsl_distro = distro }
+      end
+    end
+    hollow.config.set({ domains = domains })
+  end
 end
 
 return M

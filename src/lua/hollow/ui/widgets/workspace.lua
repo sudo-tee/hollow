@@ -1,5 +1,5 @@
-local source = require("hollow.ui.workspace.source")
 local actions = require("hollow.ui.workspace.actions")
+local source = require("hollow.ui.workspace.source")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -33,7 +33,6 @@ local function switcher_state()
 end
 
 local util = require("hollow.util")
-local utf8_len = util.utf8_len
 local pad_right = util.pad_right
 local truncate_end = util.truncate_end
 local truncate_start = util.truncate_start
@@ -43,7 +42,8 @@ local function default_format_item(workspace)
   local name_color = workspace.is_active and ui_theme.open
     or (workspace.is_open and ui_theme.user or ui_theme.muted)
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
-  local status_width = math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local status_width =
+    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local cwd_width = math.max(12, total_width - status_width - name_width - (gap_width * 2) - 10)
@@ -171,10 +171,11 @@ function ui.workspace.open_switcher(opts)
     source.configure(opts)
   end
 
+  local items = source.items(force_refresh)
   local switcher = switcher_state()
   ui.select.open({
     prompt = switcher.prompt or DEFAULT_PROMPT,
-    items = source.items(force_refresh),
+    items = items,
     width = switcher.width or DEFAULT_SELECT_WIDTH,
     height = switcher.height,
     max_height = switcher.max_height or DEFAULT_SELECT_MAX_HEIGHT,

@@ -21,7 +21,9 @@ Primary namespaces:
 
 - `hollow.config`
 - `hollow.fonts`
+- `hollow.json`
 - `hollow.term`
+- `hollow.workspace`
 - `hollow.events`
 - `hollow.keymap`
 - `hollow.ui`
@@ -107,6 +109,89 @@ hollow.config.set({
 `domains` maps a domain name to either a shell string or an object with per-domain options.
 `default_cwd` is used when a pane starts in that domain without an explicit cwd.
 
+Workspace bootstrap config:
+
+```lua
+hollow.config.set({
+  workspace = {
+    auto_bootstrap = "always", -- or "never"
+    default_layout = "default", -- resolves to ~/.config/hollow/layouts/default.json
+  },
+})
+```
+
+When `auto_bootstrap = "always"`, Hollow checks for a project-local `.hollow/workspace.json` rooted at the active pane cwd first, then falls back to `workspace.default_layout` when present.
+
+## `hollow.json`
+
+```lua
+hollow.json.encode(value)
+hollow.json.decode(text)
+```
+
+These helpers convert between Lua values and JSON strings. They are intended for simple data files such as workspace bootstrap specs.
+
+## `hollow.workspace`
+
+```lua
+hollow.workspace.bootstrap(spec, opts?)
+hollow.workspace.load(path)
+hollow.workspace.load_and_bootstrap(path, opts?)
+hollow.workspace.export_current()
+hollow.workspace.export_to(path)
+hollow.workspace.project_local_path(dir?)
+hollow.workspace.resolve_auto_bootstrap_path()
+hollow.workspace.auto_bootstrap()
+```
+
+This namespace handles workspace bootstrap specs stored as JSON.
+
+Bootstrap file shape:
+
+```json
+{
+  "name": "my-project",
+  "tabs": [
+    {
+      "name": "editor",
+      "panes": [
+        { "cwd": ".", "command": "nvim" }
+      ]
+    },
+    {
+      "name": "backend",
+      "layout": "vertical",
+      "panes": [
+        { "cwd": "server", "command": "npm run dev" },
+        { "cwd": "server", "command": "npm test --watch", "size": 0.25 }
+      ]
+    }
+  ]
+}
+```
+
+Current v1 behavior:
+
+- the file format is JSON
+- project-local files live at `.hollow/workspace.json`
+- global named layouts resolve under the user config dir at `layouts/<name>.json`
+- relative `cwd` values resolve against the project root for `.hollow/workspace.json`
+- `size` maps to split `ratio` for additional panes in a tab
+- tabs are linear layouts today; nested split trees are not supported yet
+
+Example manual bootstrap:
+
+```lua
+local spec = hollow.workspace.load("/path/to/project/.hollow/workspace.json")
+hollow.workspace.bootstrap(spec, { base_dir = "/path/to/project" })
+```
+
+Export the current workspace snapshot:
+
+```lua
+hollow.workspace.export_to("/tmp/workspace.json")
+```
+
 SSH domain options:
 
 ```lua
@@ -157,7 +242,8 @@ hollow.term.tab_by_id(id)
 hollow.term.workspaces()
 hollow.term.current_workspace()
 hollow.term.set_workspace_name(name)
-hollow.term.new_workspace()
+hollow.term.set_workspace_default_cwd(cwd)
+hollow.term.new_workspace(opts?)
 hollow.term.next_workspace()
 hollow.term.prev_workspace()
 

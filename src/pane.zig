@@ -258,7 +258,7 @@ pub const Pane = struct {
         self.* = Pane.init(self.allocator);
     }
 
-    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
+    pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
@@ -322,6 +322,12 @@ pub const Pane = struct {
 
         try env_block.appendSlice(self.allocator, "HOLLOW_TRANSPORT=auto");
         try env_block.append(self.allocator, 0);
+
+        if (workspace_id) |id| {
+            try env_block.appendSlice(self.allocator, "HOLLOW_WORKSPACE_ID=");
+            try env_block.appendSlice(self.allocator, id);
+            try env_block.append(self.allocator, 0);
+        }
 
         try env_block.appendSlice(self.allocator, "TERM=xterm-256color");
         try env_block.append(self.allocator, 0);

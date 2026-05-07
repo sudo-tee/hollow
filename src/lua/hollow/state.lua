@@ -34,6 +34,8 @@ function M.new(host_api)
     events = {
       builtin_names = {
         ["config:reloaded"] = true,
+        ["workspace:new"] = true,
+        ["workspace:changed"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
         ["term:tab_closed"] = true,

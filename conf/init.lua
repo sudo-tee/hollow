@@ -111,16 +111,15 @@ local ui_theme = {
   },
 }
 
-local default_domain = is_windows and "wsl" or "unix"
-local domains = {
-  unix = { shell = hollow.platform.default_shell },
-}
+local default_domain = is_windows and "pwsh" or "unix"
+local domains = {}
 
 if is_windows then
-  domains.wsl = { shell = "wsl.exe" }
   domains.pwsh = { shell = "pwsh.exe" }
   domains.powershell = { shell = "powershell.exe" }
   domains.cmd = { shell = "cmd.exe" }
+else
+  domains.unix = { shell = hollow.platform.default_shell }
 end
 
 hollow.config.set({
@@ -176,6 +175,10 @@ hollow.config.set({
     trim_trailing = ".,;:!?)]}",
   },
 })
+
+if is_windows then
+  hollow.config.populate_wsl_domains()
+end
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   height = 30,
@@ -323,6 +326,11 @@ end, { desc = "reload config" })
 hollow.keymap.set("<leader>p", function()
   hollow.term.split_pane({ domain = "pwsh" })
 end, { desc = "edit workspace config" })
+
+hollow.keymap.set("<leader>ws", function()
+  local path = hollow.workspace.export_to("C:\\Users\\fbelanger\\workspace-layouts.json")
+  hollow.ui.notify.info("Workspace layout exported to " .. path, { ttl = 3000 })
+end, { desc = "export workspace config" })
 
 -- User config files are loaded after this bundled config, so you can override
 -- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or

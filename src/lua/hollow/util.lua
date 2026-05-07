@@ -345,6 +345,33 @@ function M.has_any_key(t, keys)
   return false
 end
 
+function M.wsl_unc_to_linux_path(path)
+  if type(path) ~= "string" then
+    return nil
+  end
+  local normalized = path:gsub("\\", "/")
+  if normalized == "" then
+    return nil
+  end
+
+  return normalized:match("^//wsl%$/[^/]+(/.*)$")
+    or normalized:match("^//wsl%.localhost/[^/]+(/.*)$")
+end
+
+function M.linux_to_wsl_unc_path(path, distro)
+  if type(path) ~= "string" or type(distro) ~= "string" then
+    return nil
+  end
+  local normalized = path:gsub("\\", "/")
+  if normalized == "" then
+    return nil
+  end
+  if normalized:sub(1, 1) ~= "/" then
+    return nil
+  end
+  return "\\\\wsl.localhost\\" .. distro .. path:gsub("/", "\\")
+end
+
 ---@param s string
 ---@return integer
 function M.utf8_len(s)

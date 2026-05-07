@@ -47,6 +47,8 @@
 
 ---@alias HollowEventName
 ---| "config:reloaded"
+---| "workspace:new"
+---| "workspace:changed"
 ---| "term:title_changed"
 ---| "term:tab_activated"
 ---| "term:tab_closed"
@@ -179,10 +181,16 @@
 ---@field default_domain? string
 ---@field domains? table<string, string|HollowDomainConfig>
 ---@field env? table<string, string>
+---@field workspace? HollowWorkspaceConfig
+
+---@class HollowWorkspaceConfig
+---@field auto_bootstrap? "always"|"never"
+---@field default_layout? string
 
 ---@class HollowDomainConfig
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
+---@field wsl_distro? string
 ---@field default_cwd? string
 
 ---@alias HollowSshBackend "native"|"wsl"
@@ -204,6 +212,7 @@
 ---@field is_floating boolean
 ---@field is_maximized boolean
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
+---@field foreground_process string
 ---@field size HollowSize
 
 ---@class HollowTab
@@ -231,18 +240,46 @@
 ---@field env? table<string, string>
 ---@field title? string
 ---@field domain? string
+---@field command? string
 
 ---@class HollowSplitPaneOpts
 ---@field direction? "horizontal"|"vertical"
 ---@field ratio? number
 ---@field domain? string
 ---@field cwd? string
+---@field command? string
+---@field command_mode? "send"|"spawn"
+---@field close_on_exit? boolean
 ---@field floating? boolean
 ---@field fullscreen? boolean
 ---@field x? number
 ---@field y? number
 ---@field width? number
 ---@field height? number
+
+---@class HollowWorkspaceBootstrapPane
+---@field cwd? string
+---@field domain? string
+---@field command? string
+---@field command_mode? "send"|"spawn"
+---@field close_on_exit? boolean
+---@field floating? boolean
+---@field fullscreen? boolean
+---@field x? number
+---@field y? number
+---@field width? number
+---@field height? number
+---@field size? number
+---@field direction? "horizontal"|"vertical"
+
+---@class HollowWorkspaceBootstrapTab
+---@field name? string
+---@field layout? "horizontal"|"vertical"
+---@field panes HollowWorkspaceBootstrapPane[]
+
+---@class HollowWorkspaceBootstrapSpec
+---@field name? string
+---@field tabs HollowWorkspaceBootstrapTab[]
 
 ---@class HollowPaneMaximizeOpts
 ---@field show_background? boolean
@@ -673,6 +710,51 @@ function config.snapshot() end
 
 function config.reload() end
 
+---@class HollowJsonNamespace
+local json = {}
+
+---@param value any
+---@return string
+function json.encode(value) end
+
+---@param text string
+---@return any
+function json.decode(text) end
+
+---@class HollowWorkspaceNamespace
+local workspace_api = {}
+
+---@param spec HollowWorkspaceBootstrapSpec
+---@param opts? { base_dir?: string, name?: string, replace_current?: boolean }
+---@return HollowWorkspaceSnapshot|nil
+function workspace_api.bootstrap(spec, opts) end
+
+---@param path string
+---@return HollowWorkspaceBootstrapSpec
+function workspace_api.load(path) end
+
+---@param path string
+---@param opts? { base_dir?: string, name?: string, replace_current?: boolean }
+---@return HollowWorkspaceSnapshot|nil
+function workspace_api.load_and_bootstrap(path, opts) end
+
+---@return HollowWorkspaceBootstrapSpec
+function workspace_api.export_current() end
+
+---@param path string
+---@return string
+function workspace_api.export_to(path) end
+
+---@param dir? string
+---@return string|nil
+function workspace_api.project_local_path(dir) end
+
+---@return string|nil
+function workspace_api.resolve_auto_bootstrap_path() end
+
+---@return boolean
+function workspace_api.auto_bootstrap() end
+
 ---@class HollowTermNamespace
 local term = {}
 
@@ -740,7 +822,10 @@ function term.move_pane(direction_or_opts, opts) end
 ---@param name string
 function term.set_workspace_name(name) end
 
----@param opts? { cwd?: string }
+---@param cwd string
+function term.set_workspace_default_cwd(cwd) end
+
+---@param opts? { cwd?: string, domain?: string, command?: string, name?: string }
 function term.new_workspace(opts) end
 
 function term.close_workspace() end
@@ -1149,6 +1234,7 @@ function process.run_child_process(args) end
 ---@field get_active_workspace_index fun(): integer
 ---@field set_tab_title fun(title: string)
 ---@field send_text fun(text: string)
+---@field on_gui_ready fun(handler: fun())
 ---@field switch_tab_by_id fun(tab_id: integer): boolean
 ---@field close_tab_by_id fun(tab_id: integer): boolean
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
@@ -1181,6 +1267,14 @@ function process.run_child_process(args) end
 ---@field reload_config fun(): boolean
 ---@field strftime fun(fmt: string): string
 ---@field read_dir fun(path: string): string[]
+---@field read_file fun(path: string): string
+---@field write_file fun(path: string, contents: string): boolean
+---@field path_exists fun(path: string): boolean
+---@field list_wsl_distros fun(): string[]
+---@field default_config_path fun(): string|nil
+---@field json_encode fun(value: any): string
+
+---@field json_decode fun(text: string): any
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
@@ -1206,13 +1300,17 @@ function process.run_child_process(args) end
 ---@class Hollow
 ---@field config HollowConfigNamespace
 ---@field fonts HollowFontsNamespace
+---@field json HollowJsonNamespace
 ---@field term HollowTermNamespace
+---@field workspace HollowWorkspaceNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
 ---@field ui HollowUi
 ---@field htp HollowHtpNamespace
 ---@field process HollowProcessNamespace
 ---@field platform HollowPlatformInfo
+---@field on_gui_ready fun(handler: fun())
+---@field log fun(...: any)
 ---@field read_dir fun(path: string): string[]
 ---@field util HollowUtilNamespace
 
@@ -1221,7 +1319,9 @@ hollow = {}
 
 hollow.config = config
 hollow.fonts = {}
+hollow.json = json
 hollow.term = term
+hollow.workspace = workspace_api
 hollow.events = events
 hollow.keymap = keymap
 hollow.ui = ui
