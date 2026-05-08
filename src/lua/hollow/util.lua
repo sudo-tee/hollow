@@ -387,10 +387,11 @@ end
 ---@return string
 function M.pad_right(value, width)
   value = tostring(value or "")
-  if M.utf8_len(value) >= width then
+  local len = M.utf8_len(value)
+  if len >= width then
     return value
   end
-  return value .. string.rep(" ", width - #value)
+  return value .. string.rep(" ", width - len)
 end
 
 ---@param value any
