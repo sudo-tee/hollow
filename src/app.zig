@@ -2863,10 +2863,10 @@ pub const App = struct {
     pub fn closeTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        const closed_tab = mux.activeTab();
+        const closed_tab_id = if (mux.activeTab()) |tab| tab.id else null;
         const should_quit = mux.closeTab(runtime);
-        if (closed_tab) |tab| {
-            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab.id });
+        if (closed_tab_id) |tab_id| {
+            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab_id });
         }
         if (should_quit) {
             std.log.info("app: last tab closed, quitting", .{});
@@ -2883,10 +2883,10 @@ pub const App = struct {
     pub fn closeTabAt(self: *App, index: usize) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        const closed_tab = mux.tabAt(index);
+        const closed_tab_id = if (mux.tabAt(index)) |tab| tab.id else null;
         const should_quit = mux.closeTabAt(runtime, index);
-        if (closed_tab) |tab| {
-            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab.id });
+        if (closed_tab_id) |tab_id| {
+            self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab_id });
         }
         if (should_quit) {
             std.log.info("app: last tab closed, quitting", .{});
@@ -2971,7 +2971,11 @@ pub const App = struct {
     pub fn closeWorkspace(self: *App, workspace_id: ?usize) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
-        const previous = mux.activePane();
+        const closing_active_workspace = if (workspace_id) |target_id|
+            if (mux.activeWorkspace()) |workspace| workspace.id == target_id else false
+        else
+            mux.activeWorkspace() != null;
+        const previous = if (closing_active_workspace) null else mux.activePane();
         const should_quit = mux.closeWorkspace(runtime, workspace_id);
         if (should_quit) {
             std.log.info("app: last workspace closed, quitting", .{});
