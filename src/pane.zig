@@ -504,7 +504,7 @@ pub const Pane = struct {
                 self.last_terminal_write_chunks += 1;
             }
             const child_alive_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-            self.refreshChildAliveCache();
+            self.refreshChildAliveCache(false);
             if (debug_overlay) self.last_child_alive_ns += std.time.nanoTimestamp() - child_alive_start_ns;
             if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
                 if (total_read == 0) {
@@ -839,11 +839,16 @@ pub const Pane = struct {
     }
 
     pub fn hasLiveChild(self: *Pane) bool {
-        self.refreshChildAliveCache();
+        self.refreshChildAliveCache(false);
         return self.child_alive_cached;
     }
 
-    fn refreshChildAliveCache(self: *Pane) void {
+    pub fn hasLiveChildForCleanup(self: *Pane) bool {
+        self.refreshChildAliveCache(true);
+        return self.child_alive_cached;
+    }
+
+    fn refreshChildAliveCache(self: *Pane, force: bool) void {
         const pty = if (self.pty) |*value| value else {
             self.child_alive_cached = false;
             self.last_child_alive_check_ns = 0;
@@ -851,7 +856,7 @@ pub const Pane = struct {
         };
         if (!self.child_alive_cached) return;
         const now_ns = std.time.nanoTimestamp();
-        if (self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutput()) return;
+        if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutput()) return;
         self.last_child_alive_check_ns = now_ns;
         self.child_alive_cached = pty.isAlive();
     }

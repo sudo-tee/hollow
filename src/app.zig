@@ -3487,7 +3487,7 @@ pub const App = struct {
         var has_dead = false;
         var panes = mux.paneIterator();
         while (panes.next()) |pane| {
-            if (!pane.hasLiveChild()) {
+            if (!pane.hasLiveChildForCleanup()) {
                 has_dead = true;
                 break;
             }
