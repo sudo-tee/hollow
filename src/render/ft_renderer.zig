@@ -1980,6 +1980,9 @@ pub const FtRenderer = struct {
                     }
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        if (isSynthesizedTerminalCodepoint(cp)) {
+                            continue;
+                        }
                         if (self.directGlyph(cp, text_style.face_idx) == null) {
                             if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
                                 self.recordShapedRun(glyph_utf8, text_style.face_idx, prepared.start, prepared.glyphs.len);
@@ -2012,6 +2015,9 @@ pub const FtRenderer = struct {
                         };
                     if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        if (firstRenderableCodepoint(glyph_utf8)) |cp| {
+                            if (isSynthesizedTerminalCodepoint(cp)) continue;
+                        }
                         if (self.prepareGlyphs(glyph_utf8, text_style.face_idx, .terminal)) |prepared| {
                             self.recordShapedRun(glyph_utf8, text_style.face_idx, prepared.start, prepared.glyphs.len);
                         }
@@ -2128,6 +2134,9 @@ pub const FtRenderer = struct {
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         self.last_glyph_runs += 1;
+                        if (drawSynthesizedTerminalCodepoint(col_px, row.py, self.cell_w, self.cell_h, cp, text_style.fg)) {
+                            continue;
+                        }
                         if (!self.drawDirectGlyph(col_px, row.py, cp, text_style.face_idx, text_style.fg, row.py, row.py + self.cell_h)) {
                             const glyph_utf8 = self.encodeCodepointUtf8(cp);
                             if (glyph_utf8.len == 0) continue;
@@ -2167,6 +2176,9 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         const px = self.columnPixelX(col_x, queue.col_count);
                         self.last_glyph_runs += 1;
+                        if (drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, glyph_utf8, text_style.fg)) {
+                            continue;
+                        }
                         if (self.consumeShapedRun(glyph_utf8, text_style.face_idx)) |prepared| {
                             self.batchPreparedGlyphs(px, row.py, prepared, text_style.fg, row.py, row.py + self.cell_h);
                         } else {
@@ -4307,6 +4319,84 @@ fn firstRenderableCodepoint(utf8: []const u8) ?u32 {
         return cp;
     }
     return null;
+}
+
+const TerminalRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+fn isSynthesizedTerminalCodepoint(cp: u32) bool {
+    return synthesizedTerminalRect(1.0, 1.0, cp) != null;
+}
+
+fn drawSynthesizedTerminalUtf8(x: f32, y: f32, cell_w: f32, cell_h: f32, utf8: []const u8, color: ghostty.ColorRgb) bool {
+    const cp = firstRenderableCodepoint(utf8) orelse return false;
+    return drawSynthesizedTerminalCodepoint(x, y, cell_w, cell_h, cp, color);
+}
+
+fn drawSynthesizedTerminalCodepoint(x: f32, y: f32, cell_w: f32, cell_h: f32, cp: u32, color: ghostty.ColorRgb) bool {
+    const rect = synthesizedTerminalRect(cell_w, cell_h, cp) orelse return false;
+    c.sgl_begin_quads();
+    emitRect(x + rect.x, y + rect.y, rect.w, rect.h, color.r, color.g, color.b, 255);
+    c.sgl_end();
+    return true;
+}
+
+fn synthesizedTerminalRect(cell_w: f32, cell_h: f32, cp: u32) ?TerminalRect {
+    if (cell_w <= 0.0 or cell_h <= 0.0) return null;
+
+    const eighth_w = @max(1.0, @round(cell_w / 8.0));
+    const quarter_w = @max(1.0, @round(cell_w / 4.0));
+    const half_w = @max(1.0, @round(cell_w / 2.0));
+    const eighth_h = @max(1.0, @round(cell_h / 8.0));
+    const quarter_h = @max(1.0, @round(cell_h / 4.0));
+    const half_h = @max(1.0, @round(cell_h / 2.0));
+
+    return switch (cp) {
+        0x2580 => topRect(cell_w, cell_h, half_h),
+        0x2581 => bottomRect(cell_w, cell_h, eighth_h),
+        0x2582 => bottomRect(cell_w, cell_h, quarter_h),
+        0x2583 => bottomRect(cell_w, cell_h, 3.0 * eighth_h),
+        0x2584 => bottomRect(cell_w, cell_h, half_h),
+        0x2585 => bottomRect(cell_w, cell_h, 5.0 * eighth_h),
+        0x2586 => bottomRect(cell_w, cell_h, 6.0 * eighth_h),
+        0x2587 => bottomRect(cell_w, cell_h, 7.0 * eighth_h),
+        0x2588 => .{ .x = 0.0, .y = 0.0, .w = cell_w, .h = cell_h },
+        0x2589 => leftRect(cell_w, cell_h, 7.0 * eighth_w),
+        0x258A => leftRect(cell_w, cell_h, 6.0 * eighth_w),
+        0x258B => leftRect(cell_w, cell_h, 5.0 * eighth_w),
+        0x258C => leftRect(cell_w, cell_h, half_w),
+        0x258D => leftRect(cell_w, cell_h, 3.0 * eighth_w),
+        0x258E => leftRect(cell_w, cell_h, quarter_w),
+        0x258F => leftRect(cell_w, cell_h, eighth_w),
+        0x2590 => rightRect(cell_w, cell_h, half_w),
+        0x2594 => topRect(cell_w, cell_h, eighth_h),
+        0x2595 => rightRect(cell_w, cell_h, eighth_w),
+        else => null,
+    };
+}
+
+fn topRect(cell_w: f32, cell_h: f32, desired_h: f32) TerminalRect {
+    const h = @min(cell_h, @max(1.0, desired_h));
+    return .{ .x = 0.0, .y = 0.0, .w = cell_w, .h = h };
+}
+
+fn bottomRect(cell_w: f32, cell_h: f32, desired_h: f32) TerminalRect {
+    const h = @min(cell_h, @max(1.0, desired_h));
+    return .{ .x = 0.0, .y = cell_h - h, .w = cell_w, .h = h };
+}
+
+fn leftRect(cell_w: f32, cell_h: f32, desired_w: f32) TerminalRect {
+    const w = @min(cell_w, @max(1.0, desired_w));
+    return .{ .x = 0.0, .y = 0.0, .w = w, .h = cell_h };
+}
+
+fn rightRect(cell_w: f32, cell_h: f32, desired_w: f32) TerminalRect {
+    const w = @min(cell_w, @max(1.0, desired_w));
+    return .{ .x = cell_w - w, .y = 0.0, .w = w, .h = cell_h };
 }
 
 fn isIgnorableCodepoint(cp: u32) bool {
