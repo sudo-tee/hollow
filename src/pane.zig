@@ -616,6 +616,8 @@ pub const Pane = struct {
         self.cols = cols;
         self.rows = rows;
 
+        const same_grid = cols == prev_cols and rows == prev_rows;
+
         if (skip_pty) {
             // Drag-preview: just mark dirty so the renderer redraws in the new
             // pixel bounds.  No ghostty reflow, no SIGWINCH.
@@ -623,10 +625,20 @@ pub const Pane = struct {
             return;
         }
 
+        if (same_grid) {
+            // Same-grid layout changes should stay a pure geometry/cache refresh.
+            // Resizing the terminal/PTY here can trigger shell reflow or prompt
+            // redraw glitches even though the terminal cell grid did not change.
+            self.render_dirty = .full;
+            runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+            runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+            return;
+        }
+
         // Guard against null terminal — can happen if bootstrap partially failed
         // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
         if (self.terminal) |terminal| {
-            if (is_windows and cols == prev_cols and rows == prev_rows and (cols > 1 or rows > 1)) {
+            if (is_windows and (cols > 1 or rows > 1)) {
                 const bump_cols: u16 = if (cols > 1) cols - 1 else cols + 1;
                 runtime.resizeTerminal(terminal, bump_cols, rows, cell_width_px, cell_height_px);
             }
