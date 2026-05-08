@@ -16,7 +16,7 @@ local DEFAULT_STATUS_COLUMN_WIDTH = 2
 local DEFAULT_NAME_COLUMN_WIDTH = 24
 local DEFAULT_COLUMN_GAP = 2
 local DEFAULT_RENAME_KEY = "<C-r>"
-local DEFAULT_CLOSE_KEY = "<C-w>"
+local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
 
 local ui_theme = {

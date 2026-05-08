@@ -138,7 +138,7 @@ pub const AppCallbacks = struct {
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
     new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void,
-    close_workspace: *const fn (app: *anyopaque) void,
+    close_workspace: *const fn (app: *anyopaque, workspace_id: ?usize) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
     switch_workspace: *const fn (app: *anyopaque, index: usize) void,
@@ -161,6 +161,7 @@ pub const AppCallbacks = struct {
     get_tab_index_by_id: *const fn (app: *anyopaque, tab_id: usize) usize,
     get_workspace_count: *const fn (app: *anyopaque) usize,
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
+    get_workspace_id: *const fn (app: *anyopaque, index: usize) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
@@ -1279,6 +1280,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_workspace_default_cwd, 1);
         api.set_field(self.state, -2, "set_workspace_default_cwd");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_id, 1);
+        api.set_field(self.state, -2, "get_workspace_id");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_name, 1);
@@ -3395,8 +3400,31 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
 
 fn l_close_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
-    if (ctx.app_callbacks) |cbs| cbs.close_workspace(cbs.app);
+    const api = ctx.api;
+    const workspace_id = switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+        .number => blk: {
+            const value = @as(isize, @intFromFloat(api.to_number(state, 1)));
+            if (value >= 0) break :blk @as(?usize, @intCast(value)) else break :blk null;
+        },
+        else => null,
+    };
+    if (ctx.app_callbacks) |cbs| cbs.close_workspace(cbs.app, workspace_id);
     return 0;
+}
+
+fn l_get_workspace_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_integer(state, @intCast(cbs.get_workspace_id(cbs.app, idx)));
+    return 1;
 }
 
 fn l_next_workspace(state: *State) callconv(.c) c_int {

@@ -1057,9 +1057,20 @@ pub const Mux = struct {
         self.active_workspace = self.workspaces.items[index];
     }
 
-    pub fn closeWorkspace(self: *Mux, runtime: *GhosttyRuntime) bool {
-        const workspace = self.activeWorkspace() orelse return true;
-        return self.removeWorkspace(runtime, workspace);
+    pub fn closeWorkspace(self: *Mux, runtime: *GhosttyRuntime, workspace_id: ?usize) bool {
+        const workspace = if (workspace_id) |target_id|
+            self.workspaceById(target_id)
+        else
+            self.activeWorkspace() orelse return true;
+        if (workspace == null) return false;
+        return self.removeWorkspace(runtime, workspace.?);
+    }
+
+    pub fn workspaceById(self: *Mux, id: usize) ?*Workspace {
+        for (self.workspaces.items) |workspace| {
+            if (workspace.id == id) return workspace;
+        }
+        return null;
     }
 
     pub fn activeWorkspaceIndex(self: *Mux) usize {
@@ -1255,6 +1266,7 @@ pub const Mux = struct {
             }
         }
         const remove_idx = idx orelse return self.workspaces.items.len == 0;
+        const removed_was_active = self.active_workspace == workspace;
 
         _ = self.workspaces.orderedRemove(remove_idx);
         workspace.deinit(runtime);
@@ -1263,6 +1275,10 @@ pub const Mux = struct {
         if (self.workspaces.items.len == 0) {
             self.active_workspace = null;
             return true;
+        }
+
+        if (!removed_was_active) {
+            return false;
         }
 
         const next_idx = if (remove_idx >= self.workspaces.items.len) self.workspaces.items.len - 1 else remove_idx;

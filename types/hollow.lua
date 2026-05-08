@@ -224,6 +224,7 @@
 ---@field pane HollowPane
 
 ---@class HollowWorkspace
+---@field id integer
 ---@field index integer
 ---@field name string
 ---@field is_active boolean
@@ -828,7 +829,8 @@ function term.set_workspace_default_cwd(cwd) end
 ---@param opts? { cwd?: string, domain?: string, command?: string, name?: string }
 function term.new_workspace(opts) end
 
-function term.close_workspace() end
+---@param id? integer
+function term.close_workspace(id) end
 
 function term.next_workspace() end
 
@@ -1036,6 +1038,7 @@ function select.close() end
 
 ---@class HollowUiWorkspaceItem
 ---@field id string
+---@field workspace_id? integer
 ---@field name string
 ---@field cwd? string
 ---@field domain? string
@@ -1043,6 +1046,7 @@ function select.close() end
 ---@field is_active boolean
 ---@field is_open boolean
 ---@field open_index? integer
+---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer
 
 ---@class HollowUiWorkspaceSource

@@ -157,12 +157,12 @@ local function close_workspace(workspace)
     return
   end
 
-  if workspace_name(target) ~= active_workspace_name() then
-    notify_warn("Close works on the active workspace")
+  if target.workspace_id ~= nil then
+    hollow.term.close_workspace(target.workspace_id)
     return
   end
 
-  hollow.term.close_workspace()
+  hollow.term.close_workspace(target.id)
 end
 
 local function open_workspace(opts)

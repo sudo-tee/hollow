@@ -466,6 +466,7 @@ local function open_workspace_items()
 
     local item = {
       id = id,
+      workspace_id = workspace.id,
       name = workspace.name,
       cwd = cwd,
       domain = domain,

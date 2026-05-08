@@ -247,7 +247,7 @@ pub const PendingMouseEvent = union(enum) {
         command: ?[]const u8,
         name: ?[]const u8,
     },
-    close_workspace,
+    close_workspace: ?usize,
     next_workspace,
     prev_workspace,
     switch_workspace: usize,
@@ -669,8 +669,8 @@ pub const App = struct {
                     defer if (payload.name) |value| self.allocator.free(value);
                     self.newWorkspace(payload.cwd, payload.domain_name, payload.command, payload.name);
                 },
-                .close_workspace => {
-                    self.closeWorkspace();
+                .close_workspace => |idx| {
+                    self.closeWorkspace(idx);
                 },
                 .next_workspace => {
                     self.nextWorkspace();
@@ -1001,6 +1001,7 @@ pub const App = struct {
             .get_tab_index_by_id = luaGetTabIndexByIdCallback,
             .get_workspace_count = luaGetWorkspaceCountCallback,
             .get_active_workspace_index = luaGetActiveWorkspaceIndexCallback,
+            .get_workspace_id = luaGetWorkspaceIdCallback,
             .get_workspace_name = luaGetWorkspaceNameCallback,
             .get_pane_pid = luaGetPanePidCallback,
             .get_pane_title = luaGetPaneTitleCallback,
@@ -2967,11 +2968,11 @@ pub const App = struct {
         std.log.info("app: created new workspace", .{});
     }
 
-    pub fn closeWorkspace(self: *App) void {
+    pub fn closeWorkspace(self: *App, workspace_id: ?usize) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const previous = mux.activePane();
-        const should_quit = mux.closeWorkspace(runtime);
+        const should_quit = mux.closeWorkspace(runtime, workspace_id);
         if (should_quit) {
             std.log.info("app: last workspace closed, quitting", .{});
             self.pending_quit = true;
@@ -3328,6 +3329,13 @@ pub const App = struct {
             if (index < mux.workspaces.items.len) return mux.workspaces.items[index].title();
         }
         return std.fmt.bufPrint(out_buf, "workspace {d}", .{index + 1}) catch "workspace";
+    }
+
+    pub fn workspaceId(self: *App, index: usize) usize {
+        if (self.mux) |*mux| {
+            if (index < mux.workspaces.items.len) return mux.workspaces.items[index].id;
+        }
+        return 0;
     }
 
     pub fn hasCustomTopBarTabs(self: *App) bool {
@@ -4106,9 +4114,9 @@ fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?
     _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name } });
 }
 
-fn luaCloseWorkspaceCallback(app_ptr: *anyopaque) void {
+fn luaCloseWorkspaceCallback(app_ptr: *anyopaque, workspace_id: ?usize) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    _ = app.enqueueMouse(.close_workspace);
+    _ = app.enqueueMouse(.{ .close_workspace = workspace_id });
 }
 
 fn luaNextWorkspaceCallback(app_ptr: *anyopaque) void {
@@ -4357,6 +4365,11 @@ fn luaGetActiveWorkspaceIndexCallback(app_ptr: *anyopaque) usize {
 fn luaGetWorkspaceNameCallback(app_ptr: *anyopaque, index: usize, out_buf: []u8) []const u8 {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.workspaceName(index, out_buf);
+}
+
+fn luaGetWorkspaceIdCallback(app_ptr: *anyopaque, index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.workspaceId(index);
 }
 
 fn luaIsLeaderActiveCallback(app_ptr: *anyopaque) bool {

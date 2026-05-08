@@ -39,6 +39,7 @@ function M.setup(hollow, host_api)
     end
     local pane = pane_snapshot(host_api.current_pane_id())
     return {
+      id = host_api.get_workspace_id and host_api.get_workspace_id(index) or (index + 1),
       index = index + 1,
       name = host_api.get_workspace_name and host_api.get_workspace_name(index)
         or ("ws " .. tostring(index + 1)),
@@ -150,8 +151,11 @@ function M.setup(hollow, host_api)
     host_api.new_workspace(opts)
   end
 
-  function hollow.term.close_workspace()
-    host_api.close_workspace()
+  function hollow.term.close_workspace(id)
+    if id ~= nil and type(id) ~= "number" then
+      error("hollow.term.close_workspace(id) expects a number or nil")
+    end
+    host_api.close_workspace(id)
   end
 
   function hollow.term.next_workspace()

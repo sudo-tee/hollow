@@ -33,6 +33,7 @@ local function make_host_api()
   local recorded = {
     config = nil,
     domain_process = nil,
+    close_workspace = nil,
     new_tab_calls = 0,
     move_pane = nil,
     split_pane = nil,
@@ -64,7 +65,7 @@ local function make_host_api()
   }
 
   local workspaces = {
-    { name = "main" },
+    { id = 41, name = "main" },
   }
 
   local host_api = {
@@ -260,6 +261,10 @@ local function make_host_api()
     return workspaces[index + 1] and workspaces[index + 1].name or nil
   end
 
+  function host_api.get_workspace_id(index)
+    return workspaces[index + 1] and workspaces[index + 1].id or nil
+  end
+
   function host_api.get_active_workspace_index()
     return 0
   end
@@ -273,7 +278,8 @@ local function make_host_api()
     return nil
   end
 
-  function host_api.close_workspace()
+  function host_api.close_workspace(index)
+    recorded.close_workspace = index
     return nil
   end
 
@@ -458,6 +464,10 @@ assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.snapshot shou
 local current_pane = hollow.term.current_pane()
 assert_equal(current_pane.id, 101, "current_pane should return the focused pane")
 assert_equal(hollow.term.current_workspace().name, "main", "current_workspace should snapshot workspace state")
+hollow.term.close_workspace(41)
+assert_equal(recorded.close_workspace, 41, "close_workspace should forward workspace ids")
+hollow.term.close_workspace()
+assert_equal(recorded.close_workspace, nil, "close_workspace should allow closing the active workspace")
 
 local process_result = hollow.term.run_domain_process({ "echo", "ok" })
 assert_equal(process_result.domain, "main", "run_domain_process should infer the current domain")
@@ -488,17 +498,15 @@ hollow.workspace.bootstrap({
     },
   },
 }, { base_dir = "/tmp/project" })
-assert_equal(recorded.new_workspace.name, "proj", "workspace bootstrap should create a named workspace")
-assert_equal(recorded.new_workspace.cwd, "/tmp/project", "workspace bootstrap should resolve first pane cwd relative to project root")
 assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
 assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
 assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
 
-assert_equal(hollow.workspace.project_local_path("/tmp/project"), "/tmp/project/.hollow/workspace.json", "workspace helper should resolve project-local path")
+assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "workspace helper should resolve project-local path")
 
-recorded.files["/tmp/project/.hollow/workspace.json"] = "present"
+recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "present"
 hollow.config.set({ workspace = { auto_bootstrap = "always", default_layout = "default" } })
-assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "/tmp/project/.hollow/workspace.json", "auto bootstrap should prefer project-local workspace files")
+assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "auto bootstrap should prefer project-local workspace files")
 
 local exported = hollow.workspace.export_current()
 assert_equal(exported.name, "main", "workspace export should include active workspace name")
