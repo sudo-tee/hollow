@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
 
+"$SCRIPT_DIR/check-zig-version.sh"
+
 # ── 1. Submodules ────────────────────────────────────────────────────────────
 echo "[setup] initialising submodules..."
 git -C "$ROOT" submodule update --init --recursive

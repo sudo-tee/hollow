@@ -45,6 +45,28 @@ The name "Hollow" is meant to evoke the idea of a container or vessel that can b
 
 ## Getting Started
 
+### Zig Version
+
+This repo currently requires Zig `0.15.2`.
+
+It is not compatible with Zig `0.16.x` yet because the build graph and pinned
+dependencies still use the Zig `0.15.2` build API.
+
+If you use `asdf` or `mise`, this repo includes a local version pin in
+`.tool-versions`, so you can install the right toolchain with:
+
+```bash
+asdf install
+## or
+mise install
+```
+
+Otherwise, install Zig `0.15.2` manually and confirm with:
+
+```bash
+zig version
+```
+
 ### Download a release
 
 The latest release is available on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases)
@@ -67,6 +89,8 @@ Refer to [the configuration docs](docs/configuration.md) for details on the conf
 ### Development builds
 
 #### Build from source (Windows/WSL)
+
+Before running setup, make sure `zig version` reports `0.15.2`.
 
 First-time setup:
 
@@ -93,6 +117,8 @@ Debug build:
 ```
 
 #### Build from source (other platforms)
+
+Before building, make sure `zig version` reports `0.15.2`.
 
 First-time setup:
 

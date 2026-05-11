@@ -56,6 +56,7 @@ fi
 EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
 
 if [[ $BUILD -eq 1 ]]; then
+  "$SCRIPT_DIR/scripts/check-zig-version.sh"
   echo "[launch] building $TARGET target"
   if [[ -n "$OPTIMIZE" ]]; then
     echo "[launch] optimize mode: $OPTIMIZE"

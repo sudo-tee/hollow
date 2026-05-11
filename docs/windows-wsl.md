@@ -7,6 +7,18 @@ and integration target, not a separate Linux build path for the main app.
 
 ## Development
 
+Before running the wrapper scripts, make sure `zig version` reports `0.15.2`.
+This repo is pinned to Zig `0.15.2` and does not build with Zig `0.16.x` yet.
+
+If you use `asdf` or `mise`, the repo-local `.tool-versions` file can install
+the correct toolchain:
+
+```bash
+asdf install
+## or
+mise install
+```
+
 First-time setup:
 
 ```bash
