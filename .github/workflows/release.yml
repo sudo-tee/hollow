@@ -16,13 +16,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
       - name: Apply sokol patch (run setup script)
         run: bash scripts/setup.sh
 
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.15.2
 
       - name: Build Windows release
         run: ./launch.sh --build-only
