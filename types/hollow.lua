@@ -696,6 +696,9 @@
 ---@field cwd? string
 ---@field env? table<string, string>
 
+---@class HollowProcessRunOpts
+---@field hide_window? boolean Defaults to true on the host bridge
+
 ---@class HollowConfigNamespace
 local config = {}
 
@@ -783,8 +786,9 @@ function term.new_tab(opts) end
 
 ---@param args string[]
 ---@param domain? string
+---@param opts? HollowProcessRunOpts
 ---@return boolean, string, string
-function term.run_domain_process(args, domain) end
+function term.run_domain_process(args, domain, opts) end
 
 ---@param direction? "horizontal"|"vertical"|HollowSplitPaneOpts
 ---@param opts? HollowSplitPaneOpts
@@ -1210,8 +1214,9 @@ function process.spawn(opts) end
 function process.exec(opts) end
 
 ---@param args string[]
+---@param opts? HollowProcessRunOpts
 ---@return boolean, string, string
-function process.run_child_process(args) end
+function process.run_child_process(args, opts) end
 
 ---@class HollowPlatformInfo
 ---@field os string
@@ -1275,6 +1280,7 @@ function process.run_child_process(args) end
 ---@field write_file fun(path: string, contents: string): boolean
 ---@field path_exists fun(path: string): boolean
 ---@field list_wsl_distros fun(): string[]
+---@field run_child_process fun(args: string[], opts?: HollowProcessRunOpts): boolean, string, string
 ---@field default_config_path fun(): string|nil
 ---@field json_encode fun(value: any): string
 

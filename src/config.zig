@@ -312,7 +312,7 @@ pub const Config = struct {
 
     pub fn defaultDomainName(self: Config) ?[]const u8 {
         if (self.default_domain) |name| {
-            if (self.domainByName(name) != null) return name;
+            if (self.domainByName(name) != null or inferredWslDistro(name) != null) return name;
         }
         return null;
     }
@@ -374,6 +374,7 @@ pub const Config = struct {
 
     pub fn setDefaultDomain(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.default_domain, value);
+        try self.ensureImplicitWslDomain(value);
     }
 
     pub fn setDomainShell(self: *Config, name: []const u8, shell_value: []const u8) !void {
@@ -417,6 +418,21 @@ pub const Config = struct {
             .name = try self.allocator.dupe(u8, name),
         });
         return &self.domains.items[self.domains.items.len - 1];
+    }
+
+    fn ensureImplicitWslDomain(self: *Config, name: []const u8) !void {
+        const distro = inferredWslDistro(name) orelse return;
+        const domain = try self.ensureDomain(name);
+        if (domain.shell != null) return;
+        const shell = try std.fmt.allocPrint(self.allocator, "wsl.exe -d {s}", .{distro});
+        defer self.allocator.free(shell);
+        try replaceOwned(self.allocator, &domain.shell, shell);
+    }
+
+    fn inferredWslDistro(name: []const u8) ?[]const u8 {
+        if (!platform.isWindows()) return null;
+        if (name.len <= 3 or !std.mem.endsWith(u8, name, "WSL")) return null;
+        return name[0 .. name.len - 3];
     }
 
     fn buildSshDomainShell(self: *Config, ssh: DomainSsh) ![]u8 {
@@ -717,6 +733,21 @@ test "window title shell and default domain helpers fall back safely" {
     try cfg.setDomainShell("actual-domain", "/bin/domain-shell");
     try cfg.setDefaultDomain("actual-domain");
     try std.testing.expectEqualStrings("actual-domain", cfg.defaultDomainName().?);
+}
+
+test "setDefaultDomain synthesizes implicit WSL domain on Windows" {
+    var cfg = Config.init(std.testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.setDefaultDomain("UbuntuWSL");
+
+    if (platform.isWindows()) {
+        try std.testing.expectEqualStrings("UbuntuWSL", cfg.defaultDomainName().?);
+        try std.testing.expectEqualStrings("wsl.exe -d Ubuntu", try cfg.shellForDomain(null));
+        try std.testing.expectEqualStrings("wsl.exe -d Ubuntu", cfg.domainByName("UbuntuWSL").?.shell.?);
+    } else {
+        try std.testing.expectEqual(@as(?[]const u8, null), cfg.defaultDomainName());
+    }
 }
 
 test "font smoothing and hinting parse accepted values and reject invalid ones" {

@@ -218,6 +218,131 @@ const LUA_ENVIRONINDEX: c_int = -10001;
 const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
+const WslDistroCache = struct {
+    mutex: std.Thread.Mutex = .{},
+    distros: std.ArrayListUnmanaged([]u8) = .{},
+    loading: bool = false,
+    loaded: bool = false,
+
+    fn ensureStarted(self: *WslDistroCache) void {
+        if (!platform.isWindows()) return;
+
+        self.mutex.lock();
+        if (self.loading or self.loaded) {
+            self.mutex.unlock();
+            return;
+        }
+        self.loading = true;
+        self.mutex.unlock();
+
+        const thread = std.Thread.spawn(.{}, loadWslDistrosThread, .{self}) catch {
+            self.mutex.lock();
+            self.loading = false;
+            self.mutex.unlock();
+            return;
+        };
+        thread.detach();
+    }
+
+    fn snapshotToLua(self: *WslDistroCache, state: *State, api: Api) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        api.create_table(state, 0, @intCast(self.distros.items.len));
+        for (self.distros.items, 0..) |distro, index| {
+            const zdistro = std.heap.page_allocator.dupeZ(u8, distro) catch continue;
+            defer std.heap.page_allocator.free(zdistro);
+            api.push_string(state, zdistro);
+            api.rawseti(state, -2, @intCast(index + 1));
+        }
+    }
+};
+
+var wsl_distro_cache = WslDistroCache{};
+
+fn parseWslDistroList(allocator: std.mem.Allocator, stdout: []const u8) !std.ArrayListUnmanaged([]u8) {
+    var utf8_stdout = stdout;
+    var decoded_utf8: ?[]u8 = null;
+    defer if (decoded_utf8) |owned| allocator.free(owned);
+
+    if (stdout.len % 2 == 0) {
+        var null_count: usize = 0;
+        for (stdout) |b| {
+            if (b == 0) null_count += 1;
+        }
+        if (null_count > stdout.len / 4) {
+            const wide = try allocator.alloc(u16, stdout.len / 2);
+            defer allocator.free(wide);
+            for (wide, 0..) |*code_unit, index| {
+                const lo = @as(u16, stdout[index * 2]);
+                const hi = @as(u16, stdout[index * 2 + 1]) << 8;
+                code_unit.* = lo | hi;
+            }
+            decoded_utf8 = try std.unicode.utf16LeToUtf8Alloc(allocator, wide);
+            utf8_stdout = decoded_utf8.?;
+        }
+    }
+
+    var distros = std.ArrayListUnmanaged([]u8){};
+    errdefer {
+        for (distros.items) |distro| allocator.free(distro);
+        distros.deinit(allocator);
+    }
+
+    var iter = std.mem.splitSequence(u8, utf8_stdout, "\n");
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r\t");
+        if (trimmed.len == 0) continue;
+        try distros.append(allocator, try allocator.dupe(u8, trimmed));
+    }
+
+    return distros;
+}
+
+fn loadWslDistrosThread(cache: *WslDistroCache) void {
+    const allocator = std.heap.page_allocator;
+    const result = runChildProcess(allocator, &.{ "wsl.exe", "-l", "-q" }, null, .{ .hide_window = true }) catch |err| {
+        std.log.warn("lua: list_wsl_distros failed err={s}", .{@errorName(err)});
+        cache.mutex.lock();
+        cache.loading = false;
+        cache.loaded = true;
+        cache.mutex.unlock();
+        return;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const success = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!success) {
+        std.log.warn("lua: list_wsl_distros exited unsuccessfully", .{});
+        cache.mutex.lock();
+        cache.loading = false;
+        cache.loaded = true;
+        cache.mutex.unlock();
+        return;
+    }
+
+    const distros = parseWslDistroList(allocator, result.stdout) catch |err| {
+        std.log.warn("lua: parse_wsl_distros failed err={s}", .{@errorName(err)});
+        cache.mutex.lock();
+        cache.loading = false;
+        cache.loaded = true;
+        cache.mutex.unlock();
+        return;
+    };
+
+    cache.mutex.lock();
+    defer cache.mutex.unlock();
+    for (cache.distros.items) |distro| allocator.free(distro);
+    cache.distros.deinit(allocator);
+    cache.distros = distros;
+    cache.loading = false;
+    cache.loaded = true;
+}
+
 fn luaValueToJson(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_int) anyerror!std.json.Value {
     const abs_idx = absoluteIndex(api, state, idx);
     const value_type: LuaType = @enumFromInt(api.value_type(state, abs_idx));
@@ -441,6 +566,68 @@ const HtpDispatchResult = struct {
     }
 };
 
+const ChildRunOptions = struct {
+    hide_window: bool = true,
+};
+
+fn runChildProcess(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, opts: ChildRunOptions) !std.process.Child.RunResult {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.cwd = cwd;
+    child.create_no_window = opts.hide_window;
+
+    try child.spawn();
+    errdefer {
+        _ = child.kill() catch {};
+    }
+
+    var stdout: std.ArrayList(u8) = .empty;
+    defer stdout.deinit(allocator);
+    var stderr: std.ArrayList(u8) = .empty;
+    defer stderr.deinit(allocator);
+
+    try child.collectOutput(allocator, &stdout, &stderr, 50 * 1024);
+
+    return .{
+        .stdout = try stdout.toOwnedSlice(allocator),
+        .stderr = try stderr.toOwnedSlice(allocator),
+        .term = try child.wait(),
+    };
+}
+
+fn luaChildRunOptions(api: Api, state: *State, idx: c_int) ChildRunOptions {
+    const abs_idx = absoluteIndex(api, state, idx);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, abs_idx))) != .table) return .{};
+
+    var opts = ChildRunOptions{};
+    api.get_field(state, abs_idx, "hide_window");
+    opts.hide_window = api.to_boolean(state, -1) != 0;
+    pop(api, state, 1);
+    return opts;
+}
+
+fn childRunResultToLua(state: *State, api: Api, result: std.process.Child.RunResult, err_label: [*:0]const u8) c_int {
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    const success = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+
+    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, err_label);
+    defer std.heap.page_allocator.free(zstdout);
+    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, err_label);
+    defer std.heap.page_allocator.free(zstderr);
+
+    api.push_boolean(state, if (success) 1 else 0);
+    api.push_string(state, zstdout);
+    api.push_string(state, zstderr);
+    return 3;
+}
+
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     state: *State,
@@ -498,6 +685,8 @@ pub const Runtime = struct {
         };
 
         active_context = ctx;
+
+        wsl_distro_cache.ensureStarted();
 
         try runtime.exposeHollowTable();
         try runtime.preloadLuaModules();
@@ -1624,67 +1813,8 @@ fn l_list_wsl_distros(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = &.{ "wsl.exe", "-l", "-q" },
-    }) catch |err| {
-        std.log.warn("lua: list_wsl_distros failed err={s}", .{@errorName(err)});
-        api.create_table(state, 0, 0);
-        return 1;
-    };
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
-
-    const stdout = result.stdout;
-    if (stdout.len == 0) {
-        api.create_table(state, 0, 0);
-        return 1;
-    }
-
-    var utf8_stdout = stdout;
-    var decoded_utf8: ?[]u8 = null;
-    if (stdout.len % 2 == 0) {
-        var null_count: usize = 0;
-        for (stdout) |b| {
-            if (b == 0) null_count += 1;
-        }
-        if (null_count > stdout.len / 4) {
-            const wide = std.heap.page_allocator.alloc(u16, stdout.len / 2) catch null;
-            if (wide) |owned_wide| {
-                defer std.heap.page_allocator.free(owned_wide);
-                for (owned_wide, 0..) |*code_unit, index| {
-                    const lo = @as(u16, stdout[index * 2]);
-                    const hi = @as(u16, stdout[index * 2 + 1]) << 8;
-                    code_unit.* = lo | hi;
-                }
-                decoded_utf8 = std.unicode.utf16LeToUtf8Alloc(std.heap.page_allocator, owned_wide) catch null;
-            }
-            if (decoded_utf8) |owned| {
-                utf8_stdout = owned;
-            }
-        }
-    }
-    defer if (decoded_utf8) |owned| std.heap.page_allocator.free(owned);
-
-    var distros = std.ArrayList([]const u8).empty;
-    defer distros.deinit(std.heap.page_allocator);
-
-    var iter = std.mem.splitSequence(u8, utf8_stdout, "\n");
-    while (iter.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \r\t");
-        if (trimmed.len > 0) {
-            distros.append(std.heap.page_allocator, trimmed) catch continue;
-        }
-    }
-
-    api.create_table(state, 0, @intCast(distros.items.len));
-    for (distros.items, 0..) |distro, index| {
-        const zdistro = std.heap.page_allocator.dupeZ(u8, distro) catch continue;
-        defer std.heap.page_allocator.free(zdistro);
-        api.push_string(state, zdistro);
-        api.rawseti(state, -2, @intCast(index + 1));
-    }
-
+    wsl_distro_cache.ensureStarted();
+    wsl_distro_cache.snapshotToLua(state, api);
     return 1;
 }
 
@@ -2018,10 +2148,9 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
         return api.raise_error(state, "run_child_process expects at least one argv item");
     }
 
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = argv.items,
-    }) catch |err| {
+    const opts = if (api.get_top(state) >= 2) luaChildRunOptions(api, state, 2) else ChildRunOptions{};
+
+    const result = runChildProcess(std.heap.page_allocator, argv.items, null, opts) catch |err| {
         std.log.warn("lua: run_child_process failed err={s}", .{@errorName(err)});
         api.push_boolean(state, 0);
         api.push_string(state, "");
@@ -2030,23 +2159,7 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
         api.push_string(state, zerr);
         return 3;
     };
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
-
-    const success = switch (result.term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-
-    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, "run_child_process failed");
-    defer std.heap.page_allocator.free(zstdout);
-    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, "run_child_process failed");
-    defer std.heap.page_allocator.free(zstderr);
-
-    api.push_boolean(state, if (success) 1 else 0);
-    api.push_string(state, zstdout);
-    api.push_string(state, zstderr);
-    return 3;
+    return childRunResultToLua(state, api, result, "run_child_process failed");
 }
 
 fn l_run_domain_process(state: *State) callconv(.c) c_int {
@@ -2103,7 +2216,9 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
         return 3;
     };
 
-    const result = runDomainProcess(shell, ctx.cfg.defaultCwdForDomain(domain), args.items) catch |err| {
+    const opts = if (api.get_top(state) >= 3) luaChildRunOptions(api, state, 3) else ChildRunOptions{};
+
+    const result = runDomainProcess(shell, ctx.cfg.defaultCwdForDomain(domain), args.items, opts) catch |err| {
         std.log.warn("lua: run_domain_process failed domain={s} err={s}", .{ domain, @errorName(err) });
         api.push_boolean(state, 0);
         api.push_string(state, "");
@@ -2112,26 +2227,10 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
         api.push_string(state, zerr);
         return 3;
     };
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
-
-    const success = switch (result.term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-
-    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, "run_domain_process failed");
-    defer std.heap.page_allocator.free(zstdout);
-    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, "run_domain_process failed");
-    defer std.heap.page_allocator.free(zstderr);
-
-    api.push_boolean(state, if (success) 1 else 0);
-    api.push_string(state, zstdout);
-    api.push_string(state, zstderr);
-    return 3;
+    return childRunResultToLua(state, api, result, "run_domain_process failed");
 }
 
-fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u8) !std.process.Child.RunResult {
+fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u8, opts: ChildRunOptions) !std.process.Child.RunResult {
     const parsed_shell = try parseCommandString(shell);
     defer freeOwnedArgv(parsed_shell);
 
@@ -2159,10 +2258,7 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
 
     if (shell_is_wsl and shell_is_ssh) {
         try argv.append(std.heap.page_allocator, command);
-        return try std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
-            .argv = argv.items,
-        });
+        return try runChildProcess(std.heap.page_allocator, argv.items, null, opts);
     }
 
     if (shell_is_wsl) {
@@ -2175,20 +2271,14 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
         try argv.append(std.heap.page_allocator, "sh");
         try argv.append(std.heap.page_allocator, "-lc");
         try argv.append(std.heap.page_allocator, command);
-        return try std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
-            .argv = argv.items,
-        });
+        return try runChildProcess(std.heap.page_allocator, argv.items, null, opts);
     }
 
     if (shell_is_ssh) {
         try argv.append(std.heap.page_allocator, "sh");
         try argv.append(std.heap.page_allocator, "-lc");
         try argv.append(std.heap.page_allocator, command);
-        return try std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
-            .argv = argv.items,
-        });
+        return try runChildProcess(std.heap.page_allocator, argv.items, null, opts);
     }
 
     if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
@@ -2202,11 +2292,7 @@ fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u
         try argv.append(std.heap.page_allocator, command);
     }
 
-    return try std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = argv.items,
-        .cwd = if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) null else cwd,
-    });
+    return try runChildProcess(std.heap.page_allocator, argv.items, if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) null else cwd, opts);
 }
 
 fn parseCommandString(command: []const u8) ![]const []const u8 {

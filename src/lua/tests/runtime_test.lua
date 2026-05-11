@@ -128,12 +128,13 @@ local function make_host_api()
     }
   end
 
-  function host_api.run_child_process(args)
-    return { ok = true, args = args }
+  function host_api.run_child_process(args, opts)
+    recorded.child_process = { args = args, opts = opts }
+    return { ok = true, args = args, opts = opts }
   end
 
-  function host_api.run_domain_process(domain, args)
-    recorded.domain_process = { domain = domain, args = args }
+  function host_api.run_domain_process(domain, args, opts)
+    recorded.domain_process = { domain = domain, args = args, opts = opts }
     return recorded.domain_process
   end
 
@@ -472,6 +473,12 @@ assert_equal(recorded.close_workspace, nil, "close_workspace should allow closin
 local process_result = hollow.term.run_domain_process({ "echo", "ok" })
 assert_equal(process_result.domain, "main", "run_domain_process should infer the current domain")
 assert_equal(recorded.domain_process.args[1], "echo", "run_domain_process should pass through arguments")
+
+hollow.process.run_child_process({ "echo", "ok" }, { hide_window = true })
+assert_equal(recorded.child_process.opts.hide_window, true, "run_child_process should forward opts")
+
+hollow.term.run_domain_process({ "echo", "ok" }, "main", { hide_window = true })
+assert_equal(recorded.domain_process.opts.hide_window, true, "run_domain_process should forward opts")
 
 local font_list = hollow.fonts.list()
 assert_equal(font_list[1].family, "Consolas", "fonts.list should return host-provided families")

@@ -190,13 +190,13 @@ function hollow.fonts.pick(candidates, style)
   return nil
 end
 
-function hollow.process.run_child_process(args)
-  return host_api.run_child_process(args)
+function hollow.process.run_child_process(args, opts)
+  return host_api.run_child_process(args, opts)
 end
 
-function hollow.term.run_domain_process(args, domain)
+function hollow.term.run_domain_process(args, domain, opts)
   if type(args) ~= "table" then
-    error("hollow.term.run_domain_process(args, domain?) expects args to be a table")
+    error("hollow.term.run_domain_process(args, domain?, opts?) expects args to be a table")
   end
 
   if domain == nil then
@@ -205,10 +205,10 @@ function hollow.term.run_domain_process(args, domain)
   end
 
   if type(domain) ~= "string" or domain == "" then
-    error("hollow.term.run_domain_process(args, domain?) could not resolve a domain")
+    error("hollow.term.run_domain_process(args, domain?, opts?) could not resolve a domain")
   end
 
-  return host_api.run_domain_process(domain, args)
+  return host_api.run_domain_process(domain, args, opts)
 end
 
 function hollow.process.spawn(_opts)
