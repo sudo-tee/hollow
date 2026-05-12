@@ -966,6 +966,7 @@ pub const App = struct {
     fn registerLuaCallbacks(self: *App, lua: *LuaRuntime) void {
         lua.registerAppCallbacks(.{
             .app = self,
+            .refresh_live_config = luaRefreshLiveConfigCallback,
             .split_pane = luaSplitPaneCallback,
             .toggle_pane_maximized = luaTogglePaneMaximizedCallback,
             .set_pane_floating = luaSetPaneFloatingCallback,
@@ -4339,6 +4340,13 @@ fn luaReloadConfigCallback(app_ptr: *anyopaque) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.reload_config);
     return true;
+}
+
+fn luaRefreshLiveConfigCallback(app_ptr: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    app.pending_renderer_refresh = app.config.backend == .sokol or app.config.backend == .webgpu;
+    app.invalidateAllPanes();
+    app.requestLayoutResize(true);
 }
 
 fn luaSendTextToPaneCallback(app_ptr: *anyopaque, pane_id: usize, text: []const u8) bool {

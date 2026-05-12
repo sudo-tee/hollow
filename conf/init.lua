@@ -33,6 +33,7 @@ local wave = {
 }
 
 local terminal_theme = wave
+local default_font_size = 14
 
 local palette = {
   bg = terminal_theme.background,
@@ -134,7 +135,7 @@ hollow.config.set({
   terminal_theme = terminal_theme,
   ui_theme = ui_theme,
   fonts = {
-    size = 14.5,
+    size = default_font_size,
     line_height = 0.95,
     smoothing = "grayscale",
     hinting = "light",
@@ -303,6 +304,33 @@ hollow.keymap.set("<A-S-PageUp>", "scrollback_page_up")
 hollow.keymap.set("<A-S-PageDown>", "scrollback_page_down")
 hollow.keymap.set("<C-S-Home>", "scrollback_top")
 hollow.keymap.set("<C-S-End>", "scrollback_bottom")
+
+local function set_font_size(size)
+  hollow.config.set({
+    fonts = {
+      size = size,
+    },
+  })
+  hollow.ui.notify.info("Font size: " .. tostring(size), { ttl = 1200 })
+end
+
+local function adjust_font_size(delta)
+  local fonts = hollow.config.get("fonts") or {}
+  local size = tonumber(fonts.size) or default_font_size
+  set_font_size(math.max(6, size + delta))
+end
+
+hollow.keymap.set("<C-S-minus>", function()
+  adjust_font_size(-0.5)
+end, { desc = "decrease font size" })
+
+hollow.keymap.set("<C-S-equal>", function()
+  adjust_font_size(0.5)
+end, { desc = "increase font size" })
+
+hollow.keymap.set("<C-0>", function()
+  set_font_size(default_font_size)
+end, { desc = "reset font size" })
 
 hollow.keymap.set("<leader>r", function()
   local tab = hollow.term.current_tab()

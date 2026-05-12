@@ -126,6 +126,7 @@ const embedded_lua_modules = [_]LuaModule{
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
+    refresh_live_config: *const fn (app: *anyopaque) void,
     split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
@@ -2470,6 +2471,7 @@ fn monthName(month: u8) []const u8 {
 fn l_set_config(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
+    var refresh_live_config = false;
     if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
         std.log.err("set_config expects a Lua table", .{});
         return 0;
@@ -2487,6 +2489,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         if (std.mem.eql(u8, key, "fonts") and value_type == .table) {
             const fonts_idx = absoluteIndex(api, state, -1);
             applyFontsTable(ctx.cfg, api, state, fonts_idx) catch |err| std.log.err("config fonts field failed: {s}", .{@errorName(err)});
+            refresh_live_config = true;
             continue;
         }
 
@@ -2560,6 +2563,10 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             const value = api.to_boolean(state, -1) != 0;
             applyBoolean(ctx.cfg, key, value) catch |err| std.log.err("config boolean field {s} failed: {s}", .{ key, @errorName(err) });
         }
+    }
+
+    if (refresh_live_config) {
+        if (ctx.app_callbacks) |cbs| cbs.refresh_live_config(cbs.app);
     }
 
     return 0;
