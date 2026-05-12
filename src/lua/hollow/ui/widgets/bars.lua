@@ -9,6 +9,149 @@ local ui = hollow.ui
 local util = hollow.util
 
 local BAR_CACHE_NO_EXPIRY = false
+local DEFAULT_TOPBAR_HEIGHT = 22
+local DEFAULT_TOPBAR_LAYOUT = {
+  padding = { left = 1, right = 1, top = 1, bottom = 1 },
+}
+
+---@param value any
+---@return table|nil
+local function optional_table(value)
+  return type(value) == "table" and value or nil
+end
+
+---@param value any
+---@return table
+local function clone_table(value)
+  return util.clone_value(type(value) == "table" and value or {})
+end
+
+---@param value any
+---@return HollowUiRenderableNode|nil
+local function configured_topbar_separator(value)
+  if value == false then
+    return nil
+  end
+  if type(value) == "string" then
+    return ui.span(value)
+  end
+  if type(value) ~= "table" then
+    return nil
+  end
+
+  local text = value.text
+  if text == nil then
+    text = value.value
+  end
+  if text == nil then
+    return nil
+  end
+
+  return ui.text(text, value.style)
+end
+
+---@param ctx HollowWidgetCtx
+---@param value any
+---@return HollowUiRenderableNode|nil
+local function configured_topbar_cwd(ctx, value)
+  if value == false then
+    return nil
+  end
+
+  local pane = ctx.term.pane
+  local text = pane and pane.cwd or ""
+  local style = nil
+  if type(value) == "table" then
+    style = value.style
+    if type(value.format) == "function" then
+      local ok, result = pcall(value.format, pane, ctx)
+      if ok then
+        text = result
+      end
+    end
+  end
+
+  if text == nil or text == "" then
+    return nil
+  end
+  if type(text) == "string" then
+    text = " " .. text .. " "
+  end
+  return ui.text(text, style)
+end
+
+---@param value any
+---@return table|false
+local function configured_topbar_bar_opts(value)
+  if value == false then
+    return false
+  end
+  return type(value) == "table" and value or {}
+end
+
+---@return HollowUiWidget|nil
+local function configured_topbar_widget()
+  local opts = optional_table(state.ui.configured_topbar)
+  if opts == nil then
+    return nil
+  end
+
+  return ui.new_widget("topbar", {
+    height = tonumber(opts.height) or DEFAULT_TOPBAR_HEIGHT,
+    style = opts.style,
+    layout = type(opts.layout) == "table" and opts.layout or DEFAULT_TOPBAR_LAYOUT,
+    render = function(ctx)
+      local items = {}
+      local workspace = configured_topbar_bar_opts(opts.workspace)
+      local tabs = configured_topbar_bar_opts(opts.tabs)
+      local separator = configured_topbar_separator(opts.separator)
+
+      if workspace ~= false then
+        items[#items + 1] = ui.bar.workspace(workspace)
+      end
+      if separator ~= nil and workspace ~= false and tabs ~= false then
+        items[#items + 1] = separator
+      end
+      if tabs ~= false then
+        items[#items + 1] = ui.bar.tabs(tabs)
+      end
+
+      local right_items = {}
+      local cwd = configured_topbar_cwd(ctx, opts.cwd)
+      if cwd ~= nil then
+        right_items[#right_items + 1] = cwd
+      end
+
+      local key_legend = configured_topbar_bar_opts(opts.key_legend)
+      if key_legend ~= false then
+        right_items[#right_items + 1] = ui.bar.key_legend(key_legend)
+      end
+
+      if opts.time ~= false then
+        local time_format = "%H:%M"
+        local time_opts = nil
+        if type(opts.time) == "string" then
+          time_format = opts.time
+        elseif type(opts.time) == "table" then
+          time_format = opts.time.format or time_format
+          if opts.time.style ~= nil then
+            time_opts = { style = opts.time.style }
+          end
+        end
+        right_items[#right_items + 1] = ui.bar.time(time_format, time_opts)
+      end
+
+      if #right_items > 0 then
+        items[#items + 1] = ui.spacer()
+        for _, item in ipairs(right_items) do
+          items[#items + 1] = item
+        end
+      end
+
+      return items
+    end,
+  })
+end
 
 local function cache_state_key(surface)
   if surface == "topbar" then
@@ -60,14 +203,18 @@ local function invalidate_bar_cache(surface)
   end
 
   state.ui[dirty_key] = true
+  ui[dirty_key] = true
   if state_key ~= nil then
     state.ui[state_key] = nil
+    ui[state_key] = nil
   end
   if layout_key ~= nil then
     state.ui[layout_key] = nil
+    ui[layout_key] = nil
   end
   if expires_key ~= nil then
     state.ui[expires_key] = nil
+    ui[expires_key] = nil
   end
   if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
     state.host_api.set_bar_cache_state(surface, true, 0)
@@ -111,6 +258,10 @@ local function set_bar_cache(surface, payload, layout, expires_at)
   state.ui[layout_key] = layout
   state.ui[expires_key] = expires_at == nil and BAR_CACHE_NO_EXPIRY or expires_at
   state.ui[dirty_key] = false
+  ui[state_key] = payload
+  ui[layout_key] = layout
+  ui[expires_key] = expires_at == nil and BAR_CACHE_NO_EXPIRY or expires_at
+  ui[dirty_key] = false
   if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
     state.host_api.set_bar_cache_state(surface, false, type(expires_at) == "number" and math.floor(expires_at) or 0)
   end
@@ -126,8 +277,10 @@ local function set_bar_layout_cache(surface, layout)
   end
 
   state.ui[layout_key] = layout
+  ui[layout_key] = layout
   if state_key ~= nil and state.ui[state_key] ~= nil then
     state.ui[dirty_key] = false
+    ui[dirty_key] = false
     if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
       local expires_key = cache_expires_key(surface)
       local expires_at = expires_key ~= nil and state.ui[expires_key] or nil
@@ -676,6 +829,21 @@ local function mounted_bar_widget(surface)
 end
 
 ---@param surface string
+---@return HollowUiWidget|nil
+local function configured_bar_widget(surface)
+  if surface == "topbar" then
+    return configured_topbar_widget()
+  end
+  return nil
+end
+
+---@param surface string
+---@return HollowUiWidget|nil
+local function active_bar_widget(surface)
+  return mounted_bar_widget(surface) or configured_bar_widget(surface)
+end
+
+---@param surface string
 ---@param payload any
 ---@return string|nil
 local function bar_payload_node_id(surface, payload)
@@ -747,7 +915,7 @@ local function call_bar_node_handler(surface, node_id, field, payload)
     end
   end
 
-  local widget = mounted_bar_widget(surface)
+  local widget = active_bar_widget(surface)
   if widget == nil or type(node_id) ~= "string" or node_id == "" then
     return false
   end
@@ -791,7 +959,7 @@ local function define_mount_api(namespace, kind, state_key, visibility_key)
   end
 
   function namespace.invalidate()
-    if state.ui[state_key] == nil then
+    if mounted_bar_widget(kind) == nil and (kind ~= "topbar" or configured_bar_widget(kind) == nil) then
       return false
     end
 
@@ -862,13 +1030,14 @@ function ui.handle_bar_node_event(kind, payload)
 end
 
 function ui._topbar_state()
-  if state.ui.mounted_topbar == nil then
+  local widget = active_bar_widget("topbar")
+  if widget == nil then
     if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
       state.host_api.set_bar_cache_state("topbar", false, 0)
     end
     return nil
   end
-  return serialize_bar_widget(state.ui.mounted_topbar, "topbar")
+  return serialize_bar_widget(widget, "topbar")
 end
 
 function ui._bottombar_state()
@@ -898,7 +1067,8 @@ function ui._bottombar_layout()
 end
 
 function ui._topbar_layout()
-  if state.ui.mounted_topbar == nil then
+  local widget = active_bar_widget("topbar")
+  if widget == nil then
     if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
       state.host_api.set_bar_cache_state("topbar", false, 0)
     end
@@ -909,8 +1079,15 @@ function ui._topbar_layout()
     return bar_cache_layout("topbar")
   end
 
-  local widget = state.ui.mounted_topbar
   return set_bar_layout_cache("topbar", serialize_bar_surface_layout(widget))
+end
+
+function ui.topbar.configure(opts)
+  opts = opts or {}
+  local configured = clone_table(state.ui.configured_topbar)
+  util.merge_tables(configured, opts)
+  state.ui.configured_topbar = configured
+  invalidate_bar_cache("topbar")
 end
 
 function ui._register_bar_invalidation_hooks()
@@ -931,6 +1108,7 @@ function ui._register_bar_invalidation_hooks()
     "term:pane_layout_changed",
     "term:title_changed",
     "term:cwd_changed",
+    "workspace:changed",
     "window:resized",
   }) do
     hollow.events.on(event_name, function()

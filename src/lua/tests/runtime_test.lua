@@ -550,4 +550,35 @@ assert_true(hollow.ui._overlay_state() ~= nil, "overlay state should serialize a
 hollow.ui.notify.clear()
 assert_equal(hollow.ui.overlay.depth(), 0, "notify.clear should remove notify widgets")
 
+hollow.ui.topbar.configure({
+  separator = "|",
+  cwd = false,
+  key_legend = false,
+  time = false,
+  tabs = {
+    fit = "content",
+    format = function(tab)
+      return "tab:" .. tab.title
+    end,
+  },
+})
+
+local configured_topbar = hollow.ui._topbar_state()
+assert_true(configured_topbar ~= nil, "topbar.configure should provide a default topbar widget")
+assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
+assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
+assert_equal(configured_topbar.items[3].kind, "tabs", "configured topbar should serialize tabs")
+
+hollow.ui.topbar.mount(hollow.ui.topbar.new({
+  render = function()
+    return {
+      hollow.ui.span("mounted")
+    }
+  end,
+}))
+
+local mounted_topbar = hollow.ui._topbar_state()
+assert_equal(mounted_topbar.items[1].text, "mounted", "mounted topbar should override configured defaults")
+hollow.ui.topbar.unmount()
+
 print("runtime_test.lua: ok")

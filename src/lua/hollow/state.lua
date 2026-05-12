@@ -72,6 +72,7 @@ function M.new(host_api)
     },
     ui = {
       mounted_topbar = nil,
+      configured_topbar = nil,
       _bar_invalidation_hooks_registered = false,
       topbar_cache_dirty = true,
       topbar_cache_expires_at = nil,

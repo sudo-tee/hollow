@@ -520,6 +520,30 @@
 ---@class HollowUiTopbarOptions: HollowWidget
 ---@field height? integer
 
+---@class HollowUiTopbarCwdOptions
+---@field style? HollowUiNodeStyle|HollowHexColor
+---@field format? fun(pane: HollowPane|nil, ctx?: HollowWidgetCtx): HollowUiFormattedValue|nil
+
+---@class HollowUiTopbarSeparatorOptions
+---@field text? HollowUiFormattedValue
+---@field value? HollowUiFormattedValue
+---@field style? HollowUiNodeStyle|HollowHexColor
+
+---@class HollowUiTopbarTimeOptions
+---@field format? string
+---@field style? HollowUiNodeStyle|HollowHexColor
+
+---@class HollowUiTopbarConfigureOptions
+---@field height? integer
+---@field style? HollowUiNodeStyle|HollowHexColor
+---@field layout? { padding?: number|{ top?: integer, right?: integer, bottom?: integer, left?: integer, x?: integer, y?: integer, horizontal?: integer, vertical?: integer }, margin?: number|{ top?: integer, right?: integer, bottom?: integer, left?: integer, x?: integer, y?: integer, horizontal?: integer, vertical?: integer } }
+---@field workspace? false|HollowUiBarWorkspaceOptions
+---@field tabs? false|HollowUiBarTabsOptions
+---@field separator? false|string|HollowUiTopbarSeparatorOptions
+---@field cwd? false|HollowUiTopbarCwdOptions
+---@field key_legend? false|HollowUiBarKeyLegendOptions
+---@field time? false|string|HollowUiTopbarTimeOptions
+
 ---@class HollowUiBottombarOptions: HollowWidget
 ---@field height? integer
 
@@ -649,6 +673,7 @@
 
 ---@class HollowUiState
 ---@field mounted_topbar HollowUiWidget|nil
+---@field configured_topbar HollowUiTopbarConfigureOptions|nil
 ---@field topbar_hovered_id string|nil
 ---@field mounted_bottombar HollowUiWidget|nil
 ---@field bottombar_hovered_id string|nil
@@ -950,6 +975,9 @@ function topbar.unmount() end
 
 ---@return boolean
 function topbar.invalidate() end
+
+---@param opts? HollowUiTopbarConfigureOptions
+function topbar.configure(opts) end
 
 ---@alias HollowUiTopbarNamespace HollowUiWidgetSurfaceNamespace
 

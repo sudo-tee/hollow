@@ -524,11 +524,16 @@ ephemeral state around the widget lifetime.
 ### `hollow.ui.topbar`
 
 ```lua
+hollow.ui.topbar.configure(opts)
 widget = hollow.ui.topbar.new(opts)
 hollow.ui.topbar.mount(widget)
 hollow.ui.topbar.unmount()
 hollow.ui.topbar.invalidate()
 ```
+
+`configure(...)` customizes the shipped top bar without replacing the whole
+surface. `mount(...)` still takes full ownership when you want a completely
+custom widget.
 
 The current renderer adapts topbar widgets onto the existing top status bar path.
 A single `hollow.ui.spacer()` splits left and right content.
@@ -542,17 +547,12 @@ Typical use cases:
 Example:
 
 ```lua
-hollow.ui.topbar.mount(hollow.ui.topbar.new({
-  render = function(ctx)
-    return {
-      hollow.ui.workspace.topbar_button(),
-      hollow.ui.bar.tabs({ fit = "content" }),
-      hollow.ui.spacer(),
-      hollow.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " "),
-      hollow.ui.bar.time("%H:%M:%S"),
-    }
-  end,
-}))
+hollow.ui.topbar.configure({
+  tabs = {
+    fit = "content",
+  },
+  time = { format = "%H:%M:%S" },
+})
 ```
 
 ### `hollow.ui.bottombar`

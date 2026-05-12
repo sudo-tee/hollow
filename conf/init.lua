@@ -181,86 +181,88 @@ if is_windows then
   hollow.config.populate_wsl_domains()
 end
 
-hollow.ui.topbar.mount(hollow.ui.topbar.new({
-  height = 30,
+local topbar_pill = {
+  bg = ui_theme.tab_bar.background,
+  radius = 8,
+  padding = { left = 3, right = 3, top = 1, bottom = 1 },
+  margin = { right = 1, left = 0, top = 0, bottom = 0 },
+}
+
+local topbar_group_bg = brighten(palette.black, 0.08, palette.bg)
+local topbar_sep_fg = brighten(palette.black, 0.08, palette.black)
+
+hollow.ui.topbar.configure({
+  height = 22,
   style = {
     bg = ui_theme.tab_bar.background,
   },
   layout = {
     padding = { left = 0, right = 0, top = 1, bottom = 1 },
   },
-  render = function(_ctx)
-    local pill = {
-      bg = ui_theme.tab_bar.background,
-      radius = 8,
-      padding = { left = 3, right = 3, top = 1, bottom = 1 },
-      margin = { right = 1, left = 0, top = 0, bottom = 0 },
-    }
+  cwd = false,
+  key_legend = false,
+  time = false,
+  workspace = {
+    style = topbar_pill,
+    format = function(workspace)
+      return {
+        hollow.ui.span(workspace.name, { fg = palette.bright_blue, bold = true }),
+      }
+    end,
+  },
+  separator = {
+    text = "|",
+    style = { fg = topbar_sep_fg, margin = { left = 3, right = 3 } },
+  },
+  tabs = {
+    fit = "content",
+    style = function(tab)
+      local tab_bg = tab.is_active and topbar_group_bg or ui_theme.tab_bar.background
+      local tab_fg = tab.is_active and palette.bright_white
+        or brighten(palette.bg, -0.4, palette.bg)
+      return {
+        bg = tab_bg,
+        fg = tab_fg,
+        radius = 4,
+        padding = { left = 6, right = 3, top = 2, bottom = 2 },
+        margin = { right = 1 },
+        bold = tab.is_active,
+      }
+    end,
+    format = function(tab)
+      local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
+      local tab_cwd = tab.pane and tab.pane.cwd and hollow.util.basename(tab.pane.cwd)
+      local tab_title = tab_cwd
+        or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
+        or tab.title
+      local tab_bg = tab.is_active and brighten(topbar_group_bg, 0.16, palette.bg) or palette.bg
+      local tab_fg = tab.is_active and palette.bright_white or brighten(palette.fg, 0.4, palette.bg)
 
-    local group_bg = brighten(palette.black, 0.08, palette.bg)
-    local sep_fg = brighten(palette.black, 0.08, palette.black)
-    return {
-      hollow.ui.bar.workspace({
-        style = pill,
-        format = function(workspace)
-          return {
-            hollow.ui.span(workspace.name, { fg = palette.bright_blue, bold = true }),
-          }
+      local close_style = {
+        id = "tab-close:" .. tostring(tab.id),
+        fg = palette.gray,
+        bg = tab_bg,
+        hover = {
+          fg = tab_fg,
+        },
+        on_click = function()
+          hollow.term.close_tab(tab.id)
         end,
-      }),
-      hollow.ui.span("|", { fg = sep_fg, margin = { left = 3, right = 3 } }),
-      hollow.ui.bar.tabs({
-        fit = "content",
-        style = function(tab)
-          local tab_bg = tab.is_active and group_bg or ui_theme.tab_bar.background
-          local tab_fg = tab.is_active and palette.bright_white
-            or brighten(palette.bg, -0.4, palette.bg)
-          return {
-            bg = tab_bg,
-            fg = tab_fg,
-            radius = 4,
-            padding = { left = 6, right = 3, top = 2, bottom = 2 },
-            margin = { right = 1 },
-            bold = tab.is_active,
-          }
-        end,
-        format = function(tab)
-          local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
-          local tab_cwd = tab.pane and tab.pane.cwd and hollow.util.basename(tab.pane.cwd)
-          local tab_title = tab_cwd
-            or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
-            or tab.title
-          local tab_bg = tab.is_active and brighten(group_bg, 0.16, palette.bg) or palette.bg
-          local tab_fg = tab.is_active and palette.bright_white
-            or brighten(palette.fg, 0.4, palette.bg)
-
-          local close_style = {
-            id = "tab-close:" .. tostring(tab.id),
-            fg = palette.gray,
-            bg = tab_bg,
-            hover = {
-              fg = tab_fg,
-            },
-            on_click = function()
-              hollow.term.close_tab(tab.id)
-            end,
-          }
-          return {
-            hollow.ui.span(is_maximized, { fg = palette.magenta }),
-            hollow.ui.span(tab_title, {
-              id = "tab-text:" .. tostring(tab.id),
-              on_click = function()
-                hollow.term.focus_tab(tab.id)
-              end,
-              hover = { fg = palette.bright_white },
-            }),
-            hollow.ui.span(" ×", close_style),
-          }
-        end,
-      }),
-    } --[[@as HollowWidgetRenderResult]]
-  end,
-}))
+      }
+      return {
+        hollow.ui.span(is_maximized, { fg = palette.magenta }),
+        hollow.ui.span(tab_title, {
+          id = "tab-text:" .. tostring(tab.id),
+          on_click = function()
+            hollow.term.focus_tab(tab.id)
+          end,
+          hover = { fg = palette.bright_white },
+        }),
+        hollow.ui.span(" ×", close_style),
+      }
+    end,
+  },
+})
 
 hollow.events.on("config:reloaded", function()
   hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
@@ -354,11 +356,6 @@ end, { desc = "reload config" })
 hollow.keymap.set("<leader>p", function()
   hollow.term.split_pane({ domain = "pwsh" })
 end, { desc = "edit workspace config" })
-
-hollow.keymap.set("<leader>ws", function()
-  local path = hollow.workspace.export_to("C:\\Users\\fbelanger\\workspace-layouts.json")
-  hollow.ui.notify.info("Workspace layout exported to " .. path, { ttl = 3000 })
-end, { desc = "export workspace config" })
 
 -- User config files are loaded after this bundled config, so you can override
 -- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or

@@ -268,15 +268,12 @@ Hollow exposes widgets and keymaps directly from Lua.
 ```lua
 local hollow = require("hollow")
 
-hollow.ui.topbar.mount(hollow.ui.topbar.new({
-  render = function(ctx)
-    return {
-      hollow.ui.span(" " .. (ctx.term.pane and ctx.term.pane.cwd or "") .. " "),
-      hollow.ui.spacer(),
-      hollow.ui.bar.time("%H:%M:%S"),
-    }
-  end,
-}))
+hollow.ui.topbar.configure({
+  workspace = false,
+  separator = false,
+  tabs = false,
+  time = { format = "%H:%M:%S" },
+})
 
 hollow.keymap.set("<leader>uu", function()
   hollow.config.reload()

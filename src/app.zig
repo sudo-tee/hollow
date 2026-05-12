@@ -3505,6 +3505,10 @@ pub const App = struct {
         if (mux.activePane()) |active| {
             runtime.registerCallbacks(active.terminal, terminalCallbacks());
         }
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        if (mux.activeTab()) |tab| {
+            self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+        }
         self.requestLayoutResize(false);
         // Invalidate pending_split_ratio_node — the tree has changed.
         self.pending_split_ratio_node = null;
@@ -3661,6 +3665,10 @@ pub const App = struct {
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {
                     runtime.registerCallbacks(active.terminal, terminalCallbacks());
+                }
+                self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+                if (mux.activeTab()) |tab| {
+                    self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
                 }
                 self.requestLayoutResize(false);
             }
