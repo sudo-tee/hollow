@@ -1,6 +1,39 @@
 local M = {}
 
 function M.setup(hollow, host_api)
+  local function domain_snapshot(name)
+    if type(name) ~= "string" or name == "" then
+      return nil
+    end
+
+    local default_domain = hollow.config.get("default_domain")
+    local current_pane_id = host_api.current_pane_id and host_api.current_pane_id() or nil
+    local current_name = current_pane_id ~= nil and host_api.get_pane_domain and host_api.get_pane_domain(current_pane_id)
+      or nil
+    local domains = hollow.config.get("domains")
+    local configured = type(domains) == "table" and domains[name] or nil
+
+    if type(configured) == "string" then
+      configured = { shell = configured }
+    elseif type(configured) ~= "table" then
+      configured = nil
+    end
+
+    local snapshot = {
+      name = name,
+      is_active = name == current_name,
+      is_default = name == default_domain,
+    }
+
+    if configured ~= nil then
+      for key, value in pairs(configured) do
+        snapshot[key] = value
+      end
+    end
+
+    return snapshot
+  end
+
   local function pane_snapshot(pane_id)
     if pane_id == nil or not host_api.pane_exists(pane_id) then
       return nil
@@ -116,6 +149,14 @@ function M.setup(hollow, host_api)
   function hollow.term.current_workspace()
     local index = host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0
     return workspace_snapshot(index)
+  end
+
+  function hollow.term.current_domain()
+    local pane_id = host_api.current_pane_id and host_api.current_pane_id() or nil
+    if pane_id == nil or host_api.get_pane_domain == nil then
+      return nil
+    end
+    return domain_snapshot(host_api.get_pane_domain(pane_id))
   end
 
   function hollow.term.set_workspace_name(name)
@@ -364,6 +405,7 @@ function M.setup(hollow, host_api)
   end
 
   return {
+    domain_snapshot = domain_snapshot,
     pane_snapshot = pane_snapshot,
     workspace_snapshot = workspace_snapshot,
     tab_snapshot = tab_snapshot,

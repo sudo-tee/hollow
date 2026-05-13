@@ -50,6 +50,7 @@ local function serializable_error(value, path, seen)
   return nil
 end
 
+---@param hollow Hollow
 function M.setup(hollow, _host_api, _state, util, term_helpers)
   local query_handlers = {}
   local emit_handlers = {}
@@ -173,6 +174,10 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
 
   hollow.htp.on_query("current_workspace", function()
     return hollow.term.current_workspace()
+  end)
+
+  hollow.htp.on_query("current_domain", function()
+    return hollow.term.current_domain()
   end)
 
   hollow.htp.on_query("echo", function(ctx)

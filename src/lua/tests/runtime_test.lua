@@ -463,8 +463,12 @@ snapshot.theme.accent = "#000000"
 assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.snapshot should clone values")
 
 local current_pane = hollow.term.current_pane()
+local current_domain = hollow.term.current_domain()
 assert_equal(current_pane.id, 101, "current_pane should return the focused pane")
+assert_equal(current_domain.name, "main", "current_domain should snapshot the focused pane domain")
+assert_equal(current_domain.is_active, true, "current_domain should mark the active domain")
 assert_equal(hollow.term.current_workspace().name, "main", "current_workspace should snapshot workspace state")
+assert_equal(hollow.term.current_workspace().domain, "main", "current_workspace should expose its active domain")
 hollow.term.close_workspace(41)
 assert_equal(recorded.close_workspace, 41, "close_workspace should forward workspace ids")
 hollow.term.close_workspace()
@@ -537,6 +541,10 @@ assert_equal(event_payload.value, 42, "once listeners should fire exactly once")
 local ok_query, pane_query = hollow.htp._handle_query("pane", nil, 101)
 assert_true(ok_query, "built-in HTP pane query should succeed")
 assert_equal(pane_query.id, 101, "HTP pane query should expose pane snapshots")
+
+local ok_domain_query, domain_query = hollow.htp._handle_query("current_domain", nil, 101)
+assert_true(ok_domain_query, "built-in HTP current_domain query should succeed")
+assert_equal(domain_query.name, "main", "HTP current_domain query should expose domain snapshots")
 
 local ok_emit = hollow.htp._handle_emit("move_pane", { direction = "left", amount = 0.2 }, 101)
 assert_true(ok_emit, "built-in HTP emit handler should succeed")
