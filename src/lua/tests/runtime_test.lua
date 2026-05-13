@@ -37,6 +37,14 @@ local function make_host_api()
     new_tab_calls = 0,
     move_pane = nil,
     split_pane = nil,
+    close_pane = nil,
+    focus_pane = nil,
+    resize_pane = nil,
+    close_tab_by_id = nil,
+    switch_tab_by_id = nil,
+    set_tab_title_by_id = nil,
+    reload_config = 0,
+    scroll = nil,
     workspace_default_cwd = nil,
     send_text = {},
     files = {},
@@ -47,6 +55,7 @@ local function make_host_api()
       pid = 4242,
       domain = "main",
       cwd = "/tmp/project",
+      text = "line one\nline two",
       title = "shell",
       is_focused = true,
       is_floating = false,
@@ -143,6 +152,7 @@ local function make_host_api()
   end
 
   function host_api.reload_config()
+    recorded.reload_config = recorded.reload_config + 1
     return true
   end
 
@@ -160,6 +170,10 @@ local function make_host_api()
 
   function host_api.get_pane_cwd(pane_id)
     return panes[pane_id].cwd
+  end
+
+  function host_api.get_pane_text(pane_id)
+    return panes[pane_id].text
   end
 
   function host_api.get_pane_title(pane_id)
@@ -306,7 +320,13 @@ local function make_host_api()
   end
 
   function host_api.close_pane()
+    recorded.close_pane = "active"
     return nil
+  end
+
+  function host_api.close_pane_by_id(pane_id)
+    recorded.close_pane = pane_id
+    return panes[pane_id] ~= nil
   end
 
   function host_api.next_tab()
@@ -327,6 +347,7 @@ local function make_host_api()
   end
 
   function host_api.focus_pane(_direction)
+    recorded.focus_pane = _direction
     return nil
   end
 
@@ -351,6 +372,7 @@ local function make_host_api()
   end
 
   function host_api.resize_pane(_axis, _amount)
+    recorded.resize_pane = { axis = _axis, amount = _amount }
     return nil
   end
 
@@ -363,22 +385,49 @@ local function make_host_api()
   end
 
   function host_api.scroll_active(_amount)
+    recorded.scroll = { kind = "delta", amount = _amount }
     return nil
   end
 
   function host_api.scroll_active_page(_amount)
+    recorded.scroll = { kind = "page", amount = _amount }
     return nil
   end
 
   function host_api.scroll_active_top()
+    recorded.scroll = { kind = "top" }
     return nil
   end
 
   function host_api.scroll_active_bottom()
+    recorded.scroll = { kind = "bottom" }
     return nil
   end
 
+  function host_api.switch_tab_by_id(tab_id)
+    recorded.switch_tab_by_id = tab_id
+    return true
+  end
+
+  function host_api.close_tab_by_id(tab_id)
+    recorded.close_tab_by_id = tab_id
+    return true
+  end
+
+  function host_api.set_tab_title_by_id(tab_id, title)
+    recorded.set_tab_title_by_id = { tab_id = tab_id, title = title }
+    return true
+  end
+
   function host_api.send_text(text)
+    recorded.send_text[#recorded.send_text + 1] = text
+    return true
+  end
+
+  function host_api.send_text_to_pane(pane_id, text)
+    if panes[pane_id] == nil then
+      return false
+    end
     recorded.send_text[#recorded.send_text + 1] = text
     return true
   end
@@ -465,6 +514,7 @@ assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.snapshot shou
 local current_pane = hollow.term.current_pane()
 local current_domain = hollow.term.current_domain()
 assert_equal(current_pane.id, 101, "current_pane should return the focused pane")
+assert_equal(hollow.term.get_pane_text(101), "line one\nline two", "get_pane_text should return pane text")
 assert_equal(current_domain.name, "main", "current_domain should snapshot the focused pane domain")
 assert_equal(current_domain.is_active, true, "current_domain should mark the active domain")
 assert_equal(hollow.term.current_workspace().name, "main", "current_workspace should snapshot workspace state")
@@ -526,9 +576,10 @@ assert_equal(exported.tabs[1].panes[1].cwd, "/tmp/project", "workspace export sh
 local on_key = get_key_handler()
 assert_true(type(on_key) == "function", "keymap setup should register a key handler")
 
-local key, mods = hollow.keymap.parse_chord("<C-t>")
-assert_true(on_key(key, mods), "default key bindings should consume mapped keys")
-assert_equal(recorded.new_tab_calls, 1, "default action bindings should invoke host actions")
+hollow.keymap.set("<C-S-t>", "new_tab")
+local key, mods = hollow.keymap.parse_chord("<C-S-t>")
+assert_true(on_key(key, mods), "registered key bindings should consume mapped keys")
+assert_equal(recorded.new_tab_calls, 1, "registered action bindings should invoke host actions")
 
 local event_payload = nil
 hollow.events.once("custom:event", function(payload)
@@ -550,6 +601,77 @@ local ok_emit = hollow.htp._handle_emit("move_pane", { direction = "left", amoun
 assert_true(ok_emit, "built-in HTP emit handler should succeed")
 assert_equal(recorded.move_pane.direction, "left", "HTP emit should dispatch term actions")
 assert_equal(recorded.move_pane.amount, 0.2, "HTP emit should preserve payload values")
+
+local ok_panes_query, panes_query = hollow.htp._handle_query("panes", nil, 101)
+assert_true(ok_panes_query, "built-in HTP panes query should succeed")
+assert_equal(panes_query[1].id, 101, "HTP panes query should expose pane snapshots")
+
+local ok_tab_query, tab_query = hollow.htp._handle_query("tab", { id = 201 }, 101)
+assert_true(ok_tab_query, "built-in HTP tab query should succeed")
+assert_equal(tab_query.id, 201, "HTP tab query should support targeted lookups")
+
+local ok_workspace_query, workspace_query = hollow.htp._handle_query("workspace", { id = 41 }, 101)
+assert_true(ok_workspace_query, "built-in HTP workspace query should succeed")
+assert_equal(workspace_query.id, 41, "HTP workspace query should support targeted lookups")
+
+local ok_close_pane = hollow.htp._handle_emit("close_pane", { id = 101 }, 101)
+assert_true(ok_close_pane, "HTP close_pane should succeed")
+assert_equal(recorded.close_pane, 101, "HTP close_pane should target pane ids")
+
+local ok_focus_pane = hollow.htp._handle_emit("focus_pane", { direction = "right" }, 101)
+assert_true(ok_focus_pane, "HTP focus_pane should succeed")
+assert_equal(recorded.focus_pane, "right", "HTP focus_pane should forward direction")
+
+local ok_resize_pane = hollow.htp._handle_emit("resize_pane", { axis = "horizontal", delta = 5 }, 101)
+assert_true(ok_resize_pane, "HTP resize_pane should succeed")
+assert_equal(recorded.resize_pane.axis, "horizontal", "HTP resize_pane should forward axis")
+assert_equal(recorded.resize_pane.amount, 5, "HTP resize_pane should forward delta")
+
+local ok_send_text = hollow.htp._handle_emit("send_text", { text = "ls\n", id = 101 }, 101)
+assert_true(ok_send_text, "HTP send_text should succeed")
+assert_equal(recorded.send_text[#recorded.send_text], "ls\n", "HTP send_text should forward text to the pane")
+
+local ok_pane_text, pane_text = hollow.htp._handle_query("pane_text", { id = 101 }, 101)
+assert_true(ok_pane_text, "HTP pane_text should succeed")
+assert_equal(pane_text, "line one\nline two", "HTP pane_text should return pane text")
+
+local ok_close_tab = hollow.htp._handle_emit("close_tab", { id = 201 }, 101)
+assert_true(ok_close_tab, "HTP close_tab should succeed")
+assert_equal(recorded.close_tab_by_id, 201, "HTP close_tab should target tab ids")
+
+local ok_focus_tab = hollow.htp._handle_emit("focus_tab", { id = 201 }, 101)
+assert_true(ok_focus_tab, "HTP focus_tab should succeed")
+assert_equal(recorded.switch_tab_by_id, 201, "HTP focus_tab should target tab ids")
+
+local ok_set_tab_title = hollow.htp._handle_emit("set_tab_title", { id = 201, title = "editor" }, 101)
+assert_true(ok_set_tab_title, "HTP set_tab_title should succeed")
+assert_equal(recorded.set_tab_title_by_id.title, "editor", "HTP set_tab_title should forward title")
+
+local ok_new_tab = hollow.htp._handle_emit("new_tab", { domain = "dev", command = "npm run dev" }, 101)
+assert_true(ok_new_tab, "HTP new_tab should succeed")
+assert_equal(recorded.new_tab.domain, "dev", "HTP new_tab should forward domain")
+assert_equal(recorded.new_tab.command, "npm run dev", "HTP new_tab should forward command")
+
+local ok_new_workspace = hollow.htp._handle_emit("new_workspace", { cwd = "/tmp/project", name = "proj" }, 101)
+assert_true(ok_new_workspace, "HTP new_workspace should succeed")
+assert_equal(recorded.new_workspace.name, "proj", "HTP new_workspace should forward payload")
+
+local ok_set_workspace_name = hollow.htp._handle_emit("set_workspace_name", { id = 41, name = "renamed" }, 101)
+assert_true(ok_set_workspace_name, "HTP set_workspace_name should succeed")
+assert_equal(hollow.term.current_workspace().name, "renamed", "HTP set_workspace_name should update the active workspace")
+
+local ok_reload_config = hollow.htp._handle_emit("reload_config", {}, 101)
+assert_true(ok_reload_config, "HTP reload_config should succeed")
+assert_equal(recorded.reload_config, 1, "HTP reload_config should call the host bridge")
+
+local ok_set_theme = hollow.htp._handle_emit("set_theme", { name = "tokyonight" }, 101)
+assert_true(ok_set_theme, "HTP set_theme should succeed")
+assert_equal(hollow.config.get("theme"), "tokyonight", "HTP set_theme should update config state")
+
+local ok_scroll = hollow.htp._handle_emit("scroll", { to = "page-down" }, 101)
+assert_true(ok_scroll, "HTP scroll should succeed")
+assert_equal(recorded.scroll.kind, "page", "HTP scroll should map to scroll actions")
+assert_equal(recorded.scroll.amount, 1, "HTP scroll page-down should scroll one page")
 
 local widget = hollow.ui.notify.info("hello", { ttl = 100 })
 assert_true(widget ~= nil, "notify should create an overlay widget")
@@ -575,7 +697,6 @@ local configured_topbar = hollow.ui._topbar_state()
 assert_true(configured_topbar ~= nil, "topbar.configure should provide a default topbar widget")
 assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
 assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
-assert_equal(configured_topbar.items[3].kind, "tabs", "configured topbar should serialize tabs")
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function()

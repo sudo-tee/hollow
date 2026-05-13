@@ -257,6 +257,7 @@ hollow.term.focus_tab(id)
 hollow.term.close_tab(id)
  hollow.term.set_title(title, tab_id?)
  hollow.term.send_text(text, pane_id?)
+ hollow.term.get_pane_text(pane_id?)
  hollow.term.set_pane_foreground_process(pane_id, process)
  hollow.term.run_domain_process(args, domain?)
  ```
@@ -1009,21 +1010,57 @@ Built-in queries currently include:
 
 - `pane`
 - `current_pane`
+- `tab`
 - `current_tab`
 - `tabs`
+- `panes`
+- `workspace`
 - `workspaces`
 - `current_workspace`
+- `current_domain`
 - `echo`
 
 Built-in emits currently include:
 
+- `close_pane`
+- `focus_pane`
+- `resize_pane`
+- `send_text`
 - `split_pane`
+- `new_tab`
+- `close_tab`
+- `focus_tab`
+- `next_tab`
+- `prev_tab`
+- `set_tab_title`
+- `new_workspace`
+- `close_workspace`
+- `next_workspace`
+- `prev_workspace`
+- `switch_workspace`
+- `set_workspace_name`
 - `toggle_pane_maximized`
 - `set_pane_floating`
 - `set_floating_pane_bounds`
 - `move_pane`
 
-Use `htp-shell-examples.md` for shell helper examples and transport notes.
+- `reload_config`
+- `set_theme`
+- `scroll`
+
+The primary shipped HTP frontend is `hollow-cli`, a single-file `python3` script installed as part of `zig build install`.
+
+Examples:
+
+```bash
+hollow-cli get current-pane
+hollow-cli workspace new --cwd /repo --name repo
+hollow-cli pane split vertical --cmd "npm run dev"
+hollow-cli get htp echo '{"value":42}'
+hollow-cli emit custom_channel '{"value":42}'
+```
+
+Use `htp-shell-examples.md` for lower-level transport examples and shell helper notes.
 
 ## `hollow.process`
 

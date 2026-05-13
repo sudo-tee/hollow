@@ -1,30 +1,56 @@
 # HTP Shell Integration
 
-These examples let a shell or script talk directly to Hollow over the shipped
-HTP transport without depending on a separate host-side `hollow` CLI.
+The primary shipped HTP frontend is `hollow-cli`, a single-file `python3`
+script that talks to Hollow directly over HTP.
+
+These lower-level examples still ship for shell integration and transport
+debugging when you want to work with raw HTP frames directly.
 
 On the Lua side, the matching API is `hollow.htp`; see
 `hollow-lua-api.md` for the handler reference.
 
 ## What Ships Today
 
-The runtime already includes built-in HTP query channels for:
+The runtime includes built-in HTP query channels such as:
 
 - `pane`
 - `current_pane`
+- `tab`
 - `current_tab`
 - `tabs`
+- `panes`
+- `workspace`
 - `workspaces`
 - `current_workspace`
+- `current_domain`
 - `echo`
 
-The runtime already includes built-in HTP emit channels for:
+The runtime includes built-in HTP emit channels such as:
 
+- `close_pane`
+- `focus_pane`
+- `resize_pane`
+- `send_text`
 - `split_pane`
+- `new_tab`
+- `close_tab`
+- `focus_tab`
+- `next_tab`
+- `prev_tab`
+- `set_tab_title`
+- `new_workspace`
+- `close_workspace`
+- `next_workspace`
+- `prev_workspace`
+- `switch_workspace`
+- `set_workspace_name`
 - `toggle_pane_maximized`
 - `set_pane_floating`
 - `set_floating_pane_bounds`
 - `move_pane`
+- `reload_config`
+- `set_theme`
+- `scroll`
 
 You can also register your own channels from Lua with `hollow.htp.on_query(...)`
 and `hollow.htp.on_emit(...)`.
@@ -35,7 +61,34 @@ Transport selection is swappable:
 
 - local shells prefer file transport via `HOLLOW_REQUEST_DIR`
 - shells can force OSC with `HOLLOW_TRANSPORT=osc`
-- emits still use OSC directly
+- `hollow-cli` prefers OSC in WSL when `hollow-wsl-bypass` is available in `PATH`, because that path is typically faster than file transport there
+- `hollow-cli` and direct requests can use either file or OSC transport for queries and emits
+
+## `hollow-cli`
+
+Typical usage:
+
+```bash
+hollow-cli get current-pane
+hollow-cli get workspaces
+hollow-cli workspace new --cwd /repo --name repo
+hollow-cli tab rename editor --index 1
+hollow-cli pane split vertical --cmd "npm run dev"
+hollow-cli send-keys "{Up}{Enter}"
+hollow-cli focus left
+hollow-cli scroll page-down
+hollow-cli config reload
+hollow-cli get htp echo '{"value":42}'
+hollow-cli emit notify '{"text":"done"}'
+```
+
+Output defaults:
+
+- `get ...` prints JSON payloads
+- mutating commands are silent on success
+- `--quiet` suppresses success output
+- `--pretty` pretty-prints JSON
+- `--envelope` prints the full HTP reply envelope
 
 ## Helper Files
 
@@ -49,7 +102,7 @@ What the helpers provide:
 
 - send raw JSON envelopes with `...;Hollow;<json>ST`
 - emit HTP channels handled by `hollow.htp.on_emit(...)`
-- optionally wait for the host `event_ack` or error reply
+- optionally wait for the host reply or error reply
 - issue one-shot queries through `examples/htp/hollow-query.py`
 
 ## Shell Examples
@@ -94,7 +147,8 @@ tty-owning query helper in the style of kitty's query-terminal flow.
 
 ## Notes
 
-- Bash, zsh, and fish use the bundled Python query helper.
+- `hollow-cli` is the preferred user-facing interface.
+- Bash, zsh, and fish examples use the bundled Python query helper for raw transport flows.
 - The helper prefers local file transport when `HOLLOW_REQUEST_DIR` is present, otherwise it falls back to OSC.
 - `hollow_htp_emit(...)` is fire-and-forget; use `hollow_htp_emit_checked(...)` if you want to see the host reply.
 - HTP emit channels are separate from built-in Lua events like `term:cwd_changed`; they only do something when Hollow has a matching `hollow.htp.on_emit("channel", handler)`.

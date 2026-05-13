@@ -153,7 +153,22 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
   end
 
   hollow.htp.on_query("pane", function(ctx)
+    local pane_id = ctx.params and ctx.params.id or nil
+    if type(pane_id) == "number" then
+      return term_helpers.pane_snapshot(pane_id)
+    end
     return ctx.pane
+  end)
+
+  hollow.htp.on_query("pane_text", function(ctx)
+    local pane_id = ctx.params and ctx.params.id or nil
+    if type(pane_id) ~= "number" then
+      pane_id = ctx.pane and ctx.pane.id or nil
+    end
+    if pane_id == nil then
+      return ""
+    end
+    return hollow.term.get_pane_text(pane_id) or ""
   end)
 
   hollow.htp.on_query("current_pane", function()
@@ -168,12 +183,38 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     return hollow.term.tabs()
   end)
 
+  hollow.htp.on_query("tab", function(ctx)
+    local tab_id = ctx.params and ctx.params.id or nil
+    if type(tab_id) ~= "number" then
+      return hollow.term.current_tab()
+    end
+    return hollow.term.tab_by_id(tab_id)
+  end)
+
+  hollow.htp.on_query("panes", function()
+    local panes = {}
+    for _, tab in ipairs(hollow.term.tabs()) do
+      for _, pane in ipairs(tab.panes) do
+        panes[#panes + 1] = pane
+      end
+    end
+    return panes
+  end)
+
   hollow.htp.on_query("workspaces", function()
     return hollow.term.workspaces()
   end)
 
   hollow.htp.on_query("current_workspace", function()
     return hollow.term.current_workspace()
+  end)
+
+  hollow.htp.on_query("workspace", function(ctx)
+    local workspace_id = ctx.params and ctx.params.id or nil
+    if type(workspace_id) ~= "number" then
+      return hollow.term.current_workspace()
+    end
+    return hollow.term.workspace_by_id(workspace_id)
   end)
 
   hollow.htp.on_query("current_domain", function()
@@ -212,11 +253,112 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     })
   end)
 
+  hollow.htp.on_emit("close_tab", function(ctx)
+    local payload = event_payload(ctx)
+    local tab_id = payload.tab_id or payload.id
+    if type(tab_id) == "number" then
+      hollow.term.close_tab(tab_id)
+      return
+    end
+    local current = hollow.term.current_tab()
+    if current ~= nil then
+      hollow.term.close_tab(current.id)
+    end
+  end)
+
+  hollow.htp.on_emit("focus_tab", function(ctx)
+    local payload = event_payload(ctx)
+    local tab_id = payload.tab_id or payload.id
+    if type(tab_id) ~= "number" then
+      error("focus_tab requires a tab id")
+    end
+    hollow.term.focus_tab(tab_id)
+  end)
+
+  hollow.htp.on_emit("next_tab", function()
+    hollow.term.next_tab()
+  end)
+
+  hollow.htp.on_emit("prev_tab", function()
+    hollow.term.prev_tab()
+  end)
+
+  hollow.htp.on_emit("set_tab_title", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.title) ~= "string" then
+      error("set_tab_title requires a string title")
+    end
+    hollow.term.set_title(payload.title, payload.tab_id or payload.id)
+  end)
+
+  hollow.htp.on_emit("new_workspace", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.new_workspace({
+      cwd = payload.cwd,
+      domain = payload.domain,
+      command = payload.command or payload.cmd,
+      name = payload.name,
+    })
+  end)
+
+  hollow.htp.on_emit("close_workspace", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.close_workspace(payload.workspace_id or payload.id)
+  end)
+
+  hollow.htp.on_emit("next_workspace", function()
+    hollow.term.next_workspace()
+  end)
+
+  hollow.htp.on_emit("prev_workspace", function()
+    hollow.term.prev_workspace()
+  end)
+
+  hollow.htp.on_emit("switch_workspace", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.index) ~= "number" then
+      error("switch_workspace requires an index")
+    end
+    hollow.term.switch_workspace(payload.index)
+  end)
+
+  hollow.htp.on_emit("set_workspace_name", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.name) ~= "string" then
+      error("set_workspace_name requires a string name")
+    end
+    local workspace_id = payload.workspace_id or payload.id
+    if workspace_id ~= nil then
+      local workspace = hollow.term.workspace_by_id(workspace_id)
+      local current = hollow.term.current_workspace()
+      if workspace == nil then
+        error("unknown workspace id: " .. tostring(workspace_id))
+      end
+      if current == nil or current.id ~= workspace.id then
+        error("set_workspace_name only supports the active workspace")
+      end
+    end
+    hollow.term.set_workspace_name(payload.name)
+  end)
+
   hollow.htp.on_emit("toggle_pane_maximized", function(ctx)
     local payload = event_payload(ctx)
     hollow.term.toggle_pane_maximized(target_pane_id(ctx, payload), {
       show_background = payload.show_background == true,
     })
+  end)
+
+  hollow.htp.on_emit("close_pane", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.close_pane(target_pane_id(ctx, payload))
+  end)
+
+  hollow.htp.on_emit("focus_pane", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.direction) ~= "string" then
+      error("focus_pane requires a direction")
+    end
+    hollow.term.focus_pane(payload.direction)
   end)
 
   hollow.htp.on_emit("set_pane_floating", function(ctx)
@@ -245,6 +387,49 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       direction = payload.direction,
       amount = payload.amount,
     })
+  end)
+
+  hollow.htp.on_emit("resize_pane", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.direction) == "string" and type(payload.delta) == "number" then
+      hollow.term.resize_pane(payload.direction, payload.delta)
+      return
+    end
+    if type(payload.axis) == "string" and type(payload.delta) == "number" then
+      hollow.term.resize_pane(payload.axis, payload.delta)
+      return
+    end
+    error("resize_pane requires direction/axis and delta")
+  end)
+
+  hollow.htp.on_emit("send_text", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.text) ~= "string" then
+      error("send_text requires a string text")
+    end
+    hollow.term.send_text(payload.text, target_pane_id(ctx, payload))
+  end)
+
+  hollow.htp.on_emit("reload_config", function()
+    hollow.term.reload_config()
+  end)
+
+  hollow.htp.on_emit("set_theme", function(ctx)
+    local payload = event_payload(ctx)
+    local name = payload.name or payload.theme
+    if type(name) ~= "string" then
+      error("set_theme requires a string name")
+    end
+    hollow.term.set_theme(name)
+  end)
+
+  hollow.htp.on_emit("scroll", function(ctx)
+    local payload = event_payload(ctx)
+    local where = payload.to or payload.direction
+    if type(where) ~= "string" then
+      error("scroll requires a target")
+    end
+    hollow.term.scroll(where)
   end)
 
   hollow.htp.on_emit("command_started", function(ctx)

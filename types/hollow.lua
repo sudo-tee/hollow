@@ -817,6 +817,10 @@ function term.current_tab() end
 ---@return HollowPaneSnapshot|nil
 function term.current_pane() end
 
+---@param id integer
+---@return HollowPaneSnapshot|nil
+function term.pane_by_id(id) end
+
 ---@return HollowTabSnapshot[]
 function term.tabs() end
 
@@ -825,6 +829,10 @@ function term.workspaces() end
 
 ---@return HollowWorkspaceSnapshot|nil
 function term.current_workspace() end
+
+---@param id integer
+---@return HollowWorkspaceSnapshot|nil
+function term.workspace_by_id(id) end
 
 ---@return HollowDomainSnapshot|nil
 function term.current_domain() end
@@ -852,6 +860,10 @@ function term.focus_tab(id) end
 ---@param id integer
 function term.close_tab(id) end
 
+function term.next_tab() end
+
+function term.prev_tab() end
+
 ---@param title string
 ---@param tab_id? integer
 function term.set_title(title, tab_id) end
@@ -859,6 +871,14 @@ function term.set_title(title, tab_id) end
 ---@param text string
 ---@param pane_id? integer
 function term.send_text(text, pane_id) end
+
+---@param pane_id? integer
+---@return string
+function term.get_pane_text(pane_id) end
+
+---@param pane_id integer|nil
+---@param process string|nil
+function term.set_pane_foreground_process(pane_id, process) end
 
 ---@param pane_id? integer|HollowPaneMaximizeOpts
 ---@param opts? HollowPaneMaximizeOpts
@@ -875,6 +895,16 @@ function term.set_floating_pane_bounds(pane_id, opts) end
 ---@param direction_or_opts "left"|"right"|"up"|"down"|HollowMovePaneOpts
 ---@param opts? HollowMovePaneOpts
 function term.move_pane(direction_or_opts, opts) end
+
+---@param pane_id? integer
+function term.close_pane(pane_id) end
+
+---@param direction string
+function term.focus_pane(direction) end
+
+---@param axis_or_direction string
+---@param delta number
+function term.resize_pane(axis_or_direction, delta) end
 
 ---@param name string
 function term.set_workspace_name(name) end
@@ -894,6 +924,14 @@ function term.prev_workspace() end
 
 ---@param index integer
 function term.switch_workspace(index) end
+
+function term.reload_config() end
+
+---@param where string
+function term.scroll(where) end
+
+---@param name string
+function term.set_theme(name) end
 
 ---@class HollowEventsNamespace
 local events = {}
@@ -1301,6 +1339,7 @@ function process.run_child_process(args, opts) end
 ---@field on_gui_ready fun(handler: fun())
 ---@field switch_tab_by_id fun(tab_id: integer): boolean
 ---@field close_tab_by_id fun(tab_id: integer): boolean
+---@field close_pane_by_id fun(pane_id: integer): boolean
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean
 ---@field get_pane_domain fun(pane_id: integer): string

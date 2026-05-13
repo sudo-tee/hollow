@@ -122,6 +122,13 @@ function M.setup(hollow, host_api)
     return pane_snapshot(pane_id)
   end
 
+  function hollow.term.pane_by_id(id)
+    if type(id) ~= "number" then
+      error("hollow.term.pane_by_id(id) expects a pane id")
+    end
+    return pane_snapshot(id)
+  end
+
   function hollow.term.tabs()
     local tabs = {}
     local count = host_api.get_tab_count()
@@ -149,6 +156,18 @@ function M.setup(hollow, host_api)
   function hollow.term.current_workspace()
     local index = host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0
     return workspace_snapshot(index)
+  end
+
+  function hollow.term.workspace_by_id(id)
+    if type(id) ~= "number" then
+      error("hollow.term.workspace_by_id(id) expects a workspace id")
+    end
+    for _, workspace in ipairs(hollow.term.workspaces()) do
+      if workspace.id == id then
+        return workspace
+      end
+    end
+    return nil
   end
 
   function hollow.term.current_domain()
@@ -237,6 +256,20 @@ function M.setup(hollow, host_api)
     return nil
   end
 
+  function hollow.term.get_pane_text(pane_id)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.get_pane_text(pane_id) expects a number or nil")
+    end
+    local target = pane_id
+    if target == nil then
+      target = host_api.current_pane_id and host_api.current_pane_id() or nil
+    end
+    if target == nil or not host_api.get_pane_text then
+      return ""
+    end
+    return host_api.get_pane_text(target)
+  end
+
   function hollow.term.split_pane(direction, opts)
     if type(direction) == "table" then
       opts, direction = direction, direction.direction
@@ -294,6 +327,14 @@ function M.setup(hollow, host_api)
     if not host_api.close_tab_by_id(id) then
       error("unknown tab id: " .. tostring(id))
     end
+  end
+
+  function hollow.term.next_tab()
+    host_api.next_tab()
+  end
+
+  function hollow.term.prev_tab()
+    host_api.prev_tab()
   end
 
   function hollow.term.set_title(title, tab_id)
@@ -402,6 +443,80 @@ function M.setup(hollow, host_api)
     end
 
     host_api.move_pane(pane_id, direction, amount or 0.08)
+  end
+
+  function hollow.term.close_pane(pane_id)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.close_pane(pane_id?) expects pane_id to be a number")
+    end
+    if pane_id ~= nil and host_api.close_pane_by_id ~= nil then
+      if not host_api.close_pane_by_id(pane_id) then
+        error("unknown pane id: " .. tostring(pane_id))
+      end
+      return
+    end
+    host_api.close_pane()
+  end
+
+  function hollow.term.focus_pane(direction)
+    if type(direction) ~= "string" then
+      error("hollow.term.focus_pane(direction) expects a direction string")
+    end
+    host_api.focus_pane(direction)
+  end
+
+  function hollow.term.resize_pane(axis_or_direction, delta)
+    if type(axis_or_direction) ~= "string" then
+      error("hollow.term.resize_pane(axis_or_direction, delta) expects a string axis or direction")
+    end
+    if type(delta) ~= "number" then
+      error("hollow.term.resize_pane(axis_or_direction, delta) expects a number delta")
+    end
+
+    local axis = axis_or_direction
+    if axis_or_direction == "left" or axis_or_direction == "right" then
+      axis = "horizontal"
+    elseif axis_or_direction == "up" or axis_or_direction == "down" then
+      axis = "vertical"
+    end
+
+    host_api.resize_pane(axis, delta)
+  end
+
+  function hollow.term.reload_config()
+    if not host_api.reload_config() then
+      error("hollow.term.reload_config() failed")
+    end
+  end
+
+  function hollow.term.scroll(where)
+    if type(where) ~= "string" then
+      error("hollow.term.scroll(where) expects a string")
+    end
+    if where == "top" then
+      host_api.scroll_active_top()
+      return
+    end
+    if where == "bottom" then
+      host_api.scroll_active_bottom()
+      return
+    end
+    if where == "page-up" then
+      host_api.scroll_active_page(-1)
+      return
+    end
+    if where == "page-down" then
+      host_api.scroll_active_page(1)
+      return
+    end
+    error("unknown scroll target: " .. tostring(where))
+  end
+
+  function hollow.term.set_theme(name)
+    if type(name) ~= "string" then
+      error("hollow.term.set_theme(name) expects a string")
+    end
+    hollow.config.set({ theme = name })
   end
 
   return {

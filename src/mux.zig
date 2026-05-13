@@ -964,7 +964,7 @@ pub const Mux = struct {
 
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
-    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, domain_name: ?[]const u8) !void {
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
@@ -990,7 +990,7 @@ pub const Mux = struct {
         }
         var workspace_id_buf: [32]u8 = undefined;
         const workspace_id = try std.fmt.bufPrint(&workspace_id_buf, "{d}", .{ws.id});
-        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, null, workspace_id);
+        const pane = try self.createPane(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, resolved_domain, launch_command, workspace_id);
         try tab.appendPane(pane);
     }
 
@@ -1028,6 +1028,27 @@ pub const Mux = struct {
         if (tab_empty) {
             ws.closeTab(runtime);
             if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
+        }
+        return false;
+    }
+
+    pub fn closePaneById(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize) bool {
+        for (self.workspaces.items) |ws| {
+            for (ws.tabs.items) |tab| {
+                for (tab.panes.items) |pane| {
+                    if (@intFromPtr(pane) != pane_id) continue;
+
+                    self.active_workspace = ws;
+                    ws.active_tab = tab;
+
+                    const tab_empty = tab.closePane(runtime, pane);
+                    if (tab_empty) {
+                        ws.closeTab(runtime);
+                        if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
+                    }
+                    return false;
+                }
+            }
         }
         return false;
     }

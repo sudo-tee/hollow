@@ -235,9 +235,13 @@ pub const PendingMouseEvent = union(enum) {
     switch_tab: usize,
     /// Close a specific tab index without focusing it first.
     close_tab_at: usize,
-    new_tab: ?[]const u8,
+    new_tab: struct {
+        domain_name: ?[]const u8,
+        command: ?[]const u8,
+    },
     close_tab,
     close_pane,
+    close_pane_by_id: usize,
     reload_config,
     next_tab,
     prev_tab,
@@ -379,6 +383,11 @@ fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 fn htpIpcQueryCallback(ctx: *anyopaque, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
     const app: *App = @ptrCast(@alignCast(ctx));
     return app.dispatchHtpQuerySync(pane_id, channel, params);
+}
+
+fn htpIpcEventCallback(ctx: *anyopaque, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!lua_mod.HtpDispatchResult {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    return app.dispatchHtpEventSync(pane_id, channel, payload);
 }
 
 pub fn signalExternalWake() void {
@@ -600,7 +609,7 @@ pub const App = struct {
 
     fn startHtpTransport(self: *App) void {
         if (self.htp_fs != null) return; // already started
-        self.htp_fs = HtpFs.Server.init(self.allocator, self, htpIpcQueryCallback);
+        self.htp_fs = HtpFs.Server.init(self.allocator, self, htpIpcQueryCallback, htpIpcEventCallback);
         self.htp_fs.?.start() catch |err| {
             std.log.warn("htp-fs: failed to start: {s}", .{@errorName(err)});
             self.htp_fs.?.deinit();
@@ -643,15 +652,19 @@ pub const App = struct {
                 .close_tab_at => |idx| {
                     self.closeTabAt(idx);
                 },
-                .new_tab => |domain_name| {
-                    defer if (domain_name) |owned| self.allocator.free(owned);
-                    self.newTab(domain_name);
+                .new_tab => |payload| {
+                    defer if (payload.domain_name) |owned| self.allocator.free(owned);
+                    defer if (payload.command) |owned| self.allocator.free(owned);
+                    self.newTab(payload.domain_name, payload.command);
                 },
                 .close_tab => {
                     self.closeTab();
                 },
                 .close_pane => {
                     self.closeActivePane();
+                },
+                .close_pane_by_id => |pane_id| {
+                    self.closePaneById(pane_id);
                 },
                 .reload_config => {
                     _ = self.reloadConfig();
@@ -1007,6 +1020,7 @@ pub const App = struct {
             .get_pane_pid = luaGetPanePidCallback,
             .get_pane_title = luaGetPaneTitleCallback,
             .get_pane_cwd = luaGetPaneCwdCallback,
+            .get_pane_text = luaGetPaneTextCallback,
             .get_pane_foreground_process = luaGetPaneForegroundProcessCallback,
             .get_pane_rows = luaGetPaneRowsCallback,
             .get_pane_cols = luaGetPaneColsCallback,
@@ -1023,6 +1037,7 @@ pub const App = struct {
             .pane_exists = luaPaneExistsCallback,
             .switch_tab_by_id = luaSwitchTabByIdCallback,
             .close_tab_by_id = luaCloseTabByIdCallback,
+            .close_pane_by_id = luaClosePaneByIdCallback,
             .send_text_to_pane = luaSendTextToPaneCallback,
             .get_pane_domain = luaGetPaneDomainCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
@@ -1516,6 +1531,11 @@ pub const App = struct {
     fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
         const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
         return try lua.dispatchHtpQuery(pane_id, channel, params);
+    }
+
+    fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!lua_mod.HtpDispatchResult {
+        const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
+        return try lua.dispatchHtpEvent(pane_id, channel, payload);
     }
 
     fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {
@@ -2331,6 +2351,30 @@ pub const App = struct {
         return pane.foreground_process orelse "";
     }
 
+    pub fn getPaneText(self: *App, pane_id: usize, out: []u8) []const u8 {
+        const runtime = if (self.ghostty) |*rt| rt else return "";
+        const pane = self.findPaneById(pane_id) orelse return "";
+        if (pane.render_state == null or pane.rows == 0) return "";
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
+
+        var writer = std.io.fixedBufferStream(out);
+        var row_index: usize = 0;
+        while (runtime.nextRow(pane.row_iterator) and row_index < pane.rows) : (row_index += 1) {
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+
+            var row_text: [4096]u8 = undefined;
+            var row_len: usize = 0;
+            while (runtime.nextCell(pane.row_cells)) {
+                appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
+            }
+            while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
+            writer.writer().writeAll(row_text[0..row_len]) catch break;
+            if (row_index + 1 < pane.rows) writer.writer().writeByte('\n') catch break;
+        }
+
+        return writer.getWritten();
+    }
+
     pub fn isPaneVisible(self: *App, needle: *const Pane) bool {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
@@ -2843,12 +2887,16 @@ pub const App = struct {
         return true;
     }
 
-    pub fn newTab(self: *App, domain_name: ?[]const u8) void {
+    pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
         const previous = mux.activePane();
-        mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name) catch |err| {
+        const launch_command: ?LaunchCommand = if (command) |value|
+            .{ .command = value }
+        else
+            null;
+        mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name, launch_command) catch |err| {
             std.log.err("app: newTab failed: {s}", .{@errorName(err)});
             return;
         };
@@ -2913,6 +2961,22 @@ pub const App = struct {
         self.refreshActivePaneBinding();
         self.requestLayoutResize(false);
         std.log.info("app: active pane closed via close_pane", .{});
+    }
+
+    pub fn closePaneById(self: *App, pane_id: usize) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const previous = mux.activePane();
+        const should_quit = mux.closePaneById(runtime, pane_id);
+        if (should_quit) {
+            std.log.info("app: last pane closed via close_pane_by_id, quitting", .{});
+            self.pending_quit = true;
+            return;
+        }
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.refreshActivePaneBinding();
+        self.requestLayoutResize(false);
+        self.requestLayoutRefresh();
     }
 
     pub fn nextTab(self: *App) void {
@@ -4092,10 +4156,11 @@ fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     }
 }
 
-fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8) void {
+fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
-    _ = app.enqueueMouse(.{ .new_tab = owned_domain });
+    const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
+    _ = app.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command } });
 }
 
 fn luaCloseTabCallback(app_ptr: *anyopaque) void {
@@ -4106,6 +4171,11 @@ fn luaCloseTabCallback(app_ptr: *anyopaque) void {
 fn luaClosePaneCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.close_pane);
+}
+
+fn luaClosePaneByIdCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.enqueueMouse(.{ .close_pane_by_id = pane_id });
 }
 
 fn luaNextTabCallback(app_ptr: *anyopaque) void {
@@ -4236,6 +4306,11 @@ fn luaGetPaneTitleCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) [
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return "";
     return pane.title;
+}
+
+fn luaGetPaneTextCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.getPaneText(pane_id, out_buf);
 }
 
 fn luaGetPaneCwdCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []u8) []const u8 {

@@ -133,7 +133,7 @@ pub const AppCallbacks = struct {
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
-    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8) void,
+    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8) void,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
@@ -167,6 +167,7 @@ pub const AppCallbacks = struct {
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_text: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -184,6 +185,7 @@ pub const AppCallbacks = struct {
     pane_exists: *const fn (app: *anyopaque, pane_id: usize) bool,
     switch_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
     close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
+    close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
     set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
@@ -558,7 +560,7 @@ pub const HtpQueryResult = struct {
     }
 };
 
-const HtpDispatchResult = struct {
+pub const HtpDispatchResult = struct {
     success: bool,
     error_message: ?[]u8 = null,
 
@@ -1563,9 +1565,13 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_get_pane_title, 1);
         api.set_field(self.state, -2, "get_pane_title");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_get_pane_cwd, 1);
-    api.set_field(self.state, -2, "get_pane_cwd");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_text, 1);
+        api.set_field(self.state, -2, "get_pane_text");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_cwd, 1);
+        api.set_field(self.state, -2, "get_pane_cwd");
 
     api.push_light_userdata(self.state, self.context);
     api.push_cclosure(self.state, l_get_pane_foreground_process, 1);
@@ -1631,6 +1637,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_close_tab_by_id, 1);
         api.set_field(self.state, -2, "close_tab_by_id");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_close_pane_by_id, 1);
+        api.set_field(self.state, -2, "close_pane_by_id");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_tab_title_by_id, 1);
@@ -3425,6 +3435,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var domain_name: ?[]const u8 = null;
+    var command: ?[]const u8 = null;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -3433,11 +3444,12 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
         },
         .table => {
             domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
+            command = luaStringField(api, state, absoluteIndex(api, state, 1), "command");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name);
+    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command);
     return 0;
 }
 
@@ -4269,6 +4281,28 @@ fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_get_pane_text(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var out_buf: [64 * 1024]u8 = undefined;
+    const text = cbs.get_pane_text(cbs.app, pane_id, &out_buf);
+    const ztext = std.heap.page_allocator.dupeZ(u8, text) catch {
+        api.push_string(state, "");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(ztext);
+    api.push_string(state, ztext);
+    return 1;
+}
+
 fn l_get_pane_foreground_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -4562,6 +4596,21 @@ fn l_send_text_to_pane(state: *State) callconv(.c) c_int {
         null;
     const text: []const u8 = if (ptr) |p| p[0..len] else "";
     api.push_boolean(state, if (cbs.send_text_to_pane(cbs.app, pane_id, text)) 1 else 0);
+    return 1;
+}
+
+fn l_close_pane_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.close_pane_by_id(cbs.app, pane_id)) 1 else 0);
     return 1;
 }
 

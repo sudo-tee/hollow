@@ -1,0 +1,763 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import os
+import pathlib
+import select
+import shutil
+import sys
+import termios
+import time
+import tty
+
+PREFIX = b"\x1b]1337;Hollow;"
+ST = b"\x1b\\"
+
+
+class CliError(Exception):
+    def __init__(self, message, code="error", status=1):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.status = status
+
+
+class HollowCli:
+    def __init__(self, pretty=False, quiet=False, envelope=False, transport="auto", timeout=1.5):
+        self.pretty = pretty
+        self.quiet = quiet
+        self.envelope = envelope
+        self.transport = transport
+        self.timeout = timeout
+        self.common_parser = self.build_common_parser()
+
+    def run(self, argv):
+        parser = self.build_parser()
+        args = parser.parse_args(argv)
+        self.pretty = getattr(args, "pretty", False)
+        self.quiet = getattr(args, "quiet", False)
+        self.envelope = getattr(args, "envelope", False)
+        self.transport = getattr(args, "transport", "auto")
+        self.timeout = getattr(args, "timeout", 1.5)
+        if not hasattr(args, "handler"):
+            parser.print_help(sys.stderr)
+            raise SystemExit(2)
+        return args.handler(args)
+
+    def build_parser(self):
+        parser = argparse.ArgumentParser(prog="hollow-cli", parents=[self.common_parser])
+        sub = parser.add_subparsers(dest="command")
+
+        self.add_get(sub)
+        self.add_workspace(sub)
+        self.add_tab(sub)
+        self.add_pane(sub)
+        self.add_focus(sub)
+        self.add_scroll(sub)
+        self.add_config(sub)
+        self.add_run(sub)
+        self.add_send_keys(sub)
+        self.add_emit(sub)
+        return parser
+
+    def build_common_parser(self):
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--pretty", action="store_true")
+        parser.add_argument("--quiet", action="store_true")
+        parser.add_argument("--envelope", action="store_true")
+        parser.add_argument("--transport", choices=["auto", "file", "osc"], default="auto")
+        parser.add_argument("--timeout", type=float, default=1.5)
+        return parser
+
+    def add_get(self, sub):
+        get = sub.add_parser("get", parents=[self.common_parser])
+        get_sub = get.add_subparsers(dest="get_command")
+
+        p = get_sub.add_parser("pane", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_get_pane)
+
+        p = get_sub.add_parser("pane-text", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_get_pane_text)
+
+        p = get_sub.add_parser("current-pane", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("current_pane", {}))
+
+        p = get_sub.add_parser("tab", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_get_tab)
+
+        p = get_sub.add_parser("current-tab", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("current_tab", {}))
+
+        p = get_sub.add_parser("tabs", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("tabs", {}))
+
+        p = get_sub.add_parser("panes", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("panes", {}))
+
+        p = get_sub.add_parser("workspace", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_get_workspace)
+
+        p = get_sub.add_parser("current-workspace", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("current_workspace", {}))
+
+        p = get_sub.add_parser("workspaces", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("workspaces", {}))
+
+        p = get_sub.add_parser("domain", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("current_domain", {}))
+
+        p = get_sub.add_parser("htp", parents=[self.common_parser])
+        p.add_argument("channel")
+        p.add_argument("params_json", nargs="?", default="{}")
+        p.set_defaults(handler=self.handle_get_htp)
+
+    def add_workspace(self, sub):
+        workspace = sub.add_parser("workspace", parents=[self.common_parser])
+        ws_sub = workspace.add_subparsers(dest="workspace_command")
+
+        p = ws_sub.add_parser("new", parents=[self.common_parser])
+        p.add_argument("--cwd")
+        p.add_argument("--domain")
+        p.add_argument("--cmd")
+        p.add_argument("--name")
+        p.set_defaults(handler=self.handle_workspace_new)
+
+        p = ws_sub.add_parser("close", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_workspace_close)
+
+        p = ws_sub.add_parser("next", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_event("next_workspace", {}))
+
+        p = ws_sub.add_parser("prev", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_event("prev_workspace", {}))
+
+        p = ws_sub.add_parser("select", parents=[self.common_parser])
+        p.add_argument("index", type=int)
+        p.set_defaults(handler=lambda args: self.print_event("switch_workspace", {"index": args.index}))
+
+        p = ws_sub.add_parser("rename", parents=[self.common_parser])
+        p.add_argument("name")
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_workspace_rename)
+
+    def add_tab(self, sub):
+        tab = sub.add_parser("tab", parents=[self.common_parser])
+        tab_sub = tab.add_subparsers(dest="tab_command")
+
+        p = tab_sub.add_parser("new", parents=[self.common_parser])
+        p.add_argument("--cmd")
+        p.add_argument("--domain")
+        p.set_defaults(handler=self.handle_tab_new)
+
+        p = tab_sub.add_parser("close", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_tab_close)
+
+        p = tab_sub.add_parser("next", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_event("next_tab", {}))
+
+        p = tab_sub.add_parser("prev", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_event("prev_tab", {}))
+
+        p = tab_sub.add_parser("select", parents=[self.common_parser])
+        p.add_argument("index", type=int)
+        p.set_defaults(handler=self.handle_tab_select)
+
+        p = tab_sub.add_parser("rename", parents=[self.common_parser])
+        p.add_argument("name")
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_tab_rename)
+
+    def add_pane(self, sub):
+        pane = sub.add_parser("pane", parents=[self.common_parser])
+        pane_sub = pane.add_subparsers(dest="pane_command")
+
+        p = pane_sub.add_parser("split", parents=[self.common_parser])
+        p.add_argument("direction", choices=["vertical", "horizontal"])
+        p.add_argument("--cmd")
+        p.add_argument("--cwd")
+        p.add_argument("--domain")
+        p.add_argument("--ratio", type=float)
+        p.set_defaults(handler=self.handle_pane_split)
+
+        p = pane_sub.add_parser("popup", parents=[self.common_parser])
+        p.add_argument("cmd")
+        p.add_argument("--cwd")
+        p.add_argument("--domain")
+        p.add_argument("--x", type=float)
+        p.add_argument("--y", type=float)
+        p.add_argument("--width", type=float)
+        p.add_argument("--height", type=float)
+        p.set_defaults(handler=self.handle_pane_popup)
+
+        p = pane_sub.add_parser("close", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=lambda args: self.print_event("close_pane", self.id_payload(args.id)))
+
+        p = pane_sub.add_parser("zoom", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=lambda args: self.print_event("toggle_pane_maximized", self.id_payload(args.id)))
+
+        p = pane_sub.add_parser("float", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=lambda args: self.print_event("set_pane_floating", {**self.id_payload(args.id), "floating": True}))
+
+        p = pane_sub.add_parser("tile", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=lambda args: self.print_event("set_pane_floating", {**self.id_payload(args.id), "floating": False}))
+
+        p = pane_sub.add_parser("move", parents=[self.common_parser])
+        p.add_argument("direction", choices=["left", "right", "up", "down"])
+        p.add_argument("--id", type=int)
+        p.add_argument("--amount", type=float)
+        p.set_defaults(handler=self.handle_pane_move)
+
+        p = pane_sub.add_parser("resize", parents=[self.common_parser])
+        p.add_argument("direction", choices=["left", "right", "up", "down"])
+        p.add_argument("--amount", type=float, default=5.0)
+        p.set_defaults(handler=self.handle_pane_resize)
+
+        p = pane_sub.add_parser("send-text", parents=[self.common_parser])
+        p.add_argument("text")
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_pane_send_text)
+
+    def add_focus(self, sub):
+        p = sub.add_parser("focus", parents=[self.common_parser])
+        p.add_argument("direction", choices=["left", "right", "up", "down"])
+        p.set_defaults(handler=lambda args: self.print_event("focus_pane", {"direction": args.direction}))
+
+    def add_scroll(self, sub):
+        p = sub.add_parser("scroll", parents=[self.common_parser])
+        p.add_argument("target", choices=["top", "bottom", "page-up", "page-down"])
+        p.set_defaults(handler=lambda args: self.print_event("scroll", {"to": args.target}))
+
+    def add_config(self, sub):
+        config = sub.add_parser("config", parents=[self.common_parser])
+        config_sub = config.add_subparsers(dest="config_command")
+
+        p = config_sub.add_parser("reload", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_event("reload_config", {}))
+
+        p = config_sub.add_parser("theme", parents=[self.common_parser])
+        p.add_argument("name")
+        p.set_defaults(handler=lambda args: self.print_event("set_theme", {"name": args.name}))
+
+    def add_run(self, sub):
+        p = sub.add_parser("run", parents=[self.common_parser])
+        p.add_argument("cmd")
+        p.add_argument("--domain")
+        p.set_defaults(handler=lambda args: self.print_event("new_tab", self.clean({"command": args.cmd, "domain": args.domain})))
+
+    def add_send_keys(self, sub):
+        p = sub.add_parser("send-keys", parents=[self.common_parser])
+        p.add_argument("keys")
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_send_keys)
+
+    def add_emit(self, sub):
+        p = sub.add_parser("emit", parents=[self.common_parser])
+        p.add_argument("channel")
+        p.add_argument("payload_json", nargs="?", default="{}")
+        p.set_defaults(handler=self.handle_emit)
+
+    def handle_get_pane(self, args):
+        return self.print_query("pane", self.id_payload(args.id))
+
+    def handle_get_pane_text(self, args):
+        return self.print_query("pane_text", self.id_payload(args.id))
+
+    def handle_get_tab(self, args):
+        return self.print_query("tab", self.id_payload(args.id))
+
+    def handle_get_workspace(self, args):
+        workspace_id = args.id or self.resolve_index("workspaces", args.index)
+        return self.print_query("workspace", self.id_payload(workspace_id))
+
+    def handle_get_htp(self, args):
+        return self.print_query(args.channel, self.parse_json_arg(args.params_json, "params"))
+
+    def handle_workspace_new(self, args):
+        return self.print_event("new_workspace", self.clean({"cwd": args.cwd, "domain": args.domain, "command": args.cmd, "name": args.name}))
+
+    def handle_workspace_close(self, args):
+        workspace_id = args.id or self.resolve_index("workspaces", args.index)
+        return self.print_event("close_workspace", self.id_payload(workspace_id))
+
+    def handle_workspace_rename(self, args):
+        workspace_id = args.id or self.resolve_index("workspaces", args.index)
+        return self.print_event("set_workspace_name", self.clean({"id": workspace_id, "name": args.name}))
+
+    def handle_tab_new(self, args):
+        return self.print_event("new_tab", self.clean({"command": args.cmd, "domain": args.domain}))
+
+    def handle_tab_close(self, args):
+        tab_id = args.id or self.resolve_index("tabs", args.index)
+        return self.print_event("close_tab", self.id_payload(tab_id))
+
+    def handle_tab_select(self, args):
+        tab_id = self.resolve_index("tabs", args.index)
+        return self.print_event("focus_tab", self.id_payload(tab_id))
+
+    def handle_tab_rename(self, args):
+        tab_id = args.id or self.resolve_index("tabs", args.index)
+        return self.print_event("set_tab_title", self.clean({"id": tab_id, "title": args.name}))
+
+    def handle_pane_split(self, args):
+        payload = self.clean({
+            "direction": args.direction,
+            "command": args.cmd,
+            "cwd": args.cwd,
+            "domain": args.domain,
+            "ratio": args.ratio,
+        })
+        return self.print_event("split_pane", payload)
+
+    def handle_pane_popup(self, args):
+        payload = self.clean({
+            "direction": "vertical",
+            "command": args.cmd,
+            "cwd": args.cwd,
+            "domain": args.domain,
+            "floating": True,
+            "x": args.x,
+            "y": args.y,
+            "width": args.width,
+            "height": args.height,
+        })
+        return self.print_event("split_pane", payload)
+
+    def handle_pane_move(self, args):
+        return self.print_event("move_pane", self.clean({"id": args.id, "direction": args.direction, "amount": args.amount}))
+
+    def handle_pane_resize(self, args):
+        return self.print_event("resize_pane", self.clean({"direction": args.direction, "delta": self.resize_delta(args.direction, args.amount)}))
+
+    def handle_pane_send_text(self, args):
+        return self.print_event("send_text", self.clean({"id": args.id, "text": args.text}))
+
+    def handle_emit(self, args):
+        return self.print_event(args.channel, self.parse_json_arg(args.payload_json, "payload"))
+
+    def handle_send_keys(self, args):
+        return self.print_event("send_text", self.clean({"id": args.id, "text": self.decode_key_sequence(args.keys)}))
+
+    def print_query(self, channel, params):
+        result = self.query(channel, params)
+        self.emit_output(result, payload_only=True)
+        return 0
+
+    def print_event(self, channel, payload):
+        result = self.emit(channel, payload)
+        self.emit_output(result, payload_only=False)
+        return 0
+
+    def emit_output(self, result, payload_only):
+        if self.quiet:
+            return
+        if self.envelope:
+            self.write_json(result)
+            return
+        if payload_only and isinstance(result, dict) and "payload" in result:
+            self.write_json(result.get("payload"))
+            return
+        if payload_only and isinstance(result, dict) and result.get("kind") == "error":
+            self.write_json(result)
+            return
+        if payload_only:
+            self.write_json(result.get("payload") if isinstance(result, dict) else result)
+            return
+        return
+
+    def write_json(self, value, stderr=False):
+        stream = sys.stderr if stderr else sys.stdout
+        if self.pretty:
+            json.dump(value, stream, indent=2, sort_keys=True)
+        else:
+            json.dump(value, stream, separators=(",", ":"))
+        stream.write("\n")
+
+    def id_payload(self, ident):
+        return self.clean({"id": ident})
+
+    def clean(self, value):
+        return {k: v for k, v in value.items() if v is not None}
+
+    def decode_key_sequence(self, text):
+        out = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == "{":
+                end = text.find("}", i + 1)
+                if end < 0:
+                    raise CliError("unterminated key token", code="invalid_args", status=2)
+                out.append(self.decode_key_token(text[i + 1:end]))
+                i = end + 1
+                continue
+            if ch == "\\":
+                decoded, i = self.decode_escape(text, i)
+                out.append(decoded)
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def decode_escape(self, text, index):
+        if index + 1 >= len(text):
+            raise CliError("trailing backslash in key sequence", code="invalid_args", status=2)
+        esc = text[index + 1]
+        simple = {
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "e": "\x1b",
+            "\\": "\\",
+            '"': '"',
+            "'": "'",
+            "{": "{",
+            "}": "}",
+        }
+        if esc in simple:
+            return simple[esc], index + 2
+        if esc == "x":
+            if index + 3 >= len(text):
+                raise CliError("short hex escape in key sequence", code="invalid_args", status=2)
+            digits = text[index + 2:index + 4]
+            try:
+                return chr(int(digits, 16)), index + 4
+            except ValueError as exc:
+                raise CliError(f"invalid hex escape \\x{digits}: {exc}", code="invalid_args", status=2)
+        raise CliError(f"unsupported escape sequence: \\{esc}", code="invalid_args", status=2)
+
+    def decode_key_token(self, token):
+        raw = token.strip()
+        if not raw:
+            raise CliError("empty key token", code="invalid_args", status=2)
+        normalized = raw.replace("_", "-").replace(" ", "-")
+        parts = [part for part in normalized.split("-") if part]
+        lowered = [part.lower() for part in parts]
+
+        if len(lowered) == 1:
+            return self.named_key_sequence(lowered[0])
+
+        key_name = lowered[-1]
+        modifiers = lowered[:-1]
+        key_text = self.modified_key_text(key_name)
+        if key_text is None:
+            raise CliError(f"unsupported modified key token: {{{raw}}}", code="invalid_args", status=2)
+
+        supported_mods = {"ctrl", "control", "alt", "meta", "shift"}
+        for mod in modifiers:
+            if mod not in supported_mods:
+                raise CliError(f"unsupported key modifier in {{{raw}}}", code="invalid_args", status=2)
+
+        ctrl = any(mod in {"ctrl", "control"} for mod in modifiers)
+        alt = any(mod in {"alt", "meta"} for mod in modifiers)
+        shift = any(mod == "shift" for mod in modifiers)
+
+        result = key_text.upper() if shift and len(key_text) == 1 and "a" <= key_text <= "z" else key_text
+        if ctrl:
+            if len(result) != 1:
+                raise CliError(f"ctrl modifier requires a printable key in {{{raw}}}", code="invalid_args", status=2)
+            upper = result.upper()
+            codepoint = ord(upper)
+            if not (64 < codepoint < 96):
+                raise CliError(f"unsupported ctrl key in {{{raw}}}", code="invalid_args", status=2)
+            result = chr(codepoint - 64)
+        if alt:
+            result = "\x1b" + result
+        return result
+
+    def modified_key_text(self, key_name):
+        named = {
+            "enter": "\r",
+            "tab": "\t",
+            "escape": "\x1b",
+            "esc": "\x1b",
+            "space": " ",
+            "backspace": "\x7f",
+        }
+        if key_name in named:
+            return named[key_name]
+        if len(key_name) == 1:
+            return key_name
+        return None
+
+    def named_key_sequence(self, key_name):
+        named = {
+            "up": "\x1b[A",
+            "down": "\x1b[B",
+            "right": "\x1b[C",
+            "left": "\x1b[D",
+            "home": "\x1b[H",
+            "end": "\x1b[F",
+            "pgup": "\x1b[5~",
+            "pageup": "\x1b[5~",
+            "pgdn": "\x1b[6~",
+            "pagedown": "\x1b[6~",
+            "enter": "\r",
+            "tab": "\t",
+            "escape": "\x1b",
+            "esc": "\x1b",
+            "backspace": "\x7f",
+            "delete": "\x1b[3~",
+            "insert": "\x1b[2~",
+            "space": " ",
+        }
+        if key_name in named:
+            return named[key_name]
+        if len(key_name) == 2 and key_name[0] == "f" and key_name[1].isdigit():
+            index = int(key_name[1])
+            sequences = {
+                1: "\x1bOP",
+                2: "\x1bOQ",
+                3: "\x1bOR",
+                4: "\x1bOS",
+                5: "\x1b[15~",
+                6: "\x1b[17~",
+                7: "\x1b[18~",
+                8: "\x1b[19~",
+                9: "\x1b[20~",
+            }
+            if index in sequences:
+                return sequences[index]
+        if len(key_name) == 3 and key_name[:1] == "f" and key_name[1:].isdigit():
+            index = int(key_name[1:])
+            sequences = {
+                10: "\x1b[21~",
+                11: "\x1b[23~",
+                12: "\x1b[24~",
+            }
+            if index in sequences:
+                return sequences[index]
+        if len(key_name) == 1:
+            return key_name
+        raise CliError(f"unsupported key token: {{{key_name}}}", code="invalid_args", status=2)
+
+    def resize_delta(self, direction, amount):
+        magnitude = abs(amount)
+        return -magnitude if direction in {"left", "up"} else magnitude
+
+    def resolve_index(self, channel, index):
+        if index is None:
+            return None
+        if index < 1:
+            raise CliError("index must be >= 1", code="invalid_args", status=2)
+        envelope = self.query(channel, {})
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, list) or index > len(payload):
+            raise CliError(f"index out of range: {index}", code="invalid_args", status=2)
+        item = payload[index - 1]
+        if not isinstance(item, dict) or "id" not in item:
+            raise CliError(f"query '{channel}' did not return addressable items", code="invalid_response")
+        return item["id"]
+
+    def parse_json_arg(self, text, kind):
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CliError(f"invalid {kind} json: {exc}", code="invalid_args", status=2)
+        if not isinstance(value, dict):
+            raise CliError(f"{kind} json must be an object", code="invalid_args", status=2)
+        return value
+
+    def next_request_id(self, prefix):
+        return f"{prefix}-{os.getpid()}-{time.time_ns()}"
+
+    def query(self, channel, params):
+        return self.send_message("query", channel, params)
+
+    def emit(self, channel, payload):
+        return self.send_message("event", channel, payload)
+
+    def send_message(self, kind, channel, data):
+        transport = self.effective_transport()
+        request_dir = os.environ.get("HOLLOW_REQUEST_DIR")
+        if request_dir and transport != "osc":
+            try:
+                return self.send_file(kind, channel, data, request_dir)
+            except OSError as exc:
+                if transport == "file":
+                    raise CliError(str(exc), code="transport_error")
+        return self.send_osc(kind, channel, data)
+
+    def effective_transport(self):
+        if self.transport != "auto":
+            return self.transport
+        if os.environ.get("WSL_DISTRO_NAME") and shutil.which("hollow-wsl-bypass"):
+            return "osc"
+        return "auto"
+
+    def send_file(self, kind, channel, data, request_dir):
+        request_id = self.next_request_id("hollow")
+        request_root = pathlib.Path(request_dir)
+        request_root.mkdir(parents=True, exist_ok=True)
+        request_path = request_root / f"{request_id}.request.json"
+        reply_path = request_root / f"{request_id}.reply.json"
+        if reply_path.exists():
+            reply_path.unlink()
+        payload = {
+            "kind": kind,
+            "pane_id": int(os.environ.get("HOLLOW_PANE_ID", "0")),
+            "name": channel,
+            "reply_file": str(reply_path),
+        }
+        if kind == "query":
+            payload["params"] = data
+        else:
+            payload["payload"] = data
+        request_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if reply_path.exists():
+                text = reply_path.read_text(encoding="utf-8")
+                try:
+                    reply_path.unlink()
+                except OSError:
+                    pass
+                return self.validate_reply(text)
+            time.sleep(0.02)
+        raise CliError(f"timed out waiting for reply to {request_id}", code="timeout")
+
+    def send_osc(self, kind, channel, data):
+        request_id = self.next_request_id("hollow")
+        payload = {
+            "kind": kind,
+            "id": request_id,
+            "name": channel,
+        }
+        if kind == "query":
+            payload["params"] = data
+            payload["request_id"] = request_id
+        else:
+            payload["payload"] = data
+        frame = PREFIX + json.dumps(payload, separators=(",", ":")).encode("utf-8") + ST
+
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        except OSError as exc:
+            raise CliError(f"unable to open /dev/tty for OSC transport: {exc}", code="transport_error")
+
+        if kind == "event":
+            try:
+                os.write(fd, frame)
+            except OSError as exc:
+                raise CliError(f"failed to write OSC event frame: {exc}", code="transport_error")
+            finally:
+                os.close(fd)
+            return {"kind": "result", "status": "ok"}
+
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            os.write(fd, frame)
+            for text in self.iter_frames(fd):
+                envelope = self.parse_frame(text)
+                if not envelope:
+                    continue
+                if envelope.get("request_id") != request_id:
+                    continue
+                return self.finish_osc_reply(envelope)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            os.close(fd)
+        raise CliError(f"timed out waiting for reply to {request_id}", code="timeout")
+
+    def iter_frames(self, fd):
+        deadline = time.monotonic() + self.timeout
+        buf = bytearray()
+        chunks = {}
+        totals = {}
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                return
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                return
+            buf.extend(chunk)
+            while True:
+                start = buf.find(PREFIX)
+                if start < 0:
+                    if len(buf) > len(PREFIX):
+                        del buf[:-len(PREFIX)]
+                    break
+                end = buf.find(ST, start + len(PREFIX))
+                if end < 0:
+                    if start > 0:
+                        del buf[:start]
+                    break
+                payload = bytes(buf[start + len(PREFIX): end])
+                del buf[: end + len(ST)]
+                text = payload.decode("utf-8", "replace")
+                envelope = self.parse_frame(text)
+                if envelope and envelope.get("kind") == "chunk":
+                    chunk_request_id = str(envelope.get("request_id"))
+                    part = envelope.get("payload") or {}
+                    index = part.get("index")
+                    total = part.get("total")
+                    data = part.get("data")
+                    if isinstance(index, int) and isinstance(total, int) and isinstance(data, str):
+                        totals[chunk_request_id] = total
+                        chunks.setdefault(chunk_request_id, {})[index] = data
+                        if len(chunks[chunk_request_id]) == total:
+                            joined = "".join(chunks[chunk_request_id][i] for i in range(1, total + 1))
+                            del chunks[chunk_request_id]
+                            del totals[chunk_request_id]
+                            yield joined
+                    continue
+                yield text
+
+    def parse_frame(self, text):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
+
+    def finish_osc_reply(self, envelope):
+        if envelope.get("kind") == "error":
+            raise CliError(envelope.get("error") or "htp error", code=envelope.get("status") or "error")
+        if envelope.get("status") != "ok":
+            raise CliError(envelope.get("error") or "htp failure", code=envelope.get("status") or "error")
+        return envelope
+
+    def validate_reply(self, text):
+        envelope = self.parse_frame(text)
+        if envelope is None:
+            raise CliError("invalid json reply", code="invalid_response")
+        if envelope.get("kind") == "error":
+            raise CliError(envelope.get("error") or "htp error", code=envelope.get("status") or "error")
+        if envelope.get("status") != "ok":
+            raise CliError(envelope.get("error") or "htp failure", code=envelope.get("status") or "error")
+        return envelope
+
+
+def main(argv=None):
+    cli = HollowCli()
+    try:
+        return cli.run(argv if argv is not None else sys.argv[1:])
+    except CliError as exc:
+        payload = {"ok": False, "error": exc.message, "code": exc.code}
+        json.dump(payload, sys.stderr, separators=(",", ":"))
+        sys.stderr.write("\n")
+        return exc.status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
