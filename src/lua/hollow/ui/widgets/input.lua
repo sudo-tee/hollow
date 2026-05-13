@@ -71,7 +71,7 @@ function ui.input.open(opts)
     end,
     width = opts.width,
     height = opts.height,
-    chrome = opts.chrome or { bg = theme.panel_bg, border = theme.panel_border },
+    chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
     on_key = function(key, mods)
       if key == "escape" then

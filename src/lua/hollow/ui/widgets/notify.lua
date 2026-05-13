@@ -64,7 +64,7 @@ function ui.notify.show(message, opts)
       }
     end,
     align = opts.align or "top_right",
-    chrome = opts.chrome or { bg = theme.panel_bg, border = level_color },
+    chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color),
     backdrop = opts.backdrop,
     on_key = function(key)
       if key ~= "escape" and key ~= "enter" then

@@ -1456,13 +1456,24 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 api.get_field(state, overlay_idx, "chrome");
                 var panel_bg = ghostty.ColorRgb{ .r = 18, .g = 22, .b = 30 };
                 var panel_border = ghostty.ColorRgb{ .r = 136, .g = 192, .b = 208 };
+                var panel_radius: f32 = 0;
+                var panel_padding = BarBox{};
+                var panel_margin = BarBox{};
                 if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
-                    if (overlayRowColorField(api, state, absoluteIndex(api, state, -1), "bg")) |bg| {
+                    const chrome_idx = absoluteIndex(api, state, -1);
+                    if (overlayRowColorField(api, state, chrome_idx, "bg")) |bg| {
                         panel_bg = bg;
                     }
-                    if (overlayRowColorField(api, state, absoluteIndex(api, state, -1), "border")) |border| {
+                    if (overlayRowColorField(api, state, chrome_idx, "border")) |border| {
                         panel_border = border;
                     }
+                    api.get_field(state, chrome_idx, "radius");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                        panel_radius = @floatCast(api.to_number(state, -1));
+                    }
+                    pop(api, state, 1);
+                    panel_padding = barBoxField(api, state, chrome_idx, "padding");
+                    panel_margin = barBoxField(api, state, chrome_idx, "margin");
                 }
                 pop(api, state, 1);
 
@@ -1533,16 +1544,27 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 const available_width = @max(@as(f32, 160.0), ctx.width - reserved_sidebar_width);
                 const max_panel_w = available_width - ctx.renderer.cell_w * 2.0;
                 const content_w = @as(f32, @floatFromInt(max_chars)) * ctx.renderer.cell_w;
+                const base_padding_x = ctx.renderer.cell_w * 0.5;
+                const base_padding_top = ctx.renderer.cell_h;
+                const base_padding_bottom = ctx.renderer.cell_h * 0.5;
+                const panel_inner_left = base_padding_x + panel_padding.left;
+                const panel_inner_right = base_padding_x + panel_padding.right;
+                const panel_inner_top = base_padding_top + panel_padding.top;
+                const panel_inner_bottom = base_padding_bottom + panel_padding.bottom;
                 const desired_panel_w = if (width_rows > 0)
                     @as(f32, @floatFromInt(width_rows)) * ctx.renderer.cell_w
                 else
-                    content_w + ctx.renderer.cell_w * 2.0;
+                    content_w + panel_inner_left + panel_inner_right;
                 const desired_panel_h = if (height_rows > 0)
                     @as(f32, @floatFromInt(height_rows)) * ctx.renderer.cell_h
                 else
-                    @as(f32, @floatFromInt(@max(@as(usize, 1), row_count))) * ctx.renderer.cell_h + ctx.renderer.cell_h * 1.5;
-                const panel_w = std.math.clamp(desired_panel_w, @as(f32, 160.0), @max(@as(f32, 160.0), max_panel_w));
-                const panel_h = std.math.clamp(desired_panel_h, ctx.renderer.cell_h * 3.0, ctx.height - top_h - bottom_h - ctx.renderer.cell_h * 2.0);
+                    @as(f32, @floatFromInt(@max(@as(usize, 1), row_count))) * ctx.renderer.cell_h + panel_inner_top + panel_inner_bottom;
+                const max_clamped_panel_w = @max(@as(f32, 160.0), max_panel_w - panel_margin.horizontal());
+                const max_clamped_panel_h = @max(ctx.renderer.cell_h * 3.0, ctx.height - top_h - bottom_h - ctx.renderer.cell_h * 2.0 - panel_margin.vertical());
+                const panel_w = std.math.clamp(desired_panel_w, @as(f32, 160.0), max_clamped_panel_w);
+                const panel_h = std.math.clamp(desired_panel_h, ctx.renderer.cell_h * 3.0, max_clamped_panel_h);
+                const occupied_w = panel_w + panel_margin.horizontal();
+                const occupied_h = panel_h + panel_margin.vertical();
                 const content_left = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right)
                     reserved_sidebar_width
                 else
@@ -1556,44 +1578,58 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 const overlay_margin_y = ctx.renderer.cell_h;
                 const stack_offset = ctx.renderer.cell_h * 0.75 * @as(f32, @floatFromInt(stack_i - 1));
 
-                var panel_x = content_left + (content_width - panel_w) * 0.5;
-                var panel_y = top_h + overlay_margin_y + stack_offset;
+                var outer_x = content_left + (content_width - occupied_w) * 0.5;
+                var outer_y = top_h + overlay_margin_y + stack_offset;
 
                 if (overlay_align == .top_left) {
-                    panel_x = content_left + overlay_margin_x;
-                    panel_y = top_h + overlay_margin_y + stack_offset;
+                    outer_x = content_left + overlay_margin_x;
+                    outer_y = top_h + overlay_margin_y + stack_offset;
                 } else if (overlay_align == .top_center) {
-                    panel_x = content_left + (content_width - panel_w) * 0.5;
-                    panel_y = top_h + overlay_margin_y + stack_offset;
+                    outer_x = content_left + (content_width - occupied_w) * 0.5;
+                    outer_y = top_h + overlay_margin_y + stack_offset;
                 } else if (overlay_align == .top_right) {
-                    panel_x = content_right - panel_w - overlay_margin_x;
-                    panel_y = top_h + overlay_margin_y + stack_offset;
+                    outer_x = content_right - occupied_w - overlay_margin_x;
+                    outer_y = top_h + overlay_margin_y + stack_offset;
                 } else if (overlay_align == .left_center) {
-                    panel_x = content_left + overlay_margin_x;
-                    panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
+                    outer_x = content_left + overlay_margin_x;
+                    outer_y = top_h + ((ctx.height - top_h - bottom_h) - occupied_h) * 0.5 + stack_offset;
                 } else if (overlay_align == .right_center) {
-                    panel_x = content_right - panel_w - overlay_margin_x;
-                    panel_y = top_h + ((ctx.height - top_h - bottom_h) - panel_h) * 0.5 + stack_offset;
+                    outer_x = content_right - occupied_w - overlay_margin_x;
+                    outer_y = top_h + ((ctx.height - top_h - bottom_h) - occupied_h) * 0.5 + stack_offset;
                 } else if (overlay_align == .bottom_left) {
-                    panel_x = content_left + overlay_margin_x;
-                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                    outer_x = content_left + overlay_margin_x;
+                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
                 } else if (overlay_align == .bottom_center) {
-                    panel_x = content_left + (content_width - panel_w) * 0.5;
-                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                    outer_x = content_left + (content_width - occupied_w) * 0.5;
+                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
                 } else if (overlay_align == .bottom_right) {
-                    panel_x = content_right - panel_w - overlay_margin_x;
-                    panel_y = ctx.height - bottom_h - panel_h - overlay_margin_y - stack_offset;
+                    outer_x = content_right - occupied_w - overlay_margin_x;
+                    outer_y = ctx.height - bottom_h - occupied_h - overlay_margin_y - stack_offset;
                 }
 
-                panel_x = std.math.clamp(panel_x, content_left + overlay_margin_x, content_right - panel_w - overlay_margin_x);
-                panel_y = std.math.clamp(panel_y, top_h + overlay_margin_y, ctx.height - bottom_h - panel_h - overlay_margin_y);
+                const min_outer_x = content_left + overlay_margin_x;
+                const max_outer_x = @max(min_outer_x, content_right - occupied_w - overlay_margin_x);
+                const min_outer_y = top_h + overlay_margin_y;
+                const max_outer_y = @max(min_outer_y, ctx.height - bottom_h - occupied_h - overlay_margin_y);
+                outer_x = std.math.clamp(outer_x, min_outer_x, max_outer_x);
+                outer_y = std.math.clamp(outer_y, min_outer_y, max_outer_y);
+                const panel_x = outer_x + panel_margin.left;
+                const panel_y = outer_y + panel_margin.top;
+                const content_x = panel_x + panel_inner_left;
+                const content_y = panel_y + panel_inner_top;
+                const row_w = @max(@as(f32, 1.0), panel_w - panel_inner_left - panel_inner_right);
                 if (backdrop_color) |bg| {
                     if (backdrop_alpha > 0) {
                         drawBorderRect(content_left, top_h, content_width, ctx.height - top_h - bottom_h, bg.r, bg.g, bg.b, backdrop_alpha);
                     }
                 }
-                drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, 235);
-                drawBorderRect(panel_x, panel_y, panel_w, 1.0, panel_border.r, panel_border.g, panel_border.b, 255);
+                if (panel_radius > 0) {
+                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_bg.r, panel_bg.g, panel_bg.b, 235);
+                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_border.r, panel_border.g, panel_border.b, 72);
+                } else {
+                    drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, 235);
+                    drawBorderRect(panel_x, panel_y, panel_w, 1.0, panel_border.r, panel_border.g, panel_border.b, 255);
+                }
 
                 var row_i: c_int = 1;
                 while (true) : (row_i += 1) {
@@ -1606,15 +1642,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
-                        const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
+                        const text_y = content_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i - 1));
                         const row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
                         const row_divider = overlayRowColorField(api, state, row_idx, "divider");
                         const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
                         const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
                         const row_scrollbar_track_color = overlayRowColorField(api, state, row_idx, "scrollbar_track_color") orelse ghostty.ColorRgb{ .r = 90, .g = 99, .b = 117 };
                         const row_scrollbar_thumb_color = overlayRowColorField(api, state, row_idx, "scrollbar_thumb_color") orelse panel_border;
-                        const row_x = panel_x + ctx.renderer.cell_w * 0.5;
-                        const row_w = panel_w - ctx.renderer.cell_w;
+                        const row_x = content_x;
                         if (row_fill_bg) |bg| {
                             drawBorderRect(row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 255);
                         }
@@ -1625,7 +1660,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             const sc = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
                             drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), sc.r, sc.g, sc.b, if (row_scrollbar_thumb) 255 else 120);
                         }
-                        drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, panel_w - ctx.renderer.cell_w, row_segments);
+                        drawRowSegments(ctx.renderer, row_x, text_y, row_w, row_segments);
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);

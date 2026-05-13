@@ -13,6 +13,17 @@
 ---@field color? HollowColor
 ---@field alpha? integer
 
+---@class HollowUiBox
+---@field top? integer
+---@field right? integer
+---@field bottom? integer
+---@field left? integer
+---@field x? integer
+---@field y? integer
+---@field horizontal? integer
+---@field vertical? integer
+
+---@alias HollowUiBoxValue integer|HollowUiBox
 ---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowUiThemeBackdrop
 ---@class HollowUiTheme
 ---@field panel_bg? HollowColor
@@ -35,6 +46,9 @@
 ---@field empty? HollowColor
 ---@field scrollbar_track? HollowColor
 ---@field scrollbar_thumb? HollowColor
+---@field radius? integer
+---@field padding? HollowUiBoxValue
+---@field margin? HollowUiBoxValue
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field notify_levels? { info?: HollowColor, warn?: HollowColor, error?: HollowColor, success?: HollowColor }
 ---@alias HollowNotifyLevel "info"|"warn"|"error"|"success"
@@ -88,6 +102,9 @@
 ---@class HollowUiChrome
 ---@field bg? HollowColor
 ---@field border? HollowColor
+---@field radius? integer
+---@field padding? HollowUiBoxValue
+---@field margin? HollowUiBoxValue
 
 ---@class HollowSize
 ---@field rows integer
@@ -193,6 +210,11 @@
 ---@field wsl_distro? string
 ---@field default_cwd? string
 
+---@class HollowDomain: HollowDomainConfig
+---@field name string
+---@field is_active boolean
+---@field is_default boolean
+
 ---@alias HollowSshBackend "native"|"wsl"
 ---@alias HollowSshReuse "none"|"auto"
 ---@class HollowSshDomainConfig
@@ -227,11 +249,13 @@
 ---@field id integer
 ---@field index integer
 ---@field name string
+---@field domain? string
 ---@field is_active boolean
 
 ---@alias HollowPaneSnapshot HollowPane
 ---@alias HollowTabSnapshot HollowTab
 ---@alias HollowWorkspaceSnapshot HollowWorkspace
+---@alias HollowDomainSnapshot HollowDomain
 ---@alias HollowPaneSizeSnapshot HollowSize
 ---@alias HollowWindowSizeSnapshot HollowSize
 
@@ -536,7 +560,7 @@
 ---@class HollowUiTopbarConfigureOptions
 ---@field height? integer
 ---@field style? HollowUiNodeStyle|HollowHexColor
----@field layout? { padding?: number|{ top?: integer, right?: integer, bottom?: integer, left?: integer, x?: integer, y?: integer, horizontal?: integer, vertical?: integer }, margin?: number|{ top?: integer, right?: integer, bottom?: integer, left?: integer, x?: integer, y?: integer, horizontal?: integer, vertical?: integer } }
+---@field layout? { padding?: HollowUiBoxValue, margin?: HollowUiBoxValue }
 ---@field workspace? false|HollowUiBarWorkspaceOptions
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
@@ -561,7 +585,7 @@
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer
----@field chrome? { bg?: HollowColor, border?: HollowColor }
+---@field chrome? HollowUiChrome
 
 ---@class HollowUiNotifyAction
 ---@field label string
@@ -574,7 +598,7 @@
 ---@field action? HollowUiNotifyAction
 ---@field align? HollowOverlayAlign
 ---@field backdrop? HollowOverlayBackdropValue
----@field chrome? { bg?: HollowColor, border?: HollowColor }
+---@field chrome? HollowUiChrome|boolean
 ---@field theme? HollowUiTheme
 
 ---@class HollowUiInputOptions
@@ -801,6 +825,9 @@ function term.workspaces() end
 
 ---@return HollowWorkspaceSnapshot|nil
 function term.current_workspace() end
+
+---@return HollowDomainSnapshot|nil
+function term.current_domain() end
 
 ---@param id integer
 ---@return HollowTabSnapshot|nil

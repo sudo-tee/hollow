@@ -134,6 +134,54 @@ local function clone_table(value)
   return util.clone_value(value or {})
 end
 
+---@param value any
+---@param default integer
+---@return integer
+local function normalize_px(value, default)
+  local number = tonumber(value)
+  if number == nil then
+    return default
+  end
+
+  number = math.floor(number)
+  if number < 0 then
+    return 0
+  end
+  return number
+end
+
+---@param value any
+---@return { top: integer, right: integer, bottom: integer, left: integer }
+local function normalize_box(value)
+  if type(value) == "number" then
+    local px = normalize_px(value, 0)
+    return { top = px, right = px, bottom = px, left = px }
+  end
+
+  if type(value) ~= "table" then
+    return { top = 0, right = 0, bottom = 0, left = 0 }
+  end
+
+  local y = value.y or value.vertical
+  local x = value.x or value.horizontal
+  local top = value.top or y or value[1] or 0
+  local right = value.right or x or value[2] or top
+  local bottom = value.bottom or y or value[3] or top
+  local left = value.left or x or value[4] or right
+  return {
+    top = normalize_px(top, 0),
+    right = normalize_px(right, 0),
+    bottom = normalize_px(bottom, 0),
+    left = normalize_px(left, 0),
+  }
+end
+
+---@param box { top: integer, right: integer, bottom: integer, left: integer }
+---@return boolean
+local function has_box_spacing(box)
+  return box.top > 0 or box.right > 0 or box.bottom > 0 or box.left > 0
+end
+
 ---@param base HollowUiNodeStyle|nil
 ---@param overlay HollowUiNodeStyle|nil
 ---@return HollowUiNodeStyle
@@ -741,11 +789,37 @@ function M.normalize_overlay_chrome(value)
 
   local bg = normalize_hex_color(value.bg, nil)
   local border = normalize_hex_color(value.border, nil)
-  if bg == nil and border == nil then
+  local radius = normalize_px(value.radius, 0)
+  local padding = normalize_box(value.padding)
+  local margin = normalize_box(value.margin)
+  if bg == nil and border == nil and radius <= 0 and not has_box_spacing(padding) and not has_box_spacing(margin) then
     return nil
   end
 
-  return { bg = bg, border = border }
+  local chrome = { bg = bg, border = border }
+  if radius > 0 then
+    chrome.radius = radius
+  end
+  if has_box_spacing(padding) then
+    chrome.padding = padding
+  end
+  if has_box_spacing(margin) then
+    chrome.margin = margin
+  end
+  return chrome
+end
+
+---@param theme HollowUiTheme
+---@param border HollowColor|nil
+---@return HollowUiChrome|nil
+function M.theme_overlay_chrome(theme, border)
+  return M.normalize_overlay_chrome({
+    bg = theme.panel_bg,
+    border = border or theme.panel_border,
+    radius = theme.radius,
+    padding = theme.padding,
+    margin = theme.margin,
+  })
 end
 
 -- ---------------------------------------------------------------------------

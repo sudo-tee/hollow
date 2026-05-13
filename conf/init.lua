@@ -52,8 +52,10 @@ local palette = {
 local ui_theme = {
   widgets = {
     all = {
-      panel_bg = brighten(palette.bg, 0.1, palette.gray),
-      panel_border = palette.blue,
+      panel_bg = brighten(palette.bg, 0.01),
+      radius = 8,
+      padding = { left = 1, right = 1, top = 0, bottom = 0 },
+      margin = { top = 1, bottom = 0 },
       title = palette.bright_blue,
       fg = palette.fg,
       input_bg = palette.black,
@@ -63,7 +65,7 @@ local ui_theme = {
       divider = palette.gray,
     },
     input = {
-      backdrop = { color = palette.black, alpha = 168 },
+      backdrop = { color = palette.black, alpha = 128 },
     },
     select = {
       selected_bg = palette.black,
