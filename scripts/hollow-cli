@@ -96,7 +96,8 @@ class HollowCli:
         p.set_defaults(handler=lambda args: self.print_query("tabs", {}))
 
         p = get_sub.add_parser("panes", parents=[self.common_parser])
-        p.set_defaults(handler=lambda args: self.print_query("panes", {}))
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.print_query("panes", self.clean({"tag": args.tag})))
 
         p = get_sub.add_parser("workspace", parents=[self.common_parser])
         p.add_argument("--id", type=int)
@@ -203,35 +204,61 @@ class HollowCli:
 
         p = pane_sub.add_parser("close", parents=[self.common_parser])
         p.add_argument("--id", type=int)
-        p.set_defaults(handler=lambda args: self.print_event("close_pane", self.id_payload(args.id)))
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("close_pane", {}, args.id, args.tag))
 
         p = pane_sub.add_parser("zoom", parents=[self.common_parser])
         p.add_argument("--id", type=int)
-        p.set_defaults(handler=lambda args: self.print_event("toggle_pane_maximized", self.id_payload(args.id)))
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("toggle_pane_maximized", {}, args.id, args.tag))
 
         p = pane_sub.add_parser("float", parents=[self.common_parser])
         p.add_argument("--id", type=int)
-        p.set_defaults(handler=lambda args: self.print_event("set_pane_floating", {**self.id_payload(args.id), "floating": True}))
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_floating", {"floating": True}, args.id, args.tag))
 
         p = pane_sub.add_parser("tile", parents=[self.common_parser])
         p.add_argument("--id", type=int)
-        p.set_defaults(handler=lambda args: self.print_event("set_pane_floating", {**self.id_payload(args.id), "floating": False}))
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("set_pane_floating", {"floating": False}, args.id, args.tag))
 
         p = pane_sub.add_parser("move", parents=[self.common_parser])
         p.add_argument("direction", choices=["left", "right", "up", "down"])
         p.add_argument("--id", type=int)
+        p.add_argument("--tag")
         p.add_argument("--amount", type=float)
         p.set_defaults(handler=self.handle_pane_move)
 
         p = pane_sub.add_parser("resize", parents=[self.common_parser])
         p.add_argument("direction", choices=["left", "right", "up", "down"])
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
         p.add_argument("--amount", type=float, default=5.0)
         p.set_defaults(handler=self.handle_pane_resize)
 
         p = pane_sub.add_parser("send-text", parents=[self.common_parser])
         p.add_argument("text")
         p.add_argument("--id", type=int)
+        p.add_argument("--tag")
         p.set_defaults(handler=self.handle_pane_send_text)
+
+        p = pane_sub.add_parser("set-tag", parents=[self.common_parser])
+        p.add_argument("tag")
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag", dest="target_tag")
+        p.set_defaults(handler=self.handle_pane_set_tag)
+
+        p = pane_sub.add_parser("remove-tag", parents=[self.common_parser])
+        p.add_argument("tag")
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag", dest="target_tag")
+        p.set_defaults(handler=self.handle_pane_remove_tag)
+
+        p = pane_sub.add_parser("set-tags", parents=[self.common_parser])
+        p.add_argument("tags", nargs="*")
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag", dest="target_tag")
+        p.set_defaults(handler=self.handle_pane_set_tags)
 
     def add_focus(self, sub):
         p = sub.add_parser("focus", parents=[self.common_parser])
@@ -264,6 +291,7 @@ class HollowCli:
         p = sub.add_parser("send-keys", parents=[self.common_parser])
         p.add_argument("keys")
         p.add_argument("--id", type=int)
+        p.add_argument("--tag")
         p.set_defaults(handler=self.handle_send_keys)
 
     def add_emit(self, sub):
@@ -339,19 +367,28 @@ class HollowCli:
         return self.print_event("split_pane", payload)
 
     def handle_pane_move(self, args):
-        return self.print_event("move_pane", self.clean({"id": args.id, "direction": args.direction, "amount": args.amount}))
+        return self.emit_to_matching_panes("move_pane", {"direction": args.direction, "amount": args.amount}, args.id, args.tag)
 
     def handle_pane_resize(self, args):
-        return self.print_event("resize_pane", self.clean({"direction": args.direction, "delta": self.resize_delta(args.direction, args.amount)}))
+        return self.emit_to_matching_panes("resize_pane", {"direction": args.direction, "delta": self.resize_delta(args.direction, args.amount)}, args.id, args.tag)
 
     def handle_pane_send_text(self, args):
-        return self.print_event("send_text", self.clean({"id": args.id, "text": args.text}))
+        return self.emit_to_matching_panes("send_text", {"text": args.text}, args.id, args.tag)
+
+    def handle_pane_set_tag(self, args):
+        return self.emit_to_matching_panes("add_pane_tag", {"tag": args.tag}, args.id, args.target_tag)
+
+    def handle_pane_remove_tag(self, args):
+        return self.emit_to_matching_panes("remove_pane_tag", {"tag": args.tag}, args.id, args.target_tag)
+
+    def handle_pane_set_tags(self, args):
+        return self.emit_to_matching_panes("set_pane_tags", {"tags": args.tags}, args.id, args.target_tag)
 
     def handle_emit(self, args):
         return self.print_event(args.channel, self.parse_json_arg(args.payload_json, "payload"))
 
     def handle_send_keys(self, args):
-        return self.print_event("send_text", self.clean({"id": args.id, "text": self.decode_key_sequence(args.keys)}))
+        return self.emit_to_matching_panes("send_text", {"text": self.decode_key_sequence(args.keys)}, args.id, args.tag)
 
     def print_query(self, channel, params):
         result = self.query(channel, params)
@@ -361,6 +398,15 @@ class HollowCli:
     def print_event(self, channel, payload):
         result = self.emit(channel, payload)
         self.emit_output(result, payload_only=False)
+        return 0
+
+    def emit_to_matching_panes(self, channel, payload, ident, tag):
+        pane_ids = self.resolve_target_pane_ids(ident, tag)
+        if pane_ids is None:
+            return self.print_event(channel, self.clean(payload))
+        for pane_id in pane_ids:
+            result = self.emit(channel, self.clean({**payload, "id": pane_id}))
+            self.emit_output(result, payload_only=False)
         return 0
 
     def emit_output(self, result, payload_only):
@@ -390,6 +436,25 @@ class HollowCli:
 
     def id_payload(self, ident):
         return self.clean({"id": ident})
+
+    def resolve_target_pane_ids(self, ident, tag):
+        if ident is not None and tag is not None:
+            raise CliError("use either --id or --tag, not both", code="invalid_args", status=2)
+        if ident is not None:
+            return [ident]
+        if tag is None:
+            return None
+        envelope = self.query("panes", {"tag": tag})
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, list):
+            raise CliError("query 'panes' did not return a pane list", code="invalid_response")
+        pane_ids = []
+        for item in payload:
+            if isinstance(item, dict) and isinstance(item.get("id"), int):
+                pane_ids.append(item["id"])
+        if not pane_ids:
+            raise CliError(f"no panes found with tag: {tag}", code="invalid_args", status=2)
+        return pane_ids
 
     def clean(self, value):
         return {k: v for k, v in value.items() if v is not None}

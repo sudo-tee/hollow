@@ -91,19 +91,21 @@ fn deleteFile(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 pub const QueryHandler = *const fn (ctx: *anyopaque, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!luajit.HtpQueryResult;
+pub const EventHandler = *const fn (ctx: *anyopaque, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!luajit.HtpDispatchResult;
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
     handler_ctx: *anyopaque,
     query_handler: QueryHandler,
+    event_handler: EventHandler,
     thread: ?std.Thread = null,
     stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     started: bool = false,
     request_dir_host: ?[]u8 = null,
     request_dir_shell: ?[]u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, handler_ctx: *anyopaque, query_handler: QueryHandler) Server {
-        return .{ .allocator = allocator, .handler_ctx = handler_ctx, .query_handler = query_handler };
+    pub fn init(allocator: std.mem.Allocator, handler_ctx: *anyopaque, query_handler: QueryHandler, event_handler: EventHandler) Server {
+        return .{ .allocator = allocator, .handler_ctx = handler_ctx, .query_handler = query_handler, .event_handler = event_handler };
     }
 
     pub fn deinit(self: *Server) void {
@@ -195,43 +197,81 @@ pub const Server = struct {
             .object => |obj| obj,
             else => return,
         };
-        const reply_file = switch (root.get("reply_file") orelse return) {
-            .string => |v| v,
-            else => return,
+        const reply_file = switch (root.get("reply_file") orelse .null) {
+            .string => |v| @as(?[]const u8, v),
+            else => null,
         };
         const pane_id = switch (root.get("pane_id") orelse return) {
             .integer => |v| if (v >= 0) @as(usize, @intCast(v)) else return,
             else => return,
         };
+        const kind = if (root.get("kind")) |value|
+            switch (value) {
+                .string => |v| v,
+                else => "query",
+            }
+        else
+            "query";
         const name = switch (root.get("name") orelse return) {
             .string => |v| v,
             else => return,
         };
-        const params = root.get("params");
+        if (std.mem.eql(u8, kind, "event")) {
+            const payload = root.get("payload");
+            const result = self.event_handler(self.handler_ctx, pane_id, name, payload) catch |err| {
+                if (reply_file) |path| try writeErrorFile(path, self.allocator, @errorName(err));
+                deleteFile(self.allocator, request_path);
+                return;
+            };
+            defer result.deinit(self.allocator);
 
+            if (!result.success) {
+                if (reply_file) |path| try writeErrorFile(path, self.allocator, result.error_message orelse "event failed");
+                deleteFile(self.allocator, request_path);
+                return;
+            }
+
+            if (reply_file) |path| {
+                var out: std.Io.Writer.Allocating = .init(self.allocator);
+                defer out.deinit();
+                try std.json.Stringify.value(.{
+                    .kind = "result",
+                    .status = "ok",
+                }, .{}, &out.writer);
+                const reply_out = try createFileShared(self.allocator, path);
+                defer reply_out.close();
+                try reply_out.writeAll(out.written());
+            }
+            deleteFile(self.allocator, request_path);
+            return;
+        }
+
+        const params = root.get("params");
         const result = self.query_handler(self.handler_ctx, pane_id, name, params) catch |err| {
-            try writeErrorFile(reply_file, self.allocator, @errorName(err));
+            if (reply_file) |path| try writeErrorFile(path, self.allocator, @errorName(err));
             deleteFile(self.allocator, request_path);
             return;
         };
         defer result.deinit(self.allocator);
 
         if (!result.success) {
-            try writeErrorFile(reply_file, self.allocator, result.error_message orelse "query failed");
+            if (reply_file) |path| try writeErrorFile(path, self.allocator, result.error_message orelse "query failed");
             deleteFile(self.allocator, request_path);
             return;
         }
 
-        var out: std.Io.Writer.Allocating = .init(self.allocator);
-        defer out.deinit();
-        try std.json.Stringify.value(.{
-            .kind = "result",
-            .status = "ok",
-            .payload = result.value,
-        }, .{}, &out.writer);
-        const reply_out = try createFileShared(self.allocator, reply_file);
-        defer reply_out.close();
-        try reply_out.writeAll(out.written());
+        if (reply_file) |path| {
+            var out: std.Io.Writer.Allocating = .init(self.allocator);
+            defer out.deinit();
+            try std.json.Stringify.value(.{
+                .kind = "result",
+                .status = "ok",
+                .payload = result.value,
+            }, .{}, &out.writer);
+            const reply_out = try createFileShared(self.allocator, path);
+            defer reply_out.close();
+            try reply_out.writeAll(out.written());
+        }
         deleteFile(self.allocator, request_path);
     }
 

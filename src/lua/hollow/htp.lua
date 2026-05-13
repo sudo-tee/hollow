@@ -191,11 +191,21 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     return hollow.term.tab_by_id(tab_id)
   end)
 
-  hollow.htp.on_query("panes", function()
+  hollow.htp.on_query("panes", function(ctx)
     local panes = {}
+    local wanted_tag = ctx and ctx.params and ctx.params.tag or nil
     for _, tab in ipairs(hollow.term.tabs()) do
       for _, pane in ipairs(tab.panes) do
-        panes[#panes + 1] = pane
+        if type(wanted_tag) ~= "string" then
+          panes[#panes + 1] = pane
+        else
+          for _, tag in ipairs(pane.tags or {}) do
+            if tag == wanted_tag then
+              panes[#panes + 1] = pane
+              break
+            end
+          end
+        end
       end
     end
     return panes
@@ -408,6 +418,27 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       error("send_text requires a string text")
     end
     hollow.term.send_text(payload.text, target_pane_id(ctx, payload))
+  end)
+
+  hollow.htp.on_emit("set_pane_tags", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.set_pane_tags(payload.tags, target_pane_id(ctx, payload))
+  end)
+
+  hollow.htp.on_emit("add_pane_tag", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.tag) ~= "string" then
+      error("add_pane_tag requires a string tag")
+    end
+    hollow.term.add_pane_tag(payload.tag, target_pane_id(ctx, payload))
+  end)
+
+  hollow.htp.on_emit("remove_pane_tag", function(ctx)
+    local payload = event_payload(ctx)
+    if type(payload.tag) ~= "string" then
+      error("remove_pane_tag requires a string tag")
+    end
+    hollow.term.remove_pane_tag(payload.tag, target_pane_id(ctx, payload))
   end)
 
   hollow.htp.on_emit("reload_config", function()

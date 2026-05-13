@@ -1,6 +1,73 @@
 local M = {}
 
 function M.setup(hollow, host_api)
+  local pane_tags = {}
+
+  local function normalize_tag(tag, fn_name)
+    if type(tag) ~= "string" then
+      error(fn_name .. " expects a string tag")
+    end
+    local trimmed = tag:match("^%s*(.-)%s*$") or ""
+    if trimmed == "" then
+      error(fn_name .. " expects a non-empty tag")
+    end
+    return trimmed
+  end
+
+  local function pane_tag_set(pane_id)
+    local tags = pane_tags[pane_id]
+    if tags == nil then
+      tags = {}
+      pane_tags[pane_id] = tags
+    end
+    return tags
+  end
+
+  local function snapshot_tags(pane_id)
+    local set = pane_tags[pane_id]
+    if set == nil then
+      return {}
+    end
+    local tags = {}
+    for tag, enabled in pairs(set) do
+      if enabled == true then
+        tags[#tags + 1] = tag
+      end
+    end
+    table.sort(tags)
+    return tags
+  end
+
+  local function resolve_pane_id(pane_id, fn_name)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error(fn_name .. " expects pane_id to be a number or nil")
+    end
+    local target = pane_id
+    if target == nil then
+      target = host_api.current_pane_id and host_api.current_pane_id() or nil
+    end
+    if target == nil or not host_api.pane_exists(target) then
+      error(fn_name .. " could not resolve a pane")
+    end
+    return target
+  end
+
+  local function set_pane_tags(tags, pane_id)
+    local target = resolve_pane_id(pane_id, "hollow.term.set_pane_tags(tags, pane_id?)")
+    if tags == nil then
+      pane_tags[target] = nil
+      return
+    end
+    if type(tags) ~= "table" then
+      error("hollow.term.set_pane_tags(tags, pane_id?) expects tags to be a table or nil")
+    end
+    local set = {}
+    for _, tag in ipairs(tags) do
+      set[normalize_tag(tag, "hollow.term.set_pane_tags(tags, pane_id?)")] = true
+    end
+    pane_tags[target] = next(set) ~= nil and set or nil
+  end
+
   local function domain_snapshot(name)
     if type(name) ~= "string" or name == "" then
       return nil
@@ -47,6 +114,7 @@ function M.setup(hollow, host_api)
       foreground_process = host_api.get_pane_foreground_process
           and host_api.get_pane_foreground_process(pane_id)
         or nil,
+      tags = snapshot_tags(pane_id),
       is_focused = host_api.pane_is_focused(pane_id),
       is_floating = host_api.pane_is_floating and host_api.pane_is_floating(pane_id) or false,
       is_maximized = host_api.pane_is_maximized and host_api.pane_is_maximized(pane_id) or false,
@@ -268,6 +336,31 @@ function M.setup(hollow, host_api)
       return ""
     end
     return host_api.get_pane_text(target)
+  end
+
+  function hollow.term.get_pane_tags(pane_id)
+    return snapshot_tags(resolve_pane_id(pane_id, "hollow.term.get_pane_tags(pane_id?)"))
+  end
+
+  function hollow.term.set_pane_tags(tags, pane_id)
+    set_pane_tags(tags, pane_id)
+  end
+
+  function hollow.term.add_pane_tag(tag, pane_id)
+    local target = resolve_pane_id(pane_id, "hollow.term.add_pane_tag(tag, pane_id?)")
+    pane_tag_set(target)[normalize_tag(tag, "hollow.term.add_pane_tag(tag, pane_id?)")] = true
+  end
+
+  function hollow.term.remove_pane_tag(tag, pane_id)
+    local target = resolve_pane_id(pane_id, "hollow.term.remove_pane_tag(tag, pane_id?)")
+    local set = pane_tags[target]
+    if set == nil then
+      return
+    end
+    set[normalize_tag(tag, "hollow.term.remove_pane_tag(tag, pane_id?)")] = nil
+    if next(set) == nil then
+      pane_tags[target] = nil
+    end
   end
 
   function hollow.term.split_pane(direction, opts)

@@ -156,6 +156,7 @@ Start with [the docs index](docs/README.md).
 | [docs/configuration.md](docs/configuration.md)           | Config model, defaults, overrides, packaging    | you want to customize Hollow or ship a default config       |
 | [docs/windows-wsl.md](docs/windows-wsl.md)               | Windows-first setup, WSL usage, troubleshooting | you are running Hollow in its primary validated environment |
 | [docs/hollow-lua-api.md](docs/hollow-lua-api.md)         | Lua runtime API reference                       | you are scripting Hollow or building custom UI/automation   |
+| [docs/hollow-cli.md](docs/hollow-cli.md)                 | Hollow CLI surface and implementation plan      | you want the shipped HTP command surface                    |
 | [docs/htp-shell-examples.md](docs/htp-shell-examples.md) | Shell-side HTP helpers and examples             | you want shells or scripts to talk back to the host         |
 
 Companion reference files outside `docs/`:

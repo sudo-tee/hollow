@@ -44,6 +44,27 @@ local function send_startup_commands(pane)
   end
 end
 
+local function normalize_tags(value)
+  if value == nil then
+    return nil
+  end
+  if type(value) == "string" then
+    local trimmed = trim_string(value)
+    return trimmed ~= "" and { trimmed } or nil
+  end
+  if type(value) ~= "table" then
+    return nil
+  end
+  local tags = {}
+  for _, tag in ipairs(value) do
+    local trimmed = trim_string(tag)
+    if trimmed ~= "" then
+      tags[#tags + 1] = trimmed
+    end
+  end
+  return #tags > 0 and tags or nil
+end
+
 local function normalize_relative_path(base_dir, value)
   value = trim_string(value)
   if value == "" then
@@ -77,7 +98,15 @@ end
 local function clone_with_resolved_paths(base_dir, pane)
   local copy = util.clone_value(pane)
   copy.cwd = normalize_relative_path(base_dir, copy.cwd)
+  copy.tags = normalize_tags(copy.tags or copy.tag)
+  copy.tag = nil
   return copy
+end
+
+local function apply_pane_tags(pane)
+  if pane.tags ~= nil then
+    hollow.term.set_pane_tags(pane.tags)
+  end
 end
 
 local function pane_opts(pane, tab_layout)
@@ -139,6 +168,8 @@ local function bootstrap_tab(tab, base_dir, is_first_tab)
     })
   end
 
+  apply_pane_tags(first)
+
   send_startup_commands(first)
 
   if trim_string(tab.name) ~= "" then
@@ -148,6 +179,7 @@ local function bootstrap_tab(tab, base_dir, is_first_tab)
   for index = 2, #panes do
     local pane = clone_with_resolved_paths(base_dir, panes[index])
     hollow.term.split_pane(pane_opts(pane, tab.layout))
+    apply_pane_tags(pane)
   end
 end
 
@@ -225,6 +257,7 @@ function M.export_current()
         cwd = pane.cwd ~= "" and pane.cwd or nil,
         domain = pane.domain,
         command = pane.foreground_process,
+        tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
       }
     end
     tabs[#tabs + 1] = {

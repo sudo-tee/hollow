@@ -197,6 +197,7 @@ This is especially useful for:
 Related docs:
 
 - [configuration.md](configuration.md) for domain and SSH examples
+- [hollow-cli.md](hollow-cli.md) simplified HTP CLI
 - [htp-shell-examples.md](htp-shell-examples.md) for shell-to-host integration
 
 ## Troubleshooting

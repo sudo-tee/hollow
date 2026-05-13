@@ -56,6 +56,7 @@ local function make_host_api()
       domain = "main",
       cwd = "/tmp/project",
       text = "line one\nline two",
+      tags = {},
       title = "shell",
       is_focused = true,
       is_floating = false,
@@ -514,7 +515,15 @@ assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.snapshot shou
 local current_pane = hollow.term.current_pane()
 local current_domain = hollow.term.current_domain()
 assert_equal(current_pane.id, 101, "current_pane should return the focused pane")
+assert_equal(#current_pane.tags, 0, "current_pane should expose pane tags")
 assert_equal(hollow.term.get_pane_text(101), "line one\nline two", "get_pane_text should return pane text")
+assert_equal(#hollow.term.get_pane_tags(101), 0, "get_pane_tags should default to an empty list")
+hollow.term.add_pane_tag("test-runner", 101)
+assert_equal(hollow.term.get_pane_tags(101)[1], "test-runner", "add_pane_tag should attach tags to panes")
+hollow.term.add_pane_tag("build", 101)
+hollow.term.remove_pane_tag("build", 101)
+assert_equal(#hollow.term.get_pane_tags(101), 1, "remove_pane_tag should delete a single tag")
+assert_equal(hollow.term.pane_by_id(101).tags[1], "test-runner", "pane snapshots should include tags")
 assert_equal(current_domain.name, "main", "current_domain should snapshot the focused pane domain")
 assert_equal(current_domain.is_active, true, "current_domain should mark the active domain")
 assert_equal(hollow.term.current_workspace().name, "main", "current_workspace should snapshot workspace state")
@@ -562,6 +571,7 @@ hollow.workspace.bootstrap({
 assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
 assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
 assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
+hollow.term.set_pane_tags({ "test-runner", "primary" }, 101)
 
 assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "workspace helper should resolve project-local path")
 
@@ -572,6 +582,8 @@ assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "\\\\wsl.localhost\
 local exported = hollow.workspace.export_current()
 assert_equal(exported.name, "main", "workspace export should include active workspace name")
 assert_equal(exported.tabs[1].panes[1].cwd, "/tmp/project", "workspace export should include pane cwd")
+assert_equal(exported.tabs[1].panes[1].tags[1], "primary", "workspace export should include pane tags")
+assert_equal(exported.tabs[1].panes[1].tags[2], "test-runner", "workspace export should preserve pane tags")
 
 local on_key = get_key_handler()
 assert_true(type(on_key) == "function", "keymap setup should register a key handler")
@@ -606,6 +618,10 @@ local ok_panes_query, panes_query = hollow.htp._handle_query("panes", nil, 101)
 assert_true(ok_panes_query, "built-in HTP panes query should succeed")
 assert_equal(panes_query[1].id, 101, "HTP panes query should expose pane snapshots")
 
+local ok_tagged_panes_query, tagged_panes_query = hollow.htp._handle_query("panes", { tag = "test-runner" }, 101)
+assert_true(ok_tagged_panes_query, "HTP tagged panes query should succeed")
+assert_equal(tagged_panes_query[1].id, 101, "HTP tagged panes query should filter by tag")
+
 local ok_tab_query, tab_query = hollow.htp._handle_query("tab", { id = 201 }, 101)
 assert_true(ok_tab_query, "built-in HTP tab query should succeed")
 assert_equal(tab_query.id, 201, "HTP tab query should support targeted lookups")
@@ -630,6 +646,19 @@ assert_equal(recorded.resize_pane.amount, 5, "HTP resize_pane should forward del
 local ok_send_text = hollow.htp._handle_emit("send_text", { text = "ls\n", id = 101 }, 101)
 assert_true(ok_send_text, "HTP send_text should succeed")
 assert_equal(recorded.send_text[#recorded.send_text], "ls\n", "HTP send_text should forward text to the pane")
+
+local ok_add_pane_tag = hollow.htp._handle_emit("add_pane_tag", { id = 101, tag = "ci" }, 101)
+assert_true(ok_add_pane_tag, "HTP add_pane_tag should succeed")
+assert_equal(hollow.term.get_pane_tags(101)[1], "ci", "HTP add_pane_tag should add a pane tag")
+
+local ok_set_pane_tags = hollow.htp._handle_emit("set_pane_tags", { id = 101, tags = { "runner", "slow" } }, 101)
+assert_true(ok_set_pane_tags, "HTP set_pane_tags should succeed")
+assert_equal(hollow.term.get_pane_tags(101)[1], "runner", "HTP set_pane_tags should replace pane tags")
+assert_equal(hollow.term.get_pane_tags(101)[2], "slow", "HTP set_pane_tags should keep all tags")
+
+local ok_remove_pane_tag = hollow.htp._handle_emit("remove_pane_tag", { id = 101, tag = "runner" }, 101)
+assert_true(ok_remove_pane_tag, "HTP remove_pane_tag should succeed")
+assert_equal(hollow.term.get_pane_tags(101)[1], "slow", "HTP remove_pane_tag should remove only the requested tag")
 
 local ok_pane_text, pane_text = hollow.htp._handle_query("pane_text", { id = 101 }, 101)
 assert_true(ok_pane_text, "HTP pane_text should succeed")

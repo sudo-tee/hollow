@@ -235,6 +235,7 @@
 ---@field is_maximized boolean
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field foreground_process string
+---@field tags string[]
 ---@field size HollowSize
 
 ---@class HollowTab
@@ -269,6 +270,8 @@
 
 ---@class HollowSplitPaneOpts
 ---@field direction? "horizontal"|"vertical"
+---@field tag? string
+---@field tags? string[]
 ---@field ratio? number
 ---@field domain? string
 ---@field cwd? string
@@ -875,6 +878,22 @@ function term.send_text(text, pane_id) end
 ---@param pane_id? integer
 ---@return string
 function term.get_pane_text(pane_id) end
+
+---@param pane_id? integer
+---@return string[]
+function term.get_pane_tags(pane_id) end
+
+---@param tags? string[]
+---@param pane_id? integer
+function term.set_pane_tags(tags, pane_id) end
+
+---@param tag string
+---@param pane_id? integer
+function term.add_pane_tag(tag, pane_id) end
+
+---@param tag string
+---@param pane_id? integer
+function term.remove_pane_tag(tag, pane_id) end
 
 ---@param pane_id integer|nil
 ---@param process string|nil

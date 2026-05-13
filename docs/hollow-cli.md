@@ -10,7 +10,7 @@ Queries:
 - `hollow-cli get tab [--id ID]`
 - `hollow-cli get current-tab`
 - `hollow-cli get tabs`
-- `hollow-cli get panes`
+- `hollow-cli get panes [--tag TAG]`
 - `hollow-cli get workspace [--id ID|--index N]`
 - `hollow-cli get current-workspace`
 - `hollow-cli get workspaces`
@@ -33,14 +33,17 @@ Mutations:
 - `hollow-cli tab rename <name> [--id ID|--index N]`
 - `hollow-cli pane split vertical|horizontal [--cmd CMD] [--cwd PATH] [--domain NAME] [--ratio N]`
 - `hollow-cli pane popup <cmd> [--cwd PATH] [--domain NAME] [--x N] [--y N] [--width N] [--height N]`
-- `hollow-cli pane close [--id ID]`
-- `hollow-cli pane zoom [--id ID]`
-- `hollow-cli pane float [--id ID]`
-- `hollow-cli pane tile [--id ID]`
-- `hollow-cli pane move <left|right|up|down> [--id ID] [--amount N]`
-- `hollow-cli pane resize <left|right|up|down> [--amount N]`
-- `hollow-cli pane send-text <text> [--id ID]`
-- `hollow-cli send-keys <keys> [--id ID]`
+- `hollow-cli pane close [--id ID|--tag TAG]`
+- `hollow-cli pane zoom [--id ID|--tag TAG]`
+- `hollow-cli pane float [--id ID|--tag TAG]`
+- `hollow-cli pane tile [--id ID|--tag TAG]`
+- `hollow-cli pane move <left|right|up|down> [--id ID|--tag TAG] [--amount N]`
+- `hollow-cli pane resize <left|right|up|down> [--id ID|--tag TAG] [--amount N]`
+- `hollow-cli pane send-text <text> [--id ID|--tag TAG]`
+- `hollow-cli pane set-tag <tag> [--id ID|--tag TAG]`
+- `hollow-cli pane remove-tag <tag> [--id ID|--tag TAG]`
+- `hollow-cli pane set-tags [tag ...] [--id ID|--tag TAG]`
+- `hollow-cli send-keys <keys> [--id ID|--tag TAG]`
 - `hollow-cli focus <left|right|up|down>`
 - `hollow-cli scroll <top|bottom|page-up|page-down>`
 - `hollow-cli config reload`
