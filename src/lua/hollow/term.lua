@@ -75,7 +75,9 @@ function M.setup(hollow, host_api)
 
     local default_domain = hollow.config.get("default_domain")
     local current_pane_id = host_api.current_pane_id and host_api.current_pane_id() or nil
-    local current_name = current_pane_id ~= nil and host_api.get_pane_domain and host_api.get_pane_domain(current_pane_id)
+    local current_name = current_pane_id ~= nil
+        and host_api.get_pane_domain
+        and host_api.get_pane_domain(current_pane_id)
       or nil
     local domains = hollow.config.get("domains")
     local configured = type(domains) == "table" and domains[name] or nil
@@ -618,6 +620,23 @@ function M.setup(hollow, host_api)
     workspace_snapshot = workspace_snapshot,
     tab_snapshot = tab_snapshot,
   }
+end
+
+function hollow.term.run_domain_process(args, domain, opts)
+  if type(args) ~= "table" then
+    error("hollow.term.run_domain_process(args, domain?, opts?) expects args to be a table")
+  end
+
+  if domain == nil then
+    local pane = hollow.term.current_pane()
+    domain = pane and pane.domain or nil
+  end
+
+  if type(domain) ~= "string" or domain == "" then
+    error("hollow.term.run_domain_process(args, domain?, opts?) could not resolve a domain")
+  end
+
+  return host_api.run_domain_process(domain, args, opts)
 end
 
 return M

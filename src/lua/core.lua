@@ -114,6 +114,10 @@ local function format_log_value(value, seen, depth)
   return "{" .. table.concat(parts, ", ") .. "}"
 end
 
+function hollow.inspect(value)
+  return format_log_value(value)
+end
+
 function hollow.log(...)
   local parts = {}
   local values = { ... }
@@ -194,23 +198,6 @@ end
 
 function hollow.process.run_child_process(args, opts)
   return host_api.run_child_process(args, opts)
-end
-
-function hollow.term.run_domain_process(args, domain, opts)
-  if type(args) ~= "table" then
-    error("hollow.term.run_domain_process(args, domain?, opts?) expects args to be a table")
-  end
-
-  if domain == nil then
-    local pane = hollow.term.current_pane()
-    domain = pane and pane.domain or nil
-  end
-
-  if type(domain) ~= "string" or domain == "" then
-    error("hollow.term.run_domain_process(args, domain?, opts?) could not resolve a domain")
-  end
-
-  return host_api.run_domain_process(domain, args, opts)
 end
 
 function hollow.process.spawn(_opts)

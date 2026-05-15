@@ -1534,6 +1534,7 @@ function process.run_child_process(args, opts) end
 ---@field platform HollowPlatformInfo
 ---@field on_gui_ready fun(handler: fun())
 ---@field log fun(...: any)
+---@field inspect fun(value: any): string
 ---@field read_dir fun(path: string): string[]
 ---@field util HollowUtilNamespace
 ---@field theme HollowThemeNamespace
