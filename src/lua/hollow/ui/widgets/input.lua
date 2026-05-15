@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -58,7 +59,7 @@ end
 function ui.input.open(opts)
   opts = opts or {}
 
-  local theme = resolve_input_theme(shared.resolve_widget_theme("input"), opts)
+  local theme = resolve_input_theme(theme_api.resolve_widget("input"), opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local local_state = {
     prompt = opts.prompt or "",

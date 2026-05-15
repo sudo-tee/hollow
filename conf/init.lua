@@ -1,119 +1,8 @@
 local hollow = require("hollow")
-local brighten = hollow.util.brighten_hex_color
 
 local is_windows = hollow.platform.is_windows == true
 
-local wave = {
-  foreground = "#dcd7ba",
-  background = "#1f1f28",
-  cursor_bg = "#c8c093",
-  cursor_fg = "#1f1f28",
-  selection_bg = "#2d4f67",
-  selection_fg = "#c8c093",
-  ansi = {
-    "#16161d",
-    "#c34043",
-    "#76946a",
-    "#c0a36e",
-    "#7e9cd8",
-    "#957fb8",
-    "#6a9589",
-    "#c8c093",
-  },
-  brights = {
-    "#727169",
-    "#e82424",
-    "#98bb6c",
-    "#e6c384",
-    "#7fb4ca",
-    "#938aa9",
-    "#7aa89f",
-    "#dcd7ba",
-  },
-}
-
-local terminal_theme = wave
 local default_font_size = 14
-
-local palette = {
-  bg = terminal_theme.background,
-  fg = terminal_theme.foreground,
-  black = terminal_theme.ansi[1],
-  blue = terminal_theme.ansi[5],
-  magenta = terminal_theme.ansi[6],
-  gray = terminal_theme.brights[1],
-  bright_green = terminal_theme.brights[3],
-  bright_yellow = terminal_theme.brights[4],
-  bright_blue = terminal_theme.brights[5],
-  bright_white = terminal_theme.brights[8],
-  error = terminal_theme.brights[2],
-}
-
-local ui_theme = {
-  widgets = {
-    all = {
-      panel_bg = brighten(palette.bg, 0.01),
-      radius = 8,
-      padding = { left = 1, right = 1, top = 0, bottom = 0 },
-      margin = { top = 1, bottom = 0 },
-      title = palette.bright_blue,
-      fg = palette.fg,
-      input_bg = palette.black,
-      input_fg = palette.fg,
-      cursor_bg = palette.fg,
-      cursor_fg = palette.bg,
-      divider = palette.gray,
-    },
-    input = {
-      backdrop = { color = palette.black, alpha = 128 },
-    },
-    select = {
-      selected_bg = palette.black,
-      selected_detail_bg = palette.bg,
-      scrollbar_thumb = palette.bright_yellow,
-      backdrop = { color = palette.black, alpha = 168 },
-    },
-    notify = {
-      notify_levels = {
-        info = palette.bright_blue,
-        warn = palette.bright_yellow,
-        error = palette.error,
-        success = palette.bright_green,
-      },
-    },
-  },
-  tab_bar = {
-    background = palette.black,
-    active_tab = {
-      bg = palette.bg,
-      fg = palette.bright_yellow,
-      bold = true,
-    },
-    inactive_tab = {
-      bg = palette.black,
-      fg = palette.fg,
-    },
-    hover_tab = {
-      bg = palette.black,
-      fg = palette.bright_white,
-    },
-  },
-  scrollbar = {
-    track = palette.black,
-    thumb = palette.gray,
-    thumb_hover = palette.blue,
-    thumb_active = palette.bright_blue,
-    border = palette.bg,
-  },
-  split = palette.magenta,
-  accent = palette.blue,
-  warm = palette.bright_yellow,
-  status = {
-    bg = palette.black,
-    fg = palette.blue,
-  },
-}
-
 local default_domain = is_windows and "pwsh" or "unix"
 local domains = {}
 
@@ -134,15 +23,14 @@ hollow.config.set({
   backend = "sokol",
   default_domain = default_domain,
   domains = domains,
-  terminal_theme = terminal_theme,
-  ui_theme = ui_theme,
+  -- theme = "kanagawa-wave",
   fonts = {
     size = default_font_size,
     line_height = 0.95,
     smoothing = "grayscale",
     hinting = "light",
     ligatures = true,
-    embolden = 0.3,
+    embolden = 0.33,
     family = "JetBrains Mono",
   },
   cols = 120,
@@ -153,8 +41,7 @@ hollow.config.set({
   window_width = 1440,
   window_height = 900,
   top_bar_mode = "always",
-  top_bar_height = 0,
-  top_bar_bg = ui_theme.tab_bar.background,
+  split_width = 1,
   window_titlebar_show = true,
   scrollbar = {
     enabled = false,
@@ -162,11 +49,6 @@ hollow.config.set({
     min_thumb_size = 24,
     margin = 2,
     jump_to_click = true,
-    track = ui_theme.scrollbar.track,
-    thumb = ui_theme.scrollbar.thumb,
-    thumb_hover = ui_theme.scrollbar.thumb_hover,
-    thumb_active = ui_theme.scrollbar.thumb_active,
-    border = ui_theme.scrollbar.border,
   },
   hyperlinks = {
     enabled = true,
@@ -183,21 +65,8 @@ if is_windows then
   hollow.config.populate_wsl_domains()
 end
 
-local topbar_pill = {
-  bg = ui_theme.tab_bar.background,
-  radius = 8,
-  padding = { left = 3, right = 3, top = 1, bottom = 1 },
-  margin = { right = 1, left = 0, top = 0, bottom = 0 },
-}
-
-local topbar_group_bg = brighten(palette.black, 0.08, palette.bg)
-local topbar_sep_fg = brighten(palette.black, 0.08, palette.black)
-
 hollow.ui.topbar.configure({
-  height = 22,
-  style = {
-    bg = ui_theme.tab_bar.background,
-  },
+  height = 24,
   layout = {
     padding = { left = 0, right = 0, top = 1, bottom = 1 },
   },
@@ -205,26 +74,35 @@ hollow.ui.topbar.configure({
   key_legend = false,
   time = false,
   workspace = {
-    style = topbar_pill,
-    format = function(workspace)
+    style = function()
+      local ui = hollow.theme.current().ui
       return {
-        hollow.ui.span(workspace.name, { fg = palette.bright_blue, bold = true }),
+        bg = ui.top_bar.background,
+        radius = 8,
+        padding = { left = 3, right = 3, top = 1, bottom = 1 },
+        margin = { right = 1, left = 0, top = 0, bottom = 0 },
+      }
+    end,
+    format = function(workspace)
+      local ui = hollow.theme.current().ui
+      return {
+        hollow.ui.span(workspace.name, { fg = ui.widgets.all.title, bold = true }),
       }
     end,
   },
   separator = {
     text = "|",
-    style = { fg = topbar_sep_fg, margin = { left = 3, right = 3 } },
+    style = { margin = { left = 3, right = 3 } },
   },
   tabs = {
     fit = "content",
     style = function(tab)
-      local tab_bg = tab.is_active and topbar_group_bg or ui_theme.tab_bar.background
-      local tab_fg = tab.is_active and palette.bright_white
-        or brighten(palette.bg, -0.4, palette.bg)
+      local ui = hollow.theme.current().ui
+      local tab_colors = tab.is_active and ui.tab_bar.active_tab
+        or (tab.is_hovered and ui.tab_bar.hover_tab or ui.tab_bar.inactive_tab)
       return {
-        bg = tab_bg,
-        fg = tab_fg,
+        bg = tab_colors.bg,
+        fg = tab_colors.fg,
         radius = 4,
         padding = { left = 6, right = 3, top = 2, bottom = 2 },
         margin = { right = 1 },
@@ -237,28 +115,28 @@ hollow.ui.topbar.configure({
       local tab_title = tab_cwd
         or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
         or tab.title
-      local tab_bg = tab.is_active and brighten(topbar_group_bg, 0.16, palette.bg) or palette.bg
-      local tab_fg = tab.is_active and palette.bright_white or brighten(palette.fg, 0.4, palette.bg)
+      local ui = hollow.theme.current().ui
 
       local close_style = {
         id = "tab-close:" .. tostring(tab.id),
-        fg = palette.gray,
-        bg = tab_bg,
+        fg = ui.widgets.all.divider,
         hover = {
-          fg = tab_fg,
+          fg = ui.tab_bar.hover_tab.fg,
         },
         on_click = function()
           hollow.term.close_tab(tab.id)
         end,
       }
       return {
-        hollow.ui.span(is_maximized, { fg = palette.magenta }),
+        hollow.ui.span(is_maximized),
         hollow.ui.span(tab_title, {
           id = "tab-text:" .. tostring(tab.id),
           on_click = function()
             hollow.term.focus_tab(tab.id)
           end,
-          hover = { fg = palette.bright_white },
+          hover = {
+            fg = ui.tab_bar.hover_tab.fg,
+          },
         }),
         hollow.ui.span(" ×", close_style),
       }

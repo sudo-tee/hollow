@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 local table_unpack = table.unpack or unpack
@@ -395,7 +396,7 @@ end
 function ui.select.open(opts)
   opts = opts or {}
 
-  local theme = resolve_select_theme(shared.resolve_widget_theme("select"), opts)
+  local theme = resolve_select_theme(theme_api.resolve_widget("select"), opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local local_state = {
     index = 1,

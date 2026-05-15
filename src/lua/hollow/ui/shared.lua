@@ -1,4 +1,5 @@
 local state = require("hollow.state").get()
+local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -86,41 +87,7 @@ local ALLOWED_OVERLAY_ALIGN = {
   bottom_right = true,
 }
 
--- ---------------------------------------------------------------------------
--- Default theme values
--- All fallback colors and the backdrop alpha live here and only here.
--- resolve_widget_theme() merges user config on top of these.
--- ---------------------------------------------------------------------------
-
-local DEFAULT_THEME = {
-  panel_bg = "#1f2430",
-  panel_border = "#88c0d0",
-  divider = "#2b3240",
-  title = "#88c0d0",
-  fg = "#d8dee9",
-  muted = "#9aa5b1",
-  input_bg = "#20242f",
-  input_fg = "#d8dee9",
-  cursor_bg = "#d8dee9",
-  cursor_fg = "#1f2430",
-  selected_bg = "#3b4252",
-  selected_detail_bg = "#313745",
-  selected_fg = "#eceff4",
-  selected_muted = "#cfd8e3",
-  detail = "#8b95a1",
-  notify_fg = "#d8dee9",
-  counter = "#667084",
-  empty = "#9aa5b1",
-  scrollbar_track = "#5a6375",
-  scrollbar_thumb = "#88c0d0",
-  backdrop = { color = "#000000", alpha = 170 },
-  notify_levels = {
-    info = "#88c0d0",
-    warn = "#ebcb8b",
-    error = "#ffb4a9",
-    success = "#a3be8c",
-  },
-}
+local DEFAULT_BACKDROP = { color = "#000000", alpha = 170 }
 
 ---@param value any
 ---@return HollowUiNodeStyle|nil
@@ -193,16 +160,32 @@ local function merged_clone(base, overlay)
   return result
 end
 
----@param field any
----@param key any
----@return table
-local function table_field(field, key)
-  if type(field) ~= "table" then
-    return {}
+---@return HollowResolvedTheme
+function M.resolve_theme()
+  local values = type(state.config.values) == "table" and state.config.values or {}
+  local resolved = type(values.resolved_theme) == "table" and values.resolved_theme or nil
+  if resolved ~= nil then
+    return resolved
   end
 
-  local value = field[key]
-  return type(value) == "table" and value or {}
+  local theme_value = values.theme
+  if type(theme_value) == "string" and theme_value ~= "" then
+    local ok, loaded = pcall(theme_api.get, theme_value)
+    if ok then
+      return loaded
+    end
+    return theme_api.create()
+  end
+
+  if type(theme_value) == "table" then
+    return theme_api.create({
+      terminal = theme_value.terminal,
+      ui = theme_value.ui,
+      palette = theme_value.palette,
+    })
+  end
+
+  return theme_api.create()
 end
 
 ---@param fn function|nil
@@ -478,10 +461,7 @@ function M.bar_value_to_segments(value, fallback_text, style)
   if type(value) == "table" then
     if value._type == "span" then
       return {
-        M.style_to_segment(
-          value.text or fallback_text,
-          M.merge_style_tables(style, value.style)
-        ),
+        M.style_to_segment(value.text or fallback_text, M.merge_style_tables(style, value.style)),
       }
     end
 
@@ -748,18 +728,18 @@ function M.normalize_overlay_backdrop(value)
   end
 
   if value == true then
-    return { color = "#000000", alpha = DEFAULT_THEME.backdrop.alpha }
+    return { color = DEFAULT_BACKDROP.color, alpha = DEFAULT_BACKDROP.alpha }
   end
 
   if util.is_hex_color(value) then
-    return { color = value, alpha = DEFAULT_THEME.backdrop.alpha }
+    return { color = value, alpha = DEFAULT_BACKDROP.alpha }
   end
 
   if type(value) == "table" then
     local color = normalize_hex_color(value.color or value.bg, "#000000")
     local alpha = tonumber(value.alpha)
     if alpha == nil then
-      alpha = DEFAULT_THEME.backdrop.alpha
+      alpha = DEFAULT_BACKDROP.alpha
     end
     alpha = math.max(0, math.min(255, math.floor(alpha)))
     return { color = color, alpha = alpha }
@@ -789,14 +769,34 @@ function M.normalize_overlay_chrome(value)
 
   local bg = normalize_hex_color(value.bg, nil)
   local border = normalize_hex_color(value.border, nil)
+  local has_border_size = value.border_size ~= nil
+  local border_size = has_border_size and normalize_px(value.border_size, 1) or 1
+  local alpha = tonumber(value.alpha)
   local radius = normalize_px(value.radius, 0)
   local padding = normalize_box(value.padding)
   local margin = normalize_box(value.margin)
-  if bg == nil and border == nil and radius <= 0 and not has_box_spacing(padding) and not has_box_spacing(margin) then
+  if alpha ~= nil then
+    alpha = math.max(0, math.min(255, math.floor(alpha)))
+  end
+  if
+    bg == nil
+    and border == nil
+    and not has_border_size
+    and alpha == nil
+    and radius <= 0
+    and not has_box_spacing(padding)
+    and not has_box_spacing(margin)
+  then
     return nil
   end
 
   local chrome = { bg = bg, border = border }
+  if has_border_size or border ~= nil then
+    chrome.border_size = border_size
+  end
+  if alpha ~= nil then
+    chrome.alpha = alpha
+  end
   if radius > 0 then
     chrome.radius = radius
   end
@@ -811,11 +811,14 @@ end
 
 ---@param theme HollowUiTheme
 ---@param border HollowColor|nil
+---@param border_size integer|nil
 ---@return HollowUiChrome|nil
-function M.theme_overlay_chrome(theme, border)
+function M.theme_overlay_chrome(theme, border, border_size)
   return M.normalize_overlay_chrome({
     bg = theme.panel_bg,
     border = border or theme.panel_border,
+    border_size = border_size,
+    alpha = 255,
     radius = theme.radius,
     padding = theme.padding,
     margin = theme.margin,
@@ -890,85 +893,10 @@ function M.render_widget_rows(widget)
   return normalize_widget_rows(rendered)
 end
 
--- ---------------------------------------------------------------------------
--- Theme resolution
--- All defaults come from DEFAULT_THEME above.
--- ---------------------------------------------------------------------------
-
 ---@param kind string
 ---@return HollowUiTheme
 function M.resolve_widget_theme(kind)
-  local values = type(state.config.values) == "table" and state.config.values or {}
-  local legacy = type(values.theme) == "table" and values.theme or {}
-  local ui_theme = type(values.ui_theme) == "table" and values.ui_theme or legacy
-  local terminal_theme = type(values.terminal_theme) == "table" and values.terminal_theme or legacy
-
-  local ansi = table_field(terminal_theme, "ansi")
-  local brights = table_field(terminal_theme, "brights")
-  local status = table_field(ui_theme, "status")
-  local tab_bar = table_field(ui_theme, "tab_bar")
-  local workspace = table_field(ui_theme, "workspace")
-  local workspace_active = table_field(workspace, "active")
-
-  local accent = ui_theme.accent or ansi[5]
-  local warm = ui_theme.warm or brights[4]
-  local split = ui_theme.split or status.fg
-
-  local resolved = {
-    panel_bg = util.brighten_hex_color(terminal_theme.background, 0.2, nil),
-    panel_border = normalize_hex_color(accent, nil),
-    divider = normalize_hex_color(split, nil),
-    title = normalize_hex_color(accent, nil),
-    fg = normalize_hex_color(terminal_theme.foreground, nil),
-    muted = normalize_hex_color(status.fg or brights[1], nil),
-    input_bg = normalize_hex_color(tab_bar.background or terminal_theme.background, nil),
-    input_fg = normalize_hex_color(terminal_theme.foreground, nil),
-    cursor_bg = normalize_hex_color(terminal_theme.foreground, nil),
-    cursor_fg = normalize_hex_color(terminal_theme.background, nil),
-    selected_bg = normalize_hex_color(status.bg or tab_bar.background, nil),
-    selected_detail_bg = normalize_hex_color(status.bg or tab_bar.background, nil),
-    selected_fg = normalize_hex_color(terminal_theme.foreground, nil),
-    selected_muted = normalize_hex_color(workspace_active.fg or terminal_theme.foreground, nil),
-    detail = normalize_hex_color(status.fg, nil),
-    notify_fg = normalize_hex_color(terminal_theme.foreground, nil),
-    counter = normalize_hex_color(status.fg, nil),
-    empty = normalize_hex_color(status.fg, nil),
-    scrollbar_track = normalize_hex_color(split, nil),
-    scrollbar_thumb = normalize_hex_color(accent, nil),
-    notify_levels = {
-      info = normalize_hex_color(accent, nil),
-      warn = normalize_hex_color(warm, nil),
-      error = normalize_hex_color(brights[2] or ansi[2], nil),
-      success = normalize_hex_color(brights[3], nil),
-    },
-  }
-
-  local widgets = table_field(ui_theme, "widgets")
-  local all_widgets = table_field(widgets, "all")
-  local widget_theme = table_field(widgets, kind)
-  util.merge_tables(resolved, clone_table(all_widgets))
-  util.merge_tables(resolved, clone_table(widget_theme))
-
-  local result = clone_table(DEFAULT_THEME)
-  for key, value in pairs(resolved) do
-    if value ~= nil then
-      if type(value) == "table" and type(result[key]) == "table" then
-        util.merge_tables(result[key], value)
-      else
-        result[key] = value
-      end
-    end
-  end
-
-  -- `false` is a deliberate user override that disables the backdrop entirely.
-  if resolved.backdrop == false then
-    result.backdrop = nil
-  elseif resolved.backdrop ~= nil then
-    result.backdrop = M.normalize_overlay_backdrop(resolved.backdrop)
-      or { color = DEFAULT_THEME.backdrop.color, alpha = DEFAULT_THEME.backdrop.alpha }
-  end
-
-  return result
+  return theme_api.resolve_widget(kind)
 end
 
 return M

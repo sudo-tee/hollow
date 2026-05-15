@@ -1,0 +1,50 @@
+return {
+  terminal = {
+    foreground = "#d8dee9",
+    background = "#1f2430",
+    cursor_bg = "#d8dee9",
+    cursor_fg = "#1f2430",
+    selection_bg = "#3b4252",
+    selection_fg = "#eceff4",
+    ansi = {
+      "#16161d",
+      "#bf616a",
+      "#a3be8c",
+      "#ebcb8b",
+      "#81a1c1",
+      "#b48ead",
+      "#88c0d0",
+      "#e5e9f0",
+    },
+    brights = {
+      "#4c566a",
+      "#ff757f",
+      "#b4d7a7",
+      "#f7d794",
+      "#8fbcdf",
+      "#c895bf",
+      "#93e0e3",
+      "#eceff4",
+    },
+  },
+  ui = {
+    widgets = {
+      all = {
+        radius = 8,
+        padding = { left = 1, right = 1, top = 0, bottom = 0 },
+        margin = { top = 1, bottom = 0 },
+      },
+      input = {},
+      select = {},
+      notify = { notify_levels = {} },
+    },
+    top_bar = { height = 24 },
+    tab_bar = {
+      active_tab = {},
+      inactive_tab = {},
+      hover_tab = {},
+    },
+    scrollbar = {},
+    status = {},
+  },
+}

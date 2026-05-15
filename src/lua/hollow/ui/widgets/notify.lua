@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -40,7 +41,7 @@ end
 function ui.notify.show(message, opts)
   opts = opts or {}
 
-  local theme = merged_theme(shared.resolve_widget_theme("notify"), opts)
+  local theme = merged_theme(theme_api.resolve_widget("notify"), opts)
   local action = opts.action
   local level = opts.level or "info"
   local level_color = theme.notify_levels[level] or theme.title
@@ -54,9 +55,8 @@ function ui.notify.show(message, opts)
         tags.overlay_row(
           nil,
           tags.group(
-            { bg = theme.panel_bg },
             tags.text(
-              { fg = theme.notify_fg, bg = theme.panel_bg, bold = true },
+              { fg = level_color, bold = true },
               notify_text(level, opts.title, message, action)
             )
           )
@@ -64,7 +64,7 @@ function ui.notify.show(message, opts)
       }
     end,
     align = opts.align or "top_right",
-    chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color),
+    chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color, 2),
     backdrop = opts.backdrop,
     on_key = function(key)
       if key ~= "escape" and key ~= "enter" then

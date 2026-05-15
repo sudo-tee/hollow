@@ -263,6 +263,11 @@ pub const Config = struct {
     bottom_bar_height: u32 = 0,
     bottom_bar_bg: ghostty.ColorRgb = .{ .r = 28, .g = 30, .b = 38 },
     bottom_bar_draw_status: bool = true,
+    split_width: f32 = 2.0,
+    split_active_color: ghostty.ColorRgb = .{ .r = 120, .g = 150, .b = 220 },
+    split_inactive_color: ghostty.ColorRgb = .{ .r = 60, .g = 65, .b = 75 },
+    floating_active_color: ghostty.ColorRgb = .{ .r = 120, .g = 150, .b = 220 },
+    floating_inactive_color: ghostty.ColorRgb = .{ .r = 72, .g = 90, .b = 110 },
     debug_overlay: bool = false,
     vsync: bool = true,
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render

@@ -99,6 +99,17 @@ const LuaModule = struct {
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
+    .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
+    .{ .name = "hollow.themes.catppuccin-mocha", .source = @embedFile("lua/hollow/themes/catppuccin-mocha.lua") },
+    .{ .name = "hollow.themes.dracula", .source = @embedFile("lua/hollow/themes/dracula.lua") },
+    .{ .name = "hollow.themes.gruvbox-dark", .source = @embedFile("lua/hollow/themes/gruvbox-dark.lua") },
+    .{ .name = "hollow.themes.kanagawa-wave", .source = @embedFile("lua/hollow/themes/kanagawa-wave.lua") },
+    .{ .name = "hollow.themes.nord", .source = @embedFile("lua/hollow/themes/nord.lua") },
+    .{ .name = "hollow.themes.onedark", .source = @embedFile("lua/hollow/themes/onedark.lua") },
+    .{ .name = "hollow.themes.rose-pine", .source = @embedFile("lua/hollow/themes/rose-pine.lua") },
+    .{ .name = "hollow.themes.solarized-dark", .source = @embedFile("lua/hollow/themes/solarized-dark.lua") },
+    .{ .name = "hollow.themes.tokyonight", .source = @embedFile("lua/hollow/themes/tokyonight.lua") },
+    .{ .name = "hollow.themes.hollow", .source = @embedFile("lua/hollow/themes/hollow.lua") },
     .{ .name = "hollow.json", .source = @embedFile("lua/hollow/json.lua") },
     .{ .name = "hollow.workspace", .source = @embedFile("lua/hollow/workspace.lua") },
     .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
@@ -2516,6 +2527,8 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         }
 
         if (std.mem.eql(u8, key, "ui_theme") and value_type == .table) {
+            const theme_idx = absoluteIndex(api, state, -1);
+            applyUiThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config ui_theme field failed: {s}", .{@errorName(err)});
             continue;
         }
 
@@ -2582,6 +2595,83 @@ fn l_set_config(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn applyUiThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+
+        if (std.mem.eql(u8, key, "top_bar") and api.value_type(state, -1) == @intFromEnum(LuaType.table)) {
+            const top_bar_idx = absoluteIndex(api, state, -1);
+            try applyTopBarThemeTable(cfg, api, state, top_bar_idx);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "scrollbar") and api.value_type(state, -1) == @intFromEnum(LuaType.table)) {
+            const scrollbar_idx = absoluteIndex(api, state, -1);
+            try applyScrollbarThemeTable(cfg, api, state, scrollbar_idx);
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "split_active")) {
+            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.split_active_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "split_inactive") or std.mem.eql(u8, key, "split")) {
+            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.split_inactive_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "floating_active")) {
+            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.floating_active_color = color;
+                }
+            }
+        } else if (std.mem.eql(u8, key, "floating_inactive")) {
+            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+                var val_len: usize = 0;
+                if (api.to_lstring(state, -1, &val_len)) |ptr| {
+                    if (parseHexColor(ptr[0..val_len])) |color| cfg.floating_inactive_color = color;
+                }
+            }
+        }
+    }
+}
+
+fn applyTopBarThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (value_type == .number and std.mem.eql(u8, key, "height")) {
+            cfg.top_bar_height = try asInt(u32, api.to_number(state, -1));
+            continue;
+        }
+
+        if (value_type != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        if (std.mem.eql(u8, key, "background")) {
+            if (parseHexColor(value_ptr[0..value_len])) |color| cfg.top_bar_bg = color;
+        }
+    }
+}
+
 fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
     if (applyHexColor(cfg, key, value)) return;
     if (std.mem.eql(u8, key, "top_bar_mode")) {
@@ -2616,6 +2706,10 @@ fn applyString(cfg: *config.Config, key: []const u8, value: []const u8) !void {
 }
 
 fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
+    if (std.mem.eql(u8, key, "split_width")) {
+        cfg.split_width = @floatCast(value);
+        return;
+    }
     if (std.mem.eql(u8, key, "font_size")) {
         cfg.fonts.size = @floatCast(value);
         return;

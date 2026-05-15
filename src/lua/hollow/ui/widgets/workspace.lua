@@ -1,4 +1,5 @@
 local actions = require("hollow.ui.workspace.actions")
+local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 
 ---@type Hollow
@@ -19,15 +20,6 @@ local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
 
-local ui_theme = {
-  accent = "#e6c384",
-  fg = "#dcd7ba",
-  muted = "#727169",
-  subtle = "#5f5b53",
-  open = "#98bb6c",
-  user = "#7fb4ca",
-}
-
 local function switcher_state()
   return source.switcher_state()
 end
@@ -37,10 +29,23 @@ local pad_right = util.pad_right
 local truncate_end = util.truncate_end
 local truncate_start = util.truncate_start
 
+local function derived_palette()
+  local theme = shared.resolve_theme()
+  local palette = theme.palette
+  return {
+    fg = palette.foreground,
+    muted = util.darken_hex_color(palette.foreground, 0.35, palette.foreground),
+    subtle = util.darken_hex_color(palette.foreground, 0.5, palette.foreground),
+    open = palette.bright_green,
+    user = palette.bright_blue,
+  }
+end
+
 local function default_format_item(workspace)
   local switcher = switcher_state()
-  local name_color = workspace.is_active and ui_theme.open
-    or (workspace.is_open and ui_theme.user or ui_theme.muted)
+  local palette = derived_palette()
+  local name_color = workspace.is_active and palette.open
+    or (workspace.is_open and palette.user or palette.muted)
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
@@ -67,12 +72,12 @@ local function default_format_item(workspace)
   return {
     ui.span(
       pad_right(status_text, status_width),
-      { fg = workspace.is_active and ui_theme.open or ui_theme.subtle, bold = workspace.is_active }
+      { fg = workspace.is_active and palette.open or palette.subtle, bold = workspace.is_active }
     ),
-    ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),
+    ui.span(string.rep(" ", gap_width), { fg = palette.subtle }),
     ui.span(name_text, { fg = name_color, bold = workspace.is_active }),
-    ui.span(string.rep(" ", gap_width), { fg = ui_theme.subtle }),
-    ui.span(cwd_text, { fg = ui_theme.subtle }),
+    ui.span(string.rep(" ", gap_width), { fg = palette.subtle }),
+    ui.span(cwd_text, { fg = palette.subtle }),
   }
 end
 

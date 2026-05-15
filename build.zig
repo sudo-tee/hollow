@@ -133,6 +133,9 @@ pub fn build(b: *std.Build) void {
     const install_exe = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_exe.step);
 
+    const install_hollow_cli = b.addInstallFile(b.path("scripts/hollow-cli"), "bin/hollow-cli");
+    b.getInstallStep().dependOn(&install_hollow_cli.step);
+
     const wsl_bypass_module = b.createModule(.{
         .root_source_file = b.path("src/wsl_bypass.zig"),
         .target = wsl_bypass_target,

@@ -120,7 +120,7 @@ local function make_host_api()
   end
 
   function host_api.default_config_path()
-    return "/home/test/.config/hollow/init.lua"
+    return "src/lua/tests/fixtures/config/init.lua"
   end
 
   function host_api.json_encode(_value)
@@ -480,6 +480,7 @@ local ui_widgets_notify = require("hollow.ui.widgets.notify")
 local ui_widgets_input = require("hollow.ui.widgets.input")
 local ui_widgets_select = require("hollow.ui.widgets.select")
 local ui_widgets_workspace = require("hollow.ui.widgets.workspace")
+local theme_api = require("hollow.theme")
 
 assert_true(hollow ~= nil, "core should initialize the global hollow table")
 assert_equal(state.get().host_api, host_api, "state should retain the host bridge")
@@ -500,17 +501,53 @@ assert_true(ui_widgets_notify == true, "notify widget module should be loadable"
 assert_true(ui_widgets_input == true, "input widget module should be loadable")
 assert_true(ui_widgets_select == true, "select widget module should be loadable")
 assert_true(ui_widgets_workspace == true, "workspace widget module should be loadable")
+assert_true(type(theme_api.create) == "function", "theme module should expose create")
+assert_true(type(theme_api.get) == "function", "theme module should expose get")
 
 assert_equal(util.host_now_ms(host_api), 1234, "host_now_ms should prefer the host clock")
 assert_equal(util.join_path("alpha", "beta"), "alpha/beta", "join_path should normalize path segments")
 
-hollow.config.set({ theme = { accent = "#abcdef" } })
-assert_equal(recorded.config.theme.accent, "#abcdef", "config.set should forward config to the host")
-assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.set should update stored state")
+hollow.config.set({ theme = { ui = { accent = "#abcdef" } } })
+assert_equal(recorded.config.theme.ui.accent, "#abcdef", "config.set should forward config to the host")
+assert_equal(hollow.config.get("theme").ui.accent, "#abcdef", "config.set should update stored state")
 
 local snapshot = hollow.config.snapshot()
-snapshot.theme.accent = "#000000"
-assert_equal(hollow.config.get("theme").accent, "#abcdef", "config.snapshot should clone values")
+snapshot.theme.ui.accent = "#000000"
+assert_equal(hollow.config.get("theme").ui.accent, "#abcdef", "config.snapshot should clone values")
+
+local derived_theme = theme_api.create({
+  terminal = {
+    foreground = "#eeeeee",
+    background = "#111111",
+    ansi = { "#010101", "#020202", "#030303", "#040404", "#050505", "#060606", "#070707", "#080808" },
+    brights = { "#111111", "#121212", "#131313", "#141414", "#151515", "#161616", "#171717", "#181818" },
+  },
+})
+assert_equal(derived_theme.palette.background, "#111111", "theme.create should derive background palette entries")
+assert_equal(derived_theme.palette.bright_blue, "#151515", "theme.create should expose named bright ANSI colors")
+assert_equal(derived_theme.ui.scrollbar.thumb, "#111111", "theme.create should derive scrollbar theme from the palette")
+
+local built_in_theme = theme_api.get("kanagawa-wave")
+assert_equal(built_in_theme.terminal.background, "#1f1f28", "theme.get should load built-in themes")
+assert_equal(built_in_theme.palette.bright_red, "#e82424", "theme.get should derive palette names from terminal themes")
+
+assert_equal(require("user_module").source, "config", "config directory should be added to package.path")
+
+hollow.config.set({ lib_dir = "src/lua/tests/fixtures/lib" })
+assert_equal(require("custom.module").source, "lib", "lib_dir should be added to package.path")
+
+local external_theme = theme_api.get("external")
+assert_equal(external_theme.terminal.background, "#121212", "theme.get should load themes from runtime package paths")
+
+local current_theme = theme_api.current()
+assert_equal(current_theme.ui.accent, "#abcdef", "theme.current should reflect the active configured theme")
+local select_theme = theme_api.resolve_widget("select")
+assert_true(type(select_theme) == "table", "theme.resolve_widget should expose flat widget theme values")
+assert_equal(
+  select_theme.panel_bg,
+  current_theme.ui.tab_bar.background,
+  "theme.resolve_widget should align overlay panel background with the tab bar background"
+)
 
 local current_pane = hollow.term.current_pane()
 local current_domain = hollow.term.current_domain()
@@ -709,6 +746,38 @@ assert_true(hollow.ui._overlay_state() ~= nil, "overlay state should serialize a
 hollow.ui.notify.clear()
 assert_equal(hollow.ui.overlay.depth(), 0, "notify.clear should remove notify widgets")
 
+hollow.ui.workspace.open_switcher()
+local workspace_overlay = hollow.ui._overlay_state()
+assert_true(workspace_overlay ~= nil, "workspace switcher should create an overlay")
+local resolved_select_theme = hollow.ui.resolve_theme("select")
+assert_equal(
+  workspace_overlay[1].chrome.bg,
+  resolved_select_theme.panel_bg,
+  "workspace switcher should use the select panel background"
+)
+assert_equal(
+  workspace_overlay[1].chrome.alpha,
+  255,
+  "workspace switcher should default overlay chrome alpha to opaque"
+)
+assert_equal(
+  workspace_overlay[1].rows[5].fill_bg,
+  resolved_select_theme.selected_bg,
+  "workspace switcher should use the select selected background for the active row"
+)
+hollow.ui.overlay.clear()
+
+hollow.ui.select.open({
+  items = { "alpha" },
+  chrome = { bg = "#112233", alpha = 123 },
+  backdrop = false,
+})
+local custom_overlay = hollow.ui._overlay_state()
+assert_true(custom_overlay ~= nil, "custom select overlay should serialize")
+assert_equal(custom_overlay[1].chrome.bg, "#112233", "custom overlay chrome bg should serialize")
+assert_equal(custom_overlay[1].chrome.alpha, 123, "custom overlay chrome alpha should serialize")
+hollow.ui.overlay.clear()
+
 hollow.ui.topbar.configure({
   separator = "|",
   cwd = false,
@@ -726,6 +795,38 @@ local configured_topbar = hollow.ui._topbar_state()
 assert_true(configured_topbar ~= nil, "topbar.configure should provide a default topbar widget")
 assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
 assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
+
+hollow.ui.topbar.configure({
+  cwd = false,
+  key_legend = false,
+  time = false,
+  tabs = false,
+  workspace = {
+    style = function()
+      local ui_theme = hollow.config.get("resolved_theme").ui
+      return {
+        bg = ui_theme.top_bar.background,
+        fg = ui_theme.widgets.all.title,
+      }
+    end,
+  },
+})
+
+local topbar_before_theme_change = hollow.ui._topbar_state()
+assert_equal(
+  topbar_before_theme_change.items[1].style.bg,
+  hollow.config.get("resolved_theme").ui.top_bar.background,
+  "workspace segment should use the current resolved topbar background"
+)
+
+hollow.config.set({ theme = "nord" })
+
+local topbar_after_theme_change = hollow.ui._topbar_state()
+assert_equal(
+  topbar_after_theme_change.items[1].style.bg,
+  hollow.config.get("resolved_theme").ui.top_bar.background,
+  "theme changes should invalidate cached topbar workspace styles"
+)
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function()

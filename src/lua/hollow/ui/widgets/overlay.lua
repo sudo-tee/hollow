@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 local widget_core = require("hollow.ui.widgets.core")
 
@@ -101,7 +102,7 @@ function ui.overlay.remove(widget)
 end
 
 function ui.resolve_theme(kind)
-  return shared.resolve_widget_theme(kind)
+  return theme_api.resolve_widget(kind)
 end
 
 function ui._overlay_state()

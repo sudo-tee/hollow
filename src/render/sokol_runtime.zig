@@ -989,6 +989,20 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
     }
 }
 
+fn roundedRectRowInset(h: f32, radius: f32, sample_y: f32) f32 {
+    if (radius <= 0.5) return 0.0;
+
+    var inset: f32 = 0.0;
+    if (sample_y < radius) {
+        const dy = radius - sample_y;
+        inset = radius - @sqrt(@max(@as(f32, 0.0), radius * radius - dy * dy));
+    } else if (sample_y > h - radius) {
+        const dy = sample_y - (h - radius);
+        inset = radius - @sqrt(@max(@as(f32, 0.0), radius * radius - dy * dy));
+    }
+    return inset;
+}
+
 fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b: u8, a: u8) void {
     if (w <= 0 or h <= 0) return;
     const clamped_radius = @min(radius, @min(w, h) * 0.5);
@@ -1005,14 +1019,7 @@ fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b:
         if (row_h <= 0) break;
 
         const sample_y = @as(f32, @floatFromInt(row)) + row_h * 0.5;
-        var inset: f32 = 0.0;
-        if (sample_y < clamped_radius) {
-            const dy = clamped_radius - sample_y;
-            inset = clamped_radius - @sqrt(@max(@as(f32, 0.0), clamped_radius * clamped_radius - dy * dy));
-        } else if (sample_y > h - clamped_radius) {
-            const dy = sample_y - (h - clamped_radius);
-            inset = clamped_radius - @sqrt(@max(@as(f32, 0.0), clamped_radius * clamped_radius - dy * dy));
-        }
+        const inset = roundedRectRowInset(h, clamped_radius, sample_y);
 
         const full_inset = @ceil(inset);
         const fringe = full_inset - inset;
@@ -1032,10 +1039,77 @@ fn drawRoundedRect(x: f32, y: f32, w: f32, h: f32, radius: f32, r: u8, g: u8, b:
     }
 }
 
+fn drawRectOutline(x: f32, y: f32, w: f32, h: f32, thickness: f32, r: u8, g: u8, b: u8, a: u8) void {
+    if (w <= 0 or h <= 0 or thickness <= 0 or a == 0) return;
+
+    const clamped = @min(thickness, @min(w, h) * 0.5);
+    if (clamped <= 0) return;
+
+    drawBorderRect(x, y, w, clamped, r, g, b, a);
+    if (h > clamped) {
+        drawBorderRect(x, y + h - clamped, w, clamped, r, g, b, a);
+    }
+
+    const middle_h = h - clamped * 2.0;
+    if (middle_h > 0) {
+        drawBorderRect(x, y + clamped, clamped, middle_h, r, g, b, a);
+        if (w > clamped) {
+            drawBorderRect(x + w - clamped, y + clamped, clamped, middle_h, r, g, b, a);
+        }
+    }
+}
+
+fn drawRoundedRectOutline(x: f32, y: f32, w: f32, h: f32, radius: f32, thickness: f32, r: u8, g: u8, b: u8, a: u8) void {
+    if (w <= 0 or h <= 0 or thickness <= 0 or a == 0) return;
+
+    const clamped_radius = @min(radius, @min(w, h) * 0.5);
+    if (clamped_radius <= 0.5) {
+        drawRectOutline(x, y, w, h, thickness, r, g, b, a);
+        return;
+    }
+
+    const inner_w = w - thickness * 2.0;
+    const inner_h = h - thickness * 2.0;
+    const inner_radius = @max(@as(f32, 0.0), clamped_radius - thickness);
+    const has_inner = inner_w > 0 and inner_h > 0;
+
+    const row_count: usize = @max(1, @as(usize, @intFromFloat(@ceil(h))));
+    var row: usize = 0;
+    while (row < row_count) : (row += 1) {
+        const row_y = y + @as(f32, @floatFromInt(row));
+        const row_h = @min(@as(f32, 1.0), y + h - row_y);
+        if (row_h <= 0) break;
+
+        const sample_y = @as(f32, @floatFromInt(row)) + row_h * 0.5;
+        const outer_inset = @ceil(roundedRectRowInset(h, clamped_radius, sample_y));
+        const outer_x = x + outer_inset;
+        const outer_w = w - outer_inset * 2.0;
+        if (outer_w <= 0) continue;
+
+        if (!has_inner or sample_y <= thickness or sample_y >= h - thickness) {
+            drawBorderRect(outer_x, row_y, outer_w, row_h, r, g, b, a);
+            continue;
+        }
+
+        const inner_sample_y = sample_y - thickness;
+        const inner_inset = thickness + @ceil(roundedRectRowInset(inner_h, inner_radius, inner_sample_y));
+        const left_w = inner_inset - outer_inset;
+        if (left_w > 0) {
+            drawBorderRect(outer_x, row_y, left_w, row_h, r, g, b, a);
+        }
+
+        const right_x = x + w - inner_inset;
+        const right_w = x + w - outer_inset - right_x;
+        if (right_w > 0) {
+            drawBorderRect(right_x, row_y, right_w, row_h, r, g, b, a);
+        }
+    }
+}
+
 fn drawBarBackground(x: f32, y: f32, w: f32, h: f32, style: BarStyle) void {
     if (style.bg) |bg| drawRoundedRect(x, y, w, h, style.radius, bg.r, bg.g, bg.b, 255);
     if (style.border) |border| {
-        drawRoundedRect(x, y, w, h, style.radius, border.r, border.g, border.b, 72);
+        drawRoundedRectOutline(x, y, w, h, style.radius, 1.0, border.r, border.g, border.b, 72);
     }
 }
 
@@ -1456,6 +1530,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 api.get_field(state, overlay_idx, "chrome");
                 var panel_bg = ghostty.ColorRgb{ .r = 18, .g = 22, .b = 30 };
                 var panel_border = ghostty.ColorRgb{ .r = 136, .g = 192, .b = 208 };
+                var panel_border_size: f32 = 1.0;
+                var panel_alpha: u8 = 255;
                 var panel_radius: f32 = 0;
                 var panel_padding = BarBox{};
                 var panel_margin = BarBox{};
@@ -1467,6 +1543,17 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     if (overlayRowColorField(api, state, chrome_idx, "border")) |border| {
                         panel_border = border;
                     }
+                    api.get_field(state, chrome_idx, "border_size");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                        panel_border_size = @max(@as(f32, 0.0), @as(f32, @floatCast(api.to_number(state, -1))));
+                    }
+                    pop(api, state, 1);
+                    api.get_field(state, chrome_idx, "alpha");
+                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                        const value = api.to_number(state, -1);
+                        panel_alpha = @intCast(std.math.clamp(@as(i32, @intFromFloat(value)), 0, 255));
+                    }
+                    pop(api, state, 1);
                     api.get_field(state, chrome_idx, "radius");
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
                         panel_radius = @floatCast(api.to_number(state, -1));
@@ -1624,11 +1711,15 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     }
                 }
                 if (panel_radius > 0) {
-                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_bg.r, panel_bg.g, panel_bg.b, 235);
-                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_border.r, panel_border.g, panel_border.b, 72);
+                    drawRoundedRect(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_bg.r, panel_bg.g, panel_bg.b, panel_alpha);
+                    if (panel_border_size > 0) {
+                        drawRoundedRectOutline(panel_x, panel_y, panel_w, panel_h, panel_radius, panel_border_size, panel_border.r, panel_border.g, panel_border.b, 72);
+                    }
                 } else {
-                    drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, 235);
-                    drawBorderRect(panel_x, panel_y, panel_w, 1.0, panel_border.r, panel_border.g, panel_border.b, 255);
+                    drawBorderRect(panel_x, panel_y, panel_w, panel_h, panel_bg.r, panel_bg.g, panel_bg.b, panel_alpha);
+                    if (panel_border_size > 0) {
+                        drawRectOutline(panel_x, panel_y, panel_w, panel_h, panel_border_size, panel_border.r, panel_border.g, panel_border.b, 255);
+                    }
                 }
 
                 var row_i: c_int = 1;
@@ -2214,12 +2305,20 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     sgl_desc.pipeline_pool_size = MAX_PANE_CACHES * 2 + 16;
     c.sgl_setup(&sgl_desc);
 
+    const swapchain = c.sglue_swapchain();
+    const swapchain_color_format = if (swapchain.color_format != c.SG_PIXELFORMAT_NONE)
+        swapchain.color_format
+    else
+        c.sglue_environment().defaults.color_format;
+
     var rect_pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
     rect_pip_desc.colors[0].blend.enabled = true;
     rect_pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_SRC_ALPHA;
     rect_pip_desc.colors[0].blend.dst_factor_rgb = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     rect_pip_desc.colors[0].blend.src_factor_alpha = c.SG_BLENDFACTOR_ONE;
     rect_pip_desc.colors[0].blend.dst_factor_alpha = c.SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    rect_pip_desc.colors[0].pixel_format = swapchain_color_format;
+    rect_pip_desc.depth.pixel_format = c.SG_PIXELFORMAT_NONE;
     g_rect_pip = c.sgl_make_pipeline(&rect_pip_desc);
 
     _ = applyWindowChrome(app);
@@ -2904,13 +3003,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (app.config.debug_overlay) swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
 
-    // Draw split borders as filled 2px quads (only when >1 pane).
+    // Draw split borders as filled quads (only when >1 pane).
     // Floating panes are modal overlays, so any seam covered by a floating pane
     // is skipped here and the floating pane gets its own explicit outline below.
     if (leaves.len > 1) {
         const fw: i32 = @intFromFloat(width);
         const fh: i32 = @intFromFloat(height);
-        const border_px: f32 = 2.0;
+        const border_px = app.config.split_width;
+
 
         // Reset viewport + scissor to the full framebuffer so rects are not
         // clipped to the last pane's sub-rect (sgl_defaults() would leave the
@@ -2935,9 +3035,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
             // Colour: active pane gets a light-blue accent; others get a
             // subtle grey.
-            const br: u8 = if (is_active) 120 else 60;
-            const bg: u8 = if (is_active) 150 else 65;
-            const bb: u8 = if (is_active) 220 else 75;
+            const br = if (is_active) app.config.split_active_color.r else app.config.split_inactive_color.r;
+            const bg = if (is_active) app.config.split_active_color.g else app.config.split_inactive_color.g;
+            const bb = if (is_active) app.config.split_active_color.b else app.config.split_inactive_color.b;
             const ba: u8 = 255;
 
             // Right seam — only draw if the right edge does not touch the
@@ -2976,9 +3076,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const y0: f32 = @floatFromInt(leaf.bounds.y);
             const lw: f32 = @floatFromInt(leaf.bounds.width);
             const lh: f32 = @floatFromInt(leaf.bounds.height);
-            const br: u8 = if (is_active) 120 else 72;
-            const bg: u8 = if (is_active) 150 else 90;
-            const bb: u8 = if (is_active) 220 else 110;
+            const br = if (is_active) app.config.floating_active_color.r else app.config.floating_inactive_color.r;
+            const bg = if (is_active) app.config.floating_active_color.g else app.config.floating_inactive_color.g;
+            const bb = if (is_active) app.config.floating_active_color.b else app.config.floating_inactive_color.b;
             const ba: u8 = 255;
 
             drawBorderRect(x0, y0, lw, border_px, br, bg, bb, ba);

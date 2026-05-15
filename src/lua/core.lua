@@ -29,10 +29,12 @@ local json = require("hollow.json")
 local keymap = require("hollow.keymap")
 local state = require("hollow.state").new(host_api)
 local term = require("hollow.term")
+local theme = require("hollow.theme")
 local util = require("hollow.util")
 local workspace = require("hollow.workspace")
 
 hollow.util = util
+hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace
 

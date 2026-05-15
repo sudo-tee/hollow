@@ -13,6 +13,86 @@
 ---@field color? HollowColor
 ---@field alpha? integer
 
+---@class HollowPalette
+---@field foreground HollowColor
+---@field background HollowColor
+---@field cursor_bg HollowColor
+---@field cursor_fg HollowColor
+---@field selection_bg HollowColor
+---@field selection_fg HollowColor
+---@field black HollowColor
+---@field red HollowColor
+---@field green HollowColor
+---@field yellow HollowColor
+---@field blue HollowColor
+---@field magenta HollowColor
+---@field cyan HollowColor
+---@field white HollowColor
+---@field bright_black HollowColor
+---@field bright_red HollowColor
+---@field bright_green HollowColor
+---@field bright_yellow HollowColor
+---@field bright_blue HollowColor
+---@field bright_magenta HollowColor
+---@field bright_cyan HollowColor
+---@field bright_white HollowColor
+
+---@class HollowResolvedTheme
+---@field terminal HollowTerminalTheme
+---@field ui HollowAppTheme
+---@field palette HollowPalette
+
+---@class HollowTerminalTheme
+---@field foreground HollowColor
+---@field background HollowColor
+---@field cursor_bg HollowColor
+---@field cursor_fg HollowColor
+---@field selection_bg HollowColor
+---@field selection_fg HollowColor
+---@field ansi HollowColor[]
+---@field brights HollowColor[]
+
+---@class HollowAppTheme
+---@field widgets table
+---@field top_bar { height: integer, background: HollowColor }
+---@field tab_bar table
+---@field scrollbar HollowScrollbarConfig
+---@field split_active HollowColor
+---@field split_inactive HollowColor
+---@field floating_active HollowColor
+---@field floating_inactive HollowColor
+---@field accent HollowColor
+---@field warm HollowColor
+---@field status { bg: HollowColor, fg: HollowColor }
+
+---@class HollowThemeTerminalSpec
+---@field foreground? HollowColor
+---@field background? HollowColor
+---@field cursor_bg? HollowColor
+---@field cursor_fg? HollowColor
+---@field selection_bg? HollowColor
+---@field selection_fg? HollowColor
+---@field ansi? HollowColor[]
+---@field brights? HollowColor[]
+
+---@class HollowThemeUiSpec
+---@field widgets? table
+---@field top_bar? { height?: integer, background?: HollowColor }
+---@field tab_bar? table
+---@field scrollbar? HollowScrollbarConfig
+---@field split_active? HollowColor
+---@field split_inactive? HollowColor
+---@field floating_active? HollowColor
+---@field floating_inactive? HollowColor
+---@field accent? HollowColor
+---@field warm? HollowColor
+---@field status? { bg?: HollowColor, fg?: HollowColor }
+
+---@class HollowThemeSpec
+---@field terminal? HollowThemeTerminalSpec
+---@field ui? HollowThemeUiSpec
+---@field palette? HollowPalette|table
+
 ---@class HollowUiBox
 ---@field top? integer
 ---@field right? integer
@@ -102,6 +182,8 @@
 ---@class HollowUiChrome
 ---@field bg? HollowColor
 ---@field border? HollowColor
+---@field border_size? integer
+---@field alpha? integer
 ---@field radius? integer
 ---@field padding? HollowUiBoxValue
 ---@field margin? HollowUiBoxValue
@@ -173,9 +255,7 @@
 ---@field vsync? boolean
 ---@field max_fps? integer
 ---@field padding? integer
----@field theme? table
----@field terminal_theme? table
----@field ui_theme? table
+---@field theme? string|HollowThemeSpec
 ---@field fonts? HollowFontsConfig
 ---@field scrollback? integer
 ---@field cols? integer
@@ -766,6 +846,25 @@ function config.snapshot() end
 
 function config.reload() end
 
+---@class HollowThemeNamespace
+local theme = {}
+
+---@param spec? HollowThemeSpec
+---@return HollowResolvedTheme
+function theme.create(spec) end
+
+---@param name string
+---@return HollowResolvedTheme
+function theme.get(name) end
+
+---@return HollowResolvedTheme
+function theme.current() end
+
+---@param kind string
+---@param resolved? HollowResolvedTheme
+---@return HollowUiTheme
+function theme.resolve_widget(kind, resolved) end
+
 ---@class HollowJsonNamespace
 local json = {}
 
@@ -1290,6 +1389,7 @@ ui.workspace = workspace
 ---@field dispatch_overlay_key fun(key:string, mods:HollowUiKeyMods):boolean
 ---@field trim_row_for_width fun(row:HollowUiRow, max_chars:number|nil):HollowUiSegment[]
 ---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
+---@field resolve_theme fun():HollowResolvedTheme
 ---@field resolve_theme fun(kind:string):HollowUiTheme
 ---@field _overlay_state fun():HollowUiOverlaySerializedWidget[]|nil
 ---@field _topbar_state fun():((HollowUiSegment|HollowUiTabsLayout|{kind:"spacer"})[])|nil
@@ -1436,6 +1536,7 @@ function process.run_child_process(args, opts) end
 ---@field log fun(...: any)
 ---@field read_dir fun(path: string): string[]
 ---@field util HollowUtilNamespace
+---@field theme HollowThemeNamespace
 
 ---@type Hollow
 hollow = {}
