@@ -96,6 +96,18 @@ const LuaModule = struct {
     source: [:0]const u8,
 };
 
+const RuntimeLuaSources = struct {
+    root_dir: []u8,
+
+    fn deinit(self: *RuntimeLuaSources, allocator: std.mem.Allocator) void {
+        allocator.free(self.root_dir);
+    }
+
+    fn rootParent(self: RuntimeLuaSources) []const u8 {
+        return std.fs.path.dirname(self.root_dir) orelse ".";
+    }
+};
+
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
@@ -646,6 +658,7 @@ pub const Runtime = struct {
     allocator: std.mem.Allocator,
     state: *State,
     context: *BridgeContext,
+    lua_sources: ?RuntimeLuaSources = null,
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
@@ -696,6 +709,7 @@ pub const Runtime = struct {
             .allocator = allocator,
             .state = state,
             .context = ctx,
+            .lua_sources = discoverLuaSources(allocator),
         };
 
         active_context = ctx;
@@ -708,6 +722,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        if (self.lua_sources) |*sources| sources.deinit(self.allocator);
         if (self.context.pending_workspace_name) |name| self.allocator.free(name);
         if (self.context.on_key_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.on_key_ref);
         if (self.context.top_bar_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.top_bar_ref);
@@ -728,6 +743,57 @@ pub const Runtime = struct {
             logLuaError(self.context.api, self.state, "pcall");
             return error.LuaRuntimeFailed;
         }
+    }
+
+    pub fn runEmbeddedLuaFile(self: *Runtime, relative_path: []const u8, fallback_source: []const u8, chunk_name: []const u8) !void {
+        if (try self.runDiskLuaFile(relative_path)) return;
+        try self.runStringNamed(fallback_source, chunk_name);
+    }
+
+    pub fn runEmbeddedProjectFile(self: *Runtime, relative_path: []const u8, fallback_source: []const u8, chunk_name: []const u8) !void {
+        if (try self.runDiskProjectFile(relative_path)) return;
+        try self.runStringNamed(fallback_source, chunk_name);
+    }
+
+    fn runStringNamed(self: *Runtime, code: []const u8, chunk_name: []const u8) !void {
+        const zchunk_name = try self.allocator.dupeZ(u8, chunk_name);
+        defer self.allocator.free(zchunk_name);
+
+        if (self.context.api.load_buffer(self.state, code.ptr, code.len, zchunk_name) != 0) {
+            logLuaError(self.context.api, self.state, "load_string");
+            return error.LuaLoadFailed;
+        }
+        if (self.context.api.pcall(self.state, 0, 0, 0) != 0) {
+            logLuaError(self.context.api, self.state, "pcall");
+            return error.LuaRuntimeFailed;
+        }
+    }
+
+    fn runDiskLuaFile(self: *Runtime, relative_path: []const u8) !bool {
+        return self.runDiskRelativeFile(relative_path, .lua_root);
+    }
+
+    fn runDiskProjectFile(self: *Runtime, relative_path: []const u8) !bool {
+        return self.runDiskRelativeFile(relative_path, .project_root);
+    }
+
+    fn runDiskRelativeFile(self: *Runtime, relative_path: []const u8, base: enum { lua_root, project_root }) !bool {
+        const api = self.context.api;
+        const sources = self.lua_sources orelse return false;
+        const root = switch (base) {
+            .lua_root => sources.root_dir,
+            .project_root => sources.rootParent(),
+        };
+        const disk_path = std.fs.path.join(self.allocator, &.{ root, relative_path }) catch return false;
+        defer self.allocator.free(disk_path);
+
+        std.fs.accessAbsolute(disk_path, .{}) catch return false;
+        try loadLuaChunkFromDisk(api, self.state, disk_path);
+        if (api.pcall(self.state, 0, 0, 0) != 0) {
+            logLuaError(api, self.state, "pcall");
+            return error.LuaRuntimeFailed;
+        }
+        return true;
     }
 
     pub fn runFile(self: *Runtime, path: []const u8) !void {
@@ -1691,11 +1757,11 @@ pub const Runtime = struct {
 
     fn preloadLuaModules(self: *Runtime) !void {
         for (embedded_lua_modules) |module| {
-            try self.preloadLuaModule(module.name, module.source);
+            try self.preloadLuaModule(module);
         }
     }
 
-    fn preloadLuaModule(self: *Runtime, name: []const u8, source: [:0]const u8) !void {
+    fn preloadLuaModule(self: *Runtime, module: LuaModule) !void {
         const api = self.context.api;
 
         api.get_field(self.state, LUA_GLOBALSINDEX, "package");
@@ -1710,12 +1776,13 @@ pub const Runtime = struct {
             return error.LuaRuntimeFailed;
         }
 
-        try pushOwnedString(self.allocator, api, self.state, name);
-        api.push_light_userdata(self.state, @ptrCast(@constCast(source.ptr)));
-        api.push_integer(self.state, @as(isize, @intCast(source.len)));
-        api.push_cclosure(self.state, l_preloaded_module_loader, 3);
+        try pushOwnedString(self.allocator, api, self.state, module.name);
+        api.push_light_userdata(self.state, self);
+        api.push_light_userdata(self.state, @ptrCast(@constCast(module.source.ptr)));
+        api.push_integer(self.state, @as(isize, @intCast(module.source.len)));
+        api.push_cclosure(self.state, l_preloaded_module_loader, 4);
 
-        const zname = try self.allocator.dupeZ(u8, name);
+        const zname = try self.allocator.dupeZ(u8, module.name);
         defer self.allocator.free(zname);
         api.set_field(self.state, -2, zname);
         pop(api, self.state, 2);
@@ -1726,26 +1793,95 @@ fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
     const api = active_context.?.api;
 
     const module_name_index = luaUpvalueIndex(1);
-    const source_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
+    const runtime_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
+        _ = api.raise_error(state, "missing runtime for module loader");
+        return 0;
+    };
+    const source_ptr = api.to_userdata(state, luaUpvalueIndex(3)) orelse {
         _ = api.raise_error(state, "missing embedded module source");
         return 0;
     };
-    const source_len = @as(usize, @intFromFloat(api.to_number(state, luaUpvalueIndex(3))));
+    const runtime: *Runtime = @ptrCast(@alignCast(runtime_ptr));
+    const source_len = @as(usize, @intFromFloat(api.to_number(state, luaUpvalueIndex(4))));
     const source: [*]const u8 = @ptrCast(source_ptr);
+    const module_name = moduleNameFromUpvalue(runtime, state, module_name_index);
 
-    if (api.load_buffer(state, source, source_len, "embedded-module") != 0) {
-        return api.raise_error(state, "failed to load embedded module");
-    }
+    loadLuaModuleIntoState(runtime, state, .{ .name = module_name, .source = source[0..source_len :0] }) catch {
+        return api.raise_error(state, "failed to load module");
+    };
 
     api.push_value(state, 1);
     if (api.pcall(state, 1, 1, 0) != 0) {
-        var module_name_len: usize = 0;
-        const module_name_ptr = api.to_lstring(state, module_name_index, &module_name_len);
-        const module_name = if (module_name_ptr) |ptr| ptr[0..module_name_len] else "(unknown)";
-        std.log.err("lua preload error in {s}", .{module_name});
+        var failed_module_name_len: usize = 0;
+        const failed_module_name_ptr = api.to_lstring(state, module_name_index, &failed_module_name_len);
+        const failed_module_name = if (failed_module_name_ptr) |ptr| ptr[0..failed_module_name_len] else "(unknown)";
+        std.log.err("lua preload error in {s}", .{failed_module_name});
         return api.raise_error(state, "failed to run embedded module");
     }
     return 1;
+}
+
+fn discoverLuaSources(allocator: std.mem.Allocator) ?RuntimeLuaSources {
+    const exe_dir = std.fs.selfExeDirPathAlloc(allocator) catch return null;
+    errdefer allocator.free(exe_dir);
+
+    const root_dir = std.fs.path.join(allocator, &.{ exe_dir, "src", "lua" }) catch return null;
+    allocator.free(exe_dir);
+    errdefer allocator.free(root_dir);
+
+    std.fs.accessAbsolute(root_dir, .{}) catch return null;
+    return .{ .root_dir = root_dir };
+}
+
+fn luaModuleDiskPath(allocator: std.mem.Allocator, sources: RuntimeLuaSources, module_name: []const u8) ![]u8 {
+    const relative = try std.mem.replaceOwned(u8, allocator, module_name, ".", std.fs.path.sep_str);
+    defer allocator.free(relative);
+    return std.fmt.allocPrint(allocator, "{s}{c}{s}.lua", .{ sources.root_dir, std.fs.path.sep, relative });
+}
+
+fn loadLuaChunkFromDisk(api: Api, state: *State, path: []const u8) !void {
+    const zpath = try std.heap.page_allocator.dupeZ(u8, path);
+    defer std.heap.page_allocator.free(zpath);
+
+    if (api.load_file(state, zpath) != 0) {
+        logLuaError(api, state, "load_file");
+        return error.LuaLoadFailed;
+    }
+}
+
+fn loadLuaChunkFromSource(api: Api, state: *State, source: []const u8, chunk_name: []const u8) !void {
+    const zchunk_name = try std.heap.page_allocator.dupeZ(u8, chunk_name);
+    defer std.heap.page_allocator.free(zchunk_name);
+
+    if (api.load_buffer(state, source.ptr, source.len, zchunk_name) != 0) {
+        logLuaError(api, state, "load_buffer");
+        return error.LuaLoadFailed;
+    }
+}
+
+fn loadLuaModuleIntoState(self: *Runtime, state: *State, module: LuaModule) !void {
+    const api = self.context.api;
+    if (self.lua_sources) |sources| {
+        const disk_path = luaModuleDiskPath(self.allocator, sources, module.name) catch null;
+        if (disk_path) |path| {
+            defer self.allocator.free(path);
+            if (std.fs.accessAbsolute(path, .{})) |_| {
+                try loadLuaChunkFromDisk(api, state, path);
+                return;
+            } else |_| {}
+        }
+    }
+
+    const chunk_name = try std.fmt.allocPrint(self.allocator, "embedded:{s}", .{module.name});
+    defer self.allocator.free(chunk_name);
+    try loadLuaChunkFromSource(api, state, module.source, chunk_name);
+}
+
+fn moduleNameFromUpvalue(self: *Runtime, state: *State, idx: c_int) []const u8 {
+    const api = self.context.api;
+    var module_name_len: usize = 0;
+    const module_name_ptr = api.to_lstring(state, idx, &module_name_len) orelse return "(unknown)";
+    return module_name_ptr[0..module_name_len];
 }
 
 fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value: []const u8) !void {

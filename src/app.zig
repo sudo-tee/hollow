@@ -1066,12 +1066,12 @@ pub const App = struct {
         };
 
         const core_lua = @embedFile("lua/core.lua");
-        lua.runString(core_lua) catch |err| {
+        lua.runEmbeddedLuaFile("core.lua", core_lua, "core.lua") catch |err| {
             std.log.warn("failed to bootstrap lua core, scripting may be broken: {s}", .{@errorName(err)});
         };
 
         if (self.using_embedded_base_config) {
-            lua.runString(embedded_base_config) catch |err| {
+            lua.runEmbeddedProjectFile("conf/init.lua", embedded_base_config, "conf/init.lua") catch |err| {
                 std.log.warn("embedded base config load failed, continuing with compiled defaults: {s}", .{@errorName(err)});
             };
         } else if (self.base_config_path) |path| {

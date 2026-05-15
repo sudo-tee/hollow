@@ -36,6 +36,7 @@ for arg in "$@"; do
   --app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
   --help | -h)
     echo "Usage: $0 [--no-build] [--build-only] [--debug] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
+    echo "Lua dev loop: after one build, Lua files under src/lua/ are loaded from disk when present, so you can use --no-build for Lua-only changes."
     exit 0
     ;;
   esac
