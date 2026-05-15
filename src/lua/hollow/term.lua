@@ -436,17 +436,53 @@ function M.setup(hollow, host_api)
     if type(title) ~= "string" then
       error("hollow.term.set_title(title) expects a string")
     end
+    local pane_id = nil
+    if tab_id ~= nil then
+      local tab = hollow.term.tab_by_id(tab_id)
+      pane_id = tab and tab.pane and tab.pane.id or nil
+    else
+      pane_id = host_api.current_pane_id and host_api.current_pane_id() or nil
+    end
+    local previous = pane_id ~= nil and pane_snapshot(pane_id) or nil
     if tab_id ~= nil then
       if not host_api.set_tab_title_by_id(tab_id, title) then
         error("unknown tab id: " .. tostring(tab_id))
       end
-      return
+    else
+      host_api.set_tab_title(title)
     end
-    host_api.set_tab_title(title)
+
+    if previous ~= nil and previous.title ~= title then
+      hollow._emit_builtin_event("term:title_changed", {
+        pane_id = previous.id,
+        old_title = previous.title,
+        new_title = title,
+      })
+    end
   end
 
   function hollow.term.set_pane_foreground_process(pane_id, process)
-    host_api.set_pane_foreground_process(pane_id, process)
+    if pane_id ~= nil and type(pane_id) ~= "number" then
+      error("hollow.term.set_pane_foreground_process(pane_id, process) expects pane_id to be a number or nil")
+    end
+    if process ~= nil and type(process) ~= "string" then
+      error("hollow.term.set_pane_foreground_process(pane_id, process) expects process to be a string or nil")
+    end
+
+    local target = resolve_pane_id(pane_id, "hollow.term.set_pane_foreground_process(pane_id, process)")
+    local previous = pane_snapshot(target)
+    local old_process = previous and previous.foreground_process or ""
+    local new_process = process or ""
+
+    host_api.set_pane_foreground_process(target, process)
+
+    if old_process ~= new_process then
+      hollow._emit_builtin_event("term:foreground_process_changed", {
+        pane_id = target,
+        old_process = old_process,
+        new_process = new_process,
+      })
+    end
   end
 
   function hollow.term.send_text(text, pane_id)

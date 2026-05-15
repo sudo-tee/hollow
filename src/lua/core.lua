@@ -66,6 +66,7 @@ end)
 
 function hollow._emit_builtin_event(name, payload)
   local adapted = events_runtime.adapt_builtin_payload(name, payload)
+
   if
     name == "topbar:hover"
     or name == "topbar:leave"

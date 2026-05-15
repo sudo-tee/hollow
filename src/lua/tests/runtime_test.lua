@@ -43,6 +43,8 @@ local function make_host_api()
     close_tab_by_id = nil,
     switch_tab_by_id = nil,
     set_tab_title_by_id = nil,
+    set_tab_title = nil,
+    set_pane_foreground_process = nil,
     reload_config = 0,
     scroll = nil,
     workspace_default_cwd = nil,
@@ -179,6 +181,10 @@ local function make_host_api()
 
   function host_api.get_pane_title(pane_id)
     return panes[pane_id].title
+  end
+
+  function host_api.get_pane_foreground_process(pane_id)
+    return panes[pane_id].foreground_process or ""
   end
 
   function host_api.pane_is_focused(pane_id)
@@ -338,6 +344,27 @@ local function make_host_api()
     return nil
   end
 
+  function host_api.set_tab_title(title)
+    recorded.set_tab_title = title
+    panes[101].title = title
+  end
+
+  function host_api.set_tab_title_by_id(tab_id, title)
+    recorded.set_tab_title_by_id = { tab_id = tab_id, title = title }
+    if tab_id ~= 201 then
+      return false
+    end
+    panes[101].title = title
+    return true
+  end
+
+  function host_api.set_pane_foreground_process(pane_id, process)
+    recorded.set_pane_foreground_process = { pane_id = pane_id, process = process }
+    if panes[pane_id] ~= nil then
+      panes[pane_id].foreground_process = process
+    end
+  end
+
   function host_api.split_pane(_opts)
     recorded.split_pane = _opts
     return nil
@@ -412,11 +439,6 @@ local function make_host_api()
 
   function host_api.close_tab_by_id(tab_id)
     recorded.close_tab_by_id = tab_id
-    return true
-  end
-
-  function host_api.set_tab_title_by_id(tab_id, title)
-    recorded.set_tab_title_by_id = { tab_id = tab_id, title = title }
     return true
   end
 
@@ -637,6 +659,34 @@ end)
 hollow.events.emit("custom:event", { value = 42 })
 hollow.events.emit("custom:event", { value = 99 })
 assert_equal(event_payload.value, 42, "once listeners should fire exactly once")
+
+local built_in_error = pcall(function()
+  hollow.events.emit("term:foreground_process_changed", {})
+end)
+assert_true(not built_in_error, "built-in events should not be emitted from Lua")
+
+hollow.term.set_title("shell", 201)
+local title_event = nil
+hollow.events.once("term:title_changed", function(payload)
+  title_event = payload
+end)
+hollow.term.set_title("editor", 201)
+assert_equal(title_event.old_title, "shell", "title_changed should expose the previous title")
+assert_equal(title_event.new_title, "editor", "title_changed should expose the updated title")
+assert_equal(title_event.pane.id, 101, "title_changed should adapt pane snapshots")
+
+hollow.term.set_pane_foreground_process(101, "nvim")
+local process_event = nil
+hollow.events.once("term:foreground_process_changed", function(payload)
+  process_event = payload
+end)
+hollow.term.set_pane_foreground_process(101, "zig build")
+assert_equal(process_event.old_process, "nvim", "foreground_process_changed should expose the previous process")
+assert_equal(process_event.new_process, "zig build", "foreground_process_changed should expose the updated process")
+assert_equal(process_event.pane.id, 101, "foreground_process_changed should adapt pane snapshots")
+
+assert_equal(state.get().ui.topbar_cache_dirty, true, "foreground_process_changed should invalidate the topbar cache")
+assert_equal(state.get().ui.bottombar_cache_dirty, true, "foreground_process_changed should invalidate the bottombar cache")
 
 local ok_query, pane_query = hollow.htp._handle_query("pane", nil, 101)
 assert_true(ok_query, "built-in HTP pane query should succeed")

@@ -517,6 +517,11 @@ pub const BuiltInPayload = union(enum) {
         old_cwd: []const u8,
         new_cwd: []const u8,
     },
+    pane_foreground_process_changed: struct {
+        pane_id: usize,
+        old_process: []const u8,
+        new_process: []const u8,
+    },
     window_size: struct {
         rows: usize,
         cols: usize,
@@ -1930,6 +1935,15 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "old_cwd");
             try pushOwnedString(allocator, api, state, value.new_cwd);
             api.set_field(state, -2, "new_cwd");
+        },
+        .pane_foreground_process_changed => |value| {
+            api.create_table(state, 0, 3);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            try pushOwnedString(allocator, api, state, value.old_process);
+            api.set_field(state, -2, "old_process");
+            try pushOwnedString(allocator, api, state, value.new_process);
+            api.set_field(state, -2, "new_process");
         },
         .window_size => |value| {
             api.create_table(state, 0, 4);

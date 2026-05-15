@@ -641,7 +641,7 @@ local function serialize_tabs(surface, node, ctx, handlers)
   for _, tab in ipairs(tabs_list) do
     local tab_state = {
       id = tab.id,
-      title = tab.title ~= "" and tab.title or "shell",
+      title = tab.title ~= "" and tab.title,
       index = tab.index,
       is_active = tab.is_active == true,
       is_hovered = false,
@@ -1195,6 +1195,7 @@ function ui._register_bar_invalidation_hooks()
     "term:pane_layout_changed",
     "term:title_changed",
     "term:cwd_changed",
+    "term:foreground_process_changed",
     "workspace:changed",
     "window:resized",
   }) do

@@ -2338,8 +2338,8 @@ pub const App = struct {
 
     pub fn setPaneForegroundProcess(self: *App, pane_id: usize, process: []const u8) void {
         if (self.findPaneById(pane_id)) |pane| {
-            if (pane.foreground_process) |old_process| {
-                self.allocator.free(old_process);
+            if (pane.foreground_process) |existing_process| {
+                self.allocator.free(existing_process);
             }
             pane.foreground_process = self.allocator.dupe(u8, process) catch null;
         }

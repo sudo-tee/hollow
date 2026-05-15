@@ -149,6 +149,7 @@
 ---| "term:pane_focused"
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
+---| "term:foreground_process_changed"
 ---| "key:unhandled"
 ---| "window:resized"
 ---| "window:focused"

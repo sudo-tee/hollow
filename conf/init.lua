@@ -112,9 +112,12 @@ hollow.ui.topbar.configure({
     format = function(tab)
       local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
       local tab_cwd = tab.pane and tab.pane.cwd and hollow.util.basename(tab.pane.cwd)
-      local tab_title = tab_cwd
+      local foreground_process = tab.pane and tab.pane.foreground_process
+      local title = tab.title and tab.title ~= "" and tab.title or nil
+      local tab_title = title
+        or foreground_process ~= "" and foreground_process
+        or tab_cwd
         or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
-        or tab.title
       local ui = hollow.theme.current().ui
 
       local close_style = {
