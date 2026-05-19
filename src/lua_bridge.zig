@@ -110,6 +110,7 @@ const RuntimeLuaSources = struct {
 
 const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
+    .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
     .{ .name = "hollow.themes.catppuccin-mocha", .source = @embedFile("lua/hollow/themes/catppuccin-mocha.lua") },
@@ -150,23 +151,24 @@ const embedded_lua_modules = [_]LuaModule{
 pub const AppCallbacks = struct {
     app: *anyopaque,
     refresh_live_config: *const fn (app: *anyopaque) void,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) void,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
-    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8) void,
+    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void,
     close_workspace: *const fn (app: *anyopaque, workspace_id: ?usize) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
     switch_workspace: *const fn (app: *anyopaque, index: usize) void,
     focus_pane: *const fn (app: *anyopaque, direction: []const u8) void,
+    focus_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
     resize_pane: *const fn (app: *anyopaque, direction: []const u8, delta: f32) void,
     switch_tab: *const fn (app: *anyopaque, index: usize) void,
     set_workspace_name: *const fn (app: *anyopaque, title: []const u8) void,
@@ -243,6 +245,16 @@ const LUA_REGISTRYINDEX: c_int = -10000;
 const LUA_ENVIRONINDEX: c_int = -10001;
 const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
+
+fn luaFunctionFieldRef(api: Api, state: *State, table_idx: c_int, field: []const u8) c_int {
+    const field_name = std.heap.page_allocator.dupeZ(u8, field) catch return LUA_NOREF;
+    defer std.heap.page_allocator.free(field_name);
+    api.get_field(state, table_idx, field_name);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .function) return LUA_NOREF;
+    api.push_value(state, -1);
+    return api.ref(state, LUA_REGISTRYINDEX);
+}
 
 const WslDistroCache = struct {
     mutex: std.Thread.Mutex = .{},
@@ -586,6 +598,13 @@ pub const HtpQueryResult = struct {
         if (self.value) |value| deinitJsonValue(allocator, value);
         if (self.error_message) |message| allocator.free(message);
     }
+};
+
+pub const OperationCallbackPayload = union(enum) {
+    none,
+    pane_id: usize,
+    tab_id: usize,
+    workspace_index: usize,
 };
 
 pub const HtpDispatchResult = struct {
@@ -953,6 +972,46 @@ pub const Runtime = struct {
         }
 
         pop(api, self.state, 1);
+    }
+
+    pub fn invokeOperationCallback(self: *Runtime, callback_ref: c_int, success: bool, payload: OperationCallbackPayload) void {
+        if (callback_ref == LUA_NOREF) return;
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const api = self.context.api;
+        defer api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 1);
+            return;
+        }
+
+        api.create_table(self.state, 0, 2);
+        api.push_boolean(self.state, if (success) 1 else 0);
+        api.set_field(self.state, -2, "success");
+        switch (payload) {
+            .none => {},
+            .pane_id => |pane_id| {
+                api.push_number(self.state, @floatFromInt(pane_id));
+                api.set_field(self.state, -2, "pane_id");
+            },
+            .tab_id => |tab_id| {
+                api.push_number(self.state, @floatFromInt(tab_id));
+                api.set_field(self.state, -2, "tab_id");
+            },
+            .workspace_index => |workspace_index| {
+                api.push_number(self.state, @floatFromInt(workspace_index + 1));
+                api.set_field(self.state, -2, "workspace_index");
+            },
+        }
+
+        if (api.pcall(self.state, 1, 0, 0) != 0) {
+            logLuaError(api, self.state, "operation_callback");
+            pop(api, self.state, 1);
+        }
     }
 
     pub fn withLockedState(self: *Runtime, comptime T: type, callback: fn (*Runtime) T) T {
@@ -1502,6 +1561,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_focus_pane, 1);
         api.set_field(self.state, -2, "focus_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_focus_pane_by_id, 1);
+        api.set_field(self.state, -2, "focus_pane_by_id");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_resize_pane, 1);
@@ -3680,6 +3743,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     var domain_name: ?[]const u8 = null;
     var command: ?[]const u8 = null;
+    var callback_ref: c_int = LUA_NOREF;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -3687,13 +3751,15 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
             if (api.to_lstring(state, 1, &len)) |ptr| domain_name = ptr[0..len];
         },
         .table => {
-            domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
-            command = luaStringField(api, state, absoluteIndex(api, state, 1), "command");
+            const opts_idx = absoluteIndex(api, state, 1);
+            domain_name = luaStringField(api, state, opts_idx, "domain");
+            command = luaStringField(api, state, opts_idx, "command");
+            callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command);
+    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command, callback_ref);
     return 0;
 }
 
@@ -3728,6 +3794,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     var domain_name: ?[]const u8 = null;
     var command: ?[]const u8 = null;
     var name: ?[]const u8 = null;
+    var callback_ref: c_int = LUA_NOREF;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -3735,15 +3802,17 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
             if (api.to_lstring(state, 1, &len)) |ptr| cwd = ptr[0..len];
         },
         .table => {
-            cwd = luaStringField(api, state, absoluteIndex(api, state, 1), "cwd");
-            domain_name = luaStringField(api, state, absoluteIndex(api, state, 1), "domain");
-            command = luaStringField(api, state, absoluteIndex(api, state, 1), "command");
-            name = luaStringField(api, state, absoluteIndex(api, state, 1), "name");
+            const opts_idx = absoluteIndex(api, state, 1);
+            cwd = luaStringField(api, state, opts_idx, "cwd");
+            domain_name = luaStringField(api, state, opts_idx, "domain");
+            command = luaStringField(api, state, opts_idx, "command");
+            name = luaStringField(api, state, opts_idx, "name");
+            callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
         },
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command, name);
+    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command, name, callback_ref);
     return 0;
 }
 
@@ -3825,6 +3894,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     var width: f32 = 0.7;
     var height: f32 = 0.75;
     var has_bounds = false;
+    var callback_ref: c_int = LUA_NOREF;
     if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .string) {
         var domain_len: usize = 0;
         if (api.to_lstring(state, 3, &domain_len)) |ptr| domain_name = ptr[0..domain_len];
@@ -3882,9 +3952,10 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
             has_bounds = true;
         }
         pop(api, state, 1);
+        callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
     }
 
-    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds);
+    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds, callback_ref);
     return 0;
 }
 
@@ -4789,6 +4860,21 @@ fn l_pane_exists(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.pane_exists(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_focus_pane_by_id(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.focus_pane_by_id(cbs.app, pane_id)) 1 else 0);
     return 1;
 }
 

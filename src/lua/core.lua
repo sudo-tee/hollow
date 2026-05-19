@@ -8,6 +8,7 @@ local hollow = {
   fonts = {},
   term = {},
   events = {},
+  async = {},
   ui = {},
   htp = {},
   process = {},
@@ -22,6 +23,7 @@ if package ~= nil and package.loaded ~= nil then
 end
 
 local actions = require("hollow.actions")
+local async = require("hollow.async")
 local config = require("hollow.config")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
@@ -34,6 +36,7 @@ local util = require("hollow.util")
 local workspace = require("hollow.workspace")
 
 hollow.util = util
+hollow.async = async
 hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace

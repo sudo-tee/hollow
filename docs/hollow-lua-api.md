@@ -146,6 +146,19 @@ hollow.workspace.auto_bootstrap()
 
 This namespace handles workspace bootstrap specs stored as JSON.
 
+## `hollow.async`
+
+```lua
+hollow.async.run(fn)
+hollow.async.await(register)
+hollow.async.promise(register)
+```
+
+Use this namespace when you want to script queued Hollow operations in sequence.
+`hollow.async.run(fn)` starts a coroutine.
+`hollow.async.await(register)` suspends until `resolve(value)` or `reject(error)` is called.
+`hollow.async.promise(register)` creates a reusable promise object with `:next(...)`, `:catch(...)`, and `:await()`.
+
 Bootstrap file shape:
 
 ```json
@@ -155,7 +168,7 @@ Bootstrap file shape:
     {
       "name": "editor",
       "panes": [
-        { "cwd": ".", "command": "nvim" }
+        { "cwd": ".", "command": "nvim", "main": true }
       ]
     },
     {
@@ -177,6 +190,7 @@ Current v1 behavior:
 - global named layouts resolve under the user config dir at `layouts/<name>.json`
 - relative `cwd` values resolve against the project root for `.hollow/workspace.json`
 - `size` maps to split `ratio` for additional panes in a tab
+- one pane may set `main: true` (or `default: true`) to receive focus after bootstrap
 - tabs are linear layouts today; nested split trees are not supported yet
 
 Example manual bootstrap:
@@ -283,6 +297,7 @@ hollow.term.close_tab(id)
   y = number,
   width = number,
   height = number,
+  on_complete = function(result) end,
 }
 ```
 
@@ -293,6 +308,26 @@ Set `command_mode = "send"` (default) to type the command into the shell, which 
 Set `command_mode = "spawn"` to launch the shell with that command directly so it does not appear as typed input. Beware this mode is not running the application with the user's default shell.
 Set `close_on_exit = true` to close the pane after that command finishes. This is opt-in and leaves normal split panes unchanged.
 When creating a floating pane, `x`, `y`, `width`, and `height` set the initial normalized bounds in `0..1` space.
+Set `on_complete = function(result) ... end` to run code after the queued mux operation finishes on the frame thread. `result.success` is always present; successful `split_pane` callbacks also receive `result.pane_id`.
+
+`new_tab(opts?)` and `new_workspace(opts?)` also accept `on_complete` callbacks. Successful results include `tab_id` and `workspace_index` respectively.
+
+Example sequential flow:
+
+```lua
+hollow.async.run(function()
+  local split = hollow.async.await(function(resolve)
+    hollow.term.split_pane({
+      direction = "vertical",
+      on_complete = resolve,
+    })
+  end)
+
+  if split.success then
+    hollow.term.set_pane_tags({ "editor" }, split.pane_id)
+  end
+end)
+```
 
 `toggle_pane_maximized` defaults to the active pane and accepts `{ show_background = true }` to keep tiled panes rendered underneath the maximized pane.
 

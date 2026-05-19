@@ -13,6 +13,7 @@ const SidebarLayout = lua_mod.SidebarLayout;
 const TopBarLayout = lua_mod.BottomBarLayout;
 const BottomBarLayout = lua_mod.BottomBarLayout;
 const HtpQueryResult = lua_mod.HtpQueryResult;
+const OperationCallbackPayload = lua_mod.OperationCallbackPayload;
 const HtpFs = @import("htp_fs.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
@@ -238,10 +239,12 @@ pub const PendingMouseEvent = union(enum) {
     new_tab: struct {
         domain_name: ?[]const u8,
         command: ?[]const u8,
+        callback_ref: c_int,
     },
     close_tab,
     close_pane,
     close_pane_by_id: usize,
+    focus_pane_by_id: usize,
     reload_config,
     next_tab,
     prev_tab,
@@ -250,6 +253,7 @@ pub const PendingMouseEvent = union(enum) {
         domain_name: ?[]const u8,
         command: ?[]const u8,
         name: ?[]const u8,
+        callback_ref: c_int,
     },
     close_workspace: ?usize,
     next_workspace,
@@ -271,6 +275,7 @@ pub const PendingMouseEvent = union(enum) {
         y: ?f32,
         width: ?f32,
         height: ?f32,
+        callback_ref: c_int,
     },
     toggle_pane_maximized: struct {
         pane_id: usize,
@@ -655,7 +660,7 @@ pub const App = struct {
                 .new_tab => |payload| {
                     defer if (payload.domain_name) |owned| self.allocator.free(owned);
                     defer if (payload.command) |owned| self.allocator.free(owned);
-                    self.newTab(payload.domain_name, payload.command);
+                    self.newTab(payload.domain_name, payload.command, payload.callback_ref);
                 },
                 .close_tab => {
                     self.closeTab();
@@ -665,6 +670,9 @@ pub const App = struct {
                 },
                 .close_pane_by_id => |pane_id| {
                     self.closePaneById(pane_id);
+                },
+                .focus_pane_by_id => |pane_id| {
+                    self.focusPaneById(pane_id);
                 },
                 .reload_config => {
                     _ = self.reloadConfig();
@@ -680,7 +688,7 @@ pub const App = struct {
                     defer if (payload.domain_name) |value| self.allocator.free(value);
                     defer if (payload.command) |value| self.allocator.free(value);
                     defer if (payload.name) |value| self.allocator.free(value);
-                    self.newWorkspace(payload.cwd, payload.domain_name, payload.command, payload.name);
+                    self.newWorkspace(payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
                 },
                 .close_workspace => |idx| {
                     self.closeWorkspace(idx);
@@ -706,7 +714,7 @@ pub const App = struct {
                     defer if (split.domain_name) |owned| self.allocator.free(owned);
                     defer if (split.cwd) |owned| self.allocator.free(owned);
                     defer if (split.command) |owned| self.allocator.free(owned);
-                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height);
+                    self.splitPane(split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref);
                 },
                 .toggle_pane_maximized => |maximize| {
                     self.togglePaneMaximizedById(maximize.pane_id, maximize.show_background);
@@ -997,6 +1005,7 @@ pub const App = struct {
             .prev_workspace = luaPrevWorkspaceCallback,
             .switch_workspace = luaSwitchWorkspaceCallback,
             .focus_pane = luaFocusPaneCallback,
+            .focus_pane_by_id = luaFocusPaneByIdCallback,
             .resize_pane = luaResizePaneCallback,
             .switch_tab = luaSwitchTabCallback,
             .set_workspace_name = luaSetWorkspaceNameCallback,
@@ -2887,7 +2896,7 @@ pub const App = struct {
         return true;
     }
 
-    pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8) void {
+    pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -2898,14 +2907,17 @@ pub const App = struct {
             null;
         mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name, launch_command) catch |err| {
             std.log.err("app: newTab failed: {s}", .{@errorName(err)});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
             return;
         };
         self.requestLayoutResize(false);
         self.syncActivePaneChange(previous, mux.activePane());
+        const tab_id = if (mux.activeTab()) |tab| tab.id else 0;
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         }
         self.bindHtpHandlers();
+        if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .tab_id = tab_id });
         std.log.info("app: created new tab", .{});
     }
 
@@ -2979,6 +2991,19 @@ pub const App = struct {
         self.requestLayoutRefresh();
     }
 
+    pub fn focusPaneById(self: *App, pane_id: usize) void {
+        if (self.mux) |*mux| {
+            const previous = mux.activePane();
+            if (!mux.focusPaneById(pane_id)) return;
+            self.syncActivePaneChange(previous, mux.activePane());
+            self.refreshActivePaneDisplay();
+            if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+            self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+            self.emitLuaBuiltInEvent("term:pane_focused", .{ .pane_id = pane_id });
+            self.requestLayoutRefresh();
+        }
+    }
+
     pub fn nextTab(self: *App) void {
         if (self.mux) |*mux| {
             const previous = mux.activePane();
@@ -3001,7 +3026,7 @@ pub const App = struct {
         self.requestLayoutRefresh();
     }
 
-    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void {
+    pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -3020,6 +3045,7 @@ pub const App = struct {
             null;
         mux.newWorkspace(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, inherited_cwd, inherited_domain, null, name) catch |err| {
             std.log.err("app: newWorkspace failed: {s}", .{@errorName(err)});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
             return;
         };
         self.bindHtpHandlers();
@@ -3030,6 +3056,7 @@ pub const App = struct {
         self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
         self.requestLayoutResize(false);
+        if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .workspace_index = mux.activeWorkspaceIndex() });
         std.log.info("app: created new workspace", .{});
     }
 
@@ -3098,7 +3125,7 @@ pub const App = struct {
         }
     }
 
-    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32) void {
+    pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -3109,6 +3136,7 @@ pub const App = struct {
             null;
         const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd, floating, launch_command) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
+            if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
             return;
         };
         if (floating) {
@@ -3132,6 +3160,7 @@ pub const App = struct {
         }
         self.bindHtpHandlers();
         self.syncActivePaneChange(previous, mux.activePane());
+        if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .pane_id = @intFromPtr(pane) });
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.requestLayoutResize(false);
@@ -3871,7 +3900,7 @@ pub const App = struct {
 };
 
 /// AppCallbacks.split_pane implementation — called from Lua.
-fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool) void {
+fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     const mode: SplitCommandMode = if (std.mem.eql(u8, command_mode, "spawn")) .spawn else .send;
@@ -3892,6 +3921,7 @@ fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, 
         .y = if (has_bounds) y else null,
         .width = if (has_bounds) width else null,
         .height = if (has_bounds) height else null,
+        .callback_ref = callback_ref,
     } });
 }
 
@@ -4156,11 +4186,11 @@ fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     }
 }
 
-fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8) void {
+fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command } });
+    _ = app.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } });
 }
 
 fn luaCloseTabCallback(app_ptr: *anyopaque) void {
@@ -4188,13 +4218,13 @@ fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8) void {
+fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name } });
+    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref } });
 }
 
 fn luaCloseWorkspaceCallback(app_ptr: *anyopaque, workspace_id: ?usize) void {
@@ -4233,6 +4263,12 @@ fn luaFocusPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
     _ = app.enqueueMouse(.{ .focus_pane = dir });
+}
+
+fn luaFocusPaneByIdCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    if (app.findPaneById(pane_id) == null) return false;
+    return app.enqueueMouse(.{ .focus_pane_by_id = pane_id });
 }
 
 fn luaResizePaneCallback(app_ptr: *anyopaque, direction: []const u8, delta: f32) void {

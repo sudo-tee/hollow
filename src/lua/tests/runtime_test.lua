@@ -39,6 +39,7 @@ local function make_host_api()
     split_pane = nil,
     close_pane = nil,
     focus_pane = nil,
+    focus_pane_by_id = nil,
     resize_pane = nil,
     close_tab_by_id = nil,
     switch_tab_by_id = nil,
@@ -71,6 +72,7 @@ local function make_host_api()
       cols = 120,
     },
   }
+  local next_pane_id = 102
 
   local tabs = {
     { id = 201, pane_ids = { 101 }, active_pane_id = 101 },
@@ -223,8 +225,12 @@ local function make_host_api()
     return panes[pane_id].cols
   end
 
+  local function current_active_pane_id()
+    return tabs[1] and tabs[1].active_pane_id or 101
+  end
+
   function host_api.current_pane_id()
-    return 101
+    return current_active_pane_id()
   end
 
   function host_api.get_tab_count()
@@ -297,6 +303,9 @@ local function make_host_api()
 
   function host_api.new_workspace(_opts)
     recorded.new_workspace = _opts
+    if _opts ~= nil and type(_opts.on_complete) == "function" then
+      _opts.on_complete({ success = true, workspace_index = 1 })
+    end
     return nil
   end
 
@@ -320,6 +329,9 @@ local function make_host_api()
   function host_api.new_tab(_opts)
     recorded.new_tab_calls = recorded.new_tab_calls + 1
     recorded.new_tab = _opts
+    if _opts ~= nil and type(_opts.on_complete) == "function" then
+      _opts.on_complete({ success = true, tab_id = 201 })
+    end
   end
 
   function host_api.close_tab()
@@ -367,6 +379,42 @@ local function make_host_api()
 
   function host_api.split_pane(_opts)
     recorded.split_pane = _opts
+    recorded.split_pane_calls = recorded.split_pane_calls or {}
+    recorded.split_pane_calls[#recorded.split_pane_calls + 1] = _opts
+
+    local pane_id = next_pane_id
+    next_pane_id = next_pane_id + 1
+    local active_pane_id = current_active_pane_id()
+    local active_pane = panes[active_pane_id] or panes[101]
+    panes[pane_id] = {
+      pid = 4242 + pane_id,
+      domain = _opts.domain or active_pane.domain,
+      cwd = _opts.cwd or active_pane.cwd,
+      text = "",
+      tags = {},
+      title = "shell",
+      is_focused = true,
+      is_floating = _opts.floating == true,
+      is_maximized = _opts.fullscreen == true,
+      x = active_pane.x,
+      y = active_pane.y,
+      width = active_pane.width,
+      height = active_pane.height,
+      rows = active_pane.rows,
+      cols = active_pane.cols,
+      foreground_process = _opts.command,
+    }
+
+    tabs[1].pane_ids[#tabs[1].pane_ids + 1] = pane_id
+    tabs[1].active_pane_id = pane_id
+    if panes[active_pane_id] ~= nil then
+      panes[active_pane_id].is_focused = false
+    end
+    panes[pane_id].is_focused = true
+
+    if type(_opts.on_complete) == "function" then
+      _opts.on_complete({ success = true, pane_id = pane_id })
+    end
     return nil
   end
 
@@ -377,6 +425,19 @@ local function make_host_api()
   function host_api.focus_pane(_direction)
     recorded.focus_pane = _direction
     return nil
+  end
+
+  function host_api.focus_pane_by_id(pane_id)
+    recorded.focus_pane_by_id = pane_id
+    if panes[pane_id] == nil then
+      return false
+    end
+    for _, pane in pairs(panes) do
+      pane.is_focused = false
+    end
+    tabs[1].active_pane_id = pane_id
+    panes[pane_id].is_focused = true
+    return true
   end
 
   function host_api.toggle_pane_maximized(_pane_id, _show_background)
@@ -614,6 +675,26 @@ assert_equal(hollow.fonts.pick({ "Missing Font" }), nil, "fonts.pick should retu
 
 assert_true(type(hollow.json.encode) == "function", "json.encode should be exposed")
 assert_true(type(hollow.json.decode) == "function", "json.decode should be exposed")
+assert_true(type(hollow.async.run) == "function", "async.run should be exposed")
+assert_true(type(hollow.async.await) == "function", "async.await should be exposed")
+
+local async_value = nil
+hollow.async.run(function()
+  async_value = hollow.async.await(function(resolve)
+    resolve("ok")
+  end)
+end)
+assert_equal(async_value, "ok", "async.await should resume coroutines with resolved values")
+
+local promise_value = nil
+local promise = hollow.async.promise(function(resolve)
+  resolve(42)
+end)
+promise:next(function(value)
+  promise_value = value
+  return value
+end)
+assert_equal(promise_value, 42, "async.promise should invoke chained handlers")
 
 hollow.workspace.bootstrap({
   name = "proj",
@@ -630,7 +711,51 @@ hollow.workspace.bootstrap({
 assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
 assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
 assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
+assert_equal(#recorded.split_pane_calls, 1, "workspace bootstrap should create one split for a two-pane tab")
+
+hollow.workspace.bootstrap({
+  tabs = {
+    {
+      panes = {
+        { command = "nvim" },
+        { command = "npm run dev", main = true },
+      },
+    },
+  },
+})
+assert_equal(recorded.focus_pane_by_id, 103, "workspace bootstrap should focus the pane marked main")
+
+local exported_main = hollow.workspace.export_current()
+assert_equal(exported_main.tabs[1].panes[3].main, true, "workspace export should mark the focused pane as main")
+
+local split_count_before_linear = #recorded.split_pane_calls
+hollow.workspace.bootstrap({
+  tabs = {
+    {
+      panes = {
+        { command = "nvim", domain = "wsl" },
+        { direction = "horizontal", domain = "wsl" },
+        { direction = "vertical", domain = "wsl" },
+      },
+    },
+  },
+})
+assert_equal(#recorded.split_pane_calls - split_count_before_linear, 2, "workspace bootstrap should create each linear split in sequence")
+assert_equal(recorded.split_pane_calls[split_count_before_linear + 1].direction, "horizontal", "workspace bootstrap should preserve the second pane split direction")
+assert_equal(recorded.split_pane_calls[split_count_before_linear + 2].direction, "vertical", "workspace bootstrap should preserve the third pane split direction")
+
+local split_result = nil
+hollow.term.split_pane({
+  direction = "vertical",
+  on_complete = function(result)
+    split_result = result
+  end,
+})
+assert_true(split_result ~= nil and split_result.success == true, "split_pane on_complete should receive a success result")
+assert_true(type(split_result.pane_id) == "number", "split_pane on_complete should receive the created pane id")
+
 hollow.term.set_pane_tags({ "test-runner", "primary" }, 101)
+hollow.term.focus_pane_by_id(101)
 
 assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "workspace helper should resolve project-local path")
 

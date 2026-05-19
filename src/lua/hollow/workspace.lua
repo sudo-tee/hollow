@@ -3,10 +3,9 @@ local M = {}
 ---@type Hollow
 local hollow = _G.hollow
 local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missing")
+local async = require("hollow.async")
 local json = require("hollow.json")
 local util = require("hollow.util")
-
-local did_auto_bootstrap = false
 
 local function trim_string(value)
   if type(value) ~= "string" then
@@ -103,10 +102,21 @@ local function clone_with_resolved_paths(base_dir, pane)
   return copy
 end
 
-local function apply_pane_tags(pane)
-  if pane.tags ~= nil then
-    hollow.term.set_pane_tags(pane.tags)
+local function is_main_pane(value)
+  return value == true
+end
+
+local function select_main_pane(current, pane_id, pane)
+  if not is_main_pane(pane.main or pane.default) then
+    return current
   end
+  if current ~= nil then
+    error("workspace spec may only mark one pane as main/default")
+  end
+  if pane_id == nil then
+    error("workspace bootstrap could not resolve main/default pane")
+  end
+  return pane_id
 end
 
 local function pane_opts(pane, tab_layout)
@@ -151,36 +161,70 @@ local function pane_opts(pane, tab_layout)
   return opts
 end
 
-local function bootstrap_tab(tab, base_dir, is_first_tab)
+local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
   local panes = type(tab.panes) == "table" and tab.panes or {}
   if #panes == 0 then
-    return
+    return nil
   end
 
   local first = clone_with_resolved_paths(base_dir, panes[1])
-  if is_first_tab then
+  local main_pane_id = nil
+  if is_first_tab and reuse_existing == true then
     if first.cwd ~= nil then
       hollow.term.set_workspace_default_cwd(first.cwd)
     end
+    local current_pane = hollow.term.current_pane()
+    main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
   else
-    hollow.term.new_tab({
-      domain = first.domain,
-    })
+    local result = async.await(function(resolve)
+      local create = is_first_tab and hollow.term.new_workspace or hollow.term.new_tab
+      create({
+        cwd = first.cwd,
+        domain = first.domain,
+        command = is_first_tab and nil or first.command,
+        name = is_first_tab and tab.name or nil,
+        on_complete = resolve,
+      })
+    end)
+    if result == nil or result.success ~= true then
+      error("workspace bootstrap " .. (is_first_tab and "new_workspace" or "new_tab") .. " failed")
+    end
+    local current_pane = hollow.term.current_pane()
+    main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
   end
 
-  apply_pane_tags(first)
+  if first.tags ~= nil then
+    hollow.term.set_pane_tags(first.tags)
+  end
 
-  send_startup_commands(first)
+  if reuse_existing == true or not is_first_tab then
+    send_startup_commands(first)
+  end
 
-  if trim_string(tab.name) ~= "" then
+  if not is_first_tab and trim_string(tab.name) ~= "" then
     hollow.term.set_title(tab.name)
   end
 
   for index = 2, #panes do
     local pane = clone_with_resolved_paths(base_dir, panes[index])
-    hollow.term.split_pane(pane_opts(pane, tab.layout))
-    apply_pane_tags(pane)
+    hollow.log("Creating pane with options: ", pane)
+    local opts = pane_opts(pane, tab.layout)
+
+    local result = async.await(function(resolve)
+      opts.on_complete = resolve
+      hollow.term.split_pane(opts)
+    end)
+
+    if result == nil or result.success ~= true then
+      error("workspace bootstrap split_pane failed")
+    end
+    if pane.tags ~= nil then
+      hollow.term.set_pane_tags(pane.tags, result.pane_id)
+    end
+    main_pane_id = select_main_pane(main_pane_id, result.pane_id, pane)
   end
+
+  return main_pane_id
 end
 
 local function workspace_spec_name(spec, fallback)
@@ -212,18 +256,38 @@ function M.bootstrap(spec, opts)
   local base_dir = normalize_base_dir(opts.base_dir)
   local existing_workspaces = hollow.term.workspaces()
   local previous_workspace = hollow.term.current_workspace()
+  local reuse_existing = not (
+    opts.replace_current == true
+    and #existing_workspaces == 1
+    and previous_workspace ~= nil
+  )
 
-  for index, tab in ipairs(tabs) do
-    bootstrap_tab(tab, base_dir, index == 1)
-  end
-
-  if opts.replace_current == true and #existing_workspaces == 1 and previous_workspace ~= nil then
-    local current_workspace = hollow.term.current_workspace()
-    if current_workspace ~= nil and current_workspace.index ~= previous_workspace.index then
-      hollow.term.switch_workspace(previous_workspace.index)
-      hollow.term.close_workspace()
+  local function finish()
+    if opts.replace_current == true and #existing_workspaces == 1 and previous_workspace ~= nil then
+      local current_workspace = hollow.term.current_workspace()
+      if current_workspace ~= nil and current_workspace.index ~= previous_workspace.index then
+        hollow.term.switch_workspace(previous_workspace.index)
+        hollow.term.close_workspace()
+      end
     end
   end
+
+  async.run(function()
+    local main_pane_id = nil
+    for index, tab in ipairs(tabs) do
+      local tab_main_pane_id = bootstrap_tab(tab, base_dir, index == 1, reuse_existing)
+      if tab_main_pane_id ~= nil then
+        if main_pane_id ~= nil then
+          error("workspace spec may only mark one pane as main/default")
+        end
+        main_pane_id = tab_main_pane_id
+      end
+    end
+    if main_pane_id ~= nil then
+      hollow.term.focus_pane_by_id(main_pane_id)
+    end
+    finish()
+  end)
 
   return hollow.term.current_workspace()
 end
@@ -258,6 +322,7 @@ function M.export_current()
         domain = pane.domain,
         command = pane.foreground_process,
         tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+        main = pane.is_focused == true or nil,
       }
     end
     tabs[#tabs + 1] = {
@@ -322,7 +387,9 @@ local function default_layout_path(name)
   if config_dir == nil then
     return nil
   end
-  return util.join_path(config_dir, "layouts", name .. ".json")
+  local default_path = util.join_path(config_dir, "layouts", name .. ".json")
+  hollow.log("Resolving default layout path: " .. default_path)
+  return default_path
 end
 
 function M.resolve_auto_bootstrap_path()
@@ -342,6 +409,7 @@ function M.resolve_auto_bootstrap_path()
   if default_layout ~= "" then
     local resolved = default_layout_path(default_layout)
     if resolved ~= nil and host_api.path_exists(resolved) then
+      hollow.log("Auto-bootstrap default layout found: " .. resolved)
       return resolved
     end
   end
@@ -350,16 +418,11 @@ function M.resolve_auto_bootstrap_path()
 end
 
 function M.auto_bootstrap()
-  if did_auto_bootstrap then
-    return false
-  end
-
   local path = M.resolve_auto_bootstrap_path()
   if path == nil then
     return false
   end
 
-  did_auto_bootstrap = true
   M.load_and_bootstrap(path, { replace_current = true })
   return true
 end

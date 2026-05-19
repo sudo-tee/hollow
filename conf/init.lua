@@ -237,7 +237,7 @@ hollow.keymap.set("<leader>uu", function()
 end, { desc = "reload config" })
 
 hollow.keymap.set("<leader>p", function()
-  hollow.term.split_pane({ domain = "pwsh" })
+  hollow.term.split_pane({ direction = "horizontal", ratio = 0.2 })
 end, { desc = "edit workspace config" })
 
 -- User config files are loaded after this bundled config, so you can override

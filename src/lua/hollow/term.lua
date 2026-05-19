@@ -278,6 +278,9 @@ function M.setup(hollow, host_api)
     if opts ~= nil and opts.name ~= nil and type(opts.name) ~= "string" then
       error("hollow.term.new_workspace(opts) expects opts.name to be a string")
     end
+    if opts ~= nil and opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error("hollow.term.new_workspace(opts) expects opts.on_complete to be a function")
+    end
     host_api.new_workspace(opts)
   end
 
@@ -321,6 +324,9 @@ function M.setup(hollow, host_api)
     end
     if opts ~= nil and opts.command ~= nil and type(opts.command) ~= "string" then
       error("hollow.term.new_tab(opts) expects opts.command to be a string")
+    end
+    if opts ~= nil and opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+      error("hollow.term.new_tab(opts) expects opts.on_complete to be a function")
     end
     host_api.new_tab(opts)
     return nil
@@ -401,6 +407,10 @@ function M.setup(hollow, host_api)
         end
         payload[field] = opts[field]
       end
+      if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then
+        error("hollow.term.split_pane: opts.on_complete must be a function")
+      end
+      payload.on_complete = opts.on_complete
     end
 
     host_api.split_pane(payload)
@@ -594,6 +604,15 @@ function M.setup(hollow, host_api)
       error("hollow.term.focus_pane(direction) expects a direction string")
     end
     host_api.focus_pane(direction)
+  end
+
+  function hollow.term.focus_pane_by_id(pane_id)
+    if type(pane_id) ~= "number" then
+      error("hollow.term.focus_pane_by_id(pane_id) expects a pane id")
+    end
+    if host_api.focus_pane_by_id == nil or not host_api.focus_pane_by_id(pane_id) then
+      error("unknown pane id: " .. tostring(pane_id))
+    end
   end
 
   function hollow.term.resize_pane(axis_or_direction, delta)

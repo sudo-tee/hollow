@@ -369,7 +369,7 @@ pub const Tab = struct {
         errdefer self.allocator.destroy(new_leaf);
         new_leaf.* = SplitNode.initPane(new_pane);
 
-        target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, ratio);
+        target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         try self.panes.append(self.allocator, new_pane);
         self.active_pane = new_pane;
         self.maximized_pane = null;
@@ -605,7 +605,7 @@ pub const Tab = struct {
         if (pane.restore_place_first) {
             target.* = SplitNode.initSplit(new_leaf, existing_leaf, direction, ratio);
         } else {
-            target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, ratio);
+        target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         }
         pane.restore_anchor_id = @intFromPtr(anchor_pane);
         return true;
@@ -869,6 +869,21 @@ pub const Mux = struct {
     pub fn tabById(self: *Mux, id: usize) ?*Tab {
         if (self.activeWorkspace()) |ws| return ws.tabById(id);
         return null;
+    }
+
+    pub fn focusPaneById(self: *Mux, pane_id: usize) bool {
+        for (self.workspaces.items) |ws| {
+            for (ws.tabs.items) |tab| {
+                for (tab.panes.items) |pane| {
+                    if (@intFromPtr(pane) != pane_id) continue;
+                    self.active_workspace = ws;
+                    ws.active_tab = tab;
+                    tab.active_pane = pane;
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     pub fn setActivePane(self: *Mux, pane: *Pane) void {
@@ -1504,6 +1519,38 @@ test "pane focus follows nearest matching split subtree" {
 
     mux.focusPaneInDirection(.up, 1200, 800);
     try std.testing.expect(tab.active_pane == top);
+}
+
+test "split pane ratio applies to new pane" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    const first = try allocator.create(Pane);
+    first.* = Pane.init(allocator);
+    try tab.appendPane(first);
+
+    const second = try allocator.create(Pane);
+    second.* = Pane.init(allocator);
+    try tab.splitActivePane(second, .vertical, 0.3);
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 100 };
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+
+    try std.testing.expectEqual(@as(usize, 2), leaves.len);
+    try std.testing.expectEqual(@as(u32, 299), leaves[1].bounds.width);
+    try std.testing.expectEqual(@as(u32, 700), leaves[0].bounds.width);
 }
 
 test "maximized pane takes full tab bounds" {

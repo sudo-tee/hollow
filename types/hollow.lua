@@ -348,6 +348,7 @@
 ---@field title? string
 ---@field domain? string
 ---@field command? string
+---@field on_complete? fun(result: { success: boolean, tab_id?: integer })
 
 ---@class HollowSplitPaneOpts
 ---@field direction? "horizontal"|"vertical"
@@ -365,6 +366,27 @@
 ---@field y? number
 ---@field width? number
 ---@field height? number
+---@field on_complete? fun(result: { success: boolean, pane_id?: integer })
+
+---@class HollowNewWorkspaceOpts
+---@field cwd? string
+---@field domain? string
+---@field command? string
+---@field name? string
+---@field on_complete? fun(result: { success: boolean, workspace_index?: integer })
+
+---@class HollowPromise<T>
+---@field status fun(self: HollowPromise<T>): "pending"|"fulfilled"|"rejected"
+---@field value fun(self: HollowPromise<T>): T|nil
+---@field error fun(self: HollowPromise<T>): any
+---@field next fun(self: HollowPromise<T>, on_resolve?: fun(value: T): any, on_reject?: fun(err: any): any): HollowPromise<any>
+---@field catch fun(self: HollowPromise<T>, on_reject: fun(err: any): any): HollowPromise<any>
+---@field await fun(self: HollowPromise<T>): T
+
+---@class HollowAsyncNamespace
+---@field run fun(fn: function): thread
+---@field await fun(register: fun(resolve: fun(value: any), reject?: fun(err: any))): any
+---@field promise fun(register: fun(resolve: fun(value: any), reject: fun(err: any))): HollowPromise<any>
 
 ---@class HollowWorkspaceBootstrapPane
 ---@field cwd? string
@@ -380,6 +402,8 @@
 ---@field height? number
 ---@field size? number
 ---@field direction? "horizontal"|"vertical"
+---@field main? boolean
+---@field default? boolean
 
 ---@class HollowWorkspaceBootstrapTab
 ---@field name? string
@@ -880,6 +904,21 @@ function json.decode(text) end
 ---@class HollowWorkspaceNamespace
 local workspace_api = {}
 
+---@class HollowAsyncNamespace
+local async = {}
+
+---@param fn function
+---@return thread
+function async.run(fn) end
+
+---@param register fun(resolve: fun(value: any), reject?: fun(err: any))
+---@return any
+function async.await(register) end
+
+---@param register fun(resolve: fun(value: any), reject: fun(err: any))
+---@return HollowPromise<any>
+function async.promise(register) end
+
 ---@param spec HollowWorkspaceBootstrapSpec
 ---@param opts? { base_dir?: string, name?: string, replace_current?: boolean }
 ---@return HollowWorkspaceSnapshot|nil
@@ -1020,6 +1059,9 @@ function term.close_pane(pane_id) end
 
 ---@param direction string
 function term.focus_pane(direction) end
+
+---@param pane_id integer
+function term.focus_pane_by_id(pane_id) end
 
 ---@param axis_or_direction string
 ---@param delta number
@@ -1507,6 +1549,7 @@ function process.run_child_process(args, opts) end
 ---@field move_pane fun(pane_id?: integer, direction: string, amount?: number)
 ---@field close_pane fun()
 ---@field focus_pane fun(direction: string)
+---@field focus_pane_by_id fun(pane_id: integer): boolean
 ---@field resize_pane fun(axis: string, delta: number)
 ---@field copy_selection fun()
 ---@field paste_clipboard fun()
@@ -1527,6 +1570,7 @@ function process.run_child_process(args, opts) end
 ---@field json HollowJsonNamespace
 ---@field term HollowTermNamespace
 ---@field workspace HollowWorkspaceNamespace
+---@field async HollowAsyncNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
 ---@field ui HollowUi
