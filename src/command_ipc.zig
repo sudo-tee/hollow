@@ -62,12 +62,12 @@ pub const Server = struct {
 
         self.stop_flag.store(true, .release);
         self.wakeAcceptLoop();
-        if (self.thread) |thread| thread.join();
-        self.thread = null;
         if (self.wake_stream) |stream| {
             stream.close();
             self.wake_stream = null;
         }
+        if (self.thread) |thread| thread.join();
+        self.thread = null;
         self.listen_address = null;
         self.started = false;
     }
@@ -93,6 +93,10 @@ pub const Server = struct {
                 std.log.warn("command-ipc: accept failed: {s}", .{@errorName(err)});
                 continue;
             };
+            if (self.stop_flag.load(.acquire)) {
+                conn.stream.close();
+                break;
+            }
             std.log.info("command-ipc: accepted connection from {f}", .{conn.address});
             handleConnection(self, &conn) catch |err| {
                 std.log.warn("command-ipc: request failed: {s}", .{@errorName(err)});

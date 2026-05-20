@@ -14,6 +14,7 @@ const STARTF_USESHOWWINDOW: windows.DWORD = 0x00000001;
 const CREATE_NEW_CONSOLE: windows.DWORD = 0x00000010;
 const SW_HIDE: windows.WORD = 0;
 const WSL_BYPASS_STARTUP_TIMEOUT_MS: u64 = 1200;
+const WSL_BYPASS_EXIT_TIMEOUT_MS: windows.DWORD = 1500;
 
 const HPCON = *opaque {};
 const COORD = extern struct {
@@ -373,10 +374,11 @@ pub const WindowsPty = struct {
 
     pub fn close(self: *WindowsPty) void {
         if (self.closed) return;
-        // Terminate the child process if still alive.
-        if (self.isAlive()) _ = kernel32.TerminateProcess(self.process, 0);
+        std.log.info("WindowsPty.close backend={s} pid={d}", .{ @tagName(self.backend), self.process_id });
         switch (self.backend) {
             .conpty => {
+                // Terminate the child process if still alive.
+                if (self.isAlive()) _ = kernel32.TerminateProcess(self.process, 0);
                 // ClosePseudoConsole MUST come before closing read_pipe and before
                 // thread.join().  It tears down the ConPTY, which causes the in-flight
                 // ReadFile on read_pipe (in the reader thread) to return immediately with
@@ -386,6 +388,12 @@ pub const WindowsPty = struct {
             },
             .wsl_bypass => {
                 _ = sendBypassFrame(self.write_pipe, .exit, &.{}) catch {};
+                if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
+                    _ = kernel32.WaitForSingleObject(self.process, WSL_BYPASS_EXIT_TIMEOUT_MS);
+                    if (kernel32.WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
+                        _ = kernel32.TerminateProcess(self.process, 0);
+                    }
+                }
             },
         }
         closeHandleIfValid(self.input_pipe_pty);

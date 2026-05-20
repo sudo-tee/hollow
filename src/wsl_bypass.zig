@@ -47,10 +47,18 @@ const Options = struct {
     }
 };
 
+const termination_grace_ms: i64 = 1500;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Keep write failures on the host pipes in-band as EPIPE so deferred cleanup
+    // still runs and reaps the shell child.
+    var sa = std.mem.zeroes(c.struct_sigaction);
+    sa.__sa_handler.sa_handler = @ptrFromInt(1);
+    _ = c.sigemptyset(&sa.sa_mask);
+    _ = c.sigaction(c.SIGPIPE, &sa, null);
 
     const options = parseArgs(allocator) catch return;
     defer {
@@ -74,6 +82,9 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     winsize.ws_col = options.cols;
     winsize.ws_row = options.rows;
 
+    var child_reaped = false;
+    var exit_status: u32 = 0;
+
     var master: c_int = -1;
     const pid = c.forkpty(&master, null, null, &winsize);
     if (pid == 0) {
@@ -85,6 +96,10 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     if (pid < 0) return error.ForkPtyFailed;
 
     defer _ = c.close(master);
+    defer if (!child_reaped) {
+        exit_status = terminateAndReapChild(pid);
+        child_reaped = true;
+    };
 
     const flags = c.fcntl(master, c.F_GETFL, @as(c_int, 0));
     if (flags >= 0) _ = c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK);
@@ -95,16 +110,18 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     const stdin_flags = c.fcntl(stdin_file.handle, c.F_GETFL, @as(c_int, 0));
     if (stdin_flags >= 0) _ = c.fcntl(stdin_file.handle, c.F_SETFL, stdin_flags | c.O_NONBLOCK);
 
+    const stdout_file = std.fs.File.stdout();
+
     var input_closed = false;
-    var child_exited = false;
-    var child_reaped = false;
     var master_closed = false;
-    var exit_status: u32 = 0;
+    var termination_requested = false;
+    var termination_deadline_ms: ?i64 = null;
 
     while (true) {
         var poll_fds = [_]c.struct_pollfd{
             .{ .fd = stdin_file.handle, .events = if (input_closed) 0 else c.POLLIN, .revents = 0 },
             .{ .fd = master, .events = c.POLLIN, .revents = 0 },
+            .{ .fd = stdout_file.handle, .events = 0, .revents = 0 },
         };
 
         _ = c.poll(&poll_fds, poll_fds.len, 50);
@@ -115,6 +132,16 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
         if (!input_closed and (poll_fds[0].revents & c.POLLIN) != 0) {
             const still_open = handleHostFrame(stdin_file, master) catch false;
             if (!still_open) input_closed = true;
+        }
+        if (!input_closed and (poll_fds[2].revents & (c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) {
+            input_closed = true;
+        }
+
+        if (input_closed and !termination_requested and !child_reaped) {
+            terminateChildGroup(pid, c.SIGHUP);
+            std.log.info("wsl bypass shutdown requested; terminating child pid={d}", .{pid});
+            termination_requested = true;
+            termination_deadline_ms = std.time.milliTimestamp() + termination_grace_ms;
         }
 
         if ((poll_fds[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
@@ -138,17 +165,26 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
             const wait_result = c.waitpid(pid, &status, c.WNOHANG);
             if (wait_result == pid) {
                 child_reaped = true;
-                child_exited = true;
                 exit_status = childExitStatus(status);
+                std.log.info("wsl bypass child reaped exit_status={d} shutdown={any}", .{ exit_status, termination_requested });
             }
         }
 
-        if (child_reaped and master_closed) break;
+        if (termination_requested and !child_reaped and termination_deadline_ms != null and std.time.milliTimestamp() >= termination_deadline_ms.?) {
+            terminateChildGroup(pid, c.SIGKILL);
+            termination_deadline_ms = null;
+        }
+
+        if (child_reaped and (master_closed or termination_requested)) break;
     }
 
     var exit_payload: [4]u8 = undefined;
     std.mem.writeInt(u32, &exit_payload, exit_status, .little);
-    try writeFrame(std.fs.File.stdout(), .exit, &exit_payload);
+    if (!input_closed) {
+        try writeFrame(std.fs.File.stdout(), .exit, &exit_payload);
+    } else {
+        _ = writeFrame(std.fs.File.stdout(), .exit, &exit_payload) catch {};
+    }
 }
 
 fn childExec(allocator: std.mem.Allocator, options: Options, argv: [:null]?[*:0]const u8) !void {
@@ -322,6 +358,38 @@ fn childExitStatus(status: c_int) u32 {
     if (c.WIFEXITED(status)) return @intCast(c.WEXITSTATUS(status));
     if (c.WIFSIGNALED(status)) return 128 + @as(u32, @intCast(c.WTERMSIG(status)));
     return 1;
+}
+
+fn terminateAndReapChild(pid: c_int) u32 {
+    terminateChildGroup(pid, c.SIGHUP);
+
+    const deadline = std.time.milliTimestamp() + termination_grace_ms;
+    while (std.time.milliTimestamp() < deadline) {
+        if (waitForChildExit(pid, c.WNOHANG)) |status| return status;
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    terminateChildGroup(pid, c.SIGKILL);
+    return waitForChildExit(pid, 0) orelse 1;
+}
+
+fn terminateChildGroup(pid: c_int, signal: c_int) void {
+    _ = c.kill(-pid, signal);
+    _ = c.kill(pid, signal);
+}
+
+fn waitForChildExit(pid: c_int, flags: c_int) ?u32 {
+    while (true) {
+        var status: c_int = 0;
+        const wait_result = c.waitpid(pid, &status, flags);
+        if (wait_result == pid) return childExitStatus(status);
+        if (wait_result == 0) return null;
+        switch (std.posix.errno(-1)) {
+            .INTR => continue,
+            .CHILD => return 0,
+            else => return 1,
+        }
+    }
 }
 
 fn parseArgs(allocator: std.mem.Allocator) !Options {

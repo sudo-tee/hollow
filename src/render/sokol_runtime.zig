@@ -2408,6 +2408,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const after_tick_ns = std.time.nanoTimestamp();
 
     if (app.pending_quit) {
+        app.shutdownRuntime();
         c.sapp_request_quit();
         return;
     }
@@ -3414,6 +3415,11 @@ fn seamCoveredByFloating(leaves: []const LayoutLeaf, seam: PaneBounds) bool {
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     _ = user_data;
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
+    if (g_app) |app| {
+        std.log.info("sokol cleanup: deinit via g_app", .{});
+        app.deinit();
+        g_app = null;
+    }
     if (builtin.os.tag == .windows) {
         if (g_subclassed_hwnd) |hwnd| {
             if (g_prev_wnd_proc != 0) _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_WNDPROC, g_prev_wnd_proc);
@@ -3657,7 +3663,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             },
             c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
             c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
-            c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
+            c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
             else => {},
         }
         return;
@@ -3680,7 +3686,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         },
         c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
         c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
-        c.SAPP_EVENTTYPE_QUIT_REQUESTED => c.sapp_request_quit(),
+        c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
         else => {},
     }
 }

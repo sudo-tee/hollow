@@ -521,6 +521,7 @@ pub const App = struct {
 
     allocator: std.mem.Allocator,
     config: Config,
+    deinitialized: bool = false,
     lua: ?LuaRuntime = null,
     ghostty: ?GhosttyRuntime = null,
     renderer: ?Backend = null,
@@ -1965,7 +1966,10 @@ pub const App = struct {
         };
     }
 
-    pub fn deinit(self: *App) void {
+    pub fn shutdownRuntime(self: *App) void {
+        if (self.deinitialized) return;
+        std.log.info("App.shutdownRuntime begin", .{});
+
         write_bridge = null;
         size_bridge = null;
         attrs_bridge = null;
@@ -1978,18 +1982,6 @@ pub const App = struct {
             self.command_ipc_server = null;
         }
 
-        for (self.htp_pending_messages.items) |message| {
-            self.allocator.free(message.payload);
-        }
-        self.htp_pending_messages.deinit(self.allocator);
-        for (self.htp_chunk_assemblies.items) |*assembly| {
-            self.allocator.free(assembly.request_id);
-            assembly.buffer.deinit(self.allocator);
-        }
-        self.htp_chunk_assemblies.deinit(self.allocator);
-        for (self.pane_tags.items) |*entry| entry.deinit(self.allocator);
-        self.pane_tags.deinit(self.allocator);
-
         if (self.renderer) |*renderer| {
             renderer.deinit();
             self.renderer = null;
@@ -1997,6 +1989,7 @@ pub const App = struct {
 
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
+                std.log.info("App.shutdownRuntime mux.deinit", .{});
                 mux.deinit(runtime);
                 self.mux = null;
             }
@@ -2008,6 +2001,28 @@ pub const App = struct {
             lua.deinit();
             self.lua = null;
         }
+
+        std.log.info("App.shutdownRuntime done", .{});
+    }
+
+    pub fn deinit(self: *App) void {
+        if (self.deinitialized) return;
+        self.deinitialized = true;
+        std.log.info("App.deinit begin", .{});
+
+        self.shutdownRuntime();
+
+        for (self.htp_pending_messages.items) |message| {
+            self.allocator.free(message.payload);
+        }
+        self.htp_pending_messages.deinit(self.allocator);
+        for (self.htp_chunk_assemblies.items) |*assembly| {
+            self.allocator.free(assembly.request_id);
+            assembly.buffer.deinit(self.allocator);
+        }
+        self.htp_chunk_assemblies.deinit(self.allocator);
+        for (self.pane_tags.items) |*entry| entry.deinit(self.allocator);
+        self.pane_tags.deinit(self.allocator);
 
         if (self.base_config_path) |path| {
             self.allocator.free(path);
@@ -2030,6 +2045,7 @@ pub const App = struct {
             self.startup_command = null;
         }
         self.config.deinit();
+        std.log.info("App.deinit done", .{});
     }
 
     pub fn configureAutomation(self: *App, startup_command: ?[]const u8, startup_command_delay_frames: usize, snapshot_dump_path: ?[]const u8) !void {
