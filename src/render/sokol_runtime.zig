@@ -25,6 +25,10 @@ const Api = lua_mod.Api;
 const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
+fn paneRenderHelpersReady(pane: *const Pane) bool {
+    return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
+}
+
 const win32 = if (builtin.os.tag == .windows) struct {
     const HWND = *anyopaque;
     const LONG_PTR = isize;
@@ -2101,7 +2105,7 @@ fn rebuildFtRenderer(app: *App) void {
 }
 
 fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128, target_fps: u32) void {
-    if (app.config.vsync or target_fps == 0) return;
+    if (app.config.vsync or target_fps == 0 or app.hasPendingCommand()) return;
 
     const target_frame_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(target_fps)));
     const deadline_ns = frame_start_ns + target_frame_ns;
@@ -2453,7 +2457,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (app.ghostty) |*runtime| {
         if (app.activePane()) |pane| {
-            if (pane.render_state_ready) {
+            if (paneRenderHelpersReady(pane)) {
                 if (!app.config.terminal_theme.enabled) {
                     if (runtime.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
                         clear_r = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
@@ -2509,7 +2513,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const do_leaves = leaves.len > 0;
             const single_pane: ?*anyopaque = if (!do_leaves) blk: {
                 if (app.activePane()) |p| {
-                    if (p.render_state_ready) break :blk p else break :blk null;
+                    if (paneRenderHelpersReady(p)) break :blk p else break :blk null;
                 }
                 break :blk null;
             } else null;
@@ -2754,7 +2758,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 g_phase_accum_direct_frames += 1;
             } else if (do_leaves) {
                 for (leaves) |leaf| {
-                    if (!leaf.pane.render_state_ready) continue;
+                    if (!paneRenderHelpersReady(leaf.pane)) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
                     const oy: f32 = @floatFromInt(leaf.bounds.y);
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -2809,7 +2813,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (leaves.len > 0) {
                     const active = app.activePane();
                     for (leaves) |leaf| {
-                        if (!leaf.pane.render_state_ready) continue;
+                        if (!paneRenderHelpersReady(leaf.pane)) continue;
                         const ox: f32 = @floatFromInt(leaf.bounds.x);
                         const oy: f32 = @floatFromInt(leaf.bounds.y);
                         const pw: f32 = @floatFromInt(leaf.bounds.width);
@@ -2846,7 +2850,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         leaf.pane.pty_wrote_this_frame = false;
                     }
                 } else if (app.activePane()) |pane| {
-                    if (!pane.render_state_ready) {
+                    if (!paneRenderHelpersReady(pane)) {
                         // nothing to queue
                     } else {
                         renderer.queueInViewport(
@@ -2954,7 +2958,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                 }
             } else if (app.activePane()) |pane| {
-                if (pane.render_state_ready) {
+                if (paneRenderHelpersReady(pane)) {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
                         renderer.drawDirect(

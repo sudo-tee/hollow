@@ -3084,6 +3084,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.vsync = value;
         return;
     }
+    if (std.mem.eql(u8, key, "command_timing")) {
+        cfg.command_timing = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "renderer_single_pane_direct")) {
         cfg.renderer_single_pane_direct = value;
         return;

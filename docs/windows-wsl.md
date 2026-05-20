@@ -43,8 +43,11 @@ Debug build:
 ./launch.sh --debug
 ```
 
-The wrapper cross-builds `x86_64-windows-gnu` and produces
-`zig-out/bin/hollow-native.exe`.
+The wrapper cross-builds `x86_64-windows-gnu` and produces:
+
+- `zig-out/bin/hollow.exe` for console/CLI entry
+- `zig-out/bin/hollow-gui.exe` for the GUI shim
+- `zig-out/bin/hollow-native.exe` for the actual GUI app
 
 Useful wrapper-only troubleshooting flags:
 
@@ -56,17 +59,19 @@ Useful wrapper-only troubleshooting flags:
 
 For a packaged release, ship at least:
 
+- `hollow.exe`
+- `hollow-gui.exe`
 - `hollow-native.exe`
 
 Optional but recommended:
 
 - `conf/init.lua` next to the executable, if you want the packaged defaults to stay editable without rebuilding
 - `wsl/hollow-wsl-bypass` and `scripts/install-wsl-bypass.sh` if you want users to enable the WSL PTY bypass from the release bundle
-- `hollow-native.pdb` next to the executable, so Windows crash addresses can be resolved to functions and source lines
+- `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` next to their matching executables, so Windows crash addresses can be resolved to functions and source lines
 
 ## Debug Symbols
 
-Windows builds emit a `hollow-native.pdb` file next to `hollow-native.exe`.
+Windows builds emit `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` next to their matching executables.
 
 Keep that file with the exact executable that produced a crash. Without the
 matching PDB, Windows stack traces in `hollow.log` will only show raw
@@ -74,6 +79,10 @@ addresses.
 
 For packaged releases, ship both:
 
+- `hollow.exe`
+- `hollow.pdb`
+- `hollow-gui.exe`
+- `hollow-gui.pdb`
 - `hollow-native.exe`
 - `hollow-native.pdb`
 
@@ -210,5 +219,5 @@ Related docs:
 | packaged build starts without your custom settings | Put your overrides in `%APPDATA%\hollow\init.lua` or launch with `--config path`                                  |
 | packaged build cannot find `conf/init.lua`         | Hollow falls back to the embedded base config; ship `conf/init.lua` only if you want an editable packaged default |
 | rendering glitches from a repo checkout            | Try `./launch.sh --safe-render`                                                                                   |
-| rendering glitches from a packaged build           | Try `hollow-native.exe --renderer-safe-mode`                                                                      |
+| rendering glitches from a packaged build           | Try `hollow.exe --renderer-safe-mode`, `hollow-gui.exe --renderer-safe-mode`, or `hollow-native.exe --renderer-safe-mode` |
 | missing glyphs                                     | Set `fonts.family` or `fonts.fallbacks` to fonts installed on that machine                                        |

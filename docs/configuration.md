@@ -155,22 +155,22 @@ hollow.config.set({
 ## Fonts
 
 ```bash
-./hollow_native.exe --list-fonts
+./hollow.exe --list-fonts
 ```
 
 Filter likely matches:
 
 ```bash
-./hollow_native.exe --match-font mono
+./hollow.exe --match-font mono
 ```
 
 Emit structured JSON:
 
 ```bash
-./hollow_native.exe --list-fonts --json
+./hollow.exe --list-fonts --json
 ```
 
-From a packaged build, run the same flags on `hollow-native.exe` directly.
+From a packaged build, run the same flags on `hollow.exe`, `hollow-gui.exe`, or `hollow-native.exe` directly.
 
 From Lua, inspect the same inventory:
 
@@ -306,6 +306,8 @@ config, so it behaves the same way as startup.
 
 For a packaged Windows release, ship at least:
 
+- `hollow.exe`
+- `hollow-gui.exe`
 - `hollow-native.exe`
 
 Optional but recommended:

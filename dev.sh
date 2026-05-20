@@ -45,7 +45,7 @@ artifact_path() {
   if [[ "$TARGET" == *"windows"* ]]; then
     printf '%s\n' "$SCRIPT_DIR/zig-out/bin/hollow-native.exe"
   else
-    printf '%s\n' "$SCRIPT_DIR/zig-out/bin/hollow-native"
+    printf '%s\n' "$SCRIPT_DIR/zig-out/bin/hollow"
   fi
 }
 

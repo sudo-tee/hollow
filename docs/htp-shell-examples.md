@@ -1,7 +1,7 @@
 # HTP Shell Integration
 
-The primary shipped HTP frontend is `hollow-cli`, a single-file `python3`
-script that talks to Hollow directly over HTP.
+The primary shipped HTP frontend is `hollow-cli`, with `hollow cli` as
+the native command path.
 
 These lower-level examples still ship for shell integration and transport
 debugging when you want to work with raw HTP frames directly.
@@ -57,12 +57,10 @@ and `hollow.htp.on_emit(...)`.
 
 ## Transport Behavior
 
-Transport selection is swappable:
+These shell helpers use OSC over the active tty.
 
-- local shells prefer file transport via `HOLLOW_REQUEST_DIR`
 - shells can force OSC with `HOLLOW_TRANSPORT=osc`
-- `hollow-cli` prefers OSC in WSL when `hollow-wsl-bypass` is available in `PATH`, because that path is typically faster than file transport there
-- `hollow-cli` and direct requests can use either file or OSC transport for queries and emits
+- `hollow-cli` and `hollow cli` are separate host-side command clients and do not use this OSC helper path
 
 ## `hollow-cli`
 
@@ -96,14 +94,14 @@ Output defaults:
 - `examples/htp/hollow-htp.zsh`
 - `examples/htp/hollow-htp.fish`
 - `examples/htp/Hollow.Htp.ps1`
-- `examples/htp/hollow-query.py`
+- `examples/htp/hollow-query`
 
 What the helpers provide:
 
 - send raw JSON envelopes with `...;Hollow;<json>ST`
 - emit HTP channels handled by `hollow.htp.on_emit(...)`
 - optionally wait for the host reply or error reply
-- issue one-shot queries through `examples/htp/hollow-query.py`
+- issue one-shot queries through `examples/htp/hollow-query`
 
 ## Shell Examples
 
@@ -142,24 +140,20 @@ Send-HollowHtpCwdChanged
 Invoke-HollowHtpQueryOnce -Name current_pane
 ```
 
-The Bash, zsh, and fish helpers call `examples/htp/hollow-query.py`, a
+The Bash, zsh, and fish helpers call `examples/htp/hollow-query`, a
 tty-owning query helper in the style of kitty's query-terminal flow.
 
 ## Notes
 
 - `hollow-cli` is the preferred user-facing interface.
-- Bash, zsh, and fish examples use the bundled Python query helper for raw transport flows.
-- The helper prefers local file transport when `HOLLOW_REQUEST_DIR` is present, otherwise it falls back to OSC.
+- Bash, zsh, and fish examples use the bundled shell query helper for raw OSC transport flows.
 - `hollow_htp_emit(...)` is fire-and-forget; use `hollow_htp_emit_checked(...)` if you want to see the host reply.
 - HTP emit channels are separate from built-in Lua events like `term:cwd_changed`; they only do something when Hollow has a matching `hollow.htp.on_emit("channel", handler)`.
-- In `auto` mode, if file transport fails, the helper falls back to OSC queries.
-- If you force `HOLLOW_TRANSPORT=file`, file transport failures are surfaced directly instead of falling back.
-- For WSL environment propagation, Hollow injects `WSLENV` so `HOLLOW_TRANSPORT` and `HOLLOW_PANE_ID` cross with `/u`, while `HOLLOW_REQUEST_DIR` crosses as a translated path with `/p`.
-- If those vars are still absent in WSL, the Python helper also tries to discover the shared request directory under `/mnt/c/Users/*/AppData/Local/hollow/htp-requests`.
+- Shell OSC helpers are tty-only and do not use host-side request directories.
+- For WSL environment propagation, Hollow injects `WSLENV` so `HOLLOW_TRANSPORT` and `HOLLOW_PANE_ID` cross with `/u`.
 - `*_query_once` reads the next host reply frame and prints the raw JSON.
 - Small replies usually arrive as a single `result` message.
-- Large replies may arrive as one or more `chunk` envelopes; the Python helper reassembles them before printing the final JSON response.
+- Large replies may arrive as one or more `chunk` envelopes; the helper reassembles them before printing the final JSON response.
 - The intended transport is direct OSC query/reply over the active tty. While the helper runs, it briefly owns terminal I/O to wait for the matching response.
-- In WSL, the helper translates the reply path to a Windows path with `wslpath -w` so the Windows-hosted Hollow process can write it.
 - These helpers are intended as portable examples for WSL, SSH, and native shells where no host-side executable is available.
 - PowerShell event sending works, but reply capture is still marked TODO in `examples/htp/Hollow.Htp.ps1`.

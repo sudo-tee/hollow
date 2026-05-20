@@ -131,8 +131,19 @@ local function make_host_api()
     error("json_encode is not available in the Lua stub runtime", 0)
   end
 
-  function host_api.json_decode(_text)
-    error("json_decode is not available in the Lua stub runtime", 0)
+  function host_api.json_decode(text)
+    if text == "__workspace_spec__" then
+      return {
+        tabs = {
+          {
+            panes = {
+              { cwd = "/tmp/project", domain = "main" },
+            },
+          },
+        },
+      }
+    end
+    error("unexpected json_decode input in Lua stub runtime", 0)
   end
 
   function host_api.list_fonts()
@@ -762,6 +773,12 @@ assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.local
 recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "present"
 hollow.config.set({ workspace = { auto_bootstrap = "always", default_layout = "default" } })
 assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "auto bootstrap should prefer project-local workspace files")
+
+local gui_ready = get_gui_ready_handler()
+assert_true(type(gui_ready) == "function", "core should register a gui ready handler")
+recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "__workspace_spec__"
+gui_ready()
+assert_equal(recorded.new_workspace.cwd, "/tmp/project", "auto bootstrap should run on gui ready using the active pane cwd")
 
 local exported = hollow.workspace.export_current()
 assert_equal(exported.name, "main", "workspace export should include active workspace name")

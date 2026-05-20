@@ -48,11 +48,23 @@ if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
 fi
 
 if [[ "$TARGET" == *"windows"* ]]; then
-  EXE_NAME="hollow-native.exe"
-  PDB_NAME="hollow-native.pdb"
+  EXE_NAME="hollow.exe"
+  PDB_NAME="hollow.pdb"
+  LAUNCHER_NAME="hollow.exe"
+  LAUNCHER_PDB_NAME="hollow.pdb"
+  GUI_NAME="hollow-native.exe"
+  GUI_PDB_NAME="hollow-native.pdb"
+  GUI_LAUNCHER_NAME="hollow-gui.exe"
+  GUI_LAUNCHER_PDB_NAME="hollow-gui.pdb"
 else
-  EXE_NAME="hollow-native"
+  EXE_NAME="hollow"
   PDB_NAME=""
+  LAUNCHER_NAME=""
+  LAUNCHER_PDB_NAME=""
+  GUI_NAME=""
+  GUI_PDB_NAME=""
+  GUI_LAUNCHER_NAME=""
+  GUI_LAUNCHER_PDB_NAME=""
 fi
 EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
 
@@ -92,6 +104,24 @@ if [[ $RUN -eq 1 ]]; then
   copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
   if [[ -n "$PDB_NAME" ]]; then
     copy_if_exists "$BIN_DIR/$PDB_NAME" "$SCRIPT_DIR/$PDB_NAME"
+  fi
+  if [[ -n "$LAUNCHER_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$LAUNCHER_NAME" "$SCRIPT_DIR/$LAUNCHER_NAME"
+  fi
+  if [[ -n "$LAUNCHER_PDB_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$LAUNCHER_PDB_NAME" "$SCRIPT_DIR/$LAUNCHER_PDB_NAME"
+  fi
+  if [[ -n "$GUI_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$GUI_NAME" "$SCRIPT_DIR/$GUI_NAME"
+  fi
+  if [[ -n "$GUI_PDB_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$GUI_PDB_NAME" "$SCRIPT_DIR/$GUI_PDB_NAME"
+  fi
+  if [[ -n "$GUI_LAUNCHER_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$GUI_LAUNCHER_NAME" "$SCRIPT_DIR/$GUI_LAUNCHER_NAME"
+  fi
+  if [[ -n "$GUI_LAUNCHER_PDB_NAME" ]]; then
+    copy_if_exists "$BIN_DIR/$GUI_LAUNCHER_PDB_NAME" "$SCRIPT_DIR/$GUI_LAUNCHER_PDB_NAME"
   fi
 
   RUN_ARGS=()

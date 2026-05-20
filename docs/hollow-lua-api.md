@@ -1088,7 +1088,7 @@ Built-in emits currently include:
 - `set_theme`
 - `scroll`
 
-The primary shipped HTP frontend is `hollow-cli`, a single-file `python3` script installed as part of `zig build install`.
+The primary shipped HTP frontend is `hollow-cli`, with `hollow cli` available as the native command path.
 
 Examples:
 

@@ -43,16 +43,11 @@ hollow_htp_emit_cwd() {
 }
 
 hollow_htp_transport() {
-	if [[ -n "${HOLLOW_REQUEST_DIR:-}" && "${HOLLOW_TRANSPORT:-auto}" != "osc" ]]; then
-		printf 'ipc\n'
-	else
-		printf 'osc\n'
-	fi
+	printf 'osc\n'
 }
 
 hollow_htp_debug_env() {
 	printf 'HOLLOW_TRANSPORT=%s\n' "${HOLLOW_TRANSPORT:-}"
-	printf 'HOLLOW_REQUEST_DIR=%s\n' "${HOLLOW_REQUEST_DIR:-}"
 	printf 'HOLLOW_PANE_ID=%s\n' "${HOLLOW_PANE_ID:-}"
 }
 

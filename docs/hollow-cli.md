@@ -1,5 +1,15 @@
 # Hollow CLI
 
+The same command surface is available from the native executable under the `cli`
+subcommand:
+
+- `hollow cli get tabs`
+- `hollow cli pane send-text "npm test\n"`
+
+The native path talks directly to Hollow's host-owned command socket, so it avoids
+bootstrapping a second app instance and is the fastest option when a Hollow window
+is already running.
+
 ## Command Surface
 
 Queries:

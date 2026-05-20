@@ -276,6 +276,8 @@ pub const Config = struct {
     /// Optional lower frame cap applied only when the app is visually idle.
     /// Set to 0 to disable the idle-specific cap.
     idle_max_fps: u32 = 0,
+    /// Emit command IPC timing logs and export timing to child CLI processes.
+    command_timing: bool = false,
     /// Allow single-pane mode to skip the offscreen render-target cache and
     /// render directly into the swapchain.  Defaulting to false preserves the
     /// cached-RT path which gives smoother frame pacing.  Set to true to

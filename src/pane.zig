@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("sokol_c");
+const command_ipc = @import("command_ipc.zig");
 const Config = @import("config.zig").Config;
 const fastmem = @import("fastmem.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
@@ -323,6 +324,19 @@ pub const Pane = struct {
         try env_block.appendSlice(self.allocator, "HOLLOW_TRANSPORT=auto");
         try env_block.append(self.allocator, 0);
 
+        if (std.process.getEnvVarOwned(self.allocator, command_ipc.EnvVar)) |command_addr| {
+            defer self.allocator.free(command_addr);
+            try env_block.appendSlice(self.allocator, command_ipc.EnvVar ++ "=");
+            try env_block.appendSlice(self.allocator, command_addr);
+            try env_block.append(self.allocator, 0);
+        } else |_| {}
+
+        if (cfg.command_timing) {
+            try env_block.appendSlice(self.allocator, command_ipc.TimingEnvVar ++ "=");
+            try env_block.appendSlice(self.allocator, "1");
+            try env_block.append(self.allocator, 0);
+        }
+
         if (workspace_id) |id| {
             try env_block.appendSlice(self.allocator, "HOLLOW_WORKSPACE_ID=");
             try env_block.appendSlice(self.allocator, id);
@@ -334,25 +348,6 @@ pub const Pane = struct {
 
         try env_block.appendSlice(self.allocator, "COLORTERM=truecolor");
         try env_block.append(self.allocator, 0);
-
-        const base_dir = platform.ensureHollowRuntimeDir(self.allocator) catch null;
-        if (base_dir) |dir| {
-            defer self.allocator.free(dir);
-            const htp_dir = std.fs.path.join(self.allocator, &.{ dir, "htp-requests" }) catch null;
-            if (htp_dir) |hdir| {
-                defer self.allocator.free(hdir);
-                // Ensure the htp-requests directory exists
-                std.fs.makeDirAbsolute(hdir) catch |err| {
-                    if (err != error.PathAlreadyExists) std.log.warn("failed to create htp-requests dir: {}", .{err});
-                };
-                // On Windows, pass the raw Windows path (e.g. C:\...\htp-requests).
-                // WSLENV with /p flag will translate it to /mnt/c/... for WSL automatically.
-                // Do NOT pre-convert the path — that would double-convert it.
-                try env_block.appendSlice(self.allocator, "HOLLOW_REQUEST_DIR=");
-                try env_block.appendSlice(self.allocator, hdir);
-                try env_block.append(self.allocator, 0);
-            }
-        }
 
         try env_block.append(self.allocator, 0); // double-null terminator
 

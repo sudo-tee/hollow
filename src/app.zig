@@ -1,6 +1,11 @@
 const std = @import("std");
 const c = @import("sokol_c");
 const builtin = @import("builtin");
+const command_mod = @import("command.zig");
+const command_ipc = @import("command_ipc.zig");
+const libc = if (builtin.os.tag == .windows) void else @cImport({
+    @cInclude("stdlib.h");
+});
 const Config = @import("config.zig").Config;
 const fastmem = @import("fastmem.zig");
 const Backend = @import("render/backend.zig").Backend;
@@ -14,7 +19,7 @@ const TopBarLayout = lua_mod.BottomBarLayout;
 const BottomBarLayout = lua_mod.BottomBarLayout;
 const HtpQueryResult = lua_mod.HtpQueryResult;
 const OperationCallbackPayload = lua_mod.OperationCallbackPayload;
-const HtpFs = @import("htp_fs.zig");
+const LUA_NOREF: c_int = -1;
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
 extern fn hollow_decode_png(
@@ -47,6 +52,10 @@ const selection = @import("selection.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
+
+const win32_env = if (builtin.os.tag == .windows) struct {
+    pub extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) i32;
+} else struct {};
 
 const SplitCommandMode = enum {
     send,
@@ -102,12 +111,71 @@ fn titleCString(text: []const u8) [256:0]u8 {
     return buf;
 }
 
+fn setProcessEnvVar(name: []const u8, value: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        const name_w = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, name);
+        defer std.heap.page_allocator.free(name_w);
+        const value_w = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, value);
+        defer std.heap.page_allocator.free(value_w);
+        if (win32_env.SetEnvironmentVariableW(name_w.ptr, value_w.ptr) == 0) return error.SetEnvironmentVariableFailed;
+        return;
+    }
+
+    const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+    defer std.heap.page_allocator.free(name_z);
+    const value_z = try std.heap.page_allocator.dupeZ(u8, value);
+    defer std.heap.page_allocator.free(value_z);
+    if (libc.setenv(name_z.ptr, value_z.ptr, 1) != 0) return error.SetEnvironmentVariableFailed;
+}
+
+fn unsetProcessEnvVar(name: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        const name_w = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, name);
+        defer std.heap.page_allocator.free(name_w);
+        if (win32_env.SetEnvironmentVariableW(name_w.ptr, null) == 0) return error.SetEnvironmentVariableFailed;
+        return;
+    }
+
+    const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+    defer std.heap.page_allocator.free(name_z);
+    if (libc.unsetenv(name_z.ptr) != 0) return error.SetEnvironmentVariableFailed;
+}
+
 fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = object.get(key) orelse return null;
     return switch (value) {
         .string => |text| text,
         else => null,
     };
+}
+
+fn dupeJsonSafeString(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(text)) return try allocator.dupe(u8, text);
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < text.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+            try out.append(allocator, '?');
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > text.len) {
+            try out.append(allocator, '?');
+            break;
+        }
+        _ = std.unicode.utf8Decode(text[i .. i + seq_len]) catch {
+            try out.append(allocator, '?');
+            i += 1;
+            continue;
+        };
+        try out.appendSlice(allocator, text[i .. i + seq_len]);
+        i += seq_len;
+    }
+
+    return try out.toOwnedSlice(allocator);
 }
 
 fn jsonObjectValue(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
@@ -188,6 +256,14 @@ fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap
     return try cloneJsonValue(allocator, value);
 }
 
+fn appendOwnedJsonString(array: *std.json.Array, allocator: std.mem.Allocator, value: []const u8) !void {
+    try array.append(.{ .string = try allocator.dupe(u8, value) });
+}
+
+fn sortStringsAsc(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.order(u8, lhs, rhs) == .lt;
+}
+
 fn chunkPayloadObject(allocator: std.mem.Allocator, chunk: []const u8, index: usize, total: usize) !std.json.ObjectMap {
     var object = std.json.ObjectMap.init(allocator);
     errdefer {
@@ -245,6 +321,7 @@ pub const PendingMouseEvent = union(enum) {
     close_pane,
     close_pane_by_id: usize,
     focus_pane_by_id: usize,
+    command_request: command_mod.Request,
     reload_config,
     next_tab,
     prev_tab,
@@ -501,7 +578,12 @@ pub const App = struct {
     htp_pending_messages: std.ArrayListUnmanaged(HtpQueuedMessage) = .empty,
     htp_chunk_assemblies: std.ArrayListUnmanaged(HtpChunkAssembly) = .empty,
     htp_next_message_id: u64 = 1,
-    htp_fs: ?HtpFs.Server = null,
+    command_ipc_server: ?command_ipc.Server = null,
+    pane_tags: std.ArrayListUnmanaged(PaneTagEntry) = .empty,
+    command_mutex: std.Thread.Mutex = .{},
+    command_ready: std.Thread.Condition = .{},
+    command_done: std.Thread.Condition = .{},
+    pending_command: ?*PendingCommandRequest = null,
     leader_visual_active: bool = false,
     leader_visual_expires_at_ns: i128 = 0,
     topbar_cache_dirty: bool = true,
@@ -551,6 +633,28 @@ pub const App = struct {
         @"error": ?[]const u8 = null,
         payload: ?std.json.Value = null,
         params: ?std.json.Value = null,
+    };
+
+    const PaneTagEntry = struct {
+        pane_id: usize,
+        tags: std.StringArrayHashMapUnmanaged(void) = .empty,
+
+        fn deinit(self: *PaneTagEntry, allocator: std.mem.Allocator) void {
+            var it = self.tags.iterator();
+            while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+            self.tags.deinit(allocator);
+        }
+    };
+
+    const PendingCommandRequest = struct {
+        request: command_mod.Request,
+        response: ?command_mod.Response = null,
+        done: bool = false,
+    };
+
+    const CommandExecutionMode = enum {
+        sync,
+        deferred,
     };
 
     /// Push any pending event onto the shared ring buffer.  Called from the
@@ -612,17 +716,37 @@ pub const App = struct {
         }
     }
 
-    fn startHtpTransport(self: *App) void {
-        if (self.htp_fs != null) return; // already started
-        self.htp_fs = HtpFs.Server.init(self.allocator, self, htpIpcQueryCallback, htpIpcEventCallback);
-        self.htp_fs.?.start() catch |err| {
-            std.log.warn("htp-fs: failed to start: {s}", .{@errorName(err)});
-            self.htp_fs.?.deinit();
-            self.htp_fs = null;
+    fn startCommandTransport(self: *App) void {
+        if (self.command_ipc_server != null) return;
+        self.command_ipc_server = command_ipc.Server.init(self.allocator, self, commandIpcHandler);
+        self.command_ipc_server.?.start() catch |err| {
+            std.log.warn("command-ipc: failed to start: {s}", .{@errorName(err)});
+            self.command_ipc_server.?.deinit();
+            self.command_ipc_server = null;
+            return;
         };
-        if (self.htp_fs != null) {
-            std.log.info("htp-fs: started, watching {?s}", .{self.htp_fs.?.requestDirForShell()});
+        if (self.command_ipc_server.?.address()) |addr| {
+            std.log.info("command-ipc: listening on {s}", .{addr});
+            setProcessEnvVar(command_ipc.EnvVar, addr) catch |err| {
+                std.log.warn("command-ipc: failed to export {s}: {s}", .{ command_ipc.EnvVar, @errorName(err) });
+            };
         }
+        self.syncCommandTimingEnv();
+    }
+
+    fn syncCommandTimingEnv(self: *App) void {
+        if (self.config.command_timing) {
+            std.log.info("command-ipc: command_timing enabled", .{});
+            setProcessEnvVar(command_ipc.TimingEnvVar, "1") catch |err| {
+                std.log.warn("command-ipc: failed to export {s}: {s}", .{ command_ipc.TimingEnvVar, @errorName(err) });
+            };
+            return;
+        }
+
+        std.log.info("command-ipc: command_timing disabled", .{});
+        unsetProcessEnvVar(command_ipc.TimingEnvVar) catch |err| {
+            std.log.warn("command-ipc: failed to clear {s}: {s}", .{ command_ipc.TimingEnvVar, @errorName(err) });
+        };
     }
 
     /// Drain all pending events and dispatch them.  Called from tick()
@@ -673,6 +797,13 @@ pub const App = struct {
                 },
                 .focus_pane_by_id => |pane_id| {
                     self.focusPaneById(pane_id);
+                },
+                .command_request => |request| {
+                    var owned = request;
+                    defer owned.deinit(self.allocator);
+                    _ = self.executeCommand(owned) catch |err| {
+                        std.log.err("command-ipc: deferred command failed: {s}", .{@errorName(err)});
+                    };
                 },
                 .reload_config => {
                     _ = self.reloadConfig();
@@ -841,6 +972,990 @@ pub const App = struct {
 
             @atomicStore(usize, &self.mouse_queue_head, (head + advance) % cap, .release);
         }
+
+        self.drainPendingCommand();
+    }
+
+    fn drainPendingCommand(self: *App) void {
+        self.command_mutex.lock();
+        defer self.command_mutex.unlock();
+
+        const pending = self.pending_command orelse return;
+        if (pending.done) return;
+
+        const timing_enabled = self.config.command_timing;
+        const start_ns = if (timing_enabled) std.time.nanoTimestamp() else 0;
+        pending.response = switch (commandExecutionMode(pending.request.kind)) {
+            .sync => self.executeCommand(pending.request) catch |err| command_mod.Response.fail("internal", @errorName(err)),
+            .deferred => self.enqueueDeferredCommand(pending.request),
+        };
+        if (timing_enabled) {
+            std.log.info("command-ipc: dispatch_ms={d:.3} kind={s}", .{ elapsedMs(start_ns), @tagName(pending.request.kind) });
+        }
+        pending.done = true;
+        self.command_done.signal();
+    }
+
+    pub fn runCommandSync(self: *App, request: command_mod.Request) command_mod.Response {
+        var pending = PendingCommandRequest{ .request = request };
+
+        self.command_mutex.lock();
+        defer self.command_mutex.unlock();
+
+        while (self.pending_command != null) {
+            self.command_done.wait(&self.command_mutex);
+        }
+
+        self.pending_command = &pending;
+        self.signalWake();
+        self.command_ready.signal();
+
+        while (!pending.done) {
+            self.command_done.wait(&self.command_mutex);
+        }
+
+        self.pending_command = null;
+        self.command_done.broadcast();
+        return pending.response orelse command_mod.Response.fail("internal", "missing command response");
+    }
+
+    pub fn hasPendingCommand(self: *App) bool {
+        self.command_mutex.lock();
+        defer self.command_mutex.unlock();
+
+        const pending = self.pending_command orelse return false;
+        return !pending.done;
+    }
+
+    fn elapsedMs(start_ns: i128) f64 {
+        return @as(f64, @floatFromInt(std.time.nanoTimestamp() - start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+    }
+
+    fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
+        return switch (kind) {
+            .get_pane,
+            .get_pane_text,
+            .get_current_pane,
+            .get_tab,
+            .get_current_tab,
+            .get_tabs,
+            .get_panes,
+            .get_workspace,
+            .get_current_workspace,
+            .get_workspaces,
+            .get_domain,
+            .get_htp,
+                => .sync,
+            else => .deferred,
+        };
+    }
+
+    fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        switch (request.kind) {
+            .workspace_new => return self.enqueueWorkspaceNewCommand(request),
+            .workspace_close => {
+                if (!self.enqueueMouse(.{ .close_workspace = request.id })) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .workspace_next => {
+                if (!self.enqueueMouse(.next_workspace)) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .workspace_prev => {
+                if (!self.enqueueMouse(.prev_workspace)) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .workspace_select => {
+                const index = request.index orelse return command_mod.Response.fail("invalid_args", "missing workspace index");
+                if (!self.enqueueMouse(.{ .switch_workspace = index -| 1 })) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .workspace_rename => return self.enqueueWorkspaceRenameCommand(request),
+            .tab_new => return self.enqueueTabNewCommand(request),
+            .tab_close => return self.enqueueTabCloseCommand(request),
+            .tab_next => {
+                if (!self.enqueueMouse(.next_tab)) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .tab_prev => {
+                if (!self.enqueueMouse(.prev_tab)) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .tab_select => return self.enqueueTabSelectCommand(request),
+            .tab_rename => return self.enqueueCommandRequest(request),
+            .pane_split => return self.enqueuePaneSplitCommand(request),
+            .pane_popup => return self.enqueuePanePopupCommand(request),
+            .pane_close => return self.enqueueCommandRequest(request),
+            .pane_zoom => return self.enqueuePaneZoomCommand(request),
+            .pane_float => return self.enqueuePaneFloatingCommand(request, true),
+            .pane_tile => return self.enqueuePaneFloatingCommand(request, false),
+            .pane_move => return self.enqueuePaneMoveCommand(request),
+            .pane_resize => return self.enqueuePaneResizeCommand(request),
+            .pane_send_text, .send_keys => return self.enqueueCommandRequest(request),
+            .pane_set_tag => return self.enqueueCommandRequest(request),
+            .pane_remove_tag => return self.enqueueCommandRequest(request),
+            .pane_set_tags => return self.enqueueCommandRequest(request),
+            .focus => return self.enqueueFocusCommand(request),
+            .scroll => return self.enqueueScrollCommand(request),
+            .config_reload => {
+                if (!self.enqueueMouse(.reload_config)) return command_mod.Response.fail("error", "command queue full");
+                return okNull();
+            },
+            .config_theme => return self.enqueueCommandRequest(request),
+            .run => return self.enqueueTabNewCommand(request),
+            .emit => return self.enqueueCommandRequest(request),
+            else => return self.enqueueCommandRequest(request),
+        }
+    }
+
+    fn enqueueCommandRequest(self: *App, request: command_mod.Request) command_mod.Response {
+        var cloned = self.cloneCommandRequest(request) catch return command_mod.Response.fail("internal", "oom");
+        errdefer cloned.deinit(self.allocator);
+        if (!self.enqueueMouse(.{ .command_request = cloned })) {
+            cloned.deinit(self.allocator);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn cloneOwnedOptionalString(self: *App, value: ?[]const u8) !?[]u8 {
+        return if (value) |text| try self.allocator.dupe(u8, text) else null;
+    }
+
+    fn cloneOwnedOptionalJson(self: *App, value: ?std.json.Value) !?std.json.Value {
+        return if (value) |json| try command_mod.cloneJsonValue(self.allocator, json) else null;
+    }
+
+    fn cloneOwnedOptionalStringSlice(self: *App, value: ?[]const []const u8) !?[]const []const u8 {
+        const items = value orelse return null;
+        var out = try self.allocator.alloc([]const u8, items.len);
+        errdefer {
+            for (out[0..items.len]) |item| self.allocator.free(item);
+            self.allocator.free(out);
+        }
+        for (items, 0..) |item, index| {
+            out[index] = try self.allocator.dupe(u8, item);
+        }
+        return out;
+    }
+
+    fn cloneCommandRequest(self: *App, request: command_mod.Request) !command_mod.Request {
+        return .{
+            .kind = request.kind,
+            .pane_id = request.pane_id,
+            .id = request.id,
+            .index = request.index,
+            .name = try self.cloneOwnedOptionalString(request.name),
+            .cmd = try self.cloneOwnedOptionalString(request.cmd),
+            .cwd = try self.cloneOwnedOptionalString(request.cwd),
+            .domain = try self.cloneOwnedOptionalString(request.domain),
+            .direction = try self.cloneOwnedOptionalString(request.direction),
+            .amount = request.amount,
+            .ratio = request.ratio,
+            .x = request.x,
+            .y = request.y,
+            .width = request.width,
+            .height = request.height,
+            .text = try self.cloneOwnedOptionalString(request.text),
+            .tag = try self.cloneOwnedOptionalString(request.tag),
+            .tags = try self.cloneOwnedOptionalStringSlice(request.tags),
+            .channel = try self.cloneOwnedOptionalString(request.channel),
+            .params = try self.cloneOwnedOptionalJson(request.params),
+            .payload = try self.cloneOwnedOptionalJson(request.payload),
+        };
+    }
+
+    fn enqueueTabNewCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_domain) |value| self.allocator.free(value);
+        const owned_command = if (request.cmd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_command) |value| self.allocator.free(value);
+        if (!self.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = LUA_NOREF } })) {
+            if (owned_command) |value| self.allocator.free(value);
+            if (owned_domain) |value| self.allocator.free(value);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn enqueueWorkspaceNewCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_cwd) |value| self.allocator.free(value);
+        const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_domain) |value| self.allocator.free(value);
+        const owned_command = if (request.cmd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_command) |value| self.allocator.free(value);
+        const owned_name = if (request.name) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_name) |value| self.allocator.free(value);
+        if (!self.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = LUA_NOREF } })) {
+            if (owned_name) |value| self.allocator.free(value);
+            if (owned_command) |value| self.allocator.free(value);
+            if (owned_domain) |value| self.allocator.free(value);
+            if (owned_cwd) |value| self.allocator.free(value);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn enqueueWorkspaceRenameCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing workspace name");
+        if (request.id) |workspace_id| {
+            const active_id = self.currentWorkspaceIdValue() orelse return command_mod.Response.fail("invalid_args", "no active workspace");
+            if (active_id != workspace_id) return command_mod.Response.fail("invalid_args", "workspace rename only supports the active workspace");
+        }
+        const owned_name = self.allocator.dupe(u8, name) catch return command_mod.Response.fail("internal", "oom");
+        if (!self.enqueueMouse(.{ .set_workspace_name = owned_name })) {
+            self.allocator.free(owned_name);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn enqueueTabCloseCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        if (request.id) |tab_id| {
+            const index = self.tabIndexById(tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
+            if (!self.enqueueMouse(.{ .close_tab_at = index })) return command_mod.Response.fail("error", "command queue full");
+            return okNull();
+        }
+        if (!self.enqueueMouse(.close_tab)) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueueTabSelectCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+        const index = self.tabIndexById(tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
+        if (!self.enqueueMouse(.{ .switch_tab = index })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueuePaneSplitCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction_text = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const direction = parseSplitDirection(direction_text) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_domain) |value| self.allocator.free(value);
+        const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_cwd) |value| self.allocator.free(value);
+        const owned_command = if (request.cmd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_command) |value| self.allocator.free(value);
+        if (!self.enqueueMouse(.{ .split_pane = .{
+            .direction = direction,
+            .ratio = @floatCast(request.ratio orelse 0.5),
+            .domain_name = owned_domain,
+            .cwd = owned_cwd,
+            .command = owned_command,
+            .command_mode = .spawn,
+            .close_on_exit = false,
+            .floating = false,
+            .fullscreen = false,
+            .x = null,
+            .y = null,
+            .width = null,
+            .height = null,
+            .callback_ref = LUA_NOREF,
+        } })) {
+            if (owned_command) |value| self.allocator.free(value);
+            if (owned_cwd) |value| self.allocator.free(value);
+            if (owned_domain) |value| self.allocator.free(value);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn enqueuePanePopupCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const cmd = request.cmd orelse return command_mod.Response.fail("invalid_args", "missing popup command");
+        const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_domain) |value| self.allocator.free(value);
+        const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+        errdefer if (owned_cwd) |value| self.allocator.free(value);
+        const owned_command = self.allocator.dupe(u8, cmd) catch return command_mod.Response.fail("internal", "oom");
+        errdefer self.allocator.free(owned_command);
+        if (!self.enqueueMouse(.{ .split_pane = .{
+            .direction = .vertical,
+            .ratio = 0.5,
+            .domain_name = owned_domain,
+            .cwd = owned_cwd,
+            .command = owned_command,
+            .command_mode = .spawn,
+            .close_on_exit = false,
+            .floating = true,
+            .fullscreen = false,
+            .x = if (request.x) |value| @floatCast(value) else null,
+            .y = if (request.y) |value| @floatCast(value) else null,
+            .width = if (request.width) |value| @floatCast(value) else null,
+            .height = if (request.height) |value| @floatCast(value) else null,
+            .callback_ref = LUA_NOREF,
+        } })) {
+            self.allocator.free(owned_command);
+            if (owned_cwd) |value| self.allocator.free(value);
+            if (owned_domain) |value| self.allocator.free(value);
+            return command_mod.Response.fail("error", "command queue full");
+        }
+        return okNull();
+    }
+
+    fn enqueuePaneZoomCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        if (!self.enqueueMouse(.{ .toggle_pane_maximized = .{ .pane_id = pane_id, .show_background = false } })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueuePaneFloatingCommand(self: *App, request: command_mod.Request, floating: bool) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        if (!self.enqueueMouse(.{ .set_pane_floating = .{ .pane_id = pane_id, .floating = floating } })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueuePaneMoveCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        if (!self.enqueueMouse(.{ .move_pane = .{ .pane_id = pane_id, .direction = focus_direction, .amount = @floatCast(request.amount orelse 0.08) } })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueuePaneResizeCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const split_direction = parseSplitDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        const amount = @as(f32, @floatCast(request.amount orelse 0));
+        const delta: f32 = if (std.mem.eql(u8, direction, "left") or std.mem.eql(u8, direction, "up")) -@abs(amount) else @abs(amount);
+        if (!self.enqueueMouse(.{ .resize_pane = .{ .direction = split_direction, .delta = delta } })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueueFocusCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing focus direction");
+        const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid focus direction");
+        if (!self.enqueueMouse(.{ .focus_pane = focus_direction })) return command_mod.Response.fail("error", "command queue full");
+        return okNull();
+    }
+
+    fn enqueueScrollCommand(self: *App, request: command_mod.Request) command_mod.Response {
+        const target = request.direction orelse return command_mod.Response.fail("invalid_args", "missing scroll target");
+        if (std.mem.eql(u8, target, "top")) {
+            if (!self.enqueueMouse(.scroll_active_top)) return command_mod.Response.fail("error", "command queue full");
+        } else if (std.mem.eql(u8, target, "bottom")) {
+            if (!self.enqueueMouse(.scroll_active_bottom)) return command_mod.Response.fail("error", "command queue full");
+        } else if (std.mem.eql(u8, target, "page-up")) {
+            if (!self.enqueueMouse(.{ .scroll_active_page = -1 })) return command_mod.Response.fail("error", "command queue full");
+        } else if (std.mem.eql(u8, target, "page-down")) {
+            if (!self.enqueueMouse(.{ .scroll_active_page = 1 })) return command_mod.Response.fail("error", "command queue full");
+        } else {
+            return command_mod.Response.fail("invalid_args", "invalid scroll target");
+        }
+        return okNull();
+    }
+
+    fn findPaneTagEntry(self: *App, pane_id: usize) ?*PaneTagEntry {
+        for (self.pane_tags.items) |*entry| {
+            if (entry.pane_id == pane_id) return entry;
+        }
+        return null;
+    }
+
+    fn ensurePaneTagEntry(self: *App, pane_id: usize) !*PaneTagEntry {
+        if (self.findPaneTagEntry(pane_id)) |entry| return entry;
+        try self.pane_tags.append(self.allocator, .{ .pane_id = pane_id });
+        return &self.pane_tags.items[self.pane_tags.items.len - 1];
+    }
+
+    fn normalizePaneTag(tag: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, tag, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        return trimmed;
+    }
+
+    pub fn getPaneTags(self: *App, pane_id: usize) !std.json.Value {
+        var array = std.json.Array.init(self.allocator);
+        errdefer {
+            for (array.items) |item| deinitJsonValue(self.allocator, item);
+            array.deinit();
+        }
+
+        const entry = self.findPaneTagEntry(pane_id) orelse return .{ .array = array };
+        var tags: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer tags.deinit(self.allocator);
+
+        var it = entry.tags.iterator();
+        while (it.next()) |item| try tags.append(self.allocator, item.key_ptr.*);
+        std.mem.sort([]const u8, tags.items, {}, sortStringsAsc);
+        for (tags.items) |tag| try appendOwnedJsonString(&array, self.allocator, tag);
+        return .{ .array = array };
+    }
+
+    pub fn setPaneTags(self: *App, pane_id: usize, tags: []const []const u8) !void {
+        const entry = try self.ensurePaneTagEntry(pane_id);
+        entry.deinit(self.allocator);
+        entry.* = .{ .pane_id = pane_id };
+
+        for (tags) |tag| {
+            const normalized = normalizePaneTag(tag) orelse continue;
+            const gop = try entry.tags.getOrPut(self.allocator, normalized);
+            if (!gop.found_existing) gop.key_ptr.* = try self.allocator.dupe(u8, normalized);
+        }
+
+        if (entry.tags.count() == 0) self.clearPaneTags(pane_id);
+    }
+
+    pub fn addPaneTag(self: *App, pane_id: usize, tag: []const u8) !void {
+        const normalized = normalizePaneTag(tag) orelse return;
+        const entry = try self.ensurePaneTagEntry(pane_id);
+        const gop = try entry.tags.getOrPut(self.allocator, normalized);
+        if (!gop.found_existing) gop.key_ptr.* = try self.allocator.dupe(u8, normalized);
+    }
+
+    pub fn removePaneTag(self: *App, pane_id: usize, tag: []const u8) void {
+        const normalized = normalizePaneTag(tag) orelse return;
+        const entry = self.findPaneTagEntry(pane_id) orelse return;
+        const removed = entry.tags.fetchSwapRemove(normalized) orelse return;
+        self.allocator.free(removed.key);
+        if (entry.tags.count() == 0) self.clearPaneTags(pane_id);
+    }
+
+    pub fn clearPaneTags(self: *App, pane_id: usize) void {
+        var index: usize = 0;
+        while (index < self.pane_tags.items.len) : (index += 1) {
+            if (self.pane_tags.items[index].pane_id != pane_id) continue;
+            self.pane_tags.items[index].deinit(self.allocator);
+            _ = self.pane_tags.swapRemove(index);
+            return;
+        }
+    }
+
+    fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Response {
+        return switch (request.kind) {
+            .get_pane => .ok(try self.snapshotPaneValue(request.id orelse request.pane_id)),
+            .get_pane_text => .ok(try self.paneTextValue(request.id orelse request.pane_id)),
+            .get_current_pane => .ok(try self.currentPaneValue()),
+            .get_tab => .ok(try self.snapshotTabValue(request.id)),
+            .get_current_tab => .ok(try self.currentTabValue()),
+            .get_tabs => .ok(try self.tabsValue()),
+            .get_panes => .ok(try self.panesValue(request.tag)),
+            .get_workspace => .ok(try self.snapshotWorkspaceValue(request.id)),
+            .get_current_workspace => .ok(try self.currentWorkspaceValue()),
+            .get_workspaces => .ok(try self.workspacesValue()),
+            .get_domain => .ok(try self.currentDomainValue()),
+            .workspace_new => self.execWorkspaceNew(request),
+            .workspace_close => self.execWorkspaceClose(request),
+            .workspace_next => self.execWorkspaceNext(),
+            .workspace_prev => self.execWorkspacePrev(),
+            .workspace_select => self.execWorkspaceSelect(request),
+            .workspace_rename => self.execWorkspaceRename(request),
+            .tab_new => self.execTabNew(request),
+            .tab_close => self.execTabClose(request),
+            .tab_next => self.execTabNext(),
+            .tab_prev => self.execTabPrev(),
+            .tab_select => self.execTabSelect(request),
+            .tab_rename => self.execTabRename(request),
+            .pane_split => self.execPaneSplit(request),
+            .pane_popup => self.execPanePopup(request),
+            .pane_close => self.execPaneClose(request),
+            .pane_zoom => self.execPaneZoom(request),
+            .pane_float => self.execPaneFloating(request, true),
+            .pane_tile => self.execPaneFloating(request, false),
+            .pane_move => self.execPaneMove(request),
+            .pane_resize => self.execPaneResize(request),
+            .pane_send_text, .send_keys => self.execPaneSendText(request),
+            .pane_set_tag => self.execPaneSetTag(request),
+            .pane_remove_tag => self.execPaneRemoveTag(request),
+            .pane_set_tags => self.execPaneSetTags(request),
+            .focus => self.execFocus(request),
+            .scroll => self.execScroll(request),
+            .get_htp => self.execGetHtp(request),
+            .config_reload => self.execConfigReload(),
+            .config_theme => self.execConfigTheme(request),
+            .run => self.execRun(request),
+            .emit => self.execEmit(request),
+        };
+    }
+
+    fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_mod.Response {
+        const app: *App = @ptrCast(@alignCast(app_ptr));
+        return app.runCommandSync(request);
+    }
+
+    fn okNull() command_mod.Response {
+        return .ok(null);
+    }
+
+    fn execWorkspaceNew(self: *App, request: command_mod.Request) command_mod.Response {
+        self.newWorkspace(request.cwd, request.domain, request.cmd, request.name, LUA_NOREF);
+        return okNull();
+    }
+
+    fn execWorkspaceClose(self: *App, request: command_mod.Request) command_mod.Response {
+        self.closeWorkspace(request.id);
+        return okNull();
+    }
+
+    fn execWorkspaceNext(self: *App) command_mod.Response {
+        self.nextWorkspace();
+        return okNull();
+    }
+
+    fn execWorkspacePrev(self: *App) command_mod.Response {
+        self.prevWorkspace();
+        return okNull();
+    }
+
+    fn execWorkspaceSelect(self: *App, request: command_mod.Request) command_mod.Response {
+        const index = request.index orelse return command_mod.Response.fail("invalid_args", "missing workspace index");
+        self.switchWorkspace(index -| 1);
+        return okNull();
+    }
+
+    fn execWorkspaceRename(self: *App, request: command_mod.Request) command_mod.Response {
+        const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing workspace name");
+        if (request.id) |workspace_id| {
+            const active_id = self.currentWorkspaceIdValue() orelse return command_mod.Response.fail("invalid_args", "no active workspace");
+            if (active_id != workspace_id) return command_mod.Response.fail("invalid_args", "workspace rename only supports the active workspace");
+        }
+        self.setWorkspaceName(name);
+        return okNull();
+    }
+
+    fn execTabNew(self: *App, request: command_mod.Request) command_mod.Response {
+        self.newTab(request.domain, request.cmd, LUA_NOREF);
+        return okNull();
+    }
+
+    fn execTabClose(self: *App, request: command_mod.Request) command_mod.Response {
+        if (request.id) |tab_id| {
+            const index = self.tabIndexById(tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
+            self.closeTabAt(index);
+        } else {
+            self.closeTab();
+        }
+        return okNull();
+    }
+
+    fn execTabNext(self: *App) command_mod.Response {
+        self.nextTab();
+        return okNull();
+    }
+
+    fn execTabPrev(self: *App) command_mod.Response {
+        self.prevTab();
+        return okNull();
+    }
+
+    fn execTabSelect(self: *App, request: command_mod.Request) command_mod.Response {
+        const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+        const index = self.tabIndexById(tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
+        self.switchTab(index);
+        return okNull();
+    }
+
+    fn execTabRename(self: *App, request: command_mod.Request) command_mod.Response {
+        const title = request.name orelse return command_mod.Response.fail("invalid_args", "missing tab title");
+        const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+        if (!self.setTabTitleById(tab_id, title)) return command_mod.Response.fail("invalid_args", "unknown tab id");
+        return okNull();
+    }
+
+    fn execPaneClose(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        self.closePaneById(pane_id);
+        self.clearPaneTags(pane_id);
+        return okNull();
+    }
+
+    fn execPaneSplit(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction_text = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const direction = parseSplitDirection(direction_text) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        self.splitPane(
+            direction,
+            @floatCast(request.ratio orelse 0.5),
+            request.domain,
+            request.cwd,
+            request.cmd,
+            .spawn,
+            false,
+            false,
+            false,
+            null,
+            null,
+            null,
+            null,
+            LUA_NOREF,
+        );
+        return okNull();
+    }
+
+    fn execPanePopup(self: *App, request: command_mod.Request) command_mod.Response {
+        const cmd = request.cmd orelse return command_mod.Response.fail("invalid_args", "missing popup command");
+        self.splitPane(
+            .vertical,
+            0.5,
+            request.domain,
+            request.cwd,
+            cmd,
+            .spawn,
+            false,
+            true,
+            false,
+            if (request.x) |value| @floatCast(value) else null,
+            if (request.y) |value| @floatCast(value) else null,
+            if (request.width) |value| @floatCast(value) else null,
+            if (request.height) |value| @floatCast(value) else null,
+            LUA_NOREF,
+        );
+        return okNull();
+    }
+
+    fn execPaneZoom(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        self.togglePaneMaximizedById(pane_id, false);
+        return okNull();
+    }
+
+    fn execPaneFloating(self: *App, request: command_mod.Request, floating: bool) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        self.setPaneFloatingById(pane_id, floating);
+        return okNull();
+    }
+
+    fn parseFocusDirection(direction: []const u8) ?FocusDirection {
+        if (std.mem.eql(u8, direction, "left")) return .left;
+        if (std.mem.eql(u8, direction, "right")) return .right;
+        if (std.mem.eql(u8, direction, "up")) return .up;
+        if (std.mem.eql(u8, direction, "down")) return .down;
+        return null;
+    }
+
+    fn parseSplitDirection(direction: []const u8) ?SplitDirection {
+        if (std.mem.eql(u8, direction, "vertical") or std.mem.eql(u8, direction, "horizontal")) {
+            return if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
+        }
+        if (std.mem.eql(u8, direction, "left") or std.mem.eql(u8, direction, "right")) return .horizontal;
+        if (std.mem.eql(u8, direction, "up") or std.mem.eql(u8, direction, "down")) return .vertical;
+        return null;
+    }
+
+    fn execPaneMove(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        self.movePaneById(pane_id, focus_direction, @floatCast(request.amount orelse 0.08));
+        return okNull();
+    }
+
+    fn execPaneResize(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+        const split_direction = parseSplitDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
+        const amount = @as(f32, @floatCast(request.amount orelse 0));
+        const delta: f32 = if (std.mem.eql(u8, direction, "left") or std.mem.eql(u8, direction, "up")) -@abs(amount) else @abs(amount);
+        self.resizePane(split_direction, delta);
+        return okNull();
+    }
+
+    fn execPaneSendText(self: *App, request: command_mod.Request) command_mod.Response {
+        const text = request.text orelse return command_mod.Response.fail("invalid_args", "missing pane text");
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        if (!self.sendTextToPane(pane_id, text)) return command_mod.Response.fail("invalid_args", "unknown pane id");
+        return okNull();
+    }
+
+    fn execPaneSetTag(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        const tag = request.tag orelse return command_mod.Response.fail("invalid_args", "missing pane tag");
+        self.addPaneTag(pane_id, tag) catch return command_mod.Response.fail("internal", "failed to add pane tag");
+        return okNull();
+    }
+
+    fn execPaneRemoveTag(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        const tag = request.tag orelse return command_mod.Response.fail("invalid_args", "missing pane tag");
+        self.removePaneTag(pane_id, tag);
+        return okNull();
+    }
+
+    fn execPaneSetTags(self: *App, request: command_mod.Request) command_mod.Response {
+        const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+        self.setPaneTags(pane_id, request.tags orelse &.{}) catch return command_mod.Response.fail("internal", "failed to set pane tags");
+        return okNull();
+    }
+
+    fn execFocus(self: *App, request: command_mod.Request) command_mod.Response {
+        const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing focus direction");
+        const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid focus direction");
+        self.focusPane(focus_direction);
+        return okNull();
+    }
+
+    fn execScroll(self: *App, request: command_mod.Request) command_mod.Response {
+        const target = request.direction orelse return command_mod.Response.fail("invalid_args", "missing scroll target");
+        if (std.mem.eql(u8, target, "top")) {
+            self.scrollActiveViewportTop();
+        } else if (std.mem.eql(u8, target, "bottom")) {
+            self.scrollActiveViewportBottom();
+        } else if (std.mem.eql(u8, target, "page-up")) {
+            self.scrollActiveViewportPage(-1);
+        } else if (std.mem.eql(u8, target, "page-down")) {
+            self.scrollActiveViewportPage(1);
+        } else {
+            return command_mod.Response.fail("invalid_args", "invalid scroll target");
+        }
+        return okNull();
+    }
+
+    fn execConfigReload(self: *App) command_mod.Response {
+        if (!self.reloadConfig()) return command_mod.Response.fail("error", "reload_config failed");
+        return okNull();
+    }
+
+    fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Response {
+        const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing theme name");
+        const theme_payload = std.json.Value{ .object = blk: {
+            var object = std.json.ObjectMap.init(self.allocator);
+            errdefer deinitJsonValue(self.allocator, .{ .object = object });
+            object.put(self.allocator.dupe(u8, "name") catch return command_mod.Response.fail("internal", "oom"), .{ .string = self.allocator.dupe(u8, name) catch return command_mod.Response.fail("internal", "oom") }) catch return command_mod.Response.fail("internal", "oom");
+            break :blk object;
+        } };
+        defer deinitJsonValue(self.allocator, theme_payload);
+
+        const result = self.dispatchHtpEventSync(self.currentPaneIdValue(), "set_theme", theme_payload) catch |err| {
+            return command_mod.Response.fail("internal", @errorName(err));
+        };
+        defer result.deinit(self.allocator);
+        if (!result.success) return command_mod.Response.fail("error", result.error_message orelse "set_theme failed");
+        return okNull();
+    }
+
+    fn execRun(self: *App, request: command_mod.Request) command_mod.Response {
+        self.newTab(request.domain, request.cmd, LUA_NOREF);
+        return okNull();
+    }
+
+    fn execGetHtp(self: *App, request: command_mod.Request) command_mod.Response {
+        const channel = request.channel orelse return command_mod.Response.fail("invalid_args", "missing htp channel");
+        const pane_id = request.id orelse request.pane_id;
+        const result = self.dispatchHtpQuerySync(pane_id, channel, request.params) catch |err| {
+            return command_mod.Response.fail("internal", @errorName(err));
+        };
+        defer result.deinit(self.allocator);
+        if (!result.success) return command_mod.Response.fail("error", result.error_message orelse "htp query failed");
+        if (result.value) |value| {
+            const cloned = command_mod.cloneJsonValue(self.allocator, value) catch return command_mod.Response.fail("internal", "failed to clone htp payload");
+            return .ok(cloned);
+        }
+        return .ok(null);
+    }
+
+    fn execEmit(self: *App, request: command_mod.Request) command_mod.Response {
+        const channel = request.channel orelse return command_mod.Response.fail("invalid_args", "missing emit channel");
+        const pane_id = request.id orelse request.pane_id;
+        const result = self.dispatchHtpEventSync(pane_id, channel, request.payload) catch |err| {
+            return command_mod.Response.fail("internal", @errorName(err));
+        };
+        defer result.deinit(self.allocator);
+        if (!result.success) return command_mod.Response.fail("error", result.error_message orelse "htp emit failed");
+        return okNull();
+    }
+
+    fn currentPaneIdValue(self: *App) usize {
+        const pane = self.activePane() orelse return 0;
+        return @intFromPtr(pane);
+    }
+
+    fn currentWorkspaceIdValue(self: *App) ?usize {
+        const workspace = self.activeWorkspace() orelse return null;
+        return workspace.id;
+    }
+
+    fn domainValue(self: *App, name: []const u8) !std.json.Value {
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+
+        try object.put(try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
+        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domain_name, name) });
+        try object.put(try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
+
+        if (self.config.domainByName(name)) |domain| {
+            if (domain.shell) |shell| try object.put(try self.allocator.dupe(u8, "shell"), .{ .string = try dupeJsonSafeString(self.allocator, shell) });
+            if (domain.default_cwd) |cwd| try object.put(try self.allocator.dupe(u8, "default_cwd"), .{ .string = try dupeJsonSafeString(self.allocator, cwd) });
+        }
+
+        return .{ .object = object };
+    }
+
+    fn currentDomainValue(self: *App) !?std.json.Value {
+        const pane = self.activePane() orelse return null;
+        if (pane.domain_name.len == 0) return null;
+        return try self.domainValue(pane.domain_name);
+    }
+
+    fn paneFrameValue(self: *App, pane: *Pane) !std.json.Value {
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+        try object.put(try self.allocator.dupe(u8, "x"), .{ .integer = @intCast(pane.x_px) });
+        try object.put(try self.allocator.dupe(u8, "y"), .{ .integer = @intCast(pane.y_px) });
+        try object.put(try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
+        try object.put(try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
+        return .{ .object = object };
+    }
+
+    fn paneSizeValue(self: *App, pane: *Pane) !std.json.Value {
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+        try object.put(try self.allocator.dupe(u8, "rows"), .{ .integer = @intCast(pane.rows) });
+        try object.put(try self.allocator.dupe(u8, "cols"), .{ .integer = @intCast(pane.cols) });
+        try object.put(try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
+        try object.put(try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
+        return .{ .object = object };
+    }
+
+    fn snapshotPane(self: *App, pane_id: usize) !?std.json.Value {
+        const pane = self.findPaneById(pane_id) orelse return null;
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+
+        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
+        try object.put(try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
+        try object.put(try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+        try object.put(try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
+        try object.put(try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
+        try object.put(try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
+        try object.put(try self.allocator.dupe(u8, "tags"), try self.getPaneTags(pane_id));
+        try object.put(try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
+        try object.put(try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
+        try object.put(try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
+        try object.put(try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
+        try object.put(try self.allocator.dupe(u8, "size"), try self.paneSizeValue(pane));
+        return .{ .object = object };
+    }
+
+    fn snapshotPaneValue(self: *App, pane_id: usize) !?std.json.Value {
+        if (pane_id == 0) return self.currentPaneValue();
+        return try self.snapshotPane(pane_id);
+    }
+
+    fn currentPaneValue(self: *App) !?std.json.Value {
+        const pane = self.activePane() orelse return null;
+        return try self.snapshotPane(@intFromPtr(pane));
+    }
+
+    fn paneTextValue(self: *App, pane_id: usize) !std.json.Value {
+        const buf = try self.allocator.alloc(u8, 256 * 1024);
+        defer self.allocator.free(buf);
+        const text = self.getPaneText(pane_id, buf);
+        return .{ .string = try self.allocator.dupe(u8, text) };
+    }
+
+    fn snapshotTab(self: *App, tab: *Tab, index: usize) !std.json.Value {
+        var panes = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = panes });
+        for (tab.panes.items) |pane| {
+            const pane_value = try self.snapshotPane(@intFromPtr(pane));
+            if (pane_value) |value| try panes.append(value);
+        }
+
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+        const active_pane = tab.activePane();
+        const pane_value = if (active_pane) |pane| try self.snapshotPane(@intFromPtr(pane)) else null;
+        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(tab.id) });
+        try object.put(try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, if (active_pane) |pane| pane.title else "") });
+        try object.put(try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
+        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeTab()) |active| active == tab else false });
+        try object.put(try self.allocator.dupe(u8, "panes"), .{ .array = panes });
+        if (pane_value) |value| {
+            try object.put(try self.allocator.dupe(u8, "pane"), value);
+        } else {
+            try object.put(try self.allocator.dupe(u8, "pane"), .null);
+        }
+        return .{ .object = object };
+    }
+
+    fn snapshotTabValue(self: *App, tab_id: ?usize) !?std.json.Value {
+        const id = tab_id orelse return self.currentTabValue();
+        const workspace = self.activeWorkspace() orelse return null;
+        for (workspace.tabs.items, 0..) |tab, index| {
+            if (tab.id == id) return try self.snapshotTab(tab, index);
+        }
+        return null;
+    }
+
+    fn currentTabValue(self: *App) !?std.json.Value {
+        const workspace = self.activeWorkspace() orelse return null;
+        const tab = self.activeTab() orelse return null;
+        for (workspace.tabs.items, 0..) |candidate, index| {
+            if (candidate == tab) return try self.snapshotTab(candidate, index);
+        }
+        return null;
+    }
+
+    fn tabsValue(self: *App) !std.json.Value {
+        var array = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = array });
+        const workspace = self.activeWorkspace() orelse return .{ .array = array };
+        for (workspace.tabs.items, 0..) |tab, index| try array.append(try self.snapshotTab(tab, index));
+        return .{ .array = array };
+    }
+
+    fn panesValue(self: *App, wanted_tag: ?[]const u8) !std.json.Value {
+        var array = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = array });
+        if (self.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| {
+                const pane_id = @intFromPtr(pane);
+                if (wanted_tag) |tag| {
+                    const entry = self.findPaneTagEntry(pane_id) orelse continue;
+                    if (!entry.tags.contains(tag)) continue;
+                }
+                const pane_value = try self.snapshotPane(pane_id);
+                if (pane_value) |value| try array.append(value);
+            }
+        }
+        return .{ .array = array };
+    }
+
+    fn snapshotWorkspace(self: *App, workspace: *Workspace, index: usize) !std.json.Value {
+        var object = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = object });
+        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(workspace.id) });
+        try object.put(try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
+        try object.put(try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
+        if (workspace.activeTab()) |tab| {
+            if (tab.activePane()) |pane| {
+                try object.put(try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+            } else {
+                try object.put(try self.allocator.dupe(u8, "domain"), .null);
+            }
+        } else {
+            try object.put(try self.allocator.dupe(u8, "domain"), .null);
+        }
+        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeWorkspace()) |active| active == workspace else false });
+        return .{ .object = object };
+    }
+
+    fn snapshotWorkspaceValue(self: *App, workspace_id: ?usize) !?std.json.Value {
+        const id = workspace_id orelse return self.currentWorkspaceValue();
+        if (self.mux) |*mux| {
+            for (mux.workspaces.items, 0..) |workspace, index| {
+                if (workspace.id == id) return try self.snapshotWorkspace(workspace, index);
+            }
+        }
+        return null;
+    }
+
+    fn currentWorkspaceValue(self: *App) !?std.json.Value {
+        if (self.mux) |*mux| {
+            const workspace = mux.activeWorkspace() orelse return null;
+            return try self.snapshotWorkspace(workspace, mux.activeWorkspaceIndex());
+        }
+        return null;
+    }
+
+    fn workspacesValue(self: *App) !std.json.Value {
+        var array = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = array });
+        if (self.mux) |*mux| {
+            for (mux.workspaces.items, 0..) |workspace, index| {
+                try array.append(try self.snapshotWorkspace(workspace, index));
+            }
+        }
+        return .{ .array = array };
     }
 
     pub fn init(allocator: std.mem.Allocator) App {
@@ -858,9 +1973,9 @@ pub const App = struct {
         htp_bridge = null;
         wake_bridge = null;
 
-        if (self.htp_fs) |*server| {
+        if (self.command_ipc_server) |*server| {
             server.deinit();
-            self.htp_fs = null;
+            self.command_ipc_server = null;
         }
 
         for (self.htp_pending_messages.items) |message| {
@@ -872,6 +1987,8 @@ pub const App = struct {
             assembly.buffer.deinit(self.allocator);
         }
         self.htp_chunk_assemblies.deinit(self.allocator);
+        for (self.pane_tags.items) |*entry| entry.deinit(self.allocator);
+        self.pane_tags.deinit(self.allocator);
 
         if (self.renderer) |*renderer| {
             renderer.deinit();
@@ -941,6 +2058,8 @@ pub const App = struct {
         self.override_config_path = config_paths.override;
 
         self.tryInitLua();
+        std.log.info("config: command_timing={}", .{self.config.command_timing});
+        self.syncCommandTimingEnv();
 
         var runtime = try GhosttyRuntime.init(self.allocator, null);
         errdefer runtime.deinit();
@@ -959,7 +2078,7 @@ pub const App = struct {
         title_bridge = self;
         htp_bridge = self;
         wake_bridge = self;
-        self.startHtpTransport();
+        self.startCommandTransport();
         const cbs = terminalCallbacks();
         try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
@@ -1623,6 +2742,7 @@ pub const App = struct {
         if (self.renderer) |*renderer| {
             if (self.ghostty) |*runtime| {
                 if (self.activePane()) |pane| {
+                    if (!paneRenderHelpersReady(pane)) return null;
                     return renderer.fillSnapshot(runtime, pane.render_state, &pane.row_iterator, &pane.row_cells, self.config, pane.title);
                 }
             }
@@ -2099,6 +3219,7 @@ pub const App = struct {
 
     fn rowTextForHyperlinks(self: *App, pane: *Pane, row: usize, out: []u8) ?[]const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return null;
+        if (!paneRenderHelpersReady(pane)) return null;
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
 
         var row_index: usize = 0;
@@ -2145,6 +3266,7 @@ pub const App = struct {
 
     fn hyperlinkTokenAt(self: *App, pane: *Pane, point: selection.CellPoint, out: []u8) ?HyperlinkToken {
         const runtime = if (self.ghostty) |*rt| rt else return null;
+        if (!paneRenderHelpersReady(pane)) return null;
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
         var row_index: usize = 0;
         while (runtime.nextRow(pane.row_iterator)) : (row_index += 1) {
@@ -2360,10 +3482,14 @@ pub const App = struct {
         return pane.foreground_process orelse "";
     }
 
+    fn paneRenderHelpersReady(pane: *const Pane) bool {
+        return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
+    }
+
     pub fn getPaneText(self: *App, pane_id: usize, out: []u8) []const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return "";
         const pane = self.findPaneById(pane_id) orelse return "";
-        if (pane.render_state == null or pane.rows == 0) return "";
+        if (!paneRenderHelpersReady(pane) or pane.rows == 0) return "";
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
 
         var writer = std.io.fixedBufferStream(out);
@@ -2868,6 +3994,8 @@ pub const App = struct {
 
         self.tryInitLua();
         if (self.lua == null) return false;
+        std.log.info("config: command_timing={}", .{self.config.command_timing});
+        self.syncCommandTimingEnv();
 
         if (self.config.window_width == 1280 and old_window_width != 0) self.config.window_width = old_window_width;
         if (self.config.window_height == 800 and old_window_height != 0) self.config.window_height = old_window_height;
@@ -4463,6 +5591,8 @@ fn luaReloadConfigCallback(app_ptr: *anyopaque) bool {
 
 fn luaRefreshLiveConfigCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
+    std.log.info("config: command_timing={}", .{app.config.command_timing});
+    app.syncCommandTimingEnv();
     app.pending_renderer_refresh = app.config.backend == .sokol or app.config.backend == .webgpu;
     app.invalidateAllPanes();
     app.requestLayoutResize(true);

@@ -1780,6 +1780,10 @@ pub const FtRenderer = struct {
         inline fn useRowMap(self: @This()) bool {
             return self.row_map_keys != null and self.row_map_vals != null;
         }
+
+        inline fn helpersReady(self: @This()) bool {
+            return self.render_state != null and self.row_iterator.* != null and self.row_cells.* != null;
+        }
     };
 
     const RowRenderInfo = struct {
@@ -1862,6 +1866,7 @@ pub const FtRenderer = struct {
         hash_skip_bits: *HashSkipBits,
         run_buf: []u8,
     ) void {
+        if (!queue.helpersReady()) return;
         if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return;
 
         var row_y: usize = 0;
@@ -1894,6 +1899,7 @@ pub const FtRenderer = struct {
         quads_open: *bool,
         run_buf: []u8,
     ) void {
+        if (!queue.helpersReady()) return;
         if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return;
 
         if (!queue.force_full) {
@@ -2039,6 +2045,7 @@ pub const FtRenderer = struct {
         run_buf: []u8,
     ) Pass2Stats {
         var stats = Pass2Stats{};
+        if (!queue.helpersReady()) return stats;
         if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return stats;
 
         var row_y: usize = 0;
@@ -2205,6 +2212,7 @@ pub const FtRenderer = struct {
         queue: *const QueueContext,
         row: RowRenderInfo,
     ) void {
+        if (!queue.helpersReady()) return;
         if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return;
 
         var dec_col_x: usize = 0;

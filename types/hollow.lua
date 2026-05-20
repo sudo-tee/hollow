@@ -255,6 +255,7 @@
 ---@field backend? string
 ---@field vsync? boolean
 ---@field max_fps? integer
+---@field command_timing? boolean
 ---@field padding? integer
 ---@field theme? string|HollowThemeSpec
 ---@field fonts? HollowFontsConfig

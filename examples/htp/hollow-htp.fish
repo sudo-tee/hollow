@@ -52,11 +52,7 @@ function hollow_htp_emit_cwd
 end
 
 function hollow_htp_transport
-    if test -n "$HOLLOW_REQUEST_DIR"; and test "$HOLLOW_TRANSPORT" != "osc"
-        printf 'ipc\n'
-    else
-        printf 'osc\n'
-    end
+    printf 'osc\n'
 end
 
 function hollow_htp_read_frame

@@ -867,7 +867,20 @@ pub const Mux = struct {
     }
 
     pub fn tabById(self: *Mux, id: usize) ?*Tab {
-        if (self.activeWorkspace()) |ws| return ws.tabById(id);
+        for (self.workspaces.items) |ws| {
+            if (ws.tabById(id)) |tab| return tab;
+        }
+        return null;
+    }
+
+    fn tabContainingPane(self: *Mux, needle: *Pane) ?*Tab {
+        for (self.workspaces.items) |ws| {
+            for (ws.tabs.items) |tab| {
+                for (tab.panes.items) |pane| {
+                    if (pane == needle) return tab;
+                }
+            }
+        }
         return null;
     }
 
@@ -930,7 +943,7 @@ pub const Mux = struct {
     }
 
     pub fn paneIsMaximized(self: *Mux, pane: *Pane) bool {
-        const tab = self.activeTab() orelse return false;
+        const tab = self.tabContainingPane(pane) orelse return false;
         return tab.isPaneMaximized(pane);
     }
 

@@ -57,6 +57,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const launcher_root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const launcher_build_options = b.addOptions();
+    launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+    launcher_build_options.addOption(bool, "launcher_mode", true);
+    launcher_root_module.addImport("fonts", fonts_module);
+    launcher_root_module.addImport("icon_data", icon_module);
+    launcher_root_module.addOptions("build_options", launcher_build_options);
+    launcher_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -65,6 +79,7 @@ pub fn build(b: *std.Build) void {
     });
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+    build_options.addOption(bool, "launcher_mode", false);
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
     root_module.addOptions("build_options", build_options);
@@ -96,42 +111,128 @@ pub fn build(b: *std.Build) void {
     ft_translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("ft_c", ft_translate.createModule());
 
-    const exe = b.addExecutable(.{
-        .name = "hollow-native",
-        .root_module = root_module,
-    });
+    var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
-        exe.subsystem = .Windows;
+        const gui_root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        const gui_build_options = b.addOptions();
+        gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+        gui_build_options.addOption(bool, "launcher_mode", false);
+        gui_root_module.addImport("fonts", fonts_module);
+        gui_root_module.addImport("icon_data", icon_module);
+        gui_root_module.addOptions("build_options", gui_build_options);
+        gui_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+        gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+        gui_root_module.addImport("sokol_c", translate.createModule());
+        gui_root_module.addImport("ft_c", ft_translate.createModule());
+
+        const gui_exe = b.addExecutable(.{
+            .name = "hollow-native",
+            .root_module = gui_root_module,
+        });
+        gui_exe.subsystem = .Windows;
+        gui_exe.linkLibC();
+        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
+        gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+        gui_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
+        gui_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/sokol_app.c"),
+            .flags = &.{
+                "-Ithird_party/sokol",
+                "-Ithird_party/sokol/util",
+                "-Ithird_party/stb",
+                "-Ithird_party/fontstash",
+            },
+        });
+        gui_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        gui_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/png_decode.c"),
+            .flags = &.{
+                "-Ithird_party/stb",
+                "-DGHOSTTY_STATIC",
+            },
+        });
+        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
+            gui_exe.root_module.linkSystemLibrary(lib_name, .{});
+        }
+        const install_gui_exe = b.addInstallArtifact(gui_exe, .{});
+        b.getInstallStep().dependOn(&install_gui_exe.step);
+
+        const launcher_exe = b.addExecutable(.{
+            .name = "hollow",
+            .root_module = launcher_root_module,
+        });
+        launcher_exe.linkLibC();
+        launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
+        launcher_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
+        launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
+        const install_launcher_exe = b.addInstallArtifact(launcher_exe, .{});
+        b.getInstallStep().dependOn(&install_launcher_exe.step);
+
+        const gui_launcher_exe = b.addExecutable(.{
+            .name = "hollow-gui",
+            .root_module = launcher_root_module,
+        });
+        gui_launcher_exe.subsystem = .Windows;
+        gui_launcher_exe.linkLibC();
+        gui_launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
+        gui_launcher_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        gui_launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
+        gui_launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
+        const install_gui_launcher_exe = b.addInstallArtifact(gui_launcher_exe, .{});
+        b.getInstallStep().dependOn(&install_gui_launcher_exe.step);
+
+        run_artifact = gui_exe;
+    } else {
+        const exe = b.addExecutable(.{
+            .name = "hollow",
+            .root_module = if (target.result.os.tag == .windows) launcher_root_module else root_module,
+        });
+        exe.linkLibC();
+        exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
+        exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+        exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/sokol_app.c"),
+            .flags = &.{
+                "-Ithird_party/sokol",
+                "-Ithird_party/sokol/util",
+                "-Ithird_party/stb",
+                "-Ithird_party/fontstash",
+            },
+        });
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/dwrite_resolver.c"),
+            .flags = &.{},
+        });
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/render/png_decode.c"),
+            .flags = &.{
+                "-Ithird_party/stb",
+                "-DGHOSTTY_STATIC",
+            },
+        });
+        for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
+            exe.root_module.linkSystemLibrary(lib_name, .{});
+        }
+        const install_exe = b.addInstallArtifact(exe, .{});
+        b.getInstallStep().dependOn(&install_exe.step);
+        run_artifact = exe;
     }
-    exe.linkLibC();
-    exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
-    exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
-    exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/render/sokol_app.c"),
-        .flags = &.{
-            "-Ithird_party/sokol",
-            "-Ithird_party/sokol/util",
-            "-Ithird_party/stb",
-            "-Ithird_party/fontstash",
-        },
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/render/dwrite_resolver.c"),
-        .flags = &.{},
-    });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/render/png_decode.c"),
-        .flags = &.{
-            "-Ithird_party/stb",
-            "-DGHOSTTY_STATIC",
-        },
-    });
-    for (platformSystemLibraries(target.result.os.tag)) |lib_name| {
-        exe.root_module.linkSystemLibrary(lib_name, .{});
-    }
-    const install_exe = b.addInstallArtifact(exe, .{});
-    b.getInstallStep().dependOn(&install_exe.step);
 
     const install_hollow_cli = b.addInstallFile(b.path("scripts/hollow-cli"), "bin/hollow-cli");
     b.getInstallStep().dependOn(&install_hollow_cli.step);
@@ -156,7 +257,7 @@ pub fn build(b: *std.Build) void {
     const install_wsl_bypass_step = b.step("install-wsl-bypass", "Install the WSL PTY bypass helper into /usr/local/bin");
     install_wsl_bypass_step.dependOn(&install_wsl_bypass_cmd.step);
 
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(run_artifact);
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }

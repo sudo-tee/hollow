@@ -10,7 +10,9 @@ const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
 const WAIT_OBJECT_0: windows.DWORD = 0;
 const STARTF_USESTDHANDLES: windows.DWORD = 0x00000100;
-const CREATE_NO_WINDOW: windows.DWORD = 0x08000000;
+const STARTF_USESHOWWINDOW: windows.DWORD = 0x00000001;
+const CREATE_NEW_CONSOLE: windows.DWORD = 0x00000010;
+const SW_HIDE: windows.WORD = 0;
 const WSL_BYPASS_STARTUP_TIMEOUT_MS: u64 = 1200;
 
 const HPCON = *opaque {};
@@ -446,7 +448,8 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
 
     var si = std.mem.zeroes(STARTUPINFOEXW);
     si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
-    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.StartupInfo.wShowWindow = SW_HIDE;
     si.StartupInfo.hStdInput = child_stdin_read;
     si.StartupInfo.hStdOutput = child_stdout_write;
     si.StartupInfo.hStdError = child_stderr_write;
@@ -467,7 +470,7 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
         null,
         null,
         windows.TRUE,
-        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+        CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
         if (env_block_utf16) |block| @as(?*anyopaque, @ptrCast(block.ptr)) else null,
         null,
         &si.StartupInfo,

@@ -75,7 +75,7 @@ Windows releases also bundle the optional `hollow-wsl-bypass` helper for WSL.
 If you install that helper inside your WSL distro, Hollow uses it for `wsl.exe`
 domains and falls back to ConPTY automatically when the helper is not installed.
 
-Windows builds also emit `hollow-native.pdb` for crash symbolization.
+Windows builds emit `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` for crash symbolization.
 
 ### Customize the config
 

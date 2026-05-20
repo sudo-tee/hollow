@@ -52,17 +52,12 @@ hollow_htp_emit_cwd() {
 
 hollow_htp_transport() {
   emulate -L zsh
-  if [[ -n "${HOLLOW_REQUEST_DIR:-}" && "${HOLLOW_TRANSPORT:-auto}" != "osc" ]]; then
-    print -r -- "ipc"
-  else
-    print -r -- "osc"
-  fi
+  print -r -- "osc"
 }
 
 hollow_htp_debug_env() {
   emulate -L zsh
   print -r -- "HOLLOW_TRANSPORT=${HOLLOW_TRANSPORT:-}"
-  print -r -- "HOLLOW_REQUEST_DIR=${HOLLOW_REQUEST_DIR:-}"
   print -r -- "HOLLOW_PANE_ID=${HOLLOW_PANE_ID:-}"
 }
 

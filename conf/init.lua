@@ -17,6 +17,7 @@ end
 hollow.config.set({
   max_fps = 120,
   idle_max_fps = 15,
+  command_timing = false,
   debug_overlay = false,
   renderer_single_pane_direct = false,
   vsync = false,
@@ -115,9 +116,10 @@ hollow.ui.topbar.configure({
       local foreground_process = tab.pane and tab.pane.foreground_process
       local title = tab.title and tab.title ~= "" and tab.title or nil
       local tab_title = title
-        or foreground_process ~= "" and foreground_process
+        or (foreground_process ~= "" and foreground_process or nil)
         or tab_cwd
-        or (tab.pane and tab.pane.title ~= "" and tab.pane.title)
+        or (tab.pane and tab.pane.title ~= "" and tab.pane.title or nil)
+        or ""
       local ui = hollow.theme.current().ui
 
       local close_style = {
