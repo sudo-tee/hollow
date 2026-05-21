@@ -132,7 +132,7 @@
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field notify_levels? { info?: HollowColor, warn?: HollowColor, error?: HollowColor, success?: HollowColor }
 ---@alias HollowNotifyLevel "info"|"warn"|"error"|"success"
----@alias HollowKeyMode "normal"
+---@alias HollowKeyMode "normal"|"copy_mode"|(string & {})
 
 ---@alias HollowKeyChord string
 ---@alias HollowKeyMods string
@@ -154,6 +154,8 @@
 ---| "window:resized"
 ---| "window:focused"
 ---| "window:blurred"
+---| "copy_mode:changed"
+---| "copy_mode:search_requested"
 ---| string
 
 ---@alias HollowHtpValue nil|boolean|number|string|table
@@ -781,6 +783,11 @@
 ---@field action any
 ---@field desc string|nil
 
+---@class HollowKeymapModeState
+---@field bindings HollowKeymapBindingStore
+---@field sequence_bindings HollowKeymapSequenceNode
+---@field leader_bindings HollowKeymapSequenceNode
+
 ---@alias HollowKeymapBindingStore table<string, table<integer, HollowKeymapBinding>>
 ---@alias HollowKeymapSequenceChildren table<string, table<integer, HollowKeymapSequenceNode>>
 
@@ -794,15 +801,14 @@
 ---@field mods integer
 
 ---@class HollowKeymapState
----@field bindings HollowKeymapBindingStore
----@field sequence_bindings HollowKeymapSequenceNode
+---@field modes table<HollowKeyMode, HollowKeymapModeState>
 ---@field leader HollowKeymapLeader|nil
----@field leader_bindings HollowKeymapSequenceNode
 ---@field sequence_timeout_ms integer
 ---@field sequence_pending_until integer|nil
 ---@field sequence_active_node HollowKeymapSequenceNode|nil
 ---@field sequence_steps string[]
 ---@field sequence_prefix string|nil
+---@field active_mode HollowKeyMode
 
 ---@class HollowUiState
 ---@field mounted_topbar HollowUiWidget|nil
@@ -815,12 +821,24 @@
 ---@field overlay_stack HollowUiWidget[]
 ---@field notifications HollowUiWidget[]
 
+---@class HollowCopyModeState
+---@field active boolean
+---@field query string
+---@field hud HollowUiWidget|nil
+---@field selecting boolean
+---@field block boolean
+---@field pending_g boolean
+---@field match_count integer
+---@field match_index integer|nil
+---@field prompt_depth integer|nil
+
 ---@class HollowState
 ---@field host_api HollowHostBridge
 ---@field config HollowConfigState
 ---@field events HollowEventState
 ---@field keymap HollowKeymapState
 ---@field ui HollowUiState
+---@field copy_mode HollowCopyModeState|nil
 
 ---@class HtpQueryContext
 ---@field pane HollowPane
@@ -1119,6 +1137,7 @@ function events.emit(name, payload) end
 ---@class HollowKeymapOpts
 ---@field desc? string
 ---@field timeout_ms? integer
+---@field mode? HollowKeyMode
 
 ---@class HollowKeymapValue
 ---@field action HollowKeyAction
@@ -1126,6 +1145,7 @@ function events.emit(name, payload) end
 
 ---@class HollowLeaderState
 ---@field active boolean
+---@field mode HollowKeyMode
 ---@field prefix string
 ---@field sequence string[]
 ---@field display string
@@ -1145,12 +1165,14 @@ local keymap = {}
 function keymap.set(chord, rhs, opts) end
 
 ---@param chord HollowKeyChord
+---@param opts? HollowKeymapOpts
 ---@return boolean
-function keymap.del(chord) end
+function keymap.del(chord, opts) end
 
 ---@param chord HollowKeyChord
+---@param opts? HollowKeymapOpts
 ---@return HollowKeyAction|nil
-function keymap.get(chord) end
+function keymap.get(chord, opts) end
 
 ---@param chord? HollowKeyChord
 ---@param opts? HollowKeymapOpts
@@ -1558,6 +1580,16 @@ function process.run_child_process(args, opts) end
 ---@field scroll_active_page fun(pages: integer)
 ---@field scroll_active_top fun()
 ---@field scroll_active_bottom fun()
+---@field copy_mode_enter fun()
+---@field copy_mode_exit fun()
+---@field copy_mode_move fun(direction: "left"|"right"|"up"|"down"|"page_up"|"page_down"|"line_start"|"line_end"|"top"|"bottom", extend?: boolean)
+---@field copy_mode_begin_selection fun(block?: boolean)
+---@field copy_mode_clear_selection fun()
+---@field copy_mode_copy fun()
+---@field copy_mode_open_search fun()
+---@field copy_mode_search_set_query fun(query: string)
+---@field copy_mode_search_next fun()
+---@field copy_mode_search_prev fun()
 ---@field platform HollowPlatformInfo
 
 ---@class HollowUiModuleExports

@@ -2530,6 +2530,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     rend: *FtRenderer,
                     rt: *ghostty.Runtime,
                     cfg: *const Config,
+                    app_ctx: *const App,
                     selection_range: ?selection.Range,
                     hovered_hyperlink: ?App.HoveredHyperlink,
                     pane: *Pane,
@@ -2682,6 +2683,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         &cache_entry.cache,
                         rt,
                         cfg,
+                        app_ctx,
+                        pane,
                         pane.terminal,
                         pane.render_state,
                         &pane.row_iterator,
@@ -2765,7 +2768,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -2796,7 +2799,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, &app.config, app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(pane) orelse app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -2822,6 +2825,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
+                            app,
+                            leaf.pane,
                             leaf.pane.terminal,
                             leaf.pane.render_state,
                             &leaf.pane.row_iterator,
@@ -2837,7 +2842,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            app.selectionRange(leaf.pane),
+                            app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -2857,6 +2862,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
+                            app,
+                            pane,
                             pane.terminal,
                             pane.render_state,
                             &pane.row_iterator,
@@ -2872,7 +2879,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            app.selectionRange(pane),
+                            app.copyModeSelectionRange(pane) orelse app.selectionRange(pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -2965,6 +2972,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.drawDirect(
                             runtime,
                             &app.config,
+                            app,
+                            pane,
                             pane.terminal,
                             pane.render_state,
                             &pane.row_iterator,
@@ -2977,7 +2986,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             height,
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
-                            app.selectionRange(pane),
+                            app.copyModeSelectionRange(pane) orelse app.selectionRange(pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3695,6 +3704,25 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
 
+    if (app.copyModeActive() and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
+        _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
+        g_swallow_char_pending = 4;
+        g_swallow_char_until_frame = event.frame_count + 1;
+        c.sapp_consume_event();
+        return;
+    }
+
+    // Let Lua/modal handlers consume keys before built-in shortcuts like paste.
+    if (key != .unidentified) {
+        const key_name = @tagName(key);
+        if (app.fireOnKey(key_name, mods)) {
+            g_swallow_char_pending = 4;
+            g_swallow_char_until_frame = event.frame_count + 1;
+            c.sapp_consume_event();
+            return;
+        }
+    }
+
     if (shouldPasteOnKeyDown(event.key_code, mods)) {
         _ = app.enqueueMouse(.paste_clipboard);
         return;
@@ -3709,14 +3737,6 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     // fireOnKey calls LuaJIT (not the ghostty DLL) so it is safe on the
     // event thread.  If Lua consumes the key we stop here — no DLL call needed.
     if (key != .unidentified) {
-        const key_name = @tagName(key);
-        if (app.fireOnKey(key_name, mods)) {
-            g_swallow_char_pending = 4;
-            g_swallow_char_until_frame = event.frame_count + 1;
-            c.sapp_consume_event();
-            return;
-        }
-
         if (handleScrollbackKey(app, key, mods)) {
             g_swallow_char_pending = 4;
             g_swallow_char_until_frame = event.frame_count + 1;
@@ -3748,6 +3768,23 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
+    const mods = ghosttyMods(event.modifiers);
+    if (app.copyModeActive() and (mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] == 0x16) {
+        _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
+        c.sapp_consume_event();
+        return;
+    }
+    if ((mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] >= 0x01 and utf8[0] <= 0x1A) {
+        var ctrl_key: [1]u8 = .{('a' + (utf8[0] - 1))};
+        if (app.fireOnKey(ctrl_key[0..], mods)) {
+            c.sapp_consume_event();
+            return;
+        }
+    }
+    if (app.fireOnKey(utf8, mods)) {
+        c.sapp_consume_event();
+        return;
+    }
     // Defer sendText to the frame thread — avoids racing with DLL calls in tick().
     _ = app.enqueueChar(utf8);
 }

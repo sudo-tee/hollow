@@ -32,6 +32,13 @@ local function bor(a, b)
   return a + b
 end
 
+local function add_mod(mods, flag)
+  if mods % (flag * 2) >= flag then
+    return mods
+  end
+  return mods + flag
+end
+
 local time_now_ms = function()
   return util.host_now_ms(nil)
 end
@@ -72,6 +79,108 @@ local function normalize_key_name(key)
     return "backslash"
   end
   return lower
+end
+
+local SHIFTED_CHAR_KEYS = {
+  ["~"] = { key = "backquote", mods = MODS_SHIFT },
+  ["!"] = { key = "digit_1", mods = MODS_SHIFT },
+  ["@"] = { key = "digit_2", mods = MODS_SHIFT },
+  ["#"] = { key = "digit_3", mods = MODS_SHIFT },
+  ["$"] = { key = "digit_4", mods = MODS_SHIFT },
+  ["%"] = { key = "digit_5", mods = MODS_SHIFT },
+  ["^"] = { key = "digit_6", mods = MODS_SHIFT },
+  ["&"] = { key = "digit_7", mods = MODS_SHIFT },
+  ["*"] = { key = "digit_8", mods = MODS_SHIFT },
+  ["("] = { key = "digit_9", mods = MODS_SHIFT },
+  [")"] = { key = "digit_0", mods = MODS_SHIFT },
+  ["_"] = { key = "minus", mods = MODS_SHIFT },
+  ["+"] = { key = "equal", mods = MODS_SHIFT },
+  ["{"] = { key = "bracket_left", mods = MODS_SHIFT },
+  ["}"] = { key = "bracket_right", mods = MODS_SHIFT },
+  ["|"] = { key = "backslash", mods = MODS_SHIFT },
+  [":"] = { key = "semicolon", mods = MODS_SHIFT },
+  ['"'] = { key = "quote", mods = MODS_SHIFT },
+  ["<"] = { key = "comma", mods = MODS_SHIFT },
+  [">"] = { key = "period", mods = MODS_SHIFT },
+  ["?"] = { key = "slash", mods = MODS_SHIFT },
+}
+
+local PLAIN_CHAR_KEYS = {
+  ["`"] = { key = "backquote", mods = 0 },
+  ["1"] = { key = "digit_1", mods = 0 },
+  ["2"] = { key = "digit_2", mods = 0 },
+  ["3"] = { key = "digit_3", mods = 0 },
+  ["4"] = { key = "digit_4", mods = 0 },
+  ["5"] = { key = "digit_5", mods = 0 },
+  ["6"] = { key = "digit_6", mods = 0 },
+  ["7"] = { key = "digit_7", mods = 0 },
+  ["8"] = { key = "digit_8", mods = 0 },
+  ["9"] = { key = "digit_9", mods = 0 },
+  ["0"] = { key = "digit_0", mods = 0 },
+  ["-"] = { key = "minus", mods = 0 },
+  ["="] = { key = "equal", mods = 0 },
+  ["["] = { key = "bracket_left", mods = 0 },
+  ["]"] = { key = "bracket_right", mods = 0 },
+  [";"] = { key = "semicolon", mods = 0 },
+  ["'"] = { key = "quote", mods = 0 },
+  [","] = { key = "comma", mods = 0 },
+  ["."] = { key = "period", mods = 0 },
+  ["/"] = { key = "slash", mods = 0 },
+}
+
+local function canonicalize_plain_char(ch)
+  if type(ch) ~= "string" or #ch ~= 1 then
+    return nil
+  end
+
+  local shifted = SHIFTED_CHAR_KEYS[ch]
+  if shifted ~= nil then
+    return shifted.key, shifted.mods
+  end
+
+  local plain = PLAIN_CHAR_KEYS[ch]
+  if plain ~= nil then
+    return plain.key, plain.mods
+  end
+
+  if ch:match("^%u$") then
+    return ch:lower(), MODS_SHIFT
+  end
+
+  if ch:match("^%l$") then
+    return ch, 0
+  end
+
+  return nil
+end
+
+local function canonicalize_runtime_key(key, mods)
+  local canonical_key = key
+  local canonical_mods = mods
+
+  if type(key) == "string" and #key == 1 then
+    local mapped_key, mapped_mods = canonicalize_plain_char(key)
+    if mapped_key ~= nil then
+      canonical_key = mapped_key
+      local extra_mods = mapped_mods or 0
+      if extra_mods % (MODS_SHIFT * 2) >= MODS_SHIFT then
+        canonical_mods = add_mod(canonical_mods, MODS_SHIFT)
+      end
+      if extra_mods % (MODS_CTRL * 2) >= MODS_CTRL then
+        canonical_mods = add_mod(canonical_mods, MODS_CTRL)
+      end
+      if extra_mods % (MODS_ALT * 2) >= MODS_ALT then
+        canonical_mods = add_mod(canonical_mods, MODS_ALT)
+      end
+      if extra_mods % (MODS_SUPER * 2) >= MODS_SUPER then
+        canonical_mods = add_mod(canonical_mods, MODS_SUPER)
+      end
+    end
+  else
+    canonical_key = normalize_key_name(key)
+  end
+
+  return canonical_key, canonical_mods
 end
 
 local function split_leader_chord(chord)
@@ -150,6 +259,11 @@ local function parse_chord(chord)
     error("plain key chords must be a single character; use Vim-style tokens like <Tab> for special keys")
   end
 
+  local key, mods = canonicalize_plain_char(chord)
+  if key ~= nil then
+    return key, mods
+  end
+
   return normalize_key_name(chord), 0
 end
 
@@ -208,6 +322,45 @@ local function normalize_binding(action_or_opts, maybe_opts)
   return binding
 end
 
+local function normalize_mode(mode)
+  if mode == nil then
+    return "normal"
+  end
+  if type(mode) ~= "string" or mode == "" then
+    error("keymap mode must be a non-empty string")
+  end
+  return mode
+end
+
+local function get_mode_state(keymap_state, mode, create)
+  local name = normalize_mode(mode)
+  local state = keymap_state.modes[name]
+  if state == nil and create == true then
+    state = {
+      bindings = {},
+      sequence_bindings = {
+        action = nil,
+        desc = nil,
+        children = {},
+      },
+      leader_bindings = {
+        action = nil,
+        desc = nil,
+        children = {},
+      },
+    }
+    keymap_state.modes[name] = state
+  end
+  return state, name
+end
+
+local function mode_for_lookup(opts)
+  if type(opts) ~= "table" then
+    return "normal"
+  end
+  return normalize_mode(opts.mode)
+end
+
 local function set_binding(store, chord, action, opts)
   local key, mods = parse_chord(chord)
   store[key] = store[key] or {}
@@ -235,6 +388,23 @@ local function get_binding(store, key, mods)
     return nil
   end
   return key_bindings[mods]
+end
+
+local function has_shift(mods)
+  return type(mods) == "number" and mods % (MODS_SHIFT * 2) >= MODS_SHIFT
+end
+
+local function get_runtime_binding(store, key, mods)
+  local binding = get_binding(store, key, mods)
+  if binding ~= nil then
+    return binding
+  end
+
+  if type(key) == "string" and #key == 1 and has_shift(mods) and not key:match("^%a$") then
+    return get_binding(store, key, mods - MODS_SHIFT)
+  end
+
+  return nil
 end
 
 local function has_mod(mods, flag)
@@ -366,12 +536,24 @@ local function get_sequence_child(node, key, mods)
     return nil
   end
 
-  local key_bindings = node.children[key]
-  if not key_bindings then
-    return nil
+  local function lookup(candidate_key, candidate_mods)
+    local key_bindings = node.children[candidate_key]
+    if not key_bindings then
+      return nil
+    end
+    return key_bindings[candidate_mods]
   end
 
-  return key_bindings[mods]
+  local child = lookup(key, mods)
+  if child ~= nil then
+    return child
+  end
+
+  if type(key) == "string" and #key == 1 and has_shift(mods) and not key:match("^%a$") then
+    return lookup(key, mods - MODS_SHIFT)
+  end
+
+  return nil
 end
 
 local function reset_sequence_state(keymap_state)
@@ -577,48 +759,57 @@ function M.setup(hollow, host_api, state)
   hollow.keymap.parse_chord = parse_chord
 
   function hollow.keymap.set(chord, action, opts)
+    local mode_state = get_mode_state(keymap_state, type(opts) == "table" and opts.mode or nil, true)
     local use_leader, resolved, style = split_leader_chord(chord)
     if use_leader then
-      set_leader_binding(keymap_state, resolved, style, action, opts)
+      set_leader_binding(mode_state, resolved, style, action, opts)
     else
       local steps = parse_vim_sequence(resolved)
       if steps ~= nil and #steps > 1 then
-        set_sequence_binding(keymap_state.sequence_bindings, steps, action, opts)
+        set_sequence_binding(mode_state.sequence_bindings, steps, action, opts)
       else
-        set_binding(keymap_state.bindings, resolved, action, opts)
+        set_binding(mode_state.bindings, resolved, action, opts)
       end
     end
   end
 
-  function hollow.keymap.del(chord)
+  function hollow.keymap.del(chord, opts)
+    local mode_state = get_mode_state(keymap_state, mode_for_lookup(opts), false)
+    if mode_state == nil then
+      return false
+    end
     local use_leader, resolved, style = split_leader_chord(chord)
     if use_leader then
-      return del_leader_binding(keymap_state, resolved, style)
+      return del_leader_binding(mode_state, resolved, style)
     end
     local steps = parse_vim_sequence(resolved)
     if steps ~= nil and #steps > 1 then
-      return del_sequence_binding(keymap_state.sequence_bindings, steps)
+      return del_sequence_binding(mode_state.sequence_bindings, steps)
     end
-    return del_binding(keymap_state.bindings, resolved)
+    return del_binding(mode_state.bindings, resolved)
   end
 
-  function hollow.keymap.get(chord)
+  function hollow.keymap.get(chord, opts)
+    local mode_state = get_mode_state(keymap_state, mode_for_lookup(opts), false)
+    if mode_state == nil then
+      return nil
+    end
     local use_leader, resolved = split_leader_chord(chord)
     if use_leader then
       local steps = parse_vim_sequence(resolved)
       if steps == nil then
         return nil
       end
-      local binding = get_sequence_binding(keymap_state.leader_bindings, steps)
+      local binding = get_sequence_binding(mode_state.leader_bindings, steps)
       return binding and binding.action or nil
     end
     local steps = parse_vim_sequence(resolved)
     if steps ~= nil and #steps > 1 then
-      local binding = get_sequence_binding(keymap_state.sequence_bindings, steps)
+      local binding = get_sequence_binding(mode_state.sequence_bindings, steps)
       return binding and binding.action or nil
     end
     local key, mods = parse_chord(resolved)
-    local binding = get_binding(keymap_state.bindings, key, mods)
+    local binding = get_binding(mode_state.bindings, key, mods)
     return binding and binding.action or nil
   end
 
@@ -666,6 +857,7 @@ function M.setup(hollow, host_api, state)
     end
     return {
       active = true,
+      mode = keymap_state.active_mode,
       prefix = prefix,
       sequence = steps,
       display = display,
@@ -679,9 +871,24 @@ function M.setup(hollow, host_api, state)
   end
 
   host_api.on_key(function(key, mods)
+    key, mods = canonicalize_runtime_key(key, mods)
+
     if hollow.ui.dispatch_overlay_key(key, mods) then
       return true
     end
+
+    local next_mode = type(hollow.copy_mode) == "table"
+        and type(hollow.copy_mode.is_active) == "function"
+        and hollow.copy_mode.is_active()
+        and "copy_mode"
+      or "normal"
+
+    if next_mode ~= keymap_state.active_mode then
+      reset_sequence_state(keymap_state)
+      keymap_state.active_mode = next_mode
+    end
+
+    local mode_state = get_mode_state(keymap_state, keymap_state.active_mode, true)
 
     if is_sequence_active(keymap_state) then
       local node = get_sequence_child(keymap_state.sequence_active_node, key, mods)
@@ -701,11 +908,14 @@ function M.setup(hollow, host_api, state)
     end
 
     if keymap_state.leader ~= nil and key == keymap_state.leader.key and mods == keymap_state.leader.mods then
-      set_sequence_state(keymap_state, keymap_state.leader_bindings, "<leader>", {})
+      if mode_state.leader_bindings.action == nil and not has_sequence_children(mode_state.leader_bindings) then
+        return keymap_state.active_mode ~= "normal"
+      end
+      set_sequence_state(keymap_state, mode_state.leader_bindings, "<leader>", {})
       return true
     end
 
-    local sequence_node = get_sequence_child(keymap_state.sequence_bindings, key, mods)
+    local sequence_node = get_sequence_child(mode_state.sequence_bindings, key, mods)
     if sequence_node ~= nil then
       if sequence_node.action ~= nil and not has_sequence_children(sequence_node) then
         return run_action(hollow, sequence_node)
@@ -714,9 +924,13 @@ function M.setup(hollow, host_api, state)
       return true
     end
 
-    local action = get_binding(keymap_state.bindings, key, mods)
+    local action = get_runtime_binding(mode_state.bindings, key, mods)
     if action ~= nil then
       return run_action(hollow, action)
+    end
+
+    if keymap_state.active_mode ~= "normal" then
+      return true
     end
 
     return false

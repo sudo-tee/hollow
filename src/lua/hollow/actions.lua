@@ -1,6 +1,30 @@
 local M = {}
 
+local function copy_mode_state()
+  local state = require("hollow.state").get()
+  state.copy_mode = state.copy_mode or {
+    active = false,
+    query = "",
+    hud = nil,
+    selecting = false,
+    pending_g = false,
+    match_count = 0,
+    match_index = nil,
+    block = false,
+  }
+  return state.copy_mode
+end
+
+local function copy_mode_move(direction)
+  return function()
+    local cs = copy_mode_state()
+    _G.host_api.copy_mode_move(direction, cs.selecting == true)
+  end
+end
+
 function M.setup(hollow, host_api)
+  local copy_mode = require("hollow.copy_mode")
+
   hollow.action = {
     split_vertical = function()
       host_api.split_pane({ direction = "vertical" })
@@ -112,6 +136,49 @@ function M.setup(hollow, host_api)
     end,
     scrollback_bottom = function()
       host_api.scroll_active_bottom()
+    end,
+    copy_mode = function()
+      copy_mode.enter()
+    end,
+    copy_mode_search = function()
+      if copy_mode.is_active() then
+        host_api.copy_mode_open_search()
+      else
+        copy_mode.enter()
+        host_api.copy_mode_open_search()
+      end
+    end,
+    copy_mode_exit = function()
+      host_api.copy_mode_exit()
+    end,
+    copy_mode_move_left = copy_mode_move("left"),
+    copy_mode_move_down = copy_mode_move("down"),
+    copy_mode_move_up = copy_mode_move("up"),
+    copy_mode_move_right = copy_mode_move("right"),
+    copy_mode_page_up = copy_mode_move("page_up"),
+    copy_mode_page_down = copy_mode_move("page_down"),
+    copy_mode_line_start = copy_mode_move("line_start"),
+    copy_mode_line_end = copy_mode_move("line_end"),
+    copy_mode_top = copy_mode_move("top"),
+    copy_mode_bottom = copy_mode_move("bottom"),
+    copy_mode_begin_selection = function()
+      host_api.copy_mode_begin_selection(false)
+    end,
+    copy_mode_begin_block_selection = function()
+      host_api.copy_mode_begin_selection(true)
+    end,
+    copy_mode_clear_selection = function()
+      host_api.copy_mode_clear_selection()
+    end,
+    copy_mode_copy_selection = function()
+      host_api.copy_mode_copy()
+      host_api.copy_mode_exit()
+    end,
+    copy_mode_search_next = function()
+      host_api.copy_mode_search_next()
+    end,
+    copy_mode_search_prev = function()
+      host_api.copy_mode_search_prev()
     end,
   }
 end

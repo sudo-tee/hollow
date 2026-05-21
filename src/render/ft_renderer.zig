@@ -18,8 +18,10 @@ const c = @import("sokol_c");
 const ft = @import("ft_c");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
+const SearchHighlight = @import("../app.zig").SearchHighlight;
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
+const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
 const fonts = @import("fonts");
 const glyph_shader = @import("shaders/glyph_shader.zig");
@@ -1300,6 +1302,7 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         cfg: *const Config,
+        app: *const App,
         terminal: ?*anyopaque,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
@@ -1307,7 +1310,7 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, cfg, terminal, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, std.math.maxInt(usize));
+        self.queueInViewport(runtime, cfg, app, null, terminal, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -1319,6 +1322,8 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         cfg: *const Config,
+        app: *const App,
+        pane: *const Pane,
         terminal: ?*anyopaque,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
@@ -1344,7 +1349,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, cfg, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, hovered_hyperlink, prev_cursor_row);
+        self.queueInViewport(runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, hovered_hyperlink, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -1370,6 +1375,8 @@ pub const FtRenderer = struct {
         cache: *PaneCache,
         runtime: *ghostty.Runtime,
         cfg: *const Config,
+        app: *const App,
+        pane: *const Pane,
         terminal: ?*anyopaque,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
@@ -1418,6 +1425,8 @@ pub const FtRenderer = struct {
         self.queueInViewport(
             runtime,
             cfg,
+            app,
+            pane,
             terminal,
             render_state,
             row_iterator,
@@ -1600,6 +1609,8 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         cfg: *const Config,
+        app: *const App,
+        pane: ?*const Pane,
         terminal: ?*anyopaque,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
@@ -1637,14 +1648,18 @@ pub const FtRenderer = struct {
             (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
         else
             mixColor(default_bg, default_fg, 0.35);
+        const search_bg = mixColor(default_bg, default_fg, 0.18);
+        const search_active_bg = mixColor(default_bg, default_fg, 0.42);
         const queue = QueueContext{
             .cfg = cfg,
+            .pane = pane,
             .render_state = render_state,
             .row_iterator = row_iterator,
             .row_cells = row_cells,
             .row_count = @intCast(runtime.renderStateRows(render_state) orelse 0),
             .col_count = @intCast(runtime.renderStateCols(render_state) orelse 0),
             .force_full = force_full,
+            .app = app,
             .selection_range = selection_range,
             .hovered_hyperlink = hovered_hyperlink,
             .prev_cursor_row = prev_cursor_row,
@@ -1661,6 +1676,8 @@ pub const FtRenderer = struct {
                     (cfg.terminal_theme.selection_fg orelse default_fg)
                 else
                     default_fg,
+                .search_bg = search_bg,
+                .search_active_bg = search_active_bg,
                 .palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.?.palette,
             },
         };
@@ -1707,7 +1724,7 @@ pub const FtRenderer = struct {
         pass2_decoration_ns = pass2_stats.decoration_ns;
 
         // ── Cursor overlay ─────────────────────────────────────────────────
-        if (is_focused and runtime.cursorVisible(render_state)) {
+        if (!queue.app.copyModeActiveForPane(queue.pane) and is_focused and runtime.cursorVisible(render_state)) {
             if (runtime.cursorPos(render_state)) |pos| {
                 const cx = self.padding_x + @as(f32, @floatFromInt(pos.x)) * self.cell_w;
                 const cursor_y_px = if (builtin.os.tag == .linux and queue.row_count > 0)
@@ -1756,11 +1773,15 @@ pub const FtRenderer = struct {
         default_fg: ghostty.ColorRgb,
         selection_bg: ghostty.ColorRgb,
         selection_fg: ghostty.ColorRgb,
+        search_bg: ghostty.ColorRgb,
+        search_active_bg: ghostty.ColorRgb,
         palette: *const [256]ghostty.ColorRgb,
     };
 
     const QueueContext = struct {
         cfg: *const Config,
+        app: *const App,
+        pane: ?*const Pane,
         render_state: ?*anyopaque,
         row_iterator: *?*anyopaque,
         row_cells: *?*anyopaque,
@@ -1790,6 +1811,8 @@ pub const FtRenderer = struct {
         row_y: usize,
         py: f32,
         selection: ?RowSelectionBounds,
+        search_highlight: ?SearchHighlight,
+        cursor_col: ?usize,
     };
 
     const CellTextStyle = struct {
@@ -1945,7 +1968,12 @@ pub const FtRenderer = struct {
                 }
             else
                 null;
-            const needs_background = if (is_selected)
+            const has_search_highlight = if (row.search_highlight) |highlight|
+                col_x >= highlight.start_col and col_x < highlight.end_col
+            else
+                false;
+            const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
+            const needs_background = if (is_selected or has_search_highlight or has_cursor)
                 true
             else if (content_tag == .bg_color_palette or content_tag == .bg_color_rgb)
                 true
@@ -1954,7 +1982,7 @@ pub const FtRenderer = struct {
             else
                 false;
             if (needs_background) {
-                self.queueCellBackground(runtime, queue, content_tag, style_id, is_selected, col_px, row.py, quads_open);
+                self.queueCellBackground(runtime, queue, row, content_tag, style_id, is_selected, col_px, row.py, quads_open);
             }
 
             switch (content_tag) {
@@ -2362,13 +2390,14 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
         queue: *const QueueContext,
+        row: RowRenderInfo,
         content_tag: ghostty.CellContentTag,
         style_id: u16,
         is_selected: bool,
         col_px: f32,
         py: f32,
         quads_open: *bool,
-    ) void {
+        ) void {
         const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
         if (is_selected) {
             self.last_bg_rects += 1;
@@ -2379,6 +2408,33 @@ pub const FtRenderer = struct {
             c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
             c.sgl_v2f(col_px, py + self.cell_h);
             return;
+        }
+
+        if (row.search_highlight) |highlight| {
+            if (highlight.start_col <= highlight.end_col and col_px >= self.padding_x + @as(f32, @floatFromInt(highlight.start_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(highlight.end_col)) * self.cell_w) {
+                const bg = if (highlight.active) queue.colors.search_active_bg else queue.colors.search_bg;
+                self.last_bg_rects += 1;
+                self.openQuadBatch(quads_open);
+                c.sgl_c4b(bg.r, bg.g, bg.b, 255);
+                c.sgl_v2f(col_px, py);
+                c.sgl_v2f(col_px + self.cell_w, py);
+                c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+                c.sgl_v2f(col_px, py + self.cell_h);
+                return;
+            }
+        }
+
+        if (row.cursor_col) |cursor_col| {
+            if (col_px >= self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(cursor_col + 1)) * self.cell_w) {
+                self.last_bg_rects += 1;
+                self.openQuadBatch(quads_open);
+                c.sgl_c4b(queue.colors.selection_fg.r, queue.colors.selection_fg.g, queue.colors.selection_fg.b, 96);
+                c.sgl_v2f(col_px, py);
+                c.sgl_v2f(col_px + self.cell_w, py);
+                c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+                c.sgl_v2f(col_px, py + self.cell_h);
+                return;
+            }
         }
 
         if (!is_bg_tag and style_id == 0) return;
@@ -2427,6 +2483,8 @@ pub const FtRenderer = struct {
             .row_y = row_y,
             .py = self.padding_y + row_y_px,
             .selection = if (queue.selection_range) |range| rowSelectionBounds(range, row_y) else null,
+            .search_highlight = if (queue.pane) |pane| queue.app.searchHighlightForRow(pane, row_y) else null,
+            .cursor_col = if (queue.pane) |pane| queue.app.copyModeCursorColForRow(pane, row_y) else null,
         };
     }
 
@@ -3412,6 +3470,9 @@ const RowSelectionBounds = struct {
 
 inline fn rowSelectionBounds(range: selection.Range, row: usize) ?RowSelectionBounds {
     if (!selection.rowIntersects(range, row)) return null;
+    if (range.block) {
+        return .{ .start_col = range.start.col, .end_col = range.end.col };
+    }
     if (range.start.row == range.end.row) {
         return .{ .start_col = range.start.col, .end_col = range.end.col };
     }

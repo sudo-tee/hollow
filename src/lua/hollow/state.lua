@@ -12,6 +12,15 @@ local function empty_sequence_node()
   }
 end
 
+---@return HollowKeymapModeState
+local function empty_mode_state()
+  return {
+    bindings = {},
+    sequence_bindings = empty_sequence_node(),
+    leader_bindings = empty_sequence_node(),
+  }
+end
+
 ---@return HollowState
 function M.get()
   if _instance == nil then
@@ -55,21 +64,25 @@ function M.new(host_api)
         ["bottombar:click"] = true,
         ["selection:begin"] = true,
         ["selection:cleared"] = true,
+        ["copy_mode:changed"] = true,
+        ["copy_mode:search_requested"] = true,
       },
       handles = {},
       listeners = {},
       next_handle = 1,
     },
     keymap = {
-      bindings = {},
-      sequence_bindings = empty_sequence_node(),
+      modes = {
+        normal = empty_mode_state(),
+        copy_mode = empty_mode_state(),
+      },
       leader = nil,
-      leader_bindings = empty_sequence_node(),
       sequence_timeout_ms = 1000,
       sequence_pending_until = nil,
       sequence_active_node = nil,
       sequence_steps = {},
       sequence_prefix = nil,
+      active_mode = "normal",
     },
     ui = {
       mounted_topbar = nil,

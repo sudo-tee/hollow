@@ -34,6 +34,8 @@ Additional top-level helpers:
 
 - `hollow.read_dir(path)`
 
+Built-in modal helpers shipped in the default config now include native scrollback copy mode.
+
 Returned tab, pane, and workspace objects are snapshots. Treat them as read-only.
 
 ## `hollow.fonts`
@@ -312,6 +314,49 @@ Set `on_complete = function(result) ... end` to run code after the queued mux op
 
 `new_tab(opts?)` and `new_workspace(opts?)` also accept `on_complete` callbacks. Successful results include `tab_id` and `workspace_index` respectively.
 
+Host bridge copy-mode helpers exposed to Lua:
+
+```lua
+host_api.copy_mode_enter()
+host_api.copy_mode_exit()
+host_api.copy_mode_move(direction, extend?)
+host_api.copy_mode_begin_selection()
+host_api.copy_mode_clear_selection()
+host_api.copy_mode_copy()
+host_api.copy_mode_open_search()
+host_api.copy_mode_search_set_query(query)
+host_api.copy_mode_search_next()
+host_api.copy_mode_search_prev()
+```
+
+Built-in events related to copy mode:
+
+```lua
+hollow.events.on("copy_mode:changed", function(e)
+  if e.active then
+    -- e.query, e.match_count, e.match_index, e.selecting, e.block
+  end
+end)
+
+hollow.events.on("copy_mode:search_requested", function()
+  -- open a search prompt
+end)
+```
+
+The shipped config binds copy mode to `<C-S-X>` and copy-mode search to `<leader>/`.
+Copy-mode defaults are ordinary keymaps registered with `{ mode = "copy_mode" }` in `conf/init.lua`.
+Once active, the default modal keys are:
+
+- `h` `j` `k` `l` or arrows: move
+- `gg` / `G`: jump to top / bottom
+- `v` / `Ctrl+v`: begin selection / block selection
+- `0` / `$`: jump to line start / end
+- `space`: clear selection
+- `y` or `Enter`: copy selection and exit
+- `/`: open search prompt
+- `n` / `N`: next / previous search match
+- `q` or `Esc`: exit copy mode
+
 Example sequential flow:
 
 ```lua
@@ -459,6 +504,15 @@ hollow.keymap.set_leader(chord, opts?)
 hollow.keymap.clear_leader()
 hollow.keymap.is_leader_active()
 hollow.keymap.get_leader_state()
+```
+
+`opts.mode` selects a mode-specific binding bucket. Hollow ships `"normal"` and
+`"copy_mode"`; omitted `mode` means `"normal"`.
+
+```lua
+hollow.keymap.set("<C-S-X>", "copy_mode")
+hollow.keymap.set("j", "copy_mode_move_down", { mode = "copy_mode" })
+hollow.keymap.set("gg", "copy_mode_top", { mode = "copy_mode" })
 ```
 
 ## `hollow.ui`

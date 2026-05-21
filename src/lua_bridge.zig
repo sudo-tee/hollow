@@ -129,6 +129,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
+    .{ .name = "hollow.copy_mode", .source = @embedFile("lua/hollow/copy_mode.lua") },
     .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
     .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
     .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
@@ -221,6 +222,16 @@ pub const AppCallbacks = struct {
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
     scroll_active_top: *const fn (app: *anyopaque) void,
     scroll_active_bottom: *const fn (app: *anyopaque) void,
+    copy_mode_enter: *const fn (app: *anyopaque) void,
+    copy_mode_exit: *const fn (app: *anyopaque) void,
+    copy_mode_move: *const fn (app: *anyopaque, direction: []const u8, extend: bool) void,
+    copy_mode_begin_selection: *const fn (app: *anyopaque, block: bool) void,
+    copy_mode_clear_selection: *const fn (app: *anyopaque) void,
+    copy_mode_copy: *const fn (app: *anyopaque) void,
+    copy_mode_open_search: *const fn (app: *anyopaque) void,
+    copy_mode_search_set_query: *const fn (app: *anyopaque, query: []const u8) void,
+    copy_mode_search_next: *const fn (app: *anyopaque) void,
+    copy_mode_search_prev: *const fn (app: *anyopaque) void,
 };
 
 const BridgeContext = struct {
@@ -549,6 +560,14 @@ pub const BuiltInPayload = union(enum) {
     },
     bottombar_node: struct {
         id: []const u8,
+    },
+    copy_mode: struct {
+        active: bool,
+        query: []const u8 = "",
+        match_count: usize = 0,
+        match_index: ?usize = null,
+        selecting: bool = false,
+        block: bool = false,
     },
 };
 
@@ -1675,6 +1694,46 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "scroll_active_bottom");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_enter, 1);
+        api.set_field(self.state, -2, "copy_mode_enter");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_exit, 1);
+        api.set_field(self.state, -2, "copy_mode_exit");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_move, 1);
+        api.set_field(self.state, -2, "copy_mode_move");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_begin_selection, 1);
+        api.set_field(self.state, -2, "copy_mode_begin_selection");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_clear_selection, 1);
+        api.set_field(self.state, -2, "copy_mode_clear_selection");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_copy, 1);
+        api.set_field(self.state, -2, "copy_mode_copy");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_open_search, 1);
+        api.set_field(self.state, -2, "copy_mode_open_search");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_search_set_query, 1);
+        api.set_field(self.state, -2, "copy_mode_search_set_query");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_search_next, 1);
+        api.set_field(self.state, -2, "copy_mode_search_next");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_copy_mode_search_prev, 1);
+        api.set_field(self.state, -2, "copy_mode_search_prev");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_current_tab_id, 1);
         api.set_field(self.state, -2, "current_tab_id");
 
@@ -2035,6 +2094,25 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.create_table(state, 0, 1);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
+        },
+        .copy_mode => |value| {
+            api.create_table(state, 0, 6);
+            api.push_boolean(state, if (value.active) 1 else 0);
+            api.set_field(state, -2, "active");
+            try pushOwnedString(allocator, api, state, value.query);
+            api.set_field(state, -2, "query");
+            api.push_number(state, @floatFromInt(value.match_count));
+            api.set_field(state, -2, "match_count");
+            if (value.match_index) |match_index| {
+                api.push_number(state, @floatFromInt(match_index + 1));
+            } else {
+                api.push_nil(state);
+            }
+            api.set_field(state, -2, "match_index");
+            api.push_boolean(state, if (value.selecting) 1 else 0);
+            api.set_field(state, -2, "selecting");
+            api.push_boolean(state, if (value.block) 1 else 0);
+            api.set_field(state, -2, "block");
         },
     }
 }
@@ -5021,6 +5099,87 @@ fn l_scroll_active_top(state: *State) callconv(.c) c_int {
 fn l_scroll_active_bottom(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.scroll_active_bottom(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_enter(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_enter(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_exit(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_exit(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_move(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    var direction_len: usize = 0;
+    const direction_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &direction_len)
+    else
+        null;
+    const direction: []const u8 = if (direction_ptr) |ptr| ptr[0..direction_len] else return 0;
+    const extend = api.to_boolean(state, 2) != 0;
+    cbs.copy_mode_move(cbs.app, direction, extend);
+    return 0;
+}
+
+fn l_copy_mode_begin_selection(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const block = api.to_boolean(state, 1) != 0;
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_begin_selection(cbs.app, block);
+    return 0;
+}
+
+fn l_copy_mode_clear_selection(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_clear_selection(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_copy(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_copy(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_open_search(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_open_search(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_search_set_query(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+
+    var query_len: usize = 0;
+    const query_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &query_len)
+    else
+        null;
+    const query: []const u8 = if (query_ptr) |ptr| ptr[0..query_len] else "";
+    cbs.copy_mode_search_set_query(cbs.app, query);
+    return 0;
+}
+
+fn l_copy_mode_search_next(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_search_next(cbs.app);
+    return 0;
+}
+
+fn l_copy_mode_search_prev(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (ctx.app_callbacks) |cbs| cbs.copy_mode_search_prev(cbs.app);
     return 0;
 }
 

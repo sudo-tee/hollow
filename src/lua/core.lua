@@ -25,6 +25,7 @@ end
 local actions = require("hollow.actions")
 local async = require("hollow.async")
 local config = require("hollow.config")
+local copy_mode = require("hollow.copy_mode")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
 local json = require("hollow.json")
@@ -40,6 +41,7 @@ hollow.async = async
 hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace
+hollow.copy_mode = copy_mode
 
 config.setup(hollow, host_api, state)
 local term_helpers = term.setup(hollow, host_api)
@@ -50,6 +52,7 @@ end
 actions.setup(hollow, host_api)
 keymap.setup(hollow, host_api, state)
 local events_runtime = events.setup(hollow, state, term_helpers)
+copy_mode.setup()
 if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
   hollow.ui._register_bar_invalidation_hooks()
 end
@@ -61,6 +64,7 @@ end
 
 hollow.on_gui_ready(function()
   events_runtime.emit_event("gui:ready", {}, true)
+  hollow.workspace.auto_bootstrap()
 end)
 
 hollow.events.on("workspace:new", function(e)

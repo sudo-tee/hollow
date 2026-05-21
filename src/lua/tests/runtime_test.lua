@@ -48,6 +48,7 @@ local function make_host_api()
     set_pane_foreground_process = nil,
     reload_config = 0,
     scroll = nil,
+    copy_mode = nil,
     workspace_default_cwd = nil,
     send_text = {},
     files = {},
@@ -504,6 +505,64 @@ local function make_host_api()
     return nil
   end
 
+  function host_api.copy_mode_enter()
+    recorded.copy_mode = { kind = "enter" }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    return nil
+  end
+
+  function host_api.copy_mode_exit()
+    recorded.copy_mode = { kind = "exit" }
+    hollow._emit_builtin_event("copy_mode:changed", { active = false, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    return nil
+  end
+
+  function host_api.copy_mode_move(direction, extend)
+    recorded.copy_mode = { kind = "move", direction = direction, extend = extend }
+    return nil
+  end
+
+  function host_api.copy_mode_begin_selection(block)
+    recorded.copy_mode = { kind = "begin_selection", block = block == true }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = true, block = block == true })
+    return nil
+  end
+
+  function host_api.copy_mode_clear_selection()
+    recorded.copy_mode = { kind = "clear_selection" }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    return nil
+  end
+
+  function host_api.copy_mode_copy()
+    recorded.copy_mode = { kind = "copy" }
+    return nil
+  end
+
+  function host_api.copy_mode_open_search()
+    recorded.copy_mode = { kind = "open_search" }
+    hollow._emit_builtin_event("copy_mode:search_requested", {})
+    return nil
+  end
+
+  function host_api.copy_mode_search_set_query(query)
+    recorded.copy_mode = { kind = "search_set_query", query = query }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = query, match_count = 0, match_index = nil, selecting = false, block = false })
+    return nil
+  end
+
+  function host_api.copy_mode_search_next()
+    recorded.copy_mode = { kind = "search_next" }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 3, match_index = 1, selecting = false, block = false })
+    return nil
+  end
+
+  function host_api.copy_mode_search_prev()
+    recorded.copy_mode = { kind = "search_prev" }
+    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 3, match_index = 3, selecting = false, block = false })
+    return nil
+  end
+
   function host_api.switch_tab_by_id(tab_id)
     recorded.switch_tab_by_id = tab_id
     return true
@@ -793,6 +852,101 @@ hollow.keymap.set("<C-S-t>", "new_tab")
 local key, mods = hollow.keymap.parse_chord("<C-S-t>")
 assert_true(on_key(key, mods), "registered key bindings should consume mapped keys")
 assert_equal(recorded.new_tab_calls, 1, "registered action bindings should invoke host actions")
+
+local mode_hits = {}
+hollow.keymap.set("x", function()
+  mode_hits[#mode_hits + 1] = "normal"
+end)
+hollow.keymap.set("x", function()
+  mode_hits[#mode_hits + 1] = "copy_mode"
+end, { mode = "copy_mode" })
+
+assert_true(on_key("x", 0), "normal mode bindings should dispatch through the shared keymap")
+assert_equal(mode_hits[#mode_hits], "normal", "normal mode should prefer the normal binding bucket")
+assert_true(hollow.keymap.get("x") ~= nil, "keymap.get should read normal bindings by default")
+assert_true(hollow.keymap.get("x", { mode = "copy_mode" }) ~= nil, "keymap.get should read mode-specific bindings")
+
+hollow.action.copy_mode()
+assert_equal(recorded.copy_mode.kind, "enter", "copy_mode action should enter copy mode")
+assert_true(state.get().copy_mode.active, "copy_mode should become active after enter")
+assert_equal(state.get().copy_mode.match_count, 0, "copy mode should initialize match count")
+
+assert_true(on_key("x", 0), "copy mode should dispatch mode-specific bindings through the shared keymap")
+assert_equal(mode_hits[#mode_hits], "copy_mode", "copy mode should prefer the copy_mode binding bucket")
+
+hollow.keymap.set("j", "copy_mode_move_down", { mode = "copy_mode" })
+hollow.keymap.set("gg", "copy_mode_top", { mode = "copy_mode" })
+hollow.keymap.set("G", "copy_mode_bottom", { mode = "copy_mode" })
+hollow.keymap.set("v", "copy_mode_begin_selection", { mode = "copy_mode" })
+hollow.keymap.set("<C-v>", "copy_mode_begin_block_selection", { mode = "copy_mode" })
+hollow.keymap.set("<Space>", "copy_mode_clear_selection", { mode = "copy_mode" })
+hollow.keymap.set("/", "copy_mode_search", { mode = "copy_mode" })
+hollow.keymap.set("n", "copy_mode_search_next", { mode = "copy_mode" })
+hollow.keymap.set("N", "copy_mode_search_prev", { mode = "copy_mode" })
+hollow.keymap.set("y", "copy_mode_copy_selection", { mode = "copy_mode" })
+
+assert_true(on_key("j", 0), "copy mode should consume modal movement")
+assert_equal(recorded.copy_mode.kind, "move", "copy mode movement should dispatch host move")
+assert_equal(recorded.copy_mode.direction, "down", "copy mode j should move down")
+assert_equal(recorded.copy_mode.extend, false, "copy mode movement should not extend before selection")
+
+recorded.copy_mode = nil
+assert_true(on_key("g", 0), "copy mode should consume the first g in gg")
+assert_equal(recorded.copy_mode, nil, "the first g should wait for a second g before moving")
+
+assert_true(on_key("g", 0), "copy mode should jump to the top on gg")
+assert_equal(recorded.copy_mode.kind, "move", "gg should dispatch a host move")
+assert_equal(recorded.copy_mode.direction, "top", "gg should move to the top")
+assert_equal(recorded.copy_mode.extend, false, "gg should not extend before selection")
+
+assert_true(on_key("g", 1), "copy mode should jump to the bottom on G")
+assert_equal(recorded.copy_mode.kind, "move", "G should dispatch a host move")
+assert_equal(recorded.copy_mode.direction, "bottom", "G should move to the bottom")
+assert_equal(recorded.copy_mode.extend, false, "G should not extend before selection")
+
+assert_true(on_key("v", 0), "copy mode should begin selection")
+assert_equal(recorded.copy_mode.kind, "begin_selection", "copy mode v should begin selection")
+assert_true(state.get().copy_mode.selecting, "copy mode should track selection state")
+assert_true(not state.get().copy_mode.block, "copy mode v should use line selection mode")
+
+assert_true(on_key("v", 2), "copy mode should begin block selection on ctrl-v")
+assert_equal(recorded.copy_mode.kind, "begin_selection", "copy mode ctrl-v should begin selection")
+assert_true(recorded.copy_mode.block, "copy mode ctrl-v should request block selection")
+assert_true(state.get().copy_mode.block, "copy mode should track block selection state")
+
+assert_true(on_key("j", 0), "copy mode should extend movement while selecting")
+assert_equal(recorded.copy_mode.extend, true, "copy mode movement should extend after selection begins")
+
+assert_true(on_key("space", 0), "copy mode should clear selection")
+assert_equal(recorded.copy_mode.kind, "clear_selection", "copy mode space should clear selection")
+assert_true(not state.get().copy_mode.selecting, "copy mode clear should clear selection state")
+assert_true(not state.get().copy_mode.block, "copy mode clear should clear block selection state")
+
+assert_true(on_key("slash", 0), "copy mode should open search")
+assert_equal(recorded.copy_mode.kind, "open_search", "copy mode slash should request search")
+assert_true(hollow.ui.overlay.depth() > 0, "copy mode search should open an input overlay")
+
+local overlay_before_confirm = hollow.ui.overlay.depth()
+assert_true(on_key("enter", 0), "search overlay should consume confirm")
+assert_true(hollow.ui.overlay.depth() < overlay_before_confirm, "confirming search should close the input overlay")
+assert_equal(recorded.copy_mode.kind, "search_set_query", "search confirm should set the host query")
+assert_equal(recorded.copy_mode.query, "", "search confirm should forward the current query")
+
+assert_true(on_key("n", 0), "copy mode should jump to next match")
+assert_equal(recorded.copy_mode.kind, "search_next", "copy mode n should jump to next match")
+assert_equal(state.get().copy_mode.match_count, 3, "copy mode should track match counts from host state")
+assert_equal(state.get().copy_mode.match_index, 1, "copy mode should track active match index from host state")
+
+assert_true(on_key("n", 1), "copy mode should jump to previous match on shifted n")
+assert_equal(recorded.copy_mode.kind, "search_prev", "copy mode N should jump to previous match")
+assert_equal(state.get().copy_mode.match_index, 3, "copy mode should update active match index on previous search")
+
+assert_true(on_key("y", 0), "copy mode should copy and exit")
+assert_equal(recorded.copy_mode.kind, "exit", "copy mode copy should exit after copying")
+assert_true(not state.get().copy_mode.active, "copy mode should be inactive after copy+exit")
+
+assert_true(hollow.keymap.del("x", { mode = "copy_mode" }), "keymap.del should remove mode-specific bindings")
+assert_true(hollow.keymap.get("x", { mode = "copy_mode" }) == nil, "deleted mode-specific bindings should not resolve")
 
 local event_payload = nil
 hollow.events.once("custom:event", function(payload)
