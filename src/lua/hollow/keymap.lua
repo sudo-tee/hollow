@@ -1,12 +1,17 @@
 local M = {}
 local util = require("hollow.util")
 
-local function invalidate_topbar()
-  if type(_G.hollow) == "table" and type(_G.hollow.ui) == "table" and type(_G.hollow.ui.topbar) == "table"
-    and type(_G.hollow.ui.topbar.invalidate) == "function"
-  then
-    _G.hollow.ui.topbar.invalidate()
-    return
+local function invalidate_bars()
+  if type(_G.hollow) == "table" and type(_G.hollow.ui) == "table" then
+    local topbar = _G.hollow.ui.topbar
+    if type(topbar) == "table" and type(topbar.invalidate) == "function" then
+      topbar.invalidate()
+    end
+
+    local bottombar = _G.hollow.ui.bottombar
+    if type(bottombar) == "table" and type(bottombar.invalidate) == "function" then
+      bottombar.invalidate()
+    end
   end
 
   local ok_state, state = pcall(function()
@@ -14,6 +19,7 @@ local function invalidate_topbar()
   end)
   if ok_state and type(state) == "table" and type(state.ui) == "table" then
     state.ui.topbar_cache_dirty = true
+    state.ui.bottombar_cache_dirty = true
   end
 end
 
@@ -442,6 +448,8 @@ local function format_key_name(key)
     return "Insert"
   elseif key == "delete" then
     return "Del"
+  elseif key == "slash" then
+    return "/"
   elseif key == "backslash" then
     return "\\"
   end
@@ -562,7 +570,7 @@ local function reset_sequence_state(keymap_state)
   keymap_state.sequence_steps = {}
   keymap_state.sequence_prefix = nil
   push_leader_state(false, 0)
-  invalidate_topbar()
+  invalidate_bars()
 end
 
 local function set_sequence_state(keymap_state, node, prefix, steps)
@@ -571,7 +579,7 @@ local function set_sequence_state(keymap_state, node, prefix, steps)
   keymap_state.sequence_steps = steps or {}
   keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
   push_leader_state(true, keymap_state.sequence_pending_until)
-  invalidate_topbar()
+  invalidate_bars()
 end
 
 local function set_leader_binding(keymap_state, chord, style, action, opts)
@@ -897,6 +905,7 @@ function M.setup(hollow, host_api, state)
         table.insert(keymap_state.sequence_steps, format_chord(key, mods))
         keymap_state.sequence_pending_until = time_now_ms() + keymap_state.sequence_timeout_ms
         push_leader_state(true, keymap_state.sequence_pending_until)
+        invalidate_bars()
         if node.action ~= nil and not has_sequence_children(node) then
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)

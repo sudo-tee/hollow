@@ -1580,6 +1580,7 @@ function process.run_child_process(args, opts) end
 ---@field scroll_active_page fun(pages: integer)
 ---@field scroll_active_top fun()
 ---@field scroll_active_bottom fun()
+---@field set_bar_cache_state fun(surface: string, dirty: boolean, expires_at_ms: integer, visible: boolean)
 ---@field copy_mode_enter fun()
 ---@field copy_mode_exit fun()
 ---@field copy_mode_move fun(direction: "left"|"right"|"up"|"down"|"page_up"|"page_down"|"line_start"|"line_end"|"top"|"bottom", extend?: boolean)

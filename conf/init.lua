@@ -192,7 +192,7 @@ hollow.keymap.set("<A-S-PageDown>", "scrollback_page_down")
 hollow.keymap.set("<C-S-Home>", "scrollback_top")
 hollow.keymap.set("<C-S-End>", "scrollback_bottom")
 hollow.keymap.set("<C-S-X>", "copy_mode")
-hollow.keymap.set("<leader>/", "copy_mode_search")
+hollow.keymap.set("<leader>/", "copy_mode_search", { desc = "search" })
 
 hollow.keymap.set("h", "copy_mode_move_left", { mode = "copy_mode" })
 hollow.keymap.set("j", "copy_mode_move_down", { mode = "copy_mode" })

@@ -176,6 +176,217 @@ local function configured_topbar_widget()
   })
 end
 
+local function leader_state()
+  local value = hollow.keymap.get_leader_state()
+  if type(value) == "table" and value.active then
+    return value
+  end
+  return nil
+end
+
+local function copy_mode_state()
+  local value = state.copy_mode
+  if type(value) == "table" and value.active == true then
+    return value
+  end
+  return nil
+end
+
+local function special_mode_theme()
+  local resolved = shared.resolve_theme().ui
+  local all = resolved.widgets.all
+  local util = hollow.util
+  local base_bg = shared.normalize_hex_color(all.panel_bg, resolved.top_bar.background)
+  local mode_copy_bg = shared.normalize_hex_color(util.brighten_hex_color(base_bg, 0.08, base_bg), base_bg)
+  local mode_leader_bg = shared.normalize_hex_color(util.darken_hex_color(base_bg, 0.04, base_bg), base_bg)
+  local hint_key_bg = shared.normalize_hex_color(util.brighten_hex_color(base_bg, 0.14, base_bg), base_bg)
+  return {
+    bg = shared.normalize_hex_color(resolved.status and resolved.status.bg, resolved.top_bar.background),
+    fg = shared.normalize_hex_color(resolved.status and resolved.status.fg, all.title),
+    chip_bg = base_bg,
+    chip_fg = shared.normalize_hex_color(all.fg, resolved.status and resolved.status.fg),
+    accent = shared.normalize_hex_color(resolved.accent, all.title),
+    muted = shared.normalize_hex_color(all.muted, all.fg),
+    divider = shared.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
+    counter = shared.normalize_hex_color(all.counter, all.muted),
+    copy_bg = mode_copy_bg,
+    leader_bg = mode_leader_bg,
+    hint_key_bg = hint_key_bg,
+  }
+end
+
+local function special_mode_chip(text, style)
+  return ui.span(text, merge_tables({
+    bold = true,
+    radius = 4,
+    padding = { left = 2, right = 2, top = 1, bottom = 1 },
+    margin = { right = 1 },
+  }, style))
+end
+
+local function special_mode_key(text, style)
+  return ui.span(text, merge_tables({
+    bold = true,
+    radius = 4,
+    padding = { left = 1, right = 1, top = 0, bottom = 0 },
+  }, style))
+end
+
+local function special_mode_hint(key, label, theme)
+  return {
+    special_mode_key(key, {
+      fg = theme.fg,
+      bg = theme.hint_key_bg,
+    }),
+    ui.span(" " .. label .. " ", {
+      fg = theme.muted,
+    }),
+  }
+end
+
+local function flatten_nodes(items)
+  local out = {}
+  for _, item in ipairs(items or {}) do
+    if type(item) == "table" and item[1] ~= nil and item._type == nil then
+      for _, nested in ipairs(item) do
+        out[#out + 1] = nested
+      end
+    else
+      out[#out + 1] = item
+    end
+  end
+  return out
+end
+
+local function copy_mode_search_chip(copy_mode, theme)
+  local pieces = {
+    special_mode_key("/", {
+      fg = theme.fg,
+      bg = theme.hint_key_bg,
+    }),
+  }
+
+  local query = copy_mode.query ~= "" and copy_mode.query or "search"
+  pieces[#pieces + 1] = ui.span(query, {
+    fg = theme.chip_fg,
+  })
+
+  if copy_mode.match_count > 0 then
+    pieces[#pieces + 1] = ui.span(string.format("  %d/%d", copy_mode.match_index or 0, copy_mode.match_count), {
+      fg = theme.counter,
+    })
+  elseif copy_mode.query ~= "" then
+    pieces[#pieces + 1] = ui.span("  0/0", {
+      fg = theme.counter,
+    })
+  end
+
+  if copy_mode.selecting then
+    pieces[#pieces + 1] = ui.span(copy_mode.block and "  BLK" or "  SEL", {
+      fg = theme.accent,
+      bold = true,
+    })
+  end
+
+  pieces[#pieces + 1] = ui.span(" ")
+  return ui.group(flatten_nodes(pieces), {
+    bg = theme.copy_bg,
+    radius = 4,
+    padding = { left = 2, right = 2, top = 1, bottom = 1 },
+    margin = { right = 1 },
+  })
+end
+
+local function special_mode_legend(copy_mode, theme)
+  local leader = copy_mode == nil and leader_state() or nil
+  local hints = copy_mode ~= nil and {
+    special_mode_hint("h/j/k/l", "move", theme),
+    special_mode_hint("gg/G", "ends", theme),
+    special_mode_hint("v", "sel", theme),
+    special_mode_hint("C-v", "blk", theme),
+    special_mode_hint("n/N", "match", theme),
+    special_mode_hint("y", "copy", theme),
+    special_mode_hint("q", "exit", theme),
+  } or (leader ~= nil and leader.next_display and #leader.next_display > 0) and (function()
+    local leader_hints = {}
+    for _, item in ipairs(leader.next_display) do
+      local key, label = item:match("^([^:]+):(.+)$")
+      leader_hints[#leader_hints + 1] = special_mode_hint(key or item, label or "", theme)
+    end
+    return leader_hints
+  end)() or {}
+
+  return ui.bar.custom({
+    id = copy_mode ~= nil and "mode:copy-legend" or "mode:leader-legend",
+    cache_ttl_ms = leader ~= nil and math.max(1, tonumber(leader.remaining_ms) or 0) or nil,
+    render = function()
+      return flatten_nodes(hints)
+    end,
+  })
+end
+
+local function configured_bottombar_widget()
+  local theme = special_mode_theme()
+  return ui.new_widget("bottombar", {
+    height = resolved_topbar_theme().height,
+    style = { bg = theme.chip_bg },
+    layout = {
+      padding = { left = 1, right = 1, top = 0, bottom = 0 },
+    },
+    render = function()
+      local copy_mode = copy_mode_state()
+      local leader = copy_mode == nil and leader_state() or nil
+      if copy_mode == nil and leader == nil then
+        return {}
+      end
+
+      local items = {}
+      if copy_mode ~= nil then
+        items[#items + 1] = ui.bar.custom({
+          id = "mode:copy",
+          render = function()
+            return special_mode_chip(" COPY ", {
+              bg = theme.copy_bg,
+              fg = theme.accent,
+            })
+          end,
+        })
+
+        items[#items + 1] = ui.bar.custom({
+          id = "mode:search",
+          render = function()
+            return copy_mode_search_chip(copy_mode, theme)
+          end,
+        })
+      elseif leader ~= nil then
+        items[#items + 1] = ui.bar.custom({
+          id = "mode:leader",
+          render = function()
+            return special_mode_chip(" LEADER ", {
+              bg = theme.leader_bg,
+              fg = theme.fg,
+            })
+          end,
+        })
+      end
+
+      items[#items + 1] = ui.spacer()
+      items[#items + 1] = special_mode_legend(copy_mode, theme)
+      return items
+    end,
+  })
+end
+
+local function visible_bar_item_count(items)
+  local count = 0
+  for _, item in ipairs(items or {}) do
+    if type(item) == "table" and item.kind ~= "spacer" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 local function sync_topbar_config(opts)
   local topbar_theme = resolved_topbar_theme()
   local style = merge_tables({ bg = topbar_theme.background }, opts.style)
@@ -239,6 +450,7 @@ local function invalidate_bar_cache(surface)
     return false
   end
 
+  local visible = state_key ~= nil and state.ui[state_key] ~= nil
   state.ui[dirty_key] = true
   ui[dirty_key] = true
   if state_key ~= nil then
@@ -254,7 +466,7 @@ local function invalidate_bar_cache(surface)
     ui[expires_key] = nil
   end
   if type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function" then
-    state.host_api.set_bar_cache_state(surface, true, 0)
+    state.host_api.set_bar_cache_state(surface, true, 0, visible)
   end
   return true
 end
@@ -304,7 +516,8 @@ local function set_bar_cache(surface, payload, layout, expires_at)
     state.host_api.set_bar_cache_state(
       surface,
       false,
-      type(expires_at) == "number" and math.floor(expires_at) or 0
+      type(expires_at) == "number" and math.floor(expires_at) or 0,
+      payload ~= nil
     )
   end
   return payload
@@ -328,13 +541,14 @@ local function set_bar_layout_cache(surface, layout)
     then
       local expires_key = cache_expires_key(surface)
       local expires_at = expires_key ~= nil and state.ui[expires_key] or nil
-      state.host_api.set_bar_cache_state(
-        surface,
-        false,
-        type(expires_at) == "number" and math.floor(expires_at) or 0
-      )
+        state.host_api.set_bar_cache_state(
+          surface,
+          false,
+          type(expires_at) == "number" and math.floor(expires_at) or 0,
+          state.ui[state_key] ~= nil
+        )
+      end
     end
-  end
   return layout
 end
 
@@ -747,8 +961,13 @@ end
 ---@param node HollowUiBarKeyLegendNode
 ---@return HollowUiSegment
 local function serialize_key_legend(surface, node)
+  local copy_mode = copy_mode_state()
+  if copy_mode ~= nil then
+    return nil, nil
+  end
+
   ---@type HollowLeaderState|nil
-  local leader_state = hollow.keymap.get_leader_state()
+  local leader_state = leader_state()
   local text = ""
   if
     leader_state
@@ -866,10 +1085,16 @@ local function serialize_bar_widget(widget, surface)
     end
   end
 
+  local visible_items = visible_bar_item_count(serialized)
+
   if surface == "topbar" then
     state.ui.topbar_handlers = handlers
   elseif surface == "bottombar" then
     state.ui.bottombar_handlers = handlers
+  end
+
+  if visible_items == 0 then
+    return set_bar_cache(surface, nil, nil, expires_at)
   end
 
   return set_bar_cache(surface, {
@@ -896,6 +1121,9 @@ end
 local function configured_bar_widget(surface)
   if surface == "topbar" then
     return configured_topbar_widget()
+  end
+  if surface == "bottombar" then
+    return configured_bottombar_widget()
   end
   return nil
 end
@@ -1025,9 +1253,7 @@ local function define_mount_api(namespace, kind, state_key, visibility_key)
   end
 
   function namespace.invalidate()
-    if
-      mounted_bar_widget(kind) == nil and (kind ~= "topbar" or configured_bar_widget(kind) == nil)
-    then
+    if active_bar_widget(kind) == nil then
       return false
     end
 
@@ -1113,7 +1339,7 @@ function ui._topbar_state()
     if
       type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function"
     then
-      state.host_api.set_bar_cache_state("topbar", false, 0)
+      state.host_api.set_bar_cache_state("topbar", false, 0, false)
     end
     return nil
   end
@@ -1121,23 +1347,25 @@ function ui._topbar_state()
 end
 
 function ui._bottombar_state()
-  if state.ui.mounted_bottombar == nil then
+  local widget = active_bar_widget("bottombar")
+  if widget == nil then
     if
       type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function"
     then
-      state.host_api.set_bar_cache_state("bottombar", false, 0)
+      state.host_api.set_bar_cache_state("bottombar", false, 0, false)
     end
     return nil
   end
-  return serialize_bar_widget(state.ui.mounted_bottombar, "bottombar")
+  return serialize_bar_widget(widget, "bottombar")
 end
 
 function ui._bottombar_layout()
-  if state.ui.mounted_bottombar == nil then
+  local widget = active_bar_widget("bottombar")
+  if widget == nil then
     if
       type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function"
     then
-      state.host_api.set_bar_cache_state("bottombar", false, 0)
+      state.host_api.set_bar_cache_state("bottombar", false, 0, false)
     end
     return nil
   end
@@ -1146,7 +1374,11 @@ function ui._bottombar_layout()
     return bar_cache_layout("bottombar")
   end
 
-  local widget = state.ui.mounted_bottombar
+  local payload = serialize_bar_widget(widget, "bottombar")
+  if payload == nil then
+    return nil
+  end
+
   return set_bar_layout_cache("bottombar", serialize_bar_surface_layout(widget))
 end
 
@@ -1156,13 +1388,18 @@ function ui._topbar_layout()
     if
       type(state.host_api) == "table" and type(state.host_api.set_bar_cache_state) == "function"
     then
-      state.host_api.set_bar_cache_state("topbar", false, 0)
+      state.host_api.set_bar_cache_state("topbar", false, 0, false)
     end
     return nil
   end
 
   if cache_is_valid("topbar") then
     return bar_cache_layout("topbar")
+  end
+
+  local payload = serialize_bar_widget(widget, "topbar")
+  if payload == nil then
+    return nil
   end
 
   return set_bar_layout_cache("topbar", serialize_bar_surface_layout(widget))
@@ -1189,6 +1426,7 @@ function ui._register_bar_invalidation_hooks()
   end)
 
   for _, event_name in ipairs({
+    "copy_mode:changed",
     "term:tab_activated",
     "term:tab_closed",
     "term:pane_focused",

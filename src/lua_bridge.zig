@@ -215,7 +215,7 @@ pub const AppCallbacks = struct {
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
     set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
-    set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64) void,
+    set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
     copy_selection: *const fn (app: *anyopaque) void,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
@@ -4374,7 +4374,8 @@ fn l_set_bar_cache_state(state: *State) callconv(.c) c_int {
         @intFromFloat(api.to_number(state, 3))
     else
         0;
-    cbs.set_bar_cache_state(cbs.app, surface[0..surface_len], dirty, expires_at_ms);
+    const visible = api.to_boolean(state, 4) != 0;
+    cbs.set_bar_cache_state(cbs.app, surface[0..surface_len], dirty, expires_at_ms, visible);
     return 0;
 }
 

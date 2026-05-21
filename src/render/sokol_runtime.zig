@@ -1360,8 +1360,30 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
     const dirty = barCacheDirty(api, state, ui_idx, dirty_field);
     if (!dirty) {
         api.get_field(state, ui_idx, cache_field);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) return true;
-        pop(api, state, 1);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            const expires_field: [:0]const u8 = if (std.mem.eql(u8, cache_field, "bottombar_cache_state") or std.mem.eql(u8, cache_field, "bottombar_cache_layout"))
+                "bottombar_cache_expires_at"
+            else
+                "topbar_cache_expires_at";
+            api.get_field(state, ui_idx, expires_field);
+            const expires_type: LuaType = @enumFromInt(api.value_type(state, -1));
+            if (expires_type == .number) {
+                const now_ms = std.time.milliTimestamp();
+                const expires_at = api.to_number(state, -1);
+                pop(api, state, 1);
+                if (expires_at <= @as(f64, @floatFromInt(now_ms))) {
+                    // Expired: drop the stale cached table before recomputing.
+                    pop(api, state, 1);
+                } else {
+                    return true;
+                }
+            } else {
+                pop(api, state, 1);
+                return true;
+            }
+        } else {
+            pop(api, state, 1);
+        }
     }
 
     api.get_field(state, ui_idx, producer_field);

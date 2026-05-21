@@ -1142,6 +1142,15 @@ assert_true(configured_topbar ~= nil, "topbar.configure should provide a default
 assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
 assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
 
+hollow.ui.topbar.mount(hollow.ui.topbar.new({
+  render = function()
+    return {}
+  end,
+}))
+assert_true(hollow.ui._topbar_state() == nil, "topbar should auto-hide when no widgets render")
+assert_true(hollow.ui._topbar_layout() == nil, "topbar layout should auto-hide when no widgets render")
+hollow.ui.topbar.unmount()
+
 hollow.ui.topbar.configure({
   cwd = false,
   key_legend = false,
@@ -1185,5 +1194,32 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 local mounted_topbar = hollow.ui._topbar_state()
 assert_equal(mounted_topbar.items[1].text, "mounted", "mounted topbar should override configured defaults")
 hollow.ui.topbar.unmount()
+
+assert_true(hollow.ui._bottombar_state() == nil, "bottombar should auto-hide when no special widgets render")
+assert_true(hollow.ui._bottombar_layout() == nil, "bottombar layout should auto-hide when inactive")
+
+hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
+hollow.keymap.set("<leader>x", function() end, { desc = "test leader" })
+local leader_key, leader_mods = hollow.keymap.parse_chord("<C-Space>")
+assert_true(on_key(leader_key, leader_mods), "leader key should activate leader mode")
+local leader_bar = hollow.ui._bottombar_state()
+assert_true(leader_bar ~= nil, "bottombar should show in leader mode")
+assert_true(leader_bar.items[1].text:find("LEADER", 1, true) ~= nil, "leader mode widget should identify leader mode")
+assert_true(#leader_bar.items >= 2, "leader mode should render the mode widget and legend region")
+assert_true(leader_bar.items[#leader_bar.items].text:find("x", 1, true) ~= nil, "leader mode should show the next leader keys")
+assert_true(on_key("z", 0), "unmatched leader continuation should clear leader mode")
+assert_true(hollow.ui._bottombar_state() == nil, "bottombar should clear immediately after leader mode resets")
+
+assert_true(on_key(leader_key, leader_mods), "leader key should activate leader mode again")
+
+hollow.action.copy_mode()
+local copy_bar = hollow.ui._bottombar_state()
+assert_true(copy_bar ~= nil, "bottombar should show in copy mode")
+assert_true(copy_bar.items[1].text:find("COPY", 1, true) ~= nil, "copy mode widget should identify copy mode")
+assert_true(copy_bar.items[2].text:find("/search", 1, true) ~= nil, "copy mode should show search status")
+assert_true(copy_bar.items[#copy_bar.items].text:find("move", 1, true) ~= nil, "copy mode should show key legend hints")
+
+hollow.action.copy_mode_exit()
+assert_true(hollow.ui._bottombar_state() == nil, "bottombar should hide again after special modes clear")
 
 print("runtime_test.lua: ok")

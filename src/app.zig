@@ -647,8 +647,10 @@ pub const App = struct {
     pending_command: ?*PendingCommandRequest = null,
     leader_visual_active: bool = false,
     leader_visual_expires_at_ns: i128 = 0,
+    topbar_cache_visible: bool = false,
     topbar_cache_dirty: bool = true,
     topbar_cache_expires_at_ns: i128 = 0,
+    bottombar_cache_visible: bool = false,
     bottombar_cache_dirty: bool = true,
     bottombar_cache_expires_at_ns: i128 = 0,
     next_idle_render_poll_ns: i128 = 0,
@@ -2514,18 +2516,25 @@ pub const App = struct {
         self.leader_visual_expires_at_ns = @as(i128, expires_at_ms) * std.time.ns_per_ms;
     }
 
-    pub fn setBarCacheState(self: *App, surface: BarSurface, dirty: bool, expires_at_ms: i64) void {
+    pub fn setBarCacheState(self: *App, surface: BarSurface, dirty: bool, expires_at_ms: i64, visible: bool) void {
         const expires_at_ns: i128 = if (expires_at_ms > 0) @as(i128, expires_at_ms) * std.time.ns_per_ms else 0;
+        const was_visible = switch (surface) {
+            .topbar => self.topbar_cache_visible,
+            .bottombar => self.bottombar_cache_visible,
+        };
         switch (surface) {
             .topbar => {
+                self.topbar_cache_visible = visible;
                 self.topbar_cache_dirty = dirty;
                 self.topbar_cache_expires_at_ns = expires_at_ns;
             },
             .bottombar => {
+                self.bottombar_cache_visible = visible;
                 self.bottombar_cache_dirty = dirty;
                 self.bottombar_cache_expires_at_ns = expires_at_ns;
             },
         }
+        if (was_visible != visible) self.requestLayoutRefresh();
     }
 
     pub fn barCacheNeedsRefresh(self: *App, surface: BarSurface, now_ns: i128) bool {
@@ -4934,6 +4943,7 @@ pub const App = struct {
 
     pub fn bottomBarLayout(self: *App) ?BottomBarLayout {
         if (!self.config.bottom_bar_show) return null;
+        if (self.bottombar_cache_dirty) self.cached_bar_layouts_dirty = true;
         if (self.cached_bar_layouts_dirty) self.refreshCachedBarLayouts();
         if (self.cached_bottom_bar_layout) |layout| return layout;
         if (self.config.bottom_bar_height == 0) return null;
@@ -6130,10 +6140,10 @@ fn luaSetLeaderStateCallback(app_ptr: *anyopaque, active: bool, expires_at_ms: i
     app.setLeaderState(active, expires_at_ms);
 }
 
-fn luaSetBarCacheStateCallback(app_ptr: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64) void {
+fn luaSetBarCacheStateCallback(app_ptr: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const bar_surface: BarSurface = if (std.mem.eql(u8, surface, "bottombar")) .bottombar else .topbar;
-    app.setBarCacheState(bar_surface, dirty, expires_at_ms);
+    app.setBarCacheState(bar_surface, dirty, expires_at_ms, visible);
 }
 
 fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
