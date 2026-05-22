@@ -36,7 +36,8 @@ local function render_input_rows(prompt, value, theme)
   end
 
   local input_rows = ui.rows(
-    tags.overlay_row(nil,
+    tags.overlay_row(
+      nil,
       tags.text({ fg = theme.input_fg, bg = theme.input_bg }, value),
       tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, " ")
     )
@@ -73,6 +74,7 @@ function ui.input.open(opts)
     width = opts.width,
     height = opts.height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
+    align = opts.align or "center",
     backdrop = backdrop,
     on_key = function(key, mods)
       if key == "escape" then

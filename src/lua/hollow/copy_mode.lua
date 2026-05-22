@@ -12,15 +12,16 @@ end
 
 local function copy_state()
   local state = runtime_state()
-  state.copy_mode = state.copy_mode or {
-    active = false,
-    query = "",
-    selecting = false,
-    pending_g = false,
-    match_count = 0,
-    match_index = nil,
-    block = false,
-  }
+  state.copy_mode = state.copy_mode
+    or {
+      active = false,
+      query = "",
+      selecting = false,
+      pending_g = false,
+      match_count = 0,
+      match_index = nil,
+      block = false,
+    }
   return state.copy_mode
 end
 
@@ -56,6 +57,7 @@ local function open_search()
     default = cs.query,
     width = 48,
     backdrop = false,
+    align = "bottom_left",
     on_confirm = function(value)
       cs.query = value or ""
       host_api().copy_mode_search_set_query(cs.query)

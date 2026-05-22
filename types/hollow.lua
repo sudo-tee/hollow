@@ -720,6 +720,7 @@
 ---@field height? integer
 ---@field chrome? HollowUiChrome|boolean
 ---@field theme? HollowUiTheme
+---@field align? HollowOverlayAlign
 ---@field on_confirm fun(value: string)
 ---@field on_cancel? fun()
 
