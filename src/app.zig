@@ -3616,17 +3616,19 @@ pub const App = struct {
         self.copy_mode_matches.clearRetainingCapacity();
         self.copy_mode_match_index = null;
         if (self.copy_mode_query.len == 0) return;
+        if (self.copy_mode_query.len == 0) return;
         for (self.copy_mode_history.items, 0..) |line, row| {
             var start: usize = 0;
-            while (std.mem.indexOfPos(u8, line.text, start, self.copy_mode_query)) |idx| {
-                const start_col = copyModeColumnForByteOffset(line, idx);
-                const end_col = copyModeColumnForByteOffset(line, idx + self.copy_mode_query.len);
+            while (true) {
+                const match = copyModeRegexFind(self.copy_mode_query, line.text, start) orelse break;
+                const start_col = copyModeColumnForByteOffset(line, match.start);
+                const end_col = copyModeColumnForByteOffset(line, match.end);
                 try self.copy_mode_matches.append(self.allocator, .{
                     .row = row,
                     .start_col = start_col,
                     .end_col = end_col,
                 });
-                start = idx + @max(@as(usize, 1), self.copy_mode_query.len);
+                start = match.start + @max(@as(usize, 1), match.end - match.start);
             }
         }
         self.emitCopyModeChanged();
@@ -3811,6 +3813,97 @@ pub const App = struct {
         var col: usize = 0;
         while (col + 1 < line.col_offsets.len and line.col_offsets[col + 1] <= target) : (col += 1) {}
         return @min(col, line.cols);
+    }
+
+    fn copyModeRegexAtomLen(pattern: []const u8, index: usize) ?usize {
+        if (index >= pattern.len) return null;
+        if (pattern[index] == '\\') {
+            if (index + 1 >= pattern.len) return null;
+            return 2;
+        }
+        return 1;
+    }
+
+    fn copyModeRegexCharMatches(token: []const u8, ch: u8) bool {
+        if (token.len == 0) return false;
+        if (token.len == 1) return token[0] == '.' or token[0] == ch;
+        if (token.len == 2 and token[0] == '\\') {
+            return switch (token[1]) {
+                'd' => std.ascii.isDigit(ch),
+                's' => std.ascii.isWhitespace(ch),
+                'w' => std.ascii.isAlphanumeric(ch) or ch == '_',
+                't' => ch == '\t',
+                'n' => ch == '\n',
+                '\\' => ch == '\\',
+                '.' => ch == '.',
+                '*' => ch == '*',
+                '+' => ch == '+',
+                '?' => ch == '?',
+                '^' => ch == '^',
+                '$' => ch == '$',
+                else => ch == token[1],
+            };
+        }
+        return false;
+    }
+
+    fn copyModeRegexQuantifier(pattern: []const u8, next_index: usize) ?u8 {
+        if (next_index >= pattern.len) return null;
+        return switch (pattern[next_index]) {
+            '*', '+', '?' => pattern[next_index],
+            else => null,
+        };
+    }
+
+    fn copyModeRegexMatchFrom(pattern: []const u8, pattern_index: usize, text: []const u8, text_index: usize) ?usize {
+        if (pattern_index >= pattern.len) return text_index;
+        if (pattern[pattern_index] == '$') {
+            if (pattern_index + 1 != pattern.len) return null;
+            return if (text_index == text.len) text_index else null;
+        }
+
+        const atom_len = copyModeRegexAtomLen(pattern, pattern_index) orelse return null;
+        const atom = pattern[pattern_index .. pattern_index + atom_len];
+        const quant = copyModeRegexQuantifier(pattern, pattern_index + atom_len);
+        const quant_len: usize = if (quant != null) 1 else 0;
+        const rest_index = pattern_index + atom_len + quant_len;
+
+        if (quant) |value| {
+            var max_count: usize = 0;
+            while (text_index + max_count < text.len and copyModeRegexCharMatches(atom, text[text_index + max_count])) : (max_count += 1) {}
+            const min_count: usize = if (value == '+') 1 else 0;
+            if (value == '?' and max_count > 1) max_count = 1;
+            if (max_count < min_count) return null;
+
+            var count = max_count + 1;
+            while (count > min_count) {
+                count -= 1;
+                if (copyModeRegexMatchFrom(pattern, rest_index, text, text_index + count)) |end| return end;
+            }
+            if (min_count == 0) {
+                return copyModeRegexMatchFrom(pattern, rest_index, text, text_index);
+            }
+            return null;
+        }
+
+        if (text_index >= text.len or !copyModeRegexCharMatches(atom, text[text_index])) return null;
+        return copyModeRegexMatchFrom(pattern, rest_index, text, text_index + 1);
+    }
+
+    fn copyModeRegexFind(pattern: []const u8, text: []const u8, start: usize) ?struct { start: usize, end: usize } {
+        if (pattern.len == 0 or start > text.len) return null;
+        if (pattern[0] == '^') {
+            if (start != 0) return null;
+            const end = copyModeRegexMatchFrom(pattern, 1, text, 0) orelse return null;
+            return .{ .start = 0, .end = end };
+        }
+
+        var index = start;
+        while (index <= text.len) : (index += 1) {
+            const end = copyModeRegexMatchFrom(pattern, 0, text, index) orelse continue;
+            return .{ .start = index, .end = end };
+        }
+        return null;
     }
 
     fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []u8) ?[]const u8 {
@@ -6453,6 +6546,39 @@ test "copy mode viewport row mapping handles unclamped and clamped scroll positi
     try std.testing.expectEqual(@as(?usize, 9), copyModeRowIndexInViewport(14, 5, 10));
     try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(15, 5, 10));
     try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(4, 5, 10));
+}
+
+test "copy mode regex finder supports simple regexp operators" {
+    const exact = App.copyModeRegexFind("foo", "xxfooyy", 0).?;
+    try std.testing.expectEqual(@as(usize, 2), exact.start);
+    try std.testing.expectEqual(@as(usize, 5), exact.end);
+
+    const wildcard = App.copyModeRegexFind("f.o", "xxfoo", 0).?;
+    try std.testing.expectEqual(@as(usize, 2), wildcard.start);
+    try std.testing.expectEqual(@as(usize, 5), wildcard.end);
+
+    const digits = App.copyModeRegexFind("\\d+", "abc123def", 0).?;
+    try std.testing.expectEqual(@as(usize, 3), digits.start);
+    try std.testing.expectEqual(@as(usize, 6), digits.end);
+
+    const optional = App.copyModeRegexFind("colou?r", "color colour", 0).?;
+    try std.testing.expectEqual(@as(usize, 0), optional.start);
+    try std.testing.expectEqual(@as(usize, 5), optional.end);
+
+    const anchored_start = App.copyModeRegexFind("^foo", "foobar", 0).?;
+    try std.testing.expectEqual(@as(usize, 0), anchored_start.start);
+    try std.testing.expectEqual(@as(usize, 3), anchored_start.end);
+
+    const anchored_end = App.copyModeRegexFind("foo$", "barfoo", 0).?;
+    try std.testing.expectEqual(@as(usize, 3), anchored_end.start);
+    try std.testing.expectEqual(@as(usize, 6), anchored_end.end);
+
+    const anchored_both = App.copyModeRegexFind("^foo$", "foo", 0).?;
+    try std.testing.expectEqual(@as(usize, 0), anchored_both.start);
+    try std.testing.expectEqual(@as(usize, 3), anchored_both.end);
+
+    try std.testing.expectEqual(@as(?struct { start: usize, end: usize }, null), App.copyModeRegexFind("^foo", "xxfoo", 0));
+    try std.testing.expectEqual(@as(?struct { start: usize, end: usize }, null), App.copyModeRegexFind("foo$", "foobar", 0));
 }
 
 test "viewport iterator row mapping follows platform row order" {
