@@ -113,6 +113,11 @@ pub fn build(b: *std.Build) void {
 
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
+        const res_obj = b.addSystemCommand(&.{ "x86_64-w64-mingw32-windres", 
+            b.path("assets/resources.rc").getPath(b), 
+        });
+        const res_file = res_obj.addOutputFileArg("resources.o");
+
         const gui_root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -134,6 +139,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow-native",
             .root_module = gui_root_module,
         });
+        gui_exe.addObjectFile(res_file);
         gui_exe.subsystem = .Windows;
         gui_exe.linkLibC();
         gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
@@ -169,6 +175,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = launcher_root_module,
         });
+        launcher_exe.addObjectFile(res_file);
         launcher_exe.linkLibC();
         launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
         launcher_exe.root_module.addCSourceFile(.{
@@ -184,6 +191,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow-gui",
             .root_module = launcher_root_module,
         });
+        gui_launcher_exe.addObjectFile(res_file);
         gui_launcher_exe.subsystem = .Windows;
         gui_launcher_exe.linkLibC();
         gui_launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
