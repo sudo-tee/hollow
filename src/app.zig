@@ -92,9 +92,21 @@ const CopyModePoint = struct {
     col: usize = 0,
 };
 
+const copy_mode_default_style_color = ghostty.StyleColor{ .tag = .none, .value = .{ .palette = 0 } };
+
+const CopyModeCell = struct {
+    text: []u8 = &.{},
+    fg: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
+    bg: ?ghostty.ColorRgb = null,
+    fg_style: ghostty.StyleColor = copy_mode_default_style_color,
+    bg_style: ghostty.StyleColor = copy_mode_default_style_color,
+    face_idx: u8 = 0,
+};
+
 const CopyModeLine = struct {
     text: []u8 = &.{},
     col_offsets: []u32 = &.{},
+    cells: []CopyModeCell = &.{},
     cols: usize = 0,
 };
 
@@ -102,6 +114,12 @@ const CopyModeMatch = struct {
     row: usize,
     start_col: usize,
     end_col: usize,
+};
+
+pub const CopyModeSnapshotLine = struct {
+    text: []const u8,
+    cells: []const CopyModeCell,
+    cols: usize,
 };
 
 pub const SearchHighlight = struct {
@@ -122,6 +140,21 @@ fn countUtf8Codepoints(text: []const u8) usize {
         count += 1;
     }
     return count;
+}
+
+fn copyModeRowIndexInViewport(target_row: usize, visible_top: usize, visible_rows: usize) ?usize {
+    if (target_row < visible_top) return null;
+    const row_index = target_row - visible_top;
+    if (row_index >= visible_rows) return null;
+    return row_index;
+}
+
+fn viewportIteratorRowIndex(visual_row: usize, visible_rows: usize) ?usize {
+    if (visual_row >= visible_rows) return null;
+    if (builtin.os.tag == .linux and visible_rows > 0) {
+        return (visible_rows - 1) - visual_row;
+    }
+    return visual_row;
 }
 
 fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
@@ -630,6 +663,8 @@ pub const App = struct {
     copy_mode_pane: ?*Pane = null,
     copy_mode_history: std.ArrayListUnmanaged(CopyModeLine) = .empty,
     copy_mode_cursor: CopyModePoint = .{},
+    copy_mode_top_row: usize = 0,
+    copy_mode_restore_top_row: usize = 0,
     copy_mode_anchor: ?CopyModePoint = null,
     copy_mode_block_selection: bool = false,
     copy_mode_matches: std.ArrayListUnmanaged(CopyModeMatch) = .empty,
@@ -1011,22 +1046,49 @@ pub const App = struct {
                     }
                 },
                 .scroll_pane_delta => |scroll_ev| {
-                    if (self.hasPane(scroll_ev.pane)) self.scrollPaneViewport(scroll_ev.pane, scroll_ev.delta);
+                    if (!self.hasPane(scroll_ev.pane)) continue;
+                    if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
+                        self.copyModeScrollDelta(scroll_ev.delta);
+                    } else {
+                        self.scrollPaneViewport(scroll_ev.pane, scroll_ev.delta);
+                    }
                 },
                 .scroll_pane_target => |scroll_ev| {
-                    if (self.hasPane(scroll_ev.pane)) self.scrollPaneViewportToRow(scroll_ev.pane, scroll_ev.top_row);
+                    if (!self.hasPane(scroll_ev.pane)) continue;
+                    if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
+                        self.copyModeScrollToRow(scroll_ev.top_row);
+                    } else {
+                        self.scrollPaneViewportToRow(scroll_ev.pane, scroll_ev.top_row);
+                    }
                 },
                 .scroll_active_delta => |delta| {
-                    self.scrollActiveViewport(delta);
+                    if (self.copy_mode_active) {
+                        self.copyModeScrollDelta(delta);
+                    } else {
+                        self.scrollActiveViewport(delta);
+                    }
                 },
                 .scroll_active_page => |pages| {
-                    self.scrollActiveViewportPage(pages);
+                    if (self.copy_mode_active) {
+                        const pane = self.copy_mode_pane orelse continue;
+                        self.copyModeScrollDelta(pages * pageScrollRows(pane));
+                    } else {
+                        self.scrollActiveViewportPage(pages);
+                    }
                 },
                 .scroll_active_top => {
-                    self.scrollActiveViewportTop();
+                    if (self.copy_mode_active) {
+                        self.copyModeScrollToRow(0);
+                    } else {
+                        self.scrollActiveViewportTop();
+                    }
                 },
                 .scroll_active_bottom => {
-                    self.scrollActiveViewportBottom();
+                    if (self.copy_mode_active) {
+                        self.copyModeScrollToBottom();
+                    } else {
+                        self.scrollActiveViewportBottom();
+                    }
                 },
                 .copy_mode_enter => {
                     self.enterCopyMode();
@@ -2168,6 +2230,10 @@ pub const App = struct {
     fn deinitCopyModeState(self: *App) void {
         for (self.copy_mode_history.items) |line| {
             if (line.text.len > 0) self.allocator.free(line.text);
+            for (line.cells) |cell| {
+                if (cell.text.len > 0) self.allocator.free(cell.text);
+            }
+            if (line.cells.len > 0) self.allocator.free(line.cells);
             if (line.col_offsets.len > 0) self.allocator.free(line.col_offsets);
         }
         self.copy_mode_history.deinit(self.allocator);
@@ -3156,6 +3222,15 @@ pub const App = struct {
         return self.copy_mode_active;
     }
 
+    pub fn copyModeSnapshotLineForRow(self: *const App, pane: *const Pane, row: usize) ?CopyModeSnapshotLine {
+        if (!self.copy_mode_active or self.copy_mode_pane != pane) return null;
+        const visible_top = self.copyModeVisibleTopRow() orelse return null;
+        const history_row = visible_top + row;
+        if (history_row >= self.copy_mode_history.items.len) return null;
+        const line = self.copy_mode_history.items[history_row];
+        return .{ .text = line.text, .cells = line.cells, .cols = line.cols };
+    }
+
     pub fn searchHighlightForRow(self: *const App, pane: *const Pane, row: usize) ?SearchHighlight {
         if (!self.copy_mode_active or self.copy_mode_pane != pane) return null;
         if (self.copy_mode_matches.items.len == 0) return null;
@@ -3180,9 +3255,9 @@ pub const App = struct {
 
     fn copyModeVisibleTopRow(self: *const App) ?usize {
         const pane = self.copy_mode_pane orelse return null;
-        const scrollbar = pane.scrollbar();
-        const max_top = scrollbarMaxTopRow(scrollbar);
-        return @intCast(@min(scrollbar.offset, max_top));
+        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const max_top = self.copy_mode_history.items.len -| visible_rows;
+        return @min(self.copy_mode_top_row, max_top);
     }
 
     fn copyModeVisibleRange(self: *const App) ?selection.Range {
@@ -3375,19 +3450,28 @@ pub const App = struct {
 
     fn enterCopyMode(self: *App) void {
         const pane = self.activePane() orelse return;
+        const top = if (self.ghostty) |*runtime|
+            blk: {
+                const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+                break :blk @as(usize, @intCast(@min(scrollbar.offset, scrollbarMaxTopRow(scrollbar))));
+            }
+        else
+            0;
         self.copy_mode_pane = pane;
         self.copy_mode_active = true;
         self.copy_mode_anchor = null;
         self.copy_mode_block_selection = false;
         self.copy_mode_match_index = null;
+        self.copy_mode_restore_top_row = top;
+        self.copy_mode_top_row = top;
         self.copy_mode_needs_refresh = true;
         self.refreshCopyModeSnapshot() catch |err| {
             std.log.err("copy mode snapshot failed: {s}", .{@errorName(err)});
             self.exitCopyMode();
             return;
         };
-        const top = self.copyModeVisibleTopRow() orelse 0;
         const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        self.copy_mode_top_row = top;
         self.copy_mode_cursor = .{
             .row = top + visible_rows - 1,
             .col = 0,
@@ -3401,9 +3485,15 @@ pub const App = struct {
         self.copy_mode_active = false;
         self.copy_mode_pane = null;
         self.copy_mode_anchor = null;
+        self.copy_mode_top_row = 0;
+        const restore_top = self.copy_mode_restore_top_row;
+        self.copy_mode_restore_top_row = 0;
         self.copy_mode_match_index = null;
         self.clearSelection();
-        if (pane) |value| value.render_dirty = .full;
+        if (pane) |value| {
+            self.scrollPaneViewportToRow(value, restore_top);
+            value.render_dirty = .full;
+        }
         self.emitCopyModeChanged();
     }
 
@@ -3425,6 +3515,11 @@ pub const App = struct {
 
         for (self.copy_mode_history.items) |line| {
             if (line.text.len > 0) self.allocator.free(line.text);
+            for (line.cells) |cell| {
+                if (cell.text.len > 0) self.allocator.free(cell.text);
+            }
+            if (line.cells.len > 0) self.allocator.free(line.cells);
+            if (line.col_offsets.len > 0) self.allocator.free(line.col_offsets);
         }
         self.copy_mode_history.clearRetainingCapacity();
         self.copy_mode_matches.clearRetainingCapacity();
@@ -3434,17 +3529,33 @@ pub const App = struct {
         const original_top: usize = @intCast(@min(original.offset, scrollbarMaxTopRow(original)));
         defer self.scrollPaneViewportToRow(pane, original_top);
 
-        const total_rows: usize = @intCast(@max(original.total, original.len));
+        const total_rows: usize = @intCast(original.total);
         const visible_rows: usize = @max(@as(usize, 1), @as(usize, pane.rows));
-        var row_index: usize = 0;
-        while (row_index < total_rows) : (row_index += 1) {
-            self.scrollPaneViewportToRow(pane, row_index);
-            const line = try self.captureCopyModeLine(pane, row_index, visible_rows);
-            try self.copy_mode_history.append(self.allocator, line);
+        var top_row: usize = 0;
+        while (top_row < total_rows) : (top_row += visible_rows) {
+            self.scrollPaneViewportToRow(pane, top_row);
+            try self.syncPaneRenderState(runtime, pane);
+            var viewport_row: usize = 0;
+            while (viewport_row < visible_rows) : (viewport_row += 1) {
+                const history_row = top_row + viewport_row;
+                if (history_row >= total_rows) break;
+                const line = try self.captureCopyModeLine(pane, history_row, visible_rows);
+                try self.copy_mode_history.append(self.allocator, line);
+            }
         }
 
         self.copy_mode_needs_refresh = false;
         if (self.copy_mode_query.len > 0) try self.rebuildCopyModeMatches();
+    }
+
+    fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void {
+        if (!pane.render_state_ready or pane.render_state == null) return;
+        runtime.clearRenderStateDirty(pane.render_state);
+        try runtime.updateRenderState(pane.render_state, pane.terminal);
+        pane.last_render_state_update_ns = std.time.nanoTimestamp();
+        pane.pty_received_data = false;
+        pane.render_state_fresh = false;
+        _ = self.refreshPaneScrollbar(runtime, pane);
     }
 
     fn captureCopyModeLine(self: *App, pane: *Pane, top_row: usize, visible_rows: usize) !CopyModeLine {
@@ -3452,10 +3563,13 @@ pub const App = struct {
         if (!paneRenderHelpersReady(pane)) return .{};
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return .{};
 
-        _ = top_row;
-        const target_index = 0;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const visible_top: usize = @intCast(@min(scrollbar.offset, scrollbarMaxTopRow(scrollbar)));
+        const visual_row = copyModeRowIndexInViewport(top_row, visible_top, visible_rows) orelse return .{};
+        const target_index = viewportIteratorRowIndex(visual_row, visible_rows) orelse return .{};
         var row_text: [4096]u8 = undefined;
         var offsets: [4097]u32 = [_]u32{0} ** 4097;
+        var cell_buf: [512]CopyModeCell = undefined;
         var row_cols: usize = 0;
         var row_i: usize = 0;
         while (runtime.nextRow(pane.row_iterator) and row_i < visible_rows) : (row_i += 1) {
@@ -3463,18 +3577,35 @@ pub const App = struct {
             if (row_i != target_index) continue;
 
             var len: usize = 0;
+            var style: ghostty.Style = undefined;
             while (runtime.nextCell(pane.row_cells)) : (row_cols += 1) {
                 offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
-                appendCellText(runtime, pane.row_cells, row_text[0..], &len);
+                const cell_text = try captureCopyModeCellText(self.allocator, runtime, pane.row_cells);
+                const has_style = runtime.cellStyleInto(pane.row_cells, &style);
+                cell_buf[@min(cell_buf.len - 1, row_cols)] = .{
+                    .text = cell_text,
+                    .fg = runtime.cellForeground(pane.row_cells) orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 },
+                    .bg = runtime.cellBackground(pane.row_cells),
+                    .fg_style = if (has_style) style.fg_color else copy_mode_default_style_color,
+                    .bg_style = if (has_style) style.bg_color else copy_mode_default_style_color,
+                    .face_idx = if (has_style)
+                        (if (style.bold and style.italic) 2 else if (style.bold) 1 else if (style.italic) 3 else 0)
+                    else
+                        0,
+                };
+                appendCopyModeCellBytes(row_text[0..], &len, cell_text);
             }
             offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
             while (len > 0 and row_text[len - 1] == ' ') len -= 1;
             while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
             const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
+            const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
             for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
+            for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
             return .{
                 .text = try self.allocator.dupe(u8, row_text[0..len]),
                 .col_offsets = owned_offsets,
+                .cells = owned_cells,
                 .cols = row_cols,
             };
         }
@@ -3527,11 +3658,11 @@ pub const App = struct {
         self.copy_mode_match_index = next_index;
         const match = self.copy_mode_matches.items[next_index];
         self.copy_mode_cursor = .{ .row = match.row, .col = match.start_col };
-        self.copy_mode_anchor = .{ .row = match.row, .col = match.end_col };
+        self.copy_mode_anchor = .{ .row = match.row, .col = match.end_col -| 1 };
         if (self.copy_mode_pane) |pane| {
             const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
             const top_target = if (match.row >= visible_rows / 2) match.row - visible_rows / 2 else 0;
-            self.scrollPaneViewportToRow(pane, top_target);
+            self.copy_mode_top_row = top_target;
             pane.render_dirty = .full;
         }
         self.emitCopyModeChanged();
@@ -3575,10 +3706,43 @@ pub const App = struct {
         const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
         const top = self.copyModeVisibleTopRow() orelse 0;
         if (cursor.row < top) {
-            self.scrollPaneViewportToRow(pane, cursor.row);
+            self.copy_mode_top_row = cursor.row;
         } else if (cursor.row >= top + visible_rows) {
-            self.scrollPaneViewportToRow(pane, cursor.row - (visible_rows - 1));
+            self.copy_mode_top_row = cursor.row - (visible_rows - 1);
         }
+        pane.render_dirty = .full;
+        self.emitCopyModeChanged();
+    }
+
+    fn copyModeScrollDelta(self: *App, delta: isize) void {
+        const pane = self.copy_mode_pane orelse return;
+        if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
+        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const max_top = self.copy_mode_history.items.len -| visible_rows;
+        const current_top: isize = @intCast(self.copyModeVisibleTopRow() orelse 0);
+        const min_top: isize = 0;
+        const max_top_i: isize = @intCast(max_top);
+        const next_top = std.math.clamp(current_top + delta, min_top, max_top_i);
+        self.copy_mode_top_row = @intCast(next_top);
+        pane.render_dirty = .full;
+        self.emitCopyModeChanged();
+    }
+
+    fn copyModeScrollToRow(self: *App, top_row: u64) void {
+        const pane = self.copy_mode_pane orelse return;
+        if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
+        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const max_top = self.copy_mode_history.items.len -| visible_rows;
+        self.copy_mode_top_row = @min(@as(usize, @intCast(top_row)), max_top);
+        pane.render_dirty = .full;
+        self.emitCopyModeChanged();
+    }
+
+    fn copyModeScrollToBottom(self: *App) void {
+        const pane = self.copy_mode_pane orelse return;
+        if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
+        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        self.copy_mode_top_row = self.copy_mode_history.items.len -| visible_rows;
         pane.render_dirty = .full;
         self.emitCopyModeChanged();
     }
@@ -3604,7 +3768,7 @@ pub const App = struct {
     }
 
     fn copyModeCopy(self: *App) !void {
-        const pane = self.copy_mode_pane orelse return;
+        _ = self.copy_mode_pane orelse return;
         if (self.copy_mode_needs_refresh) try self.refreshCopyModeSnapshot();
         const anchor = self.copy_mode_anchor orelse self.copy_mode_cursor;
         const range = normalizeCopyModeRange(anchor, self.copy_mode_cursor);
@@ -3614,7 +3778,7 @@ pub const App = struct {
         while (row <= range.end.row and row < self.copy_mode_history.items.len) : (row += 1) {
             const line = self.copy_mode_history.items[row];
             const start_col = if (row == range.start.row) @min(range.start.col, line.cols) else 0;
-            const end_col = if (row == range.end.row) @min(range.end.col, line.cols) else line.cols;
+            const end_col = if (row == range.end.row) @min(range.end.col + 1, line.cols) else line.cols;
             const start_byte = copyModeByteOffsetForColumn(line, start_col);
             const end_byte = copyModeByteOffsetForColumn(line, end_col);
             if (end_byte > start_byte) try text_buf.appendSlice(self.allocator, line.text[start_byte..end_byte]);
@@ -3626,7 +3790,7 @@ pub const App = struct {
         fastmem.copy(u8, clipboard[0..text_buf.items.len], text_buf.items);
         clipboard[text_buf.items.len] = 0;
         c.sapp_set_clipboard_string(@ptrCast(clipboard[0..text_buf.items.len :0].ptr));
-        pane.render_dirty = .full;
+        self.exitCopyMode();
     }
 
     fn normalizeCopyModeRange(a: CopyModePoint, b: CopyModePoint) struct { start: CopyModePoint, end: CopyModePoint } {
@@ -4399,6 +4563,17 @@ pub const App = struct {
 
     pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
         const hit = self.hitTestPane(x, y) orelse return;
+        if (self.copy_mode_active and self.copy_mode_pane == hit.pane) {
+            if (self.hitTestScrollbar(x, y)) |metrics| {
+                const ratio = std.math.clamp((y - metrics.track_y) / metrics.track_h, 0.0, 1.0);
+                const max_top = self.copy_mode_history.items.len -| @max(@as(usize, 1), @as(usize, hit.pane.rows));
+                const target = @as(u64, @intFromFloat(@round(ratio * @as(f32, @floatFromInt(max_top)))));
+                self.copyModeScrollToRow(target);
+            } else {
+                self.copyModeScrollDelta(delta);
+            }
+            return;
+        }
         const runtime = if (self.ghostty) |*rt| rt else return;
         const scrollbar = self.refreshPaneScrollbar(runtime, hit.pane);
         const max_top = scrollbarMaxTopRow(scrollbar);
@@ -5652,6 +5827,20 @@ fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, l
     }
 }
 
+fn captureCopyModeCellText(allocator: std.mem.Allocator, runtime: *GhosttyRuntime, row_cells: ?*anyopaque) ![]u8 {
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+    appendCellText(runtime, row_cells, &buf, &len);
+    return try allocator.dupe(u8, buf[0..len]);
+}
+
+fn appendCopyModeCellBytes(out: []u8, len: *usize, cell_text: []const u8) void {
+    if (cell_text.len == 0) return;
+    if (len.* + cell_text.len > out.len) return;
+    fastmem.copy(u8, out[len.* .. len.* + cell_text.len], cell_text);
+    len.* += cell_text.len;
+}
+
 fn encodeCodepointInto(codepoint: u32, buf: *[4]u8) ?usize {
     if (codepoint == 0) return null;
     if (codepoint < 0x80) {
@@ -6255,6 +6444,28 @@ test "app helpers count utf8 codepoints by leading byte" {
     try std.testing.expectEqual(@as(usize, 3), countUtf8Codepoints("A\xc3\xa9\xe2\x82\xac"));
     try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xf0\x9f\x98\x80"));
     try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xe2\x82"));
+}
+
+test "copy mode viewport row mapping handles unclamped and clamped scroll positions" {
+    try std.testing.expectEqual(@as(?usize, 0), copyModeRowIndexInViewport(0, 0, 10));
+    try std.testing.expectEqual(@as(?usize, 5), copyModeRowIndexInViewport(5, 0, 10));
+    try std.testing.expectEqual(@as(?usize, 3), copyModeRowIndexInViewport(8, 5, 10));
+    try std.testing.expectEqual(@as(?usize, 9), copyModeRowIndexInViewport(14, 5, 10));
+    try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(15, 5, 10));
+    try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(4, 5, 10));
+}
+
+test "viewport iterator row mapping follows platform row order" {
+    if (builtin.os.tag == .linux) {
+        try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(0, 5));
+        try std.testing.expectEqual(@as(?usize, 2), viewportIteratorRowIndex(2, 5));
+        try std.testing.expectEqual(@as(?usize, 0), viewportIteratorRowIndex(4, 5));
+    } else {
+        try std.testing.expectEqual(@as(?usize, 0), viewportIteratorRowIndex(0, 5));
+        try std.testing.expectEqual(@as(?usize, 2), viewportIteratorRowIndex(2, 5));
+        try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(4, 5));
+    }
+    try std.testing.expectEqual(@as(?usize, null), viewportIteratorRowIndex(5, 5));
 }
 
 test "titleCString truncates and null terminates window titles" {

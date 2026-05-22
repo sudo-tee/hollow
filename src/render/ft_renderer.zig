@@ -18,6 +18,7 @@ const c = @import("sokol_c");
 const ft = @import("ft_c");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
+const CopyModeSnapshotLine = @import("../app.zig").CopyModeSnapshotLine;
 const SearchHighlight = @import("../app.zig").SearchHighlight;
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
@@ -1638,6 +1639,14 @@ pub const FtRenderer = struct {
         _ = fb_w;
         _ = fb_h;
         _ = terminal;
+
+        if (pane) |value| {
+            if (app.copyModeActiveForPane(value)) {
+                self.queueCopyModeSnapshot(cfg, app, value, offset_x, offset_y, pane_w, pane_h);
+                return;
+            }
+        }
+
         const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
             if (!runtime.renderStateColorsInto(render_state, &self.render_colors_scratch)) return;
             break :blk &self.render_colors_scratch;
@@ -1762,6 +1771,163 @@ pub const FtRenderer = struct {
 
         self.last_pass2_glyph_ns = pass2_glyph_ns;
         self.last_pass2_decoration_ns = pass2_decoration_ns;
+    }
+
+    fn queueCopyModeSnapshot(
+        self: *FtRenderer,
+        cfg: *const Config,
+        app: *const App,
+        pane: *const Pane,
+        offset_x: f32,
+        offset_y: f32,
+        pane_w: f32,
+        pane_h: f32,
+    ) void {
+        const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else ghostty.ColorRgb{ .r = 0, .g = 0, .b = 0 };
+        const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+        const selection_bg = if (cfg.terminal_theme.enabled)
+            (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
+        else
+            mixColor(default_bg, default_fg, 0.35);
+        const selection_fg = if (cfg.terminal_theme.enabled)
+            (cfg.terminal_theme.selection_fg orelse default_fg)
+        else
+            default_fg;
+        const search_bg = mixColor(default_bg, default_fg, 0.18);
+        const search_active_bg = mixColor(default_bg, default_fg, 0.42);
+        const selection_range = app.copyModeSelectionRange(pane);
+
+        self.setupViewport(offset_x, offset_y, pane_w, pane_h);
+        self.resetQueueState();
+        if (!self.ensureRunBufferCapacity(@max(@as(usize, 1), @as(usize, pane.rows)), @max(@as(usize, 1), @as(usize, pane.cols)))) return;
+        const run_buf = self.run_buf;
+
+        c.sgl_load_default_pipeline();
+        c.sgl_begin_quads();
+        emitRect(0.0, 0.0, pane_w, pane_h, default_bg.r, default_bg.g, default_bg.b, 255);
+
+        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        var row: usize = 0;
+        while (row < visible_rows) : (row += 1) {
+            const row_info = self.makeCopyModeSnapshotRowInfo(app, pane, selection_range, row, visible_rows);
+            const line = app.copyModeSnapshotLineForRow(pane, row);
+            self.queueCopyModeSnapshotRowBackground(line, row_info, default_bg, cfg, selection_bg, search_bg, search_active_bg, selection_fg);
+        }
+        c.sgl_end();
+
+        row = 0;
+        while (row < visible_rows) : (row += 1) {
+            const line = app.copyModeSnapshotLineForRow(pane, row) orelse continue;
+            const row_info = self.makeCopyModeSnapshotRowInfo(app, pane, selection_range, row, visible_rows);
+            self.queueCopyModeSnapshotRowText(line, row_info, cfg, default_fg, selection_fg, run_buf, .raster);
+        }
+
+        if (self.atlas_dirty) {
+            self.flushAtlas();
+            self.atlas_dirty = false;
+            self.last_atlas_flushed = true;
+        }
+
+        row = 0;
+        while (row < visible_rows) : (row += 1) {
+            const line = app.copyModeSnapshotLineForRow(pane, row) orelse continue;
+            const row_info = self.makeCopyModeSnapshotRowInfo(app, pane, selection_range, row, visible_rows);
+            self.queueCopyModeSnapshotRowText(line, row_info, cfg, default_fg, selection_fg, run_buf, .draw);
+        }
+
+    }
+
+    fn makeCopyModeSnapshotRowInfo(
+        self: *FtRenderer,
+        app: *const App,
+        pane: *const Pane,
+        selection_range: ?selection.Range,
+        row: usize,
+        visible_rows: usize,
+    ) RowRenderInfo {
+        const row_y_px = if (builtin.os.tag == .linux and visible_rows > 0)
+            @as(f32, @floatFromInt((visible_rows - 1) - row)) * self.cell_h
+        else
+            @as(f32, @floatFromInt(row)) * self.cell_h;
+        return .{
+            .row_y = row,
+            .py = self.padding_y + row_y_px,
+            .selection = if (selection_range) |range| rowSelectionBounds(range, row) else null,
+            .search_highlight = app.searchHighlightForRow(pane, row),
+            .cursor_col = app.copyModeCursorColForRow(pane, row),
+        };
+    }
+
+    fn queueCopyModeSnapshotRowBackground(
+        self: *FtRenderer,
+        line: ?CopyModeSnapshotLine,
+        row: RowRenderInfo,
+        default_bg: ghostty.ColorRgb,
+        cfg: *const Config,
+        selection_bg: ghostty.ColorRgb,
+        search_bg: ghostty.ColorRgb,
+        search_active_bg: ghostty.ColorRgb,
+        selection_fg: ghostty.ColorRgb,
+    ) void {
+        if (line) |snapshot| {
+            for (snapshot.cells, 0..) |cell, col| {
+                const bg = if (cell.bg_style.tag != .none)
+                    ghostty.resolveStyleColor(cell.bg_style, default_bg, &cfg.terminal_theme.palette)
+                else
+                    cell.bg orelse continue;
+                const x = self.padding_x + @as(f32, @floatFromInt(col)) * self.cell_w;
+                emitRect(x, row.py, self.cell_w, self.cell_h, bg.r, bg.g, bg.b, 255);
+            }
+        }
+        if (row.selection) |bounds| {
+            const start_x = self.padding_x + @as(f32, @floatFromInt(bounds.start_col)) * self.cell_w;
+            const end_x = self.padding_x + @as(f32, @floatFromInt(bounds.end_col + 1)) * self.cell_w;
+            emitRect(start_x, row.py, @max(0.0, end_x - start_x), self.cell_h, selection_bg.r, selection_bg.g, selection_bg.b, 255);
+        }
+        if (row.search_highlight) |highlight| {
+            const bg = if (highlight.active) search_active_bg else search_bg;
+            const start_x = self.padding_x + @as(f32, @floatFromInt(highlight.start_col)) * self.cell_w;
+            const end_x = self.padding_x + @as(f32, @floatFromInt(highlight.end_col)) * self.cell_w;
+            emitRect(start_x, row.py, @max(0.0, end_x - start_x), self.cell_h, bg.r, bg.g, bg.b, 255);
+        }
+        if (row.cursor_col) |cursor_col| {
+            const cursor_x = self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w;
+            emitRect(cursor_x, row.py, self.cell_w, self.cell_h, selection_fg.r, selection_fg.g, selection_fg.b, 96);
+        }
+    }
+
+    fn queueCopyModeSnapshotRowText(
+        self: *FtRenderer,
+        line: CopyModeSnapshotLine,
+        row: RowRenderInfo,
+        cfg: *const Config,
+        default_fg: ghostty.ColorRgb,
+        selection_fg: ghostty.ColorRgb,
+        run_buf: []u8,
+        mode: GlyphRunMode,
+    ) void {
+        var run = GlyphRunState{ .fg = default_fg };
+        for (line.cells, 0..) |cell, col| {
+            if (col >= line.cols) break;
+            const resolved_fg = if (cell.fg_style.tag != .none)
+                ghostty.resolveStyleColor(cell.fg_style, default_fg, &cfg.terminal_theme.palette)
+            else
+                default_fg;
+            const fg = if (isSelectedCell(row.selection, col)) selection_fg else resolved_fg;
+            if (cell.text.len == 0 or (cell.text.len == 1 and cell.text[0] == ' ')) {
+                self.flushQueuedRun(mode, run_buf, &run, row.py);
+                continue;
+            }
+            if (mode == .draw) {
+                const px = self.columnPixelX(col, line.cols);
+                if (drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, cell.text, fg)) {
+                    self.flushQueuedRun(mode, run_buf, &run, row.py);
+                    continue;
+                }
+            }
+            self.appendQueuedRun(mode, run_buf, cell.text, col, cell.face_idx, fg, &run, row.py);
+        }
+        self.flushQueuedRun(mode, run_buf, &run, row.py);
     }
 
     const HASH_SKIP_MAX_ROWS = 512;
