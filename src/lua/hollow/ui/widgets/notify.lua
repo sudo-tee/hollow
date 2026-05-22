@@ -67,15 +67,12 @@ function ui.notify.show(message, opts)
     chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color, 2),
     backdrop = opts.backdrop,
     on_key = function(key)
-      if key ~= "escape" and key ~= "enter" then
-        return false
+      if key == "escape" then
+        ui.close_overlay_widget(widget)
+        return true
       end
 
-      ui.close_overlay_widget(widget)
-      if action and key == "enter" and type(action.fn) == "function" then
-        action.fn()
-      end
-      return true
+      return false
     end,
   })
 
