@@ -1640,13 +1640,6 @@ pub const FtRenderer = struct {
         _ = fb_h;
         _ = terminal;
 
-        if (pane) |value| {
-            if (app.copyModeActiveForPane(value)) {
-                self.queueCopyModeSnapshot(cfg, app, value, offset_x, offset_y, pane_w, pane_h);
-                return;
-            }
-        }
-
         const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
             if (!runtime.renderStateColorsInto(render_state, &self.render_colors_scratch)) return;
             break :blk &self.render_colors_scratch;

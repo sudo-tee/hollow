@@ -109,6 +109,17 @@ function M.setup(hollow, state, term_helpers)
     if name == "window:resized" then
       return { size = payload }
     end
+    if name == "copy_mode:changed" then
+      local copy_mode = payload.copy_mode or payload
+      return {
+        active = copy_mode.active == true,
+        query = copy_mode.query or "",
+        match_count = copy_mode.match_count or 0,
+        match_index = copy_mode.match_index,
+        selecting = copy_mode.selecting == true,
+        block = copy_mode.block == true,
+      }
+    end
     if name == "key:unhandled" then
       return {
         key = payload.key,

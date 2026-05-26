@@ -2395,6 +2395,27 @@ fn invalidateAllPaneCaches() void {
     }
 }
 
+pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
+    for (&g_pane_caches) |*slot| {
+        if (slot.*) |*entry| {
+            if (entry.pane != pane) continue;
+            entry.needs_clear = true;
+            entry.force_full_frames = 2;
+            entry.layout_generation = 0;
+            entry.stable_after_resize = false;
+            entry.last_cols = 0;
+            entry.last_rows = 0;
+            entry.validity = .invalid;
+            entry.last_atlas_epoch = 0;
+            entry.has_bg_color = false;
+            @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
+            @memset(&entry.row_map_vals, 0);
+            entry.prev_cursor_row = std.math.maxInt(usize);
+            return;
+        }
+    }
+}
+
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const frame_start_ns = std.time.nanoTimestamp();

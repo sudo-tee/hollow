@@ -633,10 +633,6 @@ pub const Pane = struct {
         // Guard against null terminal — can happen if bootstrap partially failed
         // (e.g. PTY spawn error left self.terminal pointing at a freed handle).
         if (self.terminal) |terminal| {
-            if (is_windows and (cols > 1 or rows > 1)) {
-                const bump_cols: u16 = if (cols > 1) cols - 1 else cols + 1;
-                runtime.resizeTerminal(terminal, bump_cols, rows, cell_width_px, cell_height_px);
-            }
             runtime.resizeTerminal(terminal, cols, rows, cell_width_px, cell_height_px);
         }
         runtime.updateRenderState(self.render_state, self.terminal) catch {};

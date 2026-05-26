@@ -222,6 +222,7 @@ pub const AppCallbacks = struct {
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
     scroll_active_top: *const fn (app: *anyopaque) void,
     scroll_active_bottom: *const fn (app: *anyopaque) void,
+    prompt_jump: *const fn (app: *anyopaque, direction: []const u8) void,
     copy_mode_enter: *const fn (app: *anyopaque) void,
     copy_mode_exit: *const fn (app: *anyopaque) void,
     copy_mode_move: *const fn (app: *anyopaque, direction: []const u8, extend: bool) void,
@@ -1692,6 +1693,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_scroll_active_bottom, 1);
         api.set_field(self.state, -2, "scroll_active_bottom");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_prompt_jump, 1);
+        api.set_field(self.state, -2, "prompt_jump");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_copy_mode_enter, 1);
@@ -5100,6 +5105,19 @@ fn l_scroll_active_top(state: *State) callconv(.c) c_int {
 fn l_scroll_active_bottom(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.scroll_active_bottom(cbs.app);
+    return 0;
+}
+
+fn l_prompt_jump(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    var direction_len: usize = 0;
+    const direction_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &direction_len)
+    else
+        null;
+    cbs.prompt_jump(cbs.app, if (direction_ptr) |ptr| ptr[0..direction_len] else "next");
     return 0;
 }
 

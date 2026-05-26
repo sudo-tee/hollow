@@ -87,6 +87,19 @@ const CopyModeMoveKind = enum {
     bottom,
 };
 
+const PromptJumpDir = enum {
+    prev,
+    next,
+};
+
+const PromptJumpSource = union(enum) {
+    live: struct {
+        runtime: *GhosttyRuntime,
+        terminal: ?*anyopaque,
+    },
+    copy_mode: []const CopyModeLine,
+};
+
 const CopyModePoint = struct {
     row: usize = 0,
     col: usize = 0,
@@ -108,6 +121,7 @@ const CopyModeLine = struct {
     col_offsets: []u32 = &.{},
     cells: []CopyModeCell = &.{},
     cols: usize = 0,
+    is_prompt: bool = false,
 };
 
 const CopyModeMatch = struct {
@@ -513,6 +527,7 @@ pub const PendingMouseEvent = union(enum) {
     scroll_active_page: isize,
     scroll_active_top,
     scroll_active_bottom,
+    prompt_jump: PromptJumpDir,
     copy_mode_enter,
     copy_mode_exit,
     copy_mode_move: struct {
@@ -1088,6 +1103,13 @@ pub const App = struct {
                         self.copyModeScrollToBottom();
                     } else {
                         self.scrollActiveViewportBottom();
+                    }
+                },
+                .prompt_jump => |dir| {
+                    if (self.copy_mode_active) {
+                        self.copyModePromptJump(dir);
+                    } else {
+                        self.handlePromptJump(dir);
                     }
                 },
                 .copy_mode_enter => {
@@ -2375,6 +2397,7 @@ pub const App = struct {
             .scroll_active_page = luaScrollActivePageCallback,
             .scroll_active_top = luaScrollActiveTopCallback,
             .scroll_active_bottom = luaScrollActiveBottomCallback,
+            .prompt_jump = luaPromptJumpCallback,
             .copy_mode_enter = luaCopyModeEnterCallback,
             .copy_mode_exit = luaCopyModeExitCallback,
             .copy_mode_move = luaCopyModeMoveCallback,
@@ -3072,7 +3095,7 @@ pub const App = struct {
             // Forcing a PTY/ghostty resize in this case sends an unnecessary
             // SIGWINCH/reflow, which is what causes shell-mode content to come
             // back looking as if `clear` had run after minimize/restore.
-            self.resizeAllPanes(runtime, pixel_width, pixel_height, !grid_unchanged, grid_unchanged, false);
+            self.resizeAllPanes(runtime, pixel_width, pixel_height, false, grid_unchanged, false);
         }
 
         _ = size_unchanged;
@@ -3237,25 +3260,45 @@ pub const App = struct {
         const visible_top = self.copyModeVisibleTopRow() orelse return null;
         const history_row = visible_top + row;
         const active_idx = self.copy_mode_match_index;
+        var fallback: ?SearchHighlight = null;
         for (self.copy_mode_matches.items, 0..) |match, index| {
             if (match.row != history_row) continue;
-            return .{
+            const highlight = SearchHighlight{
                 .row = row,
                 .start_col = match.start_col,
                 .end_col = match.end_col,
                 .active = active_idx != null and active_idx.? == index,
             };
+            if (highlight.active) return highlight;
+            if (fallback == null) fallback = highlight;
         }
-        return null;
+        return fallback;
     }
 
     pub fn selectionGeneration(self: *const App) u64 {
         return self.selection_generation;
     }
 
+    fn copyModeVisibleRows(self: *const App, pane: *const Pane) usize {
+        const fallback = @max(@as(usize, 1), @as(usize, pane.rows));
+        const runtime = if (self.ghostty) |*rt| @constCast(rt) else return fallback;
+        if (runtime.terminalScrollbar(pane.terminal)) |scrollbar| {
+            return @max(@as(usize, 1), @as(usize, @intCast(scrollbar.len)));
+        }
+        if (!pane.render_state_ready or pane.render_state == null) return fallback;
+        const rows = runtime.renderStateRows(pane.render_state) orelse return fallback;
+        return @max(@as(usize, 1), @as(usize, @intCast(rows)));
+    }
+
+    fn syncCopyModeTopRowFromViewport(self: *App, pane: *Pane) void {
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        self.copy_mode_top_row = @intCast(scrollbarTopRow(scrollbar));
+    }
+
     fn copyModeVisibleTopRow(self: *const App) ?usize {
         const pane = self.copy_mode_pane orelse return null;
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const visible_rows = self.copyModeVisibleRows(pane);
         const max_top = self.copy_mode_history.items.len -| visible_rows;
         return @min(self.copy_mode_top_row, max_top);
     }
@@ -3268,12 +3311,37 @@ pub const App = struct {
         const start_row = anchor.row -| top;
         const end_row = cursor.row -| top;
         if (anchor.row < top and cursor.row < top) return null;
-        const max_visible_row = @max(@as(usize, 1), @as(usize, pane.rows)) - 1;
+        const max_visible_row = self.copyModeVisibleRows(pane) - 1;
         if (start_row > max_visible_row and end_row > max_visible_row) return null;
         const start = selection.CellPoint{ .row = @min(max_visible_row, start_row), .col = anchor.col };
         const end_ = selection.CellPoint{ .row = @min(max_visible_row, end_row), .col = cursor.col };
         if (self.copy_mode_block_selection) return selection.normalizeBlock(start, end_);
         return selection.normalize(start, end_);
+    }
+
+    fn gridRefForHistoryRow(self: *const App, pane: *Pane, history_row: usize) ?ghostty.GridRef {
+        const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
+        const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
+        const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
+        return gridRefForHistoryPoint(runtime, pane.terminal, history_row, 0, scrollback_rows);
+    }
+
+    fn gridRefForHistoryCell(self: *const App, pane: *Pane, history_row: usize, col: usize) ?ghostty.GridRef {
+        const runtime = if (self.ghostty) |*rt| @constCast(rt) else return null;
+        const scrollbar = runtime.terminalScrollbar(pane.terminal) orelse return null;
+        const scrollback_rows: usize = @intCast(scrollbar.total - @min(scrollbar.total, scrollbar.len));
+        return gridRefForHistoryPoint(runtime, pane.terminal, history_row, col, scrollback_rows);
+    }
+
+    fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
+        const pane = self.copy_mode_pane orelse return;
+        const visible_rows = self.copyModeVisibleRows(pane);
+        const top = self.copyModeVisibleTopRow() orelse 0;
+        const aligned_top = alignedTopRowForTarget(top, visible_rows, target_row);
+        self.copy_mode_top_row = aligned_top;
+        self.scrollPaneViewportToRow(pane, aligned_top);
+        self.syncCopyModeTopRowFromViewport(pane);
+        self.refreshCopyModeVisibleSlice(pane) catch {};
     }
 
     pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, extend: bool) void {
@@ -3450,10 +3518,11 @@ pub const App = struct {
 
     fn enterCopyMode(self: *App) void {
         const pane = self.activePane() orelse return;
-        const top = if (self.ghostty) |*runtime|
+        const runtime = if (self.ghostty) |*rt| rt else null;
+        const top = if (runtime) |rt|
             blk: {
-                const scrollbar = self.refreshPaneScrollbar(runtime, pane);
-                break :blk @as(usize, @intCast(@min(scrollbar.offset, scrollbarMaxTopRow(scrollbar))));
+                const scrollbar = self.refreshPaneScrollbar(rt, pane);
+                break :blk @as(usize, @intCast(scrollbarTopRow(scrollbar)));
             }
         else
             0;
@@ -3465,12 +3534,7 @@ pub const App = struct {
         self.copy_mode_restore_top_row = top;
         self.copy_mode_top_row = top;
         self.copy_mode_needs_refresh = true;
-        self.refreshCopyModeSnapshot() catch |err| {
-            std.log.err("copy mode snapshot failed: {s}", .{@errorName(err)});
-            self.exitCopyMode();
-            return;
-        };
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const visible_rows = self.copyModeVisibleRows(pane);
         self.copy_mode_top_row = top;
         self.copy_mode_cursor = .{
             .row = top + visible_rows - 1,
@@ -3491,7 +3555,11 @@ pub const App = struct {
         self.copy_mode_match_index = null;
         self.clearSelection();
         if (pane) |value| {
+            if (self.renderer) |*renderer| renderer.invalidatePaneCache(value);
             self.scrollPaneViewportToRow(value, restore_top);
+            value.render_state_fresh = false;
+            value.last_render_state_update_ns = 0;
+            value.pty_received_data = true;
             value.render_dirty = .full;
         }
         self.emitCopyModeChanged();
@@ -3513,39 +3581,64 @@ pub const App = struct {
         const runtime = if (self.ghostty) |*rt| rt else return;
         if (!self.hasPane(pane)) return;
 
-        for (self.copy_mode_history.items) |line| {
-            if (line.text.len > 0) self.allocator.free(line.text);
-            for (line.cells) |cell| {
-                if (cell.text.len > 0) self.allocator.free(cell.text);
-            }
-            if (line.cells.len > 0) self.allocator.free(line.cells);
-            if (line.col_offsets.len > 0) self.allocator.free(line.col_offsets);
-        }
+        for (self.copy_mode_history.items) |line| self.freeCopyModeLine(line);
         self.copy_mode_history.clearRetainingCapacity();
         self.copy_mode_matches.clearRetainingCapacity();
         self.copy_mode_match_index = null;
 
-        const original = self.refreshPaneScrollbar(runtime, pane);
-        const original_top: usize = @intCast(@min(original.offset, scrollbarMaxTopRow(original)));
-        defer self.scrollPaneViewportToRow(pane, original_top);
-
-        const total_rows: usize = @intCast(original.total);
-        const visible_rows: usize = @max(@as(usize, 1), @as(usize, pane.rows));
-        var top_row: usize = 0;
-        while (top_row < total_rows) : (top_row += visible_rows) {
-            self.scrollPaneViewportToRow(pane, top_row);
-            try self.syncPaneRenderState(runtime, pane);
-            var viewport_row: usize = 0;
-            while (viewport_row < visible_rows) : (viewport_row += 1) {
-                const history_row = top_row + viewport_row;
-                if (history_row >= total_rows) break;
-                const line = try self.captureCopyModeLine(pane, history_row, visible_rows);
-                try self.copy_mode_history.append(self.allocator, line);
-            }
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const total_rows: usize = @intCast(scrollbar.total);
+        var history_row: usize = 0;
+        while (history_row < total_rows) : (history_row += 1) {
+            const line = try self.captureCopyModeLine(pane, history_row);
+            try self.copy_mode_history.append(self.allocator, line);
         }
+
+        try self.refreshCopyModeVisibleSlice(pane);
 
         self.copy_mode_needs_refresh = false;
         if (self.copy_mode_query.len > 0) try self.rebuildCopyModeMatches();
+    }
+
+    fn freeCopyModeLine(self: *App, line: CopyModeLine) void {
+        if (line.text.len > 0) self.allocator.free(line.text);
+        for (line.cells) |cell| {
+            if (cell.text.len > 0) self.allocator.free(cell.text);
+        }
+        if (line.cells.len > 0) self.allocator.free(line.cells);
+        if (line.col_offsets.len > 0) self.allocator.free(line.col_offsets);
+    }
+
+    fn refreshCopyModeVisibleSlice(self: *App, pane: *Pane) !void {
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        try self.syncPaneRenderState(runtime, pane);
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const start_row: usize = @intCast(scrollbarTopRow(scrollbar));
+        const visible_rows: usize = @intCast(@min(scrollbar.total, scrollbar.len));
+        if (start_row >= self.copy_mode_history.items.len or visible_rows == 0) return;
+        if (!pane.render_state_ready or pane.render_state == null) return;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
+
+        var row_index: usize = 0;
+        while (runtime.nextRow(pane.row_iterator) and row_index < visible_rows and start_row + row_index < self.copy_mode_history.items.len) : (row_index += 1) {
+            const target_row = start_row + row_index;
+            self.freeCopyModeLine(self.copy_mode_history.items[target_row]);
+            self.copy_mode_history.items[target_row] = try self.captureCopyModeVisibleLine(pane, target_row, runtime, pane.row_iterator, &pane.row_cells);
+        }
+
+        if (self.copy_mode_query.len > 0) {
+            const previous_index = self.copy_mode_match_index;
+            try self.rebuildCopyModeMatches();
+            if (previous_index) |index| {
+                if (self.copy_mode_matches.items.len > 0) {
+                    const next_index = @min(index, self.copy_mode_matches.items.len - 1);
+                    const match = self.copy_mode_matches.items[next_index];
+                    self.copy_mode_match_index = next_index;
+                    self.copy_mode_cursor = .{ .row = match.row, .col = match.start_col };
+                    self.copy_mode_anchor = .{ .row = match.row, .col = match.end_col -| 1 };
+                }
+            }
+        }
     }
 
     fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void {
@@ -3558,58 +3651,107 @@ pub const App = struct {
         _ = self.refreshPaneScrollbar(runtime, pane);
     }
 
-    fn captureCopyModeLine(self: *App, pane: *Pane, top_row: usize, visible_rows: usize) !CopyModeLine {
+    fn captureCopyModeLine(self: *App, pane: *Pane, history_row: usize) !CopyModeLine {
         const runtime = if (self.ghostty) |*rt| rt else return .{};
-        if (!paneRenderHelpersReady(pane)) return .{};
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return .{};
-
-        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
-        const visible_top: usize = @intCast(@min(scrollbar.offset, scrollbarMaxTopRow(scrollbar)));
-        const visual_row = copyModeRowIndexInViewport(top_row, visible_top, visible_rows) orelse return .{};
-        const target_index = viewportIteratorRowIndex(visual_row, visible_rows) orelse return .{};
         var row_text: [4096]u8 = undefined;
         var offsets: [4097]u32 = [_]u32{0} ** 4097;
         var cell_buf: [512]CopyModeCell = undefined;
         var row_cols: usize = 0;
-        var row_i: usize = 0;
-        while (runtime.nextRow(pane.row_iterator) and row_i < visible_rows) : (row_i += 1) {
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
-            if (row_i != target_index) continue;
+        const row_ref = self.gridRefForHistoryRow(pane, history_row) orelse return .{};
+        const row = runtime.gridRefRow(&row_ref) orelse return .{};
 
-            var len: usize = 0;
+        var len: usize = 0;
+        while (row_cols < cell_buf.len) : (row_cols += 1) {
+            offsets[row_cols] = @intCast(len);
+            const cell_ref = self.gridRefForHistoryCell(pane, history_row, row_cols) orelse break;
+            const raw_cell = runtime.gridRefCell(&cell_ref) orelse break;
+            const cell_text = try captureCopyModeGridRefText(self.allocator, runtime, &cell_ref, raw_cell);
             var style: ghostty.Style = undefined;
-            while (runtime.nextCell(pane.row_cells)) : (row_cols += 1) {
-                offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
-                const cell_text = try captureCopyModeCellText(self.allocator, runtime, pane.row_cells);
-                const has_style = runtime.cellStyleInto(pane.row_cells, &style);
-                cell_buf[@min(cell_buf.len - 1, row_cols)] = .{
-                    .text = cell_text,
-                    .fg = runtime.cellForeground(pane.row_cells) orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 },
-                    .bg = runtime.cellBackground(pane.row_cells),
-                    .fg_style = if (has_style) style.fg_color else copy_mode_default_style_color,
-                    .bg_style = if (has_style) style.bg_color else copy_mode_default_style_color,
-                    .face_idx = if (has_style)
-                        (if (style.bold and style.italic) 2 else if (style.bold) 1 else if (style.italic) 3 else 0)
-                    else
-                        0,
-                };
-                appendCopyModeCellBytes(row_text[0..], &len, cell_text);
-            }
-            offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
-            while (len > 0 and row_text[len - 1] == ' ') len -= 1;
-            while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
-            const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
-            const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
-            for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
-            for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
-            return .{
-                .text = try self.allocator.dupe(u8, row_text[0..len]),
-                .col_offsets = owned_offsets,
-                .cells = owned_cells,
-                .cols = row_cols,
+            const has_style = runtime.gridRefStyleInto(&cell_ref, &style);
+            cell_buf[row_cols] = .{
+                .text = cell_text,
+                .fg = colorFromGridRefCell(runtime, &cell_ref, raw_cell, true) orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 },
+                .bg = colorFromGridRefCell(runtime, &cell_ref, raw_cell, false),
+                .fg_style = if (has_style) style.fg_color else copy_mode_default_style_color,
+                .bg_style = if (has_style) style.bg_color else copy_mode_default_style_color,
+                .face_idx = if (has_style)
+                    (if (style.bold and style.italic) 2 else if (style.bold) 1 else if (style.italic) 3 else 0)
+                else
+                    0,
             };
+            appendCopyModeCellBytes(row_text[0..], &len, cell_text);
         }
-        return .{};
+        offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
+        while (len > 0 and row_text[len - 1] == ' ') len -= 1;
+        while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
+        const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
+        const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
+        for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
+        for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
+        return .{
+            .text = try self.allocator.dupe(u8, row_text[0..len]),
+            .col_offsets = owned_offsets,
+            .cells = owned_cells,
+            .cols = row_cols,
+            .is_prompt = runtime.rowSemanticPrompt(row) == .prompt,
+        };
+    }
+
+    fn captureCopyModeVisibleLine(
+        self: *App,
+        _: *Pane,
+        history_row: usize,
+        runtime: *GhosttyRuntime,
+        row_iterator: ?*anyopaque,
+        row_cells: *?*anyopaque,
+    ) !CopyModeLine {
+        var row_text: [4096]u8 = undefined;
+        var offsets: [4097]u32 = [_]u32{0} ** 4097;
+        var cell_buf: [512]CopyModeCell = undefined;
+        var row_cols: usize = 0;
+        var row: u64 = 0;
+        if (row_iterator != null) row = runtime.rowRaw(row_iterator);
+
+        var len: usize = 0;
+        if (!runtime.populateRowCells(row_iterator, row_cells)) return .{};
+        while (runtime.nextCell(row_cells.*) and row_cols < cell_buf.len) : (row_cols += 1) {
+            offsets[row_cols] = @intCast(len);
+
+            var cell_text_buf: [32]u8 = undefined;
+            var cell_len: usize = 0;
+            appendCellText(runtime, row_cells.*, cell_text_buf[0..], &cell_len);
+            const cell_text = try self.allocator.dupe(u8, cell_text_buf[0..cell_len]);
+
+            var style: ghostty.Style = undefined;
+            const has_style = runtime.cellStyleInto(row_cells.*, &style);
+            cell_buf[row_cols] = .{
+                .text = cell_text,
+                .fg = runtime.cellForeground(row_cells.*) orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 },
+                .bg = runtime.cellBackground(row_cells.*),
+                .fg_style = if (has_style) style.fg_color else copy_mode_default_style_color,
+                .bg_style = if (has_style) style.bg_color else copy_mode_default_style_color,
+                .face_idx = if (has_style)
+                    (if (style.bold and style.italic) 2 else if (style.bold) 1 else if (style.italic) 3 else 0)
+                else
+                    0,
+            };
+            appendCopyModeCellBytes(row_text[0..], &len, cell_text);
+        }
+
+        offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
+        while (len > 0 and row_text[len - 1] == ' ') len -= 1;
+        while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
+        const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
+        const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
+        for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
+        for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
+        return .{
+            .text = try self.allocator.dupe(u8, row_text[0..len]),
+            .col_offsets = owned_offsets,
+            .cells = owned_cells,
+            .cols = row_cols,
+            .is_prompt = runtime.rowSemanticPrompt(@intCast(history_row)) == .prompt or runtime.rowSemanticPrompt(row) == .prompt,
+        };
     }
 
     fn rebuildCopyModeMatches(self: *App) !void {
@@ -3662,9 +3804,12 @@ pub const App = struct {
         self.copy_mode_cursor = .{ .row = match.row, .col = match.start_col };
         self.copy_mode_anchor = .{ .row = match.row, .col = match.end_col -| 1 };
         if (self.copy_mode_pane) |pane| {
-            const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+            const visible_rows = self.copyModeVisibleRows(pane);
             const top_target = if (match.row >= visible_rows / 2) match.row - visible_rows / 2 else 0;
             self.copy_mode_top_row = top_target;
+            self.scrollPaneViewportToRow(pane, top_target);
+            self.syncCopyModeTopRowFromViewport(pane);
+            self.refreshCopyModeVisibleSlice(pane) catch {};
             pane.render_dirty = .full;
         }
         self.emitCopyModeChanged();
@@ -3688,8 +3833,8 @@ pub const App = struct {
             .down => {
                 if (cursor.row + 1 < self.copy_mode_history.items.len) cursor.row += 1;
             },
-            .page_up => cursor.row -|= @max(@as(usize, 1), @as(usize, pane.rows)) - 1,
-            .page_down => cursor.row = @min(self.copy_mode_history.items.len - 1, cursor.row + @max(@as(usize, 1), @as(usize, pane.rows)) - 1),
+            .page_up => cursor.row -|= self.copyModeVisibleRows(pane) - 1,
+            .page_down => cursor.row = @min(self.copy_mode_history.items.len - 1, cursor.row + self.copyModeVisibleRows(pane) - 1),
             .line_start => cursor.col = 0,
             .line_end => cursor.col = self.copy_mode_history.items[cursor.row].cols,
             .top => cursor.row = 0,
@@ -3705,13 +3850,7 @@ pub const App = struct {
             self.copy_mode_block_selection = false;
         }
 
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
-        const top = self.copyModeVisibleTopRow() orelse 0;
-        if (cursor.row < top) {
-            self.copy_mode_top_row = cursor.row;
-        } else if (cursor.row >= top + visible_rows) {
-            self.copy_mode_top_row = cursor.row - (visible_rows - 1);
-        }
+        self.copyModeAlignTopRowForCursor(cursor.row);
         pane.render_dirty = .full;
         self.emitCopyModeChanged();
     }
@@ -3719,13 +3858,16 @@ pub const App = struct {
     fn copyModeScrollDelta(self: *App, delta: isize) void {
         const pane = self.copy_mode_pane orelse return;
         if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const visible_rows = self.copyModeVisibleRows(pane);
         const max_top = self.copy_mode_history.items.len -| visible_rows;
         const current_top: isize = @intCast(self.copyModeVisibleTopRow() orelse 0);
         const min_top: isize = 0;
         const max_top_i: isize = @intCast(max_top);
         const next_top = std.math.clamp(current_top + delta, min_top, max_top_i);
         self.copy_mode_top_row = @intCast(next_top);
+        self.scrollPaneViewportToRow(pane, self.copy_mode_top_row);
+        self.syncCopyModeTopRowFromViewport(pane);
+        self.refreshCopyModeVisibleSlice(pane) catch {};
         pane.render_dirty = .full;
         self.emitCopyModeChanged();
     }
@@ -3733,9 +3875,12 @@ pub const App = struct {
     fn copyModeScrollToRow(self: *App, top_row: u64) void {
         const pane = self.copy_mode_pane orelse return;
         if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const visible_rows = self.copyModeVisibleRows(pane);
         const max_top = self.copy_mode_history.items.len -| visible_rows;
         self.copy_mode_top_row = @min(@as(usize, @intCast(top_row)), max_top);
+        self.scrollPaneViewportToRow(pane, self.copy_mode_top_row);
+        self.syncCopyModeTopRowFromViewport(pane);
+        self.refreshCopyModeVisibleSlice(pane) catch {};
         pane.render_dirty = .full;
         self.emitCopyModeChanged();
     }
@@ -3743,8 +3888,30 @@ pub const App = struct {
     fn copyModeScrollToBottom(self: *App) void {
         const pane = self.copy_mode_pane orelse return;
         if (self.copy_mode_needs_refresh) self.refreshCopyModeSnapshot() catch return;
-        const visible_rows = @max(@as(usize, 1), @as(usize, pane.rows));
+        const visible_rows = self.copyModeVisibleRows(pane);
         self.copy_mode_top_row = self.copy_mode_history.items.len -| visible_rows;
+        self.scrollPaneViewportToRow(pane, self.copy_mode_top_row);
+        self.syncCopyModeTopRowFromViewport(pane);
+        self.refreshCopyModeVisibleSlice(pane) catch {};
+        pane.render_dirty = .full;
+        self.emitCopyModeChanged();
+    }
+
+    fn copyModePromptJump(self: *App, direction: PromptJumpDir) void {
+        const pane = self.copy_mode_pane orelse return;
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const total: usize = @intCast(scrollbar.total);
+        if (total == 0) return;
+        const start_row = switch (direction) {
+            .next => self.copy_mode_cursor.row +| 1,
+            .prev => self.copy_mode_cursor.row -| 1,
+        };
+        const target_row = findPromptJumpTarget(.{ .live = .{ .runtime = runtime, .terminal = pane.terminal } }, direction, start_row, total) orelse return;
+        self.copy_mode_cursor = .{ .row = target_row, .col = 0 };
+        self.copy_mode_anchor = null;
+        self.copy_mode_block_selection = false;
+        self.copyModeAlignTopRowForCursor(target_row);
         pane.render_dirty = .full;
         self.emitCopyModeChanged();
     }
@@ -4492,6 +4659,10 @@ pub const App = struct {
         return if (scrollbar.total > scrollbar.len) scrollbar.total - scrollbar.len else 0;
     }
 
+    fn scrollbarTopRow(scrollbar: ghostty.TerminalScrollbar) u64 {
+        return @min(scrollbar.offset, scrollbarMaxTopRow(scrollbar));
+    }
+
     fn pageScrollRows(pane: *const Pane) isize {
         return @max(@as(isize, 1), @as(isize, @intCast(@max(@as(u16, 1), pane.rows))) - 1);
     }
@@ -4508,12 +4679,58 @@ pub const App = struct {
         _ = self.refreshPaneScrollbar(runtime, pane);
     }
 
+    fn forceScrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const max_top = scrollbarMaxTopRow(scrollbar);
+        const clamped_target = @min(top_row, max_top);
+
+        if (clamped_target == 0) {
+            runtime.terminalScrollTop(pane.terminal);
+        } else if (clamped_target == max_top) {
+            runtime.terminalScrollBottom(pane.terminal);
+        } else {
+            runtime.terminalScrollTop(pane.terminal);
+            const delta_i64: i64 = @intCast(clamped_target);
+            const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.maxInt(isize);
+            runtime.terminalScroll(pane.terminal, delta);
+        }
+
+        pane.render_dirty = .full;
+        pane.render_state_fresh = false;
+        pane.last_render_state_update_ns = 0;
+        pane.pty_received_data = true;
+        self.scroll_accum = 0;
+        _ = self.refreshPaneScrollbar(runtime, pane);
+    }
+
+    fn restorePaneViewportFromBottom(self: *App, pane: *Pane, top_row: usize) void {
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const max_top: usize = @intCast(scrollbarMaxTopRow(scrollbar));
+        const clamped_target = @min(top_row, max_top);
+
+        runtime.terminalScrollBottom(pane.terminal);
+        if (clamped_target < max_top) {
+            const delta_i64: i64 = -@as(i64, @intCast(max_top - clamped_target));
+            const delta: isize = std.math.cast(isize, delta_i64) orelse std.math.minInt(isize);
+            runtime.terminalScroll(pane.terminal, delta);
+        }
+
+        pane.render_dirty = .full;
+        pane.render_state_fresh = false;
+        pane.last_render_state_update_ns = 0;
+        pane.pty_received_data = true;
+        self.scroll_accum = 0;
+        _ = self.refreshPaneScrollbar(runtime, pane);
+    }
+
     fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
         const runtime = if (self.ghostty) |*rt| rt else return;
         const scrollbar = self.refreshPaneScrollbar(runtime, pane);
         const max_top = scrollbarMaxTopRow(scrollbar);
         const clamped_target = @min(top_row, max_top);
-        const current_top = @min(scrollbar.offset, max_top);
+        const current_top = scrollbarTopRow(scrollbar);
         if (clamped_target == current_top) return;
 
         if (clamped_target == 0) {
@@ -4566,6 +4783,22 @@ pub const App = struct {
         self.scrollPaneViewportToRow(pane, scrollbarMaxTopRow(pane.scrollbar()));
     }
 
+    fn handlePromptJump(self: *App, direction: PromptJumpDir) void {
+        const pane = self.activePane() orelse return;
+        const runtime = if (self.ghostty) |*rt| rt else return;
+        const scrollbar = self.refreshPaneScrollbar(runtime, pane);
+        const total: usize = @intCast(scrollbar.total);
+        if (total == 0) return;
+        const visible = @max(@as(usize, 1), @as(usize, pane.rows));
+        const current_top: usize = @intCast(scrollbarTopRow(scrollbar));
+        const start_row = switch (direction) {
+            .next => current_top +| visible,
+            .prev => current_top -| 1,
+        };
+        const target_row = findPromptJumpTarget(.{ .live = .{ .runtime = runtime, .terminal = pane.terminal } }, direction, start_row, total) orelse return;
+        self.scrollPaneViewportToRow(pane, target_row);
+    }
+
     fn paneScrollbarMetrics(self: *App, pane: *Pane, outer_bounds: PaneBounds) ?ScrollbarMetrics {
         if (!self.config.scrollbar.enabled) return null;
         const gutter = self.paneScrollbarGutter(pane);
@@ -4587,7 +4820,7 @@ pub const App = struct {
         const thumb_h = @min(track_h, @max(min_thumb_h, track_h * visible_ratio));
         const max_top = if (total > track_len) total - track_len else 0;
         const travel = @max(@as(f32, 0.0), track_h - thumb_h);
-        const ui_offset = @min(scrollbar.offset, max_top);
+        const ui_offset = scrollbarTopRow(scrollbar);
         const thumb_y = track_y + if (max_top == 0)
             0.0
         else
@@ -4603,7 +4836,7 @@ pub const App = struct {
             .thumb_y = thumb_y,
             .thumb_h = thumb_h,
             .total = total,
-            .offset = scrollbar.offset,
+            .offset = ui_offset,
             .len = track_len,
         };
     }
@@ -4659,7 +4892,9 @@ pub const App = struct {
         if (self.copy_mode_active and self.copy_mode_pane == hit.pane) {
             if (self.hitTestScrollbar(x, y)) |metrics| {
                 const ratio = std.math.clamp((y - metrics.track_y) / metrics.track_h, 0.0, 1.0);
-                const max_top = self.copy_mode_history.items.len -| @max(@as(usize, 1), @as(usize, hit.pane.rows));
+                const runtime = if (self.ghostty) |*rt| rt else return;
+                const scrollbar = self.refreshPaneScrollbar(runtime, hit.pane);
+                const max_top: usize = @intCast(scrollbarMaxTopRow(scrollbar));
                 const target = @as(u64, @intFromFloat(@round(ratio * @as(f32, @floatFromInt(max_top)))));
                 self.copyModeScrollToRow(target);
             } else {
@@ -4670,7 +4905,7 @@ pub const App = struct {
         const runtime = if (self.ghostty) |*rt| rt else return;
         const scrollbar = self.refreshPaneScrollbar(runtime, hit.pane);
         const max_top = scrollbarMaxTopRow(scrollbar);
-        const in_scrollback = scrollbar.offset < max_top;
+        const in_scrollback = scrollbarTopRow(scrollbar) < max_top;
         const over_scrollbar = self.hitTestScrollbar(x, y) != null;
         const should_scroll_viewport = in_scrollback or over_scrollbar or hit.pane.last_mouse_tracking == 0;
 
@@ -5575,11 +5810,11 @@ pub const App = struct {
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
-                if (needs_update) {
-                    const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-                    if (pane.render_state_fresh) {
-                        pane.render_state_fresh = false;
-                        pane.pty_received_data = false;
+                    if (needs_update) {
+                        const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                        if (pane.render_state_fresh) {
+                            pane.render_state_fresh = false;
+                            pane.pty_received_data = false;
                     } else {
                         pane.pty_received_data = false;
                         pane.last_render_state_update_ns = now_ns;
@@ -5587,11 +5822,14 @@ pub const App = struct {
                         runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
-                    }
-                    if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
-                    const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                        }
+                        if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
+                        const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
+                    }
+                    if (self.copy_mode_active and self.copy_mode_pane == pane and !self.copy_mode_needs_refresh) {
+                        self.refreshCopyModeVisibleSlice(pane) catch {};
                     }
                     if (builtin.os.tag != .windows and pane.logged_first_pty_read and pane.title.len == 0) {
                         if (runtime.cursorPos(pane.render_state)) |cp| {
@@ -5603,9 +5841,9 @@ pub const App = struct {
                             });
                         }
                     }
-                    const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-                    _ = self.refreshPaneScrollbar(runtime, pane);
-                    if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
+                        const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                        _ = self.refreshPaneScrollbar(runtime, pane);
+                        if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
@@ -5956,6 +6194,127 @@ fn encodeCodepointInto(codepoint: u32, buf: *[4]u8) ?usize {
     buf[2] = @intCast(0x80 | ((codepoint >> 6) & 0x3F));
     buf[3] = @intCast(0x80 | (codepoint & 0x3F));
     return 4;
+}
+
+fn isPromptRow(runtime: *ghostty.Runtime, terminal: ?*anyopaque, row: u64) bool {
+    var ref: ghostty.GridRef = undefined;
+    const point = ghostty.Point{
+        .tag = .screen,
+        .value = .{ .coordinate = .{ .x = 0, .y = @intCast(row) } },
+    };
+    if (runtime.terminal_grid_ref(terminal, point, &ref) != ghostty.success) return false;
+    const g_row = runtime.gridRefRow(&ref) orelse return false;
+    return runtime.rowSemanticPrompt(g_row) == .prompt;
+}
+
+fn alignedTopRowForTarget(current_top: usize, visible_rows: usize, target_row: usize) usize {
+    if (target_row < current_top) return target_row;
+    if (target_row >= current_top + visible_rows) return target_row - (visible_rows - 1);
+    return current_top;
+}
+
+fn promptRowAt(source: PromptJumpSource, row: usize) bool {
+    return switch (source) {
+        .live => |live| isPromptRow(live.runtime, live.terminal, row),
+        .copy_mode => |history| row < history.len and history[row].is_prompt,
+    };
+}
+
+fn findPromptJumpTarget(source: PromptJumpSource, direction: PromptJumpDir, start_row: usize, total_rows: usize) ?usize {
+    if (total_rows == 0) return null;
+    switch (direction) {
+        .next => {
+            var row = start_row;
+            while (row < total_rows) : (row += 1) {
+                if (promptRowAt(source, row)) return row;
+            }
+        },
+        .prev => {
+            var row = @min(start_row, total_rows - 1);
+            while (true) {
+                if (promptRowAt(source, row)) return row;
+                if (row == 0) break;
+                row -= 1;
+            }
+        },
+    }
+    return null;
+}
+
+fn pointTagForHistoryRow(row: usize, scrollback_rows: usize) ghostty.PointTag {
+    return if (row < scrollback_rows) .history else .screen;
+}
+
+fn pointYForHistoryRow(row: usize, scrollback_rows: usize) u32 {
+    return if (row < scrollback_rows)
+        @intCast(row)
+    else
+        @intCast(row - scrollback_rows);
+}
+
+fn gridRefForHistoryPoint(runtime: *GhosttyRuntime, terminal: ?*anyopaque, row: usize, col: usize, scrollback_rows: usize) ?ghostty.GridRef {
+    var ref: ghostty.GridRef = undefined;
+    const point = ghostty.Point{
+        .tag = pointTagForHistoryRow(row, scrollback_rows),
+        .value = .{ .coordinate = .{ .x = @intCast(col), .y = pointYForHistoryRow(row, scrollback_rows) } },
+    };
+    if (runtime.terminal_grid_ref(terminal, point, &ref) != ghostty.success) return null;
+    return ref;
+}
+
+fn captureCopyModeGridRefText(allocator: std.mem.Allocator, runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64) ![]u8 {
+    var cps: [16]u32 = [_]u32{0} ** 16;
+    const grapheme_len = runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0;
+    var buf: [32]u8 = undefined;
+    var len: usize = 0;
+
+    if (grapheme_len == 0) {
+        if (!runtime.cellHasText(raw_cell)) {
+            buf[0] = ' ';
+            return try allocator.dupe(u8, buf[0..1]);
+        }
+        const cp = runtime.cellCodepoint(raw_cell);
+        if (encodeCodepointInto(cp, &buf[0..4].*)) |encoded_len| {
+            return try allocator.dupe(u8, buf[0..encoded_len]);
+        }
+        buf[0] = ' ';
+        return try allocator.dupe(u8, buf[0..1]);
+    }
+
+    var idx: usize = 0;
+    while (idx < grapheme_len and cps[idx] != 0) : (idx += 1) {
+        var utf8_buf: [4]u8 = undefined;
+        const encoded_len = encodeCodepointInto(cps[idx], &utf8_buf) orelse continue;
+        if (len + encoded_len > buf.len) break;
+        fastmem.copy(u8, buf[len .. len + encoded_len], utf8_buf[0..encoded_len]);
+        len += encoded_len;
+    }
+    if (len == 0) {
+        buf[0] = ' ';
+        len = 1;
+    }
+    return try allocator.dupe(u8, buf[0..len]);
+}
+
+fn colorFromGridRefCell(runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64, foreground: bool) ?ghostty.ColorRgb {
+    const tag = runtime.cellContentTag(raw_cell);
+    if (!foreground and tag != .bg_color_palette and tag != .bg_color_rgb) return null;
+
+    var style: ghostty.Style = undefined;
+    if (runtime.gridRefStyleInto(ref, &style)) {
+        if (foreground and style.fg_color.tag == .rgb) return style.fg_color.value.rgb;
+        if (!foreground and style.bg_color.tag == .rgb) return style.bg_color.value.rgb;
+    }
+
+    if (foreground) return null;
+    return switch (runtime.cellContentTag(raw_cell)) {
+        .bg_color_rgb => blk: {
+            var rgb: ghostty.ColorRgb = undefined;
+            if (runtime.cell_get(raw_cell, @intFromEnum(ghostty.CellDataV.color_rgb), &rgb) == ghostty.success) break :blk rgb;
+            break :blk null;
+        },
+        else => null,
+    };
 }
 
 fn legacyPrintableKeyText(key: ghostty.Key, mods: u32, out: *[4]u8) ?[]const u8 {
@@ -6456,6 +6815,12 @@ fn luaScrollActiveTopCallback(app_ptr: *anyopaque) void {
 fn luaScrollActiveBottomCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.scroll_active_bottom);
+}
+
+fn luaPromptJumpCallback(app_ptr: *anyopaque, direction: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const dir: PromptJumpDir = if (std.mem.eql(u8, direction, "prev")) .prev else .next;
+    _ = app.enqueueMouse(.{ .prompt_jump = dir });
 }
 
 fn luaCopyModeEnterCallback(app_ptr: *anyopaque) void {

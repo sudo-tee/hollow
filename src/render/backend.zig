@@ -1,6 +1,7 @@
 const config = @import("../config.zig");
 const std = @import("std");
 const ghostty = @import("../term/ghostty.zig");
+const Pane = @import("../pane.zig").Pane;
 const DebugBackend = @import("debug_backend.zig").DebugBackend;
 const NullBackend = @import("null_backend.zig").NullBackend;
 
@@ -34,6 +35,13 @@ pub const Backend = union(enum) {
             .null => |backend| backend.requestedName(),
             .debug => |backend| backend.requestedName(),
         };
+    }
+
+    pub fn invalidatePaneCache(self: *Backend, pane: *const Pane) void {
+        switch (self.*) {
+            .null => |*backend| backend.invalidatePaneCache(pane),
+            .debug => |*backend| backend.invalidatePaneCache(pane),
+        }
     }
 
     pub fn fillSnapshot(self: *Backend, runtime: *ghostty.Runtime, render_state: ?*anyopaque, row_iterator: *?*anyopaque, row_cells: *?*anyopaque, cfg: config.Config, title: []const u8) ?@import("debug_backend.zig").FrameSnapshot {

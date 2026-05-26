@@ -137,6 +137,12 @@ function M.setup(hollow, host_api)
     scrollback_bottom = function()
       host_api.scroll_active_bottom()
     end,
+    prompt_jump_prev = function()
+      host_api.prompt_jump("prev")
+    end,
+    prompt_jump_next = function()
+      host_api.prompt_jump("next")
+    end,
     copy_mode = function()
       copy_mode.enter()
     end,

@@ -179,6 +179,7 @@ pub const TerminalOpt = enum(u32) {
     kitty_image_medium_shared_mem = 18,
     apc_max_bytes = 19,
     apc_max_bytes_kitty = 20,
+    selection = 21,
 };
 
 pub const TerminalData = enum(u32) {
@@ -213,6 +214,7 @@ pub const TerminalData = enum(u32) {
     kitty_image_medium_temp_file = 28,
     kitty_image_medium_shared_mem = 29,
     kitty_graphics = 30,
+    selection = 31,
 };
 
 pub const SysOpt = enum(u32) {
@@ -371,6 +373,7 @@ pub const CellData = enum(u32) {
     graphemes_buf = 4,
     bg_color = 5,
     fg_color = 6,
+    selected = 7,
 };
 
 /// Data kinds for the pure ghostty_cell_get() function (operates on a u64 cell value).
@@ -395,6 +398,20 @@ pub const CellContentTag = enum(u32) {
     codepoint_grapheme = 1,
     bg_color_palette = 2,
     bg_color_rgb = 3,
+};
+
+/// Semantic content type of a cell, set by OSC 133 semantic prompt sequences.
+pub const CellSemanticContent = enum(u32) {
+    output = 0,
+    input = 1,
+    prompt = 2,
+};
+
+/// Row-level semantic prompt state from OSC 133 sequences.
+pub const RowSemanticPrompt = enum(u32) {
+    none = 0,
+    prompt = 1,
+    prompt_continuation = 2,
 };
 
 pub const MouseEncOpt = enum(u32) {
@@ -587,7 +604,12 @@ extern fn ghostty_render_state_row_cells_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_row_cells_next(?*anyopaque) callconv(.c) bool;
 extern fn ghostty_render_state_row_cells_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_cell_get(u64, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_grid_ref_cell(*const GridRef, ?*u64) callconv(.c) i32;
+extern fn ghostty_grid_ref_row(*const GridRef, ?*u64) callconv(.c) i32;
+extern fn ghostty_row_get(u64, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_grid_ref_graphemes(*const GridRef, ?[*]u32, usize, *usize) callconv(.c) i32;
 extern fn ghostty_grid_ref_hyperlink_uri(*const GridRef, ?[*]u8, usize, *usize) callconv(.c) i32;
+extern fn ghostty_grid_ref_style(*const GridRef, *Style) callconv(.c) i32;
 extern fn ghostty_key_encoder_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_key_encoder_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_key_encoder_setopt_from_terminal(?*anyopaque, ?*anyopaque) callconv(.c) void;
@@ -672,7 +694,14 @@ pub const Runtime = struct {
     /// Pure value function: extracts typed data from a raw GhosttyCell u64.
     /// Does not go through the iterator — safe to call with just the cell value.
     cell_get: *const fn (u64, u32, ?*anyopaque) callconv(.c) i32,
+    grid_ref_cell: *const fn (*const GridRef, ?*u64) callconv(.c) i32,
+    /// Get a raw GhosttyRow value from a grid reference.
+    grid_ref_row: *const fn (*const GridRef, ?*u64) callconv(.c) i32,
+    /// Extract typed data from a raw GhosttyRow u64.
+    grid_row_get: *const fn (u64, u32, ?*anyopaque) callconv(.c) i32,
+    grid_ref_graphemes: *const fn (*const GridRef, ?[*]u32, usize, *usize) callconv(.c) i32,
     grid_ref_hyperlink_uri: *const fn (*const GridRef, ?[*]u8, usize, *usize) callconv(.c) i32,
+    grid_ref_style: *const fn (*const GridRef, *Style) callconv(.c) i32,
 
     key_encoder_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     key_encoder_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -744,7 +773,12 @@ pub const Runtime = struct {
             .row_cells_next = ghostty_render_state_row_cells_next,
             .row_cells_get = ghostty_render_state_row_cells_get,
             .cell_get = ghostty_cell_get,
+            .grid_ref_cell = ghostty_grid_ref_cell,
+            .grid_ref_row = ghostty_grid_ref_row,
+            .grid_row_get = ghostty_row_get,
+            .grid_ref_graphemes = ghostty_grid_ref_graphemes,
             .grid_ref_hyperlink_uri = ghostty_grid_ref_hyperlink_uri,
+            .grid_ref_style = ghostty_grid_ref_style,
             .key_encoder_new = ghostty_key_encoder_new,
             .key_encoder_free = ghostty_key_encoder_free,
             .key_encoder_setopt_from_terminal = ghostty_key_encoder_setopt_from_terminal,
@@ -1184,6 +1218,48 @@ pub const Runtime = struct {
         var cp: u32 = 0;
         _ = self.cell_get(cell, @intFromEnum(CellDataV.codepoint), &cp);
         return cp;
+    }
+
+    /// Pure function: get the semantic content type from a raw cell u64.
+    /// Returns the OSC 133 semantic prompt state of the cell.
+    pub fn cellSemanticContent(self: *Runtime, cell: u64) CellSemanticContent {
+        var sc: u32 = 0;
+        _ = self.cell_get(cell, @intFromEnum(CellDataV.semantic_content), &sc);
+        return @enumFromInt(sc);
+    }
+
+    /// Get a GhosttyRow from a grid reference.
+    /// Returns null if the ref's node is NULL.
+    pub fn gridRefRow(self: *Runtime, ref: *const GridRef) ?u64 {
+        var row: u64 = 0;
+        if (self.grid_ref_row(ref, &row) == success) return row;
+        return null;
+    }
+
+    pub fn gridRefCell(self: *Runtime, ref: *const GridRef) ?u64 {
+        var cell: u64 = 0;
+        if (self.grid_ref_cell(ref, &cell) == success) return cell;
+        return null;
+    }
+
+    pub fn gridRefGraphemesInto(self: *Runtime, ref: *const GridRef, out: []u32) ?usize {
+        var len: usize = 0;
+        const buf = if (out.len > 0) out.ptr else null;
+        const result = self.grid_ref_graphemes(ref, buf, out.len, &len);
+        return if (result == success) len else null;
+    }
+
+    pub fn gridRefStyleInto(self: *Runtime, ref: *const GridRef, out: *Style) bool {
+        out.* = undefined;
+        out.size = @sizeOf(Style);
+        return self.grid_ref_style(ref, out) == success;
+    }
+
+    /// Get the row-level semantic prompt state from a raw GhosttyRow u64.
+    pub fn rowSemanticPrompt(self: *Runtime, row: u64) RowSemanticPrompt {
+        var sp: u32 = 0;
+        _ = self.grid_row_get(row, 6, &sp);
+        return @enumFromInt(sp);
     }
 
     pub fn terminalKittyGraphics(self: *Runtime, handle: ?*anyopaque) ?*anyopaque {

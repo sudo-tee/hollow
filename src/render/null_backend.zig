@@ -1,4 +1,5 @@
 const config = @import("../config.zig");
+const Pane = @import("../pane.zig").Pane;
 
 pub const NullBackend = struct {
     requested: config.RendererBackend,
@@ -18,5 +19,10 @@ pub const NullBackend = struct {
 
     pub fn deinit(self: *NullBackend) void {
         _ = self;
+    }
+
+    pub fn invalidatePaneCache(self: *NullBackend, pane: *const Pane) void {
+        _ = self;
+        _ = pane;
     }
 };

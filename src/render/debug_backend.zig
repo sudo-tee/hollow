@@ -1,6 +1,8 @@
 const std = @import("std");
 const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
+const Pane = @import("../pane.zig").Pane;
+const sokol_runtime = @import("sokol_runtime.zig");
 
 pub const MAX_ROWS = 64;
 pub const MAX_COLS = 256;
@@ -38,6 +40,11 @@ pub const DebugBackend = struct {
 
     pub fn requestedName(self: DebugBackend) []const u8 {
         return self.requested;
+    }
+
+    pub fn invalidatePaneCache(self: *DebugBackend, pane: *const Pane) void {
+        _ = self;
+        sokol_runtime.invalidatePaneCacheForPane(pane);
     }
 
     pub fn fillSnapshot(self: *DebugBackend, runtime: *ghostty.Runtime, render_state: ?*anyopaque, row_iterator: *?*anyopaque, row_cells: *?*anyopaque, cfg: Config, title: []const u8) FrameSnapshot {
