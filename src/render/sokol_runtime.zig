@@ -2451,7 +2451,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const after_tick_ns = std.time.nanoTimestamp();
 
     if (app.pending_quit) {
-        app.shutdownRuntime();
+        // Keep the quit request path non-blocking. Full teardown can wait for
+        // Sokol's cleanup callback, otherwise PTY/process shutdown can stall
+        // the live window and leave it in a "Not Responding" state.
         c.sapp_request_quit();
         return;
     }
