@@ -80,6 +80,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const DWMWA_CAPTION_COLOR: u32 = 35;
     const DWMWA_TEXT_COLOR: u32 = 36;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const MONITOR_DEFAULTTONEAREST: u32 = 0x00000002;
     const SWP_NOSIZE: u32 = 0x0001;
@@ -3566,16 +3567,16 @@ fn extendDwmFrame(hwnd: win32.HWND) void {
     const margins = win32.MARGINS{
         .cxLeftWidth = 1,
         .cxRightWidth = 1,
-        .cyTopHeight = 0,
+        .cyTopHeight = 1,
         .cyBottomHeight = 1,
     };
     _ = win32.DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-    const no_border: u32 = win32.DWMWA_COLOR_NONE;
+    const default_border: u32 = win32.DWMWA_COLOR_DEFAULT;
     _ = win32.DwmSetWindowAttribute(
         hwnd,
         win32.DWMWA_BORDER_COLOR,
-        @ptrCast(&no_border),
+        @ptrCast(&default_border),
         @sizeOf(u32),
     );
 }
