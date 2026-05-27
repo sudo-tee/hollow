@@ -751,6 +751,7 @@
 ---@class HollowUiSelectOptions
 ---@field items any[]
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
+---@field search_text? fun(item: any): string|nil
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field prompt? string
 ---@field fuzzy? boolean

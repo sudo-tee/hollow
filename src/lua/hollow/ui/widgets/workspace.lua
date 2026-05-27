@@ -95,6 +95,26 @@ local function detail_for_item(_workspace)
   return nil
 end
 
+local function search_text_for_item(workspace)
+  local parts = { workspace.name }
+  local cwd = source.trim_string(workspace.cwd)
+  if cwd ~= "" then
+    local basename = util.basename(cwd)
+    basename = source.trim_string(basename)
+    if basename ~= "" and basename ~= workspace.name then
+      parts[#parts + 1] = basename
+    end
+  end
+
+  local domain = source.normalize_domain(workspace.domain)
+  local current_domain = source.normalize_domain(source.current_domain_name())
+  if domain ~= nil and domain ~= current_domain then
+    parts[#parts + 1] = domain
+  end
+
+  return table.concat(parts, "\n")
+end
+
 local function switcher_actions()
   local switcher = switcher_state()
   return {
@@ -181,6 +201,7 @@ function ui.workspace.open_switcher(opts)
   ui.select.open({
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = items,
+    fuzzy = false,
     width = switcher.width or DEFAULT_SELECT_WIDTH,
     height = switcher.height,
     max_height = switcher.max_height or DEFAULT_SELECT_MAX_HEIGHT,
@@ -190,6 +211,7 @@ function ui.workspace.open_switcher(opts)
     label = function(item)
       return item_formatter()(item)
     end,
+    search_text = search_text_for_item,
     detail = detail_for_item,
     actions = switcher_actions(),
   })

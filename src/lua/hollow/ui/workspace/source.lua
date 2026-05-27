@@ -40,6 +40,11 @@ local function path_exists(path)
   return ok or code == 13 or type(result) == "string"
 end
 
+local function is_wsl_unc_path(path)
+  local normalized = trim_string(path):gsub("\\", "/"):lower()
+  return normalized:match("^//wsl%$/") ~= nil or normalized:match("^//wsl%.localhost/") ~= nil
+end
+
 local function safe_table_result(callback)
   if type(callback) ~= "function" then
     return nil
@@ -123,6 +128,8 @@ local function scan_projects_in_root(root)
     return {}
   end
 
+  local skip_child_exists_check = is_wsl_unc_path(root)
+
   local entries = safe_table_result(function()
     return hollow.read_dir(root)
   end) or {}
@@ -131,7 +138,7 @@ local function scan_projects_in_root(root)
   for _, entry in ipairs(entries) do
     local cwd = trim_string(entry)
     local name = trim_string(util.basename(cwd))
-    if name ~= "" and name:sub(1, 1) ~= "." and path_exists(cwd) then
+    if name ~= "" and name:sub(1, 1) ~= "." and (skip_child_exists_check or path_exists(cwd)) then
       items[#items + 1] = {
         name = name,
         cwd = cwd,
@@ -140,6 +147,16 @@ local function scan_projects_in_root(root)
   end
 
   return items
+end
+
+local function workspace_name_key(name, domain)
+  local normalized_name = normalize_workspace_id(name)
+  if normalized_name == "" then
+    return nil
+  end
+
+  local normalized_domain = normalize_domain(domain) or current_domain_name() or "default"
+  return normalized_domain .. ":name:" .. normalized_name
 end
 
 local function scan_projects_in_wsl_root(source_name, root)
@@ -381,6 +398,30 @@ local function ensure_last_opened(name, timestamp)
   end
 end
 
+local function remember_workspace_cwd(name, cwd, domain)
+  cwd = trim_string(cwd)
+  if cwd == "" then
+    return
+  end
+
+  local key = workspace_name_key(name, domain)
+  if key == nil then
+    return
+  end
+
+  switcher_state().remembered_cwds[key] = cwd
+end
+
+local function remembered_workspace_cwd(name, domain)
+  local key = workspace_name_key(name, domain)
+  if key == nil then
+    return nil
+  end
+
+  local cwd = trim_string(switcher_state().remembered_cwds[key])
+  return cwd ~= "" and cwd or nil
+end
+
 local function register_workspace_listeners()
   local switcher = switcher_state()
   if switcher.listeners_registered then
@@ -396,11 +437,16 @@ local function register_workspace_listeners()
   local function touch_current_workspace()
     local workspace = hollow.term.current_workspace()
     local name = trim_string(workspace and workspace.name)
+    local pane = hollow.term.current_pane()
+    local domain = workspace and workspace.domain or (pane and pane.domain)
+    remember_workspace_cwd(name, pane and pane.cwd, domain)
     if name ~= "" then
       ensure_last_opened(name)
     end
   end
 
+  on("workspace:new", touch_current_workspace)
+  on("workspace:changed", touch_current_workspace)
   on("term:tab_activated", touch_current_workspace)
   on("term:cwd_changed", touch_current_workspace)
   on("term:title_changed", touch_current_workspace)
@@ -459,10 +505,11 @@ end
 local function open_workspace_items()
   local items = {}
   for _, workspace in ipairs(hollow.term.workspaces()) do
-    local cwd = first_pane_cwd(workspace)
     local domain = workspace.domain or current_domain_name()
+    local cwd = first_pane_cwd(workspace) or remembered_workspace_cwd(workspace.name, domain)
     local id = workspace_identity(workspace.name, cwd, domain)
     ensure_last_opened(workspace.name)
+    remember_workspace_cwd(workspace.name, cwd, domain)
 
     local item = {
       id = id,
@@ -497,14 +544,19 @@ local function merged_workspace_items(force_refresh)
     workspace.last_opened_at = workspace.last_opened_at or switcher.last_opened[workspace.id] or now
     merged[#merged + 1] = workspace
     seen[workspace.id] = workspace
+    seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
   end
 
   for _, workspace in ipairs(cached_known_workspaces(force_refresh)) do
     local existing = seen[workspace.id]
     if existing == nil then
+      existing = seen[workspace_identity(workspace.name, nil, workspace.domain)]
+    end
+    if existing == nil then
       workspace.last_opened_at = switcher.last_opened[workspace.id]
       merged[#merged + 1] = workspace
       seen[workspace.id] = workspace
+      seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
     elseif existing.cwd == nil and workspace.cwd ~= nil then
       existing.cwd = workspace.cwd
     end
@@ -570,6 +622,10 @@ end
 
 function M.ensure_last_opened(name, timestamp)
   ensure_last_opened(name, timestamp)
+end
+
+function M.remember_workspace_cwd(name, cwd, domain)
+  remember_workspace_cwd(name, cwd, domain)
 end
 
 function M.configure(opts)

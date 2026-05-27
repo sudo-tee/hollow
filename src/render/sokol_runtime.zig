@@ -3759,8 +3759,11 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     if (key != .unidentified) {
         const key_name = @tagName(key);
         if (app.fireOnKey(key_name, mods)) {
-            g_swallow_char_pending = 4;
-            g_swallow_char_until_frame = event.frame_count + 1;
+            // Only printable keydown handlers need paired char suppression.
+            if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0) {
+                g_swallow_char_pending = 4;
+                g_swallow_char_until_frame = event.frame_count + 1;
+            }
             c.sapp_consume_event();
             return;
         }

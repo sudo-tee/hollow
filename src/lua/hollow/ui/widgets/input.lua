@@ -21,9 +21,10 @@ end
 
 ---@param prompt string
 ---@param value string
+---@param cursor integer
 ---@param theme HollowUiTheme
 ---@return HollowUiRows
-local function render_input_rows(prompt, value, theme)
+local function render_input_rows(prompt, value, cursor, theme)
   ---@type HollowUiTags
   local tags = ui.tags
   local rows = {}
@@ -35,11 +36,21 @@ local function render_input_rows(prompt, value, theme)
     )
   end
 
+  local before = value:sub(1, cursor)
+  local after = value:sub(cursor + 1)
+  local cursor_char = after:sub(1, 1)
+  if cursor_char == "" then
+    cursor_char = " "
+  else
+    after = after:sub(2)
+  end
+
   local input_rows = ui.rows(
     tags.overlay_row(
       nil,
-      tags.text({ fg = theme.input_fg, bg = theme.input_bg }, value),
-      tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, " ")
+      tags.text({ fg = theme.input_fg, bg = theme.input_bg }, before),
+      tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, cursor_char),
+      tags.text({ fg = theme.input_fg, bg = theme.input_bg }, after)
     )
   )
 
@@ -51,9 +62,24 @@ local function render_input_rows(prompt, value, theme)
 end
 
 ---@param value string
+---@param cursor integer
 ---@return string
-local function backspace(value)
-  return value:sub(1, math.max(0, #value - 1))
+---@return integer
+local function backspace(value, cursor)
+  if cursor <= 0 then
+    return value, 0
+  end
+
+  return value:sub(1, cursor - 1) .. value:sub(cursor + 1), cursor - 1
+end
+
+---@param value string
+---@param cursor integer
+---@param text string
+---@return string
+---@return integer
+local function insert_text(value, cursor, text)
+  return value:sub(1, cursor) .. text .. value:sub(cursor + 1), cursor + #text
 end
 
 ---@param opts HollowUiInputOptions|nil
@@ -65,11 +91,12 @@ function ui.input.open(opts)
   local local_state = {
     prompt = opts.prompt or "",
     value = opts.default or "",
+    cursor = #(opts.default or ""),
   }
 
   local widget = ui.overlay.new({
     render = function()
-      return render_input_rows(local_state.prompt, local_state.value, theme)
+      return render_input_rows(local_state.prompt, local_state.value, local_state.cursor, theme)
     end,
     width = opts.width,
     height = opts.height,
@@ -94,13 +121,23 @@ function ui.input.open(opts)
       end
 
       if key == "backspace" then
-        local_state.value = backspace(local_state.value)
+        local_state.value, local_state.cursor = backspace(local_state.value, local_state.cursor)
+        return true
+      end
+
+      if key == "arrow_left" then
+        local_state.cursor = math.max(0, local_state.cursor - 1)
+        return true
+      end
+
+      if key == "arrow_right" then
+        local_state.cursor = math.min(#local_state.value, local_state.cursor + 1)
         return true
       end
 
       local printable = shared.printable_char_for_key(key, mods)
       if printable ~= nil then
-        local_state.value = local_state.value .. printable
+        local_state.value, local_state.cursor = insert_text(local_state.value, local_state.cursor, printable)
         return true
       end
 

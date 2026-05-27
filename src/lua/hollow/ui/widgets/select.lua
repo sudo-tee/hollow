@@ -131,7 +131,7 @@ end
 
 ---@param opts HollowUiSelectOptions
 ---@param item any
----@return HollowUiRenderableNode[], string, HollowUiRenderableNode[]|nil, string|nil
+---@return HollowUiRenderableNode[], string, HollowUiRenderableNode[]|nil, string|nil, string
 local function build_entry_text(opts, item)
   local label_value = (opts.label or tostring)(item)
   local label_nodes = shared.normalize_inline_nodes(label_value)
@@ -148,32 +148,69 @@ local function build_entry_text(opts, item)
     end
   end
 
-  return label_nodes, label_text, detail_nodes, detail_text
+  local searchable = nil
+  if type(opts.search_text) == "function" then
+    searchable = tostring(opts.search_text(item) or "")
+  end
+  if searchable == nil or searchable == "" then
+    searchable = label_text
+    if detail_text then
+      searchable = searchable .. "\n" .. detail_text
+    end
+  end
+
+  return label_nodes, label_text, detail_nodes, detail_text, searchable
+end
+
+---@param opts HollowUiSelectOptions
+---@return HollowUiSelectEntry[]
+local function prepared_entries(opts)
+  local entries = {}
+
+  for source_index, item in ipairs(opts.items or {}) do
+    local label_nodes, label_text, detail_nodes, detail_text, searchable = build_entry_text(opts, item)
+
+    entries[#entries + 1] = {
+      item = item,
+      label_nodes = label_nodes,
+      label_text = label_text,
+      detail_nodes = detail_nodes,
+      detail_text = detail_text,
+      searchable = searchable,
+      searchable_lower = tostring(searchable):lower(),
+      source_index = source_index,
+    }
+  end
+
+  return entries
 end
 
 ---@param opts HollowUiSelectOptions
 ---@param local_state HollowUiSelectState
+---@param prepared HollowUiSelectEntry[]
 ---@return HollowUiSelectEntry[]
-local function filtered_entries(opts, local_state)
+local function filtered_entries(opts, local_state, prepared)
   local entries = {}
   local fuzzy = opts.fuzzy ~= false
+  local query = local_state.query
+  local query_lower = local_state.query_lower or query:lower()
 
-  for source_index, item in ipairs(opts.items or {}) do
-    local label_nodes, label_text, detail_nodes, detail_text = build_entry_text(opts, item)
-    local searchable = label_text
-    if detail_text then
-      searchable = searchable .. "\n" .. detail_text
+  for _, prepared_entry in ipairs(prepared) do
+    local matches, score
+    if fuzzy then
+      matches, score = shared.select_item_matches(query, prepared_entry.searchable, true)
+    else
+      score = shared.plain_match_score_lower(prepared_entry.searchable_lower, query_lower)
+      matches = score ~= nil
     end
-
-    local matches, score = shared.select_item_matches(local_state.query, searchable, fuzzy)
     if matches then
       entries[#entries + 1] = {
-        item = item,
-        label_nodes = label_nodes,
-        label_text = label_text,
-        detail_nodes = detail_nodes,
-        detail_text = detail_text,
-        source_index = source_index,
+        item = prepared_entry.item,
+        label_nodes = prepared_entry.label_nodes,
+        label_text = prepared_entry.label_text,
+        detail_nodes = prepared_entry.detail_nodes,
+        detail_text = prepared_entry.detail_text,
+        source_index = prepared_entry.source_index,
         score = score or 0,
       }
     end
@@ -257,6 +294,44 @@ end
 ---@return HollowUiSelectEntry|nil
 local function selected_entry(local_state, entries)
   return entries[local_state.index] or nil
+end
+
+---@param value string
+---@param cursor integer
+---@return string
+---@return string
+---@return string
+local function split_input_cursor(value, cursor)
+  local before = value:sub(1, cursor)
+  local after = value:sub(cursor + 1)
+  local cursor_char = after:sub(1, 1)
+  if cursor_char == "" then
+    cursor_char = " "
+  else
+    after = after:sub(2)
+  end
+  return before, cursor_char, after
+end
+
+---@param value string
+---@param cursor integer
+---@return string
+---@return integer
+local function backspace_input(value, cursor)
+  if cursor <= 0 then
+    return value, 0
+  end
+
+  return value:sub(1, cursor - 1) .. value:sub(cursor + 1), cursor - 1
+end
+
+---@param value string
+---@param cursor integer
+---@param text string
+---@return string
+---@return integer
+local function insert_input(value, cursor, text)
+  return value:sub(1, cursor) .. text .. value:sub(cursor + 1), cursor + #text
 end
 
 ---@param rows HollowUiRows
@@ -374,9 +449,10 @@ end
 
 ---@param opts HollowUiSelectOptions
 ---@param local_state HollowUiSelectState
+---@param prepared HollowUiSelectEntry[]
 ---@return boolean
-local function invoke_action(opts, local_state, action_index)
-  local entries = filtered_entries(opts, local_state)
+local function invoke_action(opts, local_state, action_index, prepared)
+  local entries = filtered_entries(opts, local_state, prepared)
   clamp_index(local_state, entries)
 
   local action = opts.actions and opts.actions[action_index]
@@ -398,9 +474,12 @@ function ui.select.open(opts)
 
   local theme = resolve_select_theme(theme_api.resolve_widget("select"), opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
+  local prepared = prepared_entries(opts)
   local local_state = {
     index = 1,
     query = opts.query or "",
+    query_lower = tostring(opts.query or ""):lower(),
+    query_cursor = #(opts.query or ""),
     scroll_top = 1,
   }
 
@@ -409,7 +488,7 @@ function ui.select.open(opts)
     render = function()
       ---@type HollowUiTags
       local tags = ui.tags
-      local entries = filtered_entries(opts, local_state)
+      local entries = filtered_entries(opts, local_state, prepared)
       clamp_index(local_state, entries)
 
       local visible = visible_entries(opts, local_state, entries)
@@ -422,6 +501,7 @@ function ui.select.open(opts)
           + math.floor(((local_state.index - 1) * (#visible - 1)) / math.max(1, #entries - 1))
       end
 
+      local query_before, query_cursor_char, query_after = split_input_cursor(local_state.query, local_state.query_cursor)
       local rows = ui.rows(
         tags.overlay_row(
           nil,
@@ -432,8 +512,9 @@ function ui.select.open(opts)
         tags.overlay_row(
           nil,
           tags.text({ fg = theme.title, bold = true }, "Filter: "),
-          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, local_state.query),
-          tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, " ")
+          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_before),
+          tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, query_cursor_char),
+          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_after)
         ),
         tags.divider({ color = theme.divider })
       )
@@ -454,7 +535,7 @@ function ui.select.open(opts)
       return rows
     end,
     on_key = function(key, mods)
-      local entries = filtered_entries(opts, local_state)
+      local entries = filtered_entries(opts, local_state, prepared)
       clamp_index(local_state, entries)
 
       if key == "escape" then
@@ -484,26 +565,38 @@ function ui.select.open(opts)
         return true
       end
 
+      if key == "arrow_left" then
+        local_state.query_cursor = math.max(0, local_state.query_cursor - 1)
+        return true
+      end
+
+      if key == "arrow_right" then
+        local_state.query_cursor = math.min(#local_state.query, local_state.query_cursor + 1)
+        return true
+      end
+
       if key == "backspace" and mods == "" then
-        local_state.query = local_state.query:sub(1, math.max(0, #local_state.query - 1))
+        local_state.query, local_state.query_cursor = backspace_input(local_state.query, local_state.query_cursor)
+        local_state.query_lower = local_state.query:lower()
         local_state.index = 1
         return true
       end
 
       local printable = shared.printable_char_for_key(key, mods)
       if printable ~= nil then
-        local_state.query = local_state.query .. printable
+        local_state.query, local_state.query_cursor = insert_input(local_state.query, local_state.query_cursor, printable)
+        local_state.query_lower = local_state.query:lower()
         local_state.index = 1
         return true
       end
 
       local action_index = match_action_for_key(opts, key, mods or "")
       if action_index ~= nil then
-        return invoke_action(opts, local_state, action_index)
+        return invoke_action(opts, local_state, action_index, prepared)
       end
 
       if key == "enter" then
-        return invoke_action(opts, local_state, 1)
+        return invoke_action(opts, local_state, 1, prepared)
       end
 
       return false

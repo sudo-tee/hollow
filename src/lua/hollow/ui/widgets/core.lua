@@ -147,6 +147,10 @@ function ui.dispatch_overlay_key(key, mods)
         return true
       end
     end
+
+    if shared.normalize_overlay_backdrop(widget.backdrop) ~= nil then
+      return true
+    end
   end
 
   return false

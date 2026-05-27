@@ -67,6 +67,7 @@ local function open_new_workspace_from_item(item)
   })
 
   if name ~= "" then
+    source.remember_workspace_cwd(name, cwd, item.domain)
     source.ensure_last_opened(name)
     return
   end

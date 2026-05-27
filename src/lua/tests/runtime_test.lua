@@ -103,7 +103,13 @@ local function make_host_api()
     gui_ready_handler = callback
   end
 
-  function host_api.read_dir(_path)
+  function host_api.read_dir(path)
+    if path == "\\\\wsl$\\Ubuntu\\home\\francis\\Projects" then
+      return {
+        "\\\\wsl$\\Ubuntu\\home\\francis\\Projects\\alpha",
+        "\\\\wsl$\\Ubuntu\\home\\francis\\Projects\\_scratch",
+      }
+    end
     return {}
   end
 
@@ -932,6 +938,30 @@ assert_true(hollow.ui.overlay.depth() < overlay_before_confirm, "confirming sear
 assert_equal(recorded.copy_mode.kind, "search_set_query", "search confirm should set the host query")
 assert_equal(recorded.copy_mode.query, "", "search confirm should forward the current query")
 
+hollow.ui.workspace.configure({
+  cache_ttl_ms = 0,
+  sources = {
+    {
+      name = "Ubuntu",
+      domain = "main",
+      cwd_resolver = "wsl_unc",
+      roots = {
+        "\\\\wsl$\\Ubuntu\\home\\francis\\Projects",
+      },
+    },
+  },
+  filter_item = function(item)
+    local basename = hollow.util.basename(item.cwd)
+    return basename and basename:sub(1, 1) ~= "_"
+  end,
+})
+local workspace_items = hollow.ui.workspace.items(true)
+assert_equal(#workspace_items, 2, "workspace switcher should include open workspaces and UNC-scanned roots")
+assert_equal(workspace_items[1].name, "main", "workspace switcher should dedupe an opened workspace against its known root entry")
+assert_equal(workspace_items[1].cwd, "/tmp/project", "workspace switcher should preserve the remembered cwd for the opened workspace entry")
+assert_equal(workspace_items[2].name, "alpha", "workspace switcher should keep UNC root entries without per-item path stats")
+assert_equal(workspace_items[2].cwd, "/home/francis/Projects/alpha", "workspace switcher should still resolve UNC cwd for launch")
+
 assert_true(on_key("n", 0), "copy mode should jump to next match")
 assert_equal(recorded.copy_mode.kind, "search_next", "copy mode n should jump to next match")
 assert_equal(state.get().copy_mode.match_count, 3, "copy mode should track match counts from host state")
@@ -1111,6 +1141,60 @@ assert_equal(
   resolved_select_theme.selected_bg,
   "workspace switcher should use the select selected background for the active row"
 )
+assert_true(on_key("a", 0), "workspace switcher should consume first-key filtering")
+workspace_overlay = hollow.ui._overlay_state()
+assert_true(workspace_overlay ~= nil, "workspace switcher should remain open while filtering")
+local filtered_workspace_text = ""
+for _, row in ipairs(workspace_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    filtered_workspace_text = filtered_workspace_text .. (segment.text or "")
+  end
+  filtered_workspace_text = filtered_workspace_text .. "\n"
+end
+assert_true(filtered_workspace_text:find("alpha", 1, true) ~= nil, "workspace switcher should match alpha on the first key")
+hollow.ui.overlay.clear()
+
+hollow.ui.select.open({
+  items = {
+    { name = "hollow", cwd = "/home/francis/Projects/hollow" },
+    { name = "alpha", cwd = "/home/francis/Projects/alpha" },
+  },
+  fuzzy = false,
+  label = function(item)
+    return item.name .. " " .. item.cwd
+  end,
+  search_text = function(item)
+    return item.name
+  end,
+})
+assert_true(on_key("h", 0), "select should consume first key when search_text is provided")
+local search_text_overlay = hollow.ui._overlay_state()
+assert_true(search_text_overlay ~= nil, "search_text select overlay should remain open")
+local search_text_overlay_text = ""
+for _, row in ipairs(search_text_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    search_text_overlay_text = search_text_overlay_text .. (segment.text or "")
+  end
+  search_text_overlay_text = search_text_overlay_text .. "\n"
+end
+assert_true(search_text_overlay_text:find("hollow", 1, true) ~= nil, "select should match using custom search_text")
+hollow.ui.overlay.clear()
+
+hollow.ui.workspace.open_switcher()
+workspace_overlay = hollow.ui._overlay_state()
+assert_true(workspace_overlay ~= nil, "workspace switcher should reopen for basename search test")
+assert_true(on_key("h", 0), "workspace switcher should consume first key for basename search")
+assert_true(on_key("o", 0), "workspace switcher should consume second key for basename search")
+workspace_overlay = hollow.ui._overlay_state()
+assert_true(workspace_overlay ~= nil, "workspace switcher should remain open during basename search")
+local basename_search_text = ""
+for _, row in ipairs(workspace_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    basename_search_text = basename_search_text .. (segment.text or "")
+  end
+  basename_search_text = basename_search_text .. "\n"
+end
+assert_true(basename_search_text:find("alpha", 1, true) == nil, "workspace switcher search should not match every /home path entry")
 hollow.ui.overlay.clear()
 
 hollow.ui.select.open({
@@ -1122,6 +1206,44 @@ local custom_overlay = hollow.ui._overlay_state()
 assert_true(custom_overlay ~= nil, "custom select overlay should serialize")
 assert_equal(custom_overlay[1].chrome.bg, "#112233", "custom overlay chrome bg should serialize")
 assert_equal(custom_overlay[1].chrome.alpha, 123, "custom overlay chrome alpha should serialize")
+hollow.ui.overlay.clear()
+
+hollow.ui.input.open({
+  prompt = "Rename workspace",
+  default = "main",
+  backdrop = true,
+})
+assert_true(on_key("arrow_left", 0), "input overlay with backdrop should consume arrow keys")
+assert_true(on_key("x", 0), "input overlay should insert text at the moved cursor")
+local input_overlay = hollow.ui._overlay_state()
+assert_true(input_overlay ~= nil, "input overlay should stay open while editing")
+local input_overlay_text = ""
+for _, row in ipairs(input_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    input_overlay_text = input_overlay_text .. (segment.text or "")
+  end
+  input_overlay_text = input_overlay_text .. "\n"
+end
+assert_true(input_overlay_text:find("maixn", 1, true) ~= nil, "input overlay should insert at the caret after moving left")
+assert_true(on_key("f1", 0), "input overlay with backdrop should consume unmatched keys")
+hollow.ui.overlay.clear()
+
+hollow.ui.select.open({
+  items = { "alpha", "beta" },
+})
+assert_true(on_key("a", 0), "select should consume printable filter input before cursor test")
+assert_true(on_key("arrow_left", 0), "select filter should move cursor left")
+assert_true(on_key("x", 0), "select filter should insert at the moved cursor")
+local select_cursor_overlay = hollow.ui._overlay_state()
+assert_true(select_cursor_overlay ~= nil, "select overlay should stay open during cursor editing")
+local select_cursor_text = ""
+for _, row in ipairs(select_cursor_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    select_cursor_text = select_cursor_text .. (segment.text or "")
+  end
+  select_cursor_text = select_cursor_text .. "\n"
+end
+assert_true(select_cursor_text:find("Filter: xa", 1, true) ~= nil, "select filter should insert at the caret after moving left")
 hollow.ui.overlay.clear()
 
 hollow.ui.topbar.configure({

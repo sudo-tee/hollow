@@ -568,6 +568,22 @@ local function substring_score(haystack, needle)
   return 2000 - (start_idx * 4) - (end_idx - start_idx + 1)
 end
 
+---@param haystack string
+---@param needle string
+---@return number|nil
+function M.plain_match_score_lower(haystack, needle)
+  if needle == "" then
+    return 0
+  end
+
+  local start_idx, end_idx = haystack:find(needle, 1, true)
+  if start_idx == nil then
+    return nil
+  end
+
+  return 2000 - (start_idx * 4) - (end_idx - start_idx + 1)
+end
+
 ---@param haystack any
 ---@param needle any
 ---@return number|nil

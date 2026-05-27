@@ -114,6 +114,7 @@ function M.new(host_api)
         cache_loaded_at_ms = 0,
         cached_items = nil,
         last_opened = {},
+        remembered_cwds = {},
         listeners_registered = false,
         project_roots = nil,
         status_column_width = nil,
