@@ -37,7 +37,7 @@ hollow.config.set({
   cols = 120,
   rows = 34,
   scrollback = 64000000,
-  padding = 0,
+  padding = 5,
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,
