@@ -97,6 +97,7 @@ hollow.ui.topbar.configure({
   },
   tabs = {
     fit = "content",
+    max_width = 20,
     style = function(tab)
       local ui = hollow.theme.current().ui
       local tab_colors = tab.is_active and ui.tab_bar.active_tab

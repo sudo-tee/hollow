@@ -529,6 +529,7 @@
 
 ---@class HollowUiBarTabsOptions: HollowUiBarNodeOptionsBase
 ---@field fit? "fill"|"content"
+---@field max_width? number
 ---@field format? fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): HollowUiFormattedValue
 ---@field style? HollowUiNodeStyle|HollowHexColor|fun(tab: HollowUiTabState, ctx?:HollowWidgetCtx): HollowUiNodeStyle|HollowHexColor|nil
 
@@ -602,6 +603,7 @@
 ---@class HollowUiTabsLayout
 ---@field kind "tabs"
 ---@field fit "content"|"fill"
+---@field max_width? number
 ---@field tabs HollowUiSegment[]
 
 ---@class HollowUiOverlaySerializedRow

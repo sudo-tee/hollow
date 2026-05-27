@@ -528,6 +528,7 @@ const BarItemKind = enum {
 
 const BarTabsView = struct {
     fit_content: bool = false,
+    max_width: f32 = 0,
     style: BarStyle = .{},
     tabs: [16]BarTabView = [_]BarTabView{.{}} ** 16,
     len: usize = 0,
@@ -570,6 +571,7 @@ fn resetBarTabView(dst: *BarTabView) void {
 
 fn resetBarTabsView(dst: *BarTabsView) void {
     dst.fit_content = false;
+    dst.max_width = 0;
     dst.style = .{};
     dst.len = 0;
 }
@@ -749,6 +751,12 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
             var fit_len: usize = 0;
             const fit_ptr = api.to_lstring(state, -1, &fit_len);
             item_ptr.tabs.fit_content = fit_ptr != null and std.mem.eql(u8, fit_ptr.?[0..fit_len], "content");
+            lua_mod.pop(api, state, 1);
+
+            api.get_field(state, item_idx, "max_width");
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                item_ptr.tabs.max_width = @max(0, @as(f32, @floatCast(api.to_number(state, -1))));
+            }
             lua_mod.pop(api, state, 1);
 
             api.get_field(state, item_idx, "tabs");
@@ -1150,12 +1158,17 @@ fn tabViewTextLen(view: *const BarTabView) usize {
     return view.segment.text.len;
 }
 
+fn tabViewCodepoints(view: *const BarTabView) usize {
+    if (view.segments_len > 0) return segmentArrayCodepoints(view.segments[0..view.segments_len]);
+    return countCodepoints(view.segment.text);
+}
+
 fn segmentViewShowsFullSegments(view: *const BarSegmentView, display: []const u8) bool {
     return view.segments_len > 0 and display.len == view.segment.text.len and segmentViewTextLen(view) == view.segment.text.len;
 }
 
 fn tabViewShowsFullSegments(view: *const BarTabView, display: []const u8) bool {
-    return view.segments_len > 0 and display.len == view.segment.text.len and tabViewTextLen(view) == view.segment.text.len;
+    return view.segments_len > 0 and countCodepoints(display) == tabViewCodepoints(view) and tabViewTextLen(view) == view.segment.text.len;
 }
 
 fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
@@ -1163,7 +1176,7 @@ fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 
 }
 
 fn tabViewFullWidth(renderer: *FtRenderer, view: *const BarTabView) f32 {
-    return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(countCodepoints(view.segment.text))) * renderer.cell_w;
+    return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(tabViewCodepoints(view))) * renderer.cell_w;
 }
 
 fn barItemHeight(renderer: *FtRenderer, style: BarStyle) f32 {
@@ -1274,7 +1287,12 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     if (remaining_w <= 0) break;
 
                     const min_tab_w = tab.style.margin.horizontal() + tab.style.padding.horizontal() + renderer.cell_w;
-                    const desired_tab_w = if (item.tabs.fit_content) full_w else @max(min_tab_w, default_tab_w);
+                    const desired_raw = if (item.tabs.fit_content) full_w else @max(min_tab_w, default_tab_w);
+                    const max_tab_w = if (item.tabs.max_width > 0)
+                        tab.style.margin.horizontal() + tab.style.padding.horizontal() + (item.tabs.max_width * renderer.cell_w)
+                    else
+                        0;
+                    const desired_tab_w = if (max_tab_w > 0) @min(desired_raw, max_tab_w) else desired_raw;
                     const tab_w = @min(desired_tab_w, remaining_w);
                     const bg_h = barItemHeight(renderer, tab.style);
                     const bg_x = tx + tab.style.margin.left;
@@ -3752,8 +3770,8 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
 
     if (app.copyModeActive() and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
-        g_swallow_char_pending = 4;
-        g_swallow_char_until_frame = event.frame_count + 1;
+        g_swallow_char_pending = 1;
+        g_swallow_char_until_frame = event.frame_count;
         c.sapp_consume_event();
         return;
     }
@@ -3762,9 +3780,18 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     if (key != .unidentified) {
         const key_name = @tagName(key);
         if (app.fireOnKey(key_name, mods)) {
-            // Only printable keydown handlers need paired char suppression.
-            if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0) {
-                g_swallow_char_pending = 4;
+            const should_swallow_paired_char = (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 and switch (key) {
+                .a, .b, .c, .d, .e, .f, .g, .h, .i, .j, .k, .l, .m,
+                .n, .o, .p, .q, .r, .s, .t, .u, .v, .w, .x, .y, .z,
+                .digit_0, .digit_1, .digit_2, .digit_3, .digit_4,
+                .digit_5, .digit_6, .digit_7, .digit_8, .digit_9,
+                .space, .minus, .equal, .bracket_left, .bracket_right,
+                .backslash, .semicolon, .quote, .backquote, .comma,
+                .period, .slash => true,
+                else => false,
+            };
+            if (should_swallow_paired_char) {
+                g_swallow_char_pending = 1;
                 g_swallow_char_until_frame = event.frame_count + 1;
             }
             c.sapp_consume_event();
@@ -3787,8 +3814,8 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     // event thread.  If Lua consumes the key we stop here — no DLL call needed.
     if (key != .unidentified) {
         if (handleScrollbackKey(app, key, mods)) {
-            g_swallow_char_pending = 4;
-            g_swallow_char_until_frame = event.frame_count + 1;
+            g_swallow_char_pending = 1;
+            g_swallow_char_until_frame = event.frame_count;
             c.sapp_consume_event();
             return;
         }
@@ -3810,6 +3837,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
     if (g_swallow_char_pending > 0) {
         if (event.frame_count <= g_swallow_char_until_frame) {
             g_swallow_char_pending -= 1;
+            c.sapp_consume_event();
             return;
         }
         g_swallow_char_pending = 0;
@@ -3823,19 +3851,13 @@ fn handleChar(app: *App, event: c.sapp_event) void {
         c.sapp_consume_event();
         return;
     }
-    if ((mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] >= 0x01 and utf8[0] <= 0x1A) {
-        var ctrl_key: [1]u8 = .{('a' + (utf8[0] - 1))};
-        if (app.fireOnKey(ctrl_key[0..], mods)) {
-            c.sapp_consume_event();
-            return;
-        }
-    }
-    if (app.fireOnKey(utf8, mods)) {
+    if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) != 0) {
         c.sapp_consume_event();
         return;
     }
     // Defer sendText to the frame thread — avoids racing with DLL calls in tick().
     _ = app.enqueueChar(utf8);
+    c.sapp_consume_event();
 }
 
 fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction) void {

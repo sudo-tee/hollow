@@ -840,6 +840,90 @@ local function serialize_bar_widget_style(widget)
   return next(style) ~= nil and style or nil
 end
 
+---@param text string
+---@param width integer
+---@return string
+local function truncate_text_end(text, width)
+  text = tostring(text or "")
+  if width <= 0 then
+    return ""
+  end
+  if util.utf8_len(text) <= width then
+    return text
+  end
+
+  if utf8 and type(utf8.offset) == "function" then
+    if width <= 3 then
+      local byte_end = utf8.offset(text, width + 1)
+      return byte_end and text:sub(1, byte_end - 1) or text
+    end
+
+    local byte_end = utf8.offset(text, width - 3 + 1)
+    local prefix = byte_end and text:sub(1, byte_end - 1) or text
+    return prefix .. "..."
+  end
+
+  return util.truncate_end(text, width)
+end
+
+---@param segments HollowUiSegment[]|nil
+---@param width integer
+---@return HollowUiSegment[]|nil
+local function truncate_segments_end(segments, width)
+  if type(segments) ~= "table" or width <= 0 then
+    return nil
+  end
+
+  local out = {}
+  local remaining = width
+  for _, segment in ipairs(segments) do
+    if remaining <= 0 then
+      break
+    end
+
+    local text = tostring(segment.text or "")
+    local seg_len = util.utf8_len(text)
+    if seg_len == 0 then
+      goto continue
+    end
+
+    local clipped = truncate_text_end(text, remaining)
+    if clipped ~= "" then
+      local copy = util.clone_value(segment)
+      copy.text = clipped
+      out[#out + 1] = copy
+      remaining = remaining - util.utf8_len(clipped)
+    end
+
+    if util.utf8_len(clipped) < seg_len then
+      break
+    end
+
+    ::continue::
+  end
+
+  return #out > 0 and out or nil
+end
+
+---@param segment HollowUiSegment
+---@param width integer
+---@return HollowUiSegment
+local function clamp_tab_segment_width(segment, width)
+  if type(segment) ~= "table" or width <= 0 then
+    return segment
+  end
+
+  local text = truncate_text_end(segment.text or "", width)
+  if text == segment.text then
+    return segment
+  end
+
+  local clamped = util.clone_value(segment)
+  clamped.text = text
+  clamped.segments = truncate_segments_end(segment.segments, width)
+  return clamped
+end
+
 ---@param surface string|nil
 ---@param node HollowUiBarTabsNode
 ---@param ctx HollowWidgetCtx
@@ -900,12 +984,16 @@ local function serialize_tabs(surface, node, ctx, handlers)
     end
 
     local segment = serialize_bar_value(surface, label, tab_state.title, style)
+    if type(node.max_width) == "number" and node.max_width > 0 then
+      segment = clamp_tab_segment_width(segment, math.floor(node.max_width))
+    end
     tabs[#tabs + 1] = segment
   end
 
   return {
     kind = "tabs",
     fit = node.fit == "content" and "content" or "fill",
+    max_width = type(node.max_width) == "number" and node.max_width or nil,
     style = serialize_bar_style(resolve_bar_hover_style(surface, node.style)),
     tabs = tabs,
   }

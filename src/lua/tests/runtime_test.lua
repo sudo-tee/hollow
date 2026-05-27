@@ -1263,6 +1263,40 @@ local configured_topbar = hollow.ui._topbar_state()
 assert_true(configured_topbar ~= nil, "topbar.configure should provide a default topbar widget")
 assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
 assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
+assert_equal(configured_topbar.items[3].kind, "tabs", "configured topbar should serialize tabs content")
+
+hollow.ui.topbar.configure({
+  separator = false,
+  cwd = false,
+  key_legend = false,
+  time = false,
+  workspace = false,
+  tabs = {
+    fit = "content",
+    max_width = 20,
+    format = function(tab)
+      return {
+        hollow.ui.span("prefix "),
+        hollow.ui.span(tab.title),
+      }
+    end,
+  },
+})
+
+local topbar_with_max_width = hollow.ui._topbar_state()
+assert_equal(topbar_with_max_width.items[1].kind, "tabs", "tabs-only topbar should serialize a tabs item")
+assert_equal(topbar_with_max_width.items[1].max_width, 20, "tabs max_width should be preserved in serialized topbar state")
+assert_equal(topbar_with_max_width.items[1].tabs[1].text, "prefix shell", "short tab labels should remain unchanged under max_width")
+
+_G.host_api.set_tab_title_by_id(201, "this is a very looooong name that should be shorter")
+topbar_with_max_width = hollow.ui._topbar_state()
+assert_equal(topbar_with_max_width.items[1].tabs[1].text, "prefix this is a...", "tabs max_width should truncate serialized tab text")
+assert_true(
+  topbar_with_max_width.items[1].tabs[1].segments ~= nil
+    and topbar_with_max_width.items[1].tabs[1].segments[1].text == "prefix "
+    and topbar_with_max_width.items[1].tabs[1].segments[2].text == "this is a...",
+  "tabs max_width should truncate serialized formatted segments"
+)
 
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function()
