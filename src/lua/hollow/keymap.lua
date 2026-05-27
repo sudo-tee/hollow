@@ -181,6 +181,8 @@ local function canonicalize_runtime_key(key, mods)
       if extra_mods % (MODS_SUPER * 2) >= MODS_SUPER then
         canonical_mods = add_mod(canonical_mods, MODS_SUPER)
       end
+    else
+      canonical_key = normalize_key_name(key)
     end
   else
     canonical_key = normalize_key_name(key)
@@ -881,6 +883,13 @@ function M.setup(hollow, host_api, state)
   host_api.on_key(function(key, mods)
     key, mods = canonicalize_runtime_key(key, mods)
 
+    local suppressed = keymap_state.suppress_next_key
+    if suppressed ~= nil and suppressed.key == key and suppressed.mods == mods then
+      keymap_state.suppress_next_key = nil
+      return true
+    end
+    keymap_state.suppress_next_key = nil
+
     if hollow.ui.dispatch_overlay_key(key, mods) then
       return true
     end
@@ -910,6 +919,7 @@ function M.setup(hollow, host_api, state)
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)
         end
+        keymap_state.suppress_next_key = { key = key, mods = mods }
         return true
       end
       reset_sequence_state(keymap_state)
@@ -921,6 +931,7 @@ function M.setup(hollow, host_api, state)
         return keymap_state.active_mode ~= "normal"
       end
       set_sequence_state(keymap_state, mode_state.leader_bindings, "<leader>", {})
+      keymap_state.suppress_next_key = { key = key, mods = mods }
       return true
     end
 

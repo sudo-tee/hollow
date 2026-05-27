@@ -83,6 +83,7 @@ function M.new(host_api)
       sequence_steps = {},
       sequence_prefix = nil,
       active_mode = "normal",
+      suppress_next_key = nil,
     },
     ui = {
       mounted_topbar = nil,
