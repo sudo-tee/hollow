@@ -3557,6 +3557,11 @@ fn applyHexColor(cfg: *config.Config, key: []const u8, value: []const u8) bool {
         cfg.terminal_theme.cursor = color;
         return true;
     }
+    if (std.mem.eql(u8, key, "cursor_fg")) {
+        cfg.terminal_theme.enabled = true;
+        cfg.terminal_theme.cursor_fg = color;
+        return true;
+    }
     if (std.mem.eql(u8, key, "selection_fg")) {
         cfg.terminal_theme.enabled = true;
         cfg.terminal_theme.selection_fg = color;

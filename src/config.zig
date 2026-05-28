@@ -67,6 +67,7 @@ pub const Config = struct {
         foreground: ghostty.ColorRgb = .{ .r = 220, .g = 220, .b = 220 },
         background: ghostty.ColorRgb = .{ .r = 18, .g = 20, .b = 28 },
         cursor: ?ghostty.ColorRgb = null,
+        cursor_fg: ?ghostty.ColorRgb = null,
         selection_fg: ?ghostty.ColorRgb = null,
         selection_bg: ?ghostty.ColorRgb = null,
         palette: [256]ghostty.ColorRgb = defaultPalette(),

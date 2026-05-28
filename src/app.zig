@@ -3840,8 +3840,8 @@ pub const App = struct {
             .top => cursor.row = 0,
             .bottom => cursor.row = self.copy_mode_history.items.len - 1,
         }
-        const cols = self.copy_mode_history.items[cursor.row].cols;
-        cursor.col = @min(cursor.col, cols);
+        const cols = @max(1, @as(usize, pane.cols));
+        cursor.col = @min(cursor.col, cols - 1);
         self.copy_mode_cursor = cursor;
         if (extend) {
             if (self.copy_mode_anchor == null) self.copy_mode_anchor = previous_cursor;

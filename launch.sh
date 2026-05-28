@@ -66,7 +66,7 @@ else
   GUI_LAUNCHER_NAME=""
   GUI_LAUNCHER_PDB_NAME=""
 fi
-EXE_PATH="$SCRIPT_DIR/$EXE_NAME"
+EXE_PATH="$BIN_DIR/$EXE_NAME"
 
 if [[ $BUILD -eq 1 ]]; then
   "$SCRIPT_DIR/scripts/check-zig-version.sh"
@@ -101,29 +101,6 @@ copy_if_exists() {
 }
 
 if [[ $RUN -eq 1 ]]; then
-  copy_if_exists "$BIN_DIR/$EXE_NAME" "$EXE_PATH"
-  if [[ -n "$PDB_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$PDB_NAME" "$SCRIPT_DIR/$PDB_NAME"
-  fi
-  if [[ -n "$LAUNCHER_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$LAUNCHER_NAME" "$SCRIPT_DIR/$LAUNCHER_NAME"
-  fi
-  if [[ -n "$LAUNCHER_PDB_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$LAUNCHER_PDB_NAME" "$SCRIPT_DIR/$LAUNCHER_PDB_NAME"
-  fi
-  if [[ -n "$GUI_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$GUI_NAME" "$SCRIPT_DIR/$GUI_NAME"
-  fi
-  if [[ -n "$GUI_PDB_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$GUI_PDB_NAME" "$SCRIPT_DIR/$GUI_PDB_NAME"
-  fi
-  if [[ -n "$GUI_LAUNCHER_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$GUI_LAUNCHER_NAME" "$SCRIPT_DIR/$GUI_LAUNCHER_NAME"
-  fi
-  if [[ -n "$GUI_LAUNCHER_PDB_NAME" ]]; then
-    copy_if_exists "$BIN_DIR/$GUI_LAUNCHER_PDB_NAME" "$SCRIPT_DIR/$GUI_LAUNCHER_PDB_NAME"
-  fi
-
   RUN_ARGS=()
   if [[ $SAFE_RENDER -eq 1 ]]; then
     echo "[launch] renderer safe mode enabled"

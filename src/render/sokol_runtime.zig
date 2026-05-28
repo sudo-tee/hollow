@@ -2985,10 +2985,32 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // ── Phase 2: Swapchain pass ────────────────────────────────────────────
 
+    // Queue cursor glyph verts BEFORE the pass so they are included in the
+    // uploadGlyphVerts() call below (sg_update_buffer must not be called
+    // inside an active D3D11 pass).
+    if (g_ft_renderer) |*renderer| {
+        if (app.ghostty) |*runtime| {
+            if (use_safe_render or use_direct_multi_pane or use_direct_render) {
+                // Direct paths already bake the cursor inside queueInViewport.
+            } else if (leaves.len > 0) {
+                const active_pane = app.activePane();
+                for (leaves) |leaf| {
+                    if (!leaf.pane.render_state_ready) continue;
+                    const ox: f32 = @floatFromInt(leaf.bounds.x);
+                    const oy: f32 = @floatFromInt(leaf.bounds.y);
+                    renderer.queueCursorGlyphVerts(runtime, &app.config, app, leaf.pane, leaf.pane.render_state, &leaf.pane.row_iterator, &leaf.pane.row_cells, leaf.pane == active_pane, ox, oy);
+                }
+            } else if (app.activePane()) |pane| {
+                if (paneRenderHelpersReady(pane) and !use_direct_render) {
+                    renderer.queueCursorGlyphVerts(runtime, &app.config, app, pane, pane.render_state, &pane.row_iterator, &pane.row_cells, true, 0, 0);
+                }
+            }
+        }
+    }
+
     // Upload any pending glyph vertices BEFORE beginning the swapchain pass.
     // sg_update_buffer must NOT be called inside an active sg_pass on D3D11.
-    // In cached-RT mode this is a no-op (count == 0 after per-pane offscreen flushes).
-    // In direct-render mode this uploads the vertices accumulated by drawDirect().
+    // In cached-RT mode this now also includes cursor glyph verts queued above.
     if (g_ft_renderer) |*renderer| {
         _ = renderer.uploadGlyphVerts();
     }
@@ -3014,6 +3036,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // before the swapchain pass so we can upload glyph verts outside
                 // the pass. Nothing to blit here.
             } else if (do_leaves) {
+                const active_pane = app.activePane();
                 for (leaves) |leaf| {
                     if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
@@ -3027,6 +3050,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_bg, ox, oy, pw, ph, width, height);
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_text, ox, oy, pw, ph, width, height);
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .above_text, ox, oy, pw, ph, width, height);
+                        renderer.drawCursorOverlay(runtime, &app.config, app, leaf.pane, leaf.pane.render_state, &leaf.pane.row_iterator, &leaf.pane.row_cells, ox, oy, pw, ph, leaf.pane == active_pane);
                     }
                 }
             } else if (app.activePane()) |pane| {
@@ -3073,6 +3097,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_bg, 0, 0, width, height, width, height);
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_text, 0, 0, width, height, width, height);
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .above_text, 0, 0, width, height, width, height);
+                            renderer.drawCursorOverlay(runtime, &app.config, app, pane, pane.render_state, &pane.row_iterator, &pane.row_cells, 0, 0, width, height, true);
                         }
                     }
                 }
