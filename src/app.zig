@@ -163,6 +163,24 @@ fn copyModeRowIndexInViewport(target_row: usize, visible_top: usize, visible_row
     return row_index;
 }
 
+fn historySelectionRangeInViewport(history_range: selection.Range, visible_top: usize, visible_rows: usize) ?selection.Range {
+    if (visible_rows == 0) return null;
+    const visible_bottom = visible_top + visible_rows;
+    if (history_range.start.row >= visible_bottom or history_range.end.row < visible_top) return null;
+
+    const max_visible_row = visible_rows - 1;
+    return .{
+        .start = .{
+            .row = if (history_range.start.row < visible_top) 0 else history_range.start.row - visible_top,
+            .col = if (history_range.start.row < visible_top) 0 else history_range.start.col,
+        },
+        .end = .{
+            .row = if (history_range.end.row >= visible_bottom) max_visible_row else history_range.end.row - visible_top,
+            .col = if (history_range.end.row >= visible_bottom) std.math.maxInt(usize) else history_range.end.col,
+        },
+    };
+}
+
 fn viewportIteratorRowIndex(visual_row: usize, visible_rows: usize) ?usize {
     if (visual_row >= visible_rows) return null;
     if (builtin.os.tag == .linux and visible_rows > 0) {
@@ -3239,10 +3257,11 @@ pub const App = struct {
     }
 
     pub fn selectionRange(self: *const App, pane: *const Pane) ?selection.Range {
-        if (self.selection_pane != pane) return null;
-        const anchor = self.selection_anchor orelse return null;
-        const head = self.selection_head orelse return null;
-        return selection.normalize(anchor, head);
+        const history_range = self.selectionHistoryRange(pane) orelse return null;
+        const scrollbar = pane.scrollbar();
+        const visible_top: usize = @intCast(scrollbarTopRow(scrollbar));
+        const visible_rows: usize = @intCast(@max(@as(u64, 1), @min(scrollbar.total, scrollbar.len)));
+        return historySelectionRangeInViewport(history_range, visible_top, visible_rows);
     }
 
     pub fn copyModeSelectionRange(self: *const App, pane: *const Pane) ?selection.Range {
@@ -3356,6 +3375,24 @@ pub const App = struct {
         return gridRefForHistoryPoint(runtime, pane.terminal, history_row, col, scrollback_rows);
     }
 
+    fn selectionHistoryRange(self: *const App, pane: *const Pane) ?selection.Range {
+        if (self.selection_pane != pane) return null;
+        const anchor = self.selection_anchor orelse return null;
+        const head = self.selection_head orelse return null;
+        return selection.normalize(anchor, head);
+    }
+
+    fn selectionPointToHistory(self: *App, pane: *Pane, point: selection.CellPoint) selection.CellPoint {
+        const scrollbar = if (self.ghostty) |*rt|
+            self.refreshPaneScrollbar(rt, pane)
+        else
+            pane.scrollbar();
+        return .{
+            .row = @as(usize, @intCast(scrollbarTopRow(scrollbar))) + point.row,
+            .col = point.col,
+        };
+    }
+
     fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
         const pane = self.copy_mode_pane orelse return;
         const visible_rows = self.copyModeVisibleRows(pane);
@@ -3374,13 +3411,14 @@ pub const App = struct {
             mux.setActivePane(pane);
             self.syncActivePaneChange(previous, pane);
         }
+        const history_point = self.selectionPointToHistory(pane, point);
         const had_selection = self.hasSelection();
         const previous_selection_pane = self.selection_pane;
         if (!extend or self.selection_pane != pane or self.selection_anchor == null) {
             self.selection_pane = pane;
-            self.selection_anchor = point;
+            self.selection_anchor = history_point;
         }
-        self.selection_head = point;
+        self.selection_head = history_point;
         self.selection_drag_active = true;
         if (previous_selection_pane) |prev| {
             if (prev != pane) prev.render_dirty = .full;
@@ -3394,10 +3432,11 @@ pub const App = struct {
 
     pub fn selectionUpdate(self: *App, pane: *Pane, point: selection.CellPoint) void {
         if (!self.selection_drag_active or self.selection_pane != pane or !self.hasPane(pane)) return;
+        const history_point = self.selectionPointToHistory(pane, point);
         if (self.selection_head) |head| {
-            if (head.row == point.row and head.col == point.col) return;
+            if (head.row == history_point.row and head.col == history_point.col) return;
         }
-        self.selection_head = point;
+        self.selection_head = history_point;
         pane.render_dirty = .full;
         self.selection_generation +%= 1;
     }
@@ -3417,6 +3456,7 @@ pub const App = struct {
             mux.setActivePane(pane);
             self.syncActivePaneChange(previous, pane);
         }
+        const history_point = self.selectionPointToHistory(pane, point);
         const had_selection = self.hasSelection();
 
         const runtime = if (self.ghostty) |*rt| rt else return;
@@ -3470,8 +3510,8 @@ pub const App = struct {
             self.emitLuaBuiltInEvent("selection:cleared", .none);
         }
         self.selection_pane = pane;
-        self.selection_anchor = .{ .row = point.row, .col = start };
-        self.selection_head = .{ .row = point.row, .col = end };
+        self.selection_anchor = .{ .row = history_point.row, .col = start };
+        self.selection_head = .{ .row = history_point.row, .col = end };
         self.selection_drag_active = false;
         pane.render_dirty = .full;
         self.selection_generation +%= 1;
@@ -3486,6 +3526,7 @@ pub const App = struct {
             mux.setActivePane(pane);
             self.syncActivePaneChange(previous, pane);
         }
+        const history_point = self.selectionPointToHistory(pane, point);
         const had_selection = self.hasSelection();
 
         const cols = @max(@as(usize, 1), @as(usize, pane.cols));
@@ -3493,8 +3534,8 @@ pub const App = struct {
             self.emitLuaBuiltInEvent("selection:cleared", .none);
         }
         self.selection_pane = pane;
-        self.selection_anchor = .{ .row = point.row, .col = 0 };
-        self.selection_head = .{ .row = point.row, .col = cols - 1 };
+        self.selection_anchor = .{ .row = history_point.row, .col = 0 };
+        self.selection_head = .{ .row = history_point.row, .col = cols - 1 };
         self.selection_drag_active = false;
         pane.render_dirty = .full;
         self.selection_generation +%= 1;
@@ -3514,7 +3555,7 @@ pub const App = struct {
 
     pub fn hasSelection(self: *const App) bool {
         if (self.selection_pane == null) return false;
-        return self.selectionRange(self.selection_pane.?) != null;
+        return self.selectionHistoryRange(self.selection_pane.?) != null;
     }
 
     pub fn copySelectionToClipboard(self: *App) !void {
@@ -3523,7 +3564,7 @@ pub const App = struct {
             self.pruneSelectionIfInvalid();
             return;
         }
-        const range = self.selectionRange(pane) orelse return;
+        const range = self.selectionHistoryRange(pane) orelse return;
         var text_buf: [CLIPBOARD_EVENT_MAX]u8 = undefined;
         const text = self.captureSelectionText(pane, range, text_buf[0 .. text_buf.len - 1]) orelse return;
         if (text.len == 0) return;
@@ -4099,24 +4140,24 @@ pub const App = struct {
     fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []u8) ?[]const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return null;
         if (self.selection_pane != pane) return null;
-        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
 
         var writer = std.io.fixedBufferStream(out);
-        var row_index: usize = 0;
-        while (runtime.nextRow(pane.row_iterator) and row_index <= range.end.row) : (row_index += 1) {
-            if (!selection.rowIntersects(range, row_index)) continue;
-            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
-
+        var row_index = range.start.row;
+        while (row_index <= range.end.row) : (row_index += 1) {
             var row_text: [4096]u8 = undefined;
             var row_len: usize = 0;
             var col_index: usize = 0;
-            while (runtime.nextCell(pane.row_cells)) : (col_index += 1) {
+
+            while (true) : (col_index += 1) {
+                const cell_ref = self.gridRefForHistoryCell(pane, row_index, col_index) orelse break;
+                const raw_cell = runtime.gridRefCell(&cell_ref) orelse break;
                 if (!selection.cellSelected(range, row_index, col_index)) continue;
-                appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
+                appendGridRefText(runtime, &cell_ref, raw_cell, row_text[0..], &row_len);
             }
             while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
             writer.writer().writeAll(row_text[0..row_len]) catch break;
-            if (row_index < range.end.row) writer.writer().writeByte('\n') catch break;
+            if (row_index == range.end.row) break;
+            writer.writer().writeByte('\n') catch break;
         }
 
         return writer.getWritten();
@@ -4700,6 +4741,14 @@ pub const App = struct {
         pane.pty_received_data = true;
         self.scroll_accum = 0;
         _ = self.refreshPaneScrollbar(runtime, pane);
+        self.syncDraggedSelectionToPointer(pane);
+    }
+
+    fn syncDraggedSelectionToPointer(self: *App, pane: *Pane) void {
+        if (!self.selection_drag_active or self.selection_pane != pane) return;
+        const hit = self.hitTestPane(self.pointer_x, self.pointer_y) orelse return;
+        if (hit.pane != pane) return;
+        self.selectionUpdate(pane, self.cellPointFromPaneLocal(pane, hit.x, hit.y));
     }
 
     fn forceScrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
@@ -6196,6 +6245,35 @@ fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, l
     }
 }
 
+fn appendGridRefText(runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64, out: []u8, len: *usize) void {
+    if (len.* >= out.len) return;
+    var cps: [16]u32 = [_]u32{0} ** 16;
+    const grapheme_len = runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0;
+    if (grapheme_len == 0) {
+        if (!runtime.cellHasText(raw_cell)) {
+            out[len.*] = ' ';
+            len.* += 1;
+            return;
+        }
+        const cp = runtime.cellCodepoint(raw_cell);
+        var utf8_buf: [4]u8 = undefined;
+        const encoded_len = encodeCodepointInto(cp, &utf8_buf) orelse return;
+        if (len.* + encoded_len > out.len) return;
+        fastmem.copy(u8, out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
+        len.* += encoded_len;
+        return;
+    }
+
+    var cp_index: usize = 0;
+    while (cp_index < grapheme_len and cps[cp_index] != 0) : (cp_index += 1) {
+        var utf8_buf: [4]u8 = undefined;
+        const encoded_len = encodeCodepointInto(cps[cp_index], &utf8_buf) orelse continue;
+        if (len.* + encoded_len > out.len) return;
+        fastmem.copy(u8, out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
+        len.* += encoded_len;
+    }
+}
+
 fn captureCopyModeCellText(allocator: std.mem.Allocator, runtime: *GhosttyRuntime, row_cells: ?*anyopaque) ![]u8 {
     var buf: [32]u8 = undefined;
     var len: usize = 0;
@@ -6949,6 +7027,40 @@ test "copy mode viewport row mapping handles unclamped and clamped scroll positi
     try std.testing.expectEqual(@as(?usize, 9), copyModeRowIndexInViewport(14, 5, 10));
     try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(15, 5, 10));
     try std.testing.expectEqual(@as(?usize, null), copyModeRowIndexInViewport(4, 5, 10));
+}
+
+test "history selection range projects into viewport bounds" {
+    const within = historySelectionRangeInViewport(.{
+        .start = .{ .row = 8, .col = 3 },
+        .end = .{ .row = 11, .col = 4 },
+    }, 5, 10).?;
+    try std.testing.expectEqual(@as(usize, 3), within.start.row);
+    try std.testing.expectEqual(@as(usize, 3), within.start.col);
+    try std.testing.expectEqual(@as(usize, 6), within.end.row);
+    try std.testing.expectEqual(@as(usize, 4), within.end.col);
+
+    const clipped_top = historySelectionRangeInViewport(.{
+        .start = .{ .row = 2, .col = 7 },
+        .end = .{ .row = 6, .col = 1 },
+    }, 5, 10).?;
+    try std.testing.expectEqual(@as(usize, 0), clipped_top.start.row);
+    try std.testing.expectEqual(@as(usize, 0), clipped_top.start.col);
+    try std.testing.expectEqual(@as(usize, 1), clipped_top.end.row);
+    try std.testing.expectEqual(@as(usize, 1), clipped_top.end.col);
+
+    const clipped_bottom = historySelectionRangeInViewport(.{
+        .start = .{ .row = 12, .col = 2 },
+        .end = .{ .row = 20, .col = 9 },
+    }, 5, 10).?;
+    try std.testing.expectEqual(@as(usize, 7), clipped_bottom.start.row);
+    try std.testing.expectEqual(@as(usize, 2), clipped_bottom.start.col);
+    try std.testing.expectEqual(@as(usize, 9), clipped_bottom.end.row);
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), clipped_bottom.end.col);
+
+    try std.testing.expectEqual(@as(?selection.Range, null), historySelectionRangeInViewport(.{
+        .start = .{ .row = 0, .col = 0 },
+        .end = .{ .row = 4, .col = 0 },
+    }, 5, 10));
 }
 
 test "copy mode regex finder supports simple regexp operators" {
