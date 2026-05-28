@@ -1356,6 +1356,30 @@ pub const Runtime = struct {
         return .block;
     }
 
+    pub fn cursorBlinking(self: *Runtime, render_state: ?*anyopaque) bool {
+        if (render_state) |state| {
+            var blinking = false;
+            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_blinking), &blinking) == success) return blinking;
+        }
+        return false;
+    }
+
+    pub fn cursorPasswordInput(self: *Runtime, render_state: ?*anyopaque) bool {
+        if (render_state) |state| {
+            var password_input = false;
+            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_password_input), &password_input) == success) return password_input;
+        }
+        return false;
+    }
+
+    pub fn cursorWideTail(self: *Runtime, render_state: ?*anyopaque) bool {
+        if (render_state) |state| {
+            var wide_tail = false;
+            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_viewport_wide_tail), &wide_tail) == success) return wide_tail;
+        }
+        return false;
+    }
+
     pub fn syncKeyEncoder(self: *Runtime, encoder: ?*anyopaque, terminal: ?*anyopaque) void {
         if (encoder != null and terminal != null) self.key_encoder_setopt_from_terminal(encoder, terminal);
     }

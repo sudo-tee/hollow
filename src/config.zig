@@ -274,6 +274,7 @@ pub const Config = struct {
     floating_active_color: ghostty.ColorRgb = .{ .r = 120, .g = 150, .b = 220 },
     floating_inactive_color: ghostty.ColorRgb = .{ .r = 72, .g = 90, .b = 110 },
     debug_overlay: bool = false,
+    debug_terminal_trace: bool = false,
     vsync: bool = true,
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render
     /// loop uncapped.

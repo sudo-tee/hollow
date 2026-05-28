@@ -258,6 +258,7 @@
 
 ---@class HollowConfig
 ---@field debug_overlay? boolean
+---@field debug_terminal_trace? boolean
 ---@field backend? string
 ---@field vsync? boolean
 ---@field max_fps? integer

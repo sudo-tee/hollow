@@ -3183,6 +3183,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.debug_overlay = value;
         return;
     }
+    if (std.mem.eql(u8, key, "debug_terminal_trace")) {
+        cfg.debug_terminal_trace = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "vsync")) {
         cfg.vsync = value;
         return;

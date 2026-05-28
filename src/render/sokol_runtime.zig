@@ -286,6 +286,15 @@ const CacheValidity = enum {
     priming,
     valid,
 };
+
+const CURSOR_BLINK_INTERVAL_MS: i128 = 600;
+
+fn blinkVisibleNow(now_ns: i128) bool {
+    const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
+    const blink_phase = @divFloor(now_ms, CURSOR_BLINK_INTERVAL_MS);
+    return @mod(blink_phase, @as(i128, 2)) == 0;
+}
+
 const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
@@ -323,6 +332,15 @@ const PaneCacheEntry = struct {
     /// and ghostty does not mark the old cursor row as dirty (content unchanged).
     /// Initialised to maxInt(usize) so it matches no row on the first frame.
     prev_cursor_row: usize = std.math.maxInt(usize),
+    last_cursor_row: usize = std.math.maxInt(usize),
+    last_cursor_col: usize = std.math.maxInt(usize),
+    last_cursor_visible: bool = false,
+    last_cursor_blinking: bool = false,
+    last_cursor_blink_visible: bool = true,
+    last_cursor_wide_tail: bool = false,
+    last_cursor_style: ghostty.CursorVisualStyle = .block,
+    last_cursor_focused: bool = false,
+    has_cursor_state: bool = false,
 };
 var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = [_]?PaneCacheEntry{null} ** MAX_PANE_CACHES;
 
@@ -349,6 +367,15 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
                     @memset(&entry.row_map_vals, 0);
                     entry.prev_cursor_row = std.math.maxInt(usize);
+                    entry.last_cursor_row = std.math.maxInt(usize);
+                    entry.last_cursor_col = std.math.maxInt(usize);
+                    entry.last_cursor_visible = false;
+                    entry.last_cursor_blinking = false;
+                    entry.last_cursor_blink_visible = true;
+                    entry.last_cursor_wide_tail = false;
+                    entry.last_cursor_style = .block;
+                    entry.last_cursor_focused = false;
+                    entry.has_cursor_state = false;
                     entry.last_atlas_epoch = 0; // size changed — force full redraw next frame
                     entry.has_bg_color = false;
                 }
@@ -2658,6 +2685,23 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cache_entry.last_bg_color.r != bg_color.r or
                         cache_entry.last_bg_color.g != bg_color.g or
                         cache_entry.last_bg_color.b != bg_color.b;
+                    const cursor_pos = rt.cursorPos(pane.render_state);
+                    const cursor_row = if (cursor_pos) |cp| @as(usize, cp.y) else std.math.maxInt(usize);
+                    const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
+                    const cursor_visible = rt.cursorVisible(pane.render_state);
+                    const cursor_blinking = rt.cursorBlinking(pane.render_state);
+                    const cursor_blink_visible = blinkVisibleNow(std.time.nanoTimestamp());
+                    const cursor_wide_tail = rt.cursorWideTail(pane.render_state);
+                    const cursor_style = rt.cursorVisualStyle(pane.render_state);
+                    const cursor_state_changed = !cache_entry.has_cursor_state or
+                        cache_entry.last_cursor_row != cursor_row or
+                        cache_entry.last_cursor_col != cursor_col or
+                        cache_entry.last_cursor_visible != cursor_visible or
+                        cache_entry.last_cursor_blinking != cursor_blinking or
+                        cache_entry.last_cursor_blink_visible != cursor_blink_visible or
+                        cache_entry.last_cursor_wide_tail != cursor_wide_tail or
+                        cache_entry.last_cursor_style != cursor_style or
+                        cache_entry.last_cursor_focused != focused;
 
                     // atlas stale → full redraw needed (glyph UVs changed under existing pixels).
                     // resize → handled by cache recreation (pw/ph mismatch), so we never see
@@ -2680,8 +2724,21 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
-                    const settled_clean = dirty_level == .false_value and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed;
+                    const settled_clean = dirty_level == .false_value and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
+                        if (cfg.debug_terminal_trace and focused) {
+                            std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
+                                @intFromPtr(pane),
+                                @tagName(dirty_level),
+                                cursor_state_changed,
+                                cursor_visible,
+                                cursor_blinking,
+                                cursor_blink_visible,
+                                @tagName(cursor_style),
+                                cursor_row,
+                                cursor_col,
+                            });
+                        }
                         // Nothing changed and the pane has already survived a clean
                         // post-reflow frame, so the cached RT is safe to reuse.
                         if (g_frames_since_drag_release < 10) {
@@ -2691,6 +2748,23 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
                     const force_full = dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
+                    if (cfg.debug_terminal_trace and focused) {
+                        std.log.info("terminal-trace cache pane={x} mode=cached_dirty dirty={s} force_full={} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d} pty_active={} size_mismatch={} grid_changed={}", .{
+                            @intFromPtr(pane),
+                            @tagName(dirty_level),
+                            force_full,
+                            cursor_state_changed,
+                            cursor_visible,
+                            cursor_blinking,
+                            cursor_blink_visible,
+                            @tagName(cursor_style),
+                            cursor_row,
+                            cursor_col,
+                            pty_active,
+                            size_mismatch,
+                            grid_changed,
+                        });
+                    }
 
                     // Diagnostic counters for log output.
                     if (dirty_level == .full) g_phase_accum_full_dl_frames += 1;
@@ -2810,14 +2884,16 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (cache_entry.force_full_frames > 0 and !pty_active) cache_entry.force_full_frames -= 1;
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
-
-                    // Update prev_cursor_row for the next frame: the current cursor
-                    // row becomes the "previous" cursor row so we can erase ghost
-                    // pixels if the cursor moves away next frame.
-                    cache_entry.prev_cursor_row = if (rt.cursorPos(pane.render_state)) |cp|
-                        @as(usize, cp.y)
-                    else
-                        std.math.maxInt(usize);
+                    cache_entry.prev_cursor_row = cursor_row;
+                    cache_entry.last_cursor_row = cursor_row;
+                    cache_entry.last_cursor_col = cursor_col;
+                    cache_entry.last_cursor_visible = cursor_visible;
+                    cache_entry.last_cursor_blinking = cursor_blinking;
+                    cache_entry.last_cursor_blink_visible = cursor_blink_visible;
+                    cache_entry.last_cursor_wide_tail = cursor_wide_tail;
+                    cache_entry.last_cursor_style = cursor_style;
+                    cache_entry.last_cursor_focused = focused;
+                    cache_entry.has_cursor_state = true;
 
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
@@ -2989,32 +3065,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // ── Phase 2: Swapchain pass ────────────────────────────────────────────
 
-    // Queue cursor glyph verts BEFORE the pass so they are included in the
-    // uploadGlyphVerts() call below (sg_update_buffer must not be called
-    // inside an active D3D11 pass).
-    if (g_ft_renderer) |*renderer| {
-        if (app.ghostty) |*runtime| {
-            if (use_safe_render or use_direct_multi_pane or use_direct_render) {
-                // Direct paths already bake the cursor inside queueInViewport.
-            } else if (leaves.len > 0) {
-                const active_pane = app.activePane();
-                for (leaves) |leaf| {
-                    if (!leaf.pane.render_state_ready) continue;
-                    const ox: f32 = @floatFromInt(leaf.bounds.x);
-                    const oy: f32 = @floatFromInt(leaf.bounds.y);
-                    renderer.queueCursorGlyphVerts(runtime, &app.config, app, leaf.pane, leaf.pane.render_state, &leaf.pane.row_iterator, &leaf.pane.row_cells, leaf.pane == active_pane, ox, oy);
-                }
-            } else if (app.activePane()) |pane| {
-                if (paneRenderHelpersReady(pane) and !use_direct_render) {
-                    renderer.queueCursorGlyphVerts(runtime, &app.config, app, pane, pane.render_state, &pane.row_iterator, &pane.row_cells, true, 0, 0);
-                }
-            }
-        }
-    }
-
     // Upload any pending glyph vertices BEFORE beginning the swapchain pass.
     // sg_update_buffer must NOT be called inside an active sg_pass on D3D11.
-    // In cached-RT mode this now also includes cursor glyph verts queued above.
     if (g_ft_renderer) |*renderer| {
         _ = renderer.uploadGlyphVerts();
     }
@@ -3040,7 +3092,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // before the swapchain pass so we can upload glyph verts outside
                 // the pass. Nothing to blit here.
             } else if (do_leaves) {
-                const active_pane = app.activePane();
                 for (leaves) |leaf| {
                     if (!leaf.pane.render_state_ready) continue;
                     const ox: f32 = @floatFromInt(leaf.bounds.x);
@@ -3054,7 +3105,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_bg, ox, oy, pw, ph, width, height);
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_text, ox, oy, pw, ph, width, height);
                         renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .above_text, ox, oy, pw, ph, width, height);
-                        renderer.drawCursorOverlay(runtime, &app.config, app, leaf.pane, leaf.pane.render_state, &leaf.pane.row_iterator, &leaf.pane.row_cells, ox, oy, pw, ph, leaf.pane == active_pane);
                     }
                 }
             } else if (app.activePane()) |pane| {
@@ -3101,7 +3151,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_bg, 0, 0, width, height, width, height);
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_text, 0, 0, width, height, width, height);
                             renderer.queueKittyLayerInPane(runtime, pane.terminal, .above_text, 0, 0, width, height, width, height);
-                            renderer.drawCursorOverlay(runtime, &app.config, app, pane, pane.render_state, &pane.row_iterator, &pane.row_cells, 0, 0, width, height, true);
                         }
                     }
                 }

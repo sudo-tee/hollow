@@ -129,7 +129,9 @@ const CachedStyleInfo = struct {
     selected: bool,
     face_idx: u8,
     fg: ghostty.ColorRgb,
+    bg: ghostty.ColorRgb,
     has_non_default_bg: bool,
+    renders_background_without_text: bool,
     needs_decorations: bool,
     underline_color: ghostty.StyleColor,
     underline: i32,
@@ -1359,202 +1361,6 @@ pub const FtRenderer = struct {
         // after this returns, still inside the active swapchain sg_pass.
     }
 
-    /// Draw the block cursor and re-render the glyph under it with the inverted
-    /// foreground colour.  Must be called INSIDE the active swapchain sg_pass,
-    /// after sgl_draw() has been issued for the frame (so the sgl default
-    /// pipeline is available again).
-    ///
-    /// This is intentionally separate from renderToCache so the cursor is
-    /// composited every frame on top of the cached RT, regardless of whether the
-    /// pane was dirty.
-    /// Shared helper: compute cursor colors and geometry.  Returns false if
-    /// the cursor should not be drawn (not focused, not visible, etc.).
-    fn cursorOverlayParams(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: *const Pane,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        is_focused: bool,
-        out: *CursorOverlayParams,
-    ) bool {
-        if (!is_focused) return false;
-        if (app.copyModeActiveForPane(pane)) return false;
-        if (!runtime.cursorVisible(render_state)) return false;
-        const pos = runtime.cursorPos(render_state) orelse return false;
-
-        const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
-            if (!runtime.renderStateColorsInto(render_state, &self.render_colors_scratch)) return false;
-            break :blk &self.render_colors_scratch;
-        };
-        const default_bg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.background else render_colors.?.background;
-        const default_fg = if (cfg.terminal_theme.enabled) cfg.terminal_theme.foreground else render_colors.?.foreground;
-        const raw_cursor_color: ghostty.ColorRgb = if (cfg.terminal_theme.enabled)
-            (cfg.terminal_theme.cursor orelse .{ .r = 220, .g = 220, .b = 220 })
-        else if (render_colors.?.cursor_has_value)
-            render_colors.?.cursor
-        else
-            .{ .r = 220, .g = 220, .b = 220 };
-
-        const row_count: usize = @intCast(runtime.renderStateRows(render_state) orelse 0);
-        const col_count: usize = @intCast(runtime.renderStateCols(render_state) orelse 0);
-        const cursor_row: usize = @intCast(pos.y);
-        const cursor_col: usize = @intCast(pos.x);
-        const queue = QueueContext{
-            .cfg = cfg,
-            .pane = pane,
-            .render_state = render_state,
-            .row_iterator = row_iterator,
-            .row_cells = row_cells,
-            .row_count = @intCast(row_count),
-            .col_count = @intCast(col_count),
-            .force_full = false,
-            .app = app,
-            .selection_range = null,
-            .hovered_hyperlink = null,
-            .prev_cursor_row = std.math.maxInt(usize),
-            .cursor_row = cursor_row,
-            .cursor_col = cursor_col,
-            .hovered_row = std.math.maxInt(usize),
-            .row_map_keys = null,
-            .row_map_vals = null,
-            .row_map_skip = false,
-            .colors = .{
-                .default_bg = default_bg,
-                .default_fg = default_fg,
-                .cursor_bg = default_fg,
-                .cursor_fg = default_bg,
-                .selection_bg = default_bg,
-                .selection_fg = default_fg,
-                .search_bg = default_bg,
-                .search_active_bg = default_bg,
-                .palette = if (cfg.terminal_theme.enabled) &cfg.terminal_theme.palette else &render_colors.?.palette,
-            },
-        };
-
-        const cursor_cell_bg = self.cursorCellBackground(runtime, &queue, pos.y, pos.x) orelse default_bg;
-        const cursor_cell_fg = self.cursorCellForeground(runtime, &queue, pos.y, pos.x);
-        const cursor_color = if (cfg.terminal_theme.enabled and cfg.terminal_theme.cursor != null)
-            effectiveCursorColor(raw_cursor_color, cursor_cell_bg)
-        else
-            cursor_cell_fg orelse effectiveCursorColor(raw_cursor_color, cursor_cell_bg);
-
-        const cursor_y_px = if (builtin.os.tag == .linux and row_count > 0)
-            @as(f32, @floatFromInt((row_count - 1) - cursor_row)) * self.cell_h
-        else
-            @as(f32, @floatFromInt(cursor_row)) * self.cell_h;
-
-        out.* = .{
-            .pos_x = pos.x,
-            .pos_y = pos.y,
-            .cursor_row = cursor_row,
-            .cursor_col = cursor_col,
-            .cx = self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w,
-            .cy = self.padding_y + cursor_y_px,
-            .cursor_color = cursor_color,
-            .cursor_cell_bg = cursor_cell_bg,
-            .cursor_style = runtime.cursorVisualStyle(render_state),
-            .cursor_text_color = if (cfg.terminal_theme.enabled)
-                (cfg.terminal_theme.cursor_fg orelse contrastTextColor(cursor_color))
-            else
-                cursor_cell_bg,
-            .queue = queue,
-        };
-        return true;
-    }
-
-    const CursorOverlayParams = struct {
-        pos_x: u16,
-        pos_y: u16,
-        cursor_row: usize,
-        cursor_col: usize,
-        cx: f32,
-        cy: f32,
-        cursor_color: ghostty.ColorRgb,
-        cursor_cell_bg: ghostty.ColorRgb,
-        cursor_style: ghostty.CursorVisualStyle,
-        cursor_text_color: ghostty.ColorRgb,
-        queue: QueueContext,
-    };
-
-    /// Queue glyph vertices for the character under the block cursor with the
-    /// inverted foreground colour.  Must be called BEFORE sg_begin_pass so the
-    /// vertices are included in the pre-pass uploadGlyphVerts() call.
-    /// No sgl calls are made here.
-    /// `offset_x` / `offset_y` are the pane's top-left pixel position within the
-    /// full framebuffer.  They are added to the glyph vertex coordinates so that
-    /// drawGlyphQuads() — which uses a full-window ortho — places the glyph at the
-    /// correct screen position.  Pass 0,0 for a single-pane / full-window layout.
-    pub fn queueCursorGlyphVerts(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: *const Pane,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        is_focused: bool,
-        offset_x: f32,
-        offset_y: f32,
-    ) void {
-        var p: CursorOverlayParams = undefined;
-        if (!self.cursorOverlayParams(runtime, cfg, app, pane, render_state, row_iterator, row_cells, is_focused, &p)) return;
-        if (p.cursor_style != .block) return;
-
-        const saved_row_iterator = row_iterator.*;
-        const saved_row_cells = row_cells.*;
-        defer {
-            row_iterator.* = saved_row_iterator;
-            row_cells.* = saved_row_cells;
-        }
-        if (!runtime.populateRowIterator(render_state, row_iterator)) return;
-        var iter_row_y: usize = 0;
-        while (runtime.nextRow(row_iterator.*)) : (iter_row_y += 1) {
-            if (iter_row_y != p.cursor_row) continue;
-            if (!runtime.populateRowCells(row_iterator.*, row_cells)) break;
-            const row_info = RowRenderInfo{
-                .row_y = p.cursor_row,
-                .py = p.cy + offset_y,
-                .px_offset = offset_x,
-                .selection = null,
-                .search_highlight = null,
-                .cursor_col = p.cursor_col,
-            };
-            self.queueCursorCellGlyphInRow(runtime, &p.queue, row_info, p.cursor_col, p.cursor_text_color);
-            break;
-        }
-    }
-
-    /// Draw the block/beam/underline cursor quad via sgl.  Must be called
-    /// INSIDE the active swapchain sg_pass, after sgl_draw() for this context.
-    /// Does NOT touch glyph verts — call queueCursorGlyphVerts() before the
-    /// pass for the inverted glyph.
-    pub fn drawCursorOverlay(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: *const Pane,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        offset_x: f32,
-        offset_y: f32,
-        pane_w: f32,
-        pane_h: f32,
-        is_focused: bool,
-    ) void {
-        var p: CursorOverlayParams = undefined;
-        if (!self.cursorOverlayParams(runtime, cfg, app, pane, render_state, row_iterator, row_cells, is_focused, &p)) return;
-        self.setupViewport(offset_x, offset_y, pane_w, pane_h);
-        c.sgl_load_default_pipeline();
-        drawCursor(p.cx, p.cy, self.cell_w, self.cell_h, p.cursor_color, p.cursor_style);
-    }
-
     /// Render terminal content for one pane into its `PaneCache` render target.
     /// Must be called OUTSIDE any active sg_pass (before the swapchain pass begins).
     /// After this call the RT texture is up-to-date and can be blitted.
@@ -1822,7 +1628,7 @@ pub const FtRenderer = struct {
         pane_h: f32,
         fb_w: f32,
         fb_h: f32,
-        _is_focused: bool,
+        is_focused: bool,
         force_full: bool,
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
@@ -1839,8 +1645,6 @@ pub const FtRenderer = struct {
         _ = fb_w;
         _ = fb_h;
         _ = terminal;
-        _ = _is_focused;
-
         const render_colors = if (cfg.terminal_theme.enabled) null else blk: {
             if (!runtime.renderStateColorsInto(render_state, &self.render_colors_scratch)) return;
             break :blk &self.render_colors_scratch;
@@ -1853,6 +1657,8 @@ pub const FtRenderer = struct {
             render_colors.?.cursor
         else
             .{ .r = 220, .g = 220, .b = 220 };
+        const cursor_style = effectiveCursorStyle(runtime, render_state, pane, app, is_focused);
+        const cursor_wide = runtime.cursorWideTail(render_state);
         const cursor_bg = effectiveCursorColor(raw_cursor_color, default_bg);
         const selection_bg = if (cfg.terminal_theme.enabled)
             (cfg.terminal_theme.selection_bg orelse mixColor(default_bg, default_fg, 0.35))
@@ -1875,6 +1681,8 @@ pub const FtRenderer = struct {
             .prev_cursor_row = prev_cursor_row,
             .cursor_row = if (runtime.cursorPos(render_state)) |cp| @intCast(cp.y) else std.math.maxInt(usize),
             .cursor_col = if (runtime.cursorPos(render_state)) |cp| @intCast(cp.x) else std.math.maxInt(usize),
+            .cursor_style = cursor_style,
+            .cursor_wide = cursor_wide,
             .hovered_row = if (hovered_hyperlink) |hovered| hovered.row else std.math.maxInt(usize),
             .row_map_keys = row_map_keys,
             .row_map_vals = row_map_vals,
@@ -1938,9 +1746,6 @@ pub const FtRenderer = struct {
         const pass2_stats = self.queueGlyphPass(runtime, &queue, &hash_skip_bits, run_buf);
         pass2_glyph_ns = pass2_stats.glyph_ns;
         pass2_decoration_ns = pass2_stats.decoration_ns;
-
-        // Cursor is drawn in drawCursorOverlay() in the swapchain pass every
-        // frame, so it is NOT baked into the cached offscreen RT here.
 
         if (!self.logged_first_draw) self.logged_first_draw = true;
         if (self.frame_count <= 3) {
@@ -2147,6 +1952,8 @@ pub const FtRenderer = struct {
         prev_cursor_row: usize,
         cursor_row: usize,
         cursor_col: usize,
+        cursor_style: ?ghostty.CursorVisualStyle,
+        cursor_wide: bool,
         hovered_row: usize,
         row_map_keys: ?[]u64,
         row_map_vals: ?[]u64,
@@ -2165,13 +1972,10 @@ pub const FtRenderer = struct {
     const RowRenderInfo = struct {
         row_y: usize,
         py: f32,
-        /// Extra pixel offset added to the x-coordinate of each glyph in this row.
-        /// Used by queueCursorCellGlyphInRow to shift cursor-overlay glyphs into
-        /// window-absolute space when the pane is not at the window origin.
-        px_offset: f32 = 0,
         selection: ?RowSelectionBounds,
         search_highlight: ?SearchHighlight,
         cursor_col: ?usize,
+        cursor_wide: bool,
     };
 
     const CellTextStyle = struct {
@@ -2263,7 +2067,7 @@ pub const FtRenderer = struct {
             c.sgl_v2f(0.0, pane_h);
         }
         while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-            if (!queue.force_full and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row) continue;
+            if (!queue.force_full and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row and row_y != queue.cursor_row) continue;
             if (self.shouldSkipRowByHash(runtime, queue, row_y, hash_skip_bits)) continue;
 
             const row = self.makeRowRenderInfo(queue, row_y);
@@ -2332,16 +2136,24 @@ pub const FtRenderer = struct {
             else
                 false;
             const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
+            const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and queue.app.copyModeActiveForPane(queue.pane.?)));
+            const style_needs_background = if (style_id != 0)
+                if (cached_style) |style|
+                    style.has_non_default_bg or style.renders_background_without_text
+                else
+                    true
+            else
+                false;
             const needs_background = if (is_selected or has_search_highlight or has_cursor)
                 true
             else if (content_tag == .bg_color_palette or content_tag == .bg_color_rgb)
                 true
-            else if (style_id != 0)
-                if (cached_style) |style| style.has_non_default_bg else true
+            else if (style_needs_background)
+                true
             else
                 false;
             if (needs_background) {
-                self.queueCellBackground(runtime, queue, row, content_tag, style_id, is_selected, col_px, row.py, quads_open);
+                self.queueCellBackground(runtime, queue, row, content_tag, style_id, cached_style, is_selected, col_px, row.py, quads_open);
             }
 
             switch (content_tag) {
@@ -2351,7 +2163,7 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
                     }
-                    const cursor_fg = if (has_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
+                    const cursor_fg = if (has_block_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
                         runtime.cellBackground(queue.row_cells.*) orelse queue.colors.cursor_fg
                     else
                         queue.colors.cursor_fg;
@@ -2360,7 +2172,7 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected)
                                 queue.colors.selection_fg
-                            else if (has_cursor)
+                            else if (has_block_cursor)
                                 cursor_fg
                             else
                                 queue.colors.default_fg,
@@ -2368,7 +2180,7 @@ pub const FtRenderer = struct {
                     else if (cached_style) |info|
                         CellTextStyle{
                             .face_idx = info.face_idx,
-                            .fg = if (has_cursor) cursor_fg else info.fg,
+                            .fg = if (has_block_cursor) cursor_fg else info.fg,
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
@@ -2400,7 +2212,7 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
                     };
-                    const cursor_fg = if (has_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
+                    const cursor_fg = if (has_block_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
                         runtime.cellBackground(queue.row_cells.*) orelse queue.colors.cursor_fg
                     else
                         queue.colors.cursor_fg;
@@ -2409,7 +2221,7 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected)
                                 queue.colors.selection_fg
-                            else if (has_cursor)
+                            else if (has_block_cursor)
                                 cursor_fg
                             else
                                 queue.colors.default_fg,
@@ -2417,7 +2229,7 @@ pub const FtRenderer = struct {
                     else if (cached_style) |info|
                         CellTextStyle{
                             .face_idx = info.face_idx,
-                            .fg = if (has_cursor) cursor_fg else info.fg,
+                            .fg = if (has_block_cursor) cursor_fg else info.fg,
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
@@ -2455,12 +2267,12 @@ pub const FtRenderer = struct {
 
         var row_y: usize = 0;
         while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-            const row_is_dirty = queue.force_full or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row;
+            const row_is_dirty = queue.force_full or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row or row_y == queue.cursor_row;
             if (!row_is_dirty) {
                 self.last_rows_skipped += 1;
                 continue;
             }
-            if (skipSetGet(hash_skip_bits, row_y) and row_y != queue.prev_cursor_row) {
+            if (skipSetGet(hash_skip_bits, row_y) and row_y != queue.prev_cursor_row and row_y != queue.cursor_row) {
                 self.last_rows_skipped += 1;
                 continue;
             }
@@ -2473,6 +2285,7 @@ pub const FtRenderer = struct {
 
             const row = self.makeRowRenderInfo(queue, row_y);
             self.queueGlyphRow(runtime, queue, row, run_buf, &stats);
+            self.queueCursorShapeRow(queue, row, run_buf);
             if (!queue.force_full) runtime.clearRowDirty(queue.row_iterator.*);
         }
 
@@ -2520,6 +2333,7 @@ pub const FtRenderer = struct {
             else
                 null;
             const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
+            const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and queue.app.copyModeActiveForPane(queue.pane.?)));
 
             switch (content_tag) {
                 .codepoint => {
@@ -2528,7 +2342,7 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     }
-                    const cursor_fg = if (has_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
+                    const cursor_fg = if (has_block_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
                         runtime.cellBackground(queue.row_cells.*) orelse queue.colors.cursor_fg
                     else
                         queue.colors.cursor_fg;
@@ -2537,7 +2351,7 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected)
                                 queue.colors.selection_fg
-                            else if (has_cursor)
+                            else if (has_block_cursor)
                                 cursor_fg
                             else
                                 queue.colors.default_fg,
@@ -2545,7 +2359,7 @@ pub const FtRenderer = struct {
                     else if (cached_style) |info|
                         CellTextStyle{
                             .face_idx = info.face_idx,
-                            .fg = if (has_cursor) cursor_fg else info.fg,
+                            .fg = if (has_block_cursor) cursor_fg else info.fg,
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
@@ -2578,7 +2392,7 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
                     };
-                    const cursor_fg = if (has_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
+                    const cursor_fg = if (has_block_cursor and !(queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor_fg != null))
                         runtime.cellBackground(queue.row_cells.*) orelse queue.colors.cursor_fg
                     else
                         queue.colors.cursor_fg;
@@ -2587,7 +2401,7 @@ pub const FtRenderer = struct {
                             .face_idx = 0,
                             .fg = if (is_selected)
                                 queue.colors.selection_fg
-                            else if (has_cursor)
+                            else if (has_block_cursor)
                                 cursor_fg
                             else
                                 queue.colors.default_fg,
@@ -2595,7 +2409,7 @@ pub const FtRenderer = struct {
                     else if (cached_style) |info|
                         CellTextStyle{
                             .face_idx = info.face_idx,
-                            .fg = if (has_cursor) cursor_fg else info.fg,
+                            .fg = if (has_block_cursor) cursor_fg else info.fg,
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
@@ -2630,141 +2444,16 @@ pub const FtRenderer = struct {
         if (queue.cfg.debug_overlay) stats.decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
     }
 
-    fn queueCursorCellGlyph(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        queue: *const QueueContext,
-        row_y_raw: u16,
-        col_x_raw: u16,
-        fg: ghostty.ColorRgb,
-    ) void {
-        if (!queue.helpersReady()) return;
-        if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return;
+    fn queueCursorShapeRow(self: *FtRenderer, queue: *const QueueContext, row: RowRenderInfo, run_buf: []u8) void {
+        _ = run_buf;
+        const cursor_style = queue.cursor_style orelse return;
+        if (cursor_style == .block) return;
+        const cursor_col = row.cursor_col orelse return;
 
-        const target_row: usize = @intCast(row_y_raw);
-        const target_col: usize = @intCast(col_x_raw);
-        var row_y: usize = 0;
-        while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-            if (row_y != target_row) continue;
-            if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return;
-            const row = self.makeRowRenderInfo(queue, row_y);
-            self.queueCursorCellGlyphInRow(runtime, queue, row, target_col, fg);
-            return;
-        }
-    }
-
-    fn cursorCellBackground(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        queue: *const QueueContext,
-        row_y_raw: u16,
-        col_x_raw: u16,
-    ) ?ghostty.ColorRgb {
-        if (!queue.helpersReady()) return null;
-        if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return null;
-
-        _ = self;
-        const target_row: usize = @intCast(row_y_raw);
-        const target_col: usize = @intCast(col_x_raw);
-        var row_y: usize = 0;
-        while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-            if (row_y != target_row) continue;
-            if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return null;
-
-            var col_x: usize = 0;
-            while (runtime.nextCell(queue.row_cells.*)) : (col_x += 1) {
-                if (col_x != target_col) continue;
-                return runtime.cellBackground(queue.row_cells.*) orelse queue.colors.default_bg;
-            }
-            return null;
-        }
-        return null;
-    }
-
-    fn cursorCellForeground(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        queue: *const QueueContext,
-        row_y_raw: u16,
-        col_x_raw: u16,
-    ) ?ghostty.ColorRgb {
-        if (!queue.helpersReady()) return null;
-        if (!runtime.populateRowIterator(queue.render_state, queue.row_iterator)) return null;
-
-        _ = self;
-        const target_row: usize = @intCast(row_y_raw);
-        const target_col: usize = @intCast(col_x_raw);
-        var row_y: usize = 0;
-        while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-            if (row_y != target_row) continue;
-            if (!runtime.populateRowCells(queue.row_iterator.*, queue.row_cells)) return null;
-
-            var col_x: usize = 0;
-            while (runtime.nextCell(queue.row_cells.*)) : (col_x += 1) {
-                if (col_x != target_col) continue;
-                return runtime.cellForeground(queue.row_cells.*) orelse queue.colors.default_fg;
-            }
-            return null;
-        }
-        return null;
-    }
-
-    fn queueCursorCellGlyphInRow(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        queue: *const QueueContext,
-        row: RowRenderInfo,
-        target_col: usize,
-        fg: ghostty.ColorRgb,
-    ) void {
-        var col_x: usize = 0;
-        if (queue.row_cells.* == null) return;
-        while (runtime.nextCell(queue.row_cells.*)) : (col_x += 1) {
-            if (col_x != target_col) continue;
-
-            const raw_cell = runtime.cellRaw(queue.row_cells.*);
-            const content_tag = runtime.cellContentTagRaw(raw_cell);
-            const style_id = runtime.cellStyleIdRaw(raw_cell);
-            const is_selected = isSelectedCell(row.selection, col_x);
-            const face_idx: u8 = if (style_id == 0)
-                0
-            else blk: {
-                var style: ghostty.Style = undefined;
-                if (!runtime.cellStyleInto(queue.row_cells.*, &style)) break :blk 0;
-                break :blk if (style.bold and style.italic) 2 else if (style.bold) 1 else if (style.italic) 3 else 0;
-            };
-            const draw_fg = if (is_selected) queue.colors.selection_fg else fg;
-            const px = self.columnPixelX(col_x, queue.col_count) + row.px_offset;
-
-            switch (content_tag) {
-                .codepoint => {
-                    const cp = runtime.cellCodepointRaw(raw_cell);
-                    if (cp == 0) return;
-                    if (drawSynthesizedTerminalCodepoint(px, row.py, self.cell_w, self.cell_h, cp, draw_fg)) return;
-                    if (!self.drawDirectGlyph(px, row.py, cp, face_idx, draw_fg, row.py, row.py + self.cell_h)) {
-                        const glyph_utf8 = self.encodeCodepointUtf8(cp);
-                        if (glyph_utf8.len == 0) return;
-                        if (self.consumeShapedRun(glyph_utf8, face_idx)) |prepared| {
-                            self.batchPreparedGlyphs(px, row.py, prepared, draw_fg, row.py, row.py + self.cell_h);
-                        } else {
-                            self.batchGlyphs(px, row.py, glyph_utf8, face_idx, draw_fg, .terminal, row.py, row.py + self.cell_h);
-                        }
-                    }
-                },
-                .codepoint_grapheme => {
-                    var cps: [16]u32 = [_]u32{0} ** 16;
-                    const glyph_utf8 = self.encodeCurrentCellGraphemeUtf8(runtime, queue.row_cells.*, &cps) orelse return;
-                    if (drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, glyph_utf8, draw_fg)) return;
-                    if (self.consumeShapedRun(glyph_utf8, face_idx)) |prepared| {
-                        self.batchPreparedGlyphs(px, row.py, prepared, draw_fg, row.py, row.py + self.cell_h);
-                    } else {
-                        self.batchGlyphs(px, row.py, glyph_utf8, face_idx, draw_fg, .terminal, row.py, row.py + self.cell_h);
-                    }
-                },
-                else => {},
-            }
-            return;
-        }
+        const cursor_width = if (row.cursor_wide and cursor_style != .bar) self.cell_w * 2.0 else self.cell_w;
+        const px = self.columnPixelX(cursor_col, queue.col_count);
+        c.sgl_load_default_pipeline();
+        drawCursor(px, row.py, cursor_width, self.cell_h, queue.colors.cursor_bg, cursor_style);
     }
 
     fn drawRowDecorations(
@@ -2926,6 +2615,7 @@ pub const FtRenderer = struct {
         row: RowRenderInfo,
         content_tag: ghostty.CellContentTag,
         style_id: u16,
+        cached_style: ?*const CachedStyleInfo,
         is_selected: bool,
         col_px: f32,
         py: f32,
@@ -2957,25 +2647,36 @@ pub const FtRenderer = struct {
             }
         }
 
-        if (row.cursor_col) |cursor_col| {
-            if (col_px >= self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(cursor_col + 1)) * self.cell_w) {
-                const cursor_bg = if (queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor != null)
-                    queue.colors.cursor_bg
-                else
-                    runtime.cellForeground(queue.row_cells.*) orelse queue.colors.cursor_bg;
-                self.last_bg_rects += 1;
-                self.openQuadBatch(quads_open);
-                c.sgl_c4b(cursor_bg.r, cursor_bg.g, cursor_bg.b, 255);
-                c.sgl_v2f(col_px, py);
-                c.sgl_v2f(col_px + self.cell_w, py);
-                c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
-                c.sgl_v2f(col_px, py + self.cell_h);
-                return;
+        if (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and queue.app.copyModeActiveForPane(queue.pane.?))) {
+            if (row.cursor_col) |cursor_col| {
+                const cursor_end = cursor_col + (if (row.cursor_wide) @as(usize, 2) else 1);
+                if (col_px >= self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(cursor_end)) * self.cell_w) {
+                    const cursor_bg = if (queue.cfg.terminal_theme.enabled and queue.cfg.terminal_theme.cursor != null)
+                        queue.colors.cursor_bg
+                    else
+                        runtime.cellForeground(queue.row_cells.*) orelse queue.colors.cursor_bg;
+                    self.last_bg_rects += 1;
+                    self.openQuadBatch(quads_open);
+                    c.sgl_c4b(cursor_bg.r, cursor_bg.g, cursor_bg.b, 255);
+                    c.sgl_v2f(col_px, py);
+                    c.sgl_v2f(col_px + self.cell_w, py);
+                    c.sgl_v2f(col_px + self.cell_w, py + self.cell_h);
+                    c.sgl_v2f(col_px, py + self.cell_h);
+                    return;
+                }
             }
         }
 
         if (!is_bg_tag and style_id == 0) return;
-        const bg: ghostty.ColorRgb = runtime.cellBackground(queue.row_cells.*) orelse queue.colors.default_bg;
+        const bg: ghostty.ColorRgb = if (!is_bg_tag and style_id != 0)
+            if (cached_style) |style|
+                style.bg
+            else if (self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette)) |style|
+                style.bg
+            else
+                runtime.cellBackground(queue.row_cells.*) orelse queue.colors.default_bg
+        else
+            runtime.cellBackground(queue.row_cells.*) orelse queue.colors.default_bg;
         if (colorsEqual(bg, queue.colors.default_bg)) return;
 
         self.last_bg_rects += 1;
@@ -3023,11 +2724,15 @@ pub const FtRenderer = struct {
             .search_highlight = if (queue.pane) |pane| queue.app.searchHighlightForRow(pane, row_y) else null,
             .cursor_col = if (queue.pane) |pane|
                 queue.app.copyModeCursorColForRow(pane, row_y) orelse
-                    if (!queue.app.copyModeActiveForPane(pane) and row_y == queue.cursor_row) queue.cursor_col else null
+                    if (!queue.app.copyModeActiveForPane(pane) and row_y == queue.cursor_row)
+                        queue.cursor_col -| @intFromBool(queue.cursor_wide)
+                    else
+                        null
             else if (row_y == queue.cursor_row)
-                queue.cursor_col
+                queue.cursor_col -| @intFromBool(queue.cursor_wide)
             else
                 null,
+            .cursor_wide = row_y == queue.cursor_row and queue.cursor_wide,
         };
     }
 
@@ -3570,7 +3275,9 @@ pub const FtRenderer = struct {
             .selected = selected,
             .face_idx = if (s.bold and s.italic) 2 else if (s.bold) 1 else if (s.italic) 3 else 0,
             .fg = effective_fg,
+            .bg = effective_bg,
             .has_non_default_bg = !selected and !colorsEqual(effective_bg, default_bg),
+            .renders_background_without_text = s.inverse or s.invisible,
             .needs_decorations = s.underline != 0 or s.strikethrough or s.overline,
             .underline_color = s.underline_color,
             .underline = s.underline,
@@ -4027,6 +3734,32 @@ inline fn srgbToLinearBg(r: f32, g: f32, b: f32) [4]f32 {
 
 inline fn colorsEqual(a: ghostty.ColorRgb, b: ghostty.ColorRgb) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b;
+}
+
+const CURSOR_BLINK_INTERVAL_MS: i128 = 600;
+
+fn blinkVisibleNow(now_ns: i128) bool {
+    const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
+    const blink_phase = @divFloor(now_ms, CURSOR_BLINK_INTERVAL_MS);
+    return @mod(blink_phase, @as(i128, 2)) == 0;
+}
+
+fn effectiveCursorStyle(
+    runtime: *ghostty.Runtime,
+    render_state: ?*anyopaque,
+    pane: ?*const Pane,
+    app: *const App,
+    is_focused: bool,
+) ?ghostty.CursorVisualStyle {
+    if (pane) |value| {
+        if (app.copyModeActiveForPane(value)) return null;
+    }
+    if (runtime.cursorPos(render_state) == null) return null;
+    if (!is_focused) return null;
+    if (runtime.cursorPasswordInput(render_state)) return .block;
+    if (!runtime.cursorVisible(render_state)) return null;
+    if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(std.time.nanoTimestamp())) return null;
+    return runtime.cursorVisualStyle(render_state);
 }
 
 fn contrastTextColor(bg: ghostty.ColorRgb) ghostty.ColorRgb {
@@ -5097,7 +4830,10 @@ fn drawCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, style: gh
             emitRect(x, y, t, h, color.r, color.g, color.b, 255);
             emitRect(x + w - t, y, t, h, color.r, color.g, color.b, 255);
         },
-        .bar => emitRect(x, y, 6.0, h, color.r, color.g, color.b, 255),
+        .bar => {
+            const bar_w = @min(@as(f32, 3.0), @max(@as(f32, 2.0), @floor(w * 0.16)));
+            emitRect(x, y, bar_w, h, color.r, color.g, color.b, 255);
+        },
         .underline => emitRect(x, y + h - 4.0, w, 4.0, color.r, color.g, color.b, 255),
     }
     c.sgl_end();

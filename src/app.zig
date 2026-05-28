@@ -3037,8 +3037,19 @@ pub const App = struct {
         const now_ns = std.time.nanoTimestamp();
         self.last_input_activity_ns = now_ns;
         self.last_visual_activity_ns = now_ns;
+        pane.pty_received_data = true;
+        pane.pty_wrote_this_frame = true;
+        pane.last_render_state_update_ns = 0;
+        if (self.config.debug_terminal_trace) {
+            std.log.info("terminal-trace sendText pane={x} len={d} sample={s}", .{
+                @intFromPtr(pane),
+                text.len,
+                text[0..@min(text.len, 32)],
+            });
+        }
         self.scrollActiveViewportBottom();
         pane.sendText(text);
+        self.signalWake();
     }
 
     pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
@@ -3203,13 +3214,25 @@ pub const App = struct {
         const pane = self.activePane() orelse return;
         const rt = if (self.ghostty) |*r| r else {
             // No ghostty runtime — just send raw text without bracketed paste.
+            if (self.config.debug_terminal_trace) {
+                std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed=false runtime=false", .{ @intFromPtr(pane), text.len });
+            }
             self.sendText(text);
             return;
         };
-        if (rt.terminalMode(pane.terminal, .bracketed_paste)) {
-            self.sendText("\x1b[200~");
-            self.sendText(text);
-            self.sendText("\x1b[201~");
+        const bracketed = rt.terminalMode(pane.terminal, .bracketed_paste);
+        if (self.config.debug_terminal_trace) {
+            std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed={}", .{ @intFromPtr(pane), text.len, bracketed });
+        }
+        if (bracketed) {
+            const prefix = "\x1b[200~";
+            const suffix = "\x1b[201~";
+            const payload = try self.allocator.alloc(u8, prefix.len + text.len + suffix.len);
+            defer self.allocator.free(payload);
+            @memcpy(payload[0..prefix.len], prefix);
+            @memcpy(payload[prefix.len .. prefix.len + text.len], text);
+            @memcpy(payload[prefix.len + text.len ..], suffix);
+            self.sendText(payload);
             return;
         }
         self.sendText(text);
@@ -5825,6 +5848,21 @@ pub const App = struct {
                         }
                         if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
                         const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                    if (self.config.debug_terminal_trace and pane_is_active) {
+                        const cursor_pos = runtime.cursorPos(pane.render_state);
+                        std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
+                            @intFromPtr(pane),
+                            pane.render_state_fresh,
+                            pane.pty_received_data,
+                            @tagName(pane.render_dirty),
+                            @tagName(post_dirty),
+                            runtime.cursorVisible(pane.render_state),
+                            runtime.cursorBlinking(pane.render_state),
+                            runtime.cursorPasswordInput(pane.render_state),
+                            @tagName(runtime.cursorVisualStyle(pane.render_state)),
+                            cursor_pos,
+                        });
+                    }
                     if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
                     }
