@@ -1529,16 +1529,16 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_set_pane_floating, 1);
         api.set_field(self.state, -2, "set_pane_floating");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_set_floating_pane_bounds, 1);
-    api.set_field(self.state, -2, "set_floating_pane_bounds");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_floating_pane_bounds, 1);
+        api.set_field(self.state, -2, "set_floating_pane_bounds");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_set_pane_foreground_process, 1);
-    api.set_field(self.state, -2, "set_pane_foreground_process");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_set_pane_foreground_process, 1);
+        api.set_field(self.state, -2, "set_pane_foreground_process");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_move_pane, 1);
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_move_pane, 1);
 
         api.set_field(self.state, -2, "move_pane");
 
@@ -1782,12 +1782,12 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_get_pane_cwd, 1);
         api.set_field(self.state, -2, "get_pane_cwd");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_get_pane_foreground_process, 1);
-    api.set_field(self.state, -2, "get_pane_foreground_process");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_foreground_process, 1);
+        api.set_field(self.state, -2, "get_pane_foreground_process");
 
-    api.push_light_userdata(self.state, self.context);
-    api.push_cclosure(self.state, l_get_pane_rows, 1);
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_rows, 1);
 
         api.set_field(self.state, -2, "get_pane_rows");
 
@@ -2840,6 +2840,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "unfocused_pane") and value_type == .table) {
+            const unfocused_pane_idx = absoluteIndex(api, state, -1);
+            applyUnfocusedPaneTable(ctx.cfg, api, state, unfocused_pane_idx) catch |err| std.log.err("config unfocused_pane field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "domains") and value_type == .table) {
             const domains_idx = absoluteIndex(api, state, -1);
             applyDomainsTable(ctx.cfg, api, state, domains_idx) catch |err| std.log.err("config domains field failed: {s}", .{@errorName(err)});
@@ -2964,6 +2970,57 @@ fn applyTopBarThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
         if (std.mem.eql(u8, key, "background")) {
             if (parseHexColor(value_ptr[0..value_len])) |color| cfg.top_bar_bg = color;
+        }
+    }
+}
+
+fn parseCursorStyle(value: []const u8) ?ghostty.CursorVisualStyle {
+    if (std.mem.eql(u8, value, "block")) return .block;
+    if (std.mem.eql(u8, value, "block_hollow")) return .block_hollow;
+    if (std.mem.eql(u8, value, "bar")) return .bar;
+    if (std.mem.eql(u8, value, "underline")) return .underline;
+    return null;
+}
+
+fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (std.mem.eql(u8, key, "cursor")) {
+            if (value_type == .boolean) {
+                if (api.to_boolean(state, -1) == 0) cfg.unfocused_pane.cursor = null;
+                continue;
+            }
+
+            if (value_type == .string) {
+                var value_len: usize = 0;
+                const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+                if (parseCursorStyle(value_ptr[0..value_len])) |style| cfg.unfocused_pane.cursor = style;
+                continue;
+            }
+        }
+
+        if (std.mem.eql(u8, key, "dim")) {
+            if (value_type == .boolean) {
+                cfg.unfocused_pane.dim = if (api.to_boolean(state, -1) != 0) config.Config.UnfocusedPane.default_dim else 0.0;
+                continue;
+            }
+
+            if (value_type == .number) {
+                cfg.unfocused_pane.dim = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+                continue;
+            }
+        }
+
+        if (std.mem.eql(u8, key, "dim_opacity") and value_type == .number) {
+            cfg.unfocused_pane.dim = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
         }
     }
 }

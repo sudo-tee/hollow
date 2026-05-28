@@ -671,7 +671,7 @@ fn topLevelBarLayout(api: Api, state: *State, table_idx: c_int) BarLayout {
     };
 }
 
-fn copySegmentArray(parsed: []const bar.Segment, dst: []bar.Segment, text_storage: []u8, id_storage: [] [128]u8) struct { len: usize, used: usize } {
+fn copySegmentArray(parsed: []const bar.Segment, dst: []bar.Segment, text_storage: []u8, id_storage: [][128]u8) struct { len: usize, used: usize } {
     var seg_count: usize = 0;
     var text_used: usize = 0;
     for (parsed) |seg| {
@@ -2675,10 +2675,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cb = @as(f32, @floatFromInt(cfg.terminal_theme.background.b)) / 255.0;
                     } else {
                         if (rt.renderStateColorsInto(pane.render_state, &g_render_state_colors_scratch)) {
-                        bg_color = g_render_state_colors_scratch.background;
-                        cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
-                        cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
-                        cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
+                            bg_color = g_render_state_colors_scratch.background;
+                            cr = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.r)) / 255.0;
+                            cg = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.g)) / 255.0;
+                            cb = @as(f32, @floatFromInt(g_render_state_colors_scratch.background.b)) / 255.0;
                         }
                     }
                     const background_changed = !cache_entry.has_bg_color or
@@ -3159,14 +3159,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
     if (app.config.debug_overlay) swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
 
-    // Draw split borders as filled quads (only when >1 pane).
+    // Draw the inactive-pane dim overlay and split borders after pane content.
     // Floating panes are modal overlays, so any seam covered by a floating pane
     // is skipped here and the floating pane gets its own explicit outline below.
-    if (leaves.len > 1) {
+    const dim_alpha = app.config.unfocused_pane.dimAlpha();
+    if (leaves.len > 1 or dim_alpha > 0) {
         const fw: i32 = @intFromFloat(width);
         const fh: i32 = @intFromFloat(height);
         const border_px = app.config.split_width;
-
 
         // Reset viewport + scissor to the full framebuffer so rects are not
         // clipped to the last pane's sub-rect (sgl_defaults() would leave the
@@ -3180,67 +3180,87 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
 
         const active = app.activePane();
-        for (leaves) |leaf| {
-            const is_active = leaf.pane == active;
-            const x0: f32 = @floatFromInt(leaf.bounds.x);
-            const y0: f32 = @floatFromInt(leaf.bounds.y);
-            const lw: f32 = @floatFromInt(leaf.bounds.width);
-            const lh: f32 = @floatFromInt(leaf.bounds.height);
-            const x1 = x0 + lw;
-            const y1 = y0 + lh;
-
-            // Colour: active pane gets a light-blue accent; others get a
-            // subtle grey.
-            const br = if (is_active) app.config.split_active_color.r else app.config.split_inactive_color.r;
-            const bg = if (is_active) app.config.split_active_color.g else app.config.split_inactive_color.g;
-            const bb = if (is_active) app.config.split_active_color.b else app.config.split_inactive_color.b;
-            const ba: u8 = 255;
-
-            // Right seam — only draw if the right edge does not touch the
-            // framebuffer boundary (i.e. there is a neighbour to the right).
-            if (@as(i32, @intFromFloat(x1)) < fw) {
-                const seam = PaneBounds{
-                    .x = @as(u32, @intFromFloat(@max(0.0, x1 - border_px / 2.0))),
-                    .y = leaf.bounds.y,
-                    .width = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
-                    .height = leaf.bounds.height,
-                };
-                if (!seamCoveredByFloating(leaves, seam)) {
-                    // rect drawn at x1 - border_px/2 so it straddles the seam
-                    drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
-                }
-            }
-            // Bottom seam — same logic vertically.
-            if (@as(i32, @intFromFloat(y1)) < fh) {
-                const seam = PaneBounds{
-                    .x = leaf.bounds.x,
-                    .y = @as(u32, @intFromFloat(@max(0.0, y1 - border_px / 2.0))),
-                    .width = leaf.bounds.width,
-                    .height = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
-                };
-                if (!seamCoveredByFloating(leaves, seam)) {
-                    drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+        if (dim_alpha > 0) {
+            if (active) |active_pane| {
+                for (leaves) |leaf| {
+                    if (leaf.pane == active_pane) continue;
+                    drawBorderRect(
+                        @floatFromInt(leaf.bounds.x),
+                        @floatFromInt(leaf.bounds.y),
+                        @floatFromInt(leaf.bounds.width),
+                        @floatFromInt(leaf.bounds.height),
+                        0,
+                        0,
+                        0,
+                        dim_alpha,
+                    );
                 }
             }
         }
 
-        for (leaves) |leaf| {
-            if (!leaf.pane.is_floating) continue;
+        if (leaves.len > 1) {
+            for (leaves) |leaf| {
+                const is_active = leaf.pane == active;
+                const x0: f32 = @floatFromInt(leaf.bounds.x);
+                const y0: f32 = @floatFromInt(leaf.bounds.y);
+                const lw: f32 = @floatFromInt(leaf.bounds.width);
+                const lh: f32 = @floatFromInt(leaf.bounds.height);
+                const x1 = x0 + lw;
+                const y1 = y0 + lh;
 
-            const is_active = leaf.pane == active;
-            const x0: f32 = @floatFromInt(leaf.bounds.x);
-            const y0: f32 = @floatFromInt(leaf.bounds.y);
-            const lw: f32 = @floatFromInt(leaf.bounds.width);
-            const lh: f32 = @floatFromInt(leaf.bounds.height);
-            const br = if (is_active) app.config.floating_active_color.r else app.config.floating_inactive_color.r;
-            const bg = if (is_active) app.config.floating_active_color.g else app.config.floating_inactive_color.g;
-            const bb = if (is_active) app.config.floating_active_color.b else app.config.floating_inactive_color.b;
-            const ba: u8 = 255;
+                // Colour: active pane gets a light-blue accent; others get a
+                // subtle grey.
+                const br = if (is_active) app.config.split_active_color.r else app.config.split_inactive_color.r;
+                const bg = if (is_active) app.config.split_active_color.g else app.config.split_inactive_color.g;
+                const bb = if (is_active) app.config.split_active_color.b else app.config.split_inactive_color.b;
+                const ba: u8 = 255;
 
-            drawBorderRect(x0, y0, lw, border_px, br, bg, bb, ba);
-            drawBorderRect(x0, y0 + lh - border_px, lw, border_px, br, bg, bb, ba);
-            drawBorderRect(x0, y0, border_px, lh, br, bg, bb, ba);
-            drawBorderRect(x0 + lw - border_px, y0, border_px, lh, br, bg, bb, ba);
+                // Right seam — only draw if the right edge does not touch the
+                // framebuffer boundary (i.e. there is a neighbour to the right).
+                if (@as(i32, @intFromFloat(x1)) < fw) {
+                    const seam = PaneBounds{
+                        .x = @as(u32, @intFromFloat(@max(0.0, x1 - border_px / 2.0))),
+                        .y = leaf.bounds.y,
+                        .width = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                        .height = leaf.bounds.height,
+                    };
+                    if (!seamCoveredByFloating(leaves, seam)) {
+                        // rect drawn at x1 - border_px/2 so it straddles the seam
+                        drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
+                    }
+                }
+                // Bottom seam — same logic vertically.
+                if (@as(i32, @intFromFloat(y1)) < fh) {
+                    const seam = PaneBounds{
+                        .x = leaf.bounds.x,
+                        .y = @as(u32, @intFromFloat(@max(0.0, y1 - border_px / 2.0))),
+                        .width = leaf.bounds.width,
+                        .height = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                    };
+                    if (!seamCoveredByFloating(leaves, seam)) {
+                        drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+                    }
+                }
+            }
+
+            for (leaves) |leaf| {
+                if (!leaf.pane.is_floating) continue;
+
+                const is_active = leaf.pane == active;
+                const x0: f32 = @floatFromInt(leaf.bounds.x);
+                const y0: f32 = @floatFromInt(leaf.bounds.y);
+                const lw: f32 = @floatFromInt(leaf.bounds.width);
+                const lh: f32 = @floatFromInt(leaf.bounds.height);
+                const br = if (is_active) app.config.floating_active_color.r else app.config.floating_inactive_color.r;
+                const bg = if (is_active) app.config.floating_active_color.g else app.config.floating_inactive_color.g;
+                const bb = if (is_active) app.config.floating_active_color.b else app.config.floating_inactive_color.b;
+                const ba: u8 = 255;
+
+                drawBorderRect(x0, y0, lw, border_px, br, bg, bb, ba);
+                drawBorderRect(x0, y0 + lh - border_px, lw, border_px, br, bg, bb, ba);
+                drawBorderRect(x0, y0, border_px, lh, br, bg, bb, ba);
+                drawBorderRect(x0 + lw - border_px, y0, border_px, lh, br, bg, bb, ba);
+            }
         }
     }
 
@@ -3859,13 +3879,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         const key_name = @tagName(key);
         if (app.fireOnKey(key_name, mods)) {
             const should_swallow_paired_char = (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 and switch (key) {
-                .a, .b, .c, .d, .e, .f, .g, .h, .i, .j, .k, .l, .m,
-                .n, .o, .p, .q, .r, .s, .t, .u, .v, .w, .x, .y, .z,
-                .digit_0, .digit_1, .digit_2, .digit_3, .digit_4,
-                .digit_5, .digit_6, .digit_7, .digit_8, .digit_9,
-                .space, .minus, .equal, .bracket_left, .bracket_right,
-                .backslash, .semicolon, .quote, .backquote, .comma,
-                .period, .slash => true,
+                .a, .b, .c, .d, .e, .f, .g, .h, .i, .j, .k, .l, .m, .n, .o, .p, .q, .r, .s, .t, .u, .v, .w, .x, .y, .z, .digit_0, .digit_1, .digit_2, .digit_3, .digit_4, .digit_5, .digit_6, .digit_7, .digit_8, .digit_9, .space, .minus, .equal, .bracket_left, .bracket_right, .backslash, .semicolon, .quote, .backquote, .comma, .period, .slash => true,
                 else => false,
             };
             if (should_swallow_paired_char) {

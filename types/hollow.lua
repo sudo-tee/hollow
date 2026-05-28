@@ -5,7 +5,7 @@
 ---@alias HollowFontWeight "thin"|"extralight"|"light"|"regular"|"medium"|"semibold"|"bold"|"extrabold"|"black"
 
 ---@alias HollowFontStyle "normal"|"italic"|"oblique"
----@alias HollowCursorStyle "block"|"bar"|"underline"
+---@alias HollowCursorStyle "block"|"bar"|"underline"|"block_hollow"
 ---@alias HollowTopBarMode "always"|"tabs"
 ---@alias HollowSidebarSide "left"|"right"
 ---@alias HollowOverlayAlign "center"|"top_left"|"top_center"|"top_right"|"left_center"|"right_center"|"bottom_left"|"bottom_center"|"bottom_right"|"left"|"right"|"top"|"bottom"
@@ -235,6 +235,11 @@
 ---@field blink? boolean
 ---@field blink_rate? integer
 
+---@class HollowUnfocusedPaneConfig
+---@field cursor? HollowCursorStyle|false
+---@field dim? boolean|number
+---@field dim_opacity? number
+
 ---@class HollowScrollbarConfig
 ---@field enabled? boolean
 ---@field width? integer
@@ -283,6 +288,7 @@
 ---@field scrollbar? HollowScrollbarConfig
 ---@field hyperlinks? HollowHyperlinksConfig
 ---@field cursor? HollowCursorConfig
+---@field unfocused_pane? HollowUnfocusedPaneConfig
 ---@field shell? string|string[]
 ---@field default_domain? string
 ---@field domains? table<string, string|HollowDomainConfig>

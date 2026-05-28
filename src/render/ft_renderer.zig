@@ -1825,7 +1825,6 @@ pub const FtRenderer = struct {
             const row_info = self.makeCopyModeSnapshotRowInfo(app, pane, selection_range, row, visible_rows);
             self.queueCopyModeSnapshotRowText(line, row_info, cfg, default_fg, selection_fg, run_buf, .draw);
         }
-
     }
 
     fn makeCopyModeSnapshotRowInfo(
@@ -2117,20 +2116,17 @@ pub const FtRenderer = struct {
             const content_tag = runtime.cellContentTagRaw(raw_cell);
             const style_id = runtime.cellStyleIdRaw(raw_cell);
             const is_selected = has_selection and isSelectedCell(row.selection, col_x);
-            const cached_style = if (style_id != 0)
-                blk: {
-                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
-                        break :blk &last_style_info;
-                    }
-                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
-                    last_style_info = info.*;
-                    last_style_id = style_id;
-                    last_style_selected = is_selected;
-                    last_style_valid = true;
+            const cached_style = if (style_id != 0) blk: {
+                if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
                     break :blk &last_style_info;
                 }
-            else
-                null;
+                const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                last_style_info = info.*;
+                last_style_id = style_id;
+                last_style_selected = is_selected;
+                last_style_valid = true;
+                break :blk &last_style_info;
+            } else null;
             const has_search_highlight = if (row.search_highlight) |highlight|
                 col_x >= highlight.start_col and col_x < highlight.end_col
             else
@@ -2184,9 +2180,9 @@ pub const FtRenderer = struct {
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
-                            self.flushQueuedRun(.raster, run_buf, &run, row.py);
-                            continue;
-                        };
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        continue;
+                    };
                     const glyph_utf8 = self.encodeCodepointUtf8(cp);
                     if (glyph_utf8.len == 0) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
@@ -2233,9 +2229,9 @@ pub const FtRenderer = struct {
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
-                            self.flushQueuedRun(.raster, run_buf, &run, row.py);
-                            continue;
-                        };
+                        self.flushQueuedRun(.raster, run_buf, &run, row.py);
+                        continue;
+                    };
                     if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         if (firstRenderableCodepoint(glyph_utf8)) |cp| {
@@ -2318,20 +2314,17 @@ pub const FtRenderer = struct {
             const content_tag = runtime.cellContentTagRaw(raw_cell);
             const style_id = runtime.cellStyleIdRaw(raw_cell);
             const is_selected = has_selection and isSelectedCell(row.selection, col_x);
-            const cached_style = if (style_id != 0)
-                blk: {
-                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
-                        break :blk &last_style_info;
-                    }
-                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
-                    last_style_info = info.*;
-                    last_style_id = style_id;
-                    last_style_selected = is_selected;
-                    last_style_valid = true;
+            const cached_style = if (style_id != 0) blk: {
+                if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
                     break :blk &last_style_info;
                 }
-            else
-                null;
+                const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                last_style_info = info.*;
+                last_style_id = style_id;
+                last_style_selected = is_selected;
+                last_style_valid = true;
+                break :blk &last_style_info;
+            } else null;
             const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
             const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and queue.app.copyModeActiveForPane(queue.pane.?)));
 
@@ -2363,9 +2356,9 @@ pub const FtRenderer = struct {
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
-                            self.flushQueuedRun(.draw, run_buf, &run, row.py);
-                            continue;
-                        };
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        continue;
+                    };
                     if (text_style.needs_decorations) row_needs_decorations = true;
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
@@ -2413,9 +2406,9 @@ pub const FtRenderer = struct {
                             .needs_decorations = info.needs_decorations,
                         }
                     else {
-                            self.flushQueuedRun(.draw, run_buf, &run, row.py);
-                            continue;
-                        };
+                        self.flushQueuedRun(.draw, run_buf, &run, row.py);
+                        continue;
+                    };
                     if (text_style.needs_decorations) row_needs_decorations = true;
                     if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
@@ -2485,20 +2478,17 @@ pub const FtRenderer = struct {
             if (style_id == 0 and !hovered_link_visual) continue;
 
             const is_selected = isSelectedCell(row.selection, dec_col_x);
-            const cached_style = if (style_id != 0)
-                blk: {
-                    if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
-                        break :blk &last_style_info;
-                    }
-                    const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
-                    last_style_info = info.*;
-                    last_style_id = style_id;
-                    last_style_selected = is_selected;
-                    last_style_valid = true;
+            const cached_style = if (style_id != 0) blk: {
+                if (last_style_valid and last_style_id == style_id and last_style_selected == is_selected) {
                     break :blk &last_style_info;
                 }
-            else
-                null;
+                const info = self.resolveCachedStyle(runtime, queue.row_cells.*, style_id, is_selected, queue.colors.default_fg, queue.colors.default_bg, queue.colors.selection_fg, queue.colors.palette) orelse break :blk null;
+                last_style_info = info.*;
+                last_style_id = style_id;
+                last_style_selected = is_selected;
+                last_style_valid = true;
+                break :blk &last_style_info;
+            } else null;
             if (style_id != 0 and cached_style == null) continue;
 
             const underline = if (cached_style) |info| info.underline else 0;
@@ -2620,7 +2610,7 @@ pub const FtRenderer = struct {
         col_px: f32,
         py: f32,
         quads_open: *bool,
-        ) void {
+    ) void {
         const is_bg_tag = content_tag == .bg_color_palette or content_tag == .bg_color_rgb;
         if (is_selected) {
             self.last_bg_rects += 1;
@@ -3755,10 +3745,10 @@ fn effectiveCursorStyle(
         if (app.copyModeActiveForPane(value)) return null;
     }
     if (runtime.cursorPos(render_state) == null) return null;
-    if (!is_focused) return null;
     if (runtime.cursorPasswordInput(render_state)) return .block;
     if (!runtime.cursorVisible(render_state)) return null;
     if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(std.time.nanoTimestamp())) return null;
+    if (!is_focused) return app.config.unfocused_pane.cursor;
     return runtime.cursorVisualStyle(render_state);
 }
 
@@ -4824,7 +4814,7 @@ fn drawCursor(x: f32, y: f32, w: f32, h: f32, color: ghostty.ColorRgb, style: gh
     switch (style) {
         .block => emitRect(x, y, w, h, color.r, color.g, color.b, 255),
         .block_hollow => {
-            const t: f32 = 3.0;
+            const t: f32 = 2.0;
             emitRect(x, y, w, t, color.r, color.g, color.b, 255);
             emitRect(x, y + h - t, w, t, color.r, color.g, color.b, 255);
             emitRect(x, y, t, h, color.r, color.g, color.b, 255);

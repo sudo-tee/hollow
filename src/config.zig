@@ -240,6 +240,18 @@ pub const Config = struct {
         }
     };
 
+    pub const UnfocusedPane = struct {
+        pub const default_dim: f32 = 0.12;
+
+        cursor: ?ghostty.CursorVisualStyle = null,
+        /// Black overlay opacity applied to inactive panes. Range: 0..1.
+        dim: f32 = 0.0,
+
+        pub fn dimAlpha(self: UnfocusedPane) u8 {
+            return @intFromFloat(@round(std.math.clamp(self.dim, @as(f32, 0.0), @as(f32, 1.0)) * 255.0));
+        }
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
@@ -259,6 +271,7 @@ pub const Config = struct {
     terminal_padding: TerminalPadding = .{},
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
+    unfocused_pane: UnfocusedPane = .{},
     lib_dir: ?[]u8 = null,
     top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,

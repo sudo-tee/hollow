@@ -44,6 +44,10 @@ hollow.config.set({
   window_height = 900,
   top_bar_mode = "always",
   split_width = 1,
+  unfocused_pane = {
+    cursor = "block_hollow",
+    dim = 0.2,
+  },
   window_titlebar_show = true,
   scrollbar = {
     enabled = false,
