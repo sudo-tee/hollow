@@ -599,26 +599,29 @@ pub const Pane = struct {
     /// Resize the pane.
     ///
     /// When `skip_pty` is true (drag-preview mode) only the pixel geometry and
-    /// render-dirty flag are updated — ghostty's terminal buffer and the ConPTY
-    /// are left at their current size.  This avoids the rapid SIGWINCH storm
-    /// that causes PSReadLine to leave ghost/duplicate prompt rows in the buffer
-    /// (see https://github.com/microsoft/terminal/issues/15976).
+    /// render-dirty flag are updated — ghostty's terminal buffer, the ConPTY,
+    /// and this pane's committed rows/cols stay at their current size. This
+    /// avoids the rapid SIGWINCH storm that causes PSReadLine to leave
+    /// ghost/duplicate prompt rows in the buffer (see
+    /// https://github.com/microsoft/terminal/issues/15976).
     /// Pass `skip_pty = false` for the single authoritative resize that fires on
     /// divider_commit (mouse release), which sends exactly one SIGWINCH.
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
         const prev_cols = self.cols;
         const prev_rows = self.rows;
+
+        if (skip_pty) {
+            // Drag-preview: just mark dirty so the renderer redraws in the new
+            // pixel bounds. Keep rows/cols authoritative so mouse release still
+            // performs the real terminal resize when the preview grid changed.
+            self.render_dirty = .full;
+            return;
+        }
+
         self.cols = cols;
         self.rows = rows;
 
         const same_grid = cols == prev_cols and rows == prev_rows;
-
-        if (skip_pty) {
-            // Drag-preview: just mark dirty so the renderer redraws in the new
-            // pixel bounds.  No ghostty reflow, no SIGWINCH.
-            self.render_dirty = .full;
-            return;
-        }
 
         if (same_grid) {
             // Same-grid layout changes should stay a pure geometry/cache refresh.
