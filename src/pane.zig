@@ -217,6 +217,7 @@ pub const Pane = struct {
     scrollbar_offset: u64 = 0,
     scrollbar_len: u64 = 0,
     title_dirty: bool = false,
+    title_is_manual: bool = false,
     x_px: u32 = 0,
     y_px: u32 = 0,
     width_px: u32 = 0,
@@ -563,6 +564,21 @@ pub const Pane = struct {
         self.cwd = if (cwd.len > 0) self.allocator.dupe(u8, cwd) catch &.{} else &.{};
     }
 
+    pub fn setManualTitle(self: *Pane, title: []const u8) void {
+        if (self.title.len > 0) self.allocator.free(self.title);
+        self.title = &.{};
+        self.title_is_manual = false;
+
+        if (title.len == 0) {
+            self.title_dirty = true;
+            return;
+        }
+
+        self.title = self.allocator.dupe(u8, title) catch &.{};
+        self.title_is_manual = self.title.len > 0;
+        self.title_dirty = false;
+    }
+
     pub fn childPid(self: *const Pane) usize {
         if (self.pty) |pty| return pty.childPid();
         return 0;
@@ -734,13 +750,21 @@ pub const Pane = struct {
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
+        if (self.title_is_manual) {
+            if (runtime.terminalTitle(self.allocator, self.terminal) catch null) |title| {
+                self.allocator.free(title);
+            }
+            self.title_dirty = false;
+            return;
+        }
+
         if (self.title.len > 0) {
             self.allocator.free(self.title);
             self.title = &.{};
         }
         const maybe_title = runtime.terminalTitle(self.allocator, self.terminal) catch null;
         if (maybe_title) |title| {
-            if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command)) {
+            if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command, self.usesWslBypass())) {
                 self.allocator.free(title);
             } else {
                 self.title = title;
@@ -768,9 +792,11 @@ pub const Pane = struct {
         self.cwd_dirty = true;
     }
 
-    fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8) bool {
+    fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8, wsl_bypass: bool) bool {
         const trimmed_title = std.mem.trim(u8, title, " \t\r\n");
         if (trimmed_title.len == 0) return false;
+
+        if (wsl_bypass and isWslUncTitle(trimmed_title)) return true;
 
         const shell_program = shellProgram(shell_command);
         const shell_name = pathBasenameAny(shell_program);
@@ -807,6 +833,11 @@ pub const Pane = struct {
             std.ascii.eqlIgnoreCase(title, "powershell.exe") or
             std.ascii.eqlIgnoreCase(title, "cmd") or
             std.ascii.eqlIgnoreCase(title, "cmd.exe");
+    }
+
+    fn isWslUncTitle(title: []const u8) bool {
+        return std.ascii.startsWithIgnoreCase(title, "\\\\wsl.localhost\\") or
+            std.ascii.startsWithIgnoreCase(title, "\\\\wsl$\\");
     }
 
     fn looksLikeAbsolutePath(value: []const u8) bool {
@@ -1863,4 +1894,25 @@ test "sanitizePtyOutput preserves split OSC 7 state across chunks" {
     try std.testing.expectEqualStrings("Z", out2);
     try std.testing.expectEqualStrings("/tmp", pane.cwd);
     try std.testing.expect(pane.cwd_dirty);
+}
+
+test "setManualTitle preserves override until cleared" {
+    var pane = Pane.init(std.testing.allocator);
+    defer if (pane.title.len > 0) std.testing.allocator.free(pane.title);
+
+    pane.setManualTitle("editor");
+    try std.testing.expect(pane.title_is_manual);
+    try std.testing.expectEqualStrings("editor", pane.title);
+    try std.testing.expect(!pane.title_dirty);
+
+    pane.setManualTitle("");
+    try std.testing.expect(!pane.title_is_manual);
+    try std.testing.expectEqual(@as(usize, 0), pane.title.len);
+    try std.testing.expect(pane.title_dirty);
+}
+
+test "shouldIgnoreWindowsShellTitle ignores stale wsl unc titles" {
+    try std.testing.expect(Pane.shouldIgnoreWindowsShellTitle("\\\\wsl.localhost\\Ubuntu\\home\\francis", "zsh", true));
+    try std.testing.expect(Pane.shouldIgnoreWindowsShellTitle("\\\\wsl$\\Ubuntu\\home\\francis", "zsh", true));
+    try std.testing.expect(!Pane.shouldIgnoreWindowsShellTitle("\\\\wsl.localhost\\Ubuntu\\home\\francis", "zsh", false));
 }

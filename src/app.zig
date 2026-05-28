@@ -5681,15 +5681,13 @@ pub const App = struct {
     /// Override the active pane's title (used by Lua hollow.set_tab_title).
     pub fn setTabTitle(self: *App, title: []const u8) void {
         const pane = self.activePane() orelse return;
-        if (pane.title.len > 0) pane.allocator.free(pane.title);
-        pane.title = pane.allocator.dupe(u8, title) catch &.{};
+        pane.setManualTitle(title);
     }
 
     pub fn setTabTitleById(self: *App, tab_id: usize, title: []const u8) bool {
         const tab = self.tabById(tab_id) orelse return false;
         const pane = tab.activePane() orelse return false;
-        if (pane.title.len > 0) pane.allocator.free(pane.title);
-        pane.title = pane.allocator.dupe(u8, title) catch &.{};
+        pane.setManualTitle(title);
         return true;
     }
 
@@ -6564,6 +6562,7 @@ fn titleChangedCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
     const app = title_bridge orelse return;
     _ = app;
     if (getPaneForTerminal(title_bridge orelse return, term)) |pane| {
+        if (pane.title_is_manual) return;
         pane.title_dirty = true;
     }
 }
