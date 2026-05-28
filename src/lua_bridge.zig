@@ -3041,6 +3041,26 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "font_regular_embolden")) {
+        cfg.setFontRegularEmbolden(@floatCast(value));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_bold_embolden")) {
+        cfg.setFontBoldEmbolden(@floatCast(value));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_italic_embolden")) {
+        cfg.setFontItalicEmbolden(@floatCast(value));
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "font_bold_italic_embolden")) {
+        cfg.setFontBoldItalicEmbolden(@floatCast(value));
+        return;
+    }
+
     if (std.mem.eql(u8, key, "font_padding_x")) {
         cfg.fonts.padding_x = @floatCast(value);
         return;
@@ -3452,6 +3472,22 @@ fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
             }
             if (std.mem.eql(u8, key, "embolden")) {
                 cfg.fonts.embolden = @floatCast(value);
+                continue;
+            }
+            if (std.mem.eql(u8, key, "regular_embolden")) {
+                cfg.setFontRegularEmbolden(@floatCast(value));
+                continue;
+            }
+            if (std.mem.eql(u8, key, "bold_embolden")) {
+                cfg.setFontBoldEmbolden(@floatCast(value));
+                continue;
+            }
+            if (std.mem.eql(u8, key, "italic_embolden")) {
+                cfg.setFontItalicEmbolden(@floatCast(value));
+                continue;
+            }
+            if (std.mem.eql(u8, key, "bold_italic_embolden")) {
+                cfg.setFontBoldItalicEmbolden(@floatCast(value));
                 continue;
             }
         }

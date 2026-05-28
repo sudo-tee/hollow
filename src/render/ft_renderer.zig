@@ -431,6 +431,10 @@ pub const FtRendererConfig = struct {
     hinting: Hinting = .normal,
     ligatures: bool = true,
     embolden: f32 = 0.0,
+    regular_embolden: ?f32 = null,
+    bold_embolden: ?f32 = null,
+    italic_embolden: ?f32 = null,
+    bold_italic_embolden: ?f32 = null,
     /// Enable perceptual luminance-based alpha correction (Ghostty-style).
     /// Produces gamma-correct text blending without requiring an sRGB framebuffer.
     /// Disabled by default — simple fg*coverage matches WezTerm on dark backgrounds.
@@ -694,6 +698,10 @@ pub const FtRenderer = struct {
     hinting: FtRendererConfig.Hinting,
     ligatures: bool,
     embolden: f32,
+    regular_embolden: ?f32,
+    bold_embolden: ?f32,
+    italic_embolden: ?f32,
+    bold_italic_embolden: ?f32,
 
     glyph_buf: [32]u8 = [_]u8{0} ** 32,
     logged_first_draw: bool = false,
@@ -1092,6 +1100,10 @@ pub const FtRenderer = struct {
             .hinting = cfg.hinting,
             .ligatures = cfg.ligatures,
             .embolden = cfg.embolden,
+            .regular_embolden = cfg.regular_embolden,
+            .bold_embolden = cfg.bold_embolden,
+            .italic_embolden = cfg.italic_embolden,
+            .bold_italic_embolden = cfg.bold_italic_embolden,
             .glyph_shd = glyph_shd,
             .glyph_pip = glyph_pip,
             .glyph_pip_offscreen = glyph_pip_offscreen,
@@ -3727,8 +3739,9 @@ pub const FtRenderer = struct {
         }
 
         const slot = primary_face.*.glyph;
-        if (self.embolden > 0.0 and slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
-            const strength: ft.FT_Pos = @intFromFloat(self.embolden * 64.0);
+        const embolden = self.emboldenForRasterFace(raster_face_index);
+        if (embolden > 0.0 and slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
+            const strength: ft.FT_Pos = @intFromFloat(embolden * 64.0);
             _ = ft.FT_Outline_Embolden(&slot.*.outline, strength);
         }
         if (ft.FT_Render_Glyph(slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
@@ -3979,6 +3992,16 @@ pub const FtRenderer = struct {
                 if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_nerd;
                 break :blk null;
             },
+        };
+    }
+
+    fn emboldenForRasterFace(self: *const FtRenderer, raster_face_index: u8) f32 {
+        return switch (raster_face_index) {
+            0 => self.regular_embolden orelse self.embolden,
+            1 => self.bold_embolden orelse self.embolden,
+            2 => self.bold_italic_embolden orelse self.embolden,
+            3 => self.italic_embolden orelse self.embolden,
+            else => self.embolden,
         };
     }
 };

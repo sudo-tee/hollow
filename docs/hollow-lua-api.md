@@ -79,6 +79,17 @@ hollow.config.reload()
 
 `set()` merges config state and applies it to the host.
 
+Font config accepts global and per-face embolden values:
+
+```lua
+hollow.config.set({
+  fonts = {
+    embolden = 0.2,
+    italic_embolden = 0.45,
+  },
+})
+```
+
 In the shipped app, the bundled `conf/init.lua` base config is loaded first and
 any user config override is loaded after it, so user files only need to override
 the values they care about.

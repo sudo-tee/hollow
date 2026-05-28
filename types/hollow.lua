@@ -219,6 +219,10 @@
 ---@field hinting? HollowFontHinting
 ---@field ligatures? boolean
 ---@field embolden? number
+---@field regular_embolden? number
+---@field bold_embolden? number
+---@field italic_embolden? number
+---@field bold_italic_embolden? number
 ---@field family? string
 ---@field regular? string
 ---@field bold? string

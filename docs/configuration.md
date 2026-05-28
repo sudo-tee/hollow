@@ -107,6 +107,7 @@ Override one style and add fallbacks:
 hollow.config.set({
   fonts = {
     family = "Cascadia Mono",
+    italic_embolden = 0.2,
     bold = "Cascadia Code",
     fallbacks = {
       "Segoe UI Symbol",
@@ -115,6 +116,21 @@ hollow.config.set({
   },
 })
 ```
+
+Use per-face embolden overrides when only one variant needs help:
+
+```lua
+hollow.config.set({
+  fonts = {
+    embolden = 0.2,
+    italic_embolden = 0.45,
+  },
+})
+```
+
+`embolden` remains the global default. `regular_embolden`, `bold_embolden`,
+`italic_embolden`, and `bold_italic_embolden` override it for the primary font
+faces only.
 
 Window size:
 

@@ -148,6 +148,10 @@ pub const Config = struct {
         hinting: Hinting = .normal,
         ligatures: bool = true,
         embolden: f32 = 0.0,
+        regular_embolden: ?f32 = null,
+        bold_embolden: ?f32 = null,
+        italic_embolden: ?f32 = null,
+        bold_italic_embolden: ?f32 = null,
         family: ?[]u8 = null,
         regular: ?[]u8 = null,
         bold: ?[]u8 = null,
@@ -534,6 +538,22 @@ pub const Config = struct {
 
     pub fn setFontBoldItalic(self: *Config, value: []const u8) !void {
         try replaceOwned(self.allocator, &self.fonts.bold_italic, value);
+    }
+
+    pub fn setFontRegularEmbolden(self: *Config, value: f32) void {
+        self.fonts.regular_embolden = value;
+    }
+
+    pub fn setFontBoldEmbolden(self: *Config, value: f32) void {
+        self.fonts.bold_embolden = value;
+    }
+
+    pub fn setFontItalicEmbolden(self: *Config, value: f32) void {
+        self.fonts.italic_embolden = value;
+    }
+
+    pub fn setFontBoldItalicEmbolden(self: *Config, value: f32) void {
+        self.fonts.bold_italic_embolden = value;
     }
 
     pub fn clearFontFallbacks(self: *Config) void {

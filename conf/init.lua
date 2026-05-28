@@ -32,6 +32,7 @@ hollow.config.set({
     hinting = "light",
     ligatures = true,
     embolden = 0.33,
+    italic_embolden = 0.5,
     family = "JetBrains Mono",
   },
   cols = 120,
