@@ -353,7 +353,12 @@ pub const Pane = struct {
 
         try env_block.append(self.allocator, 0); // double-null terminator
 
-        const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name);
+        const home_dir = if (inherited_cwd == null and cfg.defaultCwdForDomain(domain_name) == null)
+            std.process.getEnvVarOwned(self.allocator, if (comptime is_windows) "USERPROFILE" else "HOME") catch null
+        else
+            null;
+        defer if (home_dir) |h| self.allocator.free(h);
+        const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name) orelse home_dir;
 
         var is_remote = false;
         if (domain_name) |name| {

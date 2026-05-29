@@ -67,10 +67,6 @@ hollow.on_gui_ready(function()
   hollow.workspace.auto_bootstrap()
 end)
 
-hollow.events.on("workspace:new", function(e)
-  hollow.workspace.auto_bootstrap_deferred()
-end)
-
 function hollow._emit_builtin_event(name, payload)
   local adapted = events_runtime.adapt_builtin_payload(name, payload)
 

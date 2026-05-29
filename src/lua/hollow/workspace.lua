@@ -192,7 +192,12 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     end)
     local create_end_ms = host_api.now_ms and host_api.now_ms() or nil
     if create_start_ms ~= nil and create_end_ms ~= nil then
-      hollow.log("workspace bootstrap create waited_ms=", create_end_ms - create_start_ms, "first_tab=", is_first_tab == true)
+      hollow.log(
+        "workspace bootstrap create waited_ms=",
+        create_end_ms - create_start_ms,
+        "first_tab=",
+        is_first_tab == true
+      )
     end
     if result == nil or result.success ~= true then
       error("workspace bootstrap " .. (is_first_tab and "new_workspace" or "new_tab") .. " failed")
@@ -226,7 +231,12 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     end)
     local split_end_ms = host_api.now_ms and host_api.now_ms() or nil
     if split_start_ms ~= nil and split_end_ms ~= nil then
-      hollow.log("workspace bootstrap split waited_ms=", split_end_ms - split_start_ms, "index=", index)
+      hollow.log(
+        "workspace bootstrap split waited_ms=",
+        split_end_ms - split_start_ms,
+        "index=",
+        index
+      )
     end
 
     if result == nil or result.success ~= true then
@@ -241,7 +251,14 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
 
   local tab_end_ms = host_api.now_ms and host_api.now_ms() or nil
   if tab_start_ms ~= nil and tab_end_ms ~= nil then
-    hollow.log("workspace bootstrap tab total_ms=", tab_end_ms - tab_start_ms, "panes=", #panes, "first_tab=", is_first_tab == true)
+    hollow.log(
+      "workspace bootstrap tab total_ms=",
+      tab_end_ms - tab_start_ms,
+      "panes=",
+      #panes,
+      "first_tab=",
+      is_first_tab == true
+    )
   end
 
   return main_pane_id

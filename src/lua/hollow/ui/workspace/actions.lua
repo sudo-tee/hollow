@@ -64,6 +64,7 @@ local function open_new_workspace_from_item(item)
     cwd = source_name == "ssh" and nil or cwd,
     domain = item.domain,
     command = source_name == "ssh" and ssh_workspace_command(cwd) or nil,
+    on_complete = item.on_complete,
   })
 
   if name ~= "" then
@@ -97,6 +98,9 @@ local function switch_to_workspace(workspace)
     cwd = workspace.cwd or current_pane_cwd(),
     domain = workspace.domain,
     source = workspace.source,
+    on_complete = function()
+      hollow.workspace.auto_bootstrap_deferred()
+    end,
   })
 end
 
@@ -111,7 +115,7 @@ local function open_create_input(opts)
         return
       end
 
-      open_new_workspace_from_item({ name = name })
+      open_new_workspace_from_item({ name = name, cwd = "" })
       if type(opts.on_confirm) == "function" then
         opts.on_confirm(name)
       end
@@ -170,6 +174,12 @@ local function open_workspace(opts)
   opts = opts or {}
   local source_name = trim_string(opts.source)
   if source_name == "" then
+    opts = type(opts) == "table" and opts or {}
+    if type(opts.on_complete) ~= "function" then
+      opts.on_complete = function()
+        hollow.workspace.auto_bootstrap_deferred()
+      end
+    end
     open_new_workspace_from_item(opts)
     return
   end
@@ -191,6 +201,11 @@ local function open_workspace(opts)
     return
   end
 
+  if type(item.on_complete) ~= "function" then
+    item.on_complete = function()
+      hollow.workspace.auto_bootstrap_deferred()
+    end
+  end
   open_new_workspace_from_item(item)
 end
 
