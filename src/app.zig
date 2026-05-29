@@ -433,6 +433,7 @@ pub const PendingMouseEvent = union(enum) {
         command: ?[]const u8,
         name: ?[]const u8,
         callback_ref: c_int,
+        queued_at_ms: i64,
     },
     close_workspace: ?usize,
     next_workspace,
@@ -950,6 +951,7 @@ pub const App = struct {
                     defer if (payload.domain_name) |value| self.allocator.free(value);
                     defer if (payload.command) |value| self.allocator.free(value);
                     defer if (payload.name) |value| self.allocator.free(value);
+                    std.log.info("app: new_workspace dispatch_lag_ms={d}", .{std.time.milliTimestamp() - payload.queued_at_ms});
                     self.newWorkspace(payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
                 },
                 .close_workspace => |idx| {
@@ -1387,7 +1389,7 @@ pub const App = struct {
         errdefer if (owned_command) |value| self.allocator.free(value);
         const owned_name = if (request.name) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
         errdefer if (owned_name) |value| self.allocator.free(value);
-        if (!self.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = LUA_NOREF } })) {
+        if (!self.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = LUA_NOREF, .queued_at_ms = std.time.milliTimestamp() } })) {
             if (owned_name) |value| self.allocator.free(value);
             if (owned_command) |value| self.allocator.free(value);
             if (owned_domain) |value| self.allocator.free(value);
@@ -2493,6 +2495,11 @@ pub const App = struct {
             self.pruneSelectionIfInvalid();
             self.pruneCopyModeIfInvalid();
             if (self.config.debug_overlay) prune_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            if (self.lua) |*lua| lua.runDeferredCallbacks();
+            if (self.config.debug_overlay) events_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
             const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
@@ -5096,6 +5103,7 @@ pub const App = struct {
     }
 
     pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
+        const start_ms = std.time.milliTimestamp();
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -5117,6 +5125,7 @@ pub const App = struct {
         }
         self.bindHtpHandlers();
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .tab_id = tab_id });
+        std.log.info("app: newTab total_ms={d}", .{std.time.milliTimestamp() - start_ms});
         std.log.info("app: created new tab", .{});
     }
 
@@ -5226,6 +5235,8 @@ pub const App = struct {
     }
 
     pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
+        const start_ms = std.time.milliTimestamp();
+        std.log.info("app: newWorkspace start_ms={d}", .{start_ms});
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -5256,6 +5267,7 @@ pub const App = struct {
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
         self.requestLayoutResize(false);
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .workspace_index = mux.activeWorkspaceIndex() });
+        std.log.info("app: newWorkspace total_ms={d}", .{std.time.milliTimestamp() - start_ms});
         std.log.info("app: created new workspace", .{});
     }
 
@@ -5325,6 +5337,7 @@ pub const App = struct {
     }
 
     pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int) void {
+        const start_ms = std.time.milliTimestamp();
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const cbs = terminalCallbacks();
@@ -5363,6 +5376,7 @@ pub const App = struct {
         // Schedule a layout resize for the next tick() (frame callback thread),
         // rather than calling ghostty_terminal_resize from the event callback thread.
         self.requestLayoutResize(false);
+        std.log.info("app: splitPane total_ms={d}", .{std.time.milliTimestamp() - start_ms});
         std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
     }
 
@@ -6605,7 +6619,7 @@ fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref } });
+    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = std.time.milliTimestamp() } });
 }
 
 fn luaCloseWorkspaceCallback(app_ptr: *anyopaque, workspace_id: ?usize) void {

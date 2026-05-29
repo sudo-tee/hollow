@@ -1,4 +1,5 @@
 local M = {}
+local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missing")
 
 function M.run(fn)
   if type(fn) ~= "function" then
@@ -59,6 +60,12 @@ function M.await(register)
   end
 
   error(value_result)
+end
+
+function M.next_tick()
+  return M.await(function(resolve)
+    host_api.defer(resolve)
+  end)
 end
 
 function M.promise(register)

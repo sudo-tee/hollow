@@ -261,6 +261,7 @@ pub const Pane = struct {
     }
 
     pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
+        const start_ms = std.time.milliTimestamp();
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
@@ -404,6 +405,7 @@ pub const Pane = struct {
         self.title = &.{};
         if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
         if (launch_cwd) |cwd| self.setCwd(cwd);
+        std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ std.time.milliTimestamp() - start_ms, domain_name orelse "", self.is_remote });
     }
 
     fn shellQuoteSingle(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

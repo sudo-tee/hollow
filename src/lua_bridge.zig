@@ -248,6 +248,7 @@ const BridgeContext = struct {
     status_ref: c_int = -1,
     gui_ready_ref: c_int = -1,
     gui_ready_fired: bool = false,
+    deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .{},
 };
 
 var active_context: ?*BridgeContext = null;
@@ -773,6 +774,10 @@ pub const Runtime = struct {
         if (self.context.workspace_title_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.workspace_title_ref);
         if (self.context.status_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.status_ref);
         if (self.context.gui_ready_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.gui_ready_ref);
+        for (self.context.deferred_callback_refs.items) |callback_ref| {
+            if (callback_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+        }
+        self.context.deferred_callback_refs.deinit(self.allocator);
         self.context.api.close(self.state);
         active_context = null;
         self.allocator.destroy(self.context);
@@ -1031,6 +1036,34 @@ pub const Runtime = struct {
         if (api.pcall(self.state, 1, 0, 0) != 0) {
             logLuaError(api, self.state, "operation_callback");
             pop(api, self.state, 1);
+        }
+    }
+
+    pub fn runDeferredCallbacks(self: *Runtime) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const deferred = self.context.deferred_callback_refs.items;
+        if (deferred.len == 0) return;
+
+        const api = self.context.api;
+        var pending = std.ArrayListUnmanaged(c_int){};
+        defer pending.deinit(self.allocator);
+        pending.appendSlice(self.allocator, deferred) catch return;
+        self.context.deferred_callback_refs.clearRetainingCapacity();
+
+        for (pending.items) |callback_ref| {
+            api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+                pop(api, self.state, 1);
+                api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+                continue;
+            }
+            if (api.pcall(self.state, 0, 0, 0) != 0) {
+                logLuaError(api, self.state, "deferred_callback");
+                pop(api, self.state, 1);
+            }
+            api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         }
     }
 
@@ -1609,6 +1642,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_on_gui_ready, 1);
         api.set_field(self.state, -2, "on_gui_ready");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_defer, 1);
+        api.set_field(self.state, -2, "defer");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_is_leader_active, 1);
@@ -4043,6 +4080,22 @@ fn l_next_workspace(state: *State) callconv(.c) c_int {
 fn l_prev_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.prev_workspace(cbs.app);
+    return 0;
+}
+
+fn l_defer(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+        std.log.err("lua: defer expects a function", .{});
+        return 0;
+    }
+
+    api.push_value(state, 1);
+    const callback_ref = api.ref(state, LUA_REGISTRYINDEX);
+    ctx.deferred_callback_refs.append(ctx.cfg.allocator, callback_ref) catch {
+        api.unref(state, LUA_REGISTRYINDEX, callback_ref);
+    };
     return 0;
 }
 

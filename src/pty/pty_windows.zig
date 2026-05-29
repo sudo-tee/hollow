@@ -433,6 +433,7 @@ pub const WindowsPty = struct {
 };
 
 fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
+    const start_ms = std.time.milliTimestamp();
     var child_stdin_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
     var child_stdout_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
     var child_stderr_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -521,7 +522,7 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
 
     pty.reader_thread = try std.Thread.spawn(.{}, wslBypassReaderLoop, .{ pty.read_pipe, pty.reader_state });
 
-    std.log.info("wsl bypass ready pid={d} shell={s}", .{ pty.process_id, spec.log_command });
+    std.log.info("wsl bypass ready pid={d} shell={s} startup_ms={d}", .{ pty.process_id, spec.log_command, std.time.milliTimestamp() - start_ms });
     return pty;
 }
 

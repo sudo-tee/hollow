@@ -167,6 +167,8 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     return nil
   end
 
+  local tab_start_ms = host_api.now_ms and host_api.now_ms() or nil
+
   local first = clone_with_resolved_paths(base_dir, panes[1])
   local main_pane_id = nil
   if is_first_tab and reuse_existing == true then
@@ -175,7 +177,9 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     end
     local current_pane = hollow.term.current_pane()
     main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
+    async.next_tick()
   else
+    local create_start_ms = host_api.now_ms and host_api.now_ms() or nil
     local result = async.await(function(resolve)
       local create = is_first_tab and hollow.term.new_workspace or hollow.term.new_tab
       create({
@@ -186,11 +190,16 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
         on_complete = resolve,
       })
     end)
+    local create_end_ms = host_api.now_ms and host_api.now_ms() or nil
+    if create_start_ms ~= nil and create_end_ms ~= nil then
+      hollow.log("workspace bootstrap create waited_ms=", create_end_ms - create_start_ms, "first_tab=", is_first_tab == true)
+    end
     if result == nil or result.success ~= true then
       error("workspace bootstrap " .. (is_first_tab and "new_workspace" or "new_tab") .. " failed")
     end
     local current_pane = hollow.term.current_pane()
     main_pane_id = select_main_pane(main_pane_id, current_pane and current_pane.id or nil, first)
+    async.next_tick()
   end
 
   if first.tags ~= nil then
@@ -210,10 +219,15 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     hollow.log("Creating pane with options: ", pane)
     local opts = pane_opts(pane, tab.layout)
 
+    local split_start_ms = host_api.now_ms and host_api.now_ms() or nil
     local result = async.await(function(resolve)
       opts.on_complete = resolve
       hollow.term.split_pane(opts)
     end)
+    local split_end_ms = host_api.now_ms and host_api.now_ms() or nil
+    if split_start_ms ~= nil and split_end_ms ~= nil then
+      hollow.log("workspace bootstrap split waited_ms=", split_end_ms - split_start_ms, "index=", index)
+    end
 
     if result == nil or result.success ~= true then
       error("workspace bootstrap split_pane failed")
@@ -222,6 +236,12 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
       hollow.term.set_pane_tags(pane.tags, result.pane_id)
     end
     main_pane_id = select_main_pane(main_pane_id, result.pane_id, pane)
+    async.next_tick()
+  end
+
+  local tab_end_ms = host_api.now_ms and host_api.now_ms() or nil
+  if tab_start_ms ~= nil and tab_end_ms ~= nil then
+    hollow.log("workspace bootstrap tab total_ms=", tab_end_ms - tab_start_ms, "panes=", #panes, "first_tab=", is_first_tab == true)
   end
 
   return main_pane_id
@@ -425,6 +445,12 @@ function M.auto_bootstrap()
 
   M.load_and_bootstrap(path, { replace_current = true })
   return true
+end
+
+function M.auto_bootstrap_deferred()
+  host_api.defer(function()
+    M.auto_bootstrap()
+  end)
 end
 
 return M

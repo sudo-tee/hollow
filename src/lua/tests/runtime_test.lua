@@ -30,6 +30,7 @@ package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
 local function make_host_api()
   local key_handler = nil
   local gui_ready_handler = nil
+  local deferred = {}
   local recorded = {
     config = nil,
     domain_process = nil,
@@ -52,6 +53,7 @@ local function make_host_api()
     workspace_default_cwd = nil,
     send_text = {},
     files = {},
+    deferred_calls = 0,
   }
 
   local panes = {
@@ -101,6 +103,11 @@ local function make_host_api()
 
   function host_api.on_gui_ready(callback)
     gui_ready_handler = callback
+  end
+
+  function host_api.defer(callback)
+    deferred[#deferred + 1] = callback
+    recorded.deferred_calls = recorded.deferred_calls + 1
   end
 
   function host_api.read_dir(path)
@@ -610,12 +617,20 @@ local function make_host_api()
     return key_handler
   end, function()
     return gui_ready_handler
+  end, function()
+    while #deferred > 0 do
+      local queued = deferred
+      deferred = {}
+      for _, callback in ipairs(queued) do
+        callback()
+      end
+    end
   end
 end
 
 reset_modules()
 
-local host_api, recorded, get_key_handler, get_gui_ready_handler = make_host_api()
+local host_api, recorded, get_key_handler, get_gui_ready_handler, flush_deferred = make_host_api()
 _G.host_api = host_api
 
 require("core")
@@ -784,6 +799,7 @@ hollow.workspace.bootstrap({
     },
   },
 }, { base_dir = "/tmp/project" })
+flush_deferred()
 assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
 assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
 assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
@@ -799,6 +815,7 @@ hollow.workspace.bootstrap({
     },
   },
 })
+flush_deferred()
 assert_equal(recorded.focus_pane_by_id, 103, "workspace bootstrap should focus the pane marked main")
 
 local exported_main = hollow.workspace.export_current()
@@ -816,6 +833,7 @@ hollow.workspace.bootstrap({
     },
   },
 })
+flush_deferred()
 assert_equal(#recorded.split_pane_calls - split_count_before_linear, 2, "workspace bootstrap should create each linear split in sequence")
 assert_equal(recorded.split_pane_calls[split_count_before_linear + 1].direction, "horizontal", "workspace bootstrap should preserve the second pane split direction")
 assert_equal(recorded.split_pane_calls[split_count_before_linear + 2].direction, "vertical", "workspace bootstrap should preserve the third pane split direction")
@@ -844,6 +862,14 @@ assert_true(type(gui_ready) == "function", "core should register a gui ready han
 recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "__workspace_spec__"
 gui_ready()
 assert_equal(recorded.new_workspace.cwd, "/tmp/project", "auto bootstrap should run on gui ready using the active pane cwd")
+
+recorded.new_workspace = nil
+local deferred_calls_before_workspace_new = recorded.deferred_calls
+hollow._emit_builtin_event("workspace:new", { workspace_index = 2 })
+assert_true(recorded.deferred_calls > deferred_calls_before_workspace_new, "workspace:new auto bootstrap should defer layout restore")
+assert_equal(recorded.new_workspace, nil, "workspace:new auto bootstrap should not run immediately")
+flush_deferred()
+assert_equal(recorded.new_workspace.cwd, "/tmp/project", "workspace:new auto bootstrap should run on the deferred tick")
 
 local exported = hollow.workspace.export_current()
 assert_equal(exported.name, "main", "workspace export should include active workspace name")

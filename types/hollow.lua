@@ -949,6 +949,8 @@ function async.run(fn) end
 ---@return any
 function async.await(register) end
 
+function async.next_tick() end
+
 ---@param register fun(resolve: fun(value: any), reject: fun(err: any))
 ---@return HollowPromise<any>
 function async.promise(register) end
@@ -1525,6 +1527,7 @@ function process.run_child_process(args, opts) end
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
+---@field defer fun(handler: fun())
 ---@field close_workspace fun()
 ---@field next_workspace fun()
 ---@field prev_workspace fun()
