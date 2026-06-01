@@ -85,7 +85,11 @@ local function switch_to_workspace(workspace)
   end
 
   if workspace.is_open and workspace.open_index ~= nil then
+    local prev_name = active_workspace_name()
     hollow.term.switch_workspace(workspace.open_index)
+    if prev_name then
+      source.ensure_last_opened(prev_name)
+    end
     if workspace.source == "user" and workspace.cwd ~= nil then
       send_cwd_to_active_workspace(workspace.cwd)
     end
