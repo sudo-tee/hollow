@@ -919,7 +919,6 @@ function M.setup(hollow, host_api, state)
           reset_sequence_state(keymap_state)
           return run_action(hollow, node)
         end
-        keymap_state.suppress_next_key = { key = key, mods = mods }
         return true
       end
       reset_sequence_state(keymap_state)
