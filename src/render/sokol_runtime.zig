@@ -3264,6 +3264,52 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
 
+    // Visual bell flash overlay: a brief tinted rect over any pane whose
+    // bell_active flag is set, fading from `bell.visual_alpha` to 0 over
+    // `bell.visual_duration_ms`. Skipped when no pane is flashing so the
+    // hot path stays at zero overhead.
+    var any_bell_active = false;
+    for (leaves) |leaf| {
+        if (leaf.pane.bell_active) {
+            any_bell_active = true;
+            break;
+        }
+    }
+    if (any_bell_active and app.config.bell.visual) {
+        const fw: i32 = @intFromFloat(width);
+        const fh: i32 = @intFromFloat(height);
+        c.sgl_defaults();
+        c.sgl_viewport(0, 0, fw, fh, true);
+        c.sgl_scissor_rect(0, 0, fw, fh, true);
+        c.sgl_load_default_pipeline();
+        c.sgl_matrix_mode_projection();
+        c.sgl_load_identity();
+        c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
+
+        const now_ns = std.time.nanoTimestamp();
+        const duration_ns: i128 = @as(i128, @intCast(app.config.bell.visual_duration_ms)) * std.time.ns_per_ms;
+        for (leaves) |leaf| {
+            if (!leaf.pane.bell_active) continue;
+            const elapsed = now_ns - leaf.pane.bell_started_at_ns;
+            if (elapsed < 0 or elapsed >= duration_ns) continue;
+            // Linear fade from full alpha to 0 over the configured duration.
+            const remaining_f: f32 = 1.0 - (@as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(duration_ns)));
+            const peak: f32 = @floatFromInt(app.config.bell.visual_alpha);
+            const alpha_u: u8 = @intFromFloat(@max(0.0, @min(255.0, peak * remaining_f)));
+            if (alpha_u == 0) continue;
+            drawBorderRect(
+                @floatFromInt(leaf.bounds.x),
+                @floatFromInt(leaf.bounds.y),
+                @floatFromInt(leaf.bounds.width),
+                @floatFromInt(leaf.bounds.height),
+                app.config.bell.visual_color.r,
+                app.config.bell.visual_color.g,
+                app.config.bell.visual_color.b,
+                alpha_u,
+            );
+        }
+    }
+
     // Draw top bar background; Lua widgets render the contents.
     const swapchain_ui_start_ns = std.time.nanoTimestamp();
     const tbh_u = app.tabBarHeight();

@@ -252,6 +252,21 @@ pub const Config = struct {
         }
     };
 
+    pub const Bell = struct {
+        /// Draw a brief flash overlay on the pane that received the BEL.
+        visual: bool = true,
+        /// Reserved: emit an audible bell. Currently a no-op; the `term:bell`
+        /// Lua event can be used to play a sound from script in the meantime.
+        audible: bool = false,
+        /// Duration of the visual flash in milliseconds.
+        visual_duration_ms: u32 = 150,
+        /// RGB fill colour for the visual flash overlay.
+        visual_color: ghostty.ColorRgb = .{ .r = 255, .g = 220, .b = 120 },
+        /// Peak alpha (0..255) at the start of the flash; fades to 0 over
+        /// `visual_duration_ms`.
+        visual_alpha: u8 = 80,
+    };
+
     allocator: std.mem.Allocator,
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
@@ -272,6 +287,7 @@ pub const Config = struct {
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
     unfocused_pane: UnfocusedPane = .{},
+    bell: Bell = .{},
     lib_dir: ?[]u8 = null,
     top_bar_mode: TopBarMode = .tabs,
     window_titlebar_show: bool = true,

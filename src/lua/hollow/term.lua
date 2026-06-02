@@ -120,6 +120,7 @@ function M.setup(hollow, host_api)
       is_focused = host_api.pane_is_focused(pane_id),
       is_floating = host_api.pane_is_floating and host_api.pane_is_floating(pane_id) or false,
       is_maximized = host_api.pane_is_maximized and host_api.pane_is_maximized(pane_id) or false,
+      has_bell = host_api.pane_has_bell and host_api.pane_has_bell(pane_id) or false,
       frame = {
         x = host_api.get_pane_x and host_api.get_pane_x(pane_id) or 0,
         y = host_api.get_pane_y and host_api.get_pane_y(pane_id) or 0,

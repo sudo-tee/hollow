@@ -226,6 +226,10 @@ local function make_host_api()
     return panes[pane_id].is_maximized
   end
 
+  function host_api.pane_has_bell(pane_id)
+    return panes[pane_id].has_bell or false
+  end
+
   function host_api.get_pane_x(pane_id)
     return panes[pane_id].x
   end
@@ -1039,6 +1043,14 @@ assert_equal(process_event.pane.id, 101, "foreground_process_changed should adap
 
 assert_equal(state.get().ui.topbar_cache_dirty, true, "foreground_process_changed should invalidate the topbar cache")
 assert_equal(state.get().ui.bottombar_cache_dirty, true, "foreground_process_changed should invalidate the bottombar cache")
+
+local bell_event = nil
+hollow.events.once("term:bell", function(payload)
+  bell_event = payload
+end)
+hollow._emit_builtin_event("term:bell", { pane_id = 101 })
+assert_true(bell_event ~= nil, "term:bell should fire when emitted by the host")
+assert_equal(bell_event.pane.id, 101, "term:bell payload should expose a pane snapshot")
 
 local ok_query, pane_query = hollow.htp._handle_query("pane", nil, 101)
 assert_true(ok_query, "built-in HTP pane query should succeed")

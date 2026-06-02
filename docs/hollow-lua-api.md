@@ -135,6 +135,29 @@ hollow.config.set({
 
 When `auto_bootstrap = "always"`, Hollow checks for a project-local `.hollow/workspace.json` rooted at the active pane cwd first, then falls back to `workspace.default_layout` when present.
 
+Bell handling:
+
+```lua
+hollow.config.set({
+  bell = {
+    visual = true,        -- draw a brief flash overlay on the pane (default)
+    audible = false,      -- reserved, currently a no-op
+    visual_duration_ms = 150,
+    visual_color = "#ffcc88",
+    visual_alpha = 80,    -- peak opacity 0..255; fades to 0 over the duration
+  },
+})
+
+hollow.events.on("term:bell", function(e)
+  -- e.pane is a HollowPane snapshot. e.pane.has_bell stays true until the
+  -- pane receives focus.
+  hollow.ui.notify.warn("bell in " .. (e.pane.title or "<pane>"))
+end)
+```
+
+`pane.has_bell` is exposed on every pane snapshot so tab/topbar formatters can
+render an attention marker. The flag clears when the pane receives focus.
+
 ## `hollow.json`
 
 ```lua
@@ -462,6 +485,7 @@ Built-in events currently include:
 - `term:pane_layout_changed`
 - `term:cwd_changed`
 - `term:foreground_process_changed`
+- `term:bell` — payload `{ pane = HollowPane }`. Fired once per BEL (`\\a`) received by a pane. The pane snapshot's `has_bell` field becomes `true` until the pane receives focus.
 - `key:unhandled`
 - `window:resized`
 - `window:focused`

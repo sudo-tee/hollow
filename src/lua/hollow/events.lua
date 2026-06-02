@@ -106,6 +106,9 @@ function M.setup(hollow, state, term_helpers)
         new_process = payload.new_process,
       }
     end
+    if name == "term:bell" then
+      return { pane = term_helpers.pane_snapshot(payload.pane_id) }
+    end
     if name == "window:resized" then
       return { size = payload }
     end

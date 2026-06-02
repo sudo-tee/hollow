@@ -128,6 +128,16 @@ hollow.ui.topbar.configure({
         or ""
       local ui = hollow.theme.current().ui
 
+      local has_bell = tab.pane and tab.pane.has_bell or false
+      if not has_bell and tab.panes then
+        for _, p in ipairs(tab.panes) do
+          if p.has_bell then
+            has_bell = true
+            break
+          end
+        end
+      end
+
       local close_style = {
         id = "tab-close:" .. tostring(tab.id),
         fg = ui.widgets.all.divider,
@@ -138,19 +148,23 @@ hollow.ui.topbar.configure({
           hollow.term.close_tab(tab.id)
         end,
       }
-      return {
+      local spans = {
         hollow.ui.span(is_maximized),
-        hollow.ui.span(tab_title, {
-          id = "tab-text:" .. tostring(tab.id),
-          on_click = function()
-            hollow.term.focus_tab(tab.id)
-          end,
-          hover = {
-            fg = ui.tab_bar.hover_tab.fg,
-          },
-        }),
-        hollow.ui.span(" ×", close_style),
       }
+      if has_bell then
+        spans[#spans + 1] = hollow.ui.span("● ", { fg = "#ffcc66", bold = true })
+      end
+      spans[#spans + 1] = hollow.ui.span(tab_title, {
+        id = "tab-text:" .. tostring(tab.id),
+        on_click = function()
+          hollow.term.focus_tab(tab.id)
+        end,
+        hover = {
+          fg = ui.tab_bar.hover_tab.fg,
+        },
+      })
+      spans[#spans + 1] = hollow.ui.span(" ×", close_style)
+      return spans
     end,
   },
 })

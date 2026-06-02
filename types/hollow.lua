@@ -150,6 +150,7 @@
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
+---| "term:bell"
 ---| "key:unhandled"
 ---| "window:resized"
 ---| "window:focused"
@@ -328,6 +329,7 @@
 ---@field is_focused boolean
 ---@field is_floating boolean
 ---@field is_maximized boolean
+---@field has_bell boolean
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field foreground_process string
 ---@field tags string[]
@@ -1562,6 +1564,7 @@ function process.run_child_process(args, opts) end
 ---@field get_pane_height fun(pane_id: integer): integer
 ---@field pane_is_floating fun(pane_id: integer): boolean
 ---@field pane_is_maximized fun(pane_id: integer): boolean
+---@field pane_has_bell fun(pane_id: integer): boolean
 ---@field get_tab_pane_count fun(tab_id: integer): integer
 ---@field get_tab_pane_id_at fun(tab_id: integer, index: integer): integer
 ---@field get_tab_active_pane_id fun(tab_id: integer): integer

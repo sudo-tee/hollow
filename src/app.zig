@@ -570,6 +570,7 @@ pub var write_bridge: ?*App = null;
 var size_bridge: ?*App = null;
 var attrs_bridge: ?*App = null;
 var title_bridge: ?*App = null;
+var bell_bridge: ?*App = null;
 var htp_bridge: ?*App = null;
 var wake_bridge: ?*App = null;
 
@@ -2175,6 +2176,7 @@ pub const App = struct {
         size_bridge = null;
         attrs_bridge = null;
         title_bridge = null;
+        bell_bridge = null;
         htp_bridge = null;
         wake_bridge = null;
 
@@ -2316,6 +2318,7 @@ pub const App = struct {
         size_bridge = self;
         attrs_bridge = self;
         title_bridge = self;
+        bell_bridge = self;
         htp_bridge = self;
         wake_bridge = self;
         self.startCommandTransport();
@@ -2402,6 +2405,7 @@ pub const App = struct {
             .pane_is_floating = luaPaneIsFloatingCallback,
             .pane_is_maximized = luaPaneIsMaximizedCallback,
             .pane_is_focused = luaPaneIsFocusedCallback,
+            .pane_has_bell = luaPaneHasBellCallback,
             .pane_exists = luaPaneExistsCallback,
             .switch_tab_by_id = luaSwitchTabByIdCallback,
             .close_tab_by_id = luaCloseTabByIdCallback,
@@ -2600,7 +2604,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
-                    if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty) {
+                    if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) {
                         self.last_visual_activity_ns = now_ns;
                         return true;
                     }
@@ -3190,6 +3194,13 @@ pub const App = struct {
     fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
         self.invalidateFocusedPaneCache(previous, current);
         if (previous == current) return;
+        if (current) |pane| {
+            if (pane.has_bell_attention) {
+                pane.has_bell_attention = false;
+                // Tab labels may have been rendering an attention marker.
+                self.topbar_cache_dirty = true;
+            }
+        }
         if (self.ghostty) |*runtime| {
             if (current) |pane| runtime.registerCallbacks(pane.terminal, terminalCallbacks());
         }
@@ -5880,6 +5891,35 @@ pub const App = struct {
                     }
                     if (self.config.debug_overlay) total_cwd_ns += std.time.nanoTimestamp() - start_ns;
                 }
+                if (pane.bell_dirty) {
+                    pane.bell_dirty = false;
+                    const now_bell_ns = std.time.nanoTimestamp();
+                    if (self.config.bell.visual) {
+                        pane.bell_active = true;
+                        pane.bell_started_at_ns = now_bell_ns;
+                    }
+                    const is_focused = (self.activePane() == pane);
+                    if (!is_focused) pane.has_bell_attention = true;
+                    self.last_visual_activity_ns = now_bell_ns;
+                    // Tab labels may render an attention marker, so force the
+                    // top bar to re-layout on the next frame.
+                    self.topbar_cache_dirty = true;
+                    self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = @intFromPtr(pane) });
+                }
+                if (pane.bell_active) {
+                    const now_bell_ns = std.time.nanoTimestamp();
+                    const duration_ns: i128 = @as(i128, @intCast(self.config.bell.visual_duration_ms)) * std.time.ns_per_ms;
+                    if (now_bell_ns - pane.bell_started_at_ns >= duration_ns) {
+                        pane.bell_active = false;
+                    } else {
+                        // hasVisualActivity() already wakes the render loop for
+                        // every frame while bell_active is set, and the flash
+                        // overlay is drawn on top of the (possibly cached) pane
+                        // content, so we don't need to invalidate the pane
+                        // render cache here.
+                        self.last_visual_activity_ns = now_bell_ns;
+                    }
+                }
                 if (!pane.render_state_ready) {
                     pane_idx += 1;
                     continue;
@@ -6523,7 +6563,15 @@ fn writePtyCallback(term: ?*anyopaque, _: ?*anyopaque, bytes: ?[*]const u8, len:
     pane.sendText(bytes_ptr[0..len]);
 }
 
-fn bellCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}
+fn bellCallback(term: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    const app = bell_bridge orelse return;
+    if (getPaneForTerminal(app, term)) |pane| {
+        // Mirror the title_changed pattern: just flag a dirty bit; the frame
+        // thread drains it inside tickPanes(). Avoids touching Lua state or
+        // any rendering data from ghostty's parser thread.
+        pane.bell_dirty = true;
+    }
+}
 
 fn enquiryCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
     return .{ .ptr = null, .len = 0 };
@@ -6826,6 +6874,12 @@ fn luaPaneIsFocusedCallback(app_ptr: *anyopaque, pane_id: usize) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.activePane() orelse return false;
     return @intFromPtr(pane) == pane_id;
+}
+
+fn luaPaneHasBellCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return false;
+    return pane.has_bell_attention;
 }
 
 fn luaPaneExistsCallback(app_ptr: *anyopaque, pane_id: usize) bool {

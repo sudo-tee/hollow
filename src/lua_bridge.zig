@@ -208,6 +208,7 @@ pub const AppCallbacks = struct {
     get_window_height: *const fn (app: *anyopaque) usize,
     now_ms: *const fn (app: *anyopaque) i64,
     pane_is_focused: *const fn (app: *anyopaque, pane_id: usize) bool,
+    pane_has_bell: *const fn (app: *anyopaque, pane_id: usize) bool,
     pane_exists: *const fn (app: *anyopaque, pane_id: usize) bool,
     switch_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
     close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
@@ -1873,6 +1874,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "pane_is_focused");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_pane_has_bell, 1);
+        api.set_field(self.state, -2, "pane_has_bell");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_exists, 1);
         api.set_field(self.state, -2, "pane_exists");
 
@@ -2883,6 +2888,12 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "bell") and value_type == .table) {
+            const bell_idx = absoluteIndex(api, state, -1);
+            applyBellTable(ctx.cfg, api, state, bell_idx) catch |err| std.log.err("config bell field failed: {s}", .{@errorName(err)});
+            continue;
+        }
+
         if (std.mem.eql(u8, key, "domains") and value_type == .table) {
             const domains_idx = absoluteIndex(api, state, -1);
             applyDomainsTable(ctx.cfg, api, state, domains_idx) catch |err| std.log.err("config domains field failed: {s}", .{@errorName(err)});
@@ -3057,6 +3068,47 @@ fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_i
 
         if (std.mem.eql(u8, key, "dim_opacity") and value_type == .number) {
             cfg.unfocused_pane.dim = @floatCast(std.math.clamp(api.to_number(state, -1), 0.0, 1.0));
+            continue;
+        }
+    }
+}
+
+fn applyBellTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+
+        if (std.mem.eql(u8, key, "visual") and value_type == .boolean) {
+            cfg.bell.visual = api.to_boolean(state, -1) != 0;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "audible") and value_type == .boolean) {
+            cfg.bell.audible = api.to_boolean(state, -1) != 0;
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "visual_duration_ms") and value_type == .number) {
+            const ms = api.to_number(state, -1);
+            if (ms >= 0) cfg.bell.visual_duration_ms = @intFromFloat(@min(ms, 10000.0));
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "visual_alpha") and value_type == .number) {
+            const a = api.to_number(state, -1);
+            cfg.bell.visual_alpha = @intFromFloat(std.math.clamp(a, 0.0, 255.0));
+            continue;
+        }
+
+        if (std.mem.eql(u8, key, "visual_color") and value_type == .string) {
+            var value_len: usize = 0;
+            const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+            if (parseHexColor(value_ptr[0..value_len])) |color| cfg.bell.visual_color = color;
             continue;
         }
     }
@@ -5088,6 +5140,21 @@ fn l_pane_is_focused(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.pane_is_focused(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_pane_has_bell(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.pane_has_bell(cbs.app, pane_id)) 1 else 0);
     return 1;
 }
 
