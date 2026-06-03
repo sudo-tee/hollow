@@ -122,6 +122,8 @@ const Glyph = struct {
     bear_y: i32,
     /// Horizontal advance, in pixels (26.6 fixed → pixels).
     advance_x: f32,
+    /// True if this glyph is a color emoji bitmap (BGRA pixel data).
+    color_emoji: bool,
 };
 
 const CachedStyleInfo = struct {
@@ -618,6 +620,7 @@ pub const FtRenderer = struct {
     face_nerd: ft.FT_Face,
     face_symbols_nerd: ft.FT_Face,
     face_symbols: ft.FT_Face,
+    face_emoji: ft.FT_Face,
     fallback_faces: []ft.FT_Face,
 
     // HarfBuzz fonts (one per face)
@@ -628,6 +631,8 @@ pub const FtRenderer = struct {
     hb_nerd: ?*ft.hb_font_t,
     hb_symbols_nerd: ?*ft.hb_font_t,
     hb_symbols: ?*ft.hb_font_t,
+    hb_emoji: ?*ft.hb_font_t,
+    emoji_face_index: u8,
     fallback_hb_fonts: []?*ft.hb_font_t,
 
     // HarfBuzz buffer (reused each cell)
@@ -646,6 +651,7 @@ pub const FtRenderer = struct {
     glyph_shd: c.sg_shader,
     glyph_pip: c.sg_pipeline, // swapchain color format
     glyph_pip_offscreen: c.sg_pipeline, // RGBA8 offscreen format
+
     swapchain_color_format: c.sg_pixel_format,
     // Stream vertex buffer for glyph quads.
     // Uploaded once per pass from glyph_verts_cpu.
@@ -779,6 +785,11 @@ pub const FtRenderer = struct {
         const face_symbols = try loadFace(ft_lib, fonts.symbols, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_symbols);
 
+        const face_emoji = discoverEmojiFont(allocator, ft_lib, font_size_px) orelse null;
+        errdefer {
+            if (face_emoji) |f| _ = ft.FT_Done_Face(f);
+        }
+
         const fallback_faces = try allocator.alloc(ft.FT_Face, cfg.fallback_paths.len);
         errdefer allocator.free(fallback_faces);
         var loaded_fallback_faces: usize = 0;
@@ -799,6 +810,7 @@ pub const FtRenderer = struct {
         const hb_nerd = ft.hb_ft_font_create_referenced(face_nerd);
         const hb_symbols_nerd = ft.hb_ft_font_create_referenced(face_symbols_nerd);
         const hb_symbols = ft.hb_ft_font_create_referenced(face_symbols);
+        const hb_emoji = if (face_emoji) |f| ft.hb_ft_font_create_referenced(f) else null;
         const fallback_hb_fonts = try allocator.alloc(?*ft.hb_font_t, fallback_faces.len);
         errdefer allocator.free(fallback_hb_fonts);
         var loaded_fallback_hb: usize = 0;
@@ -1054,6 +1066,9 @@ pub const FtRenderer = struct {
         const glyph_verts_cpu = try allocator.alloc(GlyphVertex, MAX_GLYPH_VERTS);
         errdefer allocator.free(glyph_verts_cpu);
 
+        // Emoji face index: after all bundled fonts.
+        const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 3);
+
         return .{
             .allocator = allocator,
             .ft_lib = ft_lib,
@@ -1064,6 +1079,7 @@ pub const FtRenderer = struct {
             .face_nerd = face_nerd,
             .face_symbols_nerd = face_symbols_nerd,
             .face_symbols = face_symbols,
+            .face_emoji = face_emoji,
             .fallback_faces = fallback_faces,
             .hb_regular = hb_regular,
             .hb_bold = hb_bold,
@@ -1072,6 +1088,8 @@ pub const FtRenderer = struct {
             .hb_nerd = hb_nerd,
             .hb_symbols_nerd = hb_symbols_nerd,
             .hb_symbols = hb_symbols,
+            .hb_emoji = hb_emoji,
+            .emoji_face_index = emoji_face_index,
             .fallback_hb_fonts = fallback_hb_fonts,
             .hb_buf = hb_buf,
             .atlas_img = atlas_img,
@@ -1224,8 +1242,6 @@ pub const FtRenderer = struct {
 
         const result = self.getOrShape(utf8, face_idx) orelse return;
 
-        c.sgl_c4b(fg.r, fg.g, fg.b, 255);
-
         var x_offset: f32 = 0;
         for (result.glyphs) |glyph_inst| {
             const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
@@ -1237,6 +1253,13 @@ pub const FtRenderer = struct {
             const w = @as(f32, @floatFromInt(glyph.bw));
             const h = @as(f32, @floatFromInt(glyph.bh));
             if (w > 0 and h > 0) {
+                // Color emoji: use white foreground so atlas RGBA shows through.
+                // Grayscale: use the specified foreground colour.
+                if (glyph.color_emoji) {
+                    c.sgl_c4b(255, 255, 255, 255);
+                } else {
+                    c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+                }
                 // Emit quad as two triangles via sokol_gl.
                 c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
                 c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
@@ -1285,6 +1308,7 @@ pub const FtRenderer = struct {
             if (maybe_font) |font| ft.hb_font_destroy(font);
         }
         self.allocator.free(self.fallback_hb_fonts);
+        if (self.hb_emoji) |f| ft.hb_font_destroy(f);
         if (self.hb_symbols) |f| ft.hb_font_destroy(f);
         if (self.hb_symbols_nerd) |f| ft.hb_font_destroy(f);
         if (self.hb_nerd) |f| ft.hb_font_destroy(f);
@@ -1295,6 +1319,7 @@ pub const FtRenderer = struct {
         _ = ft.FT_Done_Face(self.face_symbols);
         _ = ft.FT_Done_Face(self.face_symbols_nerd);
         _ = ft.FT_Done_Face(self.face_nerd);
+        if (self.face_emoji) |f| _ = ft.FT_Done_Face(f);
         for (self.fallback_faces) |face| _ = ft.FT_Done_Face(face);
         self.allocator.free(self.fallback_faces);
         _ = ft.FT_Done_Face(self.face_bold_italic);
@@ -2920,7 +2945,7 @@ pub const FtRenderer = struct {
         const w = @as(f32, @floatFromInt(glyph.bw));
         const h = @as(f32, @floatFromInt(glyph.bh));
         if (w > 0 and h > 0) {
-            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
+            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji);
         }
 
         x_offset.* += glyph_inst.x_advance;
@@ -2939,7 +2964,7 @@ pub const FtRenderer = struct {
             // Snap to integer pixels to prevent subpixel sampling artifacts.
             const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
             const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
-            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1);
+            self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji);
         }
         return true;
     }
@@ -2952,7 +2977,11 @@ pub const FtRenderer = struct {
         if (w > 0 and h > 0) {
             const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
             const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
-            c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+            if (glyph.color_emoji) {
+                c.sgl_c4b(255, 255, 255, 255);
+            } else {
+                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+            }
             c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
             c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
             c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
@@ -2981,11 +3010,11 @@ pub const FtRenderer = struct {
                 const face = self.faceForRasterIndex(face_idx) orelse return null;
                 const glyph_id = ft.FT_Get_Char_Index(face, cp);
                 if (glyph_id == 0) {
-                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
                     return null;
                 }
                 const g = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse {
-                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                    self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
                     break :blk self.ascii_glyphs[fi][cp].?;
                 };
                 self.ascii_glyphs[fi][cp] = g;
@@ -3023,19 +3052,25 @@ pub const FtRenderer = struct {
         fg: ghostty.ColorRgb,
         clip_y0: f32,
         clip_y1: f32,
+        color_emoji: bool,
     ) void {
         if (self.glyph_verts_count + 4 > MAX_GLYPH_VERTS) return;
 
         const base = self.glyph_verts_count;
         const verts = self.glyph_verts_cpu;
+        // For color emoji: vertex alpha = 0 signals the shader to output atlas RGBA
+        // directly (fg colour is ignored — set to white as a safe fallback).
+        // For grayscale: vertex alpha = 255, fg tints the glyph.
+        const VFgColor = struct { r: u8, g: u8, b: u8, a: u8 };
+        const vfg = if (color_emoji) VFgColor{ .r = 255, .g = 255, .b = 255, .a = 0 } else VFgColor{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
         // Common case: the glyph quad is already fully contained within the row's
         // clip bounds, so avoid the extra clipping/interpolation math.
         if (gy >= clip_y0 and gy + h <= clip_y1) {
-            verts[base + 0] = .{ .x = gx, .y = gy, .u = s0, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-            verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-            verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-            verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+            verts[base + 0] = .{ .x = gx, .y = gy, .u = s0, .v = t0, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+            verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+            verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+            verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
             self.glyph_verts_count += 4;
             return;
         }
@@ -3052,10 +3087,10 @@ pub const FtRenderer = struct {
         const tc_top = t0 + (clipped_top - gy) * inv_h * (t1 - t0);
         const tc_bot = t0 + (clipped_bot - gy) * inv_h * (t1 - t0);
 
-        verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
-        verts[base + 3] = .{ .x = gx, .y = clipped_bot, .u = s0, .v = tc_bot, .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
+        verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 3] = .{ .x = gx, .y = clipped_bot, .u = s0, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
         self.glyph_verts_count += 4;
     }
 
@@ -3429,8 +3464,10 @@ pub const FtRenderer = struct {
 
         const use_subpixel = self.smoothing == .subpixel and raster_mode == .terminal;
         const load_flags = self.loadFlagsForRasterMode(use_subpixel);
-        if (ft.FT_Load_Glyph(primary_face, glyph_id, load_flags) != 0 or glyph_id == 0) {
-            const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+        const is_emoji = self.face_emoji != null and raster_face_index == self.emoji_face_index;
+        const load_flags_actual: ft.FT_Int32 = if (is_emoji) @intCast(load_flags | ft.FT_LOAD_COLOR) else @intCast(load_flags);
+        if (ft.FT_Load_Glyph(primary_face, glyph_id, load_flags_actual) != 0 or glyph_id == 0) {
+            const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
             self.glyph_cache.put(key, miss) catch {};
             return null;
         }
@@ -3443,19 +3480,20 @@ pub const FtRenderer = struct {
         }
         if (ft.FT_Render_Glyph(slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
             if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
-                const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0 };
+                const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
                 self.glyph_cache.put(key, miss) catch {};
                 return null;
             }
         }
         const bmp = &slot.*.bitmap;
 
-        // Only handle grey bitmaps (FT_PIXEL_MODE_GRAY).
+        // Handle grey, LCD, and BGRA (color emoji) bitmaps.
         // Space characters and some glyphs produce zero-size bitmaps — cache them
         // with zero dimensions so we still get the correct advance.
         const is_gray = bmp.*.pixel_mode == ft.FT_PIXEL_MODE_GRAY;
         const is_lcd = bmp.*.pixel_mode == ft.FT_PIXEL_MODE_LCD;
-        if ((!is_gray and !is_lcd) or bmp.*.width == 0 or bmp.*.rows == 0) {
+        const is_bgra = bmp.*.pixel_mode == ft.FT_PIXEL_MODE_BGRA;
+        if ((!is_gray and !is_lcd and !is_bgra) or bmp.*.width == 0 or bmp.*.rows == 0) {
             const g = Glyph{
                 .s0 = 0,
                 .t0 = 0,
@@ -3466,6 +3504,7 @@ pub const FtRenderer = struct {
                 .bear_x = slot.*.bitmap_left,
                 .bear_y = slot.*.bitmap_top,
                 .advance_x = @as(f32, @floatFromInt(slot.*.advance.x)) / 64.0,
+                .color_emoji = false,
             };
             self.glyph_cache.put(key, g) catch {};
             return g;
@@ -3488,6 +3527,7 @@ pub const FtRenderer = struct {
         }
 
         // Blit FreeType grey bitmap into atlas as RGBA (coverage in all channels).
+        // For color emoji (BGRA), convert to premultiplied RGBA.
         var row: u32 = 0;
         while (row < bh) : (row += 1) {
             // For positive pitch: rows go top-to-bottom.
@@ -3499,7 +3539,31 @@ pub const FtRenderer = struct {
             var col: u32 = 0;
             while (col < bw) : (col += 1) {
                 const dst = dst_base + col * ATLAS_BPP;
-                if (is_lcd) {
+                if (is_bgra) {
+                    // BGRA → premultiplied RGBA
+                    const b = src_ptr[col * 4 + 0];
+                    const g = src_ptr[col * 4 + 1];
+                    const r = src_ptr[col * 4 + 2];
+                    const a = src_ptr[col * 4 + 3];
+                    if (a == 0) {
+                        self.atlas_data[dst + 0] = 0;
+                        self.atlas_data[dst + 1] = 0;
+                        self.atlas_data[dst + 2] = 0;
+                        self.atlas_data[dst + 3] = 0;
+                    } else if (a == 255) {
+                        self.atlas_data[dst + 0] = r;
+                        self.atlas_data[dst + 1] = g;
+                        self.atlas_data[dst + 2] = b;
+                        self.atlas_data[dst + 3] = 255;
+                    } else {
+                        // Premultiply: out = src * (a/255)
+                        const fa = @as(f32, @floatFromInt(a)) / 255.0;
+                        self.atlas_data[dst + 0] = @intFromFloat(@as(f32, @floatFromInt(r)) * fa);
+                        self.atlas_data[dst + 1] = @intFromFloat(@as(f32, @floatFromInt(g)) * fa);
+                        self.atlas_data[dst + 2] = @intFromFloat(@as(f32, @floatFromInt(b)) * fa);
+                        self.atlas_data[dst + 3] = a;
+                    }
+                } else if (is_lcd) {
                     const r = self.boostCoverage(src_ptr[col * 3]);
                     const g = self.boostCoverage(src_ptr[col * 3 + 1]);
                     const b = self.boostCoverage(src_ptr[col * 3 + 2]);
@@ -3537,6 +3601,7 @@ pub const FtRenderer = struct {
             .bear_x = slot.*.bitmap_left,
             .bear_y = slot.*.bitmap_top,
             .advance_x = @as(f32, @floatFromInt(slot.*.advance.x)) / 64.0,
+            .color_emoji = is_bgra,
         };
         self.glyph_cache.put(key, g) catch {};
         return g;
@@ -3654,6 +3719,11 @@ pub const FtRenderer = struct {
         if (fontLikelySupportsText(self.face_nerd, utf8)) {
             return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 2) };
         }
+        if (self.face_emoji) |emoji_face| {
+            if (fontLikelySupportsText(emoji_face, utf8)) {
+                return .{ .hb_font = self.hb_emoji, .raster_face_index = self.emoji_face_index };
+            }
+        }
 
         return .{ .hb_font = primary_hb, .raster_face_index = face_idx };
     }
@@ -3670,6 +3740,9 @@ pub const FtRenderer = struct {
                 if (fallback_index == self.fallback_faces.len) break :blk self.face_symbols_nerd;
                 if (fallback_index == self.fallback_faces.len + 1) break :blk self.face_symbols;
                 if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_nerd;
+                if (self.face_emoji) |f| {
+                    if (fallback_index == self.fallback_faces.len + 3) break :blk f;
+                }
                 break :blk null;
             },
         };
@@ -3687,6 +3760,9 @@ pub const FtRenderer = struct {
                 if (fallback_index == self.fallback_hb_fonts.len) break :blk self.hb_symbols_nerd;
                 if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk self.hb_symbols;
                 if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_nerd;
+                if (self.hb_emoji) |f| {
+                    if (fallback_index == self.fallback_hb_fonts.len + 3) break :blk f;
+                }
                 break :blk null;
             },
         };
@@ -4056,6 +4132,35 @@ fn loadFace(lib: ft.FT_Library, data: []const u8, size_px: f32) !ft.FT_Face {
     const px: c_uint = @intFromFloat(@round(size_px));
     if (ft.FT_Set_Pixel_Sizes(face, 0, px) != 0) return error.FtSetSizeFailed;
     return face;
+}
+
+fn discoverEmojiFont(allocator: std.mem.Allocator, lib: ft.FT_Library, size_px: f32) ?ft.FT_Face {
+    const known_emoji_names = [_][]const u8{
+        "Noto Color Emoji",
+        "Segoe UI Emoji",
+        "Apple Color Emoji",
+        "EmojiOne Color",
+        "JoyPixels",
+    };
+    for (known_emoji_names) |name| {
+        if (discoverSystemFont(allocator, lib, name, .regular)) |match| {
+            defer allocator.free(match.path);
+            if (loadFaceFromPathIndex(allocator, lib, match.path, match.face_index, size_px)) |face| {
+                return face;
+            } else |_| continue;
+        } else |_| continue;
+    }
+    // Fallback: look for NotoColorEmoji.ttf in common paths
+    const fallback_paths = [_][]const u8{
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/local/share/fonts/NotoColorEmoji.ttf",
+    };
+    for (fallback_paths) |path| {
+        if (loadFaceFromPath(allocator, lib, path, size_px)) |face| {
+            return face;
+        } else |_| continue;
+    }
+    return null;
 }
 
 fn loadConfiguredFace(

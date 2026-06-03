@@ -299,9 +299,21 @@ hollow.plugins.setup({
   },
 })
 
--- User config files are loaded after this bundled config, so you can override
--- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or
--- `$XDG_CONFIG_HOME/hollow/init.lua` / `$HOME/.config/hollow/init.lua` elsewhere.
+-- LuaLS autocompletion: to get types in your editor, create a `.luarc.json`
+-- in your project or config root that points to the hollow types:
+--
+-- ```jsonc
+-- {
+--   "runtime.version": "LuaJIT",
+--   "workspace.library": [
+--     "%APPDATA%/hollow/types"  -- Windows, or
+--     "~/.config/hollow/types"  -- Linux/macOS
+--   ]
+-- }
+-- ```
+--
+-- Plugin authors: open the hollow repo alongside yours, or symlink the types
+-- dir into your project.
 --
 -- Example user overrides:
 --

@@ -5,10 +5,12 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const zlib = buildZlib(b, target, optimize) orelse return;
-    const freetype = buildFreeType(b, target, optimize, zlib) orelse return;
+    const libpng = buildLibpng(b, target, optimize, zlib) orelse return;
+    const freetype = buildFreeType(b, target, optimize, zlib, libpng) orelse return;
     const harfbuzz = buildHarfbuzz(b, target, optimize, freetype) orelse return;
 
     b.installArtifact(zlib);
+    b.installArtifact(libpng);
     b.installArtifact(freetype);
     b.installArtifact(harfbuzz);
 }
@@ -58,11 +60,53 @@ fn buildZlib(
     return lib;
 }
 
+fn buildLibpng(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    zlib: *std.Build.Step.Compile,
+) ?*std.Build.Step.Compile {
+    const upstream = b.lazyDependency("libpng_upstream", .{}) orelse return null;
+
+    const lib = b.addLibrary(.{
+        .name = "png16",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+        .linkage = .static,
+    });
+    lib.root_module.linkLibrary(zlib);
+    lib.root_module.addIncludePath(upstream.path(""));
+    lib.root_module.addIncludePath(b.path(""));
+
+    var flags: std.ArrayList([]const u8) = .empty;
+    defer flags.deinit(b.allocator);
+    flags.appendSlice(b.allocator, &.{
+        "-DPNG_ARM_NEON_OPT=0",
+        "-DPNG_POWERPC_VSX_OPT=0",
+        "-DPNG_INTEL_SSE_OPT=0",
+        "-DPNG_MIPS_MSA_OPT=0",
+    }) catch @panic("OOM");
+
+    lib.root_module.addCSourceFiles(.{
+        .root = upstream.path(""),
+        .files = libpng_srcs,
+        .flags = flags.items,
+    });
+    lib.installHeader(b.path("pnglibconf.h"), "pnglibconf.h");
+    lib.installHeadersDirectory(upstream.path(""), "", .{ .include_extensions = &.{".h"} });
+
+    return lib;
+}
+
 fn buildFreeType(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     zlib: *std.Build.Step.Compile,
+    libpng: *std.Build.Step.Compile,
 ) ?*std.Build.Step.Compile {
     const upstream = b.lazyDependency("freetype_upstream", .{}) orelse return null;
 
@@ -76,12 +120,15 @@ fn buildFreeType(
         .linkage = .static,
     });
     lib.root_module.linkLibrary(zlib);
+    lib.root_module.linkLibrary(libpng);
+    lib.root_module.addIncludePath(b.path(""));
 
     var flags: std.ArrayList([]const u8) = .empty;
     defer flags.deinit(b.allocator);
     flags.appendSlice(b.allocator, &.{
         "-DFT2_BUILD_LIBRARY",
         "-DFT_CONFIG_OPTION_SYSTEM_ZLIB=1",
+        "-DFT_CONFIG_OPTION_USE_PNG=1",
         "-fno-sanitize=undefined",
     }) catch @panic("OOM");
     if (target.result.os.tag != .windows) {
@@ -201,6 +248,24 @@ const zlib_srcs: []const []const u8 = &.{
     "trees.c",
     "uncompr.c",
     "zutil.c",
+};
+
+const libpng_srcs: []const []const u8 = &.{
+    "png.c",
+    "pngerror.c",
+    "pngget.c",
+    "pngmem.c",
+    "pngpread.c",
+    "pngread.c",
+    "pngrio.c",
+    "pngrtran.c",
+    "pngrutil.c",
+    "pngset.c",
+    "pngtrans.c",
+    "pngwio.c",
+    "pngwrite.c",
+    "pngwtran.c",
+    "pngwutil.c",
 };
 
 const freetype_srcs: []const []const u8 = &.{

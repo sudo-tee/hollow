@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
     });
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+    launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
     launcher_build_options.addOption(bool, "launcher_mode", true);
     launcher_root_module.addImport("fonts", fonts_module);
     launcher_root_module.addImport("icon_data", icon_module);
@@ -79,6 +80,7 @@ pub fn build(b: *std.Build) void {
     });
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+    build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
     build_options.addOption(bool, "launcher_mode", false);
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
@@ -126,6 +128,7 @@ pub fn build(b: *std.Build) void {
         });
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
+        gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
         gui_build_options.addOption(bool, "launcher_mode", false);
         gui_root_module.addImport("fonts", fonts_module);
         gui_root_module.addImport("icon_data", icon_module);

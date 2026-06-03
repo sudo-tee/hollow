@@ -16,6 +16,11 @@
             .url = "https://deps.files.ghostty.org/harfbuzz-11.0.0.tar.xz",
             .hash = "N-V-__8AAG02ugUcWec-Ndp-i7JTsJ0dgF8nnJRUInkGLG7G",
         },
+        .libpng_upstream = .{
+            .url = "https://deps.files.ghostty.org/libpng-1220aa013f0c83da3fb64ea6d327f9173fa008d10e28bc9349eac3463457723b1c66.tar.gz",
+            .hash = "N-V-__8AAJrvXQCqAT8Mg9o_tk6m0yf5Fz-gCNEOKLyTSerD",
+            .lazy = true,
+        },
     },
     .paths = .{""},
 }

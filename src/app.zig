@@ -51,6 +51,7 @@ const bar = @import("ui/bar.zig");
 const selection = @import("selection.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
+const embedded_types: []const u8 = build_options.embedded_types;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 const win32_env = if (builtin.os.tag == .windows) struct {
@@ -2298,6 +2299,28 @@ pub const App = struct {
         self.using_embedded_base_config = config_paths.use_embedded_base;
         self.base_config_path = config_paths.base;
         self.override_config_path = config_paths.override;
+
+        {
+            const config_user_path = try platform.defaultConfigPath(self.allocator);
+            defer self.allocator.free(config_user_path);
+            if (std.fs.path.dirname(config_user_path)) |config_dir| {
+                std.fs.cwd().makePath(config_dir) catch |err| {
+                    std.log.warn("could not create config dir for LuaLS types: {s}", .{@errorName(err)});
+                };
+                if (std.fs.cwd().openDir(config_dir, .{})) |captured| {
+                    var dir = captured;
+                    defer dir.close();
+                    dir.makePath("types") catch |err| {
+                        std.log.warn("could not create types dir for LuaLS: {s}", .{@errorName(err)});
+                    };
+                    dir.writeFile(.{ .sub_path = "types/hollow.lua", .data = embedded_types }) catch |err| {
+                        std.log.warn("failed to write LuaLS types: {s}", .{@errorName(err)});
+                    };
+                } else |err| {
+                    std.log.warn("could not open config dir for LuaLS types: {s}", .{@errorName(err)});
+                }
+            }
+        }
 
         self.tryInitLua();
         std.log.info("config: command_timing={}", .{self.config.command_timing});

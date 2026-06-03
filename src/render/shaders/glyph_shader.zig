@@ -64,7 +64,7 @@ pub const glsl_fs: [:0]const u8 =
     \\#version 330 core
     \\
     \\in  vec2 v_uv;
-    \\in  vec4 v_fg;   // sRGB, straight alpha
+    \\in  vec4 v_fg;   // sRGB, straight alpha; v_fg.a == 0 → color emoji
     \\
     \\out vec4 out_color;
     \\
@@ -84,8 +84,17 @@ pub const glsl_fs: [:0]const u8 =
     \\}
     \\
     \\void main() {
-    \\    // Coverage from atlas (FreeType grayscale, perceptually linear).
-    \\    float a = texture(atlas, v_uv).r;
+    \\    vec4 tex = texture(atlas, v_uv);
+    \\    if (tex.a == 0.0) discard;
+    \\
+    \\    // v_fg.a == 0 signals color-emoji glyph: output premultiplied RGBA directly.
+    \\    if (v_fg.a < 0.5) {
+    \\        out_color = tex;
+    \\        return;
+    \\    }
+    \\
+    \\    // Grayscale path: coverage from atlas R channel.
+    \\    float a = tex.r;
     \\    if (a == 0.0) discard;
     \\
     \\    // fg is sRGB straight-alpha from vertex.
@@ -169,7 +178,7 @@ pub const hlsl_fs: [:0]const u8 =
     \\struct PSIn {
     \\    float4 pos : SV_Position;
     \\    float2 uv  : TEXCOORD0;
-    \\    float4 fg  : TEXCOORD1;   // sRGB, straight alpha (UBYTE4N normalized)
+    \\    float4 fg  : TEXCOORD1;   // sRGB, straight alpha (UBYTE4N normalized); fg.a == 0 → color emoji
     \\};
     \\
     \\float luminance(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
@@ -182,8 +191,16 @@ pub const hlsl_fs: [:0]const u8 =
     \\}
     \\
     \\float4 main(PSIn In) : SV_Target0 {
-    \\    // Coverage from atlas (FreeType grayscale, 0..1).
-    \\    float a = atlas.Sample(atlas_s, In.uv).r;
+    \\    float4 tex = atlas.Sample(atlas_s, In.uv);
+    \\    if (tex.a == 0.0f) discard;
+    \\
+    \\    // In.fg.a == 0 signals color-emoji glyph: output premultiplied RGBA directly.
+    \\    if (In.fg.a < 0.5f) {
+    \\        return tex;
+    \\    }
+    \\
+    \\    // Grayscale path: coverage from atlas R channel.
+    \\    float a = tex.r;
     \\    if (a == 0.0f) discard;
     \\
     \\    // fg is sRGB straight-alpha from vertex (UBYTE4N normalised 0..1).

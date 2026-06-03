@@ -1,4 +1,5 @@
 ---@meta
+---@module 'hollow'
 
 ---@alias HollowColor string
 
