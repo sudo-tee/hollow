@@ -289,7 +289,15 @@ end, { desc = "rename tab" })
 
 hollow.keymap.set("<leader>uu", function()
   hollow.config.reload()
+  hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
 end, { desc = "reload config" })
+
+-- Load local plugin for demo purposes
+hollow.plugins.setup({
+  plugins = {
+    "~/hollow-spirit",
+  },
+})
 
 -- User config files are loaded after this bundled config, so you can override
 -- any of the values above from `%APPDATA%\\hollow\\init.lua` on Windows or

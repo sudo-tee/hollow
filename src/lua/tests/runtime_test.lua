@@ -53,6 +53,7 @@ local function make_host_api()
     workspace_default_cwd = nil,
     send_text = {},
     files = {},
+    dirs = {},
     deferred_calls = 0,
   }
 
@@ -120,6 +121,38 @@ local function make_host_api()
     return {}
   end
 
+  function host_api.data_dir()
+    return "/tmp/hollow-test-data"
+  end
+
+  local function wildcard_to_lua_pattern(pattern)
+    return "^" .. pattern:gsub("([%^%$%(%)%%%.%[%]%+%-%?])", "%%%1"):gsub("%*", ".*") .. "$"
+  end
+
+  function host_api.glob(pattern)
+    local dir = pattern:match("^(.*)[/\\][^/\\]*$") or "."
+    local name_pattern = pattern:match("[^/\\]*$") or pattern
+    local matches = {}
+    local lua_pattern = wildcard_to_lua_pattern(name_pattern)
+    for path in pairs(recorded.files) do
+      local path_dir = path:match("^(.*)[/\\][^/\\]*$") or "."
+      local name = path:match("[^/\\]+$") or path
+      if path_dir == dir and name:match(lua_pattern) then
+        matches[#matches + 1] = path
+      end
+    end
+    table.sort(matches)
+    return matches
+  end
+
+  function host_api.is_dir(path)
+    return recorded.dirs[path] == true
+  end
+
+  function host_api.mkdir_p(path)
+    recorded.dirs[path] = true
+  end
+
   function host_api.read_file(path)
     local value = recorded.files[path]
     if value == nil then
@@ -170,6 +203,11 @@ local function make_host_api()
   function host_api.run_child_process(args, opts)
     recorded.child_process = { args = args, opts = opts }
     return { ok = true, args = args, opts = opts }
+  end
+
+  function host_api.run_process(cmd, args)
+    recorded.process_run = { cmd = cmd, args = args }
+    return { code = 0, stdout = "", stderr = "" }
   end
 
   function host_api.run_domain_process(domain, args, opts)
@@ -716,6 +754,24 @@ assert_equal(require("custom.module").source, "lib", "lib_dir should be added to
 
 local external_theme = theme_api.get("external")
 assert_equal(external_theme.terminal.background, "#121212", "theme.get should load themes from runtime package paths")
+
+local repo_root = assert(os.getenv("PWD"), "PWD should be set for runtime tests")
+local plugin_root = repo_root .. "/src/lua/tests/fixtures/plugins/localplugin"
+recorded.dirs[plugin_root] = true
+recorded.dirs[plugin_root .. "/lua"] = true
+recorded.dirs[plugin_root .. "/lua/localplugin"] = true
+recorded.dirs[plugin_root .. "/hollow_plugin"] = true
+_G.__plugin_autoloaded = nil
+_G.__plugin_setup_opts = nil
+hollow.plugins.setup({
+  plugins = {
+    { plugin_root, opts = { greeting = "hello" } },
+  },
+})
+assert_true(_G.__plugin_autoloaded == true, "plugin autoload files should be sourced")
+assert_equal(_G.__plugin_setup_opts.greeting, "hello", "plugin setup should receive opts")
+assert_equal(hollow.plugins._specs[1].source, "local", "plugin setup should normalize local plugin specs")
+assert_equal(hollow.plugins._specs[1].path, plugin_root, "plugin setup should keep absolute local plugin paths")
 
 local current_theme = theme_api.current()
 assert_equal(current_theme.ui.accent, "#abcdef", "theme.current should reflect the active configured theme")

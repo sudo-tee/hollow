@@ -884,6 +884,11 @@
 ---@field stdout string
 ---@field stderr string
 
+---@class HollowProcessRunResult
+---@field code integer
+---@field stdout string
+---@field stderr string
+
 ---@class HollowProcessOpts
 ---@field cmd string|string[]
 ---@field cwd? string
@@ -1515,6 +1520,36 @@ function process.exec(opts) end
 ---@return boolean, string, string
 function process.run_child_process(args, opts) end
 
+---@param cmd string
+---@param args? string[]
+---@return HollowProcessRunResult
+function process.run(cmd, args) end
+
+---@class HollowFsNamespace
+local fs = {}
+
+---@return string
+function fs.data_dir() end
+
+---@param pattern string
+---@return string[]
+function fs.glob(pattern) end
+
+---@param path string
+---@return boolean
+function fs.is_dir(path) end
+
+---@param path string
+function fs.mkdir_p(path) end
+
+---@class HollowPluginsNamespace
+local plugins = {}
+
+---@param config { plugins?: (string|{[1]: string, opts?: table})[] }|nil
+function plugins.setup(config) end
+
+function plugins.sync() end
+
 ---@class HollowPlatformInfo
 ---@field os string
 ---@field is_windows boolean
@@ -1576,11 +1611,16 @@ function process.run_child_process(args, opts) end
 ---@field reload_config fun(): boolean
 ---@field strftime fun(fmt: string): string
 ---@field read_dir fun(path: string): string[]
+---@field data_dir fun(): string
+---@field glob fun(pattern: string): string[]
+---@field is_dir fun(path: string): boolean
+---@field mkdir_p fun(path: string)
 ---@field read_file fun(path: string): string
 ---@field write_file fun(path: string, contents: string): boolean
 ---@field path_exists fun(path: string): boolean
 ---@field list_wsl_distros fun(): string[]
 ---@field run_child_process fun(args: string[], opts?: HollowProcessRunOpts): boolean, string, string
+---@field run_process fun(cmd: string, args?: string[]): HollowProcessRunResult
 ---@field default_config_path fun(): string|nil
 ---@field json_encode fun(value: any): string
 
@@ -1631,7 +1671,9 @@ function process.run_child_process(args, opts) end
 ---@field keymap HollowKeymapNamespace
 ---@field ui HollowUi
 ---@field htp HollowHtpNamespace
+---@field fs HollowFsNamespace
 ---@field process HollowProcessNamespace
+---@field plugins HollowPluginsNamespace
 ---@field platform HollowPlatformInfo
 ---@field on_gui_ready fun(handler: fun())
 ---@field log fun(...: any)
@@ -1652,7 +1694,9 @@ hollow.events = events
 hollow.keymap = keymap
 hollow.ui = ui
 hollow.htp = htp
+hollow.fs = fs
 hollow.process = process
+hollow.plugins = plugins
 
 ---@type HollowPlatformInfo
 hollow.platform = {

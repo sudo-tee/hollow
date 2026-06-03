@@ -132,6 +132,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.copy_mode", .source = @embedFile("lua/hollow/copy_mode.lua") },
     .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
     .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
+    .{ .name = "hollow.plugins", .source = @embedFile("lua/hollow/plugins/init.lua") },
     .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
     .{ .name = "hollow.ui.primitives", .source = @embedFile("lua/hollow/ui/primitives.lua") },
     .{ .name = "hollow.ui.widgets.core", .source = @embedFile("lua/hollow/ui/widgets/core.lua") },
@@ -236,23 +237,6 @@ pub const AppCallbacks = struct {
     copy_mode_search_prev: *const fn (app: *anyopaque) void,
 };
 
-const BridgeContext = struct {
-    api: Api,
-    cfg: *config.Config,
-    app_callbacks: ?AppCallbacks = null,
-    pending_workspace_name: ?[]u8 = null,
-    /// LuaJIT registry ref for the on_key handler function (LUA_NOREF = -1).
-    on_key_ref: c_int = -1,
-    /// Lua callback for top bar title override.
-    top_bar_ref: c_int = -1,
-    workspace_title_ref: c_int = -1,
-    status_ref: c_int = -1,
-    gui_ready_ref: c_int = -1,
-    gui_ready_fired: bool = false,
-    deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .{},
-};
-
-var active_context: ?*BridgeContext = null;
 
 // LUA_REGISTRYINDEX / LUA_GLOBALSINDEX constants (match the LuaJIT 2.1 ABI)
 const LUA_REGISTRYINDEX: c_int = -10000;
@@ -749,7 +733,7 @@ pub const Runtime = struct {
 
         const ctx = try allocator.create(BridgeContext);
         errdefer allocator.destroy(ctx);
-        ctx.* = .{ .api = api, .cfg = cfg };
+        ctx.* = .{ .api = api, .cfg = cfg, .state = state, .allocator = allocator };
 
         var runtime = Runtime{
             .allocator = allocator,
@@ -778,7 +762,11 @@ pub const Runtime = struct {
         for (self.context.deferred_callback_refs.items) |callback_ref| {
             if (callback_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         }
+        for (self.context.timed_callback_refs.items) |tc_entry| {
+            if (tc_entry.ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, tc_entry.ref);
+        }
         self.context.deferred_callback_refs.deinit(self.allocator);
+        self.context.timed_callback_refs.deinit(self.allocator);
         self.context.api.close(self.state);
         active_context = null;
         self.allocator.destroy(self.context);
@@ -1040,31 +1028,54 @@ pub const Runtime = struct {
         }
     }
 
+    fn fireCallback(api: Api, state: *State, ref: c_int, tag: []const u8) void {
+        api.rawgeti(state, LUA_REGISTRYINDEX, ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .function) {
+            pop(api, state, 1);
+            api.unref(state, LUA_REGISTRYINDEX, ref);
+            return;
+        }
+        if (api.pcall(state, 0, 0, 0) != 0) {
+            logLuaError(api, state, tag);
+            pop(api, state, 1);
+        }
+        api.unref(state, LUA_REGISTRYINDEX, ref);
+    }
+
     pub fn runDeferredCallbacks(self: *Runtime) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const deferred = self.context.deferred_callback_refs.items;
-        if (deferred.len == 0) return;
-
         const api = self.context.api;
-        var pending = std.ArrayListUnmanaged(c_int){};
-        defer pending.deinit(self.allocator);
-        pending.appendSlice(self.allocator, deferred) catch return;
-        self.context.deferred_callback_refs.clearRetainingCapacity();
 
-        for (pending.items) |callback_ref| {
-            api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
-                pop(api, self.state, 1);
-                api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
-                continue;
+        // Fire immediate deferred callbacks.
+        {
+            const deferred = self.context.deferred_callback_refs.items;
+            if (deferred.len > 0) {
+                var pending = std.ArrayListUnmanaged(c_int){};
+                defer pending.deinit(self.allocator);
+                pending.appendSlice(self.allocator, deferred) catch return;
+                self.context.deferred_callback_refs.clearRetainingCapacity();
+                for (pending.items) |callback_ref| {
+                    fireCallback(api, self.state, callback_ref, "deferred_callback");
+                }
             }
-            if (api.pcall(self.state, 0, 0, 0) != 0) {
-                logLuaError(api, self.state, "deferred_callback");
-                pop(api, self.state, 1);
+        }
+
+        // Fire timed callbacks whose expiry has passed.
+        {
+            const now: i64 = if (self.context.app_callbacks) |cbs| cbs.now_ms(cbs.app) else 0;
+            var remaining = std.ArrayListUnmanaged(TimedCallback){};
+            defer remaining.deinit(self.allocator);
+            for (self.context.timed_callback_refs.items) |tc_entry| {
+                if (tc_entry.expires_at_ms == 0 or now >= tc_entry.expires_at_ms) {
+                    fireCallback(api, self.state, tc_entry.ref, "timed_callback");
+                } else {
+                    remaining.append(self.allocator, tc_entry) catch {};
+                }
             }
-            api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+            self.context.timed_callback_refs.deinit(self.allocator);
+            self.context.timed_callback_refs.appendSlice(self.allocator, remaining.items) catch {};
         }
     }
 
@@ -1516,6 +1527,22 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "read_dir");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_data_dir, 1);
+        api.set_field(self.state, -2, "data_dir");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_glob, 1);
+        api.set_field(self.state, -2, "glob");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_is_dir, 1);
+        api.set_field(self.state, -2, "is_dir");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_mkdir_p, 1);
+        api.set_field(self.state, -2, "mkdir_p");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_read_file, 1);
         api.set_field(self.state, -2, "read_file");
 
@@ -1546,6 +1573,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_run_child_process, 1);
         api.set_field(self.state, -2, "run_child_process");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_run_process, 1);
+        api.set_field(self.state, -2, "run_process");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_run_domain_process, 1);
@@ -1647,6 +1678,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_defer, 1);
         api.set_field(self.state, -2, "defer");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_schedule, 1);
+        api.set_field(self.state, -2, "schedule");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_is_leader_active, 1);
@@ -1962,6 +1997,30 @@ pub const Runtime = struct {
         pop(api, self.state, 2);
     }
 };
+
+const TimedCallback = struct { ref: c_int, expires_at_ms: i64 };
+
+const BridgeContext = struct {
+    cfg: *config.Config,
+    state: *State,
+    api: Api,
+    allocator: std.mem.Allocator,
+    app_callbacks: ?AppCallbacks = null,
+    pending_workspace_name: ?[]u8 = null,
+    capabilities: u32 = 0,
+    key_queue: std.ArrayListUnmanaged(struct { key: [:0]const u8, mods: [:0]const u8 }) = .{},
+    key_queue_blocked: bool = false,
+    on_key_ref: c_int = -1,
+    top_bar_ref: c_int = -1,
+    workspace_title_ref: c_int = -1,
+    status_ref: c_int = -1,
+    gui_ready_ref: c_int = -1,
+    gui_ready_fired: bool = false,
+    deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .{},
+    timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .{},
+};
+
+var active_context: ?*BridgeContext = null;
 
 fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
     const api = active_context.?.api;
@@ -2296,6 +2355,204 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_data_dir(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const path = platform.userDataDir(std.heap.page_allocator) catch {
+        return api.raise_error(state, "data_dir failed");
+    };
+    defer std.heap.page_allocator.free(path);
+    api.push_lstring(state, path.ptr, path.len);
+    return 1;
+}
+
+fn wildcardMatch(pattern: []const u8, text: []const u8) bool {
+    var pattern_index: usize = 0;
+    var text_index: usize = 0;
+    var star_index: ?usize = null;
+    var match_index: usize = 0;
+
+    while (text_index < text.len) {
+        if (pattern_index < pattern.len and pattern[pattern_index] == text[text_index]) {
+            pattern_index += 1;
+            text_index += 1;
+            continue;
+        }
+
+        if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+            star_index = pattern_index;
+            pattern_index += 1;
+            match_index = text_index;
+            continue;
+        }
+
+        if (star_index) |star| {
+            pattern_index = star + 1;
+            match_index += 1;
+            text_index = match_index;
+            continue;
+        }
+
+        return false;
+    }
+
+    while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+        pattern_index += 1;
+    }
+
+    return pattern_index == pattern.len;
+}
+
+fn l_glob(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "glob expects a string pattern");
+    }
+
+    var pattern_len: usize = 0;
+    const pattern_ptr = api.to_lstring(state, 1, &pattern_len) orelse {
+        return api.raise_error(state, "glob expects a string pattern");
+    };
+    const pattern = pattern_ptr[0..pattern_len];
+    const dir_path = std.fs.path.dirname(pattern) orelse pattern;
+    const name_pattern = std.fs.path.basename(pattern);
+
+    const dir_result = if (std.fs.path.isAbsolute(dir_path))
+        std.fs.openDirAbsolute(dir_path, .{ .iterate = true })
+    else
+        std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+
+    var dir = dir_result catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => {
+            api.create_table(state, 0, 0);
+            return 1;
+        },
+        else => {
+            std.log.warn("lua: glob failed pattern={s} err={s}", .{ pattern, @errorName(err) });
+            return api.raise_error(state, "glob failed");
+        },
+    };
+    defer dir.close();
+
+    api.create_table(state, 0, 0);
+    var iter = dir.iterate();
+    var index: c_int = 1;
+    while (true) {
+        const entry = iter.next() catch |err| {
+            std.log.warn("lua: glob iterate failed pattern={s} err={s}", .{ pattern, @errorName(err) });
+            return api.raise_error(state, "glob failed");
+        };
+        const item = entry orelse break;
+        if (!wildcardMatch(name_pattern, item.name)) continue;
+
+        const joined = std.fs.path.join(std.heap.page_allocator, &.{ dir_path, item.name }) catch {
+            return api.raise_error(state, "glob failed");
+        };
+        defer std.heap.page_allocator.free(joined);
+
+        const zjoined = std.heap.page_allocator.dupeZ(u8, joined) catch {
+            return api.raise_error(state, "glob failed");
+        };
+        defer std.heap.page_allocator.free(zjoined);
+
+        api.push_string(state, zjoined);
+        api.rawseti(state, -2, index);
+        index += 1;
+    }
+
+    return 1;
+}
+
+fn l_is_dir(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "is_dir expects a string path");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "is_dir expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    const dir_result = if (std.fs.path.isAbsolute(path))
+        std.fs.openDirAbsolute(path, .{})
+    else
+        std.fs.cwd().openDir(path, .{});
+
+    var dir = dir_result catch {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    dir.close();
+
+    api.push_boolean(state, 1);
+    return 1;
+}
+
+fn makePathAbsolute(path: []const u8) !void {
+    if (path.len == 0) return;
+
+    const separator: u8 = if (std.mem.indexOfScalar(u8, path, '\\') != null) '\\' else '/';
+    var root_len: usize = 0;
+    if (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/')) {
+        root_len = 3;
+    } else if (path[0] == '/' or path[0] == '\\') {
+        root_len = 1;
+    } else {
+        return std.fs.cwd().makePath(path);
+    }
+
+    var current = std.ArrayList(u8).empty;
+    defer current.deinit(std.heap.page_allocator);
+    try current.appendSlice(std.heap.page_allocator, path[0..root_len]);
+
+    var iter = std.mem.tokenizeAny(u8, path[root_len..], "/\\");
+    while (iter.next()) |part| {
+        if (part.len == 0) continue;
+        if (current.items.len > 0 and current.items[current.items.len - 1] != separator) {
+            try current.append(std.heap.page_allocator, separator);
+        }
+        try current.appendSlice(std.heap.page_allocator, part);
+        std.fs.makeDirAbsolute(current.items) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+    }
+}
+
+fn l_mkdir_p(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "mkdir_p expects a string path");
+    }
+
+    var path_len: usize = 0;
+    const path_ptr = api.to_lstring(state, 1, &path_len) orelse {
+        return api.raise_error(state, "mkdir_p expects a string path");
+    };
+    const path = path_ptr[0..path_len];
+
+    if (std.fs.path.isAbsolute(path)) {
+        makePathAbsolute(path) catch |err| {
+            std.log.warn("lua: mkdir_p failed path={s} err={s}", .{ path, @errorName(err) });
+            return api.raise_error(state, "mkdir_p failed");
+        };
+    } else {
+        std.fs.cwd().makePath(path) catch |err| {
+            std.log.warn("lua: mkdir_p failed path={s} err={s}", .{ path, @errorName(err) });
+            return api.raise_error(state, "mkdir_p failed");
+        };
+    }
+
+    return 0;
+}
+
 fn l_read_file(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -2520,6 +2777,83 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
         return 3;
     };
     return childRunResultToLua(state, api, result, "run_child_process failed");
+}
+
+fn childExitCode(term: std.process.Child.Term) isize {
+    return switch (term) {
+        .Exited => |code| @intCast(code),
+        else => -1,
+    };
+}
+
+fn l_run_process(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+        return api.raise_error(state, "run_process expects a command string");
+    }
+
+    var cmd_len: usize = 0;
+    const cmd_ptr = api.to_lstring(state, 1, &cmd_len) orelse {
+        return api.raise_error(state, "run_process expects a command string");
+    };
+    const cmd = cmd_ptr[0..cmd_len];
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(std.heap.page_allocator);
+    argv.append(std.heap.page_allocator, cmd) catch return api.raise_error(state, "run_process failed");
+
+    if (api.get_top(state) >= 2) {
+        if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .table) {
+            return api.raise_error(state, "run_process expects an args table");
+        }
+
+        const argv_idx = absoluteIndex(api, state, 2);
+        var arg_index: c_int = 1;
+        while (true) : (arg_index += 1) {
+            api.push_number(state, @floatFromInt(arg_index));
+            api.get_table(state, argv_idx);
+            defer pop(api, state, 1);
+
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+                return api.raise_error(state, "run_process args must be strings");
+            }
+
+            var item_len: usize = 0;
+            const item_ptr = api.to_lstring(state, -1, &item_len) orelse {
+                return api.raise_error(state, "run_process args must be strings");
+            };
+            argv.append(std.heap.page_allocator, item_ptr[0..item_len]) catch {
+                return api.raise_error(state, "run_process failed");
+            };
+        }
+    }
+
+    const result = runChildProcess(std.heap.page_allocator, argv.items, null, .{}) catch |err| {
+        std.log.warn("lua: run_process failed err={s}", .{@errorName(err)});
+        api.create_table(state, 0, 3);
+        api.push_integer(state, -1);
+        api.set_field(state, -2, "code");
+        api.push_string(state, "");
+        api.set_field(state, -2, "stdout");
+        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 1;
+        defer std.heap.page_allocator.free(zerr);
+        api.push_string(state, zerr);
+        api.set_field(state, -2, "stderr");
+        return 1;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    api.create_table(state, 0, 3);
+    api.push_integer(state, childExitCode(result.term));
+    api.set_field(state, -2, "code");
+    api.push_lstring(state, result.stdout.ptr, result.stdout.len);
+    api.set_field(state, -2, "stdout");
+    api.push_lstring(state, result.stderr.ptr, result.stderr.len);
+    api.set_field(state, -2, "stderr");
+    return 1;
 }
 
 fn l_run_domain_process(state: *State) callconv(.c) c_int {
@@ -4135,11 +4469,11 @@ fn l_prev_workspace(state: *State) callconv(.c) c_int {
     return 0;
 }
 
-fn l_defer(state: *State) callconv(.c) c_int {
+fn l_schedule(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
-        std.log.err("lua: defer expects a function", .{});
+        std.log.err("lua: schedule expects a function", .{});
         return 0;
     }
 
@@ -4148,6 +4482,39 @@ fn l_defer(state: *State) callconv(.c) c_int {
     ctx.deferred_callback_refs.append(ctx.cfg.allocator, callback_ref) catch {
         api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     };
+    return 0;
+}
+
+fn l_defer(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+        std.log.err("lua: defer expects a function", .{});
+        return 0;
+    }
+
+    var timeout_ms: i64 = 0;
+    if (api.get_top(state) >= 2) {
+        timeout_ms = @intFromFloat(api.to_number(state, 2));
+    }
+
+    api.push_value(state, 1);
+    const callback_ref = api.ref(state, LUA_REGISTRYINDEX);
+
+    if (timeout_ms > 0) {
+        const now: i64 = if (ctx.app_callbacks) |cbs| cbs.now_ms(cbs.app) else 0;
+        ctx.timed_callback_refs.append(ctx.cfg.allocator, TimedCallback{
+            .ref = callback_ref,
+            .expires_at_ms = now + timeout_ms,
+        }) catch {
+            api.unref(state, LUA_REGISTRYINDEX, callback_ref);
+        };
+    } else {
+        ctx.deferred_callback_refs.append(ctx.cfg.allocator, callback_ref) catch {
+            api.unref(state, LUA_REGISTRYINDEX, callback_ref);
+        };
+    }
     return 0;
 }
 

@@ -11,7 +11,9 @@ local hollow = {
   async = {},
   ui = {},
   htp = {},
+  fs = {},
   process = {},
+  plugins = {},
   platform = host_api.platform or {},
   util = {},
 }
@@ -30,6 +32,7 @@ local events = require("hollow.events")
 local htp = require("hollow.htp")
 local json = require("hollow.json")
 local keymap = require("hollow.keymap")
+local plugins = require("hollow.plugins")
 local state = require("hollow.state").new(host_api)
 local term = require("hollow.term")
 local theme = require("hollow.theme")
@@ -42,6 +45,7 @@ hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace
 hollow.copy_mode = copy_mode
+hollow.plugins = plugins
 
 config.setup(hollow, host_api, state)
 local term_helpers = term.setup(hollow, host_api)
@@ -86,6 +90,30 @@ end
 
 function hollow.read_dir(path)
   return host_api.read_dir(path)
+end
+
+function hollow.fs.data_dir()
+  return host_api.data_dir()
+end
+
+function hollow.fs.glob(pattern)
+  return host_api.glob(pattern)
+end
+
+function hollow.fs.is_dir(path)
+  return host_api.is_dir(path)
+end
+
+function hollow.fs.mkdir_p(path)
+  return host_api.mkdir_p(path)
+end
+
+function hollow.schedule(...)
+  return host_api.schedule(...)
+end
+
+function hollow.defer(fn)
+  return host_api.defer(fn)
 end
 
 local function format_log_value(value, seen, depth)
@@ -202,6 +230,10 @@ end
 
 function hollow.process.run_child_process(args, opts)
   return host_api.run_child_process(args, opts)
+end
+
+function hollow.process.run(cmd, args)
+  return host_api.run_process(cmd, args or {})
 end
 
 function hollow.process.spawn(_opts)

@@ -429,6 +429,34 @@ fn envOwnedOrNull(allocator: std.mem.Allocator, key: []const u8) ?[]u8 {
     return std.process.getEnvVarOwned(allocator, key) catch null;
 }
 
+pub fn userDataDir(allocator: std.mem.Allocator) ![]u8 {
+    if (isWindows()) {
+        if (envOwnedOrNull(allocator, "APPDATA")) |appdata| {
+            defer allocator.free(appdata);
+            return std.fs.path.join(allocator, &.{ appdata, "hollow" });
+        }
+
+        if (envOwnedOrNull(allocator, "USERPROFILE")) |profile| {
+            defer allocator.free(profile);
+            return std.fs.path.join(allocator, &.{ profile, "AppData", "Roaming", "hollow" });
+        }
+
+        return allocator.dupe(u8, "C:\\Users\\Default\\AppData\\Roaming\\hollow");
+    }
+
+    if (envOwnedOrNull(allocator, "XDG_DATA_HOME")) |xdg| {
+        defer allocator.free(xdg);
+        return std.fs.path.join(allocator, &.{ xdg, "hollow" });
+    }
+
+    if (envOwnedOrNull(allocator, "HOME")) |home| {
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, ".local", "share", "hollow" });
+    }
+
+    return allocator.dupe(u8, "/tmp/hollow");
+}
+
 pub fn defaultConfigPath(allocator: std.mem.Allocator) ![]u8 {
     if (isWindows()) {
         if (envOwnedOrNull(allocator, "APPDATA")) |appdata| {

@@ -1245,3 +1245,66 @@ hollow.events.on("config:reloaded", function()
   hollow.ui.notify.info("Config reloaded", { ttl = 1500 })
 end)
 ```
+
+## `hollow.plugins`
+
+```lua
+require("hollow.plugins").setup({ plugins = { ... } })
+```
+
+Loads local or git-backed plugins at startup.
+
+### Plugin Layout
+
+```
+my-plugin/
+  lua/                       -- added to package.path; require()-able modules
+    my-plugin/
+      init.lua               -- should expose M.setup(opts) if configurable
+  hollow_plugin/             -- all .lua files sourced automatically at startup
+    my-plugin.lua
+```
+
+The `hollow_plugin/` files are autoloaded for keymaps, event listeners, commands.
+The `lua/` subtree is for on-demand `require()` usage. A `setup()` function in
+the module is called with per-plugin opts if present.
+
+### Usage
+
+```lua
+require("hollow.plugins").setup({
+  plugins = {
+    -- short form: github user/repo
+    "user/repo",
+
+    -- with opts
+    { "user/repo", opts = { key = "value" } },
+
+    -- full git URL
+    "https://gitlab.com/user/repo",
+
+    -- local path (~ expands to $HOME or %USERPROFILE%)
+    "~/my-hollow-plugin",
+    { "/absolute/path/to/plugin", opts = { ... } },
+  },
+})
+```
+
+`hollow.plugins.sync()` pulls updates for all git-managed plugins
+(pull --ff-only):
+
+```lua
+require("hollow.plugins").sync()
+```
+
+A working example plugin is at `examples/plugins/hollow-spirit/`.
+
+### `hollow.schedule(fn)`
+
+Schedules `fn` to run on the next frame. One-shot; the callback is cleaned up
+after execution.
+
+### `hollow.defer(fn, timeout_ms?)`
+
+Schedules `fn` to run on the next frame (no timeout) or after `timeout_ms`
+milliseconds. One-shot; cleaned up after execution.
