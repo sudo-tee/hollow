@@ -293,11 +293,11 @@ hollow.keymap.set("<leader>uu", function()
 end, { desc = "reload config" })
 
 -- Load local plugin for demo purposes
-hollow.plugins.setup({
-  plugins = {
-    "~/hollow-spirit",
-  },
-})
+-- hollow.plugins.setup({
+--   plugins = {
+--     "~/hollow-spirit",
+--   },
+-- })
 
 -- LuaLS autocompletion: to get types in your editor, create a `.luarc.json`
 -- in your project or config root that points to the hollow types:
