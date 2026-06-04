@@ -620,6 +620,7 @@ pub const FtRenderer = struct {
     face_nerd: ft.FT_Face,
     face_symbols_nerd: ft.FT_Face,
     face_symbols: ft.FT_Face,
+    face_cjk: ft.FT_Face,
     face_emoji: ft.FT_Face,
     fallback_faces: []ft.FT_Face,
 
@@ -631,6 +632,7 @@ pub const FtRenderer = struct {
     hb_nerd: ?*ft.hb_font_t,
     hb_symbols_nerd: ?*ft.hb_font_t,
     hb_symbols: ?*ft.hb_font_t,
+    hb_cjk: ?*ft.hb_font_t,
     hb_emoji: ?*ft.hb_font_t,
     emoji_face_index: u8,
     fallback_hb_fonts: []?*ft.hb_font_t,
@@ -784,6 +786,8 @@ pub const FtRenderer = struct {
         errdefer _ = ft.FT_Done_Face(face_symbols_nerd);
         const face_symbols = try loadFace(ft_lib, fonts.symbols, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_symbols);
+        const face_cjk = try loadFace(ft_lib, fonts.cjk, font_size_px);
+        errdefer _ = ft.FT_Done_Face(face_cjk);
 
         const face_emoji = discoverEmojiFont(allocator, ft_lib, font_size_px) orelse null;
         errdefer {
@@ -810,6 +814,7 @@ pub const FtRenderer = struct {
         const hb_nerd = ft.hb_ft_font_create_referenced(face_nerd);
         const hb_symbols_nerd = ft.hb_ft_font_create_referenced(face_symbols_nerd);
         const hb_symbols = ft.hb_ft_font_create_referenced(face_symbols);
+        const hb_cjk = ft.hb_ft_font_create_referenced(face_cjk);
         const hb_emoji = if (face_emoji) |f| ft.hb_ft_font_create_referenced(f) else null;
         const fallback_hb_fonts = try allocator.alloc(?*ft.hb_font_t, fallback_faces.len);
         errdefer allocator.free(fallback_hb_fonts);
@@ -1067,7 +1072,7 @@ pub const FtRenderer = struct {
         errdefer allocator.free(glyph_verts_cpu);
 
         // Emoji face index: after all bundled fonts.
-        const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 3);
+        const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 4);
 
         return .{
             .allocator = allocator,
@@ -1079,6 +1084,7 @@ pub const FtRenderer = struct {
             .face_nerd = face_nerd,
             .face_symbols_nerd = face_symbols_nerd,
             .face_symbols = face_symbols,
+            .face_cjk = face_cjk,
             .face_emoji = face_emoji,
             .fallback_faces = fallback_faces,
             .hb_regular = hb_regular,
@@ -1088,6 +1094,7 @@ pub const FtRenderer = struct {
             .hb_nerd = hb_nerd,
             .hb_symbols_nerd = hb_symbols_nerd,
             .hb_symbols = hb_symbols,
+            .hb_cjk = hb_cjk,
             .hb_emoji = hb_emoji,
             .emoji_face_index = emoji_face_index,
             .fallback_hb_fonts = fallback_hb_fonts,
@@ -1309,6 +1316,7 @@ pub const FtRenderer = struct {
         }
         self.allocator.free(self.fallback_hb_fonts);
         if (self.hb_emoji) |f| ft.hb_font_destroy(f);
+        if (self.hb_cjk) |f| ft.hb_font_destroy(f);
         if (self.hb_symbols) |f| ft.hb_font_destroy(f);
         if (self.hb_symbols_nerd) |f| ft.hb_font_destroy(f);
         if (self.hb_nerd) |f| ft.hb_font_destroy(f);
@@ -1316,6 +1324,7 @@ pub const FtRenderer = struct {
         if (self.hb_italic) |f| ft.hb_font_destroy(f);
         if (self.hb_bold) |f| ft.hb_font_destroy(f);
         if (self.hb_regular) |f| ft.hb_font_destroy(f);
+        _ = ft.FT_Done_Face(self.face_cjk);
         _ = ft.FT_Done_Face(self.face_symbols);
         _ = ft.FT_Done_Face(self.face_symbols_nerd);
         _ = ft.FT_Done_Face(self.face_nerd);
@@ -3710,14 +3719,17 @@ pub const FtRenderer = struct {
         }
 
         const bundled_base = 4 + self.fallback_faces.len;
+        if (fontLikelySupportsText(self.face_cjk, utf8)) {
+            return .{ .hb_font = self.hb_cjk, .raster_face_index = @intCast(bundled_base) };
+        }
         if (fontLikelySupportsText(self.face_symbols_nerd, utf8)) {
-            return .{ .hb_font = self.hb_symbols_nerd, .raster_face_index = @intCast(bundled_base) };
+            return .{ .hb_font = self.hb_symbols_nerd, .raster_face_index = @intCast(bundled_base + 1) };
         }
         if (fontLikelySupportsText(self.face_symbols, utf8)) {
-            return .{ .hb_font = self.hb_symbols, .raster_face_index = @intCast(bundled_base + 1) };
+            return .{ .hb_font = self.hb_symbols, .raster_face_index = @intCast(bundled_base + 2) };
         }
         if (fontLikelySupportsText(self.face_nerd, utf8)) {
-            return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 2) };
+            return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 3) };
         }
         if (self.face_emoji) |emoji_face| {
             if (fontLikelySupportsText(emoji_face, utf8)) {
@@ -3737,11 +3749,12 @@ pub const FtRenderer = struct {
             else => blk: {
                 const fallback_index = raster_face_index - 4;
                 if (fallback_index < self.fallback_faces.len) break :blk self.fallback_faces[fallback_index];
-                if (fallback_index == self.fallback_faces.len) break :blk self.face_symbols_nerd;
-                if (fallback_index == self.fallback_faces.len + 1) break :blk self.face_symbols;
-                if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_nerd;
+                if (fallback_index == self.fallback_faces.len) break :blk self.face_cjk;
+                if (fallback_index == self.fallback_faces.len + 1) break :blk self.face_symbols_nerd;
+                if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_symbols;
+                if (fallback_index == self.fallback_faces.len + 3) break :blk self.face_nerd;
                 if (self.face_emoji) |f| {
-                    if (fallback_index == self.fallback_faces.len + 3) break :blk f;
+                    if (fallback_index == self.fallback_faces.len + 4) break :blk f;
                 }
                 break :blk null;
             },
@@ -3757,11 +3770,12 @@ pub const FtRenderer = struct {
             else => blk: {
                 const fallback_index = raster_face_index - 4;
                 if (fallback_index < self.fallback_hb_fonts.len) break :blk self.fallback_hb_fonts[fallback_index];
-                if (fallback_index == self.fallback_hb_fonts.len) break :blk self.hb_symbols_nerd;
-                if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk self.hb_symbols;
-                if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_nerd;
+                if (fallback_index == self.fallback_hb_fonts.len) break :blk self.hb_cjk;
+                if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk self.hb_symbols_nerd;
+                if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_symbols;
+                if (fallback_index == self.fallback_hb_fonts.len + 3) break :blk self.hb_nerd;
                 if (self.hb_emoji) |f| {
-                    if (fallback_index == self.fallback_hb_fonts.len + 3) break :blk f;
+                    if (fallback_index == self.fallback_hb_fonts.len + 4) break :blk f;
                 }
                 break :blk null;
             },

@@ -6,3 +6,4 @@ pub const bold_italic = @embedFile("JetBrainsMono-BoldItalic.ttf");
 pub const nerd = @embedFile("JetBrainsMonoNerdFont-Regular.ttf");
 pub const symbols_nerd = @embedFile("SymbolsNerdFontMono-Regular.ttf");
 pub const symbols = @embedFile("NotoSansSymbols2-Regular.ttf");
+pub const cjk = @embedFile("NotoSansMonoCJKsc-Regular.otf");
