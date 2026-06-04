@@ -22,6 +22,8 @@ jobs:
       - name: Apply sokol patch (run setup script)
         run: bash scripts/setup.sh
 
+      - name: Install MinGW (windres for .rc files)
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
       - name: Build Windows release
         run: ./launch.sh --build-only
