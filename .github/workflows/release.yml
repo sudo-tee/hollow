@@ -42,7 +42,7 @@ jobs:
       - name: Stage release bundle
         run: |
           mkdir -p release/hollow/conf release/hollow/wsl release/hollow/scripts
-          cp zig-out/bin/hollow-native.exe release/hollow/
+          cp zig-out/bin/*.exe release/hollow/
           cp zig-out/bin/hollow-wsl-bypass release/hollow/wsl/
           cp scripts/hollow-cli release/hollow/
           cp conf/init.lua release/hollow/conf/
