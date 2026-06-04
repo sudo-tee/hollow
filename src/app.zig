@@ -6301,7 +6301,8 @@ fn firstCodepoint(text: []const u8) u32 {
 
 fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, len: *usize) void {
     if (len.* >= out.len) return;
-    const grapheme_len = runtime.cellGraphemeLen(row_cells);
+    const max_grapheme_len = 16;
+    const grapheme_len = @min(runtime.cellGraphemeLen(row_cells), max_grapheme_len);
     if (grapheme_len == 0) {
         out[len.*] = ' ';
         len.* += 1;
@@ -6323,7 +6324,7 @@ fn appendCellText(runtime: *GhosttyRuntime, row_cells: ?*anyopaque, out: []u8, l
 fn appendGridRefText(runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64, out: []u8, len: *usize) void {
     if (len.* >= out.len) return;
     var cps: [16]u32 = [_]u32{0} ** 16;
-    const grapheme_len = runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0;
+    const grapheme_len = @min(runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0, cps.len);
     if (grapheme_len == 0) {
         if (!runtime.cellHasText(raw_cell)) {
             out[len.*] = ' ';
@@ -6455,7 +6456,7 @@ fn gridRefForHistoryPoint(runtime: *GhosttyRuntime, terminal: ?*anyopaque, row: 
 
 fn captureCopyModeGridRefText(allocator: std.mem.Allocator, runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64) ![]u8 {
     var cps: [16]u32 = [_]u32{0} ** 16;
-    const grapheme_len = runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0;
+    const grapheme_len = @min(runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0, cps.len);
     var buf: [32]u8 = undefined;
     var len: usize = 0;
 

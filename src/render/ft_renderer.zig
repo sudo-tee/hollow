@@ -2238,6 +2238,7 @@ pub const FtRenderer = struct {
                 },
                 .codepoint_grapheme => {
                     var cps: [16]u32 = [_]u32{0} ** 16;
+                    const grapheme_len = @min(runtime.cellGraphemeLen(queue.row_cells.*), cps.len);
                     const glyph_utf8 = self.encodeCurrentCellGraphemeUtf8(runtime, queue.row_cells.*, &cps) orelse {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
@@ -2266,7 +2267,7 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         continue;
                     };
-                    if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
                         self.flushQueuedRun(.raster, run_buf, &run, row.py);
                         if (firstRenderableCodepoint(glyph_utf8)) |cp| {
                             if (isSynthesizedTerminalCodepoint(cp)) continue;
@@ -2415,6 +2416,7 @@ pub const FtRenderer = struct {
                 },
                 .codepoint_grapheme => {
                     var cps: [16]u32 = [_]u32{0} ** 16;
+                    const grapheme_len = @min(runtime.cellGraphemeLen(queue.row_cells.*), cps.len);
                     const glyph_utf8 = self.encodeCurrentCellGraphemeUtf8(runtime, queue.row_cells.*, &cps) orelse {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         continue;
@@ -2444,7 +2446,7 @@ pub const FtRenderer = struct {
                         continue;
                     };
                     if (text_style.needs_decorations) row_needs_decorations = true;
-                    if (!self.ligatures or !isLigatureCandidate(cps[0..runtime.cellGraphemeLen(queue.row_cells.*)])) {
+                    if (!self.ligatures or !isLigatureCandidate(cps[0..grapheme_len])) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         const px = self.columnPixelX(col_x, queue.col_count);
                         self.last_glyph_runs += 1;
@@ -2766,7 +2768,7 @@ pub const FtRenderer = struct {
     }
 
     fn encodeCurrentCellGraphemeUtf8(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, cps: *[16]u32) ?[]const u8 {
-        const grapheme_len = runtime.cellGraphemeLen(row_cells);
+        const grapheme_len = @min(runtime.cellGraphemeLen(row_cells), cps.len);
         if (grapheme_len == 0) return null;
 
         cps.* = [_]u32{0} ** 16;
