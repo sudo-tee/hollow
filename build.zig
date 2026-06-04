@@ -29,10 +29,15 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
-    const fontdeps_dep = b.dependency("fontdeps", .{
+    // fontdeps is lazy because it bundles libpng_upstream (also lazy); on a
+    // cold cache the first configure pass can't satisfy that chain, so the
+    // vendored build silently returns without installing the freetype/
+    // harfbuzz artifacts. Returning here lets the build runner fetch the
+    // missing sub-deps and re-run configure with the full graph available.
+    const fontdeps_dep = b.lazyDependency("fontdeps", .{
         .target = target,
         .optimize = optimize,
-    });
+    }) orelse return;
     const zluajit_dep = b.dependency("zluajit", .{
         .target = target,
         .optimize = optimize,
