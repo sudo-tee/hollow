@@ -299,21 +299,8 @@ end, { desc = "reload config" })
 --   },
 -- })
 
--- LuaLS autocompletion: to get types in your editor, create a `.luarc.json`
--- in your project or config root that points to the hollow types:
---
--- ```jsonc
--- {
---   "runtime.version": "LuaJIT",
---   "workspace.library": [
---     "%APPDATA%/hollow/types"  -- Windows, or
---     "~/.config/hollow/types"  -- Linux/macOS
---   ]
--- }
--- ```
---
--- Plugin authors: open the hollow repo alongside yours, or symlink the types
--- dir into your project.
+-- LuaLS autocompletion and editor setup is documented in
+-- docs/development.md → "Editor support (LuaLS)".
 --
 -- Example user overrides:
 --

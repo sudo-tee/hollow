@@ -1,204 +1,93 @@
 # Configuration
 
-Hollow is configured with Lua.
+Hollow is configured in Lua.
+The runtime loads a base config, then an override config on top, then
+calls any `hollow.plugins.setup(...)` declarations.
+You normally only need a small personal `init.lua` that overrides what you
+care about.
 
-The shipped app loads a bundled base config first and then applies a user
-override config on top. In practice that means users usually only need a small
-`init.lua` with the settings they actually want to change.
+This page describes the model and the most common knobs.
+For per-key exhaustive reference, see
+[`hollow.config`](reference/lua/config.md) and [Themes](themes.md).
 
-This page describes the current product behavior, with `conf/init.lua` as the
-shipped default.
+## Config layers
 
-## Config Model
+Hollow resolves two files in this order:
 
-At startup Hollow resolves one base config and one override config.
+1. **Base config** — `conf/init.lua` next to the executable, if present;
+   otherwise the project copy at `./conf/init.lua`; otherwise the embedded
+   fallback compiled into the binary.
+2. **Override config** — `--config path` if passed; otherwise the default
+   personal location:
+   - Windows: `%APPDATA%\hollow\init.lua`
+   - Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or
+     `$HOME/.config/hollow/init.lua`
 
-Base config resolution:
+The base is loaded first; the override merges on top with the same semantics
+as `hollow.config.set(opts)`. Last writer wins for scalars; tables merge
+key by key.
 
-1. `conf/init.lua` next to the executable, when present
-2. otherwise `conf/init.lua` in the current project directory
-3. otherwise the embedded fallback compiled into the executable
+That is the key rule: do not copy the whole shipped config into your
+personal config. Start with a few lines and override only what you change.
 
-Override config resolution:
-
-1. the file passed through `--config path`, when provided
-2. otherwise the default user config path, if that file exists
-
-Default user config paths:
-
-- Windows: `%APPDATA%\hollow\init.lua`
-- Non-Windows hosts: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`
-
-Load order is always base first, override second.
-
-That is the key rule: do not copy the whole shipped config into your personal
-config unless you actually want to fork it. Start small and override only what
-you care about.
-
-## Minimal User Config
+## Minimal override
 
 ```lua
 local hollow = require("hollow")
 
 hollow.config.set({
-  fonts = {
-    size = 16,
-  },
+  fonts = { size = 16, family = "Cascadia Mono" },
   scrollback = 128_000_000,
   window_titlebar_show = false,
 })
 ```
 
-## Shipped Defaults
+Reload at runtime with `<leader>uu` (binds `hollow.config.reload()`).
 
-The shipped `conf/init.lua` sets up a usable default product experience rather
-than a personal setup.
+## Common knobs
 
-| Area                      | Current default                                                       |
-| ------------------------- | --------------------------------------------------------------------- |
-| Backend                   | `sokol`                                                               |
-| Theme                     | dark terminal theme with matching widget/top-bar colors               |
-| Fonts                     | `Consolas` on Windows, `Menlo` on macOS, `DejaVu Sans Mono` elsewhere |
-| Font size                 | `14.5`                                                                |
-| Window                    | `1440x900`, `120x34`                                                  |
-| Top bar                   | workspace, tabs, cwd, leader legend, and time                         |
-| Scrollbar                 | enabled                                                               |
-| Hyperlinks                | enabled, with shift-click opening                                     |
-| Windows domains           | `pwsh`, `powershell`, `cmd`, `wsl`                                    |
-| Default domain on Windows | `pwsh`                                                                |
-| Default domain elsewhere  | `unix`, using `hollow.platform.default_shell`                         |
-| Reload UX                 | `<leader>uu` reloads config and shows a notification                  |
-
-The bundled config also installs a default keymap for tabs, panes, workspaces,
-clipboard, scrolling, floating panes, and pane movement.
-
-It intentionally does not include:
-
-- personal SSH hosts
-- local project paths
-- machine-specific automation
-- debug logging or demo-only UI
-
-## Common Overrides
-
-Font size:
+### Window
 
 ```lua
 hollow.config.set({
-  fonts = {
-    size = 16,
-  },
-})
-```
-
-Pick a font family by name:
-
-```lua
-hollow.config.set({
-  fonts = {
-    family = "Cascadia Mono",
-  },
-})
-```
-
-Override one style and add fallbacks:
-
-```lua
-hollow.config.set({
-  fonts = {
-    family = "Cascadia Mono",
-    italic_embolden = 0.2,
-    bold = "Cascadia Code",
-    fallbacks = {
-      "Segoe UI Symbol",
-      "Noto Sans Symbols 2",
-    },
-  },
-})
-```
-
-Use per-face embolden overrides when only one variant needs help:
-
-```lua
-hollow.config.set({
-  fonts = {
-    embolden = 0.2,
-    italic_embolden = 0.45,
-  },
-})
-```
-
-`embolden` remains the global default. `regular_embolden`, `bold_embolden`,
-`italic_embolden`, and `bold_italic_embolden` override it for the primary font
-faces only.
-
-Window size:
-
-```lua
-hollow.config.set({
+  window_title = "hollow",
   window_width = 1600,
   window_height = 1000,
+  window_titlebar_show = false, -- hide the OS title bar
+  padding = 5,
 })
 ```
 
-Turn off the scrollbar:
+### Fonts
 
 ```lua
 hollow.config.set({
-  scrollbar = {
-    enabled = false,
+  fonts = {
+    family = "Cascadia Mono",
+    size = 14,
+    line_height = 0.95,
+    smoothing = "grayscale",   -- or "subpixel"
+    hinting = "light",        -- or "none", "normal"
+    ligatures = true,
+    embolden = 0.33,          -- global default
+    italic_embolden = 0.5,
+    fallbacks = { "Segoe UI Symbol", "Noto Sans Symbols 2" },
   },
 })
 ```
 
-Adjust the top bar:
+Per-face embolden values override the global `embolden` for one face only:
+`regular_embolden`, `bold_embolden`, `italic_embolden`, `bold_italic_embolden`.
 
-```lua
-hollow.config.set({
-  top_bar_show_when_single_tab = false,
-  top_bar_height = 22,
-})
-```
-
-Switch the default shell on Windows to WSL:
-
-```lua
-hollow.config.set({
-  default_domain = "wsl",
-})
-```
-
-## Fonts
+List installed families:
 
 ```bash
 ./hollow.exe --list-fonts
-```
-
-Filter likely matches:
-
-```bash
 ./hollow.exe --match-font mono
-```
-
-Emit structured JSON:
-
-```bash
 ./hollow.exe --list-fonts --json
 ```
 
-From a packaged build, run the same flags on `hollow.exe`, `hollow-gui.exe`, or `hollow-native.exe` directly.
-
-From Lua, inspect the same inventory:
-
-```lua
-for _, font in ipairs(hollow.fonts.list()) do
-  if font.family == "Cascadia Mono" then
-    print(font.family, table.concat(font.styles, ", "))
-  end
-end
-```
-
-Pick the first installed font from a preference list:
+From Lua:
 
 ```lua
 local preferred = hollow.fonts.pick({
@@ -208,133 +97,114 @@ local preferred = hollow.fonts.pick({
 })
 
 if preferred then
-  hollow.config.set({
-    fonts = {
-      family = preferred,
-    },
-  })
+  hollow.config.set({ fonts = { family = preferred } })
 end
 ```
 
-## Domains And Shells
-
-The bundled config keeps the domain model explicit.
-
-Current default domains:
-
-- Windows: `pwsh`
-- Non-Windows hosts: `unix`
-
-Bundled Windows domains:
-
-- `pwsh`
-- `powershell`
-- `cmd`
-- `wsl`
-
-Use WSL as the default shell instead:
+### Top bar, scrollbar, hyperlinks
 
 ```lua
-local hollow = require("hollow")
-
 hollow.config.set({
-  default_domain = "wsl",
-})
-```
-
-Customize the shipped WSL domain:
-
-```lua
-local hollow = require("hollow")
-
-hollow.config.set({
-  domains = {
-    wsl = {
-      shell = "C:\\Windows\\System32\\wsl.exe",
-    },
+  top_bar_mode = "always",     -- or "tabs"
+  top_bar_height = 24,
+  scrollbar = { enabled = false, width = 12, min_thumb_size = 24 },
+  hyperlinks = {
+    enabled = true,
+    shift_click_only = true,
+    match_www = true,
+    prefixes = "https:// http:// file:// ftp:// mailto:",
   },
 })
 ```
 
-Example SSH domain:
+### Performance and debugging
 
 ```lua
-local hollow = require("hollow")
-
 hollow.config.set({
+  max_fps = 120,
+  idle_max_fps = 15,
+  vsync = false,
+  backend = "sokol",           -- primary renderer backend
+  command_timing = false,
+  debug_overlay = false,
+  debug_terminal_trace = false,
+})
+```
+
+### Domains and shells
+
+A *domain* is a named shell that Hollow knows how to spawn.
+The shipped base config defines `pwsh`, `powershell`, `cmd`, and `wsl` on
+Windows, and a `unix` domain that uses `hollow.platform.default_shell` on
+non-Windows hosts.
+
+```lua
+hollow.config.set({
+  default_domain = "wsl",      -- default for new tabs/panes
   domains = {
-    devbox = {
-      ssh = {
-        alias = "devbox",
-        backend = "wsl",
-        reuse = "auto",
-      },
-    },
+    pwsh = { shell = "pwsh.exe" },
+    wsl  = { shell = "C:\\Windows\\System32\\wsl.exe" },
+    cmd  = { shell = "cmd.exe" },
   },
 })
 ```
 
-`backend = "wsl"` is the practical choice on Windows when you want Linux-side
-SSH config, agent behavior, and multiplexing.
+Each domain entry is either a string (the shell) or a table with
+`shell`, `default_cwd`, `wsl_distro`, or an `ssh` sub-table.
+SSH-backed domains are described in [domains](reference/lua/config.md#domains).
 
-## Widgets And Keymaps
+`hollow.config.populate_wsl_domains()` (called by the shipped base config
+on Windows) lists your installed WSL distros and adds a domain for each
+one in the form `{distro}WSL`.
 
-Hollow exposes widgets and keymaps directly from Lua.
+### Bell
 
 ```lua
-local hollow = require("hollow")
-
-hollow.ui.topbar.configure({
-  workspace = false,
-  separator = false,
-  tabs = false,
-  time = { format = "%H:%M:%S" },
+hollow.config.set({
+  bell = {
+    visual = true,
+    visual_duration_ms = 150,
+    visual_color = "#ffcc88",
+    visual_alpha = 80,        -- peak opacity 0..255
+  },
 })
-
-hollow.keymap.set("<leader>uu", function()
-  hollow.config.reload()
-end, { desc = "reload config" })
 ```
 
-Advanced workspace launchers can be configured through
-`hollow.ui.workspace.configure(...)`, including WSL and SSH-backed sources.
+`pane.has_bell` is exposed on every pane snapshot, so the shipped top bar
+can render an attention marker. The flag clears on focus.
 
-## Reloading Config
-
-The shipped config defines:
+### Workspace bootstrap
 
 ```lua
-<leader>uu
+hollow.config.set({
+  workspace = {
+    auto_bootstrap = "always",     -- or "never"
+    default_layout = "default",    -- ~/.config/hollow/layouts/default.json
+  },
+})
 ```
 
-to reload config.
+When `auto_bootstrap = "always"`, Hollow checks for a project-local
+`.hollow/workspace.json` rooted at the active pane cwd first, then falls
+back to `workspace.default_layout`. See
+[`hollow.workspace`](reference/lua/workspace-api.md).
 
-You can also call:
+## Reloading
+
+The shipped config binds `<leader>uu` to `hollow.config.reload()`.
+Programmatic reload:
 
 ```lua
 hollow.config.reload()
 ```
 
-Reloading reapplies the resolved base config first and then the active override
-config, so it behaves the same way as startup.
+Reloading re-runs base + override and reapplies the merged result, so
+behaviour matches startup.
 
-## Packaging
+## Source of truth
 
-For a packaged Windows release, ship at least:
-
-- `hollow.exe`
-- `hollow-gui.exe`
-- `hollow-native.exe`
-
-Optional but recommended:
-
-- `conf/init.lua`, if you want the packaged default to stay editable without rebuilding
-
-That gives users a working default experience even before they create a personal
-config.
-
-## Related Docs
-
-- [windows-wsl.md](windows-wsl.md) for the primary Windows/WSL workflow
-- [hollow-lua-api.md](hollow-lua-api.md) for the runtime API reference
-- `types/hollow.lua` for LuaLS typings
+The default keys and values shown above come from
+[`conf/init.lua`](../conf/init.lua).
+The exhaustive schema is in
+[`hollow.config`](reference/lua/config.md) and
+[`types/hollow.lua`](../types/hollow.lua).

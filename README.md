@@ -12,8 +12,7 @@
 ## What Hollow Is
 
 Hollow is a Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core.
-The current build is usable today, highly configurable through Lua, and
-validated primarily on Windows and WSL.
+The current build is only usable on Windows for the moment.
 
 I see it as a spiritual successor to WezTerm. WezTerm is a fantastic terminal emulator, but Wezterm development has slowed down and the project is not as active as it once was. Hollow is an attempt to create a new terminal emulator that builds on the strengths of WezTerm while also providing a more modern and flexible architecture.
 
@@ -75,7 +74,7 @@ Windows releases also bundle the optional `hollow-wsl-bypass` helper for WSL.
 If you install that helper inside your WSL distro, Hollow uses it for `wsl.exe`
 domains and falls back to ConPTY automatically when the helper is not installed.
 
-Windows builds emit `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` for crash symbolization.
+Windows builds emit debug symbols to `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` next to the executables, but release bundles do not include them. See [Packaging → Crash reports](docs/packaging.md#crash-reports) for how to symbolicate a user-reported crash.
 
 ### Customize the config
 
@@ -149,15 +148,56 @@ These provide the `-lX11 -lXi -lXcursor -lGL -lasound` libraries required by the
 ## Documentation Map
 
 Start with [the docs index](docs/README.md).
+The rest of this section is the short tour; the docs index is the
+canonical source.
 
-| File                                                     | Purpose                                         | Read this when                                              |
-| -------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
-| [docs/README.md](docs/README.md)                         | Documentation hub and structure                 | you want the full map of guides and references              |
-| [docs/configuration.md](docs/configuration.md)           | Config model, defaults, overrides, packaging    | you want to customize Hollow or ship a default config       |
-| [docs/windows-wsl.md](docs/windows-wsl.md)               | Windows-first setup, WSL usage, troubleshooting | you are running Hollow in its primary validated environment |
-| [docs/hollow-lua-api.md](docs/hollow-lua-api.md)         | Lua runtime API reference                       | you are scripting Hollow or building custom UI/automation   |
-| [docs/hollow-cli.md](docs/hollow-cli.md)                 | Hollow CLI surface and implementation plan      | you want the shipped HTP command surface                    |
-| [docs/htp-shell-examples.md](docs/htp-shell-examples.md) | Shell-side HTP helpers and examples             | you want shells or scripts to talk back to the host         |
+### Guides
+
+| Page                                                           | Read this when                                        |
+| -------------------------------------------------------------- | ----------------------------------------------------- |
+| [Getting started](docs/getting-started.md)                     | you are running Hollow for the first time             |
+| [Configuration](docs/configuration.md)                         | you want to customize Hollow or ship a default config |
+| [Keybindings](docs/keybindings.md)                             | you want the default keymap or to override it         |
+| [Panes, tabs, workspaces](docs/panes-tabs-workspaces.md)       | you want the layout model in one place                |
+| [Themes](docs/themes.md)                                       | you want a built-in theme or to write a custom one    |
+| [Custom UI](docs/custom-ui.md)                                 | you want to build a widget, sidebar, or overlay       |
+| [Copy mode](docs/copy-mode.md)                                 | you want vim-like scrollback navigation               |
+| [Plugins](docs/plugins.md)                                     | you want to install or write a plugin                 |
+| [Shell integration](docs/shell-integration.md)                 | you want shells to report cwd and process to Hollow   |
+| [HTP protocol](docs/htp-protocol.md)                           | you want the wire format for shell-to-host            |
+| [Shell integration recipes](docs/shell-integration-recipes.md) | you want bash, zsh, fish, or PowerShell helpers       |
+| [Development](docs/development.md)                             | you are building Hollow from source                   |
+| [Packaging](docs/packaging.md)                                 | you are cutting a release                             |
+| [Troubleshooting](docs/troubleshooting.md)                     | something is broken and you want a quick fix          |
+| [FAQ](docs/faq.md)                                             | you want short answers to common questions            |
+
+### Platforms
+
+| Page                                        | Read this when                                 |
+| ------------------------------------------- | ---------------------------------------------- |
+| [Platform matrix](docs/platforms/README.md) | you want the up-front status of each OS        |
+| [Windows](docs/platforms/windows.md)        | you are running Hollow on Windows              |
+| [WSL](docs/platforms/wsl.md)                | you want WSL as a shell domain                 |
+| [Linux](docs/platforms/linux.md)            | you are trying to run Hollow natively on Linux |
+| [macOS](docs/platforms/macos.md)            | you are trying to run Hollow on macOS          |
+
+### Reference
+
+| Page                                                    | Read this when                                 |
+| ------------------------------------------------------- | ---------------------------------------------- |
+| [Reference index](docs/reference/README.md)             | you want the canonical API and command surface |
+| [Lua API](docs/reference/lua/README.md)                 | you are scripting Hollow (17 namespaces)       |
+| [Native CLI](docs/reference/cli/native.md)              | you want `hollow cli …` host commands          |
+| [Python `hollow-cli`](docs/reference/cli/hollow-cli.md) | you want the OSC-over-tty client               |
+| [Built-in keymap actions](docs/reference/actions.md)    | you want every string action name              |
+
+### Examples
+
+| Page                                                  | Read this when                               |
+| ----------------------------------------------------- | -------------------------------------------- |
+| [Config snippets](docs/examples/config-snippets.md)   | you want common `hollow.config.set` recipes  |
+| [UI recipes](docs/examples/ui-recipes.md)             | you want drop-in widgets and picker patterns |
+| [Plugin authoring](docs/examples/plugin-authoring.md) | you want a full plugin walkthrough           |
 
 Companion reference files outside `docs/`:
 
