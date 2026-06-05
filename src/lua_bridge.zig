@@ -733,7 +733,21 @@ pub const Runtime = struct {
 
         const ctx = try allocator.create(BridgeContext);
         errdefer allocator.destroy(ctx);
-        ctx.* = .{ .api = api, .cfg = cfg, .state = state, .allocator = allocator };
+        ctx.* = .{
+            .api = api,
+            .cfg = cfg,
+            .state = state,
+            .allocator = allocator,
+            .deferred_callback_refs = .{},
+            .timed_callback_refs = .{},
+        };
+        std.debug.print("INIT: ctx={*} deferred.ptr={*} deferred.len={d} timed.ptr={*} timed.len={d}\n", .{
+            ctx,
+            ctx.deferred_callback_refs.items.ptr,
+            ctx.deferred_callback_refs.items.len,
+            ctx.timed_callback_refs.items.ptr,
+            ctx.timed_callback_refs.items.len,
+        });
 
         var runtime = Runtime{
             .allocator = allocator,
@@ -1042,10 +1056,45 @@ pub const Runtime = struct {
         api.unref(state, LUA_REGISTRYINDEX, ref);
     }
 
+    fn drainExpiredTimedCallbacks(
+        allocator: std.mem.Allocator,
+        timed_callback_refs: *std.ArrayListUnmanaged(TimedCallback),
+        now: i64,
+    ) std.ArrayListUnmanaged(TimedCallback) {
+        var existing = timed_callback_refs.*;
+        var pending = std.ArrayListUnmanaged(TimedCallback){};
+        var remaining = std.ArrayListUnmanaged(TimedCallback){};
+
+        for (existing.items) |tc_entry| {
+            if (tc_entry.expires_at_ms == 0 or now >= tc_entry.expires_at_ms) {
+                pending.append(allocator, tc_entry) catch {};
+            } else {
+                remaining.append(allocator, tc_entry) catch {};
+            }
+        }
+
+        timed_callback_refs.* = remaining;
+        existing.deinit(allocator);
+        return pending;
+    }
+
     pub fn runDeferredCallbacks(self: *Runtime) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        const tc_ptr: [*]const u8 = @ptrCast(&self.context.timed_callback_refs);
+        const tc_bytes: [24]u8 = tc_ptr[0..24].*;
+        std.log.info("runDeferredCallbacks: self={*}, context={*}, deferred.ptr={*}, deferred.len={d}, deferred.cap={d}, timed.ptr={*}, timed.len={d}, timed.cap={d}, raw={x}", .{
+            self,
+            self.context,
+            self.context.deferred_callback_refs.items.ptr,
+            self.context.deferred_callback_refs.items.len,
+            self.context.deferred_callback_refs.capacity,
+            self.context.timed_callback_refs.items.ptr,
+            self.context.timed_callback_refs.items.len,
+            self.context.timed_callback_refs.capacity,
+            tc_bytes,
+        });
         const api = self.context.api;
 
         // Fire immediate deferred callbacks.
@@ -1065,17 +1114,11 @@ pub const Runtime = struct {
         // Fire timed callbacks whose expiry has passed.
         {
             const now: i64 = if (self.context.app_callbacks) |cbs| cbs.now_ms(cbs.app) else 0;
-            var remaining = std.ArrayListUnmanaged(TimedCallback){};
-            defer remaining.deinit(self.allocator);
-            for (self.context.timed_callback_refs.items) |tc_entry| {
-                if (tc_entry.expires_at_ms == 0 or now >= tc_entry.expires_at_ms) {
-                    fireCallback(api, self.state, tc_entry.ref, "timed_callback");
-                } else {
-                    remaining.append(self.allocator, tc_entry) catch {};
-                }
+            var pending = drainExpiredTimedCallbacks(self.allocator, &self.context.timed_callback_refs, now);
+            defer pending.deinit(self.allocator);
+            for (pending.items) |tc_entry| {
+                fireCallback(api, self.state, tc_entry.ref, "timed_callback");
             }
-            self.context.timed_callback_refs.deinit(self.allocator);
-            self.context.timed_callback_refs.appendSlice(self.allocator, remaining.items) catch {};
         }
     }
 
@@ -5995,4 +6038,24 @@ test "deinitJsonValue and htp query result deinit release owned values" {
         .error_message = error_message,
     };
     result.deinit(std.testing.allocator);
+}
+
+test "drainExpiredTimedCallbacks keeps remaining timers reusable" {
+    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    defer timed_callback_refs.deinit(std.testing.allocator);
+
+    try timed_callback_refs.append(std.testing.allocator, .{ .ref = 11, .expires_at_ms = 10 });
+    try timed_callback_refs.append(std.testing.allocator, .{ .ref = 22, .expires_at_ms = 30 });
+
+    var pending = Runtime.drainExpiredTimedCallbacks(std.testing.allocator, &timed_callback_refs, 20);
+    defer pending.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
+    try std.testing.expectEqual(@as(c_int, 11), pending.items[0].ref);
+    try std.testing.expectEqual(@as(usize, 1), timed_callback_refs.items.len);
+    try std.testing.expectEqual(@as(c_int, 22), timed_callback_refs.items[0].ref);
+
+    try timed_callback_refs.append(std.testing.allocator, .{ .ref = 33, .expires_at_ms = 40 });
+    try std.testing.expectEqual(@as(usize, 2), timed_callback_refs.items.len);
+    try std.testing.expectEqual(@as(c_int, 33), timed_callback_refs.items[1].ref);
 }

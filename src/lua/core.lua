@@ -112,8 +112,8 @@ function hollow.schedule(...)
   return host_api.schedule(...)
 end
 
-function hollow.defer(fn)
-  return host_api.defer(fn)
+function hollow.defer(...)
+  return host_api.defer(...)
 end
 
 local function format_log_value(value, seen, depth)
