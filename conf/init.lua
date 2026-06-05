@@ -4,6 +4,7 @@ local is_windows = hollow.platform.is_windows == true
 
 local default_font_size = 14
 local default_domain = is_windows and "pwsh" or "unix"
+---@type table<string, HollowDomainConfig>
 local domains = {}
 
 if is_windows then
@@ -318,6 +319,12 @@ end, { desc = "reload config" })
 --         alias = "devbox",
 --         backend = "wsl",
 --         reuse = "auto",
+--       },
+--     },
+--     wsl = {
+--       shell = "wsl.exe",
+--       env = {
+--         HOLLOW_THEME = "kanagawa-wave",
 --       },
 --     },
 --   },

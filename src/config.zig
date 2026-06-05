@@ -55,11 +55,31 @@ pub const Config = struct {
         }
     };
 
+    pub const EnvPair = struct {
+        key: []u8,
+        value: []u8,
+
+        pub fn deinit(self: *EnvPair, allocator: std.mem.Allocator) void {
+            allocator.free(self.key);
+            allocator.free(self.value);
+        }
+    };
+
     pub const Domain = struct {
         name: []u8,
         shell: ?[]u8 = null,
         default_cwd: ?[]u8 = null,
         ssh: ?DomainSsh = null,
+        env: std.ArrayListUnmanaged(EnvPair) = .{},
+
+        pub fn deinit(self: *Domain, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+            freeOwned(allocator, &self.shell);
+            freeOwned(allocator, &self.default_cwd);
+            if (self.ssh) |*ssh| ssh.deinit(allocator);
+            for (self.env.items) |*pair| pair.deinit(allocator);
+            self.env.deinit(allocator);
+        }
     };
 
     pub const TerminalTheme = struct {
@@ -334,12 +354,7 @@ pub const Config = struct {
     pub fn deinit(self: *Config) void {
         freeOwned(self.allocator, &self.shell);
         freeOwned(self.allocator, &self.default_domain);
-        for (self.domains.items) |*domain| {
-            self.allocator.free(domain.name);
-            freeOwned(self.allocator, &domain.shell);
-            freeOwned(self.allocator, &domain.default_cwd);
-            if (domain.ssh) |*ssh| ssh.deinit(self.allocator);
-        }
+        for (self.domains.items) |*domain| domain.deinit(self.allocator);
         self.domains.deinit(self.allocator);
         freeOwned(self.allocator, &self.htp_transport);
         self.fonts.deinit(self.allocator);
@@ -431,6 +446,23 @@ pub const Config = struct {
     pub fn setDomainDefaultCwd(self: *Config, name: []const u8, cwd_value: []const u8) !void {
         const domain = try self.ensureDomain(name);
         try replaceOwned(self.allocator, &domain.default_cwd, cwd_value);
+    }
+
+    pub fn setDomainEnv(self: *Config, name: []const u8, env_key: []const u8, env_value: []const u8) !void {
+        const domain = try self.ensureDomain(name);
+        try domain.env.append(self.allocator, .{
+            .key = try self.allocator.dupe(u8, env_key),
+            .value = try self.allocator.dupe(u8, env_value),
+        });
+    }
+
+    pub fn envForDomain(self: Config, domain_name: ?[]const u8) []const EnvPair {
+        if (domain_name) |name| {
+            if (self.domainByName(name)) |domain| return domain.env.items;
+        } else if (self.defaultDomainName()) |name| {
+            if (self.domainByName(name)) |domain| return domain.env.items;
+        }
+        return &.{};
     }
 
     pub fn setDomainSsh(self: *Config, name: []const u8, spec: DomainSshSpec) !void {

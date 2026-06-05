@@ -355,6 +355,15 @@ pub const Pane = struct {
         try env_block.appendSlice(self.allocator, "COLORTERM=truecolor");
         try env_block.append(self.allocator, 0);
 
+        // Domain-specific environment variables
+        const domain_env = cfg.envForDomain(domain_name);
+        for (domain_env) |pair| {
+            try env_block.appendSlice(self.allocator, pair.key);
+            try env_block.append(self.allocator, '=');
+            try env_block.appendSlice(self.allocator, pair.value);
+            try env_block.append(self.allocator, 0);
+        }
+
         try env_block.append(self.allocator, 0); // double-null terminator
 
         const home_dir = if (inherited_cwd == null and cfg.defaultCwdForDomain(domain_name) == null)

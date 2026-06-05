@@ -306,6 +306,7 @@
 ---@field ssh? HollowSshDomainConfig
 ---@field wsl_distro? string
 ---@field default_cwd? string
+---@field env? table<string, string>
 
 ---@class HollowDomain: HollowDomainConfig
 ---@field name string

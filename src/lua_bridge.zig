@@ -3795,6 +3795,12 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
             continue;
         }
 
+        if (std.mem.eql(u8, key, "env") and value_type == .table) {
+            const env_idx = absoluteIndex(api, state, -1);
+            try applyDomainEnvTable(cfg, api, state, domain_name, env_idx);
+            continue;
+        }
+
         if (value_type != .string) continue;
 
         var value_len: usize = 0;
@@ -3810,6 +3816,25 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
             try cfg.setDomainDefaultCwd(domain_name, value);
             continue;
         }
+    }
+}
+
+fn applyDomainEnvTable(cfg: *config.Config, api: Api, state: *State, domain_name: []const u8, table_idx: c_int) !void {
+    api.push_nil(state);
+    while (api.next(state, table_idx) != 0) {
+        defer pop(api, state, 1);
+
+        var key_len: usize = 0;
+        const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
+        const key = key_ptr[0..key_len];
+
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+
+        var value_len: usize = 0;
+        const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
+        const value = value_ptr[0..value_len];
+
+        try cfg.setDomainEnv(domain_name, key, value);
     }
 }
 
