@@ -1566,7 +1566,8 @@ function plugins.sync() end
 ---@field close_tab fun()
 ---@field switch_tab fun(index: integer)
 ---@field new_workspace fun(opts?: { cwd?: string })
----@field defer fun(handler: fun())
+---@field defer fun(handler: fun(), timeout_ms?: integer)
+---@field schedule fun(handler: fun())
 ---@field close_workspace fun()
 ---@field next_workspace fun()
 ---@field prev_workspace fun()
@@ -1681,6 +1682,8 @@ function plugins.sync() end
 ---@field log fun(...: any)
 ---@field inspect fun(value: any): string
 ---@field read_dir fun(path: string): string[]
+---@field schedule fun(handler: fun())
+---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field util HollowUtilNamespace
 ---@field theme HollowThemeNamespace
 
