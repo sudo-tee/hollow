@@ -13,7 +13,10 @@ The full list, grouped by intent:
 | --- | --- |
 | `split_vertical` | Split the active pane vertically |
 | `split_horizontal` | Split the active pane horizontally |
-| `maximize_pane` | Maximize the active pane (covers the tiled area) |
+| `split_vertical_in_domain` | Split the active pane vertically with a domain picker |
+| `split_horizontal_in_domain` | Split the active pane horizontally with a domain picker |
+| `create_floating_pane` | Create a new floating pane |
+| `maximize_pane` | Toggle pane maximize (covers the tiled area) |
 | `float_pane` | Make the active pane floating |
 | `tile_pane` | Return a floating pane to the tiled layout |
 | `close_pane` | Close the active pane |
@@ -50,9 +53,11 @@ The full list, grouped by intent:
 | Action | What it does |
 | --- | --- |
 | `new_tab` | Open a new tab |
+| `new_tab_in_domain` | Open a new tab with a domain picker |
 | `close_tab` | Close the active tab |
 | `next_tab` | Focus the next tab |
 | `prev_tab` | Focus the previous tab |
+| `rename_tab` | Rename the active tab |
 
 ## Workspaces
 
@@ -99,23 +104,61 @@ Bind these with `{ mode = "copy_mode" }`. See [Copy mode](../copy-mode.md).
 | `copy_mode_move_right` | Move cursor one cell right |
 | `copy_mode_move_up` | Move cursor one line up |
 | `copy_mode_move_down` | Move cursor one line down |
-| `copy_mode_line_start` | Move to line start (`0`) |
-| `copy_mode_line_end` | Move to line end (`$`) |
+| `copy_mode_line_start` | Move to line start |
+| `copy_mode_line_end` | Move to line end |
 | `copy_mode_page_up` | Move up one page |
 | `copy_mode_page_down` | Move down one page |
-| `copy_mode_top` | Jump to the top (`gg`) |
-| `copy_mode_bottom` | Jump to the bottom (`G`) |
-| `copy_mode_begin_selection` | Begin a normal selection (`v`) |
-| `copy_mode_begin_block_selection` | Begin a block selection (`<C-v>`) |
+| `copy_mode_top` | Jump to the top |
+| `copy_mode_bottom` | Jump to the bottom |
+| `copy_mode_begin_selection` | Begin a normal selection |
+| `copy_mode_begin_block_selection` | Begin a block selection |
 | `copy_mode_clear_selection` | Clear the current selection |
 | `copy_mode_copy_selection` | Copy selection and exit copy mode |
-| `copy_mode_search_next` | Jump to the next search match (`n`) |
-| `copy_mode_search_prev` | Jump to the previous search match (`N`) |
+| `copy_mode_search_next` | Jump to the next search match |
+| `copy_mode_search_prev` | Jump to the previous search match |
+
+## Misc
+
+| Action | What it does |
+| --- | --- |
+| `command_palette` | Open the command palette |
+| `reload_config` | Reload configuration |
+| `font_size_increase` | Increase font size by 0.5 |
+| `font_size_decrease` | Decrease font size by 0.5 |
+| `font_size_reset` | Reset font size to the default |
 
 ## Custom actions
 
+There are two ways to define custom actions.
+
+### Register a named action
+
+Use `hollow.action.register()` to add a named action that appears in
+the command palette and can be bound to a key chord:
+
+```lua
+hollow.action.register("command_palette", {
+  run = function() hollow.ui.command_palette.open() end,
+  desc = "Open command palette",
+  category = "general",
+})
+
+hollow.keymap.set("<leader>p", "command_palette", { desc = "command palette" })
+```
+
+The spec accepts these fields:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `run` | `fun()` | required | Function to call when the action is triggered |
+| `desc` | `string?` | `""` | Human-readable description shown in the command palette |
+| `category` | `string?` | `"general"` | One of `"tab"`, `"pane"`, `"workspace"`, `"window"`, `"scroll"`, `"copy_mode"`, `"general"`, `"user"` |
+| `workspace_targetable` | `boolean?` | `false` | If `true`, the command palette prompts for a target workspace before running |
+
+### Bind a Lua function directly
+
 A string action name is just shorthand for a Lua callback.
-You can also bind a function directly:
+You can also pass a function directly to `hollow.keymap.set`:
 
 ```lua
 hollow.keymap.set("<leader>ww", function()
@@ -124,6 +167,27 @@ hollow.keymap.set("<leader>ww", function()
 end, { desc = "new scratch workspace" })
 ```
 
+This style does not register the action in the command palette.
+
+### API reference
+
+```lua
+--- Register a named action (appears in the command palette).
+---@param name string
+---@param spec HollowActionSpec
+hollow.action.register(name, spec)
+
+--- Return all registered actions, sorted by category then name.
+---@return HollowPaletteEntry[]
+hollow.action.list()
+
+--- Call a named action directly.
+hollow.action[name]()
+```
+
+The `HollowActionSpec` and `HollowPaletteEntry` types are defined in
+[`types/hollow.lua`](../../types/hollow.lua).
+
 See [Keybindings](../keybindings.md) for the chord syntax and the
 modal binding model, and
-[`hollow.keymap`](lua/keymap.md) for the API.
+[`hollow.keymap`](lua/keymap.md) for the keymap API.

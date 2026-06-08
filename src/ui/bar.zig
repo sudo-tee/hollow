@@ -6,9 +6,10 @@ pub const Side = enum {
 };
 
 pub const Segment = struct {
-    text: []const u8,
+    text: []const u8 = "",
     fg: ?ghostty.ColorRgb = null,
     bg: ?ghostty.ColorRgb = null,
     bold: bool = false,
     id: ?[]const u8 = null,
+    spacer: bool = false,
 };

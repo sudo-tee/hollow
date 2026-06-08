@@ -245,53 +245,12 @@ hollow.keymap.set("y", "copy_mode_copy_selection", { mode = "copy_mode" })
 hollow.keymap.set("<Enter>", "copy_mode_copy_selection", { mode = "copy_mode" })
 hollow.keymap.set("q", "copy_mode_exit", { mode = "copy_mode" })
 hollow.keymap.set("<Esc>", "copy_mode_exit", { mode = "copy_mode" })
-
-local function set_font_size(size)
-  hollow.config.set({
-    fonts = {
-      size = size,
-    },
-  })
-  hollow.ui.notify.info("Font size: " .. tostring(size), { ttl = 1200 })
-end
-
-local function adjust_font_size(delta)
-  local fonts = hollow.config.get("fonts") or {}
-  local size = tonumber(fonts.size) or default_font_size
-  set_font_size(math.max(6, size + delta))
-end
-
-hollow.keymap.set("<C-S-minus>", function()
-  adjust_font_size(-0.5)
-end, { desc = "decrease font size" })
-
-hollow.keymap.set("<C-S-equal>", function()
-  adjust_font_size(0.5)
-end, { desc = "increase font size" })
-
-hollow.keymap.set("<C-0>", function()
-  set_font_size(default_font_size)
-end, { desc = "reset font size" })
-
-hollow.keymap.set("<leader>r", function()
-  local tab = hollow.term.current_tab()
-  if not tab then
-    return
-  end
-
-  hollow.ui.input.open({
-    prompt = "Rename tab",
-    default = tab.title,
-    on_confirm = function(new_title)
-      hollow.term.set_title(new_title, tab.id)
-    end,
-  })
-end, { desc = "rename tab" })
-
-hollow.keymap.set("<leader>uu", function()
-  hollow.config.reload()
-  hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
-end, { desc = "reload config" })
+hollow.keymap.set("<C-S-minus>", "font_size_decrease")
+hollow.keymap.set("<C-S-equal>", "font_size_increase")
+hollow.keymap.set("<C-0>", "font_size_reset")
+hollow.keymap.set("<leader>r", "rename_tab")
+hollow.keymap.set("<leader>uu", "reload_config")
+hollow.keymap.set("<leader>p", "command_palette", { desc = "command palette" })
 
 -- Load local plugin for demo purposes
 -- hollow.plugins.setup({

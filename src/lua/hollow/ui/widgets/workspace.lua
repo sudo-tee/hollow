@@ -25,9 +25,7 @@ local function switcher_state()
 end
 
 local util = require("hollow.util")
-local pad_right = util.pad_right
-local truncate_end = util.truncate_end
-local truncate_start = util.truncate_start
+local format = require("hollow.ui.widgets.format")
 
 local function derived_palette()
   local theme = shared.resolve_theme()
@@ -53,8 +51,6 @@ local function default_format_item(workspace)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local cwd_width = math.max(12, total_width - status_width - name_width - (gap_width * 2) - 10)
 
-  local name_text = pad_right(truncate_end(workspace.name, name_width), name_width)
-  local status_text = workspace.is_active and ACTIVE_WORKSPACE_MARKER or " "
   local cwd_text = source.trim_string(workspace.cwd)
   if cwd_text == "" then
     cwd_text = workspace.is_active and "Current workspace"
@@ -67,18 +63,13 @@ local function default_format_item(workspace)
     cwd_text = "[" .. domain .. "] " .. cwd_text
   end
 
-  cwd_text = truncate_start(cwd_text, cwd_width)
-
-  return {
-    ui.span(
-      pad_right(status_text, status_width),
-      { fg = workspace.is_active and palette.open or palette.subtle, bold = workspace.is_active }
-    ),
-    ui.span(string.rep(" ", gap_width), { fg = palette.subtle }),
-    ui.span(name_text, { fg = name_color, bold = workspace.is_active }),
-    ui.span(string.rep(" ", gap_width), { fg = palette.subtle }),
-    ui.span(cwd_text, { fg = palette.subtle }),
-  }
+  return format.columns({
+    { text = workspace.is_active and ACTIVE_WORKSPACE_MARKER or " ", width = status_width, style = { fg = workspace.is_active and palette.open or palette.subtle, bold = workspace.is_active } },
+    { text = "", width = gap_width, style = { fg = palette.subtle } },
+    { text = workspace.name, width = name_width, style = { fg = name_color, bold = workspace.is_active } },
+    { text = "", width = gap_width, style = { fg = palette.subtle } },
+    { text = cwd_text, width = cwd_width, style = { fg = palette.subtle } },
+  })
 end
 
 local function item_formatter()

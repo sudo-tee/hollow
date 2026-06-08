@@ -394,6 +394,15 @@ function M.pad_right(value, width)
   return value .. string.rep(" ", width - len)
 end
 
+function M.pad_left(value, width)
+  value = tostring(value or "")
+  local len = M.utf8_len(value)
+  if len >= width then
+    return value
+  end
+  return string.rep(" ", width - len) .. value
+end
+
 ---@param value any
 ---@param width integer
 ---@return string

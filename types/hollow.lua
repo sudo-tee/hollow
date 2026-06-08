@@ -481,6 +481,13 @@
 
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
+
+---@class HollowUiFormatColumnSpec
+---@field text? string
+---@field style? HollowUiNodeStyle|HollowHexColor
+---@field width? integer
+---@field align? "left"|"right"
+
 ---@class HollowUiOverlayRowOptions
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
@@ -612,6 +619,7 @@
 ---@field bg? HollowColor
 ---@field bold? boolean
 ---@field id? string
+---@field spacer? boolean When true, pushes subsequent segments to the right edge of the row
 ---@field segments? HollowUiSegment[]
 ---@field kind? string
 
@@ -781,6 +789,33 @@
 ---@field actions HollowUiSelectAction[]
 ---@field on_cancel? fun()
 
+---@alias HollowActionCategory "tab"|"pane"|"workspace"|"window"|"scroll"|"copy_mode"|"general"|"user"
+
+---@class HollowActionSpec
+---@field run fun()
+---@field desc? string
+---@field category? HollowActionCategory
+---@field workspace_targetable? boolean
+
+---@class HollowPaletteEntry
+---@field name string
+---@field desc string
+---@field category HollowActionCategory
+---@field chords string[]
+---@field run fun()
+---@field workspace_targetable? boolean
+
+---@class HollowUiCommandPaletteOptions
+---@field prompt? string
+---@field query? string
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
+---@field on_confirm? fun(entry: HollowPaletteEntry)
+---@field on_cancel? fun()
+
 ---@class HollowEventListener
 ---@field name string
 ---@field handler fun(payload:any)
@@ -898,6 +933,11 @@
 
 ---@class HollowProcessRunOpts
 ---@field hide_window? boolean Defaults to true on the host bridge
+
+---@class HollowActionNamespace
+---@field register fun(name: string, spec: HollowActionSpec)
+---@field list fun(): HollowPaletteEntry[]
+---@field [string] fun()
 
 ---@class HollowConfigNamespace
 local config = {}
@@ -1182,6 +1222,12 @@ function events.emit(name, payload) end
 ---@field timeout_ms integer
 ---@field complete boolean
 
+---@class HollowKeymapBindingInfo
+---@field action any
+---@field chord string
+---@field desc string|nil
+---@field mode HollowKeyMode
+
 ---@class HollowKeymapNamespace
 local keymap = {}
 
@@ -1211,6 +1257,28 @@ function keymap.is_leader_active() end
 
 ---@return HollowLeaderState|nil
 function keymap.get_leader_state() end
+
+---@param mode? HollowKeyMode
+---@return HollowKeymapBindingInfo[]
+function keymap.list_bindings(mode) end
+
+---@param action_name string
+---@param mode? HollowKeyMode
+---@return string[]
+function keymap.find_by_action(action_name, mode) end
+
+---@param mods integer
+---@return string
+function keymap.format_mods(mods) end
+
+---@param key string
+---@param mods integer
+---@return string
+function keymap.format_chord(key, mods) end
+
+---@param chord string
+---@return string, integer
+function keymap.parse_chord(chord) end
 
 ---@class HollowUiBarNamespace
 local bar = {}
@@ -1334,6 +1402,14 @@ local input = {}
 function input.open(opts) end
 
 function input.close() end
+
+---@class HollowUiCommandPaletteNamespace
+local command_palette = {}
+
+---@param opts? HollowUiCommandPaletteOptions
+function command_palette.open(opts) end
+
+function command_palette.close() end
 
 ---@class HollowUiSelectNamespace
 local select = {}
@@ -1472,6 +1548,7 @@ ui.sidebar = sidebar
 ui.overlay = overlay
 ui.notify = notify
 ui.input = input
+ui.command_palette = command_palette
 ui.select = select
 ui.workspace = workspace
 
@@ -1664,6 +1741,7 @@ function plugins.sync() end
 ---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
 
 ---@class Hollow
+---@field action HollowActionNamespace
 ---@field config HollowConfigNamespace
 ---@field fonts HollowFontsNamespace
 ---@field json HollowJsonNamespace

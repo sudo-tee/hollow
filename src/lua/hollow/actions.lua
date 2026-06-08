@@ -1,17 +1,20 @@
 local M = {}
 
+local registry = {}
+
 local function copy_mode_state()
   local state = require("hollow.state").get()
-  state.copy_mode = state.copy_mode or {
-    active = false,
-    query = "",
-    hud = nil,
-    selecting = false,
-    pending_g = false,
-    match_count = 0,
-    match_index = nil,
-    block = false,
-  }
+  state.copy_mode = state.copy_mode
+    or {
+      active = false,
+      query = "",
+      hud = nil,
+      selecting = false,
+      pending_g = false,
+      match_count = 0,
+      match_index = nil,
+      block = false,
+    }
   return state.copy_mode
 end
 
@@ -22,131 +25,343 @@ local function copy_mode_move(direction)
   end
 end
 
+local function register(hollow, name, spec)
+  registry[name] = spec
+  hollow.action[name] = spec.run
+end
+
+local function list()
+  local entries = {}
+  for name, spec in pairs(registry) do
+    entries[#entries + 1] = {
+      name = name,
+      desc = spec.desc or "",
+      category = spec.category or "general",
+      run = spec.run,
+      workspace_targetable = spec.workspace_targetable or false,
+    }
+  end
+  table.sort(entries, function(a, b)
+    if a.category ~= b.category then
+      local cat_order = {
+        tab = 1,
+        pane = 2,
+        workspace = 3,
+        window = 4,
+        scroll = 5,
+        copy_mode = 6,
+        general = 7,
+        user = 8,
+      }
+      return (cat_order[a.category] or 99) < (cat_order[b.category] or 99)
+    end
+    return a.name < b.name
+  end)
+  return entries
+end
+
 function M.setup(hollow, host_api)
   local copy_mode = require("hollow.copy_mode")
 
-  hollow.action = {
-    split_vertical = function()
+  hollow.action = hollow.action or {}
+  hollow.action.register = function(name, spec)
+    register(hollow, name, spec)
+  end
+  hollow.action.list = list
+
+  register(hollow, "split_vertical", {
+    run = function()
       host_api.split_pane({ direction = "vertical" })
     end,
-    split_horizontal = function()
+    desc = "Split pane vertically",
+    category = "pane",
+    workspace_targetable = true,
+  })
+  register(hollow, "split_horizontal", {
+    run = function()
       host_api.split_pane({ direction = "horizontal" })
     end,
-    maximize_pane = function()
+    desc = "Split pane horizontally",
+    category = "pane",
+    workspace_targetable = true,
+  })
+  register(hollow, "create_floating_pane", {
+    run = function()
+      host_api.split_pane({ floating = true })
+    end,
+    desc = "Create floating pane",
+    category = "pane",
+    workspace_targetable = true,
+  })
+  register(hollow, "maximize_pane", {
+    run = function()
       host_api.toggle_pane_maximized(nil, false)
     end,
-    float_pane = function()
+    desc = "Toggle pane maximize",
+    category = "pane",
+  })
+  register(hollow, "float_pane", {
+    run = function()
       host_api.set_pane_floating(nil, true)
     end,
-    tile_pane = function()
+    desc = "Float pane",
+    category = "pane",
+  })
+  register(hollow, "tile_pane", {
+    run = function()
       host_api.set_pane_floating(nil, false)
     end,
-    new_tab = function()
+    desc = "Tile pane (unfloat)",
+    category = "pane",
+  })
+  register(hollow, "new_tab", {
+    run = function()
       host_api.new_tab({})
     end,
-    close_tab = function()
+    desc = "Create new tab",
+    category = "tab",
+    workspace_targetable = true,
+  })
+  register(hollow, "close_tab", {
+    run = function()
       host_api.close_tab()
     end,
-    close_pane = function()
+    desc = "Close current tab",
+    category = "tab",
+  })
+  register(hollow, "close_pane", {
+    run = function()
       host_api.close_pane()
     end,
-    next_tab = function()
+    desc = "Close current pane",
+    category = "pane",
+  })
+  register(hollow, "next_tab", {
+    run = function()
       host_api.next_tab()
     end,
-    prev_tab = function()
+    desc = "Switch to next tab",
+    category = "tab",
+  })
+  register(hollow, "prev_tab", {
+    run = function()
       host_api.prev_tab()
     end,
-    new_workspace = function()
+    desc = "Switch to previous tab",
+    category = "tab",
+  })
+  register(hollow, "new_workspace", {
+    run = function()
       host_api.new_workspace()
     end,
-    workspace_switcher = function()
+    desc = "Create new workspace",
+    category = "workspace",
+  })
+  register(hollow, "workspace_switcher", {
+    run = function()
       hollow.ui.workspace.open_switcher()
     end,
-    create_workspace = function()
+    desc = "Open workspace switcher",
+    category = "workspace",
+  })
+  register(hollow, "create_workspace", {
+    run = function()
       hollow.ui.workspace.create()
     end,
-    rename_workspace = function()
+    desc = "Create workspace from prompt",
+    category = "workspace",
+  })
+  register(hollow, "rename_workspace", {
+    run = function()
       hollow.ui.workspace.rename()
     end,
-    close_workspace = function()
+    desc = "Rename current workspace",
+    category = "workspace",
+  })
+  register(hollow, "close_workspace", {
+    run = function()
       hollow.ui.workspace.close()
     end,
-    next_workspace = function()
+    desc = "Close current workspace",
+    category = "workspace",
+  })
+  register(hollow, "next_workspace", {
+    run = function()
       host_api.next_workspace()
     end,
-    prev_workspace = function()
+    desc = "Switch to next workspace",
+    category = "workspace",
+  })
+  register(hollow, "prev_workspace", {
+    run = function()
       host_api.prev_workspace()
     end,
-    focus_pane_left = function()
+    desc = "Switch to previous workspace",
+    category = "workspace",
+  })
+  register(hollow, "focus_pane_left", {
+    run = function()
       host_api.focus_pane("left")
     end,
-    focus_pane_right = function()
+    desc = "Focus pane to the left",
+    category = "pane",
+  })
+  register(hollow, "focus_pane_right", {
+    run = function()
       host_api.focus_pane("right")
     end,
-    focus_pane_up = function()
+    desc = "Focus pane to the right",
+    category = "pane",
+  })
+  register(hollow, "focus_pane_up", {
+    run = function()
       host_api.focus_pane("up")
     end,
-    focus_pane_down = function()
+    desc = "Focus pane above",
+    category = "pane",
+  })
+  register(hollow, "focus_pane_down", {
+    run = function()
       host_api.focus_pane("down")
     end,
-    move_pane_left = function()
+    desc = "Focus pane below",
+    category = "pane",
+  })
+  register(hollow, "move_pane_left", {
+    run = function()
       host_api.move_pane(nil, "left", 0.08)
     end,
-    move_pane_right = function()
+    desc = "Move pane left",
+    category = "pane",
+  })
+  register(hollow, "move_pane_right", {
+    run = function()
       host_api.move_pane(nil, "right", 0.08)
     end,
-    move_pane_up = function()
+    desc = "Move pane right",
+    category = "pane",
+  })
+  register(hollow, "move_pane_up", {
+    run = function()
       host_api.move_pane(nil, "up", 0.08)
     end,
-    move_pane_down = function()
+    desc = "Move pane up",
+    category = "pane",
+  })
+  register(hollow, "move_pane_down", {
+    run = function()
       host_api.move_pane(nil, "down", 0.08)
     end,
-    resize_pane_left = function()
+    desc = "Move pane down",
+    category = "pane",
+  })
+  register(hollow, "resize_pane_left", {
+    run = function()
       host_api.resize_pane("vertical", -0.05)
     end,
-    resize_pane_right = function()
+    desc = "Resize pane left",
+    category = "pane",
+  })
+  register(hollow, "resize_pane_right", {
+    run = function()
       host_api.resize_pane("vertical", 0.05)
     end,
-    resize_pane_up = function()
+    desc = "Resize pane right",
+    category = "pane",
+  })
+  register(hollow, "resize_pane_up", {
+    run = function()
       host_api.resize_pane("horizontal", -0.05)
     end,
-    resize_pane_down = function()
+    desc = "Resize pane up",
+    category = "pane",
+  })
+  register(hollow, "resize_pane_down", {
+    run = function()
       host_api.resize_pane("horizontal", 0.05)
     end,
-    copy_selection = function()
+    desc = "Resize pane down",
+    category = "pane",
+  })
+  register(hollow, "copy_selection", {
+    run = function()
       host_api.copy_selection()
     end,
-    paste_clipboard = function()
+    desc = "Copy selection to clipboard",
+    category = "general",
+  })
+  register(hollow, "paste_clipboard", {
+    run = function()
       host_api.paste_clipboard()
     end,
-    scrollback_line_up = function()
+    desc = "Paste from clipboard",
+    category = "general",
+  })
+  register(hollow, "scrollback_line_up", {
+    run = function()
       host_api.scroll_active(-1)
     end,
-    scrollback_line_down = function()
+    desc = "Scroll up one line",
+    category = "scroll",
+  })
+  register(hollow, "scrollback_line_down", {
+    run = function()
       host_api.scroll_active(1)
     end,
-    scrollback_page_up = function()
+    desc = "Scroll down one line",
+    category = "scroll",
+  })
+  register(hollow, "scrollback_page_up", {
+    run = function()
       host_api.scroll_active_page(-1)
     end,
-    scrollback_page_down = function()
+    desc = "Scroll up one page",
+    category = "scroll",
+  })
+  register(hollow, "scrollback_page_down", {
+    run = function()
       host_api.scroll_active_page(1)
     end,
-    scrollback_top = function()
+    desc = "Scroll down one page",
+    category = "scroll",
+  })
+  register(hollow, "scrollback_top", {
+    run = function()
       host_api.scroll_active_top()
     end,
-    scrollback_bottom = function()
+    desc = "Scroll to top",
+    category = "scroll",
+  })
+  register(hollow, "scrollback_bottom", {
+    run = function()
       host_api.scroll_active_bottom()
     end,
-    prompt_jump_prev = function()
+    desc = "Scroll to bottom",
+    category = "scroll",
+  })
+  register(hollow, "prompt_jump_prev", {
+    run = function()
       host_api.prompt_jump("prev")
     end,
-    prompt_jump_next = function()
+    desc = "Jump to previous prompt",
+    category = "scroll",
+  })
+  register(hollow, "prompt_jump_next", {
+    run = function()
       host_api.prompt_jump("next")
     end,
-    copy_mode = function()
+    desc = "Jump to next prompt",
+    category = "scroll",
+  })
+  register(hollow, "copy_mode", {
+    run = function()
       copy_mode.enter()
     end,
-    copy_mode_search = function()
+    desc = "Enter copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_search", {
+    run = function()
       if copy_mode.is_active() then
         host_api.copy_mode_open_search()
       else
@@ -154,39 +369,256 @@ function M.setup(hollow, host_api)
         host_api.copy_mode_open_search()
       end
     end,
-    copy_mode_exit = function()
+    desc = "Search in copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_exit", {
+    run = function()
       host_api.copy_mode_exit()
     end,
-    copy_mode_move_left = copy_mode_move("left"),
-    copy_mode_move_down = copy_mode_move("down"),
-    copy_mode_move_up = copy_mode_move("up"),
-    copy_mode_move_right = copy_mode_move("right"),
-    copy_mode_page_up = copy_mode_move("page_up"),
-    copy_mode_page_down = copy_mode_move("page_down"),
-    copy_mode_line_start = copy_mode_move("line_start"),
-    copy_mode_line_end = copy_mode_move("line_end"),
-    copy_mode_top = copy_mode_move("top"),
-    copy_mode_bottom = copy_mode_move("bottom"),
-    copy_mode_begin_selection = function()
+    desc = "Exit copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_move_left", {
+    run = copy_mode_move("left"),
+    desc = "Move cursor left",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_move_down", {
+    run = copy_mode_move("down"),
+    desc = "Move cursor down",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_move_up", {
+    run = copy_mode_move("up"),
+    desc = "Move cursor up",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_move_right", {
+    run = copy_mode_move("right"),
+    desc = "Move cursor right",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_page_up", {
+    run = copy_mode_move("page_up"),
+    desc = "Page up in copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_page_down", {
+    run = copy_mode_move("page_down"),
+    desc = "Page down in copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_line_start", {
+    run = copy_mode_move("line_start"),
+    desc = "Go to line start",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_line_end", {
+    run = copy_mode_move("line_end"),
+    desc = "Go to line end",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_top", {
+    run = copy_mode_move("top"),
+    desc = "Go to top of buffer",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_bottom", {
+    run = copy_mode_move("bottom"),
+    desc = "Go to bottom of buffer",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_begin_selection", {
+    run = function()
       host_api.copy_mode_begin_selection(false)
     end,
-    copy_mode_begin_block_selection = function()
+    desc = "Begin selection",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_begin_block_selection", {
+    run = function()
       host_api.copy_mode_begin_selection(true)
     end,
-    copy_mode_clear_selection = function()
+    desc = "Begin block selection",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_clear_selection", {
+    run = function()
       host_api.copy_mode_clear_selection()
     end,
-    copy_mode_copy_selection = function()
+    desc = "Clear selection",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_copy_selection", {
+    run = function()
       host_api.copy_mode_copy()
       host_api.copy_mode_exit()
     end,
-    copy_mode_search_next = function()
+    desc = "Copy selection and exit copy mode",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_search_next", {
+    run = function()
       host_api.copy_mode_search_next()
     end,
-    copy_mode_search_prev = function()
+    desc = "Search next match",
+    category = "copy_mode",
+  })
+  register(hollow, "copy_mode_search_prev", {
+    run = function()
       host_api.copy_mode_search_prev()
     end,
-  }
+    desc = "Search previous match",
+    category = "copy_mode",
+  })
+  register(hollow, "rename_tab", {
+    run = function()
+      local tab = hollow.term.current_tab()
+      if not tab then
+        return
+      end
+      hollow.ui.input.open({
+        prompt = "Rename tab",
+        default = tab.title,
+        on_confirm = function(new_title)
+          hollow.term.set_title(new_title, tab.id)
+        end,
+      })
+    end,
+    desc = "Rename current tab",
+    category = "tab",
+  })
+
+  register(hollow, "reload_config", {
+    run = function()
+      hollow.config.reload()
+      hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
+    end,
+    desc = "Reload configuration",
+    category = "general",
+  })
+
+  local initial_font_size = (hollow.config.get("fonts") or {}).size or 14
+
+  local function set_font_size(size)
+    hollow.config.set({
+      fonts = {
+        size = size,
+      },
+    })
+    hollow.ui.notify.info("Font size: " .. tostring(size), { ttl = 1200 })
+  end
+
+  local function adjust_font_size(delta)
+    local fonts = hollow.config.get("fonts") or {}
+    local size = tonumber(fonts.size) or initial_font_size
+    set_font_size(math.max(6, size + delta))
+  end
+
+  register(hollow, "font_size_increase", {
+    run = function()
+      adjust_font_size(0.5)
+    end,
+    desc = "Increase font size",
+    category = "general",
+  })
+
+  register(hollow, "font_size_decrease", {
+    run = function()
+      adjust_font_size(-0.5)
+    end,
+    desc = "Decrease font size",
+    category = "general",
+  })
+
+  register(hollow, "font_size_reset", {
+    run = function()
+      set_font_size(initial_font_size)
+    end,
+    desc = "Reset font size to default",
+    category = "general",
+  })
+
+  register(hollow, "command_palette", {
+    run = function()
+      hollow.ui.command_palette.open()
+    end,
+    desc = "Open command palette",
+    category = "general",
+  })
+
+  local palette = hollow.ui.command_palette
+  local function pick_workspace_and_run(fn)
+    local entries = palette.build_workspace_entries()
+    if #entries == 0 then
+      fn(nil)
+      return
+    end
+    if #entries == 1 then
+      fn(entries[1])
+      return
+    end
+    palette.open({
+      prompt = "Target workspace",
+      entries = entries,
+      on_confirm = function(item)
+        if item and item.workspace_index then
+          host_api.switch_workspace(item.workspace_index - 1)
+          fn(item)
+        end
+      end,
+    })
+  end
+
+  local function pick_domain_and_run(fn)
+    local entries = palette.build_domain_entries()
+    if #entries == 0 then
+      fn(nil)
+      return
+    end
+    if #entries == 1 then
+      fn(entries[1])
+      return
+    end
+    palette.open({
+      prompt = "Target domain",
+      entries = entries,
+      on_confirm = function(item)
+        if item and item.domain_name then
+          fn(item)
+        end
+      end,
+    })
+  end
+
+  register(hollow, "split_vertical_in_domain", {
+    run = function()
+      pick_domain_and_run(function(item)
+        hollow.term.split_pane("vertical", { domain = item.domain_name })
+      end)
+    end,
+    desc = "Split pane vertically with a domain",
+    category = "pane",
+  })
+  register(hollow, "split_horizontal_in_domain", {
+    run = function()
+      pick_domain_and_run(function(item)
+        hollow.term.split_pane("horizontal", { domain = item.domain_name })
+      end)
+    end,
+    desc = "Split pane horizontally with a domain",
+    category = "pane",
+  })
+  register(hollow, "new_tab_in_domain", {
+    run = function()
+      pick_domain_and_run(function(item)
+        host_api.new_tab({ domain = item.domain_name })
+      end)
+    end,
+    desc = "Create new tab with a domain",
+    category = "tab",
+  })
 end
 
 return M

@@ -1153,16 +1153,20 @@ pub const Mux = struct {
         if (!floating and source_pane.is_floating) {
             if (!tab.setPaneFloating(source_pane, false)) return error.ActivePaneMissingFromLayout;
         }
-        const inherited_cwd: ?[]const u8 = if (cwd) |value|
-            value
-        else if (source_pane.cwd.len > 0)
-            source_pane.cwd
-        else
-            null;
         const resolved_domain = domain_name orelse if (source_pane.domain_name.len > 0)
             source_pane.domain_name
         else
             cfg.defaultDomainName();
+        const same_domain = if (domain_name) |dn|
+            std.mem.eql(u8, source_pane.domain_name, dn)
+        else
+            true;
+        const inherited_cwd: ?[]const u8 = if (cwd) |value|
+            value
+        else if (source_pane.cwd.len > 0 and same_domain)
+            source_pane.cwd
+        else
+            null;
         const ws = self.activeWorkspace().?;
         var workspace_id_buf: [32]u8 = undefined;
         const workspace_id = try std.fmt.bufPrint(&workspace_id_buf, "{d}", .{ws.id});

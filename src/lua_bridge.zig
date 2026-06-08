@@ -140,7 +140,10 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("lua/hollow/ui/widgets/overlay.lua") },
     .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("lua/hollow/ui/widgets/notify.lua") },
     .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
+    .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
+    .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
     .{ .name = "hollow.ui.workspace.source", .source = @embedFile("lua/hollow/ui/workspace/source.lua") },
@@ -4363,7 +4366,11 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         }
         pop(api, state, 1);
 
-        if (seg.text.len > 0) {
+        api.get_field(state, -1, "spacer");
+        seg.spacer = api.to_boolean(state, -1) != 0;
+        pop(api, state, 1);
+
+        if (seg.text.len > 0 or seg.spacer) {
             seg_buf[seg_count] = seg;
             seg_count += 1;
         }

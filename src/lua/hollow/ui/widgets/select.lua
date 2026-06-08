@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local scroll_view = require("hollow.ui.widgets.scroll_view")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
@@ -27,26 +28,6 @@ end
 ---@return integer
 local function entry_row_count(entry)
   return (entry.detail_text and entry.detail_text ~= "") and 2 or 1
-end
-
----@param entries HollowUiSelectEntry[]
----@param first integer|nil
----@param last integer|nil
----@return integer
-local function rows_between(entries, first, last)
-  local used = 0
-  if first == nil or last == nil then
-    return used
-  end
-
-  for index = first, last do
-    local entry = entries[index]
-    if entry then
-      used = used + entry_row_count(entry)
-    end
-  end
-
-  return used
 end
 
 ---@param opts HollowUiSelectOptions
@@ -243,59 +224,6 @@ local function clamp_index(local_state, entries)
   end
 end
 
----@param opts HollowUiSelectOptions
----@param local_state HollowUiSelectState
----@param entries HollowUiSelectEntry[]
----@return HollowUiSelectEntry[]
-local function visible_entries(opts, local_state, entries)
-  local budget = list_row_budget(opts)
-  if #entries == 0 then
-    local_state.scroll_top = 1
-    return {}
-  end
-
-  clamp_index(local_state, entries)
-
-  local scroll_top = math.max(1, math.min(local_state.scroll_top or 1, #entries))
-  if local_state.index < scroll_top then
-    scroll_top = local_state.index
-  end
-  while
-    scroll_top < local_state.index
-    and rows_between(entries, scroll_top, local_state.index) > budget
-  do
-    scroll_top = scroll_top + 1
-  end
-
-  local visible = {}
-  local used = 0
-  local index = scroll_top
-  while index <= #entries do
-    local entry = entries[index]
-    local needed = entry_row_count(entry)
-    if #visible > 0 and used + needed > budget then
-      break
-    end
-
-    visible[#visible + 1] = entry
-    used = used + needed
-    if used >= budget then
-      break
-    end
-    index = index + 1
-  end
-
-  local_state.scroll_top = scroll_top
-  return visible
-end
-
----@param local_state HollowUiSelectState
----@param entries HollowUiSelectEntry[]
----@return HollowUiSelectEntry|nil
-local function selected_entry(local_state, entries)
-  return entries[local_state.index] or nil
-end
-
 ---@param value string
 ---@param cursor integer
 ---@return string
@@ -475,12 +403,13 @@ function ui.select.open(opts)
   local theme = resolve_select_theme(theme_api.resolve_widget("select"), opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local prepared = prepared_entries(opts)
+  local scroll = scroll_view.new({ row_count_fn = entry_row_count })
+
   local local_state = {
     index = 1,
     query = opts.query or "",
     query_lower = tostring(opts.query or ""):lower(),
     query_cursor = #(opts.query or ""),
-    scroll_top = 1,
   }
 
   local widget
@@ -491,15 +420,10 @@ function ui.select.open(opts)
       local entries = filtered_entries(opts, local_state, prepared)
       clamp_index(local_state, entries)
 
-      local visible = visible_entries(opts, local_state, entries)
-      local selected = selected_entry(local_state, entries)
+      local budget = list_row_budget(opts)
+      local start_idx, end_idx, show_scrollbar, thumb_index = scroll:update(entries, local_state.index, budget)
+
       local counter = (#entries > 0) and string.format(" %d/%d", local_state.index, #entries) or nil
-      local show_scrollbar = #entries > #visible and #visible > 1
-      local thumb_index = 1
-      if show_scrollbar then
-        thumb_index = 1
-          + math.floor(((local_state.index - 1) * (#visible - 1)) / math.max(1, #entries - 1))
-      end
 
       local query_before, query_cursor_char, query_after = split_input_cursor(local_state.query, local_state.query_cursor)
       local rows = ui.rows(
@@ -523,8 +447,11 @@ function ui.select.open(opts)
         rows[#rows + 1] = render_empty_row(theme)
       end
 
-      for visible_index, entry in ipairs(visible) do
-        local is_selected = selected ~= nil and entry.source_index == selected.source_index
+      local visible_index = 0
+      for i = start_idx, end_idx do
+        local entry = entries[i]
+        visible_index = visible_index + 1
+        local is_selected = (i == local_state.index)
         append_rows(
           rows,
           render_entry_rows(entry, is_selected, theme, show_scrollbar, visible_index, thumb_index)
@@ -551,7 +478,7 @@ function ui.select.open(opts)
           local_state.index = (local_state.index >= #entries) and 1
             or math.max(1, local_state.index) + 1
           if local_state.index == 1 then
-            local_state.scroll_top = 1
+            scroll.scroll_top = 1
           end
         end
         return true

@@ -1014,10 +1014,26 @@ fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, 
 }
 
 fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
+    var right_w: f32 = 0;
+    var saw_spacer = false;
+    for (segments) |seg| {
+        if (seg.spacer) {
+            saw_spacer = true;
+        } else if (saw_spacer and seg.text.len > 0) {
+            right_w += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        }
+    }
+
+    const right_edge = x + max_width;
     var cursor_x = x;
     for (segments) |seg| {
+        if (seg.spacer) {
+            cursor_x = right_edge - right_w;
+            continue;
+        }
         if (seg.text.len == 0) continue;
         const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        if (cursor_x + seg_w > right_edge) break;
         if (seg.bg) |bg| {
             drawBorderRect(cursor_x, y + 1.0, seg_w, @max(@as(f32, 1.0), renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 220);
         }
@@ -1025,7 +1041,6 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
-        if (cursor_x >= x + max_width) break;
     }
 }
 
@@ -1823,7 +1838,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             const sc = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
                             drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), sc.r, sc.g, sc.b, if (row_scrollbar_thumb) 255 else 120);
                         }
-                        drawRowSegments(ctx.renderer, row_x, text_y, row_w, row_segments);
+                        const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 4.0), ctx.renderer.cell_w * 0.5) else 0.0;
+                        drawRowSegments(ctx.renderer, row_x, text_y, row_w - seg_right_pad, row_segments);
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);

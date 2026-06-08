@@ -731,6 +731,64 @@ local function is_sequence_active(keymap_state)
   return true
 end
 
+local function collect_simple_bindings(store, mode, out)
+  for key, modmap in pairs(store) do
+    for mods, binding in pairs(modmap) do
+      out[#out + 1] = {
+        action = binding.action,
+        chord = format_chord(key, mods),
+        desc = binding.desc,
+        mode = mode,
+      }
+    end
+  end
+end
+
+local function collect_sequence_bindings(node, prefix, mode, out)
+  if not node or not node.children then
+    return
+  end
+  for key, modmap in pairs(node.children) do
+    for mods, child in pairs(modmap) do
+      local chord = prefix .. " " .. format_chord(key, mods)
+      if child.action ~= nil then
+        out[#out + 1] = {
+          action = child.action,
+          chord = chord,
+          desc = child.desc,
+          mode = mode,
+        }
+      end
+      collect_sequence_bindings(child, chord, mode, out)
+    end
+  end
+end
+
+local function find_action_in_store(store, needle, out)
+  for key, modmap in pairs(store) do
+    for mods, binding in pairs(modmap) do
+      if type(binding.action) == "string" and binding.action == needle then
+        out[#out + 1] = format_chord(key, mods)
+      end
+    end
+  end
+end
+
+local function find_action_in_sequences(node, needle, prefix, out)
+  if not node or not node.children then
+    return
+  end
+  for key, modmap in pairs(node.children) do
+    for mods, child in pairs(modmap) do
+      local chord = prefix .. format_chord(key, mods)
+      if type(child.action) == "string" and child.action == needle then
+        out[#out + 1] = chord
+      end
+      find_action_in_sequences(child, needle, chord .. " ", out)
+    end
+  end
+end
+
 local function format_mods(mods)
   local parts = {}
   if type(mods) ~= "number" then
@@ -878,6 +936,30 @@ function M.setup(hollow, host_api, state)
       timeout_ms = keymap_state.sequence_timeout_ms,
       complete = node.action ~= nil,
     }
+  end
+
+  function hollow.keymap.list_bindings(mode)
+    local mode_state = get_mode_state(keymap_state, mode, false)
+    if mode_state == nil then
+      return {}
+    end
+    local out = {}
+    collect_simple_bindings(mode_state.bindings, mode or "normal", out)
+    collect_sequence_bindings(mode_state.sequence_bindings, "", mode or "normal", out)
+    collect_sequence_bindings(mode_state.leader_bindings, "<leader>", mode or "normal", out)
+    return out
+  end
+
+  function hollow.keymap.find_by_action(action_name, mode)
+    local mode_state = get_mode_state(keymap_state, mode, false)
+    if mode_state == nil then
+      return {}
+    end
+    local out = {}
+    find_action_in_store(mode_state.bindings, action_name, out)
+    find_action_in_sequences(mode_state.sequence_bindings, action_name, "", out)
+    find_action_in_sequences(mode_state.leader_bindings, action_name, "<leader>", out)
+    return out
   end
 
   host_api.on_key(function(key, mods)

@@ -18,7 +18,9 @@ local function serialize_overlay_row(row)
   local serialized = { segments = {} }
 
   for _, node in ipairs(shared.flatten_span_nodes(ui.overlay_row.nodes(row))) do
-    if not node.spacer then
+    if node.spacer then
+      serialized.segments[#serialized.segments + 1] = { spacer = true }
+    else
       serialized.segments[#serialized.segments + 1] = shared.style_to_segment(node.text or "", node.style)
     end
   end

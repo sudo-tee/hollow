@@ -322,7 +322,10 @@ function M.resolve_widget(kind, theme)
     cursor_bg = color_or(terminal.foreground, nil),
     cursor_fg = color_or(terminal.background, nil),
     selected_bg = color_or(status.bg or tab_bar.background, nil),
-    selected_detail_bg = color_or(status.bg or tab_bar.background, nil),
+    selected_detail_bg = color_or(
+      ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg,
+      util.brighten_hex_color(terminal.background, 0.1, nil)
+    ),
     selected_fg = color_or(terminal.foreground, nil),
     selected_muted = color_or(workspace_active.fg or terminal.foreground, nil),
     detail = color_or(status.fg, nil),
