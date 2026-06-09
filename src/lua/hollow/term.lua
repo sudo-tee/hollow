@@ -307,6 +307,26 @@ function M.setup(hollow, host_api)
     host_api.switch_workspace(index - 1)
   end
 
+  function hollow.term.move_tab_to_workspace(tab_id, workspace_index)
+    if type(tab_id) ~= "number" then
+      error("hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects tab_id to be a number")
+    end
+    if type(workspace_index) ~= "number" then
+      error("hollow.term.move_tab_to_workspace(tab_id, workspace_index) expects workspace_index to be a number")
+    end
+    return host_api.move_tab_to_workspace(tab_id, workspace_index - 1)
+  end
+
+  function hollow.term.move_pane_to_workspace(pane_id, workspace_index)
+    if type(pane_id) ~= "number" then
+      error("hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects pane_id to be a number")
+    end
+    if type(workspace_index) ~= "number" then
+      error("hollow.term.move_pane_to_workspace(pane_id, workspace_index) expects workspace_index to be a number")
+    end
+    return host_api.move_pane_to_workspace(pane_id, workspace_index - 1)
+  end
+
   function hollow.term.tab_by_id(id)
     for _, tab in ipairs(hollow.term.tabs()) do
       if tab.id == id then

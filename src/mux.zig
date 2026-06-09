@@ -422,6 +422,33 @@ pub const Tab = struct {
         return self.panes.items.len == 0;
     }
 
+    /// Remove `pane` from this tab's split tree and panes list without freeing.
+    /// The pane is returned intact for reuse elsewhere (e.g. moving to another tab).
+    pub fn detachPane(self: *Tab, pane: *Pane) void {
+        if (self.maximized_pane == pane) self.maximized_pane = null;
+        if (self.root_split) |root| {
+            if (root.kind == .pane and root.pane == pane) {
+                root.deinit(self.allocator);
+                self.allocator.destroy(root);
+                self.root_split = null;
+            } else {
+                const sibling = removePaneFromTree(self.allocator, root, pane);
+                if (sibling) |s| {
+                    if (self.active_pane == pane) self.active_pane = s;
+                }
+            }
+        }
+        for (self.panes.items, 0..) |p, i| {
+            if (p == pane) {
+                _ = self.panes.orderedRemove(i);
+                break;
+            }
+        }
+        if (self.active_pane == pane or self.active_pane == null) {
+            self.active_pane = if (self.panes.items.len > 0) self.panes.items[self.panes.items.len - 1] else null;
+        }
+    }
+
     /// Compute pixel bounds for every leaf pane in this tab's split tree.
     /// Returns a slice into `out` (length = number of panes).
     pub fn computeLayout(self: *Tab, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
@@ -662,6 +689,33 @@ pub const Workspace = struct {
     pub fn appendTab(self: *Workspace, tab: *Tab) !void {
         try self.tabs.append(self.allocator, tab);
         if (self.active_tab == null) self.active_tab = tab;
+    }
+
+    pub fn detachTab(self: *Workspace, tab: *Tab) void {
+        var idx: usize = 0;
+        var found = false;
+        for (self.tabs.items, 0..) |t, i| {
+            if (t == tab) {
+                idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return;
+        _ = self.tabs.orderedRemove(idx);
+        if (self.active_tab == tab) {
+            if (self.tabs.items.len == 0) {
+                self.active_tab = null;
+            } else {
+                self.active_tab = self.tabs.items[if (idx >= self.tabs.items.len) self.tabs.items.len - 1 else idx];
+            }
+        }
+    }
+
+    pub fn insertTab(self: *Workspace, tab: *Tab) !void {
+        const insert_at = if (self.active_tab) |_| self.activeTabIndex() + 1 else self.tabs.items.len;
+        try self.tabs.insert(self.allocator, insert_at, tab);
+        self.active_tab = tab;
     }
 
     pub fn newTab(self: *Workspace, id: usize) !*Tab {
@@ -1260,6 +1314,85 @@ pub const Mux = struct {
         }
 
         if (best_pane) |p| tab.active_pane = p;
+    }
+
+    /// Move a tab to a different workspace by index (0-based).
+    pub fn moveTabToWorkspace(self: *Mux, runtime: *GhosttyRuntime, tab_id: usize, target_workspace_index: usize) bool {
+        var source_ws: ?*Workspace = null;
+        var tab: ?*Tab = null;
+        for (self.workspaces.items) |ws| {
+            if (ws.tabById(tab_id)) |t| {
+                source_ws = ws;
+                tab = t;
+                break;
+            }
+        }
+        const src = source_ws orelse return false;
+        const t = tab orelse return false;
+        if (target_workspace_index >= self.workspaces.items.len) return false;
+        const target = self.workspaces.items[target_workspace_index];
+        if (target == src) return false;
+        src.detachTab(t);
+        target.insertTab(t) catch {
+            src.appendTab(t) catch {};
+            return false;
+        };
+        self.active_workspace = target;
+        if (src.tabs.items.len == 0) _ = self.removeWorkspace(runtime, src);
+        return true;
+    }
+
+    /// Move a pane to a different workspace by index (0-based).
+    /// The pane is placed in a new tab in the target workspace.
+    pub fn movePaneToWorkspace(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize, target_workspace_index: usize) bool {
+        var source_tab: ?*Tab = null;
+        var source_ws: ?*Workspace = null;
+        var pane: ?*Pane = null;
+        for (self.workspaces.items) |ws| {
+            for (ws.tabs.items) |tab| {
+                for (tab.panes.items) |p| {
+                    if (@intFromPtr(p) == pane_id) {
+                        pane = p;
+                        source_tab = tab;
+                        source_ws = ws;
+                        break;
+                    }
+                } else continue;
+                break;
+            } else continue;
+            break;
+        }
+        const p = pane orelse return false;
+        const src_tab = source_tab orelse return false;
+        const src_ws = source_ws orelse return false;
+        if (target_workspace_index >= self.workspaces.items.len) return false;
+        const target_ws = self.workspaces.items[target_workspace_index];
+        if (target_ws == src_ws) return false;
+        src_tab.detachPane(p);
+        const tab_empty = src_tab.panes.items.len == 0;
+        const new_tab = self.allocator.create(Tab) catch {
+            src_tab.appendPane(p) catch {};
+            return false;
+        };
+        new_tab.* = Tab.init(self.allocator, self.allocId());
+        new_tab.appendPane(p) catch {
+            self.allocator.destroy(new_tab);
+            src_tab.appendPane(p) catch {};
+            return false;
+        };
+        target_ws.insertTab(new_tab) catch {
+            self.allocator.destroy(new_tab);
+            src_tab.appendPane(p) catch {};
+            return false;
+        };
+        if (tab_empty) {
+            src_ws.detachTab(src_tab);
+            src_tab.deinit(runtime);
+            self.allocator.destroy(src_tab);
+            if (src_ws.tabs.items.len == 0) _ = self.removeWorkspace(runtime, src_ws);
+        }
+        self.active_workspace = target_ws;
+        return true;
     }
 
     fn allocId(self: *Mux) usize {

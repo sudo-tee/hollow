@@ -45,6 +45,7 @@ function M.new(host_api)
         ["config:reloaded"] = true,
         ["workspace:new"] = true,
         ["workspace:changed"] = true,
+        ["workspace:closed"] = true,
         ["term:title_changed"] = true,
         ["term:tab_activated"] = true,
         ["term:tab_closed"] = true,

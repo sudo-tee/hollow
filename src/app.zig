@@ -440,6 +440,14 @@ pub const PendingMouseEvent = union(enum) {
     next_workspace,
     prev_workspace,
     switch_workspace: usize,
+    move_tab_to_workspace: struct {
+        tab_id: usize,
+        workspace_index: usize,
+    },
+    move_pane_to_workspace: struct {
+        pane_id: usize,
+        workspace_index: usize,
+    },
     set_workspace_name: []const u8,
     set_workspace_default_cwd: []const u8,
     split_pane: struct {
@@ -967,6 +975,12 @@ pub const App = struct {
                 },
                 .switch_workspace => |idx| {
                     self.switchWorkspace(idx);
+                },
+                .move_tab_to_workspace => |mev| {
+                    self.moveTabToWorkspace(mev.tab_id, mev.workspace_index);
+                },
+                .move_pane_to_workspace => |mev| {
+                    self.movePaneToWorkspace(mev.pane_id, mev.workspace_index);
                 },
                 .set_workspace_name => |name| {
                     defer self.allocator.free(name);
@@ -2433,6 +2447,8 @@ pub const App = struct {
             .switch_tab_by_id = luaSwitchTabByIdCallback,
             .close_tab_by_id = luaCloseTabByIdCallback,
             .close_pane_by_id = luaClosePaneByIdCallback,
+            .move_tab_to_workspace = luaMoveTabToWorkspaceCallback,
+            .move_pane_to_workspace = luaMovePaneToWorkspaceCallback,
             .send_text_to_pane = luaSendTextToPaneCallback,
             .get_pane_domain = luaGetPaneDomainCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
@@ -5217,6 +5233,44 @@ pub const App = struct {
         std.log.info("app: active pane closed via close_pane", .{});
     }
 
+    pub fn moveTabToWorkspace(self: *App, tab_id: usize, workspace_index: usize) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const previous = mux.activePane();
+        const prev_ws_count = mux.workspaces.items.len;
+        const closed_name = (for (mux.workspaces.items) |ws| {
+            if (ws.tabById(tab_id)) |_| {
+                if (ws.name) |n| break self.allocator.dupe(u8, n) catch null else break null;
+            }
+        } else null);
+        if (!mux.moveTabToWorkspace(runtime, tab_id, workspace_index)) {
+            if (closed_name) |n| self.allocator.free(n);
+            return;
+        }
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.refreshActivePaneDisplay();
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        if (mux.workspaces.items.len < prev_ws_count) {
+            self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
+        }
+        if (closed_name) |n| self.allocator.free(n);
+        self.requestLayoutRefresh();
+        if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+    }
+
+    pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) void {
+        var mux = if (self.mux) |*value| value else return;
+        const runtime = if (self.ghostty) |*value| value else return;
+        const previous = mux.activePane();
+        if (!mux.movePaneToWorkspace(runtime, pane_id, workspace_index)) return;
+        self.syncActivePaneChange(previous, mux.activePane());
+        self.refreshActivePaneDisplay();
+        self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        self.requestLayoutResize(true);
+        self.requestLayoutRefresh();
+        if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
+    }
+
     pub fn closePaneById(self: *App, pane_id: usize) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
@@ -7101,6 +7155,16 @@ fn luaCopyModeSearchNextCallback(app_ptr: *anyopaque) void {
 fn luaCopyModeSearchPrevCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_mode_search_prev);
+}
+
+fn luaMoveTabToWorkspaceCallback(app_ptr: *anyopaque, tab_id: usize, workspace_index: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.enqueueMouse(.{ .move_tab_to_workspace = .{ .tab_id = tab_id, .workspace_index = workspace_index } });
+}
+
+fn luaMovePaneToWorkspaceCallback(app_ptr: *anyopaque, pane_id: usize, workspace_index: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.enqueueMouse(.{ .move_pane_to_workspace = .{ .pane_id = pane_id, .workspace_index = workspace_index } });
 }
 
 test "app helpers count utf8 codepoints by leading byte" {

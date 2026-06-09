@@ -619,6 +619,34 @@ function M.setup(hollow, host_api)
     desc = "Create new tab with a domain",
     category = "tab",
   })
+
+  register(hollow, "move_tab_to_workspace", {
+    run = function()
+      local tab = hollow.term.current_tab()
+      if not tab then return end
+      pick_workspace_and_run(function(item)
+        if item and item.workspace_index then
+          host_api.move_tab_to_workspace(tab.id, item.workspace_index - 1)
+        end
+      end)
+    end,
+    desc = "Move current tab to workspace",
+    category = "tab",
+  })
+
+  register(hollow, "move_pane_to_workspace", {
+    run = function()
+      local pane = hollow.term.current_pane()
+      if not pane then return end
+      pick_workspace_and_run(function(item)
+        if item and item.workspace_index then
+          host_api.move_pane_to_workspace(pane.id, item.workspace_index - 1)
+        end
+      end)
+    end,
+    desc = "Move current pane to workspace",
+    category = "pane",
+  })
 end
 
 return M

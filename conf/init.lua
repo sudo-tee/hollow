@@ -174,6 +174,11 @@ hollow.events.on("config:reloaded", function()
   hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
 end)
 
+hollow.events.on("workspace:closed", function(ev)
+  local label = ev.name ~= "" and ("'" .. ev.name .. "'") or "workspace"
+  hollow.ui.notify.info(label .. " closed (empty)", { ttl = 2400 })
+end)
+
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 -- hollow.keymap.set("<C-S-c>", "copy_selection")
 -- hollow.keymap.set("<C-S-v>", "paste_clipboard")

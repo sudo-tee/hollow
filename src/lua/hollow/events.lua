@@ -76,6 +76,11 @@ function M.setup(hollow, state, term_helpers)
         index = payload.workspace_index + 1,
       }
     end
+    if name == "workspace:closed" then
+      return {
+        name = payload.name,
+      }
+    end
     if name == "term:tab_closed" then
       return { tab_id = payload.tab_id }
     end

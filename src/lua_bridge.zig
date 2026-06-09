@@ -216,6 +216,8 @@ pub const AppCallbacks = struct {
     pane_exists: *const fn (app: *anyopaque, pane_id: usize) bool,
     switch_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
     close_tab_by_id: *const fn (app: *anyopaque, tab_id: usize) bool,
+    move_tab_to_workspace: *const fn (app: *anyopaque, tab_id: usize, workspace_index: usize) bool,
+    move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
@@ -558,6 +560,9 @@ pub const BuiltInPayload = union(enum) {
         match_index: ?usize = null,
         selecting: bool = false,
         block: bool = false,
+    },
+    workspace_closed: struct {
+        name: []const u8,
     },
 };
 
@@ -1975,6 +1980,14 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "close_pane_by_id");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_move_tab_to_workspace, 1);
+        api.set_field(self.state, -2, "move_tab_to_workspace");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_move_pane_to_workspace, 1);
+        api.set_field(self.state, -2, "move_pane_to_workspace");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_tab_title_by_id, 1);
         api.set_field(self.state, -2, "set_tab_title_by_id");
 
@@ -2265,6 +2278,11 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "selecting");
             api.push_boolean(state, if (value.block) 1 else 0);
             api.set_field(state, -2, "block");
+        },
+        .workspace_closed => |value| {
+            api.create_table(state, 0, 1);
+            try pushOwnedString(allocator, api, state, value.name);
+            api.set_field(state, -2, "name");
         },
     }
 }
@@ -5657,6 +5675,44 @@ fn l_close_tab_by_id(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.close_tab_by_id(cbs.app, tab_id)) 1 else 0);
+    return 1;
+}
+
+fn l_move_tab_to_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const ws_idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 2)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.move_tab_to_workspace(cbs.app, tab_id, ws_idx)) 1 else 0);
+    return 1;
+}
+
+fn l_move_pane_to_workspace(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const ws_idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 2)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.move_pane_to_workspace(cbs.app, pane_id, ws_idx)) 1 else 0);
     return 1;
 }
 

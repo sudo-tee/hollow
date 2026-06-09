@@ -24,22 +24,31 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | Event | Payload |
 | --- | --- |
 | `config:reloaded` | (empty) |
-| `workspace:new` | `{ workspace }` |
-| `workspace:changed` | `{ workspace }` |
-| `term:title_changed` | `{ tab, title }` |
+| `workspace:new` | `{ workspace, index }` |
+| `workspace:changed` | `{ workspace, index }` |
+| `workspace:closed` | `{ name }` — emitted when a workspace becomes empty and is auto-closed |
+| `selection:begin` | (empty) |
+| `selection:cleared` | (empty) |
+| `term:title_changed` | `{ pane, old_title, new_title }` |
 | `term:tab_activated` | `{ tab }` |
 | `term:tab_closed` | `{ tab_id }` |
 | `term:pane_focused` | `{ pane }` |
 | `term:pane_layout_changed` | `{ pane }` |
-| `term:cwd_changed` | `{ pane, cwd }` |
-| `term:foreground_process_changed` | `{ pane, process }` |
+| `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
+| `term:foreground_process_changed` | `{ pane, old_process, new_process }` |
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
 | `key:unhandled` | `{ key, mods }` |
-| `window:resized` | `{ width, height }` |
+| `window:resized` | `{ size }` (`size` has `rows`, `cols`, `width`, `height`) |
 | `window:focused` | (empty) |
 | `window:blurred` | (empty) |
 | `copy_mode:changed` | `{ active, query?, match_count?, match_index?, selecting?, block? }` |
 | `copy_mode:search_requested` | (empty; open a search prompt) |
+| `topbar:hover` | `{ id }` |
+| `topbar:leave` | (empty) |
+| `topbar:click` | `{ id }` |
+| `bottombar:hover` | `{ id }` |
+| `bottombar:leave` | (empty) |
+| `bottombar:click` | `{ id }` |
 
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane
@@ -60,7 +69,7 @@ Track cwd changes to update a custom widget:
 ```lua
 hollow.events.on("term:cwd_changed", function(e)
   -- e.pane is a HollowPane snapshot
-  -- e.cwd is the new directory
+  -- e.new_cwd is the new directory
 end)
 ```
 

@@ -144,6 +144,7 @@
 ---| "config:reloaded"
 ---| "workspace:new"
 ---| "workspace:changed"
+---| "workspace:closed"
 ---| "term:title_changed"
 ---| "term:tab_activated"
 ---| "term:tab_closed"
