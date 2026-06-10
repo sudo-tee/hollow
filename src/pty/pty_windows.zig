@@ -16,6 +16,179 @@ const SW_HIDE: windows.WORD = 0;
 const WSL_BYPASS_STARTUP_TIMEOUT_MS: u64 = 1200;
 const WSL_BYPASS_EXIT_TIMEOUT_MS: windows.DWORD = 1500;
 
+/// Tracks which WSL distros have had the bypass binary deployed to /tmp/.
+const WslBootState = struct {
+    mutex: std.Thread.Mutex = .{},
+    keys: std.ArrayListUnmanaged([]const u8) = .{},
+
+    fn isBooted(self: *@This(), key: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.keys.items) |k| {
+            if (std.mem.eql(u8, k, key)) return true;
+        }
+        return false;
+    }
+
+    fn markBooted(self: *@This(), key: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.keys.items) |k| {
+            if (std.mem.eql(u8, k, key)) return;
+        }
+        const owned = std.heap.page_allocator.dupe(u8, key) catch return;
+        self.keys.append(std.heap.page_allocator, owned) catch {
+            std.heap.page_allocator.free(owned);
+        };
+    }
+};
+
+var wsl_boot_state = WslBootState{};
+
+fn wslDistroKey(parsed_shell: []const []const u8) []const u8 {
+    const split = splitWslLauncherArgs(parsed_shell);
+    var i: usize = 1;
+    while (i < split.launcher.len) {
+        const arg = split.launcher[i];
+        if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--distribution")) {
+            if (i + 1 < split.launcher.len) return split.launcher[i + 1];
+            i += 1;
+        } else if (wslOptionTakesValue(arg)) {
+            i += 1;
+        }
+        i += 1;
+    }
+    return "default";
+}
+
+fn wslBypassBinaryPath(allocator: std.mem.Allocator) ![]u8 {
+    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe_path);
+    const dir = std.fs.path.dirname(exe_path) orelse ".";
+    return std.fs.path.join(allocator, &.{ dir, "hollow-wsl-bypass" });
+}
+
+fn wslWindowsToLinuxPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (path.len >= 18 and std.ascii.startsWithIgnoreCase(path, "\\\\wsl.localhost\\")) {
+        var index: usize = 17;
+        while (index < path.len and path[index] != '\\' and path[index] != '/') : (index += 1) {}
+        if (index < path.len) {
+            const remainder = path[index..];
+            var buf = std.ArrayList(u8).empty;
+            for (remainder) |ch| {
+                try buf.append(allocator, if (ch == '\\') '/' else ch);
+            }
+            return buf.toOwnedSlice(allocator);
+        }
+        return allocator.dupe(u8, "/");
+    }
+
+    if (path.len < 3 or path[1] != ':') return allocator.dupe(u8, path);
+    var buf = std.ArrayList(u8).empty;
+    try buf.appendSlice(allocator, "/mnt/");
+    try buf.append(allocator, std.ascii.toLower(path[0]));
+    for (path[2..]) |ch| {
+        try buf.append(allocator, if (ch == '\\') '/' else ch);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+fn wslShellQuote(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, s, '\'') == null) {
+        return std.fmt.allocPrint(allocator, "'{s}'", .{s});
+    }
+    var buf = std.ArrayList(u8).empty;
+    try buf.append(allocator, '\'');
+    for (s) |ch| {
+        if (ch == '\'') {
+            try buf.appendSlice(allocator, "'\\''");
+        } else {
+            try buf.append(allocator, ch);
+        }
+    }
+    try buf.append(allocator, '\'');
+    return buf.toOwnedSlice(allocator);
+}
+
+fn bootstrapWslDistro(allocator: std.mem.Allocator, shell: [:0]const u8) !void {
+    const parsed = try parseCommandString(allocator, shell);
+    defer freeArgv(allocator, parsed);
+    const split = splitWslLauncherArgs(parsed);
+
+    if (split.launcher.len == 0) return error.InvalidCharacter;
+
+    const windows_path = try wslBypassBinaryPath(allocator);
+    defer allocator.free(windows_path);
+
+    const wsl_path = try wslWindowsToLinuxPath(allocator, windows_path);
+    defer allocator.free(wsl_path);
+
+    const quoted_path = try wslShellQuote(allocator, wsl_path);
+    defer allocator.free(quoted_path);
+
+    var argv = std.ArrayListUnmanaged([]const u8){};
+    defer argv.deinit(allocator);
+
+    try argv.appendSlice(allocator, split.launcher);
+    try argv.append(allocator, try allocator.dupe(u8, "--exec"));
+    try argv.append(allocator, try allocator.dupe(u8, "/bin/sh"));
+    try argv.append(allocator, try allocator.dupe(u8, "-c"));
+    const shell_cmd = try std.fmt.allocPrint(allocator, "cp {s} /tmp/hollow-wsl-bypass && chmod +x /tmp/hollow-wsl-bypass", .{quoted_path});
+    defer allocator.free(shell_cmd);
+    try argv.append(allocator, shell_cmd);
+
+    const command_line = try windowsCreateCommandLine(allocator, argv.items);
+    defer freeSentinelU8(allocator, command_line);
+
+    const application = try resolveWindowsProgram(allocator, split.launcher[0]);
+    defer allocator.free(application);
+
+    const app_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, application);
+    defer allocator.free(app_utf16);
+    const cmd_utf16 = try std.unicode.utf8ToUtf16LeAllocZ(allocator, command_line);
+    defer allocator.free(cmd_utf16);
+
+    var si = std.mem.zeroes(windows.STARTUPINFOW);
+    si.cb = @sizeOf(windows.STARTUPINFOW);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
+    if (CreateProcessW(
+        app_utf16.ptr,
+        cmd_utf16.ptr,
+        null,
+        null,
+        windows.FALSE,
+        CREATE_UNICODE_ENVIRONMENT,
+        null,
+        null,
+        &si,
+        &pi,
+    ) == windows.FALSE) {
+        std.log.warn("wsl bootstrap CreateProcessW failed err={d}", .{kernel32.GetLastError()});
+        return error.WslBypassUnavailable;
+    }
+    defer _ = CloseHandle(pi.hProcess);
+    defer _ = CloseHandle(pi.hThread);
+
+    const wait_result = kernel32.WaitForSingleObject(pi.hProcess, 10000);
+    if (wait_result != WAIT_OBJECT_0) {
+        std.log.warn("wsl bootstrap timed out after 10s", .{});
+        _ = kernel32.TerminateProcess(pi.hProcess, 1);
+        return error.WslBypassUnavailable;
+    }
+
+    var exit_code: windows.DWORD = 0;
+    _ = kernel32.GetExitCodeProcess(pi.hProcess, &exit_code);
+    if (exit_code != 0) {
+        std.log.warn("wsl bootstrap failed exit_code={d}", .{exit_code});
+        return error.WslBypassUnavailable;
+    }
+
+    std.log.info("wsl bootstrap ok distro={s} path={s}", .{ wslDistroKey(parsed), wsl_path });
+}
+
 const HPCON = *opaque {};
 const COORD = extern struct {
     X: i16,
@@ -434,6 +607,21 @@ pub const WindowsPty = struct {
 
 fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
     const start_ms = std.time.milliTimestamp();
+
+    {
+        const parsed = try parseCommandString(allocator, shell);
+        defer freeArgv(allocator, parsed);
+        const distro_key = wslDistroKey(parsed);
+        if (!wsl_boot_state.isBooted(distro_key)) {
+            std.log.info("wsl bootstrap first use distro={s} …", .{distro_key});
+            bootstrapWslDistro(allocator, shell) catch |err| {
+                std.log.warn("wsl bootstrap failed err={s}", .{@errorName(err)});
+                return error.WslBypassUnavailable;
+            };
+            wsl_boot_state.markBooted(distro_key);
+        }
+    }
+
     var child_stdin_read: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
     var child_stdout_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
     var child_stderr_write: windows.HANDLE = windows.INVALID_HANDLE_VALUE;
@@ -791,7 +979,7 @@ fn buildWslBypassCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, 
     }
 
     try argv.append(allocator, try allocator.dupe(u8, "--exec"));
-    try argv.append(allocator, try allocator.dupe(u8, "hollow-wsl-bypass"));
+    try argv.append(allocator, try allocator.dupe(u8, "/tmp/hollow-wsl-bypass"));
     try argv.append(allocator, try allocator.dupe(u8, "--cols"));
     try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{cols}));
     try argv.append(allocator, try allocator.dupe(u8, "--rows"));

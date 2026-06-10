@@ -129,21 +129,24 @@ Install WSL with `wsl --install` from elevated PowerShell and restart.
 
 ### Bypass helper does not activate
 
-Check that `hollow-wsl-bypass` is on the WSL shell `PATH`:
+The helper is now auto-deployed by Hollow on first use — no manual
+install is needed.
+
+Check that `hollow-wsl-bypass` exists alongside the Hollow exe:
 
 ```bash
-wsl which hollow-wsl-bypass
+ls -la "$(dirname "$(which hollow-native.exe)")/hollow-wsl-bypass"
 ```
 
-If it is not there, install it:
+During development, `zig build` produces it in `zig-out/bin/` alongside
+the exe.
 
-```bash
-zig build install-wsl-bypass
-```
-
-If the helper is missing or fails to start, Hollow falls back to
-ConPTY automatically; look in `hollow.log` for
+If the auto-deploy fails, look in `hollow.log` for
+`wsl bootstrap failed` or
 `wsl bypass unavailable, falling back to ConPTY`.
+
+The old manual install still works as
+a fallback (run `zig build install-wsl-bypass` from a source checkout).
 
 ### Wrong WSL distro launches
 

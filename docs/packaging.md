@@ -25,15 +25,16 @@ A Windows release zip should contain:
 | `hollow-native.exe`                          | Actual GUI process                           |
 | `hollow-cli` _(optional)_                    | Python HTP client (talks OSC over a tty)     |
 | `conf/init.lua` _(optional)_                 | Editable shipped base config                 |
-| `wsl/hollow-wsl-bypass` _(optional)_         | Linux-side WSL helper binary                 |
-| `scripts/install-wsl-bypass.sh` _(optional)_ | Helper to install the bypass binary into WSL |
+| `hollow-wsl-bypass`                           | Linux-side WSL helper binary (auto-deployed) |
+| `scripts/install-wsl-bypass.sh` _(optional)_ | Legacy manual install script                 |
 | `README.md`, `LICENSE`                       | Standard release files                       |
 
-Without `hollow-wsl-bypass`, WSL panes still work through ConPTY but
-with limitations: no image protocol, no Sixel, and no Python
-`hollow-cli` over a redirected WSL pty.
-See [WSL → Bypass helper](platforms/wsl.md#bypass-helper) for the
-install path.
+`hollow-wsl-bypass` is auto-deployed by Hollow on first use — copy
+from alongside the exe to `/tmp/hollow-wsl-bypass` inside the WSL
+distro. Without it, WSL panes still work through ConPTY but with
+limitations: no image protocol, no Sixel, and no Python `hollow-cli`
+over a redirected WSL pty.
+See [WSL → Bypass helper](platforms/wsl.md#bypass-helper).
 
 Without `hollow-cli`, end users can still drive Hollow from outside
 via the native [`hollow cli …`](reference/cli/native.md) subcommand
@@ -95,21 +96,23 @@ shape of a CI release build.
 
 ## WSL bypass helper
 
-To enable the bypass path, also build and bundle
-`hollow-wsl-bypass`:
+The bypass helper is now built as part of the default build step.
+`zig build` produces `hollow-wsl-bypass` alongside the main exe:
 
 ```bash
-zig build wsl-bypass -Doptimize=ReleaseFast
-zig build install-wsl-bypass
+zig build -Doptimize=ReleaseFast
 ```
 
-`install-wsl-bypass` writes the helper to
-`/usr/local/bin/hollow-wsl-bypass` inside the default WSL distro.
-For release bundles, ship the helper binary at
-`wsl/hollow-wsl-bypass` and let users install it manually with the
-provided `scripts/install-wsl-bypass.sh`. See
-[WSL → Bypass helper](platforms/wsl.md#bypass-helper) for the install
-command.
+At runtime, Hollow auto-deploys it to `/tmp/hollow-wsl-bypass` inside
+the WSL distro on first use. No manual install is required.
+
+If you ship a release bundle, include `hollow-wsl-bypass` alongside
+`hollow-native.exe` in the same directory. The auto-deploy finds it
+there automatically.
+
+The legacy manual install (`zig build install-wsl-bypass` →
+`/usr/local/bin/hollow-wsl-bypass`) still works as a fallback.
+See [WSL → Bypass helper](platforms/wsl.md#bypass-helper).
 
 ## Crash reports
 

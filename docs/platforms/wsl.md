@@ -67,33 +67,40 @@ hollow.term.new_tab({ domain = "UbuntuWSL" })
 
 ## Bypass helper
 
-The bypass helper is a small Linux-side binary Hollow spawns inside
-the WSL distro.
+The bypass helper is a small Linux-side binary (`hollow-wsl-bypass`)
+Hollow deploys inside the WSL distro.
 Without it, WSL still works — it just goes through ConPTY.
 With it, you get lower latency and avoid the extra ConPTY layer.
 
-### Install from a source checkout
+### Auto-deploy (no setup needed)
 
-```bash
-zig build install-wsl-bypass
-```
+Starting from a `zig build` (or a release bundle), the helper is always
+built alongside the main exe and placed in the same directory.
 
-That target builds `hollow-wsl-bypass` and installs it to
-`/usr/local/bin/hollow-wsl-bypass` inside the default WSL distro.
+On the **first WSL pane opened for a given distro**, Hollow
+automatically copies the binary from the host filesystem to
+`/tmp/hollow-wsl-bypass` inside the WSL distro and launches it.
+Subsequent panes for the same distro skip the copy and exec
+`/tmp/hollow-wsl-bypass` directly.
 
-### Install from a release bundle
+The auto-deploy uses the WSL filesystem directly:
 
-```bash
-wsl sh -lc 'sudo install -d -m 755 /usr/local/bin && \
-  sudo install -m 755 /mnt/c/path/to/hollow/wsl/hollow-wsl-bypass \
-  /usr/local/bin/hollow-wsl-bypass'
-```
+- When the exe lives on the Windows filesystem (`C:\...\hollow.exe`),
+  the path is translated to `/mnt/c/.../hollow-wsl-bypass` and copied.
+- When the exe lives in the WSL filesystem
+  (`\\wsl.localhost\Ubuntu\...\hollow.exe`, common during development
+  from WSL), the path stays a native Linux path and the copy is a
+  local file copy.
+
+No manual install step needed during development — `zig build` now
+produces `hollow-wsl-bypass` in `zig-out/bin/` as part of the default
+build.
 
 ### Requirements
 
-- `/usr/local/bin` must be on the WSL shell `PATH`
+- `/bin/sh` must be available inside the WSL distro (always true)
 - Hollow must launch WSL through `wsl.exe` as usual
-- The default distro must have a user Hollow can `wsl.exe -u <user>` into
+- The distro must have a user Hollow can `wsl.exe -u <user>` into
 
 If you do nothing, WSL panes still work — they just use ConPTY.
 
@@ -175,7 +182,7 @@ echo "$HOLLOW_PANE_ID $HOLLOW_TRANSPORT"
 | Problem | Fix |
 | --- | --- |
 | `wsl.exe not found` | Install WSL with `wsl --install` from elevated PowerShell |
-| Bypass helper does not activate | Install `hollow-wsl-bypass` into WSL `PATH` with `zig build install-wsl-bypass`; otherwise Hollow uses ConPTY |
+| Bypass helper does not activate | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
 | Wrong distro launches | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()` |
 | `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane` |
 

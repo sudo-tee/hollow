@@ -266,6 +266,7 @@ pub fn build(b: *std.Build) void {
     const install_wsl_bypass = b.addInstallArtifact(wsl_bypass, .{});
     const wsl_bypass_step = b.step("wsl-bypass", "Build the WSL PTY bypass helper");
     wsl_bypass_step.dependOn(&install_wsl_bypass.step);
+    b.getInstallStep().dependOn(&install_wsl_bypass.step);
 
     const install_wsl_bypass_cmd = b.addSystemCommand(&.{"bash"});
     install_wsl_bypass_cmd.addFileArg(b.path("scripts/install-wsl-bypass.sh"));
