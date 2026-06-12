@@ -195,6 +195,8 @@ pub const Pane = struct {
     /// Last known mouse tracking mode (from terminal_get).  Logged on change.
     last_mouse_tracking: u32 = 0,
     mouse_tracking_logged_initial: bool = false,
+    /// Last known active screen (0=primary, 1=alternate).  Used for per-pane padding.
+    active_screen: u32 = 0,
     last_has_pending_ns: i128 = 0,
     last_sanitize_ns: i128 = 0,
     last_child_alive_ns: i128 = 0,
@@ -556,6 +558,16 @@ pub const Pane = struct {
                     self.mouse_tracking_logged_initial = true;
                     std.log.info("pane initial mouse_tracking={d} (get_result={d})", .{ mouse_tracking, mt_result });
                 }
+
+                {
+                    var active_screen: u32 = 0;
+                    const as_result = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.active_screen), &active_screen);
+                    if (active_screen != self.active_screen) {
+                        std.log.info("pane active_screen changed {d} -> {d} (get_result={d})", .{ self.active_screen, active_screen, as_result });
+                    }
+                    self.active_screen = active_screen;
+                }
+
                 if (debug_overlay) self.last_encoder_sync_ns += std.time.nanoTimestamp() - encoder_sync_start_ns;
 
                 const now_ns = std.time.nanoTimestamp();

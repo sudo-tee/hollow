@@ -272,6 +272,13 @@
 ---@field max_fps? integer
 ---@field command_timing? boolean
 ---@field padding? integer
+---@field alternate_screen_padding? integer
+---@field alternate_padding_x? integer
+---@field alternate_padding_y? integer
+---@field alternate_padding_left? integer
+---@field alternate_padding_right? integer
+---@field alternate_padding_top? integer
+---@field alternate_padding_bottom? integer
 ---@field theme? string|HollowThemeSpec
 ---@field fonts? HollowFontsConfig
 ---@field scrollback? integer
@@ -327,6 +334,7 @@
 ---@field id integer
 ---@field pid integer
 ---@field domain? string
+---@field active_screen '"primary"|"alternate"'
 ---@field cwd string
 ---@field title string
 ---@field is_focused boolean

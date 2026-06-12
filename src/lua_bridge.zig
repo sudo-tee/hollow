@@ -200,6 +200,7 @@ pub const AppCallbacks = struct {
     get_pane_text: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_active_screen: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_x: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -1901,6 +1902,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_text, 1);
         api.set_field(self.state, -2, "get_pane_text");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_active_screen, 1);
+        api.set_field(self.state, -2, "get_pane_active_screen");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_cwd, 1);
@@ -3670,6 +3675,46 @@ fn applyNumber(cfg: *config.Config, key: []const u8, value: f64) !void {
         return;
     }
 
+    if (std.mem.eql(u8, key, "alternate_screen_padding")) {
+        const pad = try asInt(u32, value);
+        cfg.alternate_screen_padding = .{ .left = pad, .right = pad, .top = pad, .bottom = pad };
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_x")) {
+        const pad = try asInt(u32, value);
+        cfg.alternate_screen_padding.left = pad;
+        cfg.alternate_screen_padding.right = pad;
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_y")) {
+        const pad = try asInt(u32, value);
+        cfg.alternate_screen_padding.top = pad;
+        cfg.alternate_screen_padding.bottom = pad;
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_left")) {
+        cfg.alternate_screen_padding.left = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_right")) {
+        cfg.alternate_screen_padding.right = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_top")) {
+        cfg.alternate_screen_padding.top = try asInt(u32, value);
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "alternate_padding_bottom")) {
+        cfg.alternate_screen_padding.bottom = try asInt(u32, value);
+        return;
+    }
+
     if (std.mem.eql(u8, key, "top_bar_height")) {
         cfg.top_bar_height = try asInt(u32, value);
         return;
@@ -5432,6 +5477,22 @@ fn l_get_pane_domain(state: *State) callconv(.c) c_int {
     };
     defer std.heap.page_allocator.free(zdomain);
     api.push_string(state, zdomain);
+    return 1;
+}
+
+fn l_get_pane_active_screen(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_string(state, "primary");
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const screen = cbs.get_pane_active_screen(cbs.app, pane_id);
+    api.push_string(state, if (screen == 1) "alternate" else "primary");
     return 1;
 }
 

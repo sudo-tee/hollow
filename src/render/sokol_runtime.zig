@@ -29,6 +29,14 @@ fn paneRenderHelpersReady(pane: *const Pane) bool {
     return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
 }
 
+fn paneRenderPadding(pane: *const Pane, cfg: *const Config) struct { x: u32, y: u32 } {
+    const pad = if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+        cfg.alternate_screen_padding
+    else
+        cfg.terminal_padding;
+    return .{ .x = pad.horizontal(), .y = pad.vertical() };
+}
+
 const win32 = if (builtin.os.tag == .windows) struct {
     const HWND = *anyopaque;
     const LONG_PTR = isize;
@@ -2837,6 +2845,21 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         @memset(&cache_entry.row_map_vals, 0);
                     }
 
+                    const saved_renderer_pad_x = rend.padding_x;
+                    const saved_renderer_pad_y = rend.padding_y;
+                    {
+                        const pad_left: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            cfg.alternate_screen_padding.left
+                        else
+                            cfg.terminal_padding.left);
+                        const pad_top: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            cfg.alternate_screen_padding.top
+                        else
+                            cfg.terminal_padding.top);
+                        rend.padding_x = (cfg.fonts.padding_x + pad_left) * rend.dpi_scale;
+                        rend.padding_y = (cfg.fonts.padding_y + pad_top) * rend.dpi_scale;
+                    }
+
                     rend.renderToCache(
                         &cache_entry.cache,
                         rt,
@@ -2861,6 +2884,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         hovered_hyperlink,
                         cache_entry.prev_cursor_row,
                     );
+
+                    rend.padding_x = saved_renderer_pad_x;
+                    rend.padding_y = saved_renderer_pad_y;
                     g_phase_accum_rows_rendered += rend.last_rows_rendered;
                     g_phase_accum_rows_skipped += rend.last_rows_skipped;
                     g_phase_accum_queue_ns += rend.last_queue_ns;
@@ -2928,7 +2954,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    const render_pad = paneRenderPadding(leaf.pane, &app.config);
+                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -2959,7 +2986,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(pane) orelse app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, app.config.terminal_padding.horizontal(), app.config.terminal_padding.vertical())) {
+                    const render_pad_single = paneRenderPadding(pane, &app.config);
+                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(pane) orelse app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -2982,6 +3010,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const oy: f32 = @floatFromInt(leaf.bounds.y);
                         const pw: f32 = @floatFromInt(leaf.bounds.width);
                         const ph: f32 = @floatFromInt(leaf.bounds.height);
+                        const saved_pad_x_r = renderer.padding_x;
+                        const saved_pad_y_r = renderer.padding_y;
+                        {
+                            const pad_left: f32 = @floatFromInt(if (leaf.pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                                app.config.alternate_screen_padding.left
+                            else
+                                app.config.terminal_padding.left);
+                            const pad_top: f32 = @floatFromInt(if (leaf.pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                                app.config.alternate_screen_padding.top
+                            else
+                                app.config.terminal_padding.top);
+                            renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
+                            renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
+                        }
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
@@ -3006,6 +3048,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
+                        renderer.padding_x = saved_pad_x_r;
+                        renderer.padding_y = saved_pad_y_r;
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
                         g_phase_accum_rows_skipped += renderer.last_rows_skipped;
                         g_phase_accum_cells_visited += renderer.last_cells_visited;
@@ -3019,6 +3063,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (!paneRenderHelpersReady(pane)) {
                         // nothing to queue
                     } else {
+                        const saved_pad_x_r = renderer.padding_x;
+                        const saved_pad_y_r = renderer.padding_y;
+                        {
+                            const pad_left: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                                app.config.alternate_screen_padding.left
+                            else
+                                app.config.terminal_padding.left);
+                            const pad_top: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                                app.config.alternate_screen_padding.top
+                            else
+                                app.config.terminal_padding.top);
+                            renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
+                            renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
+                        }
                         renderer.queueInViewport(
                             runtime,
                             &app.config,
@@ -3043,6 +3101,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
+                        renderer.padding_x = saved_pad_x_r;
+                        renderer.padding_y = saved_pad_y_r;
                         g_phase_accum_rows_rendered += renderer.last_rows_rendered;
                         g_phase_accum_rows_skipped += renderer.last_rows_skipped;
                         g_phase_accum_cells_visited += renderer.last_cells_visited;

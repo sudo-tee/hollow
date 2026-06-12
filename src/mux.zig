@@ -104,6 +104,8 @@ pub fn layoutSplitTree(
     bounds: PaneBounds,
     out: []LayoutLeaf,
     written: *usize,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     switch (node.kind) {
         .pane => {
@@ -120,26 +122,42 @@ pub fn layoutSplitTree(
             var second_bounds: PaneBounds = undefined;
             switch (node.direction) {
                 .vertical => {
-                    // Split left/right
                     const divider: u32 = if (bounds.width > 1) 1 else 0;
                     const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
-                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
-                    const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                    second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    if (cell_w > 0) {
+                        const total_cells = usable_w / cell_w;
+                        const first_cells = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_cells)) * ratio));
+                        const first_w = first_cells * cell_w;
+                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    } else {
+                        const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    }
                 },
                 .horizontal => {
-                    // Split top/bottom
                     const divider: u32 = if (bounds.height > 1) 1 else 0;
                     const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
-                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
-                    const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    if (cell_h > 0) {
+                        const total_rows = usable_h / cell_h;
+                        const first_rows = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_rows)) * ratio));
+                        const first_h = first_rows * cell_h;
+                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    } else {
+                        const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    }
                 },
             }
-            layoutSplitTree(first, first_bounds, out, written);
-            layoutSplitTree(second, second_bounds, out, written);
+            layoutSplitTree(first, first_bounds, out, written, cell_w, cell_h);
+            layoutSplitTree(second, second_bounds, out, written, cell_w, cell_h);
         },
     }
 }
@@ -150,6 +168,8 @@ fn layoutVisibleTree(
     out: []LayoutLeaf,
     written: *usize,
     skip_pane: ?*Pane,
+    cell_w: u32,
+    cell_h: u32,
 ) void {
     switch (node.kind) {
         .pane => {
@@ -169,22 +189,40 @@ fn layoutVisibleTree(
                 .vertical => {
                     const divider: u32 = if (bounds.width > 1) 1 else 0;
                     const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
-                    const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
-                    const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                    second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    if (cell_w > 0) {
+                        const total_cells = usable_w / cell_w;
+                        const first_cells = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_cells)) * ratio));
+                        const first_w = first_cells * cell_w;
+                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    } else {
+                        const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+                    }
                 },
                 .horizontal => {
                     const divider: u32 = if (bounds.height > 1) 1 else 0;
                     const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
-                    const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
-                    const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                    first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                    second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    if (cell_h > 0) {
+                        const total_rows = usable_h / cell_h;
+                        const first_rows = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_rows)) * ratio));
+                        const first_h = first_rows * cell_h;
+                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    } else {
+                        const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+                    }
                 },
             }
-            layoutVisibleTree(first, first_bounds, out, written, skip_pane);
-            layoutVisibleTree(second, second_bounds, out, written, skip_pane);
+            layoutVisibleTree(first, first_bounds, out, written, skip_pane, cell_w, cell_h);
+            layoutVisibleTree(second, second_bounds, out, written, skip_pane, cell_w, cell_h);
         },
     }
 }
@@ -457,15 +495,15 @@ pub const Tab = struct {
             .y = 0,
             .width = window_width,
             .height = window_height,
-        }, out);
+        }, out, 0, 0);
     }
 
-    pub fn computeLayoutInBounds(self: *Tab, bounds: PaneBounds, out: []LayoutLeaf) []LayoutLeaf {
+    pub fn computeLayoutInBounds(self: *Tab, bounds: PaneBounds, out: []LayoutLeaf, cell_w: u32, cell_h: u32) []LayoutLeaf {
         var written: usize = 0;
         if (self.maximized_pane) |pane| {
             if (self.maximized_show_background) {
                 if (self.root_split) |root| {
-                    layoutVisibleTree(root, bounds, out, &written, null);
+                    layoutVisibleTree(root, bounds, out, &written, null, cell_w, cell_h);
                 }
             }
             if (written < out.len) {
@@ -473,7 +511,7 @@ pub const Tab = struct {
                 written += 1;
             }
         } else if (self.root_split) |root| {
-            layoutVisibleTree(root, bounds, out, &written, null);
+            layoutVisibleTree(root, bounds, out, &written, null, cell_w, cell_h);
         }
 
         for (self.panes.items) |pane| {
@@ -1696,7 +1734,7 @@ test "split pane ratio applies to new pane" {
 
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 100 };
-    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
 
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
     try std.testing.expectEqual(@as(u32, 299), leaves[1].bounds.width);
@@ -1730,7 +1768,7 @@ test "maximized pane takes full tab bounds" {
     const bounds = PaneBounds{ .x = 10, .y = 20, .width = 1200, .height = 800 };
 
     _ = tab.setPaneMaximized(second, true, false);
-    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
 
     try std.testing.expectEqual(@as(usize, 1), leaves.len);
     try std.testing.expect(leaves[0].pane == second);
@@ -1764,7 +1802,7 @@ test "maximized pane background keeps tiled panes visible" {
     const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 700 };
 
     _ = tab.setPaneMaximized(right, true, true);
-    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
 
     try std.testing.expectEqual(@as(usize, 3), leaves.len);
     try std.testing.expect(leaves[0].pane == left);

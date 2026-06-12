@@ -111,6 +111,9 @@ function M.setup(hollow, host_api)
       id = pane_id,
       pid = host_api.get_pane_pid(pane_id),
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
+      active_screen = host_api.get_pane_active_screen
+          and host_api.get_pane_active_screen(pane_id)
+        or "primary",
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
       foreground_process = host_api.get_pane_foreground_process

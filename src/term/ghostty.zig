@@ -311,6 +311,11 @@ pub const KittyGraphicsPlacementRenderInfo = extern struct {
     source_height: u32,
 };
 
+pub const TerminalScreen = enum(u32) {
+    primary = 0,
+    alternate = 1,
+};
+
 pub const Mode = enum(u32) {
     focus_event = 1004,
     bracketed_paste = 2004,
@@ -850,6 +855,16 @@ pub const Runtime = struct {
             }
         }
         return null;
+    }
+
+    pub fn terminalActiveScreen(self: *Runtime, handle: ?*anyopaque) TerminalScreen {
+        if (handle) |terminal| {
+            var screen: u32 = 0;
+            if (self.terminal_get(terminal, @intFromEnum(TerminalData.active_screen), &screen) == success) {
+                return @enumFromInt(screen);
+            }
+        }
+        return .primary;
     }
 
     pub fn terminalScrollbar(self: *Runtime, handle: ?*anyopaque) ?TerminalScrollbar {

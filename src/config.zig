@@ -304,6 +304,7 @@ pub const Config = struct {
     /// line count because storage depends on row width and styling density.
     scrollback: usize = 10_000_000,
     terminal_padding: TerminalPadding = .{},
+    alternate_screen_padding: TerminalPadding = .{},
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
     unfocused_pane: UnfocusedPane = .{},

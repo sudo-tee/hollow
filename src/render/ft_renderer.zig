@@ -700,6 +700,7 @@ pub const FtRenderer = struct {
     cell_h: f32,
     ascender: f32,
     font_size_px: f32, // physical pixels = font_size * dpi_scale
+    dpi_scale: f32,
     padding_x: f32,
     padding_y: f32,
     coverage_boost: f32,
@@ -1119,6 +1120,7 @@ pub const FtRenderer = struct {
             .cell_h = cell_h,
             .ascender = baseline_ascender,
             .font_size_px = font_size_px,
+            .dpi_scale = cfg.dpi_scale,
             .padding_x = cfg.padding_x * cfg.dpi_scale,
             .padding_y = cfg.padding_y * cfg.dpi_scale,
             .coverage_boost = cfg.coverage_boost,

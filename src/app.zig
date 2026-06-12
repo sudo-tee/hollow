@@ -2451,6 +2451,7 @@ pub const App = struct {
             .move_pane_to_workspace = luaMovePaneToWorkspaceCallback,
             .send_text_to_pane = luaSendTextToPaneCallback,
             .get_pane_domain = luaGetPaneDomainCallback,
+            .get_pane_active_screen = luaGetPaneActiveScreenCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
             .set_leader_state = luaSetLeaderStateCallback,
             .set_bar_cache_state = luaSetBarCacheStateCallback,
@@ -4478,8 +4479,15 @@ pub const App = struct {
         return if (self.scrollbarVisible(pane.scrollbar())) self.config.scrollbar.gutterWidth() else 0;
     }
 
+    fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
+        return if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+            self.config.alternate_screen_padding
+        else
+            self.config.terminal_padding;
+    }
+
     fn paneHorizontalReserved(self: *const App, pane: *const Pane) u32 {
-        return self.config.terminal_padding.horizontal() + self.paneScrollbarGutter(pane);
+        return self.panePadding(pane).horizontal() + self.paneScrollbarGutter(pane);
     }
 
     pub fn hasPane(self: *App, needle: *const Pane) bool {
@@ -4613,19 +4621,26 @@ pub const App = struct {
     };
 
     fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
-        const pad = self.config.terminal_padding;
+        const pad = self.panePadding(pane);
         const scrollbar_gutter = @min(bounds.width, self.paneScrollbarGutter(pane));
         const trim_x = @min(bounds.width, pad.horizontal() + scrollbar_gutter);
         const trim_y = @min(bounds.height, pad.vertical());
         const inner_w = @max(@as(u32, 1), bounds.width - trim_x);
         const inner_h = @max(@as(u32, 1), bounds.height - trim_y);
+        // Snap to cell boundaries so the grid always occupies an exact number of
+        // cells. The leftover pixels (inner_w - snapped_w) become invisible
+        // background-color space inside the padding zone.
+        const cell_w = @max(1, self.cell_width_px);
+        const cell_h = @max(1, self.cell_height_px);
+        const snapped_w = (inner_w / cell_w) * cell_w;
+        const snapped_h = (inner_h / cell_h) * cell_h;
         const inset_left = @min(pad.left, bounds.width - inner_w);
         const inset_top = @min(pad.top, bounds.height - inner_h);
         return .{
             .x = bounds.x + inset_left,
             .y = bounds.y + inset_top,
-            .width = inner_w,
-            .height = inner_h,
+            .width = @max(1, snapped_w),
+            .height = @max(1, snapped_h),
         };
     }
 
@@ -5532,7 +5547,7 @@ pub const App = struct {
         const bounds = self.activeLayoutBounds();
         if (self.mux) |*mux| {
             const tab = mux.activeTab() orelse return out[0..0];
-            return tab.computeLayoutInBounds(bounds, out);
+            return tab.computeLayoutInBounds(bounds, out, 0, 0);
         }
         return out[0..0];
     }
@@ -6156,7 +6171,7 @@ pub const App = struct {
                 .width = layout_width,
                 .height = pane_h,
             };
-            const leaves = tab.computeLayoutInBounds(bounds, &layout_buf);
+            const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, self.cell_width_px, self.cell_height_px);
             if (leaves.len > 0) {
                 for (leaves) |leaf| {
                     // Skip panes with zero-size bounds — can happen when the window
@@ -6180,16 +6195,17 @@ pub const App = struct {
                     // The encoder maps absolute surface pixels into pane-local cells
                     // using the full surface size plus the pane's outer padding.
                     const scrollbar_gutter = self.paneScrollbarGutter(leaf.pane);
+                    const pad = self.panePadding(leaf.pane);
                     leaf.pane.setMouseSize(
                         runtime,
                         leaf.bounds.width,
                         leaf.bounds.height,
                         self.cell_width_px,
                         self.cell_height_px,
-                        self.config.terminal_padding.top,
-                        self.config.terminal_padding.bottom,
-                        self.config.terminal_padding.left,
-                        self.config.terminal_padding.right + scrollbar_gutter,
+                        pad.top,
+                        pad.bottom,
+                        pad.left,
+                        pad.right + scrollbar_gutter,
                     );
                     leaf.pane.render_state_ready = true;
                 }
@@ -6199,10 +6215,11 @@ pub const App = struct {
                 if (pixel_width == 0 or pane_h == 0) return;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
+                    const pad = self.panePadding(pane);
                     const scrollbar_gutter = self.paneScrollbarGutter(pane);
-                    const horizontal_reserved = self.config.terminal_padding.horizontal() + scrollbar_gutter;
+                    const horizontal_reserved = pad.horizontal() + scrollbar_gutter;
                     const inner_width = if (layout_width > horizontal_reserved) layout_width - horizontal_reserved else 1;
-                    const inner_height = if (pane_h > self.config.terminal_padding.vertical()) pane_h - self.config.terminal_padding.vertical() else 1;
+                    const inner_height = if (pane_h > pad.vertical()) pane_h - pad.vertical() else 1;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
                     if (recreate_render_helpers) {
@@ -6220,10 +6237,10 @@ pub const App = struct {
                         pane_h,
                         self.cell_width_px,
                         self.cell_height_px,
-                        self.config.terminal_padding.top,
-                        self.config.terminal_padding.bottom,
-                        self.config.terminal_padding.left,
-                        self.config.terminal_padding.right + scrollbar_gutter,
+                        pad.top,
+                        pad.bottom,
+                        pad.left,
+                        pad.right + scrollbar_gutter,
                     );
                     pane.render_state_ready = true;
                 }
@@ -6850,6 +6867,12 @@ fn luaGetTabActivePaneIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
 fn luaGetTabIndexByIdCallback(app_ptr: *anyopaque, tab_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.tabIndexById(tab_id) orelse std.math.maxInt(usize);
+}
+
+fn luaGetPaneActiveScreenCallback(app_ptr: *anyopaque, pane_id: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return 0;
+    return pane.active_screen;
 }
 
 fn luaGetPanePidCallback(app_ptr: *anyopaque, pane_id: usize) usize {
