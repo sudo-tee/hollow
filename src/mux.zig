@@ -1296,7 +1296,6 @@ pub const Mux = struct {
         const tab = self.activeTab() orelse return;
         const current = tab.activePane() orelse return;
         const root = tab.root_split orelse return;
-        // Find the innermost split node along `direction` that contains `current`.
         if (findSplitContaining(root, current, direction)) |node| {
             node.ratio = std.math.clamp(node.ratio + delta, 0.1, 0.9);
         }

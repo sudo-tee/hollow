@@ -221,6 +221,7 @@ pub const AppCallbacks = struct {
     move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
+    send_key_to_pane: *const fn (app: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
     set_leader_state: *const fn (app: *anyopaque, active: bool, expires_at_ms: i64) void,
     set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
@@ -1091,19 +1092,6 @@ pub const Runtime = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const tc_ptr: [*]const u8 = @ptrCast(&self.context.timed_callback_refs);
-        const tc_bytes: [24]u8 = tc_ptr[0..24].*;
-        std.log.info("runDeferredCallbacks: self={*}, context={*}, deferred.ptr={*}, deferred.len={d}, deferred.cap={d}, timed.ptr={*}, timed.len={d}, timed.cap={d}, raw={x}", .{
-            self,
-            self.context,
-            self.context.deferred_callback_refs.items.ptr,
-            self.context.deferred_callback_refs.items.len,
-            self.context.deferred_callback_refs.capacity,
-            self.context.timed_callback_refs.items.ptr,
-            self.context.timed_callback_refs.items.len,
-            self.context.timed_callback_refs.capacity,
-            tc_bytes,
-        });
         const api = self.context.api;
 
         // Fire immediate deferred callbacks.
@@ -1999,6 +1987,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_send_text_to_pane, 1);
         api.set_field(self.state, -2, "send_text_to_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_send_key_to_pane, 1);
+        api.set_field(self.state, -2, "send_key_to_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_domain, 1);
@@ -5810,6 +5802,31 @@ fn l_close_pane_by_id(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.close_pane_by_id(cbs.app, pane_id)) 1 else 0);
+    return 1;
+}
+
+fn l_send_key_to_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    var key_len: usize = 0;
+    const key_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+        api.to_lstring(state, 2, &key_len)
+    else
+        null;
+    const key_name: []const u8 = if (key_ptr) |p| p[0..key_len] else "";
+    const mods: u32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+        @as(u32, @intFromFloat(api.to_number(state, 3)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.send_key_to_pane(cbs.app, pane_id, key_name, mods)) 1 else 0);
     return 1;
 }
 

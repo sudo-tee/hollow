@@ -1104,6 +1104,10 @@ function term.prev_tab() end
 ---@param tab_id? integer
 function term.set_title(title, tab_id) end
 
+---@param combo string  e.g. "<C-h>", "<C-A-Left>", "home"
+---@param pane_id? integer
+function term.send_key(combo, pane_id) end
+
 ---@param text string
 ---@param pane_id? integer
 function term.send_text(text, pane_id) end

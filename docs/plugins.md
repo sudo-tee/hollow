@@ -5,8 +5,10 @@ The runtime clones git-based plugins, autoloads any `hollow_plugin/*.lua`
 files, and calls `setup(opts)` on the module if it provides one.
 
 For the API see [`hollow.plugins`](reference/lua/plugins.md).
-For a working example see
-[`examples/plugins/hollow-spirit`](../examples/plugins/hollow-spirit).
+For working examples see
+[`examples/plugins/hollow-spirit`](../examples/plugins/hollow-spirit) (general)
+and [`examples/plugins/smart-splits`](../examples/plugins/smart-splits) (nvim
+integration).
 
 ## Declaring plugins
 

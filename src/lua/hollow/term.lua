@@ -519,6 +519,76 @@ function M.setup(hollow, host_api)
     end
   end
 
+  local MODS_CTRL = 0x02
+  local MODS_ALT = 0x04
+  local MODS_SHIFT = 0x01
+  local MODS_SUPER = 0x08
+
+  local function normalize_key_name(key)
+    local lower = key:lower()
+    if lower == "left" then return "arrow_left" end
+    if lower == "right" then return "arrow_right" end
+    if lower == "up" then return "arrow_up" end
+    if lower == "down" then return "arrow_down" end
+    if lower == "esc" then return "escape" end
+    if lower == "cr" or lower == "return" then return "enter" end
+    if lower == "bs" then return "backspace" end
+    if lower == "tab" then return "tab" end
+    if lower == "space" or key == " " then return "space" end
+    if lower == "pageup" or lower == "pgup" then return "page_up" end
+    if lower == "pagedown" or lower == "pgdn" or lower == "pgdown" then return "page_down" end
+    if lower == "home" then return "home" end
+    if lower == "end" then return "end" end
+    if lower == "insert" or lower == "ins" then return "insert" end
+    if lower == "delete" or lower == "del" then return "delete" end
+    return lower
+  end
+
+  local function modifier_mask(token)
+    local lower = token:lower()
+    if lower == "ctrl" or lower == "c" then return MODS_CTRL end
+    if lower == "alt" or lower == "a" or lower == "m" or lower == "meta" then return MODS_ALT end
+    if lower == "shift" or lower == "s" then return MODS_SHIFT end
+    if lower == "super" or lower == "d" or lower == "cmd" or lower == "w" then return MODS_SUPER end
+    return 0
+  end
+
+  function hollow.term.send_key(combo, pane_id)
+    if type(combo) ~= "string" then
+      error("hollow.term.send_key(combo, pane_id?) expects a string combo")
+    end
+
+    local mods = 0
+    local key
+
+    if combo:sub(1, 1) == "<" and combo:sub(-1, -1) == ">" then
+      local inner = combo:sub(2, -2)
+      local parts = {}
+      for part in inner:gmatch("[^-]+") do
+        table.insert(parts, part)
+      end
+      if #parts == 0 then
+        error("empty key chord")
+      end
+      key = normalize_key_name(table.remove(parts))
+      for _, mod in ipairs(parts) do
+        mods = mods + modifier_mask(mod)
+      end
+    else
+      key = normalize_key_name(combo)
+    end
+
+    if pane_id ~= nil then
+      if not host_api.send_key_to_pane(pane_id, key, mods) then
+        error("failed to send key: " .. tostring(combo))
+      end
+      return
+    end
+    if not host_api.send_key_to_pane(host_api.get_current_pane_id(), key, mods) then
+      error("failed to send key: " .. tostring(combo))
+    end
+  end
+
   function hollow.term.send_text(text, pane_id)
     if type(text) ~= "string" then
       error("hollow.term.send_text(text) expects a string")

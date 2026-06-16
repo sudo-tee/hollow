@@ -8,6 +8,8 @@ personal `init.lua` or a plugin.
   recipes
 - [UI recipes](ui-recipes.md) — widgets, bars, pickers, overlays
 - [Plugin authoring](plugin-authoring.md) — a complete plugin walkthrough
+- [Smart splits](../examples/plugins/smart-splits) — bidirectional pane
+  navigation between hollow and nvim via smart-splits.nvim
 
 The recipes assume the API surface described in
 [Reference](../reference/README.md).

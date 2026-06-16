@@ -2450,6 +2450,7 @@ pub const App = struct {
             .move_tab_to_workspace = luaMoveTabToWorkspaceCallback,
             .move_pane_to_workspace = luaMovePaneToWorkspaceCallback,
             .send_text_to_pane = luaSendTextToPaneCallback,
+            .send_key_to_pane = luaSendKeyToPaneCallback,
             .get_pane_domain = luaGetPaneDomainCallback,
             .get_pane_active_screen = luaGetPaneActiveScreenCallback,
             .is_leader_active = luaIsLeaderActiveCallback,
@@ -3125,6 +3126,30 @@ pub const App = struct {
         const pane = self.findPaneById(pane_id) orelse return false;
         pane.sendText(text);
         return true;
+    }
+
+    pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32) bool {
+        const pane = self.findPaneById(pane_id) orelse return false;
+        const rt = if (self.ghostty) |*r| r else return false;
+        const key = std.meta.stringToEnum(ghostty.Key, key_name) orelse return false;
+
+        var buf: [128]u8 = undefined;
+        var text_buf: [4]u8 = undefined;
+        const effective_text = legacyPrintableKeyText(key, mods, &text_buf);
+        const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
+
+        if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (effective_text) |t| firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
+            pane.sendText(bytes);
+            return true;
+        }
+
+        if (effective_text != null and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0) {
+            pane.sendText("\x1b");
+            pane.sendText(effective_text.?);
+            return true;
+        }
+
+        return false;
     }
 
     pub fn setCellSize(self: *App, cell_w: u32, cell_h: u32) void {
@@ -7023,6 +7048,11 @@ fn luaRefreshLiveConfigCallback(app_ptr: *anyopaque) void {
 fn luaSendTextToPaneCallback(app_ptr: *anyopaque, pane_id: usize, text: []const u8) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.sendTextToPane(pane_id, text);
+}
+
+fn luaSendKeyToPaneCallback(app_ptr: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.sendKeyToPane(pane_id, key_name, mods);
 }
 
 fn luaGetTabCountCallback(app_ptr: *anyopaque) usize {
