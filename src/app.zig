@@ -3341,7 +3341,10 @@ pub const App = struct {
 
     pub fn selectionRange(self: *const App, pane: *const Pane) ?selection.Range {
         const history_range = self.selectionHistoryRange(pane) orelse return null;
-        const scrollbar = pane.scrollbar();
+        const scrollbar = if (self.ghostty) |*rt|
+            @constCast(rt).terminalScrollbar(pane.terminal) orelse return null
+        else
+            pane.scrollbar();
         const visible_top: usize = @intCast(scrollbarTopRow(scrollbar));
         const visible_rows: usize = @intCast(@max(@as(u64, 1), @min(scrollbar.total, scrollbar.len)));
         return historySelectionRangeInViewport(history_range, visible_top, visible_rows);
@@ -6534,10 +6537,8 @@ fn pointTagForHistoryRow(row: usize, scrollback_rows: usize) ghostty.PointTag {
 }
 
 fn pointYForHistoryRow(row: usize, scrollback_rows: usize) u32 {
-    return if (row < scrollback_rows)
-        @intCast(row)
-    else
-        @intCast(row - scrollback_rows);
+    _ = scrollback_rows;
+    return @intCast(row);
 }
 
 fn gridRefForHistoryPoint(runtime: *GhosttyRuntime, terminal: ?*anyopaque, row: usize, col: usize, scrollback_rows: usize) ?ghostty.GridRef {
