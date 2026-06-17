@@ -4379,8 +4379,22 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             const bx: f32 = @floatFromInt(g_drag_bounds.x);
             const by: f32 = @floatFromInt(g_drag_bounds.y);
             const new_ratio = switch (g_drag_direction) {
-                .vertical => (event.mouse_x - bx) / bw,
-                .horizontal => (event.mouse_y - by) / bh,
+                .vertical => blk: {
+                    const raw = (event.mouse_x - bx) / bw;
+                    const cell_w = @max(@as(u32, 1), app.cell_width_px);
+                    const usable = if (g_drag_bounds.width > 1) g_drag_bounds.width - 1 else g_drag_bounds.width;
+                    const total: u32 = @max(1, usable / cell_w);
+                    const first = @max(1, @min(total - 1, @as(u32, @intFromFloat(@round(raw * @as(f32, @floatFromInt(total)))))));
+                    break :blk @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(total));
+                },
+                .horizontal => blk: {
+                    const raw = (event.mouse_y - by) / bh;
+                    const cell_h = @max(@as(u32, 1), app.cell_height_px);
+                    const usable = if (g_drag_bounds.height > 1) g_drag_bounds.height - 1 else g_drag_bounds.height;
+                    const total: u32 = @max(1, usable / cell_h);
+                    const first = @max(1, @min(total - 1, @as(u32, @intFromFloat(@round(raw * @as(f32, @floatFromInt(total)))))));
+                    break :blk @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(total));
+                },
             };
             _ = app.enqueueMouse(.{ .divider_ratio = .{
                 .node = node,

@@ -42,6 +42,24 @@ pub const DividerHit = struct {
     bounds: PaneBounds,
 };
 
+fn splitCellCount(total: u32, ratio: f32) u32 {
+    if (total <= 1) return total;
+
+    const clamped_ratio = std.math.clamp(ratio, 0.0, 1.0);
+    return @max(1, @min(total - 1, @as(u32, @intFromFloat(@round(@as(f32, @floatFromInt(total)) * clamped_ratio)))));
+}
+
+fn splitSpan(usable: u32, cell: u32, ratio: f32) u32 {
+    if (cell == 0) {
+        return @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable)) * std.math.clamp(ratio, 0.0, 1.0)));
+    }
+
+    const total = usable / cell;
+    if (total == 0) return 0;
+
+    return splitCellCount(total, ratio) * cell;
+}
+
 /// Walk the split tree rooted at `node` with the given pixel `bounds` and
 /// return the first split seam within `radius` pixels of (`mx`, `my`).
 /// Returns null when the cursor is not near any divider.
@@ -96,6 +114,46 @@ pub fn hitTestDivider(
     return null;
 }
 
+pub fn boundsForNode(
+    node: *SplitNode,
+    target: *const SplitNode,
+    bounds: PaneBounds,
+    cell_w: u32,
+    cell_h: u32,
+) ?PaneBounds {
+    if (node == target) return bounds;
+    if (node.kind != .split) return null;
+
+    const first = node.first orelse return null;
+    const second = node.second orelse return null;
+    const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
+    var first_bounds: PaneBounds = undefined;
+    var second_bounds: PaneBounds = undefined;
+
+    switch (node.direction) {
+        .vertical => {
+            const divider: u32 = if (bounds.width > 1) 1 else 0;
+            const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
+            const first_w = splitSpan(usable_w, cell_w, ratio);
+            const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+            first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
+            second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
+        },
+        .horizontal => {
+            const divider: u32 = if (bounds.height > 1) 1 else 0;
+            const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
+            const first_h = splitSpan(usable_h, cell_h, ratio);
+            const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+            first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
+            second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
+        },
+    }
+
+    if (boundsForNode(first, target, first_bounds, cell_w, cell_h)) |result| return result;
+    if (boundsForNode(second, target, second_bounds, cell_w, cell_h)) |result| return result;
+    return null;
+}
+
 /// Walk a SplitNode tree and fill `out` with one LayoutLeaf per pane leaf.
 /// Returns the number of entries written.
 /// `bounds` is the pixel rectangle available to `node`.
@@ -125,14 +183,12 @@ pub fn layoutSplitTree(
                     const divider: u32 = if (bounds.width > 1) 1 else 0;
                     const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
                     if (cell_w > 0) {
-                        const total_cells = usable_w / cell_w;
-                        const first_cells = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_cells)) * ratio));
-                        const first_w = first_cells * cell_w;
+                        const first_w = splitSpan(usable_w, cell_w, ratio);
                         const second_w = if (usable_w > first_w) usable_w - first_w else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
                         second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
                     } else {
-                        const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                        const first_w = splitSpan(usable_w, cell_w, ratio);
                         const second_w = if (usable_w > first_w) usable_w - first_w else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
                         second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
@@ -142,14 +198,12 @@ pub fn layoutSplitTree(
                     const divider: u32 = if (bounds.height > 1) 1 else 0;
                     const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
                     if (cell_h > 0) {
-                        const total_rows = usable_h / cell_h;
-                        const first_rows = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_rows)) * ratio));
-                        const first_h = first_rows * cell_h;
+                        const first_h = splitSpan(usable_h, cell_h, ratio);
                         const second_h = if (usable_h > first_h) usable_h - first_h else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
                         second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
                     } else {
-                        const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                        const first_h = splitSpan(usable_h, cell_h, ratio);
                         const second_h = if (usable_h > first_h) usable_h - first_h else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
                         second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
@@ -190,14 +244,12 @@ fn layoutVisibleTree(
                     const divider: u32 = if (bounds.width > 1) 1 else 0;
                     const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
                     if (cell_w > 0) {
-                        const total_cells = usable_w / cell_w;
-                        const first_cells = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_cells)) * ratio));
-                        const first_w = first_cells * cell_w;
+                        const first_w = splitSpan(usable_w, cell_w, ratio);
                         const second_w = if (usable_w > first_w) usable_w - first_w else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
                         second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
                     } else {
-                        const first_w = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_w)) * ratio));
+                        const first_w = splitSpan(usable_w, cell_w, ratio);
                         const second_w = if (usable_w > first_w) usable_w - first_w else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
                         second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
@@ -207,14 +259,12 @@ fn layoutVisibleTree(
                     const divider: u32 = if (bounds.height > 1) 1 else 0;
                     const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
                     if (cell_h > 0) {
-                        const total_rows = usable_h / cell_h;
-                        const first_rows = @as(u32, @intFromFloat(@as(f32, @floatFromInt(total_rows)) * ratio));
-                        const first_h = first_rows * cell_h;
+                        const first_h = splitSpan(usable_h, cell_h, ratio);
                         const second_h = if (usable_h > first_h) usable_h - first_h else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
                         second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
                     } else {
-                        const first_h = @as(u32, @intFromFloat(@as(f32, @floatFromInt(usable_h)) * ratio));
+                        const first_h = splitSpan(usable_h, cell_h, ratio);
                         const second_h = if (usable_h > first_h) usable_h - first_h else 0;
                         first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
                         second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
@@ -1011,6 +1061,12 @@ pub const Mux = struct {
         return tab.activeSplitRoot();
     }
 
+    pub fn splitContainingPane(self: *Mux, pane: *Pane, direction: SplitDirection) ?*SplitNode {
+        const tab = self.activeTab() orelse return null;
+        const root = tab.root_split orelse return null;
+        return findSplitContaining(root, pane, direction);
+    }
+
     /// Compute pixel bounds for every pane in the active tab.
     pub fn computeActiveLayout(self: *Mux, window_width: u32, window_height: u32, out: []LayoutLeaf) []LayoutLeaf {
         const tab = self.activeTab() orelse return out[0..0];
@@ -1738,6 +1794,38 @@ test "split pane ratio applies to new pane" {
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
     try std.testing.expectEqual(@as(u32, 299), leaves[1].bounds.width);
     try std.testing.expectEqual(@as(u32, 700), leaves[0].bounds.width);
+}
+
+test "horizontal split rounds to nearest whole row" {
+    const allocator = std.testing.allocator;
+
+    const tab = try allocator.create(Tab);
+    defer allocator.destroy(tab);
+    tab.* = Tab.init(allocator, 1);
+    defer {
+        if (tab.root_split) |root| {
+            root.deinit(allocator);
+            allocator.destroy(root);
+        }
+        for (tab.panes.items) |pane| allocator.destroy(pane);
+        tab.panes.deinit(allocator);
+    }
+
+    const first = try allocator.create(Pane);
+    first.* = Pane.init(allocator);
+    try tab.appendPane(first);
+
+    const second = try allocator.create(Pane);
+    second.* = Pane.init(allocator);
+    try tab.splitActivePane(second, .horizontal, @as(f32, 16.0 / 34.0));
+
+    var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+    const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 34 * 20 + 1 };
+    const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 10, 20);
+
+    try std.testing.expectEqual(@as(usize, 2), leaves.len);
+    try std.testing.expectEqual(@as(u32, 18 * 20), leaves[0].bounds.height);
+    try std.testing.expectEqual(@as(u32, 16 * 20 + 1), leaves[1].bounds.height);
 }
 
 test "maximized pane takes full tab bounds" {

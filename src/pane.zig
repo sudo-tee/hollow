@@ -197,6 +197,9 @@ pub const Pane = struct {
     mouse_tracking_logged_initial: bool = false,
     /// Last known active screen (0=primary, 1=alternate).  Used for per-pane padding.
     active_screen: u32 = 0,
+    /// Queue a one-shot PTY repaint nudge after alternate-screen entry settles.
+    pending_alt_screen_nudge: bool = false,
+    alt_screen_nudge_quiet_ticks: u8 = 0,
     last_has_pending_ns: i128 = 0,
     last_sanitize_ns: i128 = 0,
     last_child_alive_ns: i128 = 0,
@@ -697,15 +700,22 @@ pub const Pane = struct {
         }
     }
 
-    /// Force a full ConPTY screen repaint by briefly sending a row-bump SIGWINCH.
-    /// Called after a post-settle VT clear so the shell repaints into the blank buffer.
-    /// We only resize the PTY (not ghostty's terminal buffer) because the VT sequences
-    /// the shell emits are absolute and render correctly inside ghostty's rows×cols grid.
-    pub fn nudgePty(self: *Pane) void {
+    /// Force a repaint by briefly bumping the terminal and PTY row count and then
+    /// restoring it. This mirrors a user resize more closely than a PTY-only nudge.
+    pub fn nudgeResize(self: *Pane, runtime: *GhosttyRuntime, cell_width_px: u32, cell_height_px: u32) void {
+        if (self.cols == 0 or self.rows == 0) return;
+        const bump_rows: u16 = if (self.rows > 1) self.rows - 1 else self.rows + 1;
+        std.log.info("pane.nudgeResize: row-bump cols={d} rows={d}->{}->{}", .{ self.cols, self.rows, bump_rows, self.rows });
+        if (self.terminal) |terminal| {
+            runtime.resizeTerminal(terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
+            runtime.resizeTerminal(terminal, self.cols, self.rows, cell_width_px, cell_height_px);
+        }
+        runtime.updateRenderState(self.render_state, self.terminal) catch {};
+        self.render_dirty = .full;
+        runtime.syncKeyEncoder(self.key_encoder, self.terminal);
+        runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
-                const bump_rows: u16 = if (self.rows > 1) self.rows - 1 else self.rows + 1;
-                std.log.info("pane.nudgePty: row-bump cols={d} rows={d}→{d}→{d}", .{ self.cols, self.rows, bump_rows, self.rows });
                 pty.resize(self.cols, bump_rows);
                 pty.resize(self.cols, self.rows);
             }

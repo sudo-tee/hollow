@@ -679,6 +679,12 @@ pub const App = struct {
     pending_drag_layout_resize: bool = false,
     pending_split_ratio_node: ?*SplitNode = null,
     pending_split_ratio: f32 = 0.5,
+    pending_post_split_snap: ?struct {
+        node: *SplitNode,
+        ratio: f32,
+        direction: SplitDirection,
+    } = null,
+    debug_split_trace_frames: u8 = 0,
     /// Set when all panes/tabs have closed; the runtime should call sapp_request_quit().
     pending_quit: bool = false,
     hovered_tab_index: ?usize = null,
@@ -4648,22 +4654,20 @@ pub const App = struct {
         y: f32,
     };
 
-    fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
+    pub fn paneInnerBounds(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneBounds {
         const pad = self.panePadding(pane);
         const scrollbar_gutter = @min(bounds.width, self.paneScrollbarGutter(pane));
-        const trim_x = @min(bounds.width, pad.horizontal() + scrollbar_gutter);
-        const trim_y = @min(bounds.height, pad.vertical());
-        const inner_w = @max(@as(u32, 1), bounds.width - trim_x);
-        const inner_h = @max(@as(u32, 1), bounds.height - trim_y);
-        // Snap to cell boundaries so the grid always occupies an exact number of
-        // cells. The leftover pixels (inner_w - snapped_w) become invisible
-        // background-color space inside the padding zone.
+        const inset_left = @min(pad.left, bounds.width -| scrollbar_gutter);
+        const inset_top = @min(pad.top, bounds.height);
+        const available_w = @max(@as(u32, 1), bounds.width -| inset_left -| scrollbar_gutter);
+        const available_h = @max(@as(u32, 1), bounds.height -| inset_top);
+        // Preserve top/left padding, but let bottom/right padding shrink before
+        // sacrificing a whole row/column. This minimizes visible dead bands when
+        // the pane is just a few pixels short of the next cell.
         const cell_w = @max(1, self.cell_width_px);
         const cell_h = @max(1, self.cell_height_px);
-        const snapped_w = (inner_w / cell_w) * cell_w;
-        const snapped_h = (inner_h / cell_h) * cell_h;
-        const inset_left = @min(pad.left, bounds.width - inner_w);
-        const inset_top = @min(pad.top, bounds.height - inner_h);
+        const snapped_w = (available_w / cell_w) * cell_w;
+        const snapped_h = (available_h / cell_h) * cell_h;
         return .{
             .x = bounds.x + inset_left,
             .y = bounds.y + inset_top,
@@ -5477,11 +5481,48 @@ pub const App = struct {
             .{ .command = command.?, .close_on_exit = close_on_exit }
         else
             null;
-        const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, ratio, domain_name, cwd, floating, launch_command) catch |err| {
+        const split_bounds = blk: {
+            if (previous) |pane| {
+                var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+                const leaves = self.computeActiveLayout(&layout_buf);
+                for (leaves) |leaf| {
+                    if (leaf.pane == pane) {
+                        break :blk PaneBounds{ .x = 0, .y = 0, .width = leaf.bounds.width, .height = leaf.bounds.height };
+                    }
+                }
+                if (pane.width_px > 0 and pane.height_px > 0) {
+                    break :blk PaneBounds{ .x = 0, .y = 0, .width = pane.width_px, .height = pane.height_px };
+                }
+            }
+            break :blk self.activeLayoutBounds();
+        };
+        const snapped_ratio = self.snapSplitRatio(ratio, direction, split_bounds);
+        std.log.info("split-trace create dir={s} requested={d:.4} snapped={d:.4} bounds={d}x{d} cell={d}x{d}", .{
+            @tagName(direction),
+            ratio,
+            snapped_ratio,
+            split_bounds.width,
+            split_bounds.height,
+            self.cell_width_px,
+            self.cell_height_px,
+        });
+        const pane = mux.splitActivePane(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, direction, snapped_ratio, domain_name, cwd, floating, launch_command) catch |err| {
             std.log.err("app: splitPane failed: {s}", .{@errorName(err)});
             if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
             return;
         };
+        if (!floating) {
+            if (previous) |prev| {
+                if (mux.splitContainingPane(prev, direction)) |node| {
+                    self.pending_post_split_snap = .{
+                        .node = node,
+                        .ratio = ratio,
+                        .direction = direction,
+                    };
+                    self.debug_split_trace_frames = 4;
+                }
+            }
+        }
         if (floating) {
             if (x != null or y != null or width != null or height != null) {
                 _ = mux.setFloatingPaneBounds(
@@ -5509,6 +5550,26 @@ pub const App = struct {
         self.requestLayoutResize(false);
         std.log.info("app: splitPane total_ms={d}", .{std.time.milliTimestamp() - start_ms});
         std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
+    }
+
+    fn snapSplitRatio(self: *const App, ratio: f32, direction: SplitDirection, bounds: PaneBounds) f32 {
+        const cell_w = @max(1, self.cell_width_px);
+        const cell_h = @max(1, self.cell_height_px);
+
+        return switch (direction) {
+            .vertical => blk: {
+                const usable = if (bounds.width > 1) bounds.width - 1 else bounds.width;
+                const total: u32 = @max(1, usable / cell_w);
+                const first = @max(1, @min(total - 1, @as(u32, @intFromFloat(@round(ratio * @as(f32, @floatFromInt(total)))))));
+                break :blk @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(total));
+            },
+            .horizontal => blk: {
+                const usable = if (bounds.height > 1) bounds.height - 1 else bounds.height;
+                const total: u32 = @max(1, usable / cell_h);
+                const first = @max(1, @min(total - 1, @as(u32, @intFromFloat(@round(ratio * @as(f32, @floatFromInt(total)))))));
+                break :blk @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(total));
+            },
+        };
     }
 
     pub fn resizePane(self: *App, direction: SplitDirection, delta: f32) void {
@@ -5575,7 +5636,7 @@ pub const App = struct {
         const bounds = self.activeLayoutBounds();
         if (self.mux) |*mux| {
             const tab = mux.activeTab() orelse return out[0..0];
-            return tab.computeLayoutInBounds(bounds, out, 0, 0);
+            return tab.computeLayoutInBounds(bounds, out, self.cell_width_px, self.cell_height_px);
         }
         return out[0..0];
     }
@@ -5910,6 +5971,28 @@ pub const App = struct {
             }
             self.pending_split_ratio_node = null;
         }
+        if (self.pending_post_split_snap) |pending| {
+            if (self.isSplitNodeValid(pending.node)) {
+                const mux = if (self.mux) |*m| m else null;
+                if (mux) |*value| {
+                    if (value.*.activeSplitRoot()) |root| {
+                        const bounds = self.activeLayoutBounds();
+                        if (mux_mod.boundsForNode(root, pending.node, bounds, self.cell_width_px, self.cell_height_px)) |node_bounds| {
+                            const corrected_new_ratio = self.snapSplitRatio(pending.ratio, pending.node.direction, .{ .x = 0, .y = 0, .width = node_bounds.width, .height = node_bounds.height });
+                            std.log.info("split-trace post dir={s} requested={d:.4} corrected={d:.4} node_bounds={d}x{d}", .{
+                                @tagName(pending.direction),
+                                pending.ratio,
+                                corrected_new_ratio,
+                                node_bounds.width,
+                                node_bounds.height,
+                            });
+                            pending.node.ratio = std.math.clamp(1.0 - corrected_new_ratio, 0.1, 0.9);
+                        }
+                    }
+                }
+            }
+            self.pending_post_split_snap = null;
+        }
         if (self.ghostty) |*runtime| {
             std.log.info("flushPendingLayoutResize resizeAllPanes window={d}x{d}", .{ self.config.window_width, self.config.window_height });
             self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers, false, skip_unchanged_pty);
@@ -5948,6 +6031,7 @@ pub const App = struct {
         self.requestLayoutResize(false);
         // Invalidate pending_split_ratio_node — the tree has changed.
         self.pending_split_ratio_node = null;
+        self.pending_post_split_snap = null;
     }
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
@@ -5970,6 +6054,7 @@ pub const App = struct {
             var total_encoder_sync_ns: i128 = 0;
             while (panes.next()) |pane| {
                 const pane_is_active = (self.activePane() == pane);
+                const active_screen_before = pane.active_screen;
                 // Let the active pane drain a larger PTY backlog per tick so VT
                 // parsing tracks the producer more like Ghostty's dedicated read
                 // path instead of spreading one burst across many frame ticks.
@@ -5978,6 +6063,22 @@ pub const App = struct {
                 pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
+                if (pane.active_screen != active_screen_before) {
+                    std.log.info("app: pane screen changed pane={x} {d}->{d}, resizing layout", .{
+                        @intFromPtr(pane),
+                        active_screen_before,
+                        pane.active_screen,
+                    });
+                    if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) {
+                        pane.pending_alt_screen_nudge = true;
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                    } else {
+                        pane.pending_alt_screen_nudge = false;
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                    }
+                    self.requestLayoutResize(false);
+                }
+                const had_pty_output_this_tick = pane.pty_received_data;
                 total_pty_read_ns += pane.last_pty_read_ns;
                 total_terminal_write_ns += pane.last_terminal_write_ns;
                 total_terminal_write_bytes += pane.last_terminal_write_bytes;
@@ -6111,6 +6212,33 @@ pub const App = struct {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }
                 }
+                if (pane.pending_alt_screen_nudge) {
+                    if (pane.active_screen != @intFromEnum(ghostty.TerminalScreen.alternate)) {
+                        pane.pending_alt_screen_nudge = false;
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                    } else if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize) {
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        self.last_visual_activity_ns = now_ns;
+                    } else if (had_pty_output_this_tick) {
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        self.last_visual_activity_ns = now_ns;
+                    } else {
+                        pane.alt_screen_nudge_quiet_ticks +|= 1;
+                        if (pane.alt_screen_nudge_quiet_ticks >= 3) {
+                            std.log.info("app: pane alt-screen repaint nudge pane={x} rows={d} cols={d}", .{
+                                @intFromPtr(pane),
+                                pane.rows,
+                                pane.cols,
+                            });
+                            pane.nudgeResize(runtime, self.cell_width_px, self.cell_height_px);
+                            pane.pending_alt_screen_nudge = false;
+                            pane.alt_screen_nudge_quiet_ticks = 0;
+                            self.last_visual_activity_ns = now_ns;
+                        } else {
+                            self.last_visual_activity_ns = now_ns;
+                        }
+                    }
+                }
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
             }
@@ -6220,20 +6348,35 @@ pub const App = struct {
                     leaf.pane.y_px = leaf.bounds.y;
                     const pane_skip_pty = skip_pty or (skip_unchanged_pty and leaf.pane.cols == cols and leaf.pane.rows == rows);
                     leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
-                    // The encoder maps absolute surface pixels into pane-local cells
-                    // using the full surface size plus the pane's outer padding.
-                    const scrollbar_gutter = self.paneScrollbarGutter(leaf.pane);
-                    const pad = self.panePadding(leaf.pane);
+                    const actual_left = inner.x - leaf.bounds.x;
+                    const actual_top = inner.y - leaf.bounds.y;
+                    const actual_right = leaf.bounds.width - actual_left - inner.width;
+                    const actual_bottom = leaf.bounds.height - actual_top - inner.height;
+                    if (self.debug_split_trace_frames > 0) {
+                        std.log.info("split-trace leaf pane={x} outer={d}x{d} inner={d}x{d} insets=t{d} r{d} b{d} l{d} rows={d} cols={d}", .{
+                            @intFromPtr(leaf.pane),
+                            leaf.bounds.width,
+                            leaf.bounds.height,
+                            inner.width,
+                            inner.height,
+                            actual_top,
+                            actual_right,
+                            actual_bottom,
+                            actual_left,
+                            rows,
+                            cols,
+                        });
+                    }
                     leaf.pane.setMouseSize(
                         runtime,
                         leaf.bounds.width,
                         leaf.bounds.height,
                         self.cell_width_px,
                         self.cell_height_px,
-                        pad.top,
-                        pad.bottom,
-                        pad.left,
-                        pad.right + scrollbar_gutter,
+                        actual_top,
+                        actual_bottom,
+                        actual_left,
+                        actual_right,
                     );
                     leaf.pane.render_state_ready = true;
                 }
@@ -6243,11 +6386,10 @@ pub const App = struct {
                 if (pixel_width == 0 or pane_h == 0) return;
                 var panes = tab.paneIterator();
                 while (panes.next()) |pane| {
-                    const pad = self.panePadding(pane);
-                    const scrollbar_gutter = self.paneScrollbarGutter(pane);
-                    const horizontal_reserved = pad.horizontal() + scrollbar_gutter;
-                    const inner_width = if (layout_width > horizontal_reserved) layout_width - horizontal_reserved else 1;
-                    const inner_height = if (pane_h > pad.vertical()) pane_h - pad.vertical() else 1;
+                    const outer = PaneBounds{ .x = left_inset, .y = tbh, .width = layout_width, .height = pane_h };
+                    const inner = self.paneInnerBounds(pane, outer);
+                    const inner_width = inner.width;
+                    const inner_height = inner.height;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
                     if (recreate_render_helpers) {
@@ -6259,20 +6401,25 @@ pub const App = struct {
                     pane.y_px = tbh;
                     const pane_skip_pty = skip_pty or (skip_unchanged_pty and pane.cols == cols and pane.rows == rows);
                     pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
+                    const actual_left = inner.x - outer.x;
+                    const actual_top = inner.y - outer.y;
+                    const actual_right = outer.width - actual_left - inner.width;
+                    const actual_bottom = outer.height - actual_top - inner.height;
                     pane.setMouseSize(
                         runtime,
                         layout_width,
                         pane_h,
                         self.cell_width_px,
                         self.cell_height_px,
-                        pad.top,
-                        pad.bottom,
-                        pad.left,
-                        pad.right + scrollbar_gutter,
+                        actual_top,
+                        actual_bottom,
+                        actual_left,
+                        actual_right,
                     );
                     pane.render_state_ready = true;
                 }
             }
+            if (self.debug_split_trace_frames > 0) self.debug_split_trace_frames -|= 1;
         }
     }
     /// Fire the Lua on_key handler. Returns true if the key was consumed.
