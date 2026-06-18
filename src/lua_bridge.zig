@@ -143,6 +143,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
@@ -553,6 +554,9 @@ pub const BuiltInPayload = union(enum) {
         id: []const u8,
     },
     bottombar_node: struct {
+        id: []const u8,
+    },
+    overlay_node: struct {
         id: []const u8,
     },
     copy_mode: struct {
@@ -2253,6 +2257,11 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "id");
         },
         .bottombar_node => |value| {
+            api.create_table(state, 0, 1);
+            try pushOwnedString(allocator, api, state, value.id);
+            api.set_field(state, -2, "id");
+        },
+        .overlay_node => |value| {
             api.create_table(state, 0, 1);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
@@ -4423,6 +4432,20 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
 
         api.get_field(state, -1, "spacer");
         seg.spacer = api.to_boolean(state, -1) != 0;
+        pop(api, state, 1);
+
+        api.get_field(state, -1, "radius");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            seg.radius = @floatCast(api.to_number(state, -1));
+        }
+        pop(api, state, 1);
+
+        seg.border = parseColorField(api, state, -1, "border");
+
+        api.get_field(state, -1, "border_size");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            seg.border_size = @max(@as(f32, 0.0), @as(f32, @floatCast(api.to_number(state, -1))));
+        }
         pop(api, state, 1);
 
         if (seg.text.len > 0 or seg.spacer) {

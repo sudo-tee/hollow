@@ -120,6 +120,10 @@
 ---@field selected_bg? HollowColor
 ---@field selected_detail_bg? HollowColor
 ---@field selected_fg? HollowColor
+---@field primary_bg? HollowColor
+---@field primary_fg? HollowColor
+---@field destructive_bg? HollowColor
+---@field destructive_fg? HollowColor
 ---@field selected_muted? HollowColor
 ---@field detail? HollowColor
 ---@field notify_fg? HollowColor
@@ -159,7 +163,51 @@
 ---| "window:blurred"
 ---| "copy_mode:changed"
 ---| "copy_mode:search_requested"
+---| "topbar:hover"
+---| "topbar:leave"
+---| "topbar:click"
+---| "bottombar:hover"
+---| "bottombar:leave"
+---| "bottombar:click"
+---| "overlay:hover"
+---| "overlay:leave"
+---| "overlay:click"
+---| "selection:begin"
+---| "selection:cleared"
+---| "window:focused"
+---| "window:blurred"
 ---| string
+
+---@class HollowEventPayloadMap
+---@field ["config:reloaded"] {}
+---@field ["workspace:new"] { workspace: HollowWorkspace, index: integer }
+---@field ["workspace:changed"] { workspace: HollowWorkspace, index: integer }
+---@field ["workspace:closed"] { name: string }
+---@field ["term:title_changed"] { pane: HollowPane, old_title: string, new_title: string }
+---@field ["term:tab_activated"] { tab: HollowTab }
+---@field ["term:tab_closed"] { tab_id: integer }
+---@field ["term:pane_focused"] { pane: HollowPane }
+---@field ["term:pane_layout_changed"] { pane: HollowPane }
+---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
+---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }
+---@field ["term:bell"] { pane: HollowPane }
+---@field ["key:unhandled"] { key: string, mods: string }
+---@field ["window:resized"] { size: HollowSize }
+---@field ["window:focused"] {}
+---@field ["window:blurred"] {}
+---@field ["copy_mode:changed"] { active: boolean, query: string, match_count: integer, match_index: integer|nil, selecting: boolean, block: boolean }
+---@field ["copy_mode:search_requested"] {}
+---@field ["topbar:hover"] { id: string }
+---@field ["topbar:leave"] {}
+---@field ["topbar:click"] { id: string }
+---@field ["bottombar:hover"] { id: string }
+---@field ["bottombar:leave"] {}
+---@field ["bottombar:click"] { id: string }
+---@field ["overlay:hover"] { id: string }
+---@field ["overlay:leave"] {}
+---@field ["overlay:click"] { id: string }
+---@field ["selection:begin"] {}
+---@field ["selection:cleared"] {}
 
 ---@alias HollowHtpValue nil|boolean|number|string|table
 ---@alias HollowEventHandle integer
@@ -173,6 +221,9 @@
 ---@field strikethrough? boolean
 ---@field dim? boolean
 ---@field id? string
+---@field radius? number Rounded corner radius for bg/border rect
+---@field border? HollowColor Border color for bg rect outline
+---@field border_size? number Border thickness in pixels
 ---@field on_click? fun(e: { id: string })
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
@@ -631,6 +682,9 @@
 ---@field spacer? boolean When true, pushes subsequent segments to the right edge of the row
 ---@field segments? HollowUiSegment[]
 ---@field kind? string
+---@field radius? number Rounded corner radius for bg/border rect
+---@field border? HollowColor Border color for bg rect outline
+---@field border_size? number Border thickness in pixels
 
 ---@class HollowUiTabsLayout
 ---@field kind "tabs"
@@ -767,6 +821,25 @@
 ---@field fn fun(item: any)
 ---@field key? string
 ---@field desc? string
+
+---@class HollowUiConfirmButton
+---@field text string
+---@field value? any
+---@field style? "default"|"primary"|"secondary"|"destructive"
+---@field on_confirm? fun()
+
+---@class HollowUiConfirmOptions
+---@field prompt string
+---@field title? string
+---@field buttons? HollowUiConfirmButton[]
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
+---@field align? HollowOverlayAlign
+---@field on_confirm? fun(value: any)
+---@field on_cancel? fun()
 
 ---@class HollowUiSelectState
 ---@field index integer
@@ -1196,7 +1269,7 @@ function term.set_theme(name) end
 local events = {}
 
 ---@param name HollowEventName
----@param handler fun(e: table)
+---@param handler fun(e: HollowEventPayloadMap[name])
 ---@return HollowEventHandle
 function events.on(name, handler) end
 
@@ -1204,7 +1277,7 @@ function events.on(name, handler) end
 function events.off(handle) end
 
 ---@param name HollowEventName
----@param handler fun(e: table)
+---@param handler fun(e: HollowEventPayloadMap[name])
 function events.once(name, handler) end
 
 ---@param name string
@@ -1416,6 +1489,14 @@ function input.open(opts) end
 
 function input.close() end
 
+---@class HollowUiConfirmNamespace
+local confirm = {}
+
+---@param opts HollowUiConfirmOptions
+function confirm.open(opts) end
+
+function confirm.close() end
+
 ---@class HollowUiCommandPaletteNamespace
 local command_palette = {}
 
@@ -1563,6 +1644,7 @@ ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
 ui.select = select
+ui.confirm = confirm
 ui.workspace = workspace
 
 ---@field new_widget fun(kind:string, opts:HollowUiWidgetOptions):HollowUiWidget

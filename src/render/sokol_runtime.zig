@@ -196,6 +196,11 @@ var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
 var g_top_bar_cache: BarCache = .{};
 var g_bottom_bar_cache: BarCache = .{};
+var g_overlay_hit_cache: struct {
+    enabled: bool = false,
+    hit_count: usize = 0,
+    hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = [_]CachedOverlayHitRegion{.{}} ** MAX_OVERLAY_HIT_REGIONS,
+} = .{};
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -487,6 +492,15 @@ const BarHit = struct {
 };
 
 const MAX_BAR_HIT_REGIONS = 256;
+const MAX_OVERLAY_HIT_REGIONS = 128;
+
+const CachedOverlayHitRegion = struct {
+    x: f32 = 0,
+    width: f32 = 0,
+    y: f32 = 0,
+    height: f32 = 0,
+    node_id: ?[]const u8 = null,
+};
 
 const CachedBarHitRegion = struct {
     x: f32 = 0,
@@ -1022,6 +1036,7 @@ fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, 
 }
 
 fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
+    const cell_h = @max(@as(f32, 1.0), renderer.cell_h - 2.0);
     var right_w: f32 = 0;
     var saw_spacer = false;
     for (segments) |seg| {
@@ -1041,14 +1056,37 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         }
         if (seg.text.len == 0) continue;
         const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
-        if (cursor_x + seg_w > right_edge) break;
-        if (seg.bg) |bg| {
-            drawBorderRect(cursor_x, y + 1.0, seg_w, @max(@as(f32, 1.0), renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 220);
+        const seg_x = cursor_x;
+        if (seg_x + seg_w > right_edge) break;
+        const bg_y = y + 1.0;
+        if (seg.radius > 0) {
+            if (seg.bg) |bg| {
+                drawRoundedRect(seg_x, bg_y, seg_w, cell_h, seg.radius, bg.r, bg.g, bg.b, 220);
+            }
+            if (seg.border) |border| {
+                drawRoundedRectOutline(seg_x, bg_y, seg_w, cell_h, seg.radius, seg.border_size, border.r, border.g, border.b, 220);
+            }
+        } else if (seg.bg) |bg| {
+            drawBorderRect(seg_x, bg_y, seg_w, cell_h, bg.r, bg.g, bg.b, 220);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-        renderer.drawLabelFace(cursor_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        renderer.drawLabelFace(seg_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
+        if (g_overlay_hit_cache.enabled) {
+            if (seg.id) |id| {
+                if (g_overlay_hit_cache.hit_count < g_overlay_hit_cache.hits.len) {
+                    g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
+                        .x = seg_x,
+                        .width = seg_w,
+                        .y = bg_y,
+                        .height = cell_h,
+                        .node_id = id,
+                    };
+                    g_overlay_hit_cache.hit_count += 1;
+                }
+            }
+        }
     }
 }
 
@@ -1572,6 +1610,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     }
     pop(api, state, 1);
 
+    g_overlay_hit_cache = .{ .enabled = true };
+
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
@@ -2061,6 +2101,42 @@ fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) B
         app.emitLuaBuiltInEvent("topbar:leave", .none);
     }
     return hit;
+}
+
+fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
+    const cache = &g_overlay_hit_cache;
+    if (!cache.enabled or cache.hit_count == 0) {
+        app.emitLuaBuiltInEvent("overlay:leave", .none);
+        return;
+    }
+    var idx = cache.hit_count;
+    while (idx > 0) {
+        idx -= 1;
+        const region = cache.hits[idx];
+        if (region.width <= 0) continue;
+        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
+        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
+        if (region.node_id) |id| {
+            app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = id } });
+        }
+        return;
+    }
+    app.emitLuaBuiltInEvent("overlay:leave", .none);
+}
+
+fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?[]const u8 {
+    const cache = &g_overlay_hit_cache;
+    if (!cache.enabled or cache.hit_count == 0) return null;
+    var idx = cache.hit_count;
+    while (idx > 0) {
+        idx -= 1;
+        const region = cache.hits[idx];
+        if (region.width <= 0) continue;
+        if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
+        if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
+        return region.node_id;
+    }
+    return null;
 }
 
 fn scrollbarTrackRowForPosition(metrics: App.ScrollbarMetrics, pointer_y: f32, grab_offset_y: f32) u64 {
@@ -4184,6 +4260,15 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         return;
     }
 
+    updateOverlayHover(app, event.mouse_x, event.mouse_y);
+
+    if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (hitTestOverlay(event.mouse_x, event.mouse_y)) |id| {
+            app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = id } });
+            return;
+        }
+    }
+
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
         if (app.hasSelection()) {
             _ = app.enqueueMouse(.copy_selection);
@@ -4416,7 +4501,14 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (bar_hit.inBar()) {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
-        // Restore default cursor when in a bar.
+        setTextSelectionCursor(.arrow);
+        return;
+    }
+
+    updateOverlayHover(app, event.mouse_x, event.mouse_y);
+    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |_| {
+        g_scrollbar_hover_pane = null;
+        g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);
         return;
     }

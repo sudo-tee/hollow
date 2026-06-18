@@ -430,6 +430,15 @@ function M.style_to_segment(text, style)
     if util.is_hex_color(style.bg) then
       segment.bg = style.bg
     end
+    if style.radius ~= nil then
+      segment.radius = style.radius
+    end
+    if util.is_hex_color(style.border) then
+      segment.border = style.border
+    end
+    if style.border_size ~= nil then
+      segment.border_size = style.border_size
+    end
   end
 
   return segment
