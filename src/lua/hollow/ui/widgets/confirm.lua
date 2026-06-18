@@ -1,14 +1,36 @@
+--- Modal confirmation dialog built on the overlay system.
+---
+--- Usage:
+--- ```lua
+--- hollow.ui.confirm.open({
+---   prompt = "Are you sure?",
+---   title = "Delete file",
+---   on_confirm = function(value)
+---     if value == true then delete_file() end
+---   end,
+---   on_cancel = function() end,
+--- })
+--- ```
+---
+--- Buttons can be customised per-call.  Each button fires the
+--- global `on_confirm` first, then its own `on_confirm` if set.
+--- Default: `{ Yes (primary), No }`.
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 local table_unpack = table.unpack or unpack
 
+---@type Hollow
 local hollow = _G.hollow
+---@type HollowUi
 local ui = hollow.ui
 
 ui.confirm = ui.confirm or {}
 
+---@param theme HollowUiTheme
+---@param opts HollowUiConfirmOptions
+---@return HollowUiTheme
 local function resolve_confirm_theme(theme, opts)
   if type(opts.theme) == "table" then
     util.merge_tables(theme, util.clone_value(opts.theme))
@@ -16,6 +38,7 @@ local function resolve_confirm_theme(theme, opts)
   return theme
 end
 
+---@return HollowUiConfirmButton[]
 local function default_buttons()
   return {
     { text = "Yes", style = "primary", value = true },
@@ -23,6 +46,11 @@ local function default_buttons()
   }
 end
 
+---@param theme HollowUiTheme
+---@param btn HollowUiConfirmButton
+---@param is_selected boolean
+---@param is_hovered boolean
+---@return { fg?: string, bg?: string, bold?: boolean, radius?: integer }
 local function button_style(theme, btn, is_selected, is_hovered)
   local style = btn.style or "default"
 
@@ -67,6 +95,12 @@ local function button_style(theme, btn, is_selected, is_hovered)
   return result
 end
 
+---@param theme HollowUiTheme
+---@param opts HollowUiConfirmOptions
+---@param buttons HollowUiConfirmButton[]
+---@param selected_index integer
+---@param hovered_index integer|nil
+---@return HollowUiRows
 local function render_confirm(theme, opts, buttons, selected_index, hovered_index)
   local tags = ui.tags
   local rows = {}
@@ -96,6 +130,8 @@ local function render_confirm(theme, opts, buttons, selected_index, hovered_inde
   return rows
 end
 
+--- Open a modal confirm dialog.
+---@param opts HollowUiConfirmOptions
 function ui.confirm.open(opts)
   opts = opts or {}
 
@@ -188,6 +224,7 @@ function ui.confirm.open(opts)
   ui.overlay.push(widget)
 end
 
+--- Dismiss the current confirm dialog (pops the overlay).
 function ui.confirm.close()
   ui.overlay.pop()
 end

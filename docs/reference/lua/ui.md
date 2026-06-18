@@ -188,6 +188,57 @@ hollow.ui.input.close()
 `Enter` confirms, `Escape` cancels, `Backspace` deletes, printable
 keys append. A visible caret is rendered.
 
+### `hollow.ui.confirm`
+
+```lua
+hollow.ui.confirm.open({
+  prompt = "Are you sure?",
+  title = "Delete file",
+  buttons = {
+    { text = "Save", style = "primary", value = "save", on_confirm = function(value) end },
+    { text = "Cancel", value = "cancel", on_confirm = function() end },
+  },
+  on_confirm = function(value) end,
+  on_cancel = function() end,
+  width = 50,
+  backdrop = ...,
+  chrome = ...,
+  theme = ...,
+  align = "center",
+})
+hollow.ui.confirm.close()
+```
+
+A modal confirmation dialog with configurable buttons.  `Tab`/arrow
+keys cycle focus, `Enter` confirms the focused button, `Escape`
+triggers the cancel handler.
+
+Options:
+
+```lua
+{
+  prompt  = "Are you sure?",                 -- required
+  title   = "Delete file",                   -- optional header
+  buttons = {                                -- default: Yes (primary), No
+    { text = "Yes", style = "primary", value = true },
+    { text = "No",  value = false },
+  },
+  on_confirm = function(value) end,          -- global, always called first
+  on_cancel   = function() end,
+  width      = 50,
+  height     = nil,
+  backdrop   = ...,
+  chrome     = ...,
+  theme      = ...,
+  align      = "center",
+}
+```
+
+The global `on_confirm` fires before the button-local `on_confirm`.
+Default buttons have no per-button handler; only the global callback
+runs.  Each button's `style` can be `"default"`, `"primary"`, or
+`"destructive"`.
+
 ### `hollow.ui.select`
 
 ```lua
