@@ -157,11 +157,42 @@ hollow.ui.overlay.push(hollow.ui.overlay.new({
 }))
 ```
 
-Built on top of overlays:
+For overlays with buttons, text input, or list navigation there is a
+**Builder API** that reduces boilerplate:
+
+```lua
+local w = require("hollow.ui.builder")
+
+local m = w.modal({
+  render = function(theme)
+    return w.dialog({
+      title = "Pick one",
+      body = { w.text("Choose an option:") },
+      footer = w.buttons(items, function(item)
+        return { on_click = function() choose(item); m.close() end }
+      end),
+    }, theme)
+  end,
+  keys = w.keys(nav, {
+    escape = function() m.close() end,
+    enter = function() confirm(selected); m.close() end,
+  }),
+  width = 50,
+})
+```
+
+Behaviors (`w.list_nav`, `w.scroll_nav`, `w.text_input`) encapsulate
+state and key handlers.  Components (`w.dialog`, `w.button`,
+`w.buttons`) produce renderable layouts.  See
+[`hollow.ui`](reference/lua/ui.md) for the full reference.
+
+Built on top of overlays / the builder:
 
 - `hollow.ui.notify.show / .info / .warn / .error / .clear`
 - `hollow.ui.input.open / .close`
+- `hollow.ui.confirm.open / .close`
 - `hollow.ui.select.open / .close`
+- `hollow.ui.command_palette.open / .close`
 
 These accept `align`, `backdrop`, `chrome`, `theme`, `width`, and
 `height` options. The notify family auto-dismisses after `ttl`

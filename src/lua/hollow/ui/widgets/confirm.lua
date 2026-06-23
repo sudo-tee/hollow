@@ -1,4 +1,4 @@
---- Modal confirmation dialog built on the overlay system.
+--- Modal confirmation dialog built on the builder API.
 ---
 --- Usage:
 --- ```lua
@@ -11,34 +11,15 @@
 ---   on_cancel = function() end,
 --- })
 --- ```
----
---- Buttons can be customised per-call.  Each button fires the
---- global `on_confirm` first, then its own `on_confirm` if set.
---- Default: `{ Yes (primary), No }`.
-local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
+local w = require("hollow.ui.builder")
 
-local table_unpack = table.unpack or unpack
-
----@type Hollow
-local hollow = _G.hollow
----@type HollowUi
-local ui = hollow.ui
+local ui = _G.hollow.ui
 
 ui.confirm = ui.confirm or {}
 
----@param theme HollowUiTheme
----@param opts HollowUiConfirmOptions
----@return HollowUiTheme
-local function resolve_confirm_theme(theme, opts)
-  if type(opts.theme) == "table" then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
-  return theme
-end
-
----@return HollowUiConfirmButton[]
+---@return { text: string, style?: string, value: any, on_confirm?: function }[]
 local function default_buttons()
   return {
     { text = "Yes", style = "primary", value = true },
@@ -46,88 +27,16 @@ local function default_buttons()
   }
 end
 
----@param theme HollowUiTheme
----@param btn HollowUiConfirmButton
----@param is_selected boolean
----@param is_hovered boolean
----@return { fg?: string, bg?: string, bold?: boolean, radius?: integer }
-local function button_style(theme, btn, is_selected, is_hovered)
-  local style = btn.style or "default"
-
-  local result = {
-    radius = theme.radius or 4,
-  }
-
-  if is_selected then
-    result.bold = true
-    if style == "primary" then
-      result.fg = theme.primary_fg
-      result.bg = theme.primary_bg
-    elseif style == "destructive" then
-      result.fg = theme.destructive_fg
-      result.bg = theme.destructive_bg
-    else
-      result.fg = theme.selected_fg
-      result.bg = util.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
-    end
-  elseif is_hovered then
-    result.bold = true
-    if style == "primary" then
-      result.fg = theme.primary_fg
-      result.bg = theme.primary_bg
-    elseif style == "destructive" then
-      result.fg = theme.destructive_fg
-      result.bg = theme.destructive_bg
-    else
-      result.fg = theme.selected_fg
-      result.bg = util.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
-    end
-  else
-    if style == "primary" then
-      result.fg = theme.primary_bg
-    elseif style == "destructive" then
-      result.fg = theme.destructive_bg
-    else
-      result.fg = theme.fg
-    end
+local function find_hovered_index(hovered_id, buttons)
+  if not hovered_id then
+    return nil
   end
-
-  return result
-end
-
----@param theme HollowUiTheme
----@param opts HollowUiConfirmOptions
----@param buttons HollowUiConfirmButton[]
----@param selected_index integer
----@param hovered_index integer|nil
----@return HollowUiRows
-local function render_confirm(theme, opts, buttons, selected_index, hovered_index)
-  local tags = ui.tags
-  local rows = {}
-
-  if opts.title ~= nil and opts.title ~= "" then
-    rows = ui.rows(
-      tags.overlay_row(nil, tags.group(tags.text({ fg = theme.title, bold = true }, opts.title))),
-      tags.divider({ color = theme.divider })
-    )
-  end
-
-  rows[#rows + 1] = tags.overlay_row(nil, tags.group(tags.text({ fg = theme.fg }, opts.prompt)))
-  rows[#rows + 1] = tags.overlay_row(nil, tags.text({}, " "))
-
-  local button_nodes = {}
-  button_nodes[#button_nodes + 1] = ui.spacer()
   for i, btn in ipairs(buttons) do
-    if #button_nodes > 1 then
-      button_nodes[#button_nodes + 1] = tags.text({}, "  ")
+    if btn.id == hovered_id then
+      return i
     end
-    local style = button_style(theme, btn, i == selected_index, i == hovered_index)
-    style.id = "confirm:btn:" .. i
-    button_nodes[#button_nodes + 1] = tags.text(style, " " .. btn.text .. " ")
   end
-  rows[#rows + 1] = tags.overlay_row(nil, table_unpack(button_nodes))
-
-  return rows
+  return nil
 end
 
 --- Open a modal confirm dialog.
@@ -139,89 +48,56 @@ function ui.confirm.open(opts)
     error("hollow.ui.confirm.open() requires a 'prompt' string")
   end
 
-  local theme = resolve_confirm_theme(theme_api.resolve_widget("confirm"), opts)
-  local backdrop = opts.backdrop ~= nil and opts.backdrop or true
-  local buttons = type(opts.buttons) == "table" and #opts.buttons > 0 and opts.buttons
-    or default_buttons()
-  local selected_index = 1
-  local hovered_index = nil
-
-  local function find_btn_by_id(id)
-    local prefix = "confirm:btn:"
-    if type(id) == "string" and id:sub(1, #prefix) == prefix then
-      return tonumber(id:sub(#prefix + 1))
-    end
-    return nil
+  local base_theme = theme_api.resolve_widget("confirm")
+  if type(opts.theme) == "table" then
+    util.merge_tables(base_theme, util.clone_value(opts.theme))
   end
 
-  local widget
+  local raw_buttons = type(opts.buttons) == "table" and #opts.buttons > 0 and opts.buttons
+    or default_buttons()
+
+  local m
 
   local function confirm_and_close(btn)
-    if type(opts.on_confirm) == "function" then
-      opts.on_confirm(btn.value)
-    end
-    if type(btn.on_confirm) == "function" then
-      btn.on_confirm(btn.value)
-    end
-    ui.close_overlay_widget(widget)
+    w.fire(opts.on_confirm, btn.value)
+    w.fire(btn.on_confirm, btn.value)
+    m.close()
   end
 
-  widget = ui.overlay.new({
-    render = function()
-      return render_confirm(theme, opts, buttons, selected_index, hovered_index)
-    end,
-    on_event = function(name, payload)
-      if name == "overlay:hover" then
-        local i = payload and find_btn_by_id(payload.id)
-        hovered_index = i
-      elseif name == "overlay:leave" then
-        hovered_index = nil
-      elseif name == "overlay:click" then
-        local i = payload and find_btn_by_id(payload.id)
-        if i then
-          confirm_and_close(buttons[i])
-        end
-      end
-    end,
-    on_key = function(key, mods)
-      if key == "tab" or key == "arrow_right" then
-        selected_index = selected_index + 1
-        if selected_index > #buttons then
-          selected_index = 1
-        end
-        return true
-      end
+  local footer_buttons = w.buttons(raw_buttons, function(btn)
+    return { on_click = function() confirm_and_close(btn) end }
+  end)
 
-      if key == "arrow_left" then
-        selected_index = selected_index - 1
-        if selected_index < 1 then
-          selected_index = #buttons
-        end
-        return true
-      end
-      if key == "enter" then
-        confirm_and_close(buttons[selected_index])
-        return true
-      end
+  local nav = w.list_nav(#footer_buttons)
 
-      if key == "escape" then
-        ui.close_overlay_widget(widget)
-        if type(opts.on_cancel) == "function" then
-          opts.on_cancel()
-        end
-        return true
-      end
-
-      return false
+  m = w.modal({
+    theme = base_theme,
+    render = function(theme, state)
+      local hovered = state and find_hovered_index(state.hovered_id, footer_buttons)
+      return w.dialog({
+        title = opts.title,
+        body = { w.text(opts.prompt) },
+        footer = footer_buttons,
+        selected = nav.index,
+        hovered = hovered,
+      }, theme)
     end,
     width = opts.width or 50,
     height = opts.height,
-    chrome = opts.chrome or shared.theme_overlay_chrome(theme),
+    chrome = opts.chrome,
     align = opts.align or "center",
-    backdrop = backdrop,
+    backdrop = opts.backdrop ~= nil and opts.backdrop or true,
+    keys = w.keys(nav, {
+      enter = function()
+        local btn = raw_buttons[nav.index]
+        confirm_and_close(btn)
+      end,
+      escape = function()
+        m.close()
+        w.fire(opts.on_cancel)
+      end,
+    }),
   })
-
-  ui.overlay.push(widget)
 end
 
 --- Dismiss the current confirm dialog (pops the overlay).

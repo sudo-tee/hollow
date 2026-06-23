@@ -828,6 +828,13 @@
 ---@field style? "default"|"primary"|"secondary"|"destructive"
 ---@field on_confirm? fun()
 
+---@class (exact) HollowUiBuilderButton
+---@field _button true
+---@field id string
+---@field text string
+---@field kind "default"|"primary"|"destructive"
+---@field on_click? fun(e: { id: string })
+
 ---@class HollowUiConfirmOptions
 ---@field prompt string
 ---@field title? string
@@ -840,6 +847,77 @@
 ---@field align? HollowOverlayAlign
 ---@field on_confirm? fun(value: any)
 ---@field on_cancel? fun()
+
+---@class HollowUiBuilderModal
+---@field widget table
+---@field close fun()
+---@field invalidate fun()
+
+---@class HollowUiBuilderButtonOptions
+---@field id? string
+---@field text string
+---@field kind? "default"|"primary"|"destructive"
+---@field on_click? fun(e: { id: string })
+
+---@class (exact) HollowUiBuilderListNav
+---@field index integer
+---@field count integer
+---@field resize fun(new_n: integer)
+---@field set fun(i: integer)
+---@field next fun()
+---@field prev fun()
+---@field move fun(delta: integer)
+---@field first fun()
+---@field last fun()
+---@field handlers table<string, function>
+
+---@class (exact) HollowUiBuilderScrollNav
+---@field index integer
+---@field count integer
+---@field resize fun(new_n: integer)
+---@field visible_range fun(items: any[], budget: integer): integer, integer, boolean, integer
+---@field page_down fun()
+---@field page_up fun()
+---@field handlers table<string, function>
+
+---@class (exact) HollowUiBuilderTextInput
+---@field value string
+---@field cursor integer
+---@field on_change? fun(value: string)
+---@field set fun(value: string, cursor?: integer)
+---@field render fun(theme: table): any[]
+---@field handlers table<string, function>
+
+---@class (exact) HollowUiBuilderDialogOptions
+---@field title? string
+---@field body? table[]
+---@field footer? (HollowUiBuilderButton|{ text: string, kind?: string, id?: string, on_click?: fun(e: { id: string }) })[]
+---@field selected? integer
+---@field hovered? integer
+
+---@class HollowUiBuilderModalSpec
+---@field theme? table|string
+---@field render fun(theme: table, state?: table): any
+---@field keys? function
+---@field width? integer
+---@field height? integer
+---@field max_height? integer
+---@field chrome? table|boolean
+---@field align? string
+---@field backdrop? any
+---@field on_event? function
+
+---@class HollowUiBuilderNamespace
+---@field modal fun(spec: HollowUiBuilderModalSpec): HollowUiBuilderModal
+---@field keys fun(...: table): function
+---@field fire fun(fn: function|nil, value?: any)
+---@field list_nav fun(n: integer): HollowUiBuilderListNav
+---@field scroll_nav fun(n: integer, opts?: { row_count_fn?: fun(item: any): integer, row_budget?: integer }): HollowUiBuilderScrollNav
+---@field text_input fun(opts?: { initial?: string, on_change?: fun(value: string) }): HollowUiBuilderTextInput
+---@field dialog fun(opts: HollowUiBuilderDialogOptions, theme: table): table
+---@field button fun(opts: HollowUiBuilderButtonOptions): HollowUiBuilderButton
+---@field buttons fun(items: { id?: string, text: string, kind?: string, style?: string, on_click?: fun(e: { id: string }), on_confirm?: fun() }[], map?: fun(item: table, i: integer): { on_click?: fun(e: { id: string }) }|nil): HollowUiBuilderButton[]
+---@field text fun(value: any, style?: any): any
 
 ---@class HollowUiSelectState
 ---@field index integer

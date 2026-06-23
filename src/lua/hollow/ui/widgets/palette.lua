@@ -1,6 +1,6 @@
 local shared = require("hollow.ui.shared")
-local scroll_view = require("hollow.ui.widgets.scroll_view")
 local theme_api = require("hollow.theme")
+local w = require("hollow.ui.builder")
 
 local table_unpack = table.unpack or unpack
 
@@ -21,8 +21,14 @@ local CATEGORY_LABELS = {
 }
 
 local CATEGORY_ORDER = {
-  tab = 1, pane = 2, workspace = 3, window = 4,
-  scroll = 5, copy_mode = 6, general = 7, user = 8,
+  tab = 1,
+  pane = 2,
+  workspace = 3,
+  window = 4,
+  scroll = 5,
+  copy_mode = 6,
+  general = 7,
+  user = 8,
 }
 
 local DEFAULT_TOTAL_ROWS = 16
@@ -172,19 +178,6 @@ local function grouped_entries(entries, collapsed)
   return flat
 end
 
-local function clamp_index(index, count)
-  if count == 0 then
-    return 0
-  end
-  if index < 1 then
-    return 1
-  end
-  if index > count then
-    return count
-  end
-  return index
-end
-
 local function selected_item(flat, cursor)
   if cursor < 1 or cursor > #flat then
     return nil
@@ -194,39 +187,6 @@ local function selected_item(flat, cursor)
     return nil
   end
   return entry.item
-end
-
----@param value string
----@param cursor integer
----@return string, integer
-local function backspace_input(value, cursor)
-  if cursor <= 0 then
-    return value, 0
-  end
-  return value:sub(1, cursor - 1) .. value:sub(cursor + 1), cursor - 1
-end
-
----@param value string
----@param cursor integer
----@param text string
----@return string, integer
-local function insert_input(value, cursor, text)
-  return value:sub(1, cursor) .. text .. value:sub(cursor + 1), cursor + #text
-end
-
----@param value string
----@param cursor integer
----@return string, string, string
-local function split_input_cursor(value, cursor)
-  local before = value:sub(1, cursor)
-  local after = value:sub(cursor + 1)
-  local cursor_char = after:sub(1, 1)
-  if cursor_char == "" then
-    cursor_char = " "
-  else
-    after = after:sub(2)
-  end
-  return before, cursor_char, after
 end
 
 ---@param rows HollowUiRows
@@ -245,7 +205,6 @@ end
 ---@return integer, integer
 local function flat_item_index(flat, cursor)
   local item_count = 0
-  local item_idx = 0
   for _, entry in ipairs(flat) do
     if entry._type == "item" then
       item_count = item_count + 1
@@ -314,7 +273,10 @@ local function render_section_header(theme, label, is_selected, is_collapsed)
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
   return tags.overlay_row(
     { fill_bg = is_selected and theme.selected_bg or (theme.selected_detail_bg or theme.panel_bg) },
-    tags.text({ fg = theme.title, bold = true }, (is_selected and "> " or "  ") .. arrow .. " " .. label)
+    tags.text(
+      { fg = theme.title, bold = true },
+      (is_selected and "> " or "  ") .. arrow .. " " .. label
+    )
   )
 end
 
@@ -325,7 +287,14 @@ end
 ---@param visible_index integer
 ---@param thumb_index integer
 ---@return HollowUiRows
-local function render_entry_row(entry, is_selected, theme, show_scrollbar, visible_index, thumb_index)
+local function render_entry_row(
+  entry,
+  is_selected,
+  theme,
+  show_scrollbar,
+  visible_index,
+  thumb_index
+)
   local tags = ui.tags
   local chord_text = ""
   if #entry.chords > 0 then
@@ -359,18 +328,13 @@ local function render_entry_row(entry, is_selected, theme, show_scrollbar, visib
     })
   end
 
-  return ui.rows(
-    tags.overlay_row(
-      {
-        fill_bg = is_selected and theme.selected_bg or nil,
-        scrollbar_track = show_scrollbar,
-        scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
-        scrollbar_track_color = theme.scrollbar_track,
-        scrollbar_thumb_color = theme.scrollbar_thumb,
-      },
-      ui.group(label_nodes)
-    )
-  )
+  return ui.rows(tags.overlay_row({
+    fill_bg = is_selected and theme.selected_bg or nil,
+    scrollbar_track = show_scrollbar,
+    scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
+    scrollbar_track_color = theme.scrollbar_track,
+    scrollbar_thumb_color = theme.scrollbar_thumb,
+  }, ui.group(label_nodes)))
 end
 
 ---@param opts table|nil
@@ -381,23 +345,19 @@ function ui.command_palette.open(opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local all_entries = opts.entries or build_entries()
 
-  local scroll = scroll_view.new({ row_budget = DEFAULT_TOTAL_ROWS - 5 })
+  local nav = w.scroll_nav(0, { row_budget = DEFAULT_TOTAL_ROWS - 5 })
 
-  local local_state = {
-    query = opts.query or "",
-    query_cursor = #(opts.query or ""),
-    cursor = 0,
-    collapsed = {},
-  }
+  local filter = w.text_input({ initial = opts.query or "" })
+  local collapsed = {}
 
   local widget
   widget = ui.overlay.new({
     render = function()
       local tags = ui.tags
-      local filtered = filtered_entries(all_entries, local_state.query)
-      local flat = grouped_entries(filtered, local_state.collapsed)
-      local_state.cursor = clamp_cursor(flat, local_state.cursor)
-      local item_idx, total_items = flat_item_index(flat, local_state.cursor)
+      local filtered = filtered_entries(all_entries, filter.value)
+      local flat = grouped_entries(filtered, collapsed)
+      nav.index = clamp_cursor(flat, nav.index)
+      local item_idx, total_items = flat_item_index(flat, nav.index)
       local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
 
       local budget = shared.normalize_overlay_size(opts.height)
@@ -405,9 +365,8 @@ function ui.command_palette.open(opts)
         or DEFAULT_TOTAL_ROWS
       local row_budget = budget - 5
 
-      local start_idx, end_idx, show_scrollbar, thumb_index = scroll:update(flat, local_state.cursor, row_budget)
+      local start_idx, end_idx, show_scrollbar, thumb_index = nav.visible_range(flat, row_budget)
 
-      local query_before, query_cursor_char, query_after = split_input_cursor(local_state.query, local_state.query_cursor)
       local rows = ui.rows(
         tags.overlay_row(
           nil,
@@ -418,9 +377,7 @@ function ui.command_palette.open(opts)
         tags.overlay_row(
           nil,
           tags.text({ fg = theme.title, bold = true }, "Filter: "),
-          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_before),
-          tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, query_cursor_char),
-          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_after)
+          table_unpack(filter.render(theme))
         ),
         tags.divider({ color = theme.divider })
       )
@@ -432,81 +389,78 @@ function ui.command_palette.open(opts)
         for idx = start_idx, end_idx do
           local entry = flat[idx]
           if entry._type == "header" then
-            local is_selected = (idx == local_state.cursor)
-            rows[#rows + 1] = render_section_header(theme, entry.label, is_selected, local_state.collapsed[entry.category])
+            local is_selected = (idx == nav.index)
+            rows[#rows + 1] = render_section_header(
+              theme,
+              entry.label,
+              is_selected,
+              collapsed[entry.category]
+            )
           elseif entry._type == "item" then
             display_item_count = display_item_count + 1
-            local is_selected = (idx == local_state.cursor)
-            append_rows(rows, render_entry_row(entry.item, is_selected, theme, show_scrollbar, display_item_count, thumb_index))
+            local is_selected = (idx == nav.index)
+            append_rows(
+              rows,
+              render_entry_row(
+                entry.item,
+                is_selected,
+                theme,
+                show_scrollbar,
+                display_item_count,
+                thumb_index
+              )
+            )
           end
         end
       end
 
       append_rows(rows, tags.divider({ color = theme.divider }))
-      append_rows(rows, tags.overlay_row(nil,
-        tags.text({ fg = theme.panel_border, bold = true }, "<CR>"),
-        tags.text({ fg = theme.muted }, " execute  "),
-        tags.text({ fg = theme.panel_border, bold = true }, "<Esc>"),
-        tags.text({ fg = theme.muted }, " dismiss")
-      ))
+      append_rows(
+        rows,
+        tags.overlay_row(
+          nil,
+          tags.text({ fg = theme.panel_border, bold = true }, "<CR>"),
+          tags.text({ fg = theme.muted }, " execute  "),
+          tags.text({ fg = theme.panel_border, bold = true }, "<Esc>"),
+          tags.text({ fg = theme.muted }, " dismiss")
+        )
+      )
 
       return rows
     end,
-    on_key = function(key, mods)
-      local filtered = filtered_entries(all_entries, local_state.query)
-      local flat = grouped_entries(filtered, local_state.collapsed)
-      local_state.cursor = clamp_cursor(flat, local_state.cursor)
-
-      if key == "escape" then
+    on_key = w.keys(filter, nav, {
+      escape = function()
         ui.overlay.pop()
         if type(opts.on_cancel) == "function" then
           opts.on_cancel()
         end
-        return true
-      end
-
-      if key == "arrow_down" then
+      end,
+      arrow_down = function()
+        local filtered = filtered_entries(all_entries, filter.value)
+        local flat = grouped_entries(filtered, collapsed)
+        nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
-          local_state.cursor = next_item(flat, local_state.cursor)
+          nav.index = next_item(flat, nav.index)
         end
-        return true
-      end
-
-      if key == "arrow_up" then
+      end,
+      arrow_up = function()
+        local filtered = filtered_entries(all_entries, filter.value)
+        local flat = grouped_entries(filtered, collapsed)
+        nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
-          local_state.cursor = prev_item(flat, local_state.cursor)
+          nav.index = prev_item(flat, nav.index)
         end
-        return true
-      end
-
-      if key == "arrow_left" then
-        local_state.query_cursor = math.max(0, local_state.query_cursor - 1)
-        return true
-      end
-
-      if key == "arrow_right" then
-        local_state.query_cursor = math.min(#local_state.query, local_state.query_cursor + 1)
-        return true
-      end
-
-      if key == "backspace" and mods == "" then
-        local_state.query, local_state.query_cursor = backspace_input(local_state.query, local_state.query_cursor)
-        return true
-      end
-
-      local printable = shared.printable_char_for_key(key, mods)
-      if printable ~= nil then
-        local_state.query, local_state.query_cursor = insert_input(local_state.query, local_state.query_cursor, printable)
-        return true
-      end
-
-      if key == "enter" then
-        local entry = flat[local_state.cursor]
+      end,
+      enter = function()
+        local filtered = filtered_entries(all_entries, filter.value)
+        local flat = grouped_entries(filtered, collapsed)
+        nav.index = clamp_cursor(flat, nav.index)
+        local entry = flat[nav.index]
         if entry and entry._type == "header" then
-          local_state.collapsed[entry.category] = not local_state.collapsed[entry.category]
-          return true
+          collapsed[entry.category] = not collapsed[entry.category]
+          return
         end
-        local item = selected_item(flat, local_state.cursor)
+        local item = selected_item(flat, nav.index)
         if item ~= nil then
           ui.overlay.pop()
           if type(item.run) == "function" then
@@ -516,11 +470,8 @@ function ui.command_palette.open(opts)
             opts.on_confirm(item)
           end
         end
-        return true
-      end
-
-      return false
-    end,
+      end,
+    }),
     width = opts.width or DEFAULT_WIDTH,
     height = opts.height,
     max_height = opts.max_height,
@@ -562,7 +513,9 @@ local function build_domain_entries()
       searchable_lower = searchable:lower(),
     }
   end
-  table.sort(entries, function(a, b) return a.name < b.name end)
+  table.sort(entries, function(a, b)
+    return a.name < b.name
+  end)
   return entries
 end
 

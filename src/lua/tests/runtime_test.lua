@@ -720,6 +720,55 @@ assert_true(ui_widgets_workspace == true, "workspace widget module should be loa
 assert_true(type(theme_api.create) == "function", "theme module should expose create")
 assert_true(type(theme_api.get) == "function", "theme module should expose get")
 
+-- Test w.keys dispatch
+local w = require("hollow.ui.builder")
+local enter_called = false
+local escape_called = false
+local k = w.keys({
+  enter = function() enter_called = true end,
+  escape = function() escape_called = true end,
+})
+assert_true(k("enter", "") == true, "w.keys should dispatch enter")
+assert_true(enter_called, "enter handler should fire")
+assert_true(k("escape", "") == true, "w.keys should dispatch escape")
+assert_true(escape_called, "escape handler should fire")
+assert_true(k("unknown", "") == false, "w.keys should not dispatch unknown keys")
+
+-- Test w.keys with behavior
+local nav = w.list_nav(5)
+local k2 = w.keys(nav, {
+  enter = function() enter_called = true end,
+})
+-- nav should have tab/arrow_right/arrow_left/shift_tab
+assert_true(k2("tab", "") == true, "w.keys should dispatch tab from nav")
+assert_true(k2("arrow_right", "") == true, "w.keys should dispatch arrow_right from nav")
+assert_true(k2("arrow_left", "") == true, "w.keys should dispatch arrow_left from nav")
+assert_true(k2("shift_tab", "") == true, "w.keys should dispatch shift_tab from nav")
+-- enter from second arg
+assert_true(k2("enter", "") == true, "w.keys should dispatch enter from second arg")
+-- unknown should not dispatch
+assert_true(k2("unknown", "") == false, "w.keys should not dispatch unknown")
+
+-- Test w.keys with text_input behavior + enter/escape (exact input.lua pattern)
+local ti = w.text_input({ initial = "test" })
+local ti_enter = false
+local ti_escape = false
+local k3 = w.keys(ti, {
+  enter = function() ti_enter = true end,
+  escape = function() ti_escape = true end,
+})
+-- text_input handlers should work
+assert_true(k3("arrow_left", "") == true, "w.keys should dispatch arrow_left from text_input")
+assert_true(k3("arrow_right", "") == true, "w.keys should dispatch arrow_right from text_input")
+assert_true(k3("backspace", "") == true, "w.keys should dispatch backspace from text_input")
+-- enter/escape from second arg
+assert_true(k3("enter", "") == true, "w.keys should dispatch enter from second arg (with text_input)")
+assert_true(ti_enter, "enter handler should fire with text_input")
+assert_true(k3("escape", "") == true, "w.keys should dispatch escape from second arg (with text_input)")
+assert_true(ti_escape, "escape handler should fire with text_input")
+-- _else catches non-special keys (printable)
+assert_true(k3("x", "") == true, "w.keys should dispatch printable via _else")
+
 assert_equal(util.host_now_ms(host_api), 1234, "host_now_ms should prefer the host clock")
 assert_equal(util.join_path("alpha", "beta"), "alpha/beta", "join_path should normalize path segments")
 
@@ -1320,6 +1369,21 @@ for _, row in ipairs(input_overlay[1].rows or {}) do
 end
 assert_true(input_overlay_text:find("maixn", 1, true) ~= nil, "input overlay should insert at the caret after moving left")
 assert_true(on_key("f1", 0), "input overlay with backdrop should consume unmatched keys")
+hollow.ui.overlay.clear()
+
+-- Test enter confirmation on input
+local confirm_value = nil
+hollow.ui.input.open({
+  prompt = "Enter test",
+  default = "world",
+  backdrop = true,
+  on_confirm = function(value)
+    confirm_value = value
+  end,
+})
+assert_true(on_key("enter", 0), "input overlay should consume enter")
+assert_equal(confirm_value, "world", "on_confirm should receive the input value")
+assert_equal(hollow.ui.overlay.depth(), 0, "overlay should close after enter")
 hollow.ui.overlay.clear()
 
 hollow.ui.select.open({

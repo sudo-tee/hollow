@@ -1,7 +1,7 @@
 local shared = require("hollow.ui.shared")
-local scroll_view = require("hollow.ui.widgets.scroll_view")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
+local w = require("hollow.ui.builder")
 
 local table_unpack = table.unpack or unpack
 
@@ -62,54 +62,6 @@ local function normalize_hint_chord(raw)
   return raw
 end
 
----@param hint string
----@param key string
----@param mods string
----@return boolean
-local function action_matches_hint(hint, key, mods)
-  local normalized = hint:lower():gsub("<cr>", "<enter>")
-  if normalized == "<enter>" and key == "enter" and mods == "" then
-    return true
-  end
-
-  local encoded_mods, encoded_key = normalized:match("^<([csa%-d]+)%-(.+)>$")
-  if encoded_mods ~= nil and encoded_key ~= nil then
-    local parts = {}
-    if encoded_mods:find("c", 1, true) then
-      parts[#parts + 1] = "C"
-    end
-    if encoded_mods:find("s", 1, true) then
-      parts[#parts + 1] = "S"
-    end
-    if encoded_mods:find("a", 1, true) then
-      parts[#parts + 1] = "A"
-    end
-    if encoded_mods:find("d", 1, true) then
-      parts[#parts + 1] = "D"
-    end
-
-    local canonical_mods = #parts > 0 and ("<" .. table.concat(parts, "-") .. ">") or ""
-    return canonical_mods == mods and encoded_key == key
-  end
-
-  return normalized == key and mods == ""
-end
-
----@param opts HollowUiSelectOptions
----@param key string
----@param mods string
----@return integer|nil
-local function match_action_for_key(opts, key, mods)
-  for index, action in ipairs(opts.actions or {}) do
-    local hint = action.key
-    if type(hint) == "string" and hint ~= "" and action_matches_hint(hint, key, mods) then
-      return index
-    end
-  end
-
-  return nil
-end
-
 ---@param opts HollowUiSelectOptions
 ---@param item any
 ---@return HollowUiRenderableNode[], string, HollowUiRenderableNode[]|nil, string|nil, string
@@ -149,7 +101,8 @@ local function prepared_entries(opts)
   local entries = {}
 
   for source_index, item in ipairs(opts.items or {}) do
-    local label_nodes, label_text, detail_nodes, detail_text, searchable = build_entry_text(opts, item)
+    local label_nodes, label_text, detail_nodes, detail_text, searchable =
+      build_entry_text(opts, item)
 
     entries[#entries + 1] = {
       item = item,
@@ -167,14 +120,13 @@ local function prepared_entries(opts)
 end
 
 ---@param opts HollowUiSelectOptions
----@param local_state HollowUiSelectState
+---@param query string
+---@param query_lower string
 ---@param prepared HollowUiSelectEntry[]
 ---@return HollowUiSelectEntry[]
-local function filtered_entries(opts, local_state, prepared)
+local function filtered_entries(opts, query, query_lower, prepared)
   local entries = {}
   local fuzzy = opts.fuzzy ~= false
-  local query = local_state.query
-  local query_lower = local_state.query_lower or query:lower()
 
   for _, prepared_entry in ipairs(prepared) do
     local matches, score
@@ -197,7 +149,7 @@ local function filtered_entries(opts, local_state, prepared)
     end
   end
 
-  if fuzzy and local_state.query ~= "" then
+  if fuzzy and query ~= "" then
     table.sort(entries, function(a, b)
       if a.score ~= b.score then
         return a.score > b.score
@@ -212,54 +164,18 @@ local function filtered_entries(opts, local_state, prepared)
   return entries
 end
 
----@param local_state HollowUiSelectState
+---@param index integer
 ---@param entries HollowUiSelectEntry[]
-local function clamp_index(local_state, entries)
+---@return integer
+local function clamp_index(index, entries)
   if #entries == 0 then
-    local_state.index = 0
-  elseif local_state.index < 1 then
-    local_state.index = 1
-  elseif local_state.index > #entries then
-    local_state.index = #entries
+    return 0
+  elseif index < 1 then
+    return 1
+  elseif index > #entries then
+    return #entries
   end
-end
-
----@param value string
----@param cursor integer
----@return string
----@return string
----@return string
-local function split_input_cursor(value, cursor)
-  local before = value:sub(1, cursor)
-  local after = value:sub(cursor + 1)
-  local cursor_char = after:sub(1, 1)
-  if cursor_char == "" then
-    cursor_char = " "
-  else
-    after = after:sub(2)
-  end
-  return before, cursor_char, after
-end
-
----@param value string
----@param cursor integer
----@return string
----@return integer
-local function backspace_input(value, cursor)
-  if cursor <= 0 then
-    return value, 0
-  end
-
-  return value:sub(1, cursor - 1) .. value:sub(cursor + 1), cursor - 1
-end
-
----@param value string
----@param cursor integer
----@param text string
----@return string
----@return integer
-local function insert_input(value, cursor, text)
-  return value:sub(1, cursor) .. text .. value:sub(cursor + 1), cursor + #text
+  return index
 end
 
 ---@param rows HollowUiRows
@@ -376,19 +292,22 @@ local function render_hint_rows(opts, theme)
 end
 
 ---@param opts HollowUiSelectOptions
----@param local_state HollowUiSelectState
+---@param query string
+---@param query_lower string
+---@param selected_index integer
+---@param action_index integer
 ---@param prepared HollowUiSelectEntry[]
 ---@return boolean
-local function invoke_action(opts, local_state, action_index, prepared)
-  local entries = filtered_entries(opts, local_state, prepared)
-  clamp_index(local_state, entries)
+local function invoke_action(opts, query, query_lower, selected_index, action_index, prepared)
+  local entries = filtered_entries(opts, query, query_lower, prepared)
+  local idx = clamp_index(selected_index, entries)
 
   local action = opts.actions and opts.actions[action_index]
   if action == nil then
     return false
   end
 
-  local entry = entries[local_state.index]
+  local entry = entries[idx]
   if type(action.fn) == "function" then
     action.fn(entry and entry.item or nil)
   end
@@ -398,144 +317,117 @@ end
 
 ---@param opts HollowUiSelectOptions|nil
 function ui.select.open(opts)
-  opts = opts or {}
+  opts = opts or {} --[[@as HollowUiSelectOptions]]
 
   local theme = resolve_select_theme(theme_api.resolve_widget("select"), opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local prepared = prepared_entries(opts)
-  local scroll = scroll_view.new({ row_count_fn = entry_row_count })
 
-  local local_state = {
-    index = 1,
-    query = opts.query or "",
-    query_lower = tostring(opts.query or ""):lower(),
-    query_cursor = #(opts.query or ""),
-  }
+  local nav = w.scroll_nav(0, { row_count_fn = entry_row_count })
 
-  local widget
-  widget = ui.overlay.new({
-    render = function()
-      ---@type HollowUiTags
+  local filter = w.text_input({
+    initial = opts.query or "",
+    on_change = function()
+      nav.index = 1
+    end,
+  })
+
+  local function current_entries()
+    return filtered_entries(opts, filter.value, filter.value:lower(), prepared)
+  end
+
+  local action_keys = {}
+  for i, action in ipairs(opts.actions or {}) do
+    local hint = action.key
+    if hint and hint ~= "" then
+      local idx = i
+      action_keys[hint] = function()
+        invoke_action(opts, filter.value, filter.value:lower(), nav.index, idx, prepared)
+      end
+    end
+  end
+
+  ---@type HollowUiBuilderModal
+  local m
+  m = w.modal({
+    theme = theme,
+    render = function(render_theme)
       local tags = ui.tags
-      local entries = filtered_entries(opts, local_state, prepared)
-      clamp_index(local_state, entries)
+      local entries = current_entries()
+      nav.index = clamp_index(nav.index, entries)
 
       local budget = list_row_budget(opts)
-      local start_idx, end_idx, show_scrollbar, thumb_index = scroll:update(entries, local_state.index, budget)
+      local start_idx, end_idx, show_scrollbar, thumb_index = nav.visible_range(entries, budget)
 
-      local counter = (#entries > 0) and string.format(" %d/%d", local_state.index, #entries) or nil
+      local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
 
-      local query_before, query_cursor_char, query_after = split_input_cursor(local_state.query, local_state.query_cursor)
-      local rows = ui.rows(
+      local rows = {
         tags.overlay_row(
           nil,
-          tags.text({ fg = theme.title, bold = true }, (opts.prompt or "Select") .. ":"),
-          tags.text({ fg = theme.counter }, counter and ("  " .. counter) or "")
+          tags.text({ fg = render_theme.title, bold = true }, (opts.prompt or "Select") .. ":"),
+          tags.text({ fg = render_theme.counter }, counter and ("  " .. counter) or "")
         ),
-        tags.divider({ color = theme.divider }),
+        tags.divider({ color = render_theme.divider }),
         tags.overlay_row(
           nil,
-          tags.text({ fg = theme.title, bold = true }, "Filter: "),
-          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_before),
-          tags.text({ fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }, query_cursor_char),
-          tags.text({ fg = theme.input_fg, bg = theme.input_bg }, query_after)
+          tags.text({ fg = render_theme.title, bold = true }, "Filter: "),
+          table_unpack(filter.render(render_theme))
         ),
-        tags.divider({ color = theme.divider })
-      )
+        tags.divider({ color = render_theme.divider }),
+      }
 
       if #entries == 0 then
-        rows[#rows + 1] = render_empty_row(theme)
+        rows[#rows + 1] = render_empty_row(render_theme)
       end
 
       local visible_index = 0
       for i = start_idx, end_idx do
-        local entry = entries[i]
+        local entry = entries[i] --[[@as HollowUiSelectEntry]]
         visible_index = visible_index + 1
-        local is_selected = (i == local_state.index)
+        local is_selected = (i == nav.index)
         append_rows(
           rows,
-          render_entry_rows(entry, is_selected, theme, show_scrollbar, visible_index, thumb_index)
+          render_entry_rows(
+            entry,
+            is_selected,
+            render_theme,
+            show_scrollbar,
+            visible_index,
+            thumb_index
+          )
         )
       end
 
-      append_rows(rows, render_hint_rows(opts, theme))
+      append_rows(rows, render_hint_rows(opts, render_theme))
       return rows
-    end,
-    on_key = function(key, mods)
-      local entries = filtered_entries(opts, local_state, prepared)
-      clamp_index(local_state, entries)
-
-      if key == "escape" then
-        ui.close_overlay_widget(widget)
-        if type(opts.on_cancel) == "function" then
-          opts.on_cancel()
-        end
-        return true
-      end
-
-      if key == "arrow_down" then
-        if #entries > 0 then
-          local_state.index = (local_state.index >= #entries) and 1
-            or math.max(1, local_state.index) + 1
-          if local_state.index == 1 then
-            scroll.scroll_top = 1
-          end
-        end
-        return true
-      end
-
-      if key == "arrow_up" then
-        if #entries > 0 then
-          local_state.index = (local_state.index <= 1) and #entries
-            or math.max(1, local_state.index - 1)
-        end
-        return true
-      end
-
-      if key == "arrow_left" then
-        local_state.query_cursor = math.max(0, local_state.query_cursor - 1)
-        return true
-      end
-
-      if key == "arrow_right" then
-        local_state.query_cursor = math.min(#local_state.query, local_state.query_cursor + 1)
-        return true
-      end
-
-      if key == "backspace" and mods == "" then
-        local_state.query, local_state.query_cursor = backspace_input(local_state.query, local_state.query_cursor)
-        local_state.query_lower = local_state.query:lower()
-        local_state.index = 1
-        return true
-      end
-
-      local printable = shared.printable_char_for_key(key, mods)
-      if printable ~= nil then
-        local_state.query, local_state.query_cursor = insert_input(local_state.query, local_state.query_cursor, printable)
-        local_state.query_lower = local_state.query:lower()
-        local_state.index = 1
-        return true
-      end
-
-      local action_index = match_action_for_key(opts, key, mods or "")
-      if action_index ~= nil then
-        return invoke_action(opts, local_state, action_index, prepared)
-      end
-
-      if key == "enter" then
-        return invoke_action(opts, local_state, 1, prepared)
-      end
-
-      return false
     end,
     width = opts.width,
     height = opts.height,
     max_height = opts.max_height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
+    keys = w.keys(filter, nav, {
+      escape = function()
+        m.close()
+        w.fire(opts.on_cancel)
+      end,
+      arrow_down = function()
+        local entries = current_entries()
+        if #entries > 0 then
+          nav.index = (nav.index >= #entries) and 1 or math.max(1, nav.index) + 1
+        end
+      end,
+      arrow_up = function()
+        local entries = current_entries()
+        if #entries > 0 then
+          nav.index = (nav.index <= 1) and #entries or math.max(1, nav.index - 1)
+        end
+      end,
+      enter = function()
+        invoke_action(opts, filter.value, filter.value:lower(), nav.index, 1, prepared)
+      end,
+    }, action_keys),
   })
-
-  ui.overlay.push(widget)
 end
 
 function ui.select.close()

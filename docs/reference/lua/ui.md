@@ -141,6 +141,137 @@ Overlays stack. The topmost overlay receives `on_key` first and can
 return `true` to swallow the key. The notify, input, and select
 helpers are all overlays internally.
 
+## Builder API
+
+A compositional widget-builder layer on top of `hollow.ui.overlay`.
+Used internally by the built-in dialogs (confirm, input, select,
+palette).  Available for custom overlays that need less boilerplate.
+
+```lua
+local w = require("hollow.ui.builder")
+```
+
+### `w.modal(spec)`
+
+Creates and pushes an overlay, returns a handle with `.close()` and
+`.invalidate()`.  Handles hover/click dispatch automatically.
+
+```lua
+local m = w.modal({
+  theme  = theme,              -- resolved theme table or widget name
+  render = function(theme, state)
+    return w.dialog({ ... }, theme)
+  end,
+  width   = 50,
+  height  = nil,
+  chrome  = ...,
+  align   = "center",
+  backdrop = true,
+  keys    = w.keys(...),        -- optional key handler
+  on_event = function(name, payload) end,  -- optional raw events
+})
+m.close()
+```
+
+`state` tracks hover state: `state.hovered_id` is the id of the
+currently hovered node or `nil`.
+
+### Behaviors
+
+Behaviors encapsulate state and key handlers.  Each exposes a
+`.handlers` table consumed by `w.keys(...)`.
+
+**`w.list_nav(n)`** — Cyclical list navigation.
+
+```lua
+local nav = w.list_nav(3)   -- 3 items
+nav.index                    -- current selection (1-based)
+nav.next()                   -- wraps at end
+nav.prev()                   -- wraps at start
+nav.move(2)                  -- relative jump
+nav.first() / nav.last()
+nav.resize(5)                -- change item count
+nav.handlers                 -- { ["tab|arrow_right"] = fn, ["shift_tab|arrow_left"] = fn }
+```
+
+**`w.scroll_nav(n, opts?)`** — Scrolled list navigation with
+page-up/down, home, end, and visible-range calculation.
+
+```lua
+local nav = w.scroll_nav(0, { row_budget = 16 })
+nav.index
+local s, e, show_bar, thumb = nav:visible_range(items, budget)
+nav.page_up() / nav.page_down()
+nav.handlers  -- page_down, page_up, home, ["end"]
+```
+
+**`w.text_input(opts?)`** — Single-line text input with cursor.
+
+```lua
+local input = w.text_input({ initial = "", on_change = function(val) end })
+input.value            -- current text
+input.cursor           -- 0-based byte offset
+input.render(theme)    -- returns { before, cursor, after } nodes
+input.set("text", #"text")
+input.handlers         -- arrow_left, arrow_right, backspace, _else
+```
+
+### Components
+
+**`w.dialog(opts, theme)`** — Layout helper: title, divider, body,
+footer with styled buttons.  Returns a row list.
+
+```lua
+w.dialog({
+  title    = "Confirm",
+  body     = { w.text("Are you sure?") },
+  footer   = buttons,       -- HollowUiBuilderButton[]
+  selected = nav.index,      -- highlighted button index
+  hovered  = hovered_idx,    -- hovered button index
+}, theme)
+```
+
+**`w.button(opts)`** / **`w.buttons(items, map?)`** — Normalized button
+specs with stable auto-generated ids.
+
+```lua
+local btn = w.button({ text = "Save", kind = "primary" })
+
+local btns = w.buttons(raw_items, function(item, i)
+  return { on_click = function() confirm(item) end }
+end)
+```
+
+**`w.text(value, style?)`** — Inline text shorthand (passthrough to
+`hollow.ui.text`).
+
+### Key composition
+
+**`w.keys(...)`** — Merge behaviors and raw handler tables into a single
+`function(key, mods)` suitable for overlay `on_key`.
+
+```lua
+w.keys(nav, input, {
+  enter = function()
+    m.close()
+    w.fire(opts.on_confirm, input.value)
+  end,
+  escape = function()
+    m.close()
+    w.fire(opts.on_cancel)
+  end,
+})
+```
+
+Each arg is either a behavior (its `.handlers` are extracted) or a raw
+`{ key = fn }` table.  Later entries win on conflict.
+Supports pipe-separated aliases (`"tab|arrow_right"`),
+`<C-r>` / `<C-S-enter>` syntax, and `_else` catch-all.
+
+### `w.fire(fn, value)`
+
+Calls `fn(value)` if `fn` is a function, otherwise no-ops.
+
 ## Built-in overlay helpers
 
 ### `hollow.ui.notify`

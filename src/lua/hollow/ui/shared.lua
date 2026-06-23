@@ -884,17 +884,13 @@ function M.render_widget(widget)
 
   local ok_ctx, ctx = pcall(M.widget_ctx)
   if not ok_ctx then
-    if type(host_api.log) == "function" then
-      host_api.log("[hollow.ui] render_widget: widget_ctx error: " .. tostring(ctx))
-    end
+    hollow.log("[hollow.ui] render_widget: widget_ctx error: " .. tostring(ctx))
     return nil
   end
 
   local ok, rendered = pcall(widget.render, ctx)
   if not ok then
-    if type(host_api.log) == "function" then
-      host_api.log("[hollow.ui] render_widget: render error: " .. tostring(rendered))
-    end
+    hollow.log("[hollow.ui] render_widget: render error: " .. tostring(rendered))
     return nil
   end
 

@@ -1,0 +1,86 @@
+--- Button component.
+---
+--- Returns a normalized button spec with auto-generated id.
+--- Ids are stable when provided, allowing dynamic widget usage.
+
+local util = require("hollow.util")
+
+local M = {}
+
+local counter = 0
+
+---@param opts { id?: string, text: string, kind?: "default"|"primary"|"destructive", on_click?: fun(e: { id: string }) }
+---@return HollowUiBuilderButton
+function M.button(opts)
+  opts = opts or {}
+  if type(opts.text) ~= "string" or opts.text == "" then
+    error("w.button() requires a 'text' string")
+  end
+
+  counter = counter + 1
+  local id = opts.id or ("builder:btn:" .. counter)
+
+  return {
+    _button = true,
+    id = id,
+    text = opts.text,
+    kind = opts.kind or "default",
+    on_click = opts.on_click,
+  }
+end
+
+---@param theme table
+---@param btn HollowUiBuilderButton
+---@param selected boolean
+---@param hovered boolean
+---@return { fg: string, bg?: string, bold?: boolean, radius: integer }
+function M.button_style(theme, btn, selected, hovered)
+  local kind = btn.kind or "default"
+  local result = { radius = theme.radius or 4 }
+
+  if selected or hovered then
+    result.bold = true
+    if kind == "primary" then
+      result.fg = theme.primary_fg
+      result.bg = theme.primary_bg
+    elseif kind == "destructive" then
+      result.fg = theme.destructive_fg
+      result.bg = theme.destructive_bg
+    else
+      result.fg = theme.selected_fg
+      result.bg = util.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
+    end
+  else
+    if kind == "primary" then
+      result.fg = theme.primary_bg
+    elseif kind == "destructive" then
+      result.fg = theme.destructive_bg
+    else
+      result.fg = theme.fg
+    end
+  end
+
+  return result
+end
+
+--- Create an array of builder buttons from raw button specs.
+--- Each item should have `text`, optionally `kind` / `id` / other fields.
+--- The optional `map` fn receives `(raw_spec, i)` and returns `{ on_click = fn, ... }`.
+---@param items { id?: string, text: string, kind?: "default"|"primary"|"destructive", style?: string, on_click?: fun(e: { id: string }), on_confirm?: fun() }[]
+---@param map fun(item: table, i: integer): { on_click?: fun(e: { id: string }) }|nil
+---@return HollowUiBuilderButton[]
+function M.buttons(items, map)
+  local result = {}
+  for i, item in ipairs(items or {}) do
+    local overrides = map and map(item, i) or {}
+    result[i] = M.button({
+      id = item.id,
+      text = item.text,
+      kind = item.kind or item.style or "default",
+      on_click = overrides.on_click or item.on_click or item.on_confirm,
+    })
+  end
+  return result
+end
+
+return M

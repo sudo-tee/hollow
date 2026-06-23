@@ -82,10 +82,6 @@ local function workspace_badge_text()
   return " ws: " .. name .. " "
 end
 
-local function detail_for_item(_workspace)
-  return nil
-end
-
 local function search_text_for_item(workspace)
   local parts = { workspace.name }
   local cwd = source.trim_string(workspace.cwd)
@@ -104,6 +100,10 @@ local function search_text_for_item(workspace)
   end
 
   return table.concat(parts, "\n")
+end
+
+local function detail_for_item(_workspace)
+  return nil
 end
 
 local function switcher_actions()
