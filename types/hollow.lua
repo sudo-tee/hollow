@@ -949,7 +949,7 @@
 ---@field actions HollowUiSelectAction[]
 ---@field on_cancel? fun()
 
----@alias HollowActionCategory "tab"|"pane"|"workspace"|"window"|"scroll"|"copy_mode"|"general"|"user"
+---@alias HollowActionCategory "tab"|"pane"|"workspace"|"window"|"scroll"|"copy_mode"|"general"|"user"|string
 
 ---@class HollowActionSpec
 ---@field run fun()

@@ -11,261 +11,70 @@
 
 ## What Hollow Is
 
-Hollow is a Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core.
-The current build is only usable on Windows for the moment.
+A Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core. A personal
+project first — built for my own workflow — but designed to be useful and
+customizable for others. A spiritual successor to
+[WezTerm](https://wezfurlong.org/wezterm/), with Lua API inspiration from
+Neovim.
 
-I see it as a spiritual successor to WezTerm. WezTerm is a fantastic terminal emulator, but Wezterm development has slowed down and the project is not as active as it once was. Hollow is an attempt to create a new terminal emulator that builds on the strengths of WezTerm while also providing a more modern and flexible architecture.
-
-If you are new to the repo, start with [the docs index](docs/README.md). The
-root README is the product overview; the rest of `docs/` is the actual guide
-set.
-
-## Table Of Contents
-
-- [What Hollow Is](#what-hollow-is)
-- [Getting Started](#getting-started)
-- [Documentation Map](#documentation-map)
-- [What Ships Today](#what-ships-today)
-- [Default Keymaps](#default-keymaps)
-- [Project Status](#project-status)
-- [Project Docs](docs/README.md)
-
-## Why "Hollow"?
-
-The name "Hollow" is meant to evoke the idea of a container or vessel that can be filled with different contents. In this case, the "hollow" is the terminal emulator itself, which can be customized and extended with different configurations, scripts, and plugins to suit the user's needs. The name also has a certain simplicity and elegance to it, which reflects the design philosophy of the project.
+If you are new to the repo, start with [the docs index](docs/README.md).
 
 ## Features
 
-- A modern terminal emulator built with Zig and LuaJIT
-- A built-in Lua API for interacting with the terminal and building custom UI and automation
-- A VT core based on Ghostty for fast and accurate terminal emulation
-- Support for tabs, panes, workspaces, and a customizable top bar
-- Cross-platform support with a focus on Windows and WSL (Linux and macOS support is planned but not yet validated)
-
-## Getting Started
-
-### Zig Version
-
-This repo currently requires Zig `0.15.2`.
-
-It is not compatible with Zig `0.16.x` yet because the build graph and pinned
-dependencies still use the Zig `0.15.2` build API.
-
-If you use `asdf` or `mise`, this repo includes a local version pin in
-`.tool-versions`, so you can install the right toolchain with:
-
-```bash
-asdf install
-## or
-mise install
-```
-
-Otherwise, install Zig `0.15.2` manually and confirm with:
-
-```bash
-zig version
-```
-
-### Download a release
-
-The latest release is available on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases)
-
-Windows releases also bundle the optional `hollow-wsl-bypass` helper for WSL.
-If you install that helper inside your WSL distro, Hollow uses it for `wsl.exe`
-domains and falls back to ConPTY automatically when the helper is not installed.
-
-Windows builds emit debug symbols to `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb` next to the executables, but release bundles do not include them. See [Packaging → Crash reports](docs/packaging.md#crash-reports) for how to symbolicate a user-reported crash.
-
-### Customize the config
-
-Copy the default config `conf/init.lua` to the user config location:
-
-- Windows: `%APPDATA%\hollow\init.lua`
-- Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`
-
-Refer to [the configuration docs](docs/configuration.md) for details on the config model, defaults and overrides
-
-### Development builds
-
-#### Build from source (Windows/WSL)
-
-Before running setup, make sure `zig version` reports `0.15.2`.
-
-First-time setup:
-
-```bash
-./scripts/setup.sh
-```
-
-Build and run:
-
-```bash
-./launch.sh
-```
-
-Build only:
-
-```bash
-./launch.sh --build-only
-```
-
-Debug build:
-
-```bash
-./launch.sh --debug
-```
-
-#### Build from source (other platforms)
-
-Before building, make sure `zig version` reports `0.15.2`.
-
-First-time setup:
-
-```bash
-./scripts/setup.sh
-```
-
-Build and run:
-
-```bash
-zig build run
-## Or build a release binary:
-zig build -Doptimize=ReleaseFast
-```
-
-**Linux build prerequisites**
-
-> **Error:** The linux build is currently broken.
-
-To build on Linux you need the X11, Xi, Xcursor, OpenGL and ALSA development packages:
-
-```bash
-sudo apt install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev pkg-config
-```
-
-These provide the `-lX11 -lXi -lXcursor -lGL -lasound` libraries required by the linker.
-
-## Documentation Map
-
-Start with [the docs index](docs/README.md).
-The rest of this section is the short tour; the docs index is the
-canonical source.
-
-### Guides
-
-| Page                                                           | Read this when                                        |
-| -------------------------------------------------------------- | ----------------------------------------------------- |
-| [Getting started](docs/getting-started.md)                     | you are running Hollow for the first time             |
-| [Configuration](docs/configuration.md)                         | you want to customize Hollow or ship a default config |
-| [Keybindings](docs/keybindings.md)                             | you want the default keymap or to override it         |
-| [Panes, tabs, workspaces](docs/panes-tabs-workspaces.md)       | you want the layout model in one place                |
-| [Themes](docs/themes.md)                                       | you want a built-in theme or to write a custom one    |
-| [Custom UI](docs/custom-ui.md)                                 | you want to build a widget, sidebar, or overlay       |
-| [Copy mode](docs/copy-mode.md)                                 | you want vim-like scrollback navigation               |
-| [Plugins](docs/plugins.md)                                     | you want to install or write a plugin                 |
-| [Shell integration](docs/shell-integration.md)                 | you want shells to report cwd and process to Hollow   |
-| [HTP protocol](docs/htp-protocol.md)                           | you want the wire format for shell-to-host            |
-| [Shell integration recipes](docs/shell-integration-recipes.md) | you want bash, zsh, fish, or PowerShell helpers       |
-| [Development](docs/development.md)                             | you are building Hollow from source                   |
-| [Packaging](docs/packaging.md)                                 | you are cutting a release                             |
-| [Troubleshooting](docs/troubleshooting.md)                     | something is broken and you want a quick fix          |
-| [FAQ](docs/faq.md)                                             | you want short answers to common questions            |
-
-### Platforms
-
-| Page                                        | Read this when                                 |
-| ------------------------------------------- | ---------------------------------------------- |
-| [Platform matrix](docs/platforms/README.md) | you want the up-front status of each OS        |
-| [Windows](docs/platforms/windows.md)        | you are running Hollow on Windows              |
-| [WSL](docs/platforms/wsl.md)                | you want WSL as a shell domain                 |
-| [Linux](docs/platforms/linux.md)            | you are trying to run Hollow natively on Linux |
-| [macOS](docs/platforms/macos.md)            | you are trying to run Hollow on macOS          |
-
-### Reference
-
-| Page                                                    | Read this when                                 |
-| ------------------------------------------------------- | ---------------------------------------------- |
-| [Reference index](docs/reference/README.md)             | you want the canonical API and command surface |
-| [Lua API](docs/reference/lua/README.md)                 | you are scripting Hollow (17 namespaces)       |
-| [Native CLI](docs/reference/cli/native.md)              | you want `hollow cli …` host commands          |
-| [Python `hollow-cli`](docs/reference/cli/hollow-cli.md) | you want the OSC-over-tty client               |
-| [Built-in keymap actions](docs/reference/actions.md)    | you want every string action name              |
-
-### Examples
-
-| Page                                                  | Read this when                               |
-| ----------------------------------------------------- | -------------------------------------------- |
-| [Config snippets](docs/examples/config-snippets.md)   | you want common `hollow.config.set` recipes  |
-| [UI recipes](docs/examples/ui-recipes.md)             | you want drop-in widgets and picker patterns |
-| [Plugin authoring](docs/examples/plugin-authoring.md) | you want a full plugin walkthrough           |
-
-Companion reference files outside `docs/`:
-
-- `conf/init.lua`: the shipped default configuration
-- `types/hollow.lua`: LuaLS typings for the runtime API
-
-## What Ships Today
-
-- tabs, split panes, floating panes, maximized panes, and workspaces
-- scrollback, selection, clipboard, and hyperlink handling
-- a shipped top bar with workspace, tabs, cwd, key legend, and time
-- a Lua API centered on `hollow.config`, `hollow.term`, `hollow.events`, `hollow.keymap`, `hollow.ui`, and `hollow.htp`
-- CLI and Lua font discovery helpers
+- Zig + LuaJIT runtime with a full Lua API (`hollow.config`, `hollow.term`,
+  `hollow.events`, `hollow.keymap`, `hollow.ui`, `hollow.htp`, and more)
+- Ghostty's VT core for fast, accurate terminal emulation
+- Tabs, split panes, floating panes, maximized panes, workspaces, customizable top bar
+- Scrollback, selection, clipboard, hyperlink handling, font discovery, ligature, nerd fonts and emoji support
+- Basic support for Kitty images and Sixel
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
-- optional WSL PTY bypass helper with automatic fallback to ConPTY when not installed
-- a bundled config that users can extend from `%APPDATA%\hollow\init.lua` on Windows or `$XDG_CONFIG_HOME/hollow/init.lua` / `$HOME/.config/hollow/init.lua` on non-Windows hosts
+- Optional WSL PTY bypass helper with automatic ConPTY fallback (needed for full escape sequence support)
+- Cross-platform targets: Windows, WSL (primary); Linux, macOS (planned)
+- Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
+- Opiniated default UX but fully customizable via Lua config and plugins
 
-The shipped Windows default domain is currently `pwsh`. `wsl` is available and
-documented because it is an important workflow, but it is not the default in the
-current bundled config.
+## Quick Start
+
+**Zig version:** `0.15.2` only. If you use `asdf` or `mise`, run
+`asdf install` or `mise install` from the repo root — `.tool-versions` is
+already pinned.
+
+**Download a release:** [github.com/sudo-tee/hollow/releases](https://github.com/sudo-tee/hollow/releases)
+Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
+(falls back to ConPTY automatically when the helper is absent).
+
+**Customize:** copy `conf/init.lua` to `%APPDATA%\hollow\init.lua` (Windows) or
+`~/.config/hollow/init.lua` (other).
+
+**Build from source:**
+
+```
+./scripts/setup.sh        # first-time submodule init
+./launch.sh               # Windows cross-build + run
+zig build run             # non-Windows build + run
+```
+
+Full build docs in [Development](docs/development.md).
+
+## Documentation
+
+The full guide set lives in [`docs/`](docs/README.md):
+
+| Section   | Start here                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Guides    | [Getting started](docs/getting-started.md), [Configuration](docs/configuration.md), [Keybindings](docs/keybindings.md), [Panes/tabs/workspaces](docs/panes-tabs-workspaces.md) |
+| Platforms | [Windows](docs/platforms/windows.md), [WSL](docs/platforms/wsl.md), [Linux](docs/platforms/linux.md), [macOS](docs/platforms/macos.md)                                         |
+| Reference | [Lua API](docs/reference/lua/README.md), [CLI](docs/reference/cli/native.md), [Keymap actions](docs/reference/actions.md)                                                      |
+| Examples  | [Config snippets](docs/examples/config-snippets.md), [UI recipes](docs/examples/ui-recipes.md), [Plugin authoring](docs/examples/plugin-authoring.md)                          |
+
+Companion files: [`conf/init.lua`](conf/init.lua) (default config),
+[`types/hollow.lua`](types/hollow.lua) (LuaLS typings).
 
 ## Default Keymaps
 
-The default keymaps are defined in `conf/init.lua`. The bundled leader key is
-`<C-Space>` (timeout 1200ms). Below are the default bindings included in the
-shipped config (key → action):
-
-- `<C-S-c>`: `copy_selection`
-- `<C-S-v>`: `paste_clipboard`
-- `<S-Insert>`: `paste_clipboard`
-- `<C-\>`: `split_vertical`
-- `<C-S-\>`: `split_horizontal`
-- `<C-t>`: `new_tab`
-- `<C-w>`: `close_tab`
-- `<C-S-w>`: `close_pane`
-- `<C-Tab>`: `next_tab`
-- `<C-S-Tab>`: `prev_tab`
-- `<C-A-n>`: `new_workspace`
-- `<C-A-p>`: `workspace_switcher`
-- `<C-A-r>`: `rename_workspace`
-- `<C-A-w>`: `close_workspace`
-- `<C-A-Right>`: `next_workspace`
-- `<C-A-Left>`: `prev_workspace`
-- `<C-S-Left>`: `focus_pane_left`
-- `<C-S-Right>`: `focus_pane_right`
-- `<C-S-Up>`: `focus_pane_up`
-- `<C-S-Down>`: `focus_pane_down`
-- `<C-S-m>`: `maximize_pane`
-- `<C-S-f>`: `float_pane`
-- `<C-A-S-f>`: `tile_pane`
-- `<C-A-h>`: `move_pane_left`
-- `<C-A-l>`: `move_pane_right`
-- `<C-A-k>`: `move_pane_up`
-- `<C-A-j>`: `move_pane_down`
-- `<C-A-S-Left>`: `resize_pane_left`
-- `<C-A-S-Right>`: `resize_pane_right`
-- `<C-A-Up>`: `resize_pane_up`
-- `<C-A-Down>`: `resize_pane_down`
-- `<A-S-PageUp>`: `scrollback_page_up`
-- `<A-S-PageDown>`: `scrollback_page_down`
-- `<C-S-Home>`: `scrollback_top`
-- `<C-S-End>`: `scrollback_bottom`
-- `<leader>r`: rename current tab (bound to a small rename prompt; desc: "rename tab")
-- `<leader>uu`: reload the config (desc: "reload config")
-
-You can override any of these in your user config by calling `hollow.keymap.set`
-or `hollow.keymap.set_leader` in `$XDG_CONFIG_HOME/hollow/init.lua` or
-`%APPDATA%\\hollow\\init.lua`.
+All keymaps are defined in [`conf/init.lua`](conf/init.lua). The leader key is
+`<C-Space>` (1200ms timeout). See the file for the full bindings or override
+them in your user config via `hollow.keymap.set`.
 
 ## Project Status
 
