@@ -1,6 +1,9 @@
 local actions = require("hollow.ui.workspace.actions")
+local format = require("hollow.ui.widgets.format")
+local palette = require("src.lua.hollow.ui.widgets.palette")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
+local util = require("hollow.util")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -20,12 +23,42 @@ local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
 
+local WORKSPACE_PALETTE_KEYS = {
+  "blue",
+  "green",
+  "yellow",
+  "magenta",
+  "cyan",
+  "bright_blue",
+  "bright_green",
+  "bright_yellow",
+  "bright_magenta",
+  "bright_cyan",
+  "bright_white",
+  "white",
+  "bright_black",
+  "black",
+}
+
+local function workspace_name_color(name)
+  local theme = shared.resolve_theme()
+  local palette = theme.palette
+  local hash = 0
+  for i = 1, #name do
+    hash = (hash * 31 + name:byte(i)) % 2147483647
+  end
+  local key = WORKSPACE_PALETTE_KEYS[(hash % #WORKSPACE_PALETTE_KEYS) + 1]
+  local bg = palette[key]
+  if key:find("^bright_") then
+    bg = util.darken_hex_color(bg, 0.35, bg)
+  end
+  local fg = util.hex_luminance(bg) > 150 and palette.foreground or palette.background
+  return { bg = bg, fg = fg }
+end
+
 local function switcher_state()
   return source.switcher_state()
 end
-
-local util = require("hollow.util")
-local format = require("hollow.ui.widgets.format")
 
 local function derived_palette()
   local theme = shared.resolve_theme()
@@ -64,9 +97,20 @@ local function default_format_item(workspace)
   end
 
   return format.columns({
-    { text = workspace.is_active and ACTIVE_WORKSPACE_MARKER or " ", width = status_width, style = { fg = workspace.is_active and palette.open or palette.subtle, bold = workspace.is_active } },
+    {
+      text = workspace.is_active and ACTIVE_WORKSPACE_MARKER or " ",
+      width = status_width,
+      style = {
+        fg = workspace.is_active and palette.open or palette.subtle,
+        bold = workspace.is_active,
+      },
+    },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
-    { text = workspace.name, width = name_width, style = { fg = name_color, bold = workspace.is_active } },
+    {
+      text = workspace.name,
+      width = name_width,
+      style = { fg = name_color, bold = workspace.is_active },
+    },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
     { text = cwd_text, width = cwd_width, style = { fg = palette.subtle } },
   })
@@ -76,10 +120,17 @@ local function item_formatter()
   return switcher_state().format_item or default_format_item
 end
 
-local function workspace_badge_text()
+local function workspace_parts(prefix, suffix)
   local current = hollow.term.current_workspace()
   local name = current and current.name or "workspace"
-  return " ws: " .. name .. " "
+  local p = prefix or "  "
+  local s = suffix
+  if s == nil then
+    local index = current and current.index or 1
+    local count = current and #hollow.term.workspaces() or 1
+    s = " " .. index .. "/" .. count
+  end
+  return { name = p .. name, suffix = s }
 end
 
 local function search_text_for_item(workspace)
@@ -210,14 +261,46 @@ end
 
 function ui.workspace.topbar_button(opts)
   opts = opts or {}
-  return ui.button({
-    id = opts.id or "workspace-switcher-button",
-    text = opts.text or workspace_badge_text(),
-    style = opts.style,
-    on_click = function()
-      ui.workspace.open_switcher(opts.switcher or {})
-    end,
-  })
+  local style = {}
+  if opts.colorize ~= false then
+    local current = hollow.term.current_workspace()
+    local colors = workspace_name_color(current and current.name or "workspace")
+    style.bg = colors.bg
+    style.fg = colors.fg
+  end
+  if type(opts.style) == "table" then
+    for k, v in pairs(opts.style) do
+      style[k] = v
+    end
+  end
+
+  if opts.text ~= nil then
+    return ui.button({
+      id = opts.id or "workspace-switcher-button",
+      text = opts.text,
+      style = style,
+      on_click = function()
+        ui.workspace.open_switcher(opts.switcher or {})
+      end,
+    })
+  end
+
+  local parts = workspace_parts(opts.prefix, opts.suffix)
+  return {
+    ui.span(parts.name, {
+      bg = style.bg,
+      fg = style.fg,
+      bold = true,
+      id = opts.id or "workspace-switcher-button",
+      on_click = function()
+        ui.workspace.open_switcher(opts.switcher or {})
+      end,
+    }),
+    ui.span(parts.suffix, {
+      bg = style.bg,
+      fg = util.brighten_hex_color(style.bg, 0.4, style.fg),
+    }),
+  }
 end
 
 ui.workspace.switcher = ui.workspace.open_switcher

@@ -83,19 +83,16 @@ hollow.ui.topbar.configure({
   time = false,
   workspace = {
     style = function()
-      local ui = hollow.theme.current().ui
       return {
-        bg = ui.top_bar.background,
-        radius = 8,
+        radius = 4,
         padding = { left = 3, right = 3, top = 1, bottom = 1 },
         margin = { right = 1, left = 0, top = 0, bottom = 0 },
       }
     end,
-    format = function(workspace)
-      local ui = hollow.theme.current().ui
-      return {
-        hollow.ui.span(workspace.name, { fg = ui.widgets.all.title, bold = true }),
-      }
+    format = function()
+      return hollow.ui.workspace.topbar_button({
+        colorize = true,
+      })
     end,
   },
   separator = {

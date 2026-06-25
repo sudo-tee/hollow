@@ -1002,8 +1002,9 @@ end
 ---@param surface string|nil
 ---@param node HollowUiBarWorkspaceNode
 ---@param ctx HollowWidgetCtx
+---@param handlers table<string, table<string, function>>
 ---@return HollowUiSegment
-local function serialize_workspace(surface, node, ctx)
+  local function serialize_workspace(surface, node, ctx, handlers)
   local workspace = ctx.term.workspace
   local workspace_state = {
     index = workspace and workspace.index or 1,
@@ -1021,12 +1022,41 @@ local function serialize_workspace(surface, node, ctx)
     end
   end
 
+  local format_style = {}
+  if type(text) == "table" then
+    for _, formatted_node in
+      ipairs(shared.flatten_span_nodes(shared.normalize_inline_nodes(text)))
+    do
+      local fs = formatted_node.style
+      if type(fs) == "table" then
+        if type(fs.id) == "string" and fs.id ~= "" then
+          local entry = handlers[fs.id] or {}
+          for _, field in ipairs(BAR_EVENT_FIELDS) do
+            if type(fs[field]) == "function" then
+              entry[field] = fs[field]
+            end
+          end
+          handlers[fs.id] = entry
+        end
+        if format_style.bg == nil and type(fs.bg) == "string" then
+          format_style.bg = fs.bg
+        end
+        if format_style.fg == nil and type(fs.fg) == "string" then
+          format_style.fg = fs.fg
+        end
+      end
+    end
+  end
+
   local style = node.style
   if type(style) == "function" then
     local ok, result = pcall(style, workspace_state, ctx)
     style = ok and result or nil
   end
   style = resolve_bar_hover_style(surface, style)
+  if format_style.bg ~= nil or format_style.fg ~= nil then
+    style = shared.merge_style_tables(style, format_style)
+  end
 
   local segment = serialize_bar_value(surface, text, workspace_state.name, style)
   segment.kind = "segment"
@@ -1122,7 +1152,7 @@ local function serialize_bar_item(surface, node, ctx, handlers)
     return serialize_tabs(surface, node, ctx, handlers), nil
   end
   if node._type == "bar_workspace" then
-    return serialize_workspace(surface, node, ctx), nil
+    return serialize_workspace(surface, node, ctx, handlers), nil
   end
   if node._type == "bar_time" then
     return serialize_time(surface, node)

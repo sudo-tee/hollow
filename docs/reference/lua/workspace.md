@@ -145,11 +145,49 @@ a configured source first.
 
 ## Top-bar button
 
+Renders a clickable workspace badge for the top bar. By default shows
+the current workspace name (bold) with an index/count suffix (dimmed),
+colorized by workspace name.
+
+```lua
+hollow.ui.workspace.topbar_button(opts?)
+```
+
+Options:
+
+```lua
+{
+  text      = "custom text",          -- plain text override (skips prefix/suffix)
+  prefix    = " ",                    -- before the name (default "  ")
+  suffix    = " 2/4",                  -- after the name (default " index/count")
+  style     = { fg = "...", bg = "..." },
+  colorize  = true,                    -- pick bg/fg from workspace name hash
+  id        = "my-button",
+  switcher  = { ... },                 -- passed to open_switcher on click
+}
+```
+
+When `text` is set, returns a single span node. Otherwise returns two
+spans (name bold, suffix dimmed). Both have `on_click` wired to
+`open_switcher`.
+
+**With `bar.workspace`** (default conf behavior):
+
+```lua
+workspace = {
+  format = function(ws)
+    return hollow.ui.workspace.topbar_button({ colorize = true })
+  end,
+}
+```
+
+**Standalone in a custom bar:**
+
 ```lua
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function()
     return {
-      hollow.ui.workspace.topbar_button({ text = " workspaces " }),
+      hollow.ui.workspace.topbar_button(),
       hollow.ui.spacer(),
       hollow.ui.bar.time("%H:%M"),
     }

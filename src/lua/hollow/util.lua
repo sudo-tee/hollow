@@ -10,6 +10,7 @@ local M = {}
 ---@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field hex_luminance fun(hex:string): number
 ---@field path_separator fun(path:string|nil): string
 ---@field normalize_path fun(path:string, separator:string|nil): string|nil
 ---@field join_path fun(...:string): string
@@ -177,7 +178,7 @@ local function normalize_amount(value)
   return math.max(-1, math.min(1, amount))
 end
 
----@param color string
+---@param color string|HollowColor
 ---@return integer|nil, integer|nil, integer|nil
 local function split_hex_channels(color)
   if type(color) ~= "string" or color:match(HEX_COLOR_PATTERN) == nil then
@@ -187,13 +188,13 @@ local function split_hex_channels(color)
   return tonumber(color:sub(2, 3), 16), tonumber(color:sub(4, 5), 16), tonumber(color:sub(6, 7), 16)
 end
 
----@param value string
+---@param value string|HollowColor
 ---@return boolean
 function M.is_hex_color(value)
   return type(value) == "string" and value:match(HEX_COLOR_PATTERN) ~= nil
 end
 
----@param value string
+---@param value string|HollowColor
 ---@param fallback string|nil
 ---@return string|nil
 function M.normalize_hex_color(value, fallback)
@@ -203,7 +204,7 @@ function M.normalize_hex_color(value, fallback)
   return fallback
 end
 
----@param value string
+---@param value string|HollowColor
 ---@param amount number|string
 ---@param fallback string|nil
 ---@return string|nil
@@ -227,7 +228,7 @@ function M.adjust_hex_color(value, amount, fallback)
   return string.format("#%02x%02x%02x", adjust(red), adjust(green), adjust(blue))
 end
 
----@param value string
+---@param value string|HollowColor
 ---@param amount number|string
 ---@param fallback string|nil
 ---@return string|nil
@@ -235,12 +236,24 @@ function M.brighten_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, math.abs(tonumber(amount) or 0), fallback)
 end
 
----@param value string
+---@param value string|HollowColor
 ---@param amount number|string
 ---@param fallback string|nil
 ---@return string|nil
 function M.darken_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, -math.abs(tonumber(amount) or 0), fallback)
+end
+
+---@param hex string|HollowColor
+---@return number
+function M.hex_luminance(hex)
+  if type(hex) ~= "string" then
+    return 0
+  end
+  local r = tonumber(hex:sub(2, 3), 16) or 0
+  local g = tonumber(hex:sub(4, 5), 16) or 0
+  local b = tonumber(hex:sub(6, 7), 16) or 0
+  return 0.299 * r + 0.587 * g + 0.114 * b
 end
 
 ---@param path string|nil

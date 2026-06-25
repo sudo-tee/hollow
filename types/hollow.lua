@@ -1645,7 +1645,7 @@ function select.close() end
 ---@field items fun(force_refresh?: boolean): HollowUiWorkspaceItem[]
 ---@field open_switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
 ---@field switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
----@field topbar_button fun(opts?: { id?: string, text?: string, style?: HollowUiNodeStyle, switcher?: HollowUiWorkspaceSwitcherOptions }): HollowUiSpanNode
+---@field topbar_button fun(opts?: { id?: string, text?: string, prefix?: string, suffix?: string, style?: HollowUiNodeStyle, switcher?: HollowUiWorkspaceSwitcherOptions, colorize?: boolean }): HollowUiSpanNode|HollowUiSpanNode[]
 ---@field create fun(opts?: { prompt?: string, on_confirm?: fun(name: string) })
 ---@field rename fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem, opts?: { prompt?: string, on_confirm?: fun(name: string, workspace: any) })
 ---@field close fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem)
@@ -1973,6 +1973,7 @@ hollow.platform = {
 ---@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field hex_luminance fun(hex:string): number
 ---@field path_separator fun(path:string|nil): string
 ---@field normalize_path fun(path:string, separator:string|nil): string|nil
 ---@field join_path fun(...:string): string
