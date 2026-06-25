@@ -2126,15 +2126,49 @@ fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
 }
 
 fn discoverLuaSources(allocator: std.mem.Allocator) ?RuntimeLuaSources {
-    const exe_dir = std.fs.selfExeDirPathAlloc(allocator) catch return null;
-    errdefer allocator.free(exe_dir);
+    const exe_dir = std.fs.selfExeDirPathAlloc(allocator) catch return discoverLuaSourcesWalkUp(allocator, null);
+    defer allocator.free(exe_dir);
 
-    const root_dir = std.fs.path.join(allocator, &.{ exe_dir, "src", "lua" }) catch return null;
-    allocator.free(exe_dir);
-    errdefer allocator.free(root_dir);
+    {
+        const root_dir = std.fs.path.join(allocator, &.{ exe_dir, "src", "lua" }) catch return null;
+        defer allocator.free(root_dir);
+        if (std.fs.accessAbsolute(root_dir, .{})) |_| {
+            return .{ .root_dir = allocator.dupe(u8, root_dir) catch return null };
+        } else |_| {}
+    }
 
-    std.fs.accessAbsolute(root_dir, .{}) catch return null;
-    return .{ .root_dir = root_dir };
+    return discoverLuaSourcesWalkUp(allocator, exe_dir);
+}
+
+fn discoverLuaSourcesWalkUp(allocator: std.mem.Allocator, start: ?[]const u8) ?RuntimeLuaSources {
+    const seed = start orelse {
+        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return null;
+        defer allocator.free(cwd);
+        return discoverLuaSourcesWalkUpFrom(allocator, cwd);
+    };
+    return discoverLuaSourcesWalkUpFrom(allocator, seed);
+}
+
+fn discoverLuaSourcesWalkUpFrom(allocator: std.mem.Allocator, start: []const u8) ?RuntimeLuaSources {
+    var current = allocator.dupe(u8, start) catch return null;
+    defer allocator.free(current);
+
+    var depth: usize = 0;
+    while (depth < 5) : (depth += 1) {
+        const candidate = std.fs.path.join(allocator, &.{ current, "src", "lua" }) catch return null;
+        defer allocator.free(candidate);
+
+        if (std.fs.accessAbsolute(candidate, .{})) |_| {
+            return .{ .root_dir = allocator.dupe(u8, candidate) catch return null };
+        } else |_| {}
+
+        const parent = std.fs.path.dirname(current) orelse return null;
+        const new_current = allocator.dupe(u8, parent) catch return null;
+        allocator.free(current);
+        current = new_current;
+    }
+
+    return null;
 }
 
 fn luaModuleDiskPath(allocator: std.mem.Allocator, sources: RuntimeLuaSources, module_name: []const u8) ![]u8 {
