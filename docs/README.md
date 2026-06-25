@@ -1,23 +1,16 @@
 # Documentation
 
-Hollow docs are organized to work as plain Markdown in this repo **and** as the
-source for a future docs site.
-The directory layout maps directly to a typical site nav: Overview, Guides,
-Reference, Examples, plus Platform notes for the validated targets.
+The is the main entry point for Hollow's documentation.
 
-## At a glance
-
-| Section | What lives there | Start with |
-| --- | --- | --- |
-| [Overview](getting-started.md) | Install, first run, mental model | [Getting started](getting-started.md) |
-| [Guides](#guides) | Concept-focused how-tos | [Configuration](configuration.md) |
-| [Platforms](#platforms) | Per-OS notes and troubleshooting | [Windows + WSL](platforms/windows.md) |
-| [Reference](#reference) | API and command surface | [Lua API](reference/lua/README.md) |
-| [Examples](examples/README.md) | Runnable recipes and snippets | [Config snippets](examples/config-snippets.md) |
+| Section                        | What lives there                 | Start with                                     |
+| ------------------------------ | -------------------------------- | ---------------------------------------------- |
+| [Overview](getting-started.md) | Install, first run, mental model | [Getting started](getting-started.md)          |
+| [Guides](#guides)              | Concept-focused how-tos          | [Configuration](configuration.md)              |
+| [Platforms](#platforms)        | Per-OS notes and troubleshooting | [Windows + WSL](platforms/windows.md)          |
+| [Reference](#reference)        | API and command surface          | [Lua API](reference/lua/README.md)             |
+| [Examples](./examples/README.md) | Runnable recipes and snippets    | [Config snippets](examples/config-snippets.md) |
 
 ## Guides
-
-Concept-focused, in roughly the order a new user wants them.
 
 - [Getting started](getting-started.md) — install, first run, mental model
 - [Configuration](configuration.md) — config model, defaults, overrides
@@ -80,22 +73,3 @@ Runnable recipes and small, complete snippets.
 - [Config snippets](examples/config-snippets.md)
 - [UI recipes](examples/ui-recipes.md)
 - [Plugin authoring](examples/plugin-authoring.md)
-
-## Source of truth
-
-When the docs and the code disagree, the code wins.
-These files are the canonical references for the documented behavior:
-
-- `conf/init.lua` — shipped default config and keymap
-- `types/hollow.lua` — LuaLS typings for the Lua API
-- `src/main.zig` — native CLI flags and startup flow
-- `src/app.zig` — config resolution, runtime wiring, host behavior
-- `src/pty/pty_windows.zig` — Windows PTY and WSL bypass logic
-- `src/lua/hollow/*.lua` — Lua-side runtime modules
-
-## Writing rules
-
-The docs in this directory follow the rules in [DOCS.md](../DOCS.md).
-Short version: describe what the product does today, not what it might do
-tomorrow; prefer tables and code blocks over prose; use sentence-per-line in
-Markdown source; name things exactly as the code does.

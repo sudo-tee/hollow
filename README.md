@@ -1,6 +1,16 @@
 # Hollow
 
 <div align="center">
+
+![Zig](https://img.shields.io/badge/Zig-%23F7A41D.svg?&style=for-the-badge&logo=zig&logoColor=black)
+[![GitHub stars](https://img.shields.io/github/stars/sudo-tee/hollow?style=for-the-badge)](https://github.com/sudo-tee/hollow/stargazers)
+![Last Commit](https://img.shields.io/github/last-commit/sudo-tee/hollow?style=for-the-badge)
+
+<a href="https://www.buymeacoffee.com/sudo.tee"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" height="20px"></a>
+
+</div>
+
+<div align="center">
     <img src="assets/banner.png" alt="Hollow demo" width="200"/>
 </div>
 
@@ -11,11 +21,12 @@
 
 ## What Hollow Is
 
-A Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core. A personal
-project first — built for my own workflow — but designed to be useful and
-customizable for others. A spiritual successor to
-[WezTerm](https://wezfurlong.org/wezterm/), with Lua API inspiration from
-Neovim.
+A Zig terminal emulator with a LuaJIT runtime and Ghostty's VT core. Fully
+configurable via Lua — inspired by the Lua APIs from
+[WezTerm](https://wezfurlong.org/wezterm/) and Neovim — with a plugin system for
+custom panes, overlays, and widgets.
+
+A personal side project — built for around my personal workflow, but completely customizable for anyone else.
 
 If you are new to the repo, start with [the docs index](docs/README.md).
 
@@ -29,15 +40,11 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 - Basic support for Kitty images and Sixel
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
 - Optional WSL PTY bypass helper with automatic ConPTY fallback (needed for full escape sequence support)
-- Cross-platform targets: Windows, WSL (primary); Linux, macOS (planned)
+- Cross-platform targets: Windows, WSL (primary); Linux (planned), macOS (planned)
 - Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
-- Opiniated default UX but fully customizable via Lua config and plugins
+- Sensible default UX but fully customizable via Lua config and plugins
 
 ## Quick Start
-
-**Zig version:** `0.15.2` only. If you use `asdf` or `mise`, run
-`asdf install` or `mise install` from the repo root — `.tool-versions` is
-already pinned.
 
 **Download a release:** [github.com/sudo-tee/hollow/releases](https://github.com/sudo-tee/hollow/releases)
 Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
@@ -47,6 +54,10 @@ Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
 `~/.config/hollow/init.lua` (other).
 
 **Build from source:**
+
+**Zig version:** `0.15.2` only. If you use `asdf` or `mise`, run
+`asdf install` or `mise install` from the repo root — `.tool-versions` is
+already pinned.
 
 ```
 ./scripts/setup.sh        # first-time submodule init
@@ -81,4 +92,3 @@ them in your user config via `hollow.keymap.set`.
 - Hollow is still an active project and the API surface is still moving.
 - The docs in this repo are meant to describe the current product, not a future roadmap.
 - The current build is suitable for building, running, configuring, and packaging now, with Windows/WSL as the main tested target.
-- If you are planning a docs site, treat [docs/README.md](docs/README.md) as the navigation root.
