@@ -18,6 +18,7 @@ const c = @import("sokol_c");
 const ft = @import("ft_c");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
+const box_draw = @import("box_draw.zig");
 const CopyModeSnapshotLine = @import("../app.zig").CopyModeSnapshotLine;
 const SearchHighlight = @import("../app.zig").SearchHighlight;
 const Config = @import("../config.zig").Config;
@@ -1946,7 +1947,9 @@ pub const FtRenderer = struct {
             }
             if (mode == .draw) {
                 const px = self.columnPixelX(col, line.cols);
-                if (drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, cell.text, fg)) {
+                if (self.drawSynthesizedBoxUtf8(px, row.py, cell.text, fg, row.py, row.py + self.cell_h) or
+                    drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, cell.text, fg))
+                {
                     self.flushQueuedRun(mode, run_buf, &run, row.py);
                     continue;
                 }
@@ -2400,6 +2403,9 @@ pub const FtRenderer = struct {
                     if (!self.ligatures or !isLigatureCodepoint(cp)) {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         self.last_glyph_runs += 1;
+                        if (self.drawSynthesizedBoxGlyph(col_px, row.py, cp, text_style.fg, row.py, row.py + self.cell_h)) {
+                            continue;
+                        }
                         if (drawSynthesizedTerminalCodepoint(col_px, row.py, self.cell_w, self.cell_h, cp, text_style.fg)) {
                             continue;
                         }
@@ -2452,6 +2458,9 @@ pub const FtRenderer = struct {
                         self.flushQueuedRun(.draw, run_buf, &run, row.py);
                         const px = self.columnPixelX(col_x, queue.col_count);
                         self.last_glyph_runs += 1;
+                        if (self.drawSynthesizedBoxUtf8(px, row.py, glyph_utf8, text_style.fg, row.py, row.py + self.cell_h)) {
+                            continue;
+                        }
                         if (drawSynthesizedTerminalUtf8(px, row.py, self.cell_w, self.cell_h, glyph_utf8, text_style.fg)) {
                             continue;
                         }
@@ -3795,6 +3804,295 @@ pub const FtRenderer = struct {
             else => self.embolden,
         };
     }
+
+    const SYNTHETIC_FACE: u8 = 250;
+
+    /// Render a box-drawing character (U+2500-U+257F) to the atlas
+    /// and return a cached Glyph. Returns null on OOM / atlas-full.
+    fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
+        if (!isBoxDrawingCodepoint(cp)) return null;
+        if (isRoundedArcCodepoint(cp)) return self.ensureSynthesizedRoundedArcGlyph(cp);
+
+        const bw: u32 = @intFromFloat(@ceil(self.cell_w));
+        const bh: u32 = @intFromFloat(@ceil(self.cell_h));
+        if (bw < 2 or bh < 2) return null;
+
+        const key = GlyphKey{ .glyph_index = cp, .face_index = SYNTHETIC_FACE, .raster_mode = .terminal };
+        if (self.glyph_cache.get(key)) |g| return g;
+
+        const box_thickness: u32 = @max(1, @as(u32, @intFromFloat(@round(@min(self.cell_w, self.cell_h) / 12.0))));
+        const metrics: box_draw.Metrics = .{
+            .cell_width = bw,
+            .cell_height = bh,
+            .box_thickness = box_thickness,
+        };
+        const buf = self.allocator.alloc(u8, bw * bh) catch return null;
+        defer self.allocator.free(buf);
+        @memset(buf, 0);
+
+        var canvas: box_draw.SimpleCanvas = .{
+            .buf = buf,
+            .width = bw,
+            .height = bh,
+        };
+        box_draw.draw(cp, metrics, &canvas);
+
+        // Pack into atlas (same logic as getOrRasterize).
+        if (self.atlas_x + bw + 1 >= ATLAS_W) {
+            self.atlas_x = 1;
+            self.atlas_y += self.atlas_row_h + 1;
+            self.atlas_row_h = 0;
+        }
+        if (self.atlas_y + bh >= ATLAS_H) {
+            std.log.warn("ft_renderer: glyph atlas full (box glyph)!", .{});
+            return null;
+        }
+
+        var row: u32 = 0;
+        while (row < bh) : (row += 1) {
+            const dst_base = (self.atlas_y + row) * ATLAS_W * ATLAS_BPP + self.atlas_x * ATLAS_BPP;
+            var col: u32 = 0;
+            while (col < bw) : (col += 1) {
+                const cov = self.boostCoverage(buf[row * bw + col]);
+                const dst = dst_base + col * ATLAS_BPP;
+                self.atlas_data[dst + 0] = cov;
+                self.atlas_data[dst + 1] = cov;
+                self.atlas_data[dst + 2] = cov;
+                self.atlas_data[dst + 3] = cov;
+            }
+        }
+        self.atlas_dirty = true;
+        self.atlas_uploaded_this_frame = false;
+        if (bh > self.atlas_row_h) self.atlas_row_h = bh;
+
+        const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
+        const t0 = @as(f32, @floatFromInt(self.atlas_y)) / @as(f32, @floatFromInt(ATLAS_H));
+        const s1 = @as(f32, @floatFromInt(self.atlas_x + bw)) / @as(f32, @floatFromInt(ATLAS_W));
+        const t1 = @as(f32, @floatFromInt(self.atlas_y + bh)) / @as(f32, @floatFromInt(ATLAS_H));
+
+        self.atlas_x += bw + 1;
+
+        const g = Glyph{
+            .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1,
+            .bw = @intCast(bw), .bh = @intCast(bh),
+            .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)),
+            .advance_x = self.cell_w,
+            .color_emoji = false,
+        };
+        self.glyph_cache.put(key, g) catch {};
+        return g;
+    }
+
+    fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
+        const bd_lw = @max(1.0, @round(self.cell_w / 12.0));
+        const bw: u32 = @intFromFloat(@ceil(self.cell_w));
+        const bh: u32 = @intFromFloat(@ceil(self.cell_h));
+        if (bw < 2 or bh < 2) return null;
+
+        const key = GlyphKey{ .glyph_index = cp, .face_index = SYNTHETIC_FACE, .raster_mode = .terminal };
+        if (self.glyph_cache.get(key)) |g| return g;
+
+        const cw_f = self.cell_w;
+        const ch_f = self.cell_h;
+        const cx = cw_f / 2.0;
+        const cy = ch_f / 2.0;
+        const half_lw = bd_lw / 2.0;
+        const segs: usize = @max(4, @min(32, @divFloor(bw, 2)));
+
+        var pts: [64]struct { x: f32, y: f32 } = undefined;
+        var npts: usize = 0;
+
+        switch (cp) {
+            0x256D => {
+                const y1 = cy + cy / 2.0;
+                const x2 = cx + cx / 2.0;
+                pts[npts] = .{ .x = cx, .y = ch_f }; npts += 1;
+                pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+                var i: usize = 1;
+                while (i < segs) : (i += 1) {
+                    const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
+                    const omt = 1.0 - t;
+                    const bx = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2;
+                    const by = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy;
+                    pts[npts] = .{ .x = bx, .y = by }; npts += 1;
+                }
+                pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
+                pts[npts] = .{ .x = cw_f, .y = cy }; npts += 1;
+            },
+            0x256E => {
+                const y1 = cy + cy / 2.0;
+                const x2 = cx - cx / 2.0;
+                pts[npts] = .{ .x = cx, .y = ch_f }; npts += 1;
+                pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+                var i: usize = 1;
+                while (i < segs) : (i += 1) {
+                    const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
+                    const omt = 1.0 - t;
+                    pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                }
+                pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
+                pts[npts] = .{ .x = 0.0, .y = cy }; npts += 1;
+            },
+            0x256F => {
+                const y1 = cy - cy / 2.0;
+                const x2 = cx - cx / 2.0;
+                pts[npts] = .{ .x = cx, .y = 0.0 }; npts += 1;
+                pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+                var i: usize = 1;
+                while (i < segs) : (i += 1) {
+                    const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
+                    const omt = 1.0 - t;
+                    pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                }
+                pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
+                pts[npts] = .{ .x = 0.0, .y = cy }; npts += 1;
+            },
+            0x2570 => {
+                const y1 = cy - cy / 2.0;
+                const x2 = cx + cx / 2.0;
+                pts[npts] = .{ .x = cx, .y = 0.0 }; npts += 1;
+                pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+                var i: usize = 1;
+                while (i < segs) : (i += 1) {
+                    const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
+                    const omt = 1.0 - t;
+                    pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                }
+                pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
+                pts[npts] = .{ .x = cw_f, .y = cy }; npts += 1;
+            },
+            else => return null,
+        }
+
+        var buf: [2048]u8 = undefined;
+        if (bw * bh > buf.len) return null;
+        @memset(buf[0 .. bw * bh], 0);
+
+        var py: u32 = 0;
+        while (py < bh) : (py += 1) {
+            var px: u32 = 0;
+            while (px < bw) : (px += 1) {
+                const fx = @as(f32, @floatFromInt(px)) + 0.5;
+                const fy = @as(f32, @floatFromInt(py)) + 0.5;
+
+                var min_dist: f32 = 1e6;
+                var si: usize = 0;
+                while (si + 1 < npts) : (si += 1) {
+                    const ax = pts[si].x;
+                    const ay = pts[si].y;
+                    const bx = pts[si + 1].x;
+                    const by = pts[si + 1].y;
+
+                    const dx = bx - ax;
+                    const dy = by - ay;
+                    const len2 = dx * dx + dy * dy;
+                    if (len2 < 0.0001) {
+                        const d = (fx - ax) * (fx - ax) + (fy - ay) * (fy - ay);
+                        if (d < min_dist) min_dist = d;
+                        continue;
+                    }
+                    const t = ((fx - ax) * dx + (fy - ay) * dy) / len2;
+                    const clamped_t = @max(0.0, @min(1.0, t));
+                    const near_x = ax + clamped_t * dx;
+                    const near_y = ay + clamped_t * dy;
+                    const d = (fx - near_x) * (fx - near_x) + (fy - near_y) * (fy - near_y);
+                    if (d < min_dist) min_dist = d;
+                }
+
+                const dist = @sqrt(min_dist);
+                var alpha: u8 = 0;
+                if (dist <= half_lw - 0.5) {
+                    alpha = 255;
+                } else if (dist < half_lw + 0.5) {
+                    const a_val = @round(255.0 * ((half_lw + 0.5) - dist) / 1.0);
+                    alpha = @intFromFloat(@min(a_val, @as(f32, 255.0)));
+                }
+                buf[py * bw + px] = alpha;
+            }
+        }
+
+        if (self.atlas_x + bw + 1 >= ATLAS_W) {
+            self.atlas_x = 1;
+            self.atlas_y += self.atlas_row_h + 1;
+            self.atlas_row_h = 0;
+        }
+        if (self.atlas_y + bh >= ATLAS_H) {
+            std.log.warn("ft_renderer: glyph atlas full (arc glyph)!", .{});
+            return null;
+        }
+
+        var row: u32 = 0;
+        while (row < bh) : (row += 1) {
+            const dst_base = (self.atlas_y + row) * ATLAS_W * ATLAS_BPP + self.atlas_x * ATLAS_BPP;
+            var col: u32 = 0;
+            while (col < bw) : (col += 1) {
+                const cov = self.boostCoverage(buf[row * bw + col]);
+                const dst = dst_base + col * ATLAS_BPP;
+                self.atlas_data[dst + 0] = cov;
+                self.atlas_data[dst + 1] = cov;
+                self.atlas_data[dst + 2] = cov;
+                self.atlas_data[dst + 3] = cov;
+            }
+        }
+        self.atlas_dirty = true;
+        self.atlas_uploaded_this_frame = false;
+        if (bh > self.atlas_row_h) self.atlas_row_h = bh;
+
+        const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
+        const t0 = @as(f32, @floatFromInt(self.atlas_y)) / @as(f32, @floatFromInt(ATLAS_H));
+        const s1 = @as(f32, @floatFromInt(self.atlas_x + bw)) / @as(f32, @floatFromInt(ATLAS_W));
+        const t1 = @as(f32, @floatFromInt(self.atlas_y + bh)) / @as(f32, @floatFromInt(ATLAS_H));
+
+        self.atlas_x += bw + 1;
+
+        const g = Glyph{
+            .s0 = s0,
+            .t0 = t0,
+            .s1 = s1,
+            .t1 = t1,
+            .bw = @intCast(bw),
+            .bh = @intCast(bh),
+            .bear_x = 0,
+            .bear_y = @intFromFloat(@ceil(self.ascender)),
+            .advance_x = cw_f,
+            .color_emoji = false,
+        };
+        self.glyph_cache.put(key, g) catch {};
+        return g;
+    }
+
+    /// Draw a box-drawing character (U+2500-U+257F) from the atlas glyph cache.
+    fn drawSynthesizedBoxGlyph(
+        self: *FtRenderer,
+        px: f32,
+        py: f32,
+        cp: u32,
+        fg: ghostty.ColorRgb,
+        clip_y0: f32,
+        clip_y1: f32,
+    ) bool {
+        const glyph = self.ensureSynthesizedBoxGlyph(cp) orelse return false;
+        const w = @as(f32, @floatFromInt(glyph.bw));
+        const h = @as(f32, @floatFromInt(glyph.bh));
+        if (w <= 0 or h <= 0) return false;
+        const gx = @round(px);
+        const gy = @round(py);
+        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, false);
+        return true;
+    }
+
+    fn drawSynthesizedBoxUtf8(
+        self: *FtRenderer,
+        px: f32,
+        py: f32,
+        utf8: []const u8,
+        fg: ghostty.ColorRgb,
+        clip_y0: f32,
+        clip_y1: f32,
+    ) bool {
+        const cp = firstRenderableCodepoint(utf8) orelse return false;
+        return self.drawSynthesizedBoxGlyph(px, py, cp, fg, clip_y0, clip_y1);
+    }
 };
 
 fn featureTag(tag: [4]u8) u32 {
@@ -4836,8 +5134,25 @@ const TerminalRect = struct {
     h: f32,
 };
 
+const SynthesizedResult = struct {
+    r0: TerminalRect,
+    r1: TerminalRect,
+    count: u32,
+};
+
 fn isSynthesizedTerminalCodepoint(cp: u32) bool {
-    return synthesizedTerminalRect(1.0, 1.0, cp) != null;
+    return isBoxDrawingCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
+}
+
+fn isBoxDrawingCodepoint(cp: u32) bool {
+    return cp >= 0x2500 and cp <= 0x257F;
+}
+
+fn isRoundedArcCodepoint(cp: u32) bool {
+    return switch (cp) {
+        0x256D, 0x256E, 0x256F, 0x2570 => true,
+        else => false,
+    };
 }
 
 fn drawSynthesizedTerminalUtf8(x: f32, y: f32, cell_w: f32, cell_h: f32, utf8: []const u8, color: ghostty.ColorRgb) bool {
@@ -4846,14 +5161,17 @@ fn drawSynthesizedTerminalUtf8(x: f32, y: f32, cell_w: f32, cell_h: f32, utf8: [
 }
 
 fn drawSynthesizedTerminalCodepoint(x: f32, y: f32, cell_w: f32, cell_h: f32, cp: u32, color: ghostty.ColorRgb) bool {
-    const rect = synthesizedTerminalRect(cell_w, cell_h, cp) orelse return false;
+    const result = synthesizedTerminalRect(cell_w, cell_h, cp) orelse return false;
     c.sgl_begin_quads();
-    emitRect(x + rect.x, y + rect.y, rect.w, rect.h, color.r, color.g, color.b, 255);
+    emitRect(x + result.r0.x, y + result.r0.y, result.r0.w, result.r0.h, color.r, color.g, color.b, 255);
+    if (result.count > 1) {
+        emitRect(x + result.r1.x, y + result.r1.y, result.r1.w, result.r1.h, color.r, color.g, color.b, 255);
+    }
     c.sgl_end();
     return true;
 }
 
-fn synthesizedTerminalRect(cell_w: f32, cell_h: f32, cp: u32) ?TerminalRect {
+fn synthesizedTerminalRect(cell_w: f32, cell_h: f32, cp: u32) ?SynthesizedResult {
     if (cell_w <= 0.0 or cell_h <= 0.0) return null;
 
     const eighth_w = @max(1.0, @round(cell_w / 8.0));
@@ -4864,27 +5182,38 @@ fn synthesizedTerminalRect(cell_w: f32, cell_h: f32, cp: u32) ?TerminalRect {
     const half_h = @max(1.0, @round(cell_h / 2.0));
 
     return switch (cp) {
-        0x2580 => topRect(cell_w, cell_h, half_h),
-        0x2581 => bottomRect(cell_w, cell_h, eighth_h),
-        0x2582 => bottomRect(cell_w, cell_h, quarter_h),
-        0x2583 => bottomRect(cell_w, cell_h, 3.0 * eighth_h),
-        0x2584 => bottomRect(cell_w, cell_h, half_h),
-        0x2585 => bottomRect(cell_w, cell_h, 5.0 * eighth_h),
-        0x2586 => bottomRect(cell_w, cell_h, 6.0 * eighth_h),
-        0x2587 => bottomRect(cell_w, cell_h, 7.0 * eighth_h),
-        0x2588 => .{ .x = 0.0, .y = 0.0, .w = cell_w, .h = cell_h },
-        0x2589 => leftRect(cell_w, cell_h, 7.0 * eighth_w),
-        0x258A => leftRect(cell_w, cell_h, 6.0 * eighth_w),
-        0x258B => leftRect(cell_w, cell_h, 5.0 * eighth_w),
-        0x258C => leftRect(cell_w, cell_h, half_w),
-        0x258D => leftRect(cell_w, cell_h, 3.0 * eighth_w),
-        0x258E => leftRect(cell_w, cell_h, quarter_w),
-        0x258F => leftRect(cell_w, cell_h, eighth_w),
-        0x2590 => rightRect(cell_w, cell_h, half_w),
-        0x2594 => topRect(cell_w, cell_h, eighth_h),
-        0x2595 => rightRect(cell_w, cell_h, eighth_w),
+        0x2580 => single(topRect(cell_w, cell_h, half_h)),
+        0x2581 => single(bottomRect(cell_w, cell_h, eighth_h)),
+        0x2582 => single(bottomRect(cell_w, cell_h, quarter_h)),
+        0x2583 => single(bottomRect(cell_w, cell_h, 3.0 * eighth_h)),
+        0x2584 => single(bottomRect(cell_w, cell_h, half_h)),
+        0x2585 => single(bottomRect(cell_w, cell_h, 5.0 * eighth_h)),
+        0x2586 => single(bottomRect(cell_w, cell_h, 6.0 * eighth_h)),
+        0x2587 => single(bottomRect(cell_w, cell_h, 7.0 * eighth_h)),
+        0x2588 => single(.{ .x = 0.0, .y = 0.0, .w = cell_w, .h = cell_h }),
+        0x2589 => single(leftRect(cell_w, cell_h, 7.0 * eighth_w)),
+        0x258A => single(leftRect(cell_w, cell_h, 6.0 * eighth_w)),
+        0x258B => single(leftRect(cell_w, cell_h, 5.0 * eighth_w)),
+        0x258C => single(leftRect(cell_w, cell_h, half_w)),
+        0x258D => single(leftRect(cell_w, cell_h, 3.0 * eighth_w)),
+        0x258E => single(leftRect(cell_w, cell_h, quarter_w)),
+        0x258F => single(leftRect(cell_w, cell_h, eighth_w)),
+        0x2590 => single(rightRect(cell_w, cell_h, half_w)),
+        0x2594 => single(topRect(cell_w, cell_h, eighth_h)),
+        0x2595 => single(rightRect(cell_w, cell_h, eighth_w)),
+
         else => null,
     };
+}
+
+/// Helper: wrap a single rect as a SynthesizedResult.
+fn single(r: TerminalRect) SynthesizedResult {
+    return .{ .r0 = r, .r1 = undefined, .count = 1 };
+}
+
+/// Helper: wrap two rects as a SynthesizedResult.
+fn two(r0: TerminalRect, r1: TerminalRect) SynthesizedResult {
+    return .{ .r0 = r0, .r1 = r1, .count = 2 };
 }
 
 fn topRect(cell_w: f32, cell_h: f32, desired_h: f32) TerminalRect {
