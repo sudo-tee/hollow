@@ -1935,6 +1935,7 @@ function plugins.sync() end
 ---@field read_dir fun(path: string): string[]
 ---@field schedule fun(handler: fun())
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
+---@field color HollowColorModule
 ---@field util HollowUtilNamespace
 ---@field theme HollowThemeNamespace
 
@@ -1948,6 +1949,7 @@ hollow.term = term
 hollow.workspace = workspace_api
 hollow.events = events
 hollow.keymap = keymap
+hollow.color = color
 hollow.ui = ui
 hollow.htp = htp
 hollow.fs = fs
@@ -1963,17 +1965,20 @@ hollow.platform = {
   default_shell = "",
 }
 
----@class HollowUtilNamespace
----@field clone_value fun(value:any, seen:table|nil): any
----@field merge_tables fun(dst:table, src:table): table
----@field unsupported fun(name:string)
----@field host_now_ms fun(host_api:table|nil): integer
+---@class HollowColorModule
 ---@field is_hex_color fun(value:string): boolean
 ---@field normalize_hex_color fun(value:string, fallback:string|nil): string|nil
 ---@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field contrast_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field hex_luminance fun(hex:string): number
+
+---@class HollowUtilNamespace
+---@field clone_value fun(value:any, seen:table|nil): any
+---@field merge_tables fun(dst:table, src:table): table
+---@field unsupported fun(name:string)
+---@field host_now_ms fun(host_api:table|nil): integer
 ---@field path_separator fun(path:string|nil): string
 ---@field normalize_path fun(path:string, separator:string|nil): string|nil
 ---@field join_path fun(...:string): string

@@ -1,3 +1,4 @@
+local color = require("hollow.color")
 local util = require("hollow.util")
 
 local M = {}
@@ -79,7 +80,7 @@ end
 ---@param fallback HollowColor|string
 ---@return HollowColor
 local function color_or(value, fallback)
-  return util.normalize_hex_color(value, fallback) --[[@as HollowColor]]
+  return color.normalize_hex_color(value, fallback) --[[@as HollowColor]]
 end
 
 ---@param values HollowColor[]|nil
@@ -154,7 +155,7 @@ local function create_ui(spec, palette)
   widgets.input.backdrop = widgets.input.backdrop or { color = palette.black, alpha = 168 }
 
   local select = widgets.select
-  local select_bg = util.brighten_hex_color(all.panel_bg, 0.1, all.panel_bg)
+  local select_bg = color.brighten_hex_color(all.panel_bg, 0.1, all.panel_bg)
   select.selected_bg = color_or(select.selected_bg, select_bg)
   select.selected_detail_bg = color_or(select.selected_detail_bg, all.panel_bg)
   select.scrollbar_thumb = color_or(select.scrollbar_thumb, palette.bright_yellow)
@@ -167,10 +168,10 @@ local function create_ui(spec, palette)
   levels.success = color_or(levels.success, palette.bright_green)
 
   local tab_bar = ui.tab_bar
-  local bar_bg = util.darken_hex_color(palette.background, 0.1, palette.black)
-  local active_bg = util.brighten_hex_color(palette.background, 0.06, palette.background)
-  local hover_bg = util.brighten_hex_color(bar_bg, 0.12, active_bg)
-  local inactive_fg = util.darken_hex_color(palette.foreground, 0.50, palette.foreground)
+  local bar_bg = color.darken_hex_color(palette.background, 0.1, palette.black)
+  local active_bg = color.brighten_hex_color(palette.background, 0.06, palette.background)
+  local hover_bg = color.brighten_hex_color(bar_bg, 0.12, active_bg)
+  local inactive_fg = color.darken_hex_color(palette.foreground, 0.50, palette.foreground)
 
   tab_bar.background = color_or(tab_bar.background, bar_bg)
   tab_bar.active_tab.bg = color_or(tab_bar.active_tab.bg, active_bg)
@@ -197,10 +198,10 @@ local function create_ui(spec, palette)
 
   ui.split_active = color_or(ui.split_active, palette.magenta)
   ui.split_inactive =
-    color_or(ui.split_inactive, util.brighten_hex_color(palette.black, 0.08, palette.black))
+    color_or(ui.split_inactive, color.brighten_hex_color(palette.black, 0.08, palette.black))
   ui.floating_active = color_or(ui.floating_active, palette.magenta)
   ui.floating_inactive =
-    color_or(ui.floating_inactive, util.brighten_hex_color(palette.black, 0.08, palette.black))
+    color_or(ui.floating_inactive, color.brighten_hex_color(palette.black, 0.08, palette.black))
   ui.accent = color_or(ui.accent, palette.magenta)
   ui.warm = color_or(ui.warm, palette.bright_yellow)
   ui.status.bg = color_or(ui.status.bg, palette.black)
@@ -314,7 +315,7 @@ function M.resolve_widget(kind, theme)
   local resolved = {
     panel_bg = color_or(
       ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg,
-      util.brighten_hex_color(terminal.background, 0.2, nil)
+      color.brighten_hex_color(terminal.background, 0.2, nil)
     ),
     panel_border = color_or(accent, nil),
     divider = color_or(split, nil),
@@ -328,7 +329,7 @@ function M.resolve_widget(kind, theme)
     selected_bg = color_or(status.bg or tab_bar.background, nil),
     selected_detail_bg = color_or(
       ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg,
-      util.brighten_hex_color(terminal.background, 0.1, nil)
+      color.brighten_hex_color(terminal.background, 0.1, nil)
     ),
     selected_fg = color_or(terminal.foreground, nil),
     primary_bg = color_or(accent, nil),
@@ -370,7 +371,7 @@ function M.resolve_widget(kind, theme)
   if resolved.backdrop == false then
     result.backdrop = nil
   elseif resolved.backdrop ~= nil then
-    if util.is_hex_color(resolved.backdrop) then
+    if color.is_hex_color(resolved.backdrop) then
       result.backdrop = { color = resolved.backdrop, alpha = DEFAULT_WIDGET_THEME.backdrop.alpha }
     elseif type(resolved.backdrop) == "table" then
       result.backdrop = {

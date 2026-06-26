@@ -1,6 +1,6 @@
 local actions = require("hollow.ui.workspace.actions")
+local color = require("hollow.color")
 local format = require("hollow.ui.widgets.format")
-local palette = require("src.lua.hollow.ui.widgets.palette")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 local util = require("hollow.util")
@@ -48,11 +48,9 @@ local function workspace_name_color(name)
     hash = (hash * 31 + name:byte(i)) % 2147483647
   end
   local key = WORKSPACE_PALETTE_KEYS[(hash % #WORKSPACE_PALETTE_KEYS) + 1]
-  local bg = palette[key]
-  if key:find("^bright_") then
-    bg = util.darken_hex_color(bg, 0.35, bg)
-  end
-  local fg = util.hex_luminance(bg) > 150 and palette.foreground or palette.background
+  local bg = palette[key] or palette.background
+  bg = color.darken_hex_color(bg, 0.6, bg)
+  local fg = color.contrast_hex_color(bg, 0.4, palette.foreground)
   return { bg = bg, fg = fg }
 end
 
@@ -65,8 +63,8 @@ local function derived_palette()
   local palette = theme.palette
   return {
     fg = palette.foreground,
-    muted = util.darken_hex_color(palette.foreground, 0.35, palette.foreground),
-    subtle = util.darken_hex_color(palette.foreground, 0.5, palette.foreground),
+    muted = color.darken_hex_color(palette.foreground, 0.35, palette.foreground),
+    subtle = color.darken_hex_color(palette.foreground, 0.6, palette.foreground),
     open = palette.bright_green,
     user = palette.bright_blue,
   }
@@ -123,14 +121,14 @@ end
 local function workspace_parts(prefix, suffix)
   local current = hollow.term.current_workspace()
   local name = current and current.name or "workspace"
-  local p = prefix or "  "
+  local p = prefix or "  "
   local s = suffix
   if s == nil then
     local index = current and current.index or 1
     local count = current and #hollow.term.workspaces() or 1
     s = " " .. index .. "/" .. count
   end
-  return { name = p .. name, suffix = s }
+  return { prefix = p, name = name, suffix = s }
 end
 
 local function search_text_for_item(workspace)
@@ -287,6 +285,10 @@ function ui.workspace.topbar_button(opts)
 
   local parts = workspace_parts(opts.prefix, opts.suffix)
   return {
+    ui.span(parts.prefix, {
+      bg = style.bg,
+      fg = color.brighten_hex_color(style.bg, 0.3, style.fg),
+    }),
     ui.span(parts.name, {
       bg = style.bg,
       fg = style.fg,
@@ -298,7 +300,7 @@ function ui.workspace.topbar_button(opts)
     }),
     ui.span(parts.suffix, {
       bg = style.bg,
-      fg = util.brighten_hex_color(style.bg, 0.4, style.fg),
+      fg = color.brighten_hex_color(style.bg, 0.3, style.fg),
     }),
   }
 end

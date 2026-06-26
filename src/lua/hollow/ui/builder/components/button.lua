@@ -3,7 +3,7 @@
 --- Returns a normalized button spec with auto-generated id.
 --- Ids are stable when provided, allowing dynamic widget usage.
 
-local util = require("hollow.util")
+local color = require("hollow.color")
 
 local M = {}
 
@@ -48,7 +48,7 @@ function M.button_style(theme, btn, selected, hovered)
       result.bg = theme.destructive_bg
     else
       result.fg = theme.selected_fg
-      result.bg = util.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
+      result.bg = color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
     end
   else
     if kind == "primary" then

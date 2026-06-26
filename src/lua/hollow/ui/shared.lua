@@ -1,5 +1,6 @@
 local state = require("hollow.state").get()
 local theme_api = require("hollow.theme")
+local color = require("hollow.color")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -248,12 +249,7 @@ local function resolve_segment_style(value)
   return value
 end
 
----@param value any
----@param fallback HollowHexColor|nil
----@return HollowHexColor|nil
-local function normalize_hex_color(value, fallback)
-  return util.normalize_hex_color(value, fallback)
-end
+
 
 ---@param rendered any
 ---@return HollowUiRows
@@ -413,7 +409,7 @@ end
 function M.style_to_segment(text, style)
   local segment = { text = text }
 
-  if util.is_hex_color(style) then
+  if color.is_hex_color(style) then
     segment.fg = style
     return segment
   end
@@ -424,16 +420,16 @@ function M.style_to_segment(text, style)
     if type(style.id) == "string" and style.id ~= "" then
       segment.id = style.id
     end
-    if util.is_hex_color(style.fg) then
+    if color.is_hex_color(style.fg) then
       segment.fg = style.fg
     end
-    if util.is_hex_color(style.bg) then
+    if color.is_hex_color(style.bg) then
       segment.bg = style.bg
     end
     if style.radius ~= nil then
       segment.radius = style.radius
     end
-    if util.is_hex_color(style.border) then
+    if color.is_hex_color(style.border) then
       segment.border = style.border
     end
     if style.border_size ~= nil then
@@ -756,18 +752,18 @@ function M.normalize_overlay_backdrop(value)
     return { color = DEFAULT_BACKDROP.color, alpha = DEFAULT_BACKDROP.alpha }
   end
 
-  if util.is_hex_color(value) then
+  if color.is_hex_color(value) then
     return { color = value, alpha = DEFAULT_BACKDROP.alpha }
   end
 
   if type(value) == "table" then
-    local color = normalize_hex_color(value.color or value.bg, "#000000")
+    local c = color.normalize_hex_color(value.color or value.bg, "#000000")
     local alpha = tonumber(value.alpha)
     if alpha == nil then
       alpha = DEFAULT_BACKDROP.alpha
     end
     alpha = math.max(0, math.min(255, math.floor(alpha)))
-    return { color = color, alpha = alpha }
+    return { color = c, alpha = alpha }
   end
 
   return nil
@@ -785,15 +781,15 @@ function M.normalize_overlay_size(value)
   return number_value >= 1 and number_value or nil
 end
 
-M.normalize_hex_color = normalize_hex_color
+M.normalize_hex_color = color.normalize_hex_color
 
 ---@param value any
 ---@return HollowUiChrome|nil
 function M.normalize_overlay_chrome(value)
   value = type(value) == "table" and value or {}
 
-  local bg = normalize_hex_color(value.bg, nil)
-  local border = normalize_hex_color(value.border, nil)
+  local bg = color.normalize_hex_color(value.bg, nil)
+  local border = color.normalize_hex_color(value.border, nil)
   local has_border_size = value.border_size ~= nil
   local border_size = has_border_size and normalize_px(value.border_size, 1) or 1
   local alpha = tonumber(value.alpha)

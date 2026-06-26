@@ -757,7 +757,14 @@ fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, te
 
 fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c_int, text_buf: []u8, scratch: *BarWidgetScratch) void {
     resetBarWidgetView(dst);
-    dst.layout = topLevelBarLayout(api, state, table_idx);
+
+    api.get_field(state, table_idx, "layout");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const layout_idx = lua_mod.absoluteIndex(api, state, -1);
+        dst.layout = topLevelBarLayout(api, state, layout_idx);
+    }
+    pop(api, state, 1);
+
     dst.style = barStyleField(api, state, table_idx, "style");
 
     api.get_field(state, table_idx, "items");

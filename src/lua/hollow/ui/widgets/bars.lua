@@ -1,3 +1,4 @@
+local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local widget_core = require("hollow.ui.widgets.core")
 
@@ -18,7 +19,7 @@ local function resolved_topbar_theme()
   local top_bar = shared.resolve_theme().ui.top_bar or {}
   return {
     height = tonumber(top_bar.height) or DEFAULT_TOPBAR_HEIGHT,
-    background = shared.normalize_hex_color(top_bar.background, nil),
+    background = color.normalize_hex_color(top_bar.background, nil),
   }
 end
 
@@ -195,20 +196,19 @@ end
 local function special_mode_theme()
   local resolved = shared.resolve_theme().ui
   local all = resolved.widgets.all
-  local util = hollow.util
-  local base_bg = shared.normalize_hex_color(all.panel_bg, resolved.top_bar.background)
-  local mode_copy_bg = shared.normalize_hex_color(util.brighten_hex_color(base_bg, 0.08, base_bg), base_bg)
-  local mode_leader_bg = shared.normalize_hex_color(util.darken_hex_color(base_bg, 0.04, base_bg), base_bg)
-  local hint_key_bg = shared.normalize_hex_color(util.brighten_hex_color(base_bg, 0.14, base_bg), base_bg)
+  local base_bg = color.normalize_hex_color(all.panel_bg, resolved.top_bar.background)
+  local mode_copy_bg = color.normalize_hex_color(color.brighten_hex_color(base_bg, 0.08, base_bg), base_bg)
+  local mode_leader_bg = color.normalize_hex_color(color.darken_hex_color(base_bg, 0.04, base_bg), base_bg)
+  local hint_key_bg = color.normalize_hex_color(color.brighten_hex_color(base_bg, 0.14, base_bg), base_bg)
   return {
-    bg = shared.normalize_hex_color(resolved.status and resolved.status.bg, resolved.top_bar.background),
-    fg = shared.normalize_hex_color(resolved.status and resolved.status.fg, all.title),
+    bg = color.normalize_hex_color(resolved.status and resolved.status.bg, resolved.top_bar.background),
+    fg = color.normalize_hex_color(resolved.status and resolved.status.fg, all.title),
     chip_bg = base_bg,
-    chip_fg = shared.normalize_hex_color(all.fg, resolved.status and resolved.status.fg),
-    accent = shared.normalize_hex_color(resolved.accent, all.title),
-    muted = shared.normalize_hex_color(all.muted, all.fg),
-    divider = shared.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
-    counter = shared.normalize_hex_color(all.counter, all.muted),
+    chip_fg = color.normalize_hex_color(all.fg, resolved.status and resolved.status.fg),
+    accent = color.normalize_hex_color(resolved.accent, all.title),
+    muted = color.normalize_hex_color(all.muted, all.fg),
+    divider = color.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
+    counter = color.normalize_hex_color(all.counter, all.muted),
     copy_bg = mode_copy_bg,
     leader_bg = mode_leader_bg,
     hint_key_bg = hint_key_bg,
@@ -701,13 +701,13 @@ local function serialize_bar_style(style)
     return nil
   end
 
-  local bg = shared.normalize_hex_color(style.bg, nil)
-  local fg = shared.normalize_hex_color(style.fg, nil)
-  local border = shared.normalize_hex_color(style.border, nil)
-  local close_bg = shared.normalize_hex_color(style.close_bg, nil)
-  local close_fg = shared.normalize_hex_color(style.close_fg, nil)
-  local close_hover_bg = shared.normalize_hex_color(style.close_hover_bg, nil)
-  local close_hover_fg = shared.normalize_hex_color(style.close_hover_fg, nil)
+  local bg = color.normalize_hex_color(style.bg, nil)
+  local fg = color.normalize_hex_color(style.fg, nil)
+  local border = color.normalize_hex_color(style.border, nil)
+  local close_bg = color.normalize_hex_color(style.close_bg, nil)
+  local close_fg = color.normalize_hex_color(style.close_fg, nil)
+  local close_hover_bg = color.normalize_hex_color(style.close_hover_bg, nil)
+  local close_hover_fg = color.normalize_hex_color(style.close_hover_fg, nil)
   local radius = normalize_px(style.radius, 0)
   local close_radius = normalize_px(style.close_radius, 0)
   local padding = normalize_box(style.padding)
@@ -766,8 +766,8 @@ local function serialize_bar_text_style(style)
   end
 
   local serialized = {}
-  local fg = shared.normalize_hex_color(style.fg, nil)
-  local bg = shared.normalize_hex_color(style.bg, nil)
+  local fg = color.normalize_hex_color(style.fg, nil)
+  local bg = color.normalize_hex_color(style.bg, nil)
   if fg ~= nil then
     serialized.fg = fg
   end

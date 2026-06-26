@@ -25,10 +25,9 @@ hollow.config.set({
   backend = "sokol",
   default_domain = default_domain,
   domains = domains,
-  -- theme = "kanagawa-wave",
   fonts = {
     size = default_font_size,
-    line_height = 0.95,
+    line_height = 0.93,
     smoothing = "grayscale",
     hinting = "light",
     ligatures = true,
@@ -74,9 +73,9 @@ if is_windows then
 end
 
 hollow.ui.topbar.configure({
-  height = 24,
+  height = 28,
   layout = {
-    padding = { left = 0, right = 0, top = 1, bottom = 1 },
+    padding = { left = 4, right = 0, top = 1, bottom = 1 },
   },
   cwd = false,
   key_legend = false,
@@ -85,7 +84,7 @@ hollow.ui.topbar.configure({
     style = function()
       return {
         radius = 4,
-        padding = { left = 3, right = 3, top = 1, bottom = 1 },
+        padding = { left = 6, right = 6, top = 0, bottom = 2 },
         margin = { right = 1, left = 0, top = 0, bottom = 0 },
       }
     end,
@@ -97,7 +96,7 @@ hollow.ui.topbar.configure({
   },
   separator = {
     text = "|",
-    style = { margin = { left = 3, right = 3 } },
+    style = { margin = { left = 4, right = 4 } },
   },
   tabs = {
     fit = "content",
@@ -110,7 +109,7 @@ hollow.ui.topbar.configure({
         bg = tab_colors.bg,
         fg = tab_colors.fg,
         radius = 4,
-        padding = { left = 6, right = 3, top = 2, bottom = 2 },
+        padding = { left = 6, right = 3, top = 1, bottom = 2 },
         margin = { right = 1 },
         bold = tab.is_active,
       }
