@@ -3810,7 +3810,7 @@ pub const FtRenderer = struct {
     /// Render a box-drawing character (U+2500-U+257F) to the atlas
     /// and return a cached Glyph. Returns null on OOM / atlas-full.
     fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
-        if (!isBoxDrawingCodepoint(cp)) return null;
+        if (!isBoxDrawingCodepoint(cp) and !isQuadrantCodepoint(cp)) return null;
         if (isRoundedArcCodepoint(cp)) return self.ensureSynthesizedRoundedArcGlyph(cp);
 
         const bw: u32 = @intFromFloat(@ceil(self.cell_w));
@@ -5141,11 +5141,15 @@ const SynthesizedResult = struct {
 };
 
 fn isSynthesizedTerminalCodepoint(cp: u32) bool {
-    return isBoxDrawingCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
+    return isBoxDrawingCodepoint(cp) or isQuadrantCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
 }
 
 fn isBoxDrawingCodepoint(cp: u32) bool {
     return cp >= 0x2500 and cp <= 0x257F;
+}
+
+fn isQuadrantCodepoint(cp: u32) bool {
+    return cp >= 0x2596 and cp <= 0x259F;
 }
 
 fn isRoundedArcCodepoint(cp: u32) bool {

@@ -451,6 +451,8 @@ fn dashVertical(metrics: Metrics, canvas: *SimpleCanvas, comptime count: u8, thi
 }
 
 pub fn draw(cp: u32, metrics: Metrics, canvas: *SimpleCanvas) void {
+    const half_w: u32 = metrics.cell_width / 2;
+    const half_h: u32 = metrics.cell_height / 2;
     switch (cp) {
         0x2500 => linesChar(metrics, canvas, .{ .left = .light, .right = .light }),
         0x2501 => linesChar(metrics, canvas, .{ .left = .heavy, .right = .heavy }),
@@ -580,6 +582,32 @@ pub fn draw(cp: u32, metrics: Metrics, canvas: *SimpleCanvas) void {
         0x257d => linesChar(metrics, canvas, .{ .up = .light, .down = .heavy }),
         0x257e => linesChar(metrics, canvas, .{ .left = .heavy, .right = .light }),
         0x257f => linesChar(metrics, canvas, .{ .up = .heavy, .down = .light }),
+        // Quadrant block elements U+2596-U+259F
+        0x2596 => canvas.box(0, @intCast(half_h), @intCast(half_w), @intCast(metrics.cell_height)),
+        0x2597 => canvas.box(@intCast(half_w), @intCast(half_h), @intCast(metrics.cell_width), @intCast(metrics.cell_height)),
+        0x2598 => canvas.box(0, 0, @intCast(half_w), @intCast(half_h)),
+        0x2599 => {
+            canvas.box(0, 0, @intCast(metrics.cell_width), @intCast(half_h));
+            canvas.box(0, @intCast(half_h), @intCast(half_w), @intCast(metrics.cell_height));
+        },
+        0x259A => {
+            canvas.box(0, 0, @intCast(half_w), @intCast(half_h));
+            canvas.box(@intCast(half_w), @intCast(half_h), @intCast(metrics.cell_width), @intCast(metrics.cell_height));
+        },
+        0x259B => {
+            canvas.box(0, 0, @intCast(metrics.cell_width), @intCast(half_h));
+            canvas.box(0, @intCast(half_h), @intCast(half_w), @intCast(metrics.cell_height));
+        },
+        0x259C => {
+            canvas.box(0, 0, @intCast(metrics.cell_width), @intCast(half_h));
+            canvas.box(@intCast(half_w), @intCast(half_h), @intCast(metrics.cell_width), @intCast(metrics.cell_height));
+        },
+        0x259D => canvas.box(@intCast(half_w), 0, @intCast(metrics.cell_width), @intCast(half_h)),
+        0x259E => {
+            canvas.box(@intCast(half_w), 0, @intCast(metrics.cell_width), @intCast(half_h));
+            canvas.box(0, @intCast(half_h), @intCast(half_w), @intCast(metrics.cell_height));
+        },
+        0x259F => canvas.box(@intCast(half_w), 0, @intCast(metrics.cell_width), @intCast(metrics.cell_height)),
         else => {},
     }
 }
