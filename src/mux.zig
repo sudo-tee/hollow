@@ -322,7 +322,7 @@ pub const SplitNode = struct {
             .first = first,
             .second = second,
             .direction = direction,
-            .ratio = std.math.clamp(ratio, 0.1, 0.9),
+            .ratio = std.math.clamp(ratio, 0.05, 0.95),
         };
     }
 
@@ -716,7 +716,7 @@ pub const Tab = struct {
         new_leaf.* = SplitNode.initPane(pane);
 
         const direction: SplitDirection = if (pane.restore_split_horizontal) .horizontal else .vertical;
-        const ratio = std.math.clamp(pane.restore_ratio, 0.1, 0.9);
+        const ratio = std.math.clamp(pane.restore_ratio, 0.05, 0.95);
         if (pane.restore_place_first) {
             target.* = SplitNode.initSplit(new_leaf, existing_leaf, direction, ratio);
         } else {
@@ -1335,7 +1335,7 @@ pub const Mux = struct {
                 break :blk null;
             };
             if (restore_anchor) |anchor| new_pane.restore_anchor_id = @intFromPtr(anchor);
-            new_pane.restore_ratio = std.math.clamp(ratio, 0.1, 0.9);
+            new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
             new_pane.restore_split_horizontal = direction == .horizontal;
             new_pane.restore_place_first = false;
             tab.active_pane = new_pane;
@@ -1353,7 +1353,7 @@ pub const Mux = struct {
         const current = tab.activePane() orelse return;
         const root = tab.root_split orelse return;
         if (findSplitContaining(root, current, direction)) |node| {
-            node.ratio = std.math.clamp(node.ratio + delta, 0.1, 0.9);
+            node.ratio = std.math.clamp(node.ratio + delta, 0.05, 0.95);
         }
     }
 

@@ -4733,12 +4733,12 @@ pub const App = struct {
     pub fn setSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
         std.log.info("setSplitNodeRatio queued node={x} ratio={d:.4}", .{ @intFromPtr(node), ratio });
         self.pending_split_ratio_node = node;
-        self.pending_split_ratio = std.math.clamp(ratio, 0.1, 0.9);
+        self.pending_split_ratio = std.math.clamp(ratio, 0.05, 0.95);
         self.requestLayoutResize(false);
     }
 
     pub fn previewSplitNodeRatio(self: *App, node: *SplitNode, ratio: f32) void {
-        node.ratio = std.math.clamp(ratio, 0.1, 0.9);
+        node.ratio = std.math.clamp(ratio, 0.05, 0.95);
         self.pending_drag_layout_resize = true;
         self.signalWake();
     }
@@ -5986,7 +5986,7 @@ pub const App = struct {
                                 node_bounds.width,
                                 node_bounds.height,
                             });
-                            pending.node.ratio = std.math.clamp(1.0 - corrected_new_ratio, 0.1, 0.9);
+                            pending.node.ratio = std.math.clamp(1.0 - corrected_new_ratio, 0.05, 0.95);
                         }
                     }
                 }
