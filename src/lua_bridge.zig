@@ -2,7 +2,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const fastmem = @import("fastmem.zig");
 const platform = @import("platform.zig");
-const ft_renderer = @import("render/ft_renderer.zig");
+const font_discovery = @import("render/font_discovery.zig");
 const ghostty = @import("term/ghostty.zig");
 const bar = @import("ui/bar.zig");
 
@@ -2817,7 +2817,7 @@ fn l_list_fonts(state: *State) callconv(.c) c_int {
     const api = ctx.api;
 
     const allocator = std.heap.page_allocator;
-    const families = ft_renderer.listAvailableFontsDetailed(allocator) catch {
+    const families = font_discovery.listAvailableFontsDetailed(allocator) catch {
         api.create_table(state, 0, 0);
         return 1;
     };

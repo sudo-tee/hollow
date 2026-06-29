@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const native_cli = @import("native_cli.zig");
+const font_config = @import("render/font_config.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -427,8 +428,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
 }
 
 fn printAvailableFonts(allocator: std.mem.Allocator, query: ?[]const u8, as_json: bool) !void {
-    const ft_renderer = @import("render/ft_renderer.zig");
-    const families = try ft_renderer.listAvailableFontsDetailed(allocator);
+    const font_discovery = @import("render/font_discovery.zig");
+    const families = try font_discovery.listAvailableFontsDetailed(allocator);
     defer {
         for (families) |*family| family.deinit(allocator);
         allocator.free(families);
@@ -453,7 +454,7 @@ fn printAvailableFonts(allocator: std.mem.Allocator, query: ?[]const u8, as_json
     }
 }
 
-fn printAvailableFontsJson(allocator: std.mem.Allocator, families: []const @import("render/ft_renderer.zig").FontFamilyInfo, query: ?[]const u8) !void {
+fn printAvailableFontsJson(allocator: std.mem.Allocator, families: []const font_config.FontFamilyInfo, query: ?[]const u8) !void {
     var list: std.ArrayListUnmanaged(u8) = .empty;
     defer list.deinit(allocator);
 
@@ -497,7 +498,7 @@ fn appendJsonString(allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged(
     try list.append(allocator, '"');
 }
 
-fn fontFamilyMatchesQuery(family: @import("render/ft_renderer.zig").FontFamilyInfo, query: ?[]const u8) bool {
+fn fontFamilyMatchesQuery(family: font_config.FontFamilyInfo, query: ?[]const u8) bool {
     const q = query orelse return true;
     var query_buf: [256]u8 = undefined;
     const normalized_query = normalizeCliQuery(&query_buf, q);
@@ -562,4 +563,16 @@ test {
     _ = @import("config.zig");
     _ = @import("platform.zig");
     _ = @import("lua_bridge.zig");
+    _ = @import("render/color_math.zig");
+    _ = @import("render/text_util.zig");
+    _ = @import("render/font_config.zig");
+    _ = @import("render/font_discovery.zig");
+    _ = @import("render/ft_types.zig");
+    _ = @import("render/synth_glyphs.zig");
+    _ = @import("render/kitty_graphics.zig");
+    _ = @import("render/shaping.zig");
+    _ = @import("render/glyph_batch.zig");
+    _ = @import("render/terminal_render.zig");
+    _ = @import("render/box_draw.zig");
+    _ = @import("render/ft_renderer.zig");
 }
