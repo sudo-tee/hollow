@@ -95,6 +95,7 @@ local function focus_handler(key, direction)
     end
     if is_vim(pane) then
       hollow.term.send_key("<C-" .. key .. ">", pane.id)
+      return
     end
     hollow.term.focus_pane(direction)
   end
@@ -108,6 +109,7 @@ local function resize_handler(key, direction)
     end
     if is_vim(pane) then
       hollow.term.send_key("<C-A-" .. key .. ">", pane.id)
+      return
     end
     local ok, splits = pcall(require, "smart-splits")
     local amount = ok and splits.get_config().resize_amount or 0.05
