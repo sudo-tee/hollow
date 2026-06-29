@@ -155,7 +155,7 @@ local function create_ui(spec, palette)
   widgets.input.backdrop = widgets.input.backdrop or { color = palette.black, alpha = 168 }
 
   local select = widgets.select
-  local select_bg = color.brighten_hex_color(all.panel_bg, 0.1, all.panel_bg)
+  local select_bg = color.brighten_hex_color(all.panel_bg, 0.4, all.panel_bg)
   select.selected_bg = color_or(select.selected_bg, select_bg)
   select.selected_detail_bg = color_or(select.selected_detail_bg, all.panel_bg)
   select.scrollbar_thumb = color_or(select.scrollbar_thumb, palette.bright_yellow)
@@ -306,17 +306,16 @@ function M.resolve_widget(kind, theme)
   local status = table_field(ui, "status")
   local tab_bar = table_field(ui, "tab_bar")
   local workspace = table_field(ui, "workspace")
+  local widgets = table_field(ui, "widgets")
   local workspace_active = table_field(workspace, "active")
 
   local accent = ui.accent or ansi[5]
   local warm = ui.warm or brights[4]
   local split = ui.split or status.fg
+  local panel_bg = ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg or terminal.background
 
   local resolved = {
-    panel_bg = color_or(
-      ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg,
-      color.brighten_hex_color(terminal.background, 0.2, nil)
-    ),
+    panel_bg = color_or(panel_bg, color.brighten_hex_color(terminal.background, 0.2, nil)),
     panel_border = color_or(accent, nil),
     divider = color_or(split, nil),
     title = color_or(accent, nil),
@@ -326,10 +325,10 @@ function M.resolve_widget(kind, theme)
     input_fg = color_or(terminal.foreground, nil),
     cursor_bg = color_or(terminal.foreground, nil),
     cursor_fg = color_or(terminal.background, nil),
-    selected_bg = color_or(status.bg or tab_bar.background, nil),
+    selected_bg = color_or(widgets.selected_bg, color.brighten_hex_color(panel_bg, 0.1, nil)),
     selected_detail_bg = color_or(
-      ui.widgets and ui.widgets.all and ui.widgets.all.panel_bg,
-      color.brighten_hex_color(terminal.background, 0.1, nil)
+      widgets.selected_bg,
+      color.brighten_hex_color(panel_bg, 0.1, nil)
     ),
     selected_fg = color_or(terminal.foreground, nil),
     primary_bg = color_or(accent, nil),
