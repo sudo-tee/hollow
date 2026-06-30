@@ -271,6 +271,10 @@ hollow.keymap.set("<leader>p", "command_palette", { desc = "command palette" })
 --   top_bar_mode = "always",
 --   window_titlebar_show = false,
 --   fonts = { size = 16, family = "Consolas" },
+--   watch_dirs = {
+--     "./local",
+--     os.getenv("HOME") .. "/Projects/my-hollow-plugins",
+--   },
 -- })
 --
 -- hollow.config.set({

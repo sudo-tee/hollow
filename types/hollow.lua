@@ -355,6 +355,7 @@
 ---@field domains? table<string, string|HollowDomainConfig>
 ---@field env? table<string, string>
 ---@field workspace? HollowWorkspaceConfig
+---@field watch_dirs? string[]
 
 ---@class HollowWorkspaceConfig
 ---@field auto_bootstrap? "always"|"never"

@@ -92,3 +92,5 @@ them in your user config via `hollow.keymap.set`.
 - Hollow is still an active project and the API surface is still moving.
 - The docs in this repo are meant to describe the current product, not a future roadmap.
 - The current build is suitable for building, running, configuring, and packaging now, with Windows/WSL as the main tested target.
+
+## Roadmap

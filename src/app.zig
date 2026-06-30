@@ -48,6 +48,7 @@ const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
 const bar = @import("ui/bar.zig");
+const ConfigWatcher = @import("config_watcher.zig").ConfigWatcher;
 const selection = @import("selection.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
@@ -735,6 +736,8 @@ pub const App = struct {
     topbar_cache_visible: bool = false,
     topbar_cache_dirty: bool = true,
     topbar_cache_expires_at_ns: i128 = 0,
+    config_watcher: ?*ConfigWatcher = null,
+    config_watch_reload_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     bottombar_cache_visible: bool = false,
     bottombar_cache_dirty: bool = true,
     bottombar_cache_expires_at_ns: i128 = 0,
@@ -2269,6 +2272,10 @@ pub const App = struct {
             self.allocator.free(cmd);
             self.startup_command = null;
         }
+        if (self.config_watcher) |w| {
+            w.destroy(self.allocator);
+            self.config_watcher = null;
+        }
         self.config.deinit();
         std.log.info("App.deinit done", .{});
     }
@@ -2379,6 +2386,7 @@ pub const App = struct {
         }
 
         try self.tick();
+        self.startConfigWatcher();
     }
 
     pub fn fireGuiReady(self: *App) void {
@@ -2586,6 +2594,9 @@ pub const App = struct {
             const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             self.maybeRunStartupCommand();
             if (self.config.debug_overlay) startup_ns = std.time.nanoTimestamp() - start_ns;
+        }
+        {
+            self.drainConfigWatchFlag();
         }
         debug_timing.setTickPhaseTimes(
             @as(f32, @floatFromInt(cleanup_ns)) / 1_000_000.0,
@@ -3106,6 +3117,7 @@ pub const App = struct {
         std.log.info("embedded_base_config={}", .{self.using_embedded_base_config});
         if (self.base_config_path) |path| std.log.info("base_config={s}", .{path});
         if (self.override_config_path) |path| std.log.info("override_config={s}", .{path});
+        for (self.config.watch_dirs.items) |dir| std.log.info("watch_dir={s}", .{dir});
     }
 
     pub fn sendText(self: *App, text: []const u8) void {
@@ -5197,6 +5209,41 @@ pub const App = struct {
         if (self.lua) |*lua| self.registerLuaCallbacks(lua);
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
+    }
+
+    fn drainConfigWatchFlag(self: *App) void {
+        if (self.config_watch_reload_flag.load(.acquire)) {
+            self.config_watch_reload_flag.store(false, .release);
+            std.log.info("config change detected by watcher", .{});
+            _ = self.enqueueMouse(.reload_config);
+        }
+    }
+
+    fn startConfigWatcher(self: *App) void {
+        const has_watch_dirs = self.config.watch_dirs.items.len > 0;
+        const has_config_file = self.base_config_path != null or self.override_config_path != null;
+        if (!has_watch_dirs and !has_config_file) return;
+
+        const watcher = ConfigWatcher.create(self.allocator, &self.config_watch_reload_flag) catch |err| {
+            std.log.err("config watcher init failed: {s}", .{@errorName(err)});
+            return;
+        };
+        for (self.config.watch_dirs.items) |dir| {
+            watcher.watch(dir) catch |err| {
+                std.log.warn("watch_dir add failed: {s} err={s}", .{ dir, @errorName(err) });
+            };
+        }
+        if (self.base_config_path) |path| {
+            watcher.watchFile(path) catch |err| {
+                std.log.warn("base config watch failed: {s} err={s}", .{ path, @errorName(err) });
+            };
+        }
+        if (self.override_config_path) |path| {
+            watcher.watchFile(path) catch |err| {
+                std.log.warn("override config watch failed: {s} err={s}", .{ path, @errorName(err) });
+            };
+        }
+        self.config_watcher = watcher;
     }
 
     pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {

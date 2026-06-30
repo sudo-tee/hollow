@@ -347,6 +347,7 @@ pub const Config = struct {
     /// old hard-coded value was 2.0.
     scroll_multiplier: f32 = 1.0,
     terminal_theme: TerminalTheme = .{},
+    watch_dirs: std.ArrayListUnmanaged([]u8) = .{},
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };
@@ -362,6 +363,8 @@ pub const Config = struct {
         freeOwned(self.allocator, &self.window_title);
         freeOwned(self.allocator, &self.lib_dir);
         self.hyperlinks.deinit(self.allocator);
+        for (self.watch_dirs.items) |dir| self.allocator.free(dir);
+        self.watch_dirs.deinit(self.allocator);
     }
 
     pub fn shellOrDefault(self: Config) []const u8 {

@@ -10,6 +10,10 @@
         },
         .fontdeps = .{ .path = "vendor/ghostty-fontdeps", .lazy = true },
         .zluajit = .{ .path = "third_party/lua-zluajit" },
+        .nightwatch = .{
+            .url = "git+https://github.com/neurocyte/nightwatch.git#zig-0.15",
+            .hash = "nightwatch-1.0.0-uXzeHxePAgA9eglnFOJ9efsfds9CpH3Xal8-qVJ863mL",
+        },
     },
     .paths = .{""},
 }

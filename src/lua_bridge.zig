@@ -3368,6 +3368,29 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             continue;
         }
 
+        if (std.mem.eql(u8, key, "watch_dirs") and value_type == .table) {
+            for (ctx.cfg.watch_dirs.items) |dir| ctx.allocator.free(dir);
+            ctx.cfg.watch_dirs.clearRetainingCapacity();
+            const watch_table = absoluteIndex(api, state, -1);
+            api.push_nil(state);
+            while (api.next(state, watch_table) != 0) {
+                defer pop(api, state, 1);
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+                var dir_len: usize = 0;
+                const dir_ptr = api.to_lstring(state, -1, &dir_len) orelse continue;
+                const dir_slice = dir_ptr[0..dir_len];
+                const owned = ctx.allocator.dupe(u8, dir_slice) catch |err| {
+                    std.log.err("config watch_dirs dupe failed: {s}", .{@errorName(err)});
+                    continue;
+                };
+                ctx.cfg.watch_dirs.append(ctx.allocator, owned) catch |err| {
+                    std.log.err("config watch_dirs append failed: {s}", .{@errorName(err)});
+                    ctx.allocator.free(owned);
+                };
+            }
+            continue;
+        }
+
         if (value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;

@@ -46,6 +46,10 @@ pub fn build(b: *std.Build) void {
         .@"lua52-compat" = false,
         .llvm = true,
     });
+    const nightwatch_dep = b.dependency("nightwatch", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Fonts module: root lives in third_party/fonts/ so @embedFile paths
     // stay inside that directory (avoids "outside package path" errors).
@@ -76,6 +80,7 @@ pub fn build(b: *std.Build) void {
     launcher_root_module.addImport("icon_data", icon_module);
     launcher_root_module.addOptions("build_options", launcher_build_options);
     launcher_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+    launcher_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -91,6 +96,7 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("icon_data", icon_module);
     root_module.addOptions("build_options", build_options);
     root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+    root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
 
     const translate = b.addTranslateC(.{
@@ -139,6 +145,7 @@ pub fn build(b: *std.Build) void {
         gui_root_module.addImport("icon_data", icon_module);
         gui_root_module.addOptions("build_options", gui_build_options);
         gui_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
+        gui_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
         gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
