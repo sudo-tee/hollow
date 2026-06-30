@@ -5356,10 +5356,30 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const previous = mux.activePane();
-        if (!mux.movePaneToWorkspace(runtime, pane_id, workspace_index)) return;
+        const prev_ws_count = mux.workspaces.items.len;
+        const closed_name = blk: {
+            for (mux.workspaces.items) |ws| {
+                for (ws.tabs.items) |tab| {
+                    for (tab.panes.items) |p| {
+                        if (@intFromPtr(p) == pane_id) {
+                            break :blk if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null;
+                        }
+                    }
+                }
+            }
+            break :blk null;
+        };
+        if (!mux.movePaneToWorkspace(runtime, pane_id, workspace_index)) {
+            if (closed_name) |n| self.allocator.free(n);
+            return;
+        }
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneDisplay();
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        if (mux.workspaces.items.len < prev_ws_count) {
+            self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
+        }
+        if (closed_name) |n| self.allocator.free(n);
         self.requestLayoutResize(true);
         self.requestLayoutRefresh();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
@@ -5461,9 +5481,13 @@ pub const App = struct {
         else
             mux.activeWorkspace() != null;
         const previous = if (closing_active_workspace) null else mux.activePane();
+        const closed_name = if (workspace_id) |target_id|
+            if (mux.workspaceById(target_id)) |ws| if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null else null
+        else
+            if (mux.activeWorkspace()) |ws| if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null else null;
         const should_quit = mux.closeWorkspace(runtime, workspace_id);
         if (should_quit) {
-            std.log.info("app: last workspace closed, quitting", .{});
+            if (closed_name) |n| self.allocator.free(n);
             self.pending_quit = true;
             return;
         }
@@ -5471,6 +5495,8 @@ pub const App = struct {
         self.refreshActivePaneDisplay();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
+        self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
+        if (closed_name) |n| self.allocator.free(n);
         self.requestLayoutRefresh();
     }
 
