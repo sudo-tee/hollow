@@ -173,7 +173,7 @@ end)
 
 hollow.events.on("workspace:closed", function(ev)
   local label = ev.name ~= "" and ("'" .. ev.name .. "'") or "workspace"
-  hollow.ui.notify.info(label .. " closed (empty)", { ttl = 2400 })
+  hollow.ui.notify.info(label .. " closed", { ttl = 2400 })
 end)
 
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
