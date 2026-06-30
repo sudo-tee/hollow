@@ -1973,6 +1973,7 @@ hollow.platform = {
 ---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field contrast_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field hex_from_hsl fun(h:number, s:number, l:number): string
 ---@field hex_luminance fun(hex:string): number
 
 ---@class HollowUtilNamespace

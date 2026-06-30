@@ -23,39 +23,29 @@ local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
 
-local WORKSPACE_PALETTE_KEYS = {
-  "blue",
-  "green",
-  "yellow",
-  "magenta",
-  "cyan",
-  "bright_blue",
-  "bright_green",
-  "bright_yellow",
-  "bright_magenta",
-  "bright_cyan",
-  "bright_white",
-  "white",
-  "bright_black",
-  "black",
-}
+local function switcher_state()
+  return source.switcher_state()
+end
 
 local function workspace_name_color(name)
+  local custom_fn = switcher_state().workspace_color_fn
+  if custom_fn then
+    return custom_fn(name)
+  end
   local theme = shared.resolve_theme()
-  local palette = theme.palette
   local hash = 0
   for i = 1, #name do
     hash = (hash * 31 + name:byte(i)) % 2147483647
   end
-  local key = WORKSPACE_PALETTE_KEYS[(hash % #WORKSPACE_PALETTE_KEYS) + 1]
-  local bg = palette[key] or palette.background
-  bg = color.darken_hex_color(bg, 0.6, bg)
-  local fg = color.contrast_hex_color(bg, 0.4, palette.foreground)
+  -- Golden angle (~222.5deg) for maximal hue distance between workspaces
+  local hue = ((hash / 2147483647) * 360 + 222.5) % 360
+  local bg_luminance = color.hex_luminance(theme.palette.background)
+  local is_dark = bg_luminance < 128
+  local saturation = 0.3
+  local lightness = is_dark and 0.22 or 0.68
+  local bg = color.hex_from_hsl(hue, saturation, lightness)
+  local fg = color.contrast_hex_color(bg, 0.45, theme.palette.foreground)
   return { bg = bg, fg = fg }
-end
-
-local function switcher_state()
-  return source.switcher_state()
 end
 
 local function derived_palette()

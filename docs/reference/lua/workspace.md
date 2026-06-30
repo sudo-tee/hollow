@@ -71,6 +71,7 @@ hollow.ui.workspace.configure({
 
   format_item = function(workspace) return { ... } end,
   filter_item = function(workspace) return workspace.name ~= "scratch" end,
+  workspace_color_fn = function(name) return { bg = "#...", fg = "#..." } end,
 
   status_column_width = 2,
   name_column_width = 24,
@@ -236,6 +237,19 @@ hollow.ui.workspace.configure({
   filter_item = function(ws) return ws.name ~= "scratch" end,
 })
 ```
+
+Customize the top-bar button color (by default derived from the workspace name via HSL hash):
+
+```lua
+hollow.ui.workspace.configure({
+  workspace_color_fn = function(name)
+    if name == "default" then return { bg = "#223344", fg = "#ffffff" } end
+    return nil  -- fall back to the default HSL-based generator
+  end,
+})
+```
+
+Return `{ bg, fg }` to override, or `nil` to let the default generator handle it.
 
 ## See also
 

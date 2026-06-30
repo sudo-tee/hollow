@@ -7,6 +7,7 @@ local M = {}
 ---@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
 ---@field contrast_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field hex_from_hsl fun(h:number, s:number, l:number): string
 ---@field hex_luminance fun(hex:string): number
 
 local HEX_COLOR_PATTERN = "^#%x%x%x%x%x%x$"
@@ -152,6 +153,37 @@ function M.contrast_hex_color(value, amount, fallback)
     b = hue_to_rgb(p, q, h - 1 / 3)
   end
 
+  return string.format("#%02x%02x%02x",
+    clamp_byte(r * 255),
+    clamp_byte(g * 255),
+    clamp_byte(b * 255)
+  )
+end
+
+---@param h number hue 0--360
+---@param s number saturation 0--1
+---@param l number lightness 0--1
+---@return string
+function M.hex_from_hsl(h, s, l)
+  local function hue_to_rgb(p, q, t)
+    if t < 0 then t = t + 1 end
+    if t > 1 then t = t - 1 end
+    if t < 1 / 6 then return p + (q - p) * 6 * t end
+    if t < 1 / 2 then return q end
+    if t < 2 / 3 then return p + (q - p) * (2 / 3 - t) * 6 end
+    return p
+  end
+
+  local r, g, b
+  if s == 0 then
+    r, g, b = l, l, l
+  else
+    local q = l < 0.5 and l * (1 + s) or l + s - l * s
+    local p = 2 * l - q
+    r = hue_to_rgb(p, q, (h / 360) + 1 / 3)
+    g = hue_to_rgb(p, q, h / 360)
+    b = hue_to_rgb(p, q, (h / 360) - 1 / 3)
+  end
   return string.format("#%02x%02x%02x",
     clamp_byte(r * 255),
     clamp_byte(g * 255),
