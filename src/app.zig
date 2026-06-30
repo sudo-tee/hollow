@@ -5273,6 +5273,20 @@ pub const App = struct {
         std.log.info("app: created new tab", .{});
     }
 
+    fn emitWorkspaceClosedIfRemoved(self: *App, mux: *Mux) void {
+        if (mux.last_removed_workspace_name) |name| {
+            self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = name } });
+            self.allocator.free(name);
+            mux.last_removed_workspace_name = null;
+        }
+    }
+
+    fn quitOnWorkspaceRemoved(self: *App, mux: *Mux) void {
+        if (mux.last_removed_workspace_name) |n| self.allocator.free(n);
+        mux.last_removed_workspace_name = null;
+        self.pending_quit = true;
+    }
+
     pub fn closeTab(self: *App) void {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
@@ -5283,9 +5297,10 @@ pub const App = struct {
         }
         if (should_quit) {
             std.log.info("app: last tab closed, quitting", .{});
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.refreshActivePaneBinding();
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
@@ -5303,9 +5318,10 @@ pub const App = struct {
         }
         if (should_quit) {
             std.log.info("app: last tab closed, quitting", .{});
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.refreshActivePaneBinding();
         if (mux.activeTab()) |tab| {
             self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
@@ -5319,9 +5335,10 @@ pub const App = struct {
         const should_quit = mux.closeActivePane(runtime);
         if (should_quit) {
             std.log.info("app: last pane closed via close_pane, quitting", .{});
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.refreshActivePaneBinding();
         self.requestLayoutResize(false);
         std.log.info("app: active pane closed via close_pane", .{});
@@ -5331,23 +5348,11 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const previous = mux.activePane();
-        const prev_ws_count = mux.workspaces.items.len;
-        const closed_name = (for (mux.workspaces.items) |ws| {
-            if (ws.tabById(tab_id)) |_| {
-                if (ws.name) |n| break self.allocator.dupe(u8, n) catch null else break null;
-            }
-        } else null);
-        if (!mux.moveTabToWorkspace(runtime, tab_id, workspace_index)) {
-            if (closed_name) |n| self.allocator.free(n);
-            return;
-        }
+        if (!mux.moveTabToWorkspace(runtime, tab_id, workspace_index)) return;
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneDisplay();
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
-        if (mux.workspaces.items.len < prev_ws_count) {
-            self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
-        }
-        if (closed_name) |n| self.allocator.free(n);
         self.requestLayoutRefresh();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
     }
@@ -5356,30 +5361,11 @@ pub const App = struct {
         var mux = if (self.mux) |*value| value else return;
         const runtime = if (self.ghostty) |*value| value else return;
         const previous = mux.activePane();
-        const prev_ws_count = mux.workspaces.items.len;
-        const closed_name = blk: {
-            for (mux.workspaces.items) |ws| {
-                for (ws.tabs.items) |tab| {
-                    for (tab.panes.items) |p| {
-                        if (@intFromPtr(p) == pane_id) {
-                            break :blk if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null;
-                        }
-                    }
-                }
-            }
-            break :blk null;
-        };
-        if (!mux.movePaneToWorkspace(runtime, pane_id, workspace_index)) {
-            if (closed_name) |n| self.allocator.free(n);
-            return;
-        }
+        if (!mux.movePaneToWorkspace(runtime, pane_id, workspace_index)) return;
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneDisplay();
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
-        if (mux.workspaces.items.len < prev_ws_count) {
-            self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
-        }
-        if (closed_name) |n| self.allocator.free(n);
         self.requestLayoutResize(true);
         self.requestLayoutRefresh();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
@@ -5392,9 +5378,10 @@ pub const App = struct {
         const should_quit = mux.closePaneById(runtime, pane_id);
         if (should_quit) {
             std.log.info("app: last pane closed via close_pane_by_id, quitting", .{});
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneBinding();
         self.requestLayoutResize(false);
@@ -5481,22 +5468,16 @@ pub const App = struct {
         else
             mux.activeWorkspace() != null;
         const previous = if (closing_active_workspace) null else mux.activePane();
-        const closed_name = if (workspace_id) |target_id|
-            if (mux.workspaceById(target_id)) |ws| if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null else null
-        else
-            if (mux.activeWorkspace()) |ws| if (ws.name) |n| self.allocator.dupe(u8, n) catch null else null else null;
         const should_quit = mux.closeWorkspace(runtime, workspace_id);
         if (should_quit) {
-            if (closed_name) |n| self.allocator.free(n);
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
         self.syncActivePaneChange(previous, mux.activePane());
         self.refreshActivePaneDisplay();
         if (mux.activeTab()) |tab| self.emitLuaBuiltInEvent("term:tab_activated", .{ .tab_id = tab.id });
         self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
-        self.emitLuaBuiltInEvent("workspace:closed", .{ .workspace_closed = .{ .name = closed_name orelse "" } });
-        if (closed_name) |n| self.allocator.free(n);
+        self.emitWorkspaceClosedIfRemoved(mux);
         self.requestLayoutRefresh();
     }
 
@@ -6090,9 +6071,10 @@ pub const App = struct {
         const should_quit = mux.closeDeadPanes(runtime);
         if (should_quit) {
             std.log.info("app: last pane closed (early cleanup), quitting", .{});
-            self.pending_quit = true;
+            self.quitOnWorkspaceRemoved(mux);
             return;
         }
+        self.emitWorkspaceClosedIfRemoved(mux);
         // Re-register callbacks for the (possibly new) active pane.
         if (mux.activePane()) |active| {
             runtime.registerCallbacks(active.terminal, terminalCallbacks());
@@ -6342,9 +6324,10 @@ pub const App = struct {
                 const should_quit = mux.closeDeadPanes(runtime);
                 if (should_quit) {
                     std.log.info("app: last pane closed, quitting", .{});
-                    self.pending_quit = true;
+                    self.quitOnWorkspaceRemoved(mux);
                     return;
                 }
+                self.emitWorkspaceClosedIfRemoved(mux);
                 // Re-register callbacks for the (possibly new) active pane so
                 // write/size/title events are routed correctly.
                 if (mux.activePane()) |active| {

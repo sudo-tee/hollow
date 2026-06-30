@@ -908,6 +908,9 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
+    /// Set by removeWorkspace to the name of the workspace that was just removed.
+    /// Caller must free and set to null after consuming.
+    last_removed_workspace_name: ?[]u8 = null,
 
     pub const PaneIterator = struct {
         mux: *Mux,
@@ -942,6 +945,7 @@ pub const Mux = struct {
             self.allocator.destroy(workspace);
         }
         self.workspaces.deinit(self.allocator);
+        if (self.last_removed_workspace_name) |n| self.allocator.free(n);
         self.* = Mux.init(self.allocator);
     }
 
@@ -1546,6 +1550,9 @@ pub const Mux = struct {
         }
         const remove_idx = idx orelse return self.workspaces.items.len == 0;
         const removed_was_active = self.active_workspace == workspace;
+
+        if (self.last_removed_workspace_name) |n| self.allocator.free(n);
+        self.last_removed_workspace_name = if (workspace.name) |n| self.allocator.dupe(u8, n) catch null else null;
 
         _ = self.workspaces.orderedRemove(remove_idx);
         workspace.deinit(runtime);
