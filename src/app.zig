@@ -5282,7 +5282,7 @@ pub const App = struct {
     }
 
     fn quitOnWorkspaceRemoved(self: *App, mux: *Mux, log_msg: ?[]const u8) void {
-        if (log_msg) |msg| std.log.info(msg, .{});
+        if (log_msg) |msg| std.log.info("{s}", .{msg});
         if (mux.last_removed_workspace_name) |n| self.allocator.free(n);
         mux.last_removed_workspace_name = null;
         self.pending_quit = true;
