@@ -5281,7 +5281,8 @@ pub const App = struct {
         }
     }
 
-    fn quitOnWorkspaceRemoved(self: *App, mux: *Mux) void {
+    fn quitOnWorkspaceRemoved(self: *App, mux: *Mux, log_msg: ?[]const u8) void {
+        if (log_msg) |msg| std.log.info(msg, .{});
         if (mux.last_removed_workspace_name) |n| self.allocator.free(n);
         mux.last_removed_workspace_name = null;
         self.pending_quit = true;
@@ -5296,8 +5297,7 @@ pub const App = struct {
             self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab_id });
         }
         if (should_quit) {
-            std.log.info("app: last tab closed, quitting", .{});
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, "app: last tab closed, quitting");
             return;
         }
         self.emitWorkspaceClosedIfRemoved(mux);
@@ -5317,8 +5317,7 @@ pub const App = struct {
             self.emitLuaBuiltInEvent("term:tab_closed", .{ .tab_id = tab_id });
         }
         if (should_quit) {
-            std.log.info("app: last tab closed, quitting", .{});
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, "app: last tab closed, quitting");
             return;
         }
         self.emitWorkspaceClosedIfRemoved(mux);
@@ -5334,8 +5333,7 @@ pub const App = struct {
         const runtime = if (self.ghostty) |*value| value else return;
         const should_quit = mux.closeActivePane(runtime);
         if (should_quit) {
-            std.log.info("app: last pane closed via close_pane, quitting", .{});
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, "app: last pane closed via close_pane, quitting");
             return;
         }
         self.emitWorkspaceClosedIfRemoved(mux);
@@ -5377,8 +5375,7 @@ pub const App = struct {
         const previous = mux.activePane();
         const should_quit = mux.closePaneById(runtime, pane_id);
         if (should_quit) {
-            std.log.info("app: last pane closed via close_pane_by_id, quitting", .{});
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, "app: last pane closed via close_pane_by_id, quitting");
             return;
         }
         self.emitWorkspaceClosedIfRemoved(mux);
@@ -5470,7 +5467,7 @@ pub const App = struct {
         const previous = if (closing_active_workspace) null else mux.activePane();
         const should_quit = mux.closeWorkspace(runtime, workspace_id);
         if (should_quit) {
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, null);
             return;
         }
         self.syncActivePaneChange(previous, mux.activePane());
@@ -6070,8 +6067,7 @@ pub const App = struct {
 
         const should_quit = mux.closeDeadPanes(runtime);
         if (should_quit) {
-            std.log.info("app: last pane closed (early cleanup), quitting", .{});
-            self.quitOnWorkspaceRemoved(mux);
+            self.quitOnWorkspaceRemoved(mux, "app: last pane closed (early cleanup), quitting");
             return;
         }
         self.emitWorkspaceClosedIfRemoved(mux);
@@ -6323,8 +6319,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 const should_quit = mux.closeDeadPanes(runtime);
                 if (should_quit) {
-                    std.log.info("app: last pane closed, quitting", .{});
-                    self.quitOnWorkspaceRemoved(mux);
+                    self.quitOnWorkspaceRemoved(mux, "app: last pane closed, quitting");
                     return;
                 }
                 self.emitWorkspaceClosedIfRemoved(mux);
