@@ -10,6 +10,7 @@ const std = @import("std");
 const ghostty = @import("../term/ghostty.zig");
 const selection = @import("../selection.zig");
 const App = @import("../app.zig").App;
+const copy_mode = @import("../app/copy_mode.zig");
 const Pane = @import("../pane.zig").Pane;
 
 // ── sRGB / linear conversion ─────────────────────────────────────────────────
@@ -94,7 +95,7 @@ pub fn effectiveCursorStyle(
     is_focused: bool,
 ) ?ghostty.CursorVisualStyle {
     if (pane) |value| {
-        if (app.copyModeActiveForPane(value)) return null;
+        if (copy_mode.copyModeActiveForPane(app, value)) return null;
     }
     if (runtime.cursorPos(render_state) == null) return null;
     if (runtime.cursorPasswordInput(render_state)) return .block;

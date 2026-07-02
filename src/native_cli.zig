@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const command = @import("command.zig");
-const command_ipc = @import("command_ipc.zig");
+const command_ipc = @import("ipc.zig");
 const platform = @import("platform.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {

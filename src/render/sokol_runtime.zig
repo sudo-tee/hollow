@@ -18,6 +18,11 @@ const Config = @import("../config.zig").Config;
 const PaneCache = @import("pane_cache.zig").PaneCache;
 const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
+const scroll = @import("../app/scroll.zig");
+const copy_mode = @import("../app/copy_mode.zig");
+const selection_mod = @import("../app/selection.zig");
+const mux_ops = @import("../app/mux_ops.zig");
+const input = @import("../app/input.zig");
 const debug_timing = @import("debug_timing.zig");
 
 const LUA_GLOBALSINDEX: c_int = -10002;
@@ -1315,7 +1320,7 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
 
     var cursor_x = content_x;
     var on_right_side = false;
-    const active_idx = app.activeTabIndex();
+    const active_idx = mux_ops.activeTabIndex(app);
     for (widget.items[0..widget.len]) |*item| {
         switch (item.kind) {
             .spacer => {
@@ -2589,7 +2594,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (@atomicLoad(bool, &g_restore_pending, .acquire)) {
         @atomicStore(bool, &g_restore_pending, false, .release);
         invalidateAllPaneCaches();
-        app.invalidateAllPanes();
+        mux_ops.invalidateAllPanes(app);
         // Do not trust sapp_widthf()/heightf() here on Windows restore.
         // Sokol can still report the transient minimized size (e.g. 160x28)
         // for one frame, which collapses the shell grid to 17x1 and makes the
@@ -3038,7 +3043,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
                     const render_pad = paneRenderPadding(leaf.pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app,leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -3070,7 +3075,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 } else {
                     // Use cached RT path
                     const render_pad_single = paneRenderPadding(pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, app.copyModeSelectionRange(pane) orelse app.selectionRange(pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -3127,7 +3132,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            app.copyModeSelectionRange(leaf.pane) orelse app.selectionRange(leaf.pane),
+                            copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app,leaf.pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3180,7 +3185,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            app.copyModeSelectionRange(pane) orelse app.selectionRange(pane),
+                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3287,7 +3292,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             height,
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
-                            app.copyModeSelectionRange(pane) orelse app.selectionRange(pane),
+                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3493,7 +3498,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         var layout_buf_scrollbar: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const scrollbar_leaves = app.computeActiveLayout(&layout_buf_scrollbar);
         for (scrollbar_leaves) |leaf| {
-            if (app.scrollbarMetricsForPane(leaf.pane)) |metrics| {
+            if (scroll.scrollbarMetricsForPane(app, leaf.pane)) |metrics| {
                 drawScrollbar(app, metrics);
             }
         }
@@ -3719,7 +3724,7 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const text0 = std.fmt.bufPrint(&lines[0], "fps {d:.1}  max {d:.2}ms", .{ g_perf_fps, g_perf_max_frame_ms }) catch "fps ?";
     const text1 = std.fmt.bufPrint(&lines[1], "avg {d:.2}ms", .{g_perf_frame_ms}) catch "frame ?";
     const text2 = std.fmt.bufPrint(&lines[2], "grid {d}x{d}", .{ cols, rows }) catch "grid ?";
-    const text3 = std.fmt.bufPrint(&lines[3], "tabs {d} ws {d}", .{ app.tabCount(), app.workspaceCount() }) catch "tabs ?";
+    const text3 = std.fmt.bufPrint(&lines[3], "tabs {d} ws {d}", .{ app.tabCount(), mux_ops.workspaceCount(app) }) catch "tabs ?";
     const text4 = std.fmt.bufPrint(&lines[4], "scroll {d}/{d} vis {d}", .{ scroll_offset, scroll_total, scroll_len }) catch "scroll ?";
     const text5 = std.fmt.bufPrint(&lines[5], "frame #{d}", .{g_frame_index}) catch "frame #?";
     const text6 = std.fmt.bufPrint(&lines[6], "mode {s}", .{render_mode}) catch "mode ?";
@@ -4071,7 +4076,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
 
-    if (app.copyModeActive() and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
+    if (copy_mode.copyModeActive(app) and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
         g_swallow_char_pending = 1;
         g_swallow_char_until_frame = event.frame_count;
@@ -4143,7 +4148,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
     const mods = ghosttyMods(event.modifiers);
-    if (app.copyModeActive() and (mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] == 0x16) {
+    if (copy_mode.copyModeActive(app) and (mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] == 0x16) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
         c.sapp_consume_event();
         return;
@@ -4277,7 +4282,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     }
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_RIGHT) {
-        if (app.hasSelection()) {
+        if (selection_mod.hasSelection(app)) {
             _ = app.enqueueMouse(.copy_selection);
             return;
         }
@@ -4290,7 +4295,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             const wants_shift_click_link = app.config.hyperlinks.enabled and
                 (!app.config.hyperlinks.shift_click_only or (mods & ghostty.Mods.shift) != 0);
             if (wants_shift_click_link) {
-                if (app.hoveredHyperlinkAtPointer()) |hovered_link| {
+                if (input.hoveredHyperlinkAtPointer(app)) |hovered_link| {
                     c.sapp_consume_event();
                     g_block_all_mouse_until_up = true;
                     g_block_left_mouse_until_up = true;
@@ -4352,7 +4357,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             const wants_selection = selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
             if (wants_selection) {
                 const extend = (ghosttyMods(event.modifiers) & ghostty.Mods.shift) != 0;
-                const point = app.cellPointFromPaneLocal(hit.pane, hit.x, hit.y);
+                const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
 
                 // Detect double/triple click: same position within 500 ms.
                 const now_ms: u64 = @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
@@ -4392,7 +4397,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             }
         }
 
-        if (app.hasSelection()) {
+        if (selection_mod.hasSelection(app)) {
             _ = app.enqueueMouse(.clear_selection);
         }
     }
@@ -4429,7 +4434,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     if (g_scrollbar_drag_pane) |pane| {
-        const metrics = if (app.scrollbarMetricsForPane(pane)) |m| m else blk: {
+        const metrics = if (scroll.scrollbarMetricsForPane(app, pane)) |m| m else blk: {
             g_scrollbar_drag_pane = null;
             g_scrollbar_drag_metrics = null;
             g_scrollbar_drag_grab_y = 0.0;
@@ -4727,7 +4732,7 @@ fn handleClipboardShortcut(app: *App, key: ghostty.Key, mods: u32) bool {
 
     switch (key) {
         .c => {
-            if (app.hasSelection()) {
+            if (selection_mod.hasSelection(app)) {
                 _ = app.enqueueMouse(.copy_selection);
                 return true;
             }

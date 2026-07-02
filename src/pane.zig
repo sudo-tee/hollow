@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("sokol_c");
-const command_ipc = @import("command_ipc.zig");
+const command_ipc = @import("ipc.zig");
 const Config = @import("config.zig").Config;
 const fastmem = @import("fastmem.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
