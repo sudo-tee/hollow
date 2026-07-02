@@ -57,7 +57,11 @@ fn enquiryCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
 }
 
 fn xtversionCallback(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
-    return .{ .ptr = null, .len = 0 };
+    // Report "ghostty" so that apps like nvim detect Ghostty via XTVERSION
+    // and enable the Kitty keyboard protocol. The real Ghostty terminal reports
+    // "ghostty <version>"; we omit the version since hollow doesn't track it.
+    const version = "ghostty";
+    return .{ .ptr = version.ptr, .len = version.len };
 }
 
 fn sizeCallback(term: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.SizeReportSize) callconv(.c) bool {

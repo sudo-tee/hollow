@@ -294,6 +294,8 @@ pub const Pane = struct {
         // terminal has null slots for all callbacks; calling into ghostty before
         // these are set causes a null-function-pointer segfault.
         runtime.registerCallbacks(terminal, callbacks);
+        // Enable Kitty keyboard protocol by simulating the activation sequence from the PTY
+        runtime.terminalWrite(terminal, "\x1b[>12;1u");
 
         const render_state = try runtime.createRenderState();
         errdefer runtime.freeRenderState(render_state);
@@ -306,6 +308,7 @@ pub const Pane = struct {
 
         const key_encoder = try runtime.createKeyEncoder();
         errdefer runtime.freeKeyEncoder(key_encoder);
+        runtime.syncKeyEncoder(key_encoder, terminal);
 
         const key_event = try runtime.createKeyEvent();
         errdefer runtime.freeKeyEvent(key_event);
@@ -358,6 +361,9 @@ pub const Pane = struct {
         try env_block.append(self.allocator, 0);
 
         try env_block.appendSlice(self.allocator, "COLORTERM=truecolor");
+        try env_block.append(self.allocator, 0);
+
+        try env_block.appendSlice(self.allocator, "TERM_PROGRAM=ghostty");
         try env_block.append(self.allocator, 0);
 
         // Domain-specific environment variables
