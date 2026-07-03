@@ -400,6 +400,46 @@ fn renderStrokePolyline(canvas: *SimpleCanvas, pts: []const Vec2, thickness: f64
     }
 }
 
+fn renderFilledCornerTriangle(canvas: *SimpleCanvas, metrics: Metrics, comptime corner: Corner) void {
+    const fw: f64 = @floatFromInt(metrics.cell_width);
+    const fh: f64 = @floatFromInt(metrics.cell_height);
+
+    var py: u32 = 0;
+    while (py < metrics.cell_height) : (py += 1) {
+        var px: u32 = 0;
+        while (px < metrics.cell_width) : (px += 1) {
+            const fx = @as(f64, @floatFromInt(px)) + 0.5;
+            const fy = @as(f64, @floatFromInt(py)) + 0.5;
+
+            const inside = switch (corner) {
+                .tl => fx / fw + fy / fh <= 1.0,
+                .tr => fy / fh <= fx / fw,
+                .bl => fy / fh >= fx / fw,
+                .br => fx / fw + fy / fh >= 1.0,
+            };
+
+            if (inside) {
+                canvas.setPixel(@intCast(px), @intCast(py), 255);
+            }
+        }
+    }
+}
+
+fn renderOutlinedCornerTriangle(canvas: *SimpleCanvas, metrics: Metrics, comptime corner: Corner) void {
+    const fw: f64 = @floatFromInt(metrics.cell_width);
+    const fh: f64 = @floatFromInt(metrics.cell_height);
+    const thick: f64 = @floatFromInt(Thickness.light.height(metrics.box_thickness));
+
+    const pts: [4]Vec2 = switch (corner) {
+        .tl => .{ .{ .x = 0, .y = 0 }, .{ .x = 0, .y = fh }, .{ .x = fw, .y = 0 }, .{ .x = 0, .y = 0 } },
+        .tr => .{ .{ .x = 0, .y = 0 }, .{ .x = fw, .y = fh }, .{ .x = fw, .y = 0 }, .{ .x = 0, .y = 0 } },
+        .bl => .{ .{ .x = 0, .y = 0 }, .{ .x = 0, .y = fh }, .{ .x = fw, .y = fh }, .{ .x = 0, .y = 0 } },
+        .br => .{ .{ .x = 0, .y = fh }, .{ .x = fw, .y = fh }, .{ .x = fw, .y = 0 }, .{ .x = 0, .y = fh } },
+    };
+
+    renderStrokePolyline(canvas, &pts, thick);
+}
+
 fn dashHorizontal(metrics: Metrics, canvas: *SimpleCanvas, count: u8, thick_px: u32, desired_gap: u32) void {
     const gap_count = count;
     if (metrics.cell_width < count + gap_count) {
@@ -453,6 +493,64 @@ fn dashVertical(metrics: Metrics, canvas: *SimpleCanvas, comptime count: u8, thi
 pub fn draw(cp: u32, metrics: Metrics, canvas: *SimpleCanvas) void {
     const half_w: u32 = metrics.cell_width / 2;
     const half_h: u32 = metrics.cell_height / 2;
+    // Shade characters: U+2591 (Light), U+2592 (Medium), U+2593 (Dark)
+    if (cp == 0x2591 or cp == 0x2592 or cp == 0x2593) {
+        const density: u32 = switch (cp) {
+            0x2591 => 1,
+            0x2592 => 2,
+            0x2593 => 3,
+            else => 0,
+        };
+        var py: u32 = 0;
+        while (py < metrics.cell_height) : (py += 1) {
+            var px: u32 = 0;
+            while (px < metrics.cell_width) : (px += 1) {
+                if ((px % 2 == 0 and py % 2 == 0) or
+                    (density >= 2 and px % 2 != 0 and py % 2 == 0) or
+                    (density >= 3 and px % 2 == 0 and py % 2 != 0)) {
+                    canvas.setPixel(@intCast(px), @intCast(py), 255);
+                }
+            }
+        }
+        return;
+    }
+
+    // Block elements supported by synthesizedTerminalRect
+    if (cp >= 0x2580 and cp <= 0x2595) {
+        const fw = metrics.cell_width;
+        const fh = metrics.cell_height;
+        const eighth_w = @max(1, fw / 8);
+        const quarter_w = @max(1, fw / 4);
+        const hw = @max(1, fw / 2);
+        const eighth_h = @max(1, fh / 8);
+        const quarter_h = @max(1, fh / 4);
+        const hh = @max(1, fh / 2);
+
+        switch (cp) {
+            0x2580 => canvas.box(0, 0, @intCast(fw), @intCast(hh)),
+            0x2581 => canvas.box(0, @intCast(fh - eighth_h), @intCast(fw), @intCast(fh)),
+            0x2582 => canvas.box(0, @intCast(fh - quarter_h), @intCast(fw), @intCast(fh)),
+            0x2583 => canvas.box(0, @intCast(fh - 3 * eighth_h), @intCast(fw), @intCast(fh)),
+            0x2584 => canvas.box(0, @intCast(fh - hh), @intCast(fw), @intCast(fh)),
+            0x2585 => canvas.box(0, @intCast(fh - 5 * eighth_h), @intCast(fw), @intCast(fh)),
+            0x2586 => canvas.box(0, @intCast(fh - 6 * eighth_h), @intCast(fw), @intCast(fh)),
+            0x2587 => canvas.box(0, @intCast(fh - 7 * eighth_h), @intCast(fw), @intCast(fh)),
+            0x2588 => canvas.box(0, 0, @intCast(fw), @intCast(fh)),
+            0x2589 => canvas.box(0, 0, @intCast(7 * eighth_w), @intCast(fh)),
+            0x258A => canvas.box(0, 0, @intCast(6 * eighth_w), @intCast(fh)),
+            0x258B => canvas.box(0, 0, @intCast(5 * eighth_w), @intCast(fh)),
+            0x258C => canvas.box(0, 0, @intCast(hw), @intCast(fh)),
+            0x258D => canvas.box(0, 0, @intCast(3 * eighth_w), @intCast(fh)),
+            0x258E => canvas.box(0, 0, @intCast(quarter_w), @intCast(fh)),
+            0x258F => canvas.box(0, 0, @intCast(eighth_w), @intCast(fh)),
+            0x2590 => canvas.box(@intCast(hw), 0, @intCast(fw), @intCast(fh)),
+            0x2594 => canvas.box(0, 0, @intCast(fw), @intCast(eighth_h)),
+            0x2595 => canvas.box(@intCast(fw - eighth_w), 0, @intCast(fw), @intCast(fh)),
+            else => {},
+        }
+        return;
+    }
+
     switch (cp) {
         0x2500 => linesChar(metrics, canvas, .{ .left = .light, .right = .light }),
         0x2501 => linesChar(metrics, canvas, .{ .left = .heavy, .right = .heavy }),
@@ -608,6 +706,16 @@ pub fn draw(cp: u32, metrics: Metrics, canvas: *SimpleCanvas) void {
             canvas.box(0, @intCast(half_h), @intCast(half_w), @intCast(metrics.cell_height));
         },
         0x259F => canvas.box(@intCast(half_w), 0, @intCast(metrics.cell_width), @intCast(metrics.cell_height)),
+        // Geometric shapes (filled corner triangles)
+        0x25E2 => renderFilledCornerTriangle(canvas, metrics, .br),
+        0x25E3 => renderFilledCornerTriangle(canvas, metrics, .bl),
+        0x25E4 => renderFilledCornerTriangle(canvas, metrics, .tl),
+        0x25E5 => renderFilledCornerTriangle(canvas, metrics, .tr),
+        // Geometric shapes (outlined corner triangles)
+        0x25F8 => renderOutlinedCornerTriangle(canvas, metrics, .tl),
+        0x25F9 => renderOutlinedCornerTriangle(canvas, metrics, .tr),
+        0x25FA => renderOutlinedCornerTriangle(canvas, metrics, .bl),
+        0x25FF => renderOutlinedCornerTriangle(canvas, metrics, .br),
         else => {},
     }
 }
@@ -702,4 +810,40 @@ test "all codepoints render without error" {
         @memset(&buf, 0);
         draw(cp, m, &c);
     }
+}
+
+test "filled corner triangle U+25E2 draws non-empty" {
+    var buf: [256]u8 = @splat(0);
+    var c = SimpleCanvas{ .buf = &buf, .width = 16, .height = 16 };
+    const m = Metrics{ .cell_width = 16, .cell_height = 16, .box_thickness = 2 };
+    draw(0x25E2, m, &c);
+    var has_pixel = false;
+    for (buf) |v| {
+        if (v > 0) has_pixel = true;
+    }
+    try std.testing.expect(has_pixel);
+}
+
+test "outlined corner triangle U+25F8 draws non-empty" {
+    var buf: [256]u8 = @splat(0);
+    var c = SimpleCanvas{ .buf = &buf, .width = 16, .height = 16 };
+    const m = Metrics{ .cell_width = 16, .cell_height = 16, .box_thickness = 2 };
+    draw(0x25F8, m, &c);
+    var has_pixel = false;
+    for (buf) |v| {
+        if (v > 0) has_pixel = true;
+    }
+    try std.testing.expect(has_pixel);
+}
+
+test "corner triangle U+25FF draws non-empty" {
+    var buf: [256]u8 = @splat(0);
+    var c = SimpleCanvas{ .buf = &buf, .width = 16, .height = 16 };
+    const m = Metrics{ .cell_width = 16, .cell_height = 16, .box_thickness = 2 };
+    draw(0x25FF, m, &c);
+    var has_pixel = false;
+    for (buf) |v| {
+        if (v > 0) has_pixel = true;
+    }
+    try std.testing.expect(has_pixel);
 }

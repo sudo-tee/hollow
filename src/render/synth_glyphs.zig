@@ -49,15 +49,26 @@ pub const SynthesizedResult = struct {
 // ── Codepoint predicates ──────────────────────────────────────────────────────
 
 pub fn isSynthesizedTerminalCodepoint(cp: u32) bool {
-    return isBoxDrawingCodepoint(cp) or isQuadrantCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
+    return isBoxDrawingCodepoint(cp) or isBlockElementCodepoint(cp) or isQuadrantCodepoint(cp) or isGeometricShapeCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
 }
 
 pub fn isBoxDrawingCodepoint(cp: u32) bool {
     return cp >= 0x2500 and cp <= 0x257F;
 }
 
+pub fn isBlockElementCodepoint(cp: u32) bool {
+    return cp >= 0x2580 and cp <= 0x259F;
+}
+
 pub fn isQuadrantCodepoint(cp: u32) bool {
     return cp >= 0x2596 and cp <= 0x259F;
+}
+
+pub fn isGeometricShapeCodepoint(cp: u32) bool {
+    return switch (cp) {
+        0x25E2...0x25E5, 0x25F8...0x25FA, 0x25FF => true,
+        else => false,
+    };
 }
 
 pub fn isRoundedArcCodepoint(cp: u32) bool {
@@ -157,7 +168,7 @@ fn rightRect(cell_w: f32, cell_h: f32, desired_w: f32) TerminalRect {
 //   fn ensureSynthesizedBoxGlyph(self, cp) ?Glyph { return synth_glyphs.ensureSynthesizedBoxGlyph(self, cp); }
 
 pub fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
-    if (!isBoxDrawingCodepoint(cp) and !isQuadrantCodepoint(cp)) return null;
+    if (!isBoxDrawingCodepoint(cp) and !isBlockElementCodepoint(cp) and !isQuadrantCodepoint(cp) and !isGeometricShapeCodepoint(cp)) return null;
     if (isRoundedArcCodepoint(cp)) return ensureSynthesizedRoundedArcGlyph(self, cp);
 
     const bw: u32 = @intFromFloat(@ceil(self.cell_w));
@@ -488,9 +499,19 @@ test "rightRect: positioned at right" {
     try std.testing.expectEqual(@as(f32, 3.0), r.w);
 }
 
-test "isSynthesizedTerminalCodepoint: covers boxes, blocks, and quadrants" {
+test "isGeometricShapeCodepoint: triangles" {
+    try std.testing.expect(isGeometricShapeCodepoint(0x25E2));
+    try std.testing.expect(isGeometricShapeCodepoint(0x25E5));
+    try std.testing.expect(isGeometricShapeCodepoint(0x25F8));
+    try std.testing.expect(isGeometricShapeCodepoint(0x25FF));
+    try std.testing.expect(!isGeometricShapeCodepoint(0x25E1));
+    try std.testing.expect(!isGeometricShapeCodepoint(0x25F7));
+}
+
+test "isSynthesizedTerminalCodepoint: covers boxes, blocks, quadrants, and geometric shapes" {
     try std.testing.expect(isSynthesizedTerminalCodepoint(0x2500)); // box drawing
     try std.testing.expect(isSynthesizedTerminalCodepoint(0x2588)); // full block
     try std.testing.expect(isSynthesizedTerminalCodepoint(0x2596)); // quadrant
+    try std.testing.expect(isSynthesizedTerminalCodepoint(0x25E2)); // geometric triangle
     try std.testing.expect(!isSynthesizedTerminalCodepoint(0x2440)); // unrelated
 }
