@@ -5,7 +5,6 @@ local M = {}
 ---@field merge_tables fun(dst:table, src:table): table
 ---@field unsupported fun(name:string)
 ---@field host_now_ms fun(host_api:table|nil): integer
-
 ---@field path_separator fun(path:string|nil): string
 ---@field normalize_path fun(path:string, separator:string|nil): string|nil
 ---@field join_path fun(...:string): string
@@ -150,8 +149,6 @@ end
 local function separator_pattern(separator)
   return separator == "\\" and "\\" or "/"
 end
-
-
 
 ---@param path string|nil
 ---@return string

@@ -578,6 +578,43 @@ local BAR_EVENT_FIELDS = {
   "on_mouse_leave",
 }
 
+local bar_auto_id_counter = 0
+
+--- Assign auto-ids to handler/hover spans and register events — one walk.
+--- Mutates original span style so `serialize_bar_value` sees the id.
+---@param value any
+---@param handlers table<string, table<string, function>>
+local function register_bar_events(value, handlers)
+  for _, node in ipairs(shared.normalize_inline_nodes(value)) do
+    if type(node) == "table" then
+      if node._type == "group" then
+        register_bar_events(node.children, handlers)
+      elseif node._type == "span" then
+        local style = node.style
+        if type(style) == "table" then
+          if not (type(style.id) == "string" and style.id ~= "") then
+            local has_handler = false
+            for _, field in ipairs(BAR_EVENT_FIELDS) do
+              if type(style[field]) == "function" then has_handler = true; break end
+            end
+            if has_handler or type(style.hover) == "table" then
+              bar_auto_id_counter = bar_auto_id_counter + 1
+              style.id = "bar:auto:" .. bar_auto_id_counter
+            end
+          end
+          if type(style.id) == "string" and style.id ~= "" then
+            local entry = handlers[style.id] or {}
+            for _, field in ipairs(BAR_EVENT_FIELDS) do
+              if type(style[field]) == "function" then entry[field] = style[field] end
+            end
+            handlers[style.id] = entry
+          end
+        end
+      end
+    end
+  end
+end
+
 ---@param surface string
 ---@return string|nil
 local function hovered_bar_id_key(surface)
@@ -963,24 +1000,7 @@ local function serialize_tabs(surface, node, ctx, handlers)
     end
 
     if type(label) == "table" then
-      for _, formatted_node in
-        ipairs(shared.flatten_span_nodes(shared.normalize_inline_nodes(label)))
-      do
-        local formatted_style = formatted_node.style
-        if
-          type(formatted_style) == "table"
-          and type(formatted_style.id) == "string"
-          and formatted_style.id ~= ""
-        then
-          local entry = handlers[formatted_style.id] or {}
-          for _, field in ipairs(BAR_EVENT_FIELDS) do
-            if type(formatted_style[field]) == "function" then
-              entry[field] = formatted_style[field]
-            end
-          end
-          handlers[formatted_style.id] = entry
-        end
-      end
+      register_bar_events(label, handlers)
     end
 
     local segment = serialize_bar_value(surface, label, tab_state.title, style)
@@ -1024,26 +1044,12 @@ end
 
   local format_style = {}
   if type(text) == "table" then
-    for _, formatted_node in
-      ipairs(shared.flatten_span_nodes(shared.normalize_inline_nodes(text)))
-    do
-      local fs = formatted_node.style
+    register_bar_events(text, handlers)
+    for _, n in ipairs(shared.flatten_span_nodes(shared.normalize_inline_nodes(text))) do
+      local fs = n.style
       if type(fs) == "table" then
-        if type(fs.id) == "string" and fs.id ~= "" then
-          local entry = handlers[fs.id] or {}
-          for _, field in ipairs(BAR_EVENT_FIELDS) do
-            if type(fs[field]) == "function" then
-              entry[field] = fs[field]
-            end
-          end
-          handlers[fs.id] = entry
-        end
-        if format_style.bg == nil and type(fs.bg) == "string" then
-          format_style.bg = fs.bg
-        end
-        if format_style.fg == nil and type(fs.fg) == "string" then
-          format_style.fg = fs.fg
-        end
+        if format_style.bg == nil and type(fs.bg) == "string" then format_style.bg = fs.bg end
+        if format_style.fg == nil and type(fs.fg) == "string" then format_style.fg = fs.fg end
       end
     end
   end
@@ -1187,6 +1193,7 @@ local function serialize_bar_widget(widget, surface)
     return bar_cache_payload(surface)
   end
 
+  bar_auto_id_counter = 0
   local ctx = shared.widget_ctx()
   local items = shared.normalize_bar_items(shared.render_widget(widget))
   local serialized = {}

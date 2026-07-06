@@ -6,6 +6,7 @@ local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local ui = _G.hollow.ui
 local click_registry = require("hollow.ui.builder.internal.click_registry")
+local button_component = require("hollow.ui.builder.components.button")
 
 local M = {}
 
@@ -26,6 +27,7 @@ function M.modal(spec)
   local widget = ui.overlay.new({
     render = function()
       click_registry.reset()
+      button_component.reset()
       local rows = spec.render(theme, state)
       return rows
     end,
