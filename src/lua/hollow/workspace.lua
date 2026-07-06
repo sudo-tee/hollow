@@ -54,13 +54,10 @@ local function normalize_tags(value)
   if type(value) ~= "table" then
     return nil
   end
-  local tags = {}
-  for _, tag in ipairs(value) do
+  local tags = hollow.tbl(value):filter_map(function(tag)
     local trimmed = trim_string(tag)
-    if trimmed ~= "" then
-      tags[#tags + 1] = trimmed
-    end
-  end
+    return trimmed ~= "" and trimmed or nil
+  end):get()
   return #tags > 0 and tags or nil
 end
 

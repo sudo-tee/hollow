@@ -109,6 +109,7 @@ const RuntimeLuaSources = struct {
 };
 
 const embedded_lua_modules = [_]LuaModule{
+    .{ .name = "hollow.tbl", .source = @embedFile("lua/hollow/tbl.lua") },
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
@@ -775,11 +776,13 @@ pub const Runtime = struct {
             ctx.timed_callback_refs.items.len,
         });
 
+        const lua_sources = discoverLuaSources(allocator);
+        ctx.lua_sources = lua_sources;
         var runtime = Runtime{
             .allocator = allocator,
             .state = state,
             .context = ctx,
-            .lua_sources = discoverLuaSources(allocator),
+            .lua_sources = lua_sources,
         };
 
         active_context = ctx;
@@ -2058,7 +2061,7 @@ pub const Runtime = struct {
         }
 
         try pushOwnedString(self.allocator, api, self.state, module.name);
-        api.push_light_userdata(self.state, self);
+        api.push_light_userdata(self.state, self.context);
         api.push_light_userdata(self.state, @ptrCast(@constCast(module.source.ptr)));
         api.push_integer(self.state, @as(isize, @intCast(module.source.len)));
         api.push_cclosure(self.state, l_preloaded_module_loader, 4);
@@ -2077,6 +2080,7 @@ const BridgeContext = struct {
     state: *State,
     api: Api,
     allocator: std.mem.Allocator,
+    lua_sources: ?RuntimeLuaSources = null,
     app_callbacks: ?AppCallbacks = null,
     pending_workspace_name: ?[]u8 = null,
     capabilities: u32 = 0,
@@ -2098,20 +2102,22 @@ fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
     const api = active_context.?.api;
 
     const module_name_index = luaUpvalueIndex(1);
-    const runtime_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
-        _ = api.raise_error(state, "missing runtime for module loader");
+    const ctx_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
+        _ = api.raise_error(state, "missing bridge context for module loader");
         return 0;
     };
     const source_ptr = api.to_userdata(state, luaUpvalueIndex(3)) orelse {
         _ = api.raise_error(state, "missing embedded module source");
         return 0;
     };
-    const runtime: *Runtime = @ptrCast(@alignCast(runtime_ptr));
+    const module_ctx: *BridgeContext = @ptrCast(@alignCast(ctx_ptr));
     const source_len = @as(usize, @intFromFloat(api.to_number(state, luaUpvalueIndex(4))));
     const source: [*]const u8 = @ptrCast(source_ptr);
-    const module_name = moduleNameFromUpvalue(runtime, state, module_name_index);
+    var module_name_len: usize = 0;
+    const module_name_ptr = api.to_lstring(state, module_name_index, &module_name_len) orelse "(unknown)";
+    const module_name = module_name_ptr[0..module_name_len];
 
-    loadLuaModuleIntoState(runtime, state, .{ .name = module_name, .source = source[0..source_len :0] }) catch {
+    loadLuaModuleIntoState(module_ctx, state, .{ .name = module_name, .source = source[0..source_len :0] }) catch {
         return api.raise_error(state, "failed to load module");
     };
 
@@ -2198,12 +2204,12 @@ fn loadLuaChunkFromSource(api: Api, state: *State, source: []const u8, chunk_nam
     }
 }
 
-fn loadLuaModuleIntoState(self: *Runtime, state: *State, module: LuaModule) !void {
-    const api = self.context.api;
-    if (self.lua_sources) |sources| {
-        const disk_path = luaModuleDiskPath(self.allocator, sources, module.name) catch null;
+fn loadLuaModuleIntoState(ctx: *BridgeContext, state: *State, module: LuaModule) !void {
+    const api = ctx.api;
+    if (ctx.lua_sources) |sources| {
+        const disk_path = luaModuleDiskPath(ctx.allocator, sources, module.name) catch null;
         if (disk_path) |path| {
-            defer self.allocator.free(path);
+            defer ctx.allocator.free(path);
             if (std.fs.accessAbsolute(path, .{})) |_| {
                 try loadLuaChunkFromDisk(api, state, path);
                 return;
@@ -2211,16 +2217,9 @@ fn loadLuaModuleIntoState(self: *Runtime, state: *State, module: LuaModule) !voi
         }
     }
 
-    const chunk_name = try std.fmt.allocPrint(self.allocator, "embedded:{s}", .{module.name});
-    defer self.allocator.free(chunk_name);
+    const chunk_name = try std.fmt.allocPrint(ctx.allocator, "embedded:{s}", .{module.name});
+    defer ctx.allocator.free(chunk_name);
     try loadLuaChunkFromSource(api, state, module.source, chunk_name);
-}
-
-fn moduleNameFromUpvalue(self: *Runtime, state: *State, idx: c_int) []const u8 {
-    const api = self.context.api;
-    var module_name_len: usize = 0;
-    const module_name_ptr = api.to_lstring(state, idx, &module_name_len) orelse return "(unknown)";
-    return module_name_ptr[0..module_name_len];
 }
 
 fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value: []const u8) !void {

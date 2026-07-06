@@ -7,8 +7,7 @@ local M = {}
 
 ---@param specs HollowUiFormatColumnSpec[]
 function M.columns(specs)
-  local nodes = {}
-  for _, col in ipairs(specs or {}) do
+  return hollow.tbl(specs or {}):map(function(col)
     local text = tostring(col.text or "")
     local style = col.style
     if col.width then
@@ -19,9 +18,8 @@ function M.columns(specs)
         text = util.pad_right(util.truncate_end(text, w), w)
       end
     end
-    nodes[#nodes + 1] = ui.span(text, style)
-  end
-  return nodes
+    return ui.span(text, style)
+  end):get()
 end
 
 return M

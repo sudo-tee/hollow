@@ -24,6 +24,7 @@ if package ~= nil and package.loaded ~= nil then
   package.loaded.hollow = hollow
 end
 
+local tbl = require("hollow.tbl")
 local actions = require("hollow.actions")
 local async = require("hollow.async")
 local config = require("hollow.config")
@@ -39,6 +40,7 @@ local theme = require("hollow.theme")
 local util = require("hollow.util")
 local workspace = require("hollow.workspace")
 
+hollow.tbl = tbl
 hollow.util = util
 hollow.async = async
 hollow.theme = theme

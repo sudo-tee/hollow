@@ -263,12 +263,7 @@ local function normalize_widget_rows(rendered)
     return { rendered }
   end
 
-  local rows = {}
-  for _, row in ipairs(rendered) do
-    if type(row) == "table" then
-      rows[#rows + 1] = row
-    end
-  end
+  local rows = hollow.tbl(rendered):filter(function(row) return type(row) == "table" end):get()
 
   return rows
 end
@@ -348,16 +343,15 @@ function M.normalize_inline_nodes(value)
   end
 
   if type(value) == "table" then
-    local nodes = {}
-    for _, node in ipairs(value) do
+    local nodes = hollow.tbl(value):filter_map(function(node)
       if type(node) == "string" then
-        nodes[#nodes + 1] = { _type = "span", text = node }
+        return { _type = "span", text = node }
       elseif M.is_span_node(node) then
-        nodes[#nodes + 1] = node
+        return node
       elseif M.is_text_shorthand(node) then
-        nodes[#nodes + 1] = M.normalize_text_shorthand(node)
+        return M.normalize_text_shorthand(node)
       end
-    end
+    end):get()
 
     if #nodes > 0 then
       return nodes
@@ -443,15 +437,11 @@ end
 ---@param segments HollowUiSegment[]
 ---@return string
 function M.segments_plain_text(segments)
-  local parts = {}
-
-  for _, segment in ipairs(segments or {}) do
+  return table.concat(hollow.tbl(segments or {}):filter_map(function(segment)
     if type(segment.text) == "string" and segment.text ~= "" then
-      parts[#parts + 1] = segment.text
+      return segment.text
     end
-  end
-
-  return table.concat(parts)
+  end):get())
 end
 
 ---@param value any
@@ -472,13 +462,11 @@ function M.bar_value_to_segments(value, fallback_text, style)
 
     if M.is_span_node(value) or value[1] ~= nil then
       local flattened = M.flatten_span_nodes(M.normalize_inline_nodes(value), style)
-      local segments = {}
-
-      for _, node in ipairs(flattened) do
+      local segments = hollow.tbl(flattened):filter_map(function(node)
         if type(node.text) == "string" and node.text ~= "" then
-          segments[#segments + 1] = M.style_to_segment(node.text, node.style)
+          return M.style_to_segment(node.text, node.style)
         end
-      end
+      end):get()
 
       if #segments > 0 then
         return segments

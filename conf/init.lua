@@ -115,53 +115,51 @@ hollow.ui.topbar.configure({
       }
     end,
     format = function(tab)
-      local is_maximized = tab.pane and tab.pane.is_maximized and "󰊓 " or ""
-      local tab_cwd = tab.pane and tab.pane.cwd and hollow.util.basename(tab.pane.cwd)
-      local foreground_process = tab.pane and tab.pane.foreground_process
-      local title = tab.title and tab.title ~= "" and tab.title or nil
-      local tab_title = title
-        or (foreground_process ~= "" and foreground_process or nil)
-        or tab_cwd
-        or (tab.pane and tab.pane.title ~= "" and tab.pane.title or nil)
-        or ""
       local ui = hollow.theme.current().ui
+      local pane = tab.pane
 
-      local has_bell = tab.pane and tab.pane.has_bell or false
-      if not has_bell and tab.panes then
-        for _, p in ipairs(tab.panes) do
-          if p.has_bell then
-            has_bell = true
-            break
-          end
-        end
+      local function nonempty(s)
+        return s and s ~= "" and s or nil
       end
 
-      local close_style = {
-        id = "tab-close:" .. tostring(tab.id),
-        fg = ui.widgets.all.divider,
-        hover = {
-          fg = ui.tab_bar.hover_tab.fg,
-        },
-        on_click = function()
-          hollow.term.close_tab(tab.id)
-        end,
-      }
+      local function tab_label()
+        return nonempty(tab.title)
+          or nonempty(pane and pane.foreground_process)
+          or (pane and pane.cwd and hollow.util.basename(pane.cwd))
+          or nonempty(pane and pane.title)
+          or ""
+      end
+
+      local function tab_bell()
+        return pane and pane.has_bell
+          or hollow.tbl(tab.panes or {}):some(function(p)
+            return p.has_bell
+          end)
+      end
+
+      local prefix = (pane and pane.is_maximized) and "󰊓 " or ""
+
       local spans = {
-        hollow.ui.span(is_maximized),
+        hollow.ui.span(prefix),
+        hollow.ui.span(tab_label(), {
+          on_click = function()
+            hollow.term.focus_tab(tab.id)
+          end,
+          hover = { fg = ui.tab_bar.hover_tab.fg },
+        }),
+        hollow.ui.span(" ×", {
+          fg = ui.widgets.all.divider,
+          on_click = function()
+            hollow.term.close_tab(tab.id)
+          end,
+          hover = { fg = ui.tab_bar.hover_tab.fg },
+        }),
       }
-      if has_bell then
-        spans[#spans + 1] = hollow.ui.span("● ", { fg = "#ffcc66", bold = true })
+
+      if tab_bell() then
+        table.insert(spans, 2, hollow.ui.span("● ", { fg = "#ffcc66", bold = true }))
       end
-      spans[#spans + 1] = hollow.ui.span(tab_title, {
-        id = "tab-text:" .. tostring(tab.id),
-        on_click = function()
-          hollow.term.focus_tab(tab.id)
-        end,
-        hover = {
-          fg = ui.tab_bar.hover_tab.fg,
-        },
-      })
-      spans[#spans + 1] = hollow.ui.span(" ×", close_style)
+
       return spans
     end,
   },

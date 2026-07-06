@@ -1939,6 +1939,7 @@ function plugins.sync() end
 ---@field color HollowColorModule
 ---@field util HollowUtilNamespace
 ---@field theme HollowThemeNamespace
+---@field tbl HollowTblModule
 
 ---@type Hollow
 hollow = {}
@@ -1987,6 +1988,47 @@ hollow.platform = {
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
 ---@field has_any_key fun(t:table, keys:table): boolean
+
+---@class HollowTbl
+---@field get fun(self): table
+---@field done fun(self): table
+---@field totable fun(self): table
+---@field each fun(self, fn:fun(v:any, i:integer, t:table)): HollowTbl
+---@field map fun(self, fn:fun(v:any, i:integer, t:table):any): HollowTbl
+---@field filter fun(self, fn:fun(v:any, i:integer, t:table):boolean): HollowTbl
+---@field filter_map fun(self, fn:fun(v:any, i:integer, t:table):any|nil): HollowTbl
+---@field take fun(self, n:integer): HollowTbl
+---@field skip fun(self, n:integer): HollowTbl
+---@field flatten fun(self): HollowTbl
+---@field flat_map fun(self, fn:fun(v:any, i:integer, t:table):table|any): HollowTbl
+---@field reduce fun(self, fn:fun(acc:any, v:any, i:integer, t:table):any, initial:any|nil): any
+---@field some fun(self, fn:fun(v:any, i:integer, t:table):boolean): boolean
+---@field every fun(self, fn:fun(v:any, i:integer, t:table):boolean): boolean
+---@field find fun(self, fn:fun(v:any, i:integer, t:table):boolean): any, integer|nil
+---@field first fun(self): any|nil
+---@field last fun(self): any|nil
+---@field len fun(self): integer
+---@field count fun(self, fn?:fun(v:any):boolean): integer
+---@field nth fun(self, n:integer): any|nil
+---@field sort fun(self, fn?:fun(a:any, b:any):boolean): HollowTbl
+---@field reverse fun(self): HollowTbl
+---@field uniq fun(self, fn?:fun(v:any):any): HollowTbl
+---@field concat fun(self, ...:table|any): HollowTbl
+---@field join fun(self, sep?:string): string
+---@field group_by fun(self, fn:fun(v:any):any): table
+---@field chunk fun(self, n:integer): HollowTbl
+---@field entries fun(self): table
+---@field map_entries fun(self, fn:fun(k:any, v:any):any, any): table
+---@field pick fun(self, ...:any): table
+---@field omit fun(self, ...:any): table
+
+---@class HollowTblModule
+---@field range fun(start:integer, stop:integer, step?:integer): HollowTbl
+---@field new fun(t:table|nil): HollowTbl
+---@overload fun(t: table|nil): HollowTbl
+
+---@type HollowTblModule
+hollow.tbl = {}
 
 hollow.util = {}
 

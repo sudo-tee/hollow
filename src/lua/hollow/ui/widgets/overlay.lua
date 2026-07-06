@@ -117,9 +117,5 @@ function ui._overlay_state()
     return nil
   end
 
-  local result = {}
-  for _, widget in ipairs(overlay_stack) do
-    result[#result + 1] = serialize_overlay_widget(widget)
-  end
-  return result
+  return hollow.tbl(overlay_stack):map(function(w) return serialize_overlay_widget(w) end):get()
 end
