@@ -10,6 +10,7 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("sys/ioctl.h");
+    @cInclude("sys/uio.h");
     @cInclude("sys/wait.h");
     @cInclude("termios.h");
     @cInclude("unistd.h");
@@ -145,7 +146,7 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
         }
 
         if ((poll_fds[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
-            var buf: [4096]u8 = undefined;
+            var buf: [65536]u8 = undefined;
             const count = c.read(master, &buf, buf.len);
             if (count > 0) {
                 try writeFrame(std.fs.File.stdout(), .output, buf[0..@intCast(count)]);
@@ -242,17 +243,17 @@ fn childExec(allocator: std.mem.Allocator, options: Options, argv: [:null]?[*:0]
 fn reportChildExecFailure(stderr_fd: c_int, options: Options, argv: [:null]?[*:0]const u8, err: anyerror) void {
     if (stderr_fd < 0) return;
     var stderr_buf: [256]u8 = undefined;
+    var argv0_hex_buf: [96]u8 = undefined;
     var stderr_file = std.fs.File{ .handle = stderr_fd };
     var stderr = stderr_file.writer(&stderr_buf);
     const cwd = options.cwd orelse "<null>";
     const argv0 = if (argv.len > 0 and argv[0] != null) std.mem.span(argv[0].?) else "<null>";
-    const argv0_hex = if (argv.len > 0 and argv[0] != null) previewHex(argv[0].?) else "<null>";
+    const argv0_hex = if (argv.len > 0 and argv[0] != null) previewHex(&argv0_hex_buf, argv[0].?) else "<null>";
     stderr.interface.print("hollow-wsl-bypass childExec failed err={s} cwd={s} argv0={s} argv0_hex={s}\n", .{ @errorName(err), cwd, argv0, argv0_hex }) catch {};
     stderr.interface.flush() catch {};
 }
 
-fn previewHex(ptr: [*:0]const u8) []const u8 {
-    var buf: [96]u8 = undefined;
+fn previewHex(buf: []u8, ptr: [*:0]const u8) []const u8 {
     var src_index: usize = 0;
     var dst_index: usize = 0;
     while (src_index < 16 and ptr[src_index] != 0 and dst_index + 2 <= buf.len) : (src_index += 1) {
@@ -314,8 +315,44 @@ fn writeFrame(file: std.fs.File, frame_type: protocol.FrameType, payload: []cons
     var header: [5]u8 = undefined;
     header[0] = @intFromEnum(frame_type);
     std.mem.writeInt(u32, header[1..5], @intCast(payload.len), .little);
-    try file.writeAll(&header);
-    if (payload.len > 0) try file.writeAll(payload);
+    if (payload.len == 0) {
+        try file.writeAll(&header);
+        return;
+    }
+    var iov = [_]c.struct_iovec{
+        .{ .iov_base = &header, .iov_len = header.len },
+        .{ .iov_base = @constCast(payload.ptr), .iov_len = payload.len },
+    };
+    const total = header.len + payload.len;
+    var written: usize = 0;
+    while (written < total) {
+        const n = c.writev(file.handle, &iov, iov.len);
+        if (n < 0) {
+            return switch (std.posix.errno(-1)) {
+                .INTR => continue,
+                .AGAIN => {
+                    var pfd = [_]c.struct_pollfd{.{ .fd = file.handle, .events = c.POLLOUT, .revents = 0 }};
+                    _ = c.poll(&pfd, pfd.len, -1);
+                    continue;
+                },
+                else => error.WriteFailed,
+            };
+        }
+        written += @intCast(n);
+        if (written >= total) break;
+        // advance iov past already-written bytes
+        var remaining: usize = written;
+        for (&iov) |*v| {
+            if (remaining >= v.iov_len) {
+                remaining -= v.iov_len;
+                v.iov_len = 0;
+            } else {
+                v.iov_base = @ptrFromInt(@intFromPtr(v.iov_base) + remaining);
+                v.iov_len -= remaining;
+                break;
+            }
+        }
+    }
 }
 
 fn readExactNonBlocking(file: std.fs.File, buffer: []u8) !bool {
@@ -348,7 +385,11 @@ fn writeAllFd(fd: c_int, bytes: []const u8) !void {
             continue;
         }
         switch (std.posix.errno(-1)) {
-            .AGAIN, .INTR => continue,
+            .AGAIN => {
+                var poll_fd = [_]c.struct_pollfd{.{ .fd = fd, .events = c.POLLOUT, .revents = 0 }};
+                _ = c.poll(&poll_fd, poll_fd.len, -1);
+            },
+            .INTR => continue,
             else => return error.WriteFailed,
         }
     }
@@ -456,10 +497,12 @@ fn parseArgs(allocator: std.mem.Allocator) !Options {
 fn buildShellArgv(allocator: std.mem.Allocator, input_shell_args: []const []const u8, launch: LaunchCommand) ![:null]?[*:0]const u8 {
     var shell_args: std.ArrayListUnmanaged([]const u8) = .empty;
     defer shell_args.deinit(allocator);
+    var default_shell_owned: ?[]u8 = null;
+    defer if (default_shell_owned) |shell| allocator.free(shell);
 
     if (input_shell_args.len == 0) {
         const default_shell = try defaultShellPath(allocator);
-        defer allocator.free(default_shell);
+        default_shell_owned = default_shell;
         try shell_args.append(allocator, default_shell);
     } else {
         try shell_args.appendSlice(allocator, input_shell_args);
@@ -517,7 +560,7 @@ fn freeExecArgv(allocator: std.mem.Allocator, argv: [:null]?[*:0]const u8) void 
 
 fn freeExecArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]const u8) void {
     for (argv) |maybe_ptr| {
-        if (maybe_ptr) |ptr| allocator.free(std.mem.span(ptr));
+        if (maybe_ptr) |ptr| allocator.free(std.mem.sliceTo(ptr, 0));
     }
 }
 
