@@ -2415,9 +2415,8 @@ fn l_strftime(state: *State) callconv(.c) c_int {
         }
     }
 
-    const zvalue = std.heap.page_allocator.dupeZ(u8, fbs.getWritten()) catch return 0;
-    defer std.heap.page_allocator.free(zvalue);
-    api.push_string(state, zvalue);
+    const written = fbs.getWritten();
+    api.push_lstring(state, written.ptr, written.len);
     return 1;
 }
 
@@ -5229,13 +5228,7 @@ fn l_get_workspace_name(state: *State) callconv(.c) c_int {
         0;
 
     const title = cbs.get_workspace_name(cbs.app, idx, &out_buf);
-
-    const ztitle = std.heap.page_allocator.dupeZ(u8, title) catch {
-        api.push_string(state, "");
-        return 1;
-    };
-    defer std.heap.page_allocator.free(ztitle);
-    api.push_string(state, ztitle);
+    api.push_lstring(state, title.ptr, title.len);
     return 1;
 }
 
@@ -5448,12 +5441,7 @@ fn l_get_pane_title(state: *State) callconv(.c) c_int {
         0;
     var out_buf: [256]u8 = undefined;
     const title = cbs.get_pane_title(cbs.app, pane_id, &out_buf);
-    const ztitle = std.heap.page_allocator.dupeZ(u8, title) catch {
-        api.push_string(state, "");
-        return 1;
-    };
-    defer std.heap.page_allocator.free(ztitle);
-    api.push_string(state, ztitle);
+    api.push_lstring(state, title.ptr, title.len);
     return 1;
 }
 
@@ -5470,12 +5458,7 @@ fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
         0;
     var out_buf: [512]u8 = undefined;
     const cwd = cbs.get_pane_cwd(cbs.app, pane_id, &out_buf);
-    const zcwd = std.heap.page_allocator.dupeZ(u8, cwd) catch {
-        api.push_string(state, "");
-        return 1;
-    };
-    defer std.heap.page_allocator.free(zcwd);
-    api.push_string(state, zcwd);
+    api.push_lstring(state, cwd.ptr, cwd.len);
     return 1;
 }
 
@@ -5514,12 +5497,7 @@ fn l_get_pane_foreground_process(state: *State) callconv(.c) c_int {
         0;
     var out_buf: [512]u8 = undefined;
     const proc = cbs.get_pane_foreground_process(cbs.app, pane_id, &out_buf);
-    const zproc = std.heap.page_allocator.dupeZ(u8, proc) catch {
-        api.push_string(state, "");
-        return 1;
-    };
-    defer std.heap.page_allocator.free(zproc);
-    api.push_string(state, zproc);
+    api.push_lstring(state, proc.ptr, proc.len);
     return 1;
 }
 
@@ -5554,12 +5532,7 @@ fn l_get_pane_domain(state: *State) callconv(.c) c_int {
         0;
     var out_buf: [128]u8 = undefined;
     const domain = cbs.get_pane_domain(cbs.app, pane_id, &out_buf);
-    const zdomain = std.heap.page_allocator.dupeZ(u8, domain) catch {
-        api.push_string(state, "");
-        return 1;
-    };
-    defer std.heap.page_allocator.free(zdomain);
-    api.push_string(state, zdomain);
+    api.push_lstring(state, domain.ptr, domain.len);
     return 1;
 }
 
