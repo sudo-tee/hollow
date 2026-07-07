@@ -18,6 +18,7 @@ fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const emit_pdb = b.option(bool, "pdb", "Emit PDB debug symbols (enables profiling ReleaseFast builds)") orelse false;
     const wsl_bypass_target = b.resolveTargetQuery(.{
         .cpu_arch = target.result.cpu.arch,
         .os_tag = .linux,
@@ -81,6 +82,7 @@ pub fn build(b: *std.Build) void {
     launcher_root_module.addOptions("build_options", launcher_build_options);
     launcher_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     launcher_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
+    if (emit_pdb) launcher_root_module.strip = false;
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -123,6 +125,7 @@ pub fn build(b: *std.Build) void {
     ft_translate.addIncludePath(fontdeps_dep.artifact("freetype").getEmittedIncludeTree());
     ft_translate.addIncludePath(fontdeps_dep.artifact("harfbuzz").getEmittedIncludeTree());
     root_module.addImport("ft_c", ft_translate.createModule());
+    if (emit_pdb) root_module.strip = false;
 
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
@@ -149,11 +152,13 @@ pub fn build(b: *std.Build) void {
         gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
+        if (emit_pdb) gui_root_module.strip = false;
 
         const gui_exe = b.addExecutable(.{
             .name = "hollow-native",
             .root_module = gui_root_module,
         });
+
         gui_exe.addObjectFile(res_file);
         gui_exe.subsystem = .Windows;
         gui_exe.linkLibC();
@@ -266,6 +271,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    if (emit_pdb) wsl_bypass_module.strip = false;
     const wsl_bypass = b.addExecutable(.{
         .name = "hollow-wsl-bypass",
         .root_module = wsl_bypass_module,

@@ -7,6 +7,7 @@ TARGET="x86_64-windows-gnu"
 BUILD=1
 RUN=1
 OPTIMIZE="ReleaseFast"
+PDB=0
 SAFE_RENDER=0
 DISABLE_SWAPCHAIN_GLYPHS=0
 DISABLE_MULTI_PANE_CACHE=0
@@ -26,6 +27,7 @@ for arg in "$@"; do
   --no-build) BUILD=0 ;;
   --build-only) RUN=0 ;;
   --debug) OPTIMIZE="Debug" ;;
+  --pdb) PDB=1 ;;
   --safe-render) SAFE_RENDER=1 ;;
   --no-swapchain-glyphs) DISABLE_SWAPCHAIN_GLYPHS=1 ;;
   --no-multi-pane-cache) DISABLE_MULTI_PANE_CACHE=1 ;;
@@ -35,7 +37,7 @@ for arg in "$@"; do
   --target=*) TARGET="${arg#--target=}" ;;
   --app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
   --help | -h)
-    echo "Usage: $0 [--no-build] [--build-only] [--debug] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
+    echo "Usage: $0 [--no-build] [--build-only] [--debug] [--pdb] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
     echo "Lua dev loop: after one build, Lua files under src/lua/ are loaded from disk when present, so you can use --no-build for Lua-only changes."
     exit 0
     ;;
@@ -77,6 +79,9 @@ if [[ $BUILD -eq 1 ]]; then
   BUILD_ARGS=("-Dtarget=$TARGET")
   if [[ -n "$OPTIMIZE" ]]; then
     BUILD_ARGS+=("-Doptimize=$OPTIMIZE")
+  fi
+  if [[ $PDB -eq 1 ]]; then
+    BUILD_ARGS+=("-Dpdb")
   fi
   zig build "${BUILD_ARGS[@]}"
 fi
