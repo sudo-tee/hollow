@@ -1214,7 +1214,10 @@ pub const App = struct {
     pub fn pasteClipboard(self: *App) !void {
         const clipboard = c.sapp_get_clipboard_string();
         const text = std.mem.span(clipboard);
-        if (text.len == 0) return;
+        if (text.len == 0) {
+            std.log.warn("pasteClipboard: clipboard string is empty", .{});
+            return;
+        }
         try mux_ops.sendPaste(self, text);
     }
 

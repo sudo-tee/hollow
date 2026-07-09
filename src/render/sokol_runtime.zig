@@ -2398,6 +2398,7 @@ pub fn run(app: *App) !void {
     desc.height = @intCast(app.config.window_height);
     desc.high_dpi = true;
     desc.enable_clipboard = true;
+    desc.clipboard_size = 1048576; // 1MB for large clipboard contents
     desc.window_title = titleCString(app.config.windowTitle());
     desc.no_vsync = !app.config.vsync;
     desc.logger.func = c.slog_func;
