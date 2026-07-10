@@ -26,7 +26,7 @@ pub fn beginFrame(self: *FtRenderer) void {
 /// Upload atlas to GPU if it has been modified and not yet uploaded this frame.
 /// Safe to call multiple times per frame — only the first call uploads.
 pub fn flushAtlasIfDirty(self: *FtRenderer) void {
-    if (self.atlas_dirty) {
+    if (self.atlas_dirty and !self.atlas_uploaded_this_frame) {
         self.flushAtlas();
         self.atlas_dirty = false;
     }
@@ -55,7 +55,6 @@ pub fn resetAtlasIfNeeded(self: *FtRenderer) void {
     self.atlas_y = 1;
     self.atlas_row_h = 0;
     self.atlas_dirty = true;
-    self.atlas_uploaded_this_frame = false;
     self.glyph_cache.clearRetainingCapacity();
     self.shape_cache.clearRetainingCapacity();
     var prepared_it = self.prepared_cache.valueIterator();

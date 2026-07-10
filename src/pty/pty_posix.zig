@@ -5,6 +5,7 @@ const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
     @cInclude("pty.h");
+    @cInclude("poll.h");
     @cInclude("signal.h");
     @cInclude("stdlib.h");
     @cInclude("string.h");
@@ -235,6 +236,23 @@ pub const PosixPty = struct {
 fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
     var temp: [4096]u8 = undefined;
     while (true) {
+        reader_state.mutex.lock();
+        const closing = reader_state.closing;
+        reader_state.mutex.unlock();
+        if (closing) return;
+
+        var poll_fd = c.struct_pollfd{
+            .fd = fd,
+            .events = c.POLLIN,
+            .revents = 0,
+        };
+        const ready = c.poll(&poll_fd, 1, 100);
+        if (ready == 0) continue;
+        if (ready < 0) {
+            if (std.posix.errno(-1) == .INTR) continue;
+            return;
+        }
+
         const result = c.read(fd, &temp, temp.len);
         if (result > 0) {
             reader_state.mutex.lock();
@@ -252,6 +270,7 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
         }
         switch (std.posix.errno(-1)) {
             .INTR => {},
+            .AGAIN => {},
             else => {
                 reader_state.mutex.lock();
                 if (!reader_state.closing) reader_state.eof = true;

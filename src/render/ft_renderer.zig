@@ -1036,14 +1036,20 @@ pub const FtRenderer = struct {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, fb_w, fb_h, 0.0, -1.0, 1.0);
 
-        // Draw a quad covering [ox, oy] → [ox+pw, oy+ph] with UV [0,0]→[1,1].
-        // Vertex colour white (1,1,1,1) so the texture is sampled as-is.
+        // OpenGL render-target textures use a bottom-left origin, while D3D11
+        // uses top-left. Flip V only for the GL cache blit so terminal rows
+        // retain Ghostty's top-to-bottom order on Linux.
+        const v_top: f32 = if (builtin.os.tag == .linux) 1.0 else 0.0;
+        const v_bottom: f32 = 1.0 - v_top;
+
+        // Draw a quad covering [ox, oy] → [ox+pw, oy+ph]. Vertex colour white
+        // (1,1,1,1) so the texture is sampled as-is.
         c.sgl_begin_quads();
         c.sgl_c4b(255, 255, 255, 255);
-        c.sgl_v2f_t2f(ox, oy, 0.0, 0.0);
-        c.sgl_v2f_t2f(ox + pw, oy, 1.0, 0.0);
-        c.sgl_v2f_t2f(ox + pw, oy + ph, 1.0, 1.0);
-        c.sgl_v2f_t2f(ox, oy + ph, 0.0, 1.0);
+        c.sgl_v2f_t2f(ox, oy, 0.0, v_top);
+        c.sgl_v2f_t2f(ox + pw, oy, 1.0, v_top);
+        c.sgl_v2f_t2f(ox + pw, oy + ph, 1.0, v_bottom);
+        c.sgl_v2f_t2f(ox, oy + ph, 0.0, v_bottom);
         c.sgl_end();
         c.sgl_disable_texture();
     }

@@ -2288,7 +2288,6 @@ fn pathExists(path: []const u8) bool {
     std.fs.cwd().access(path, .{}) catch return false;
     return true;
 }
-
 test "viewport iterator row mapping follows platform row order" {
     if (builtin.os.tag == .linux) {
         try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(0, 5));
@@ -2345,4 +2344,3 @@ test "cloneJsonValue deep copies nested JSON values" {
     try std.testing.expect(cloned_array.items.ptr != original_array.items.ptr);
     try std.testing.expect(cloned_array.items[0].string.ptr != original_array.items[0].string.ptr);
 }
-

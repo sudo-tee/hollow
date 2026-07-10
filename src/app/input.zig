@@ -377,12 +377,9 @@ pub fn processInputQueue(self: *App) void {
                 }
 
                 const printable_fallback = text_helpers.legacyPrintableKeyText(k.key, k.mods, &fallback_buf);
-                const use_char_text_only = builtin.os.tag != .windows and k.action != .release and text != null and (k.mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0;
-                if (!use_char_text_only) {
-                    if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
-                        if (printable_fallback == null) {
-                            if (text) |bytes| mux_ops.sendText(self, bytes);
-                        }
+                if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
+                    if (printable_fallback == null) {
+                        if (text) |bytes| mux_ops.sendText(self, bytes);
                     }
                 }
             },

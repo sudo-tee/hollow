@@ -9,7 +9,7 @@ state of the build and runtime on each one.
 | --- | --- | --- | --- |
 | Windows (10/11, x86_64) | Yes | Primary | See [Windows](windows.md) |
 | WSL (Ubuntu, others) | Helper only | First-class shell domain | See [WSL](wsl.md) |
-| Linux (native) | Broken | Not validated | See [Linux](linux.md) |
+| Linux (native, X11) | Yes | Basic | See [Linux](linux.md) |
 | macOS | Broken | Not validated | See [macOS](macos.md) |
 
 ## What "primary validated" means
@@ -25,6 +25,9 @@ A primary validated target is one where:
 WSL is not a build target for the app; it is a shell domain. WSL
 shells are launched from the Windows host, with an optional Linux-side
 helper that skips ConPTY.
+
+Linux currently uses Sokol's X11 backend. It can run through XWayland, but
+native Wayland is not yet supported.
 
 ## Cross-platform config
 

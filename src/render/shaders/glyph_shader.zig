@@ -47,12 +47,8 @@ pub const glsl_vs: [:0]const u8 =
     \\uniform vec4 vs_params[5];
     \\
     \\void main() {
-    \\    gl_Position = mat4(
-    \\        vec4(vs_params[0].x, vs_params[1].x, vs_params[2].x, vs_params[3].x),
-    \\        vec4(vs_params[0].y, vs_params[1].y, vs_params[2].y, vs_params[3].y),
-    \\        vec4(vs_params[0].z, vs_params[1].z, vs_params[2].z, vs_params[3].z),
-    \\        vec4(vs_params[0].w, vs_params[1].w, vs_params[2].w, vs_params[3].w)
-    \\    ) * vec4(in_pos, 0.0, 1.0);
+    \\    // Uniform array stores matrix columns in same order as CPU mvp.
+    \\    gl_Position = mat4(vs_params[0], vs_params[1], vs_params[2], vs_params[3]) * vec4(in_pos, 0.0, 1.0);
     \\    v_uv = in_uv;
     \\    // Pass fg colour as-is (sRGB, straight alpha).
     \\    // All linearization is done in the fragment shader.

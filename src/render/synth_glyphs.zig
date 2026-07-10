@@ -10,7 +10,6 @@
 ///
 /// Pilot for the method-extraction pattern used by subsequent phases:
 ///   ft_renderer.zig defines `pub fn foo(self, ...) { return synth_glyphs.foo(self, ...); }`
-
 const std = @import("std");
 const c = @import("sokol_c");
 const ghostty = @import("../term/ghostty.zig");
@@ -219,7 +218,7 @@ pub fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
         }
     }
     self.atlas_dirty = true;
-    self.atlas_uploaded_this_frame = false;
+
     if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
     const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
@@ -229,13 +228,7 @@ pub fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
 
     self.atlas_x += bw + 1;
 
-    const g = Glyph{
-        .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1,
-        .bw = @intCast(bw), .bh = @intCast(bh),
-        .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)),
-        .advance_x = self.cell_w,
-        .color_emoji = false,
-    };
+    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = self.cell_w, .color_emoji = false };
     self.glyph_cache.put(key, g) catch {};
     return g;
 }
@@ -392,7 +385,7 @@ pub fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
         }
     }
     self.atlas_dirty = true;
-    self.atlas_uploaded_this_frame = false;
+
     if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
     const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
@@ -402,18 +395,7 @@ pub fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
 
     self.atlas_x += bw + 1;
 
-    const g = Glyph{
-        .s0 = s0,
-        .t0 = t0,
-        .s1 = s1,
-        .t1 = t1,
-        .bw = @intCast(bw),
-        .bh = @intCast(bh),
-        .bear_x = 0,
-        .bear_y = @intFromFloat(@ceil(self.ascender)),
-        .advance_x = cw_f,
-        .color_emoji = false,
-    };
+    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = cw_f, .color_emoji = false };
     self.glyph_cache.put(key, g) catch {};
     return g;
 }

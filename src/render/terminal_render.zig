@@ -237,7 +237,7 @@ pub fn queueInViewport(
     const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
     queueBackgroundAndRasterPass(self, runtime, &queue, pane_w, pane_h, &hash_skip_bits, run_buf);
 
-    if (self.atlas_dirty) {
+    if (self.atlas_dirty and !self.atlas_uploaded_this_frame) {
         self.flushAtlas();
         self.atlas_dirty = false;
         self.last_atlas_flushed = true;
@@ -315,7 +315,7 @@ pub fn queueCopyModeSnapshot(
         queueCopyModeSnapshotRowText(self, line, row_info, cfg, default_fg, selection_fg, run_buf, .raster);
     }
 
-    if (self.atlas_dirty) {
+    if (self.atlas_dirty and !self.atlas_uploaded_this_frame) {
         self.flushAtlas();
         self.atlas_dirty = false;
         self.last_atlas_flushed = true;
@@ -339,10 +339,8 @@ pub fn makeCopyModeSnapshotRowInfo(
     row: usize,
     visible_rows: usize,
 ) RowRenderInfo {
-    const row_y_px = if (builtin.os.tag == .linux and visible_rows > 0)
-        @as(f32, @floatFromInt((visible_rows - 1) - row)) * self.cell_h
-    else
-        @as(f32, @floatFromInt(row)) * self.cell_h;
+    _ = visible_rows;
+    const row_y_px = @as(f32, @floatFromInt(row)) * self.cell_h;
     return .{
         .row_y = row,
         .py = self.padding_y + row_y_px,
@@ -1149,10 +1147,7 @@ pub inline fn resolveCellTextStyle(
 }
 
 pub fn makeRowRenderInfo(self: *FtRenderer, queue: *const QueueContext, row_y: usize) RowRenderInfo {
-    const row_y_px = if (builtin.os.tag == .linux and queue.row_count > 0)
-        @as(f32, @floatFromInt((queue.row_count - 1) - row_y)) * self.cell_h
-    else
-        @as(f32, @floatFromInt(row_y)) * self.cell_h;
+    const row_y_px = @as(f32, @floatFromInt(row_y)) * self.cell_h;
     return .{
         .row_y = row_y,
         .py = self.padding_y + row_y_px,

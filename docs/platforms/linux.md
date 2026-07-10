@@ -1,30 +1,31 @@
 # Linux
 
-> **Status:** The Linux build is currently broken and Linux is not a
-> validated runtime target.
-> The notes below describe what would be needed to make it work and
-> what to expect from `zig build run` today.
+> **Status:** Basic Linux/X11 support. The app builds, runs a native shell,
+> renders terminals, and supports tabs, keyboard input, and borderless window
+> move/resize. Windows and WSL remain primary validated targets.
 
 ## What works
 
-- The Lua API surface — every namespace documented in
-  [Reference](../reference/lua/README.md) is platform-neutral.
-- Config files using the same syntax as Windows; the personal config
-  location is `$XDG_CONFIG_HOME/hollow/init.lua` or
-  `$HOME/.config/hollow/init.lua`.
-- The shipped base config falls back to a `unix` domain that uses
-  `hollow.platform.default_shell`.
+- Native X11/GLX rendering, terminal input, tabs, panes, Lua configuration,
+  and the default keymaps.
+- The default `unix` domain uses `$SHELL`, with `/bin/sh` as fallback.
+- Config files use the same syntax as Windows; user config lives at
+  `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`.
+- `window_titlebar_show = false` uses X11 window-manager hints. Top-bar drag
+  and edge/corner resize work on window managers and XWayland compositors that
+  allow client-managed windows.
 
 ## What does not work
 
-- The renderer. The Linux build is currently broken and `zig build run`
-  is not expected to succeed. The README's "Linux build prerequisites"
-  call this out explicitly.
-- There is no packaged Linux release.
-- The WSL bypass helper runs on Linux, but the helper alone is not a
-  terminal — you need the Windows host to drive it.
+- Native Wayland is not supported; Hollow currently uses Sokol's X11 backend.
+  It may run through XWayland, subject to compositor policy.
+- Linux support has not received the same breadth of runtime validation as
+  Windows/WSL. Report reproducible gaps with compositor, desktop environment,
+  GPU driver, and session type.
+- The WSL bypass helper is for Windows-host WSL domains and is not required by
+  native Linux Hollow.
 
-## If you want to fix the Linux build
+## Build dependencies
 
 The dependency list in the project README is the starting point:
 
@@ -36,12 +37,15 @@ sudo apt install -y libx11-dev libxi-dev libxcursor-dev \
 These provide the `-lX11 -lXi -lXcursor -lGL -lasound` libraries
 required by the linker.
 
-After the build is restored, the runtime surface should mostly mirror
-the macOS plan in the next file:
-[macOS](macos.md).
+Then build and run:
+
+```bash
+./scripts/setup.sh
+zig build run
+```
 
 ## See also
 
 - [Platforms matrix](README.md)
-- [macOS](macos.md) — closest analogue once the build is restored
+- [macOS](macos.md)
 - [Troubleshooting](../troubleshooting.md)

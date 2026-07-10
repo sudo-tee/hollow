@@ -40,7 +40,7 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 - Basic support for Kitty images and Sixel
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
 - Optional WSL PTY bypass helper with automatic ConPTY fallback (needed for full escape sequence support)
-- Cross-platform targets: Windows, WSL (primary); Linux (planned), macOS (planned)
+- Cross-platform targets: Windows and WSL (primary); Linux/X11 (basic support); macOS (planned)
 - Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
 - Sensible default UX but fully customizable via Lua config and plugins
 
@@ -48,7 +48,8 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 
 **Download a release:** [github.com/sudo-tee/hollow/releases](https://github.com/sudo-tee/hollow/releases)
 Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
-(falls back to ConPTY automatically when the helper is absent).
+(falls back to ConPTY automatically when the helper is absent). Linux builds
+require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 
 **Customize:** copy `conf/init.lua` to `%APPDATA%\hollow\init.lua` (Windows) or
 `~/.config/hollow/init.lua` (other).
@@ -91,6 +92,7 @@ them in your user config via `hollow.keymap.set`.
 
 - Hollow is still an active project and the API surface is still moving.
 - The docs in this repo are meant to describe the current product, not a future roadmap.
-- The current build is suitable for building, running, configuring, and packaging now, with Windows/WSL as the main tested target.
+- Windows/WSL remain main tested targets. Linux/X11 has basic runtime support
+  and release artifacts, with compositor-dependent window chrome behavior.
 
 ## Roadmap

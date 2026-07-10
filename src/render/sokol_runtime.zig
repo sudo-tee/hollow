@@ -253,6 +253,7 @@ var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
+var g_linux_window_resize_active = false;
 // Double/triple click tracking (event thread only)
 var g_click_count: u32 = 0;
 var g_last_click_time_ms: u64 = 0;
@@ -2408,6 +2409,25 @@ pub fn run(app: *App) !void {
         desc.gl.major_version = 3;
         desc.gl.minor_version = 3;
     }
+    if (builtin.os.tag == .linux) {
+        // On WSL2 the default Mesa DRI driver (virtio_gpu) can crash inside
+        // the gallium driver during shader link.  The d3d12 gallium driver
+        // (translates OpenGL → Direct3D 12 on the Windows host) works
+        // reliably.  Detect WSL2 by the kernel release string and prefer
+        // d3d12 unless the user already set GALLIUM_DRIVER.
+        if (std.process.getEnvVarOwned(std.heap.page_allocator, "GALLIUM_DRIVER")) |owned| {
+            std.heap.page_allocator.free(owned);
+        } else |_| {
+            var release_buf: [128]u8 = undefined;
+            const release = readLineFromFile("/proc/sys/kernel/osrelease", &release_buf) catch "";
+            if (std.ascii.indexOfIgnoreCase(release, "microsoft") != null or
+                std.ascii.indexOfIgnoreCase(release, "wsl") != null)
+            {
+                std.log.info("WSL2 detected — forcing GALLIUM_DRIVER=d3d12", .{});
+                _ = c.setenv("GALLIUM_DRIVER", "d3d12", 1);
+            }
+        }
+    }
     std.log.info("sokol: vsync={s}", .{if (app.config.vsync) "on" else "off"});
     std.log.info("sokol: max_fps={d}", .{app.config.max_fps});
     std.log.info("sokol: renderer_single_pane_direct={s} (default=false, false=cached RT path)", .{
@@ -3061,7 +3081,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // We'll render directly in the swapchain pass for lower latency.
                     // Still need to flush atlas if dirty so glyphs are available.
                     const atlas_was_dirty = renderer.atlas_dirty;
-                    if (atlas_was_dirty) {
+                    if (atlas_was_dirty and !renderer.atlas_uploaded_this_frame) {
                         renderer.flushAtlas();
                         renderer.atlas_dirty = false;
                         g_phase_accum_atlas_flushes += 1;
@@ -3824,6 +3844,10 @@ fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
 }
 
 fn applyWindowChrome(app: *App) bool {
+    if (builtin.os.tag == .linux) {
+        c.hollow_linux_set_window_decorated(app.config.window_titlebar_show);
+        return true;
+    }
     if (builtin.os.tag != .windows) return false;
 
     const hwnd_raw = c.sapp_win32_get_hwnd() orelse return false;
@@ -4012,11 +4036,36 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
 }
 
 fn beginWindowDrag() void {
+    if (builtin.os.tag == .linux) {
+        c.hollow_linux_begin_window_drag();
+        return;
+    }
     if (builtin.os.tag != .windows) return;
     const hwnd_raw = c.sapp_win32_get_hwnd() orelse return;
     const hwnd: win32.HWND = @ptrCast(@constCast(hwnd_raw));
     _ = win32.ReleaseCapture();
     _ = win32.SendMessageW(hwnd, win32.WM_NCLBUTTONDOWN, win32.HTCAPTION, 0);
+}
+
+fn linuxResizeDirection(x: f32, y: f32) ?c_int {
+    if (builtin.os.tag != .linux) return null;
+    const edge: f32 = 8.0;
+    const width = c.sapp_widthf();
+    const height = c.sapp_heightf();
+    const left = x < edge;
+    const right = x >= width - edge;
+    const top = y < edge;
+    const bottom = y >= height - edge;
+
+    if (top and left) return 0;
+    if (top and right) return 2;
+    if (bottom and right) return 4;
+    if (bottom and left) return 6;
+    if (top) return 1;
+    if (right) return 3;
+    if (bottom) return 5;
+    if (left) return 7;
+    return null;
 }
 
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
@@ -4175,6 +4224,15 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         g_mouse_button_down = button;
     }
 
+    if (builtin.os.tag == .linux and !app.config.window_titlebar_show and
+        action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT)
+    {
+        if (linuxResizeDirection(event.mouse_x, event.mouse_y)) |direction| {
+            g_linux_window_resize_active = c.hollow_linux_begin_window_resize(direction);
+            if (g_linux_window_resize_active) return;
+        }
+    }
+
     if (g_block_all_mouse_until_up) {
         c.sapp_consume_event();
         if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
@@ -4206,6 +4264,11 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
     // On left-button release always end any active drag.
     if (action == .release and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+        if (g_linux_window_resize_active) {
+            c.hollow_linux_end_window_resize();
+            g_linux_window_resize_active = false;
+            return;
+        }
         if (g_scrollbar_drag_pane != null) {
             g_scrollbar_drag_pane = null;
             g_scrollbar_drag_metrics = null;
@@ -4266,7 +4329,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 }
                 return;
             }
-            if (builtin.os.tag == .windows and !app.config.window_titlebar_show) {
+            if (!app.config.window_titlebar_show) {
                 beginWindowDrag();
             }
         }
@@ -4419,6 +4482,10 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    if (g_linux_window_resize_active) {
+        c.hollow_linux_update_window_resize();
+        return;
+    }
     if (g_block_all_mouse_until_up) {
         c.sapp_consume_event();
         return;
@@ -4867,6 +4934,20 @@ fn encodeCodepoint(codepoint: u32, buf: *[5]u8) ?[]const u8 {
 fn appFromUserData(user_data: ?*anyopaque) ?*App {
     const ptr = user_data orelse return null;
     return @ptrCast(@alignCast(ptr));
+}
+
+/// Read first line from an absolute path (e.g. /proc file) into buf.
+/// Returns slice of buf containing the line (without trailing newline).
+fn readLineFromFile(path: []const u8, buf: []u8) ![]u8 {
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    const n = try file.read(buf);
+    if (n == 0) return error.EndOfFile;
+    var end = n;
+    while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r')) {
+        end -= 1;
+    }
+    return buf[0..end];
 }
 
 /// Draw a filled RGBA rectangle using the current sokol_gl projection.

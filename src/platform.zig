@@ -407,7 +407,7 @@ pub fn isMacos() bool {
 pub fn defaultShell() []const u8 {
     return switch (current()) {
         .windows => "pwsh.exe",
-        .linux => "/bin/sh",
+        .linux => if (comptime builtin.os.tag == .linux) std.posix.getenv("SHELL") orelse "/bin/sh" else "/bin/sh",
         .macos => "/bin/zsh",
     };
 }
