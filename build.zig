@@ -106,7 +106,7 @@ pub fn build(b: *std.Build) void {
     // (rc==-1) misses, so the subsequent @intCast(wd) from usize to i32 panics.
     if (target.result.os.tag == .linux) {
         const inotify_path = nightwatch_dep.path("src/backend/INotify.zig").getPath(b);
-        const f = std.fs.openFileAbsolute(inotify_path, .{ .mode = .read_write }) catch |e| blk: {
+        const f = std.fs.cwd().openFile(inotify_path, .{ .mode = .read_write }) catch |e| blk: {
             std.log.err("nightwatch-patch: open {s}: {s}", .{ inotify_path, @errorName(e) });
             break :blk null;
         } orelse return;
