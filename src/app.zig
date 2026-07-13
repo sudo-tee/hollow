@@ -54,7 +54,6 @@ const htp = @import("app/htp.zig");
 const input = @import("app/input.zig");
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
-const snapshot = @import("app/snapshot.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
 const mux_ops = @import("app/mux_ops.zig");
 
@@ -277,10 +276,6 @@ pub const App = struct {
     startup_command: ?[]u8 = null,
     startup_command_delay_frames: usize = 0,
     startup_command_sent: bool = false,
-    snapshot_dump_path: ?[]u8 = null,
-    snapshot_dump_file: ?std.fs.File = null,
-    snapshot_dump_last_hash: u64 = 0,
-    snapshot_dump_has_last_hash: bool = false,
     /// Fractional scroll accumulator — prevents sub-pixel scroll events from
     /// being silently dropped by integer truncation on smooth / touchpad input.
     scroll_accum: f32 = 0,
@@ -665,14 +660,6 @@ pub const App = struct {
             self.allocator.free(path);
             self.override_config_path = null;
         }
-        if (self.snapshot_dump_file) |file| {
-            file.close();
-            self.snapshot_dump_file = null;
-        }
-        if (self.snapshot_dump_path) |path| {
-            self.allocator.free(path);
-            self.snapshot_dump_path = null;
-        }
         if (self.startup_command) |cmd| {
             self.allocator.free(cmd);
             self.startup_command = null;
@@ -685,22 +672,12 @@ pub const App = struct {
         std.log.info("App.deinit done", .{});
     }
 
-    pub fn configureAutomation(self: *App, startup_command: ?[]const u8, startup_command_delay_frames: usize, snapshot_dump_path: ?[]const u8) !void {
+    pub fn configureAutomation(self: *App, startup_command: ?[]const u8, startup_command_delay_frames: usize) !void {
         if (startup_command) |cmd| {
             if (self.startup_command) |owned| self.allocator.free(owned);
             self.startup_command = try self.allocator.dupe(u8, cmd);
             self.startup_command_delay_frames = startup_command_delay_frames;
             self.startup_command_sent = false;
-        }
-
-        if (snapshot_dump_path) |path| {
-            if (self.snapshot_dump_file) |file| file.close();
-            self.snapshot_dump_file = null;
-            if (self.snapshot_dump_path) |owned| self.allocator.free(owned);
-            self.snapshot_dump_path = try self.allocator.dupe(u8, path);
-            self.snapshot_dump_file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-            self.snapshot_dump_last_hash = 0;
-            self.snapshot_dump_has_last_hash = false;
         }
     }
 

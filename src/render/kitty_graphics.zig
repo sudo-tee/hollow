@@ -5,7 +5,6 @@
 ///   - `getOrCreateKittyTexture`: GPU texture cache for Kitty images.
 ///   - `clipTexturedQuad`: clips a textured quad to pane bounds with UV adjustment.
 ///   - `queueKittyLayerInPane`: draws Kitty placement layers for a pane.
-///   - `drawKittyLayer`: offscreen render path for Kitty layers (currently unused).
 
 const std = @import("std");
 const c = @import("sokol_c");
@@ -255,50 +254,6 @@ pub fn queueKittyLayerInPane(
         c.sgl_load_default_pipeline();
         c.sgl_enable_texture();
         c.sgl_texture(tex.view, self.kitty_image_smp);
-        c.sgl_begin_quads();
-        c.sgl_c4b(255, 255, 255, 255);
-        c.sgl_v2f_t2f(x, y, uv0_x, uv0_y);
-        c.sgl_v2f_t2f(x + w, y, uv1_x, uv0_y);
-        c.sgl_v2f_t2f(x + w, y + h, uv1_x, uv1_y);
-        c.sgl_v2f_t2f(x, y + h, uv0_x, uv1_y);
-        c.sgl_end();
-        c.sgl_disable_texture();
-    }
-}
-
-pub fn drawKittyLayer(self: *FtRenderer, runtime: *ghostty.Runtime, terminal: ?*anyopaque, layer: ghostty.KittyPlacementLayer, pane_w: f32, pane_h: f32) void {
-    const term = terminal orelse return;
-    const graphics = runtime.terminalKittyGraphics(term) orelse return;
-    const iterator = runtime.createKittyPlacementIterator() catch return;
-    defer runtime.freeKittyPlacementIterator(iterator);
-    if (!runtime.populateKittyPlacementIterator(graphics, iterator)) return;
-    if (!runtime.setKittyPlacementLayer(iterator, layer)) return;
-
-    while (runtime.nextKittyPlacement(iterator)) {
-        var is_virtual = false;
-        if (!runtime.kittyPlacementData(iterator, .is_virtual, &is_virtual) or is_virtual) continue;
-
-        var image_id: u32 = 0;
-        if (!runtime.kittyPlacementData(iterator, .image_id, &image_id)) continue;
-        const image = runtime.kittyGraphicsImage(graphics, image_id) orelse continue;
-        const render_info = runtime.kittyPlacementRenderInfo(iterator, image, term) orelse continue;
-        if (!render_info.viewport_visible or render_info.pixel_width == 0 or render_info.pixel_height == 0) continue;
-
-        const tex = getOrCreateKittyTexture(self, runtime, image_id, image) orelse continue;
-
-        var x = self.padding_x + @as(f32, @floatFromInt(render_info.viewport_col)) * self.cell_w;
-        var y = self.padding_y + @as(f32, @floatFromInt(render_info.viewport_row)) * self.cell_h;
-        var w = @as(f32, @floatFromInt(render_info.pixel_width));
-        var h = @as(f32, @floatFromInt(render_info.pixel_height));
-        var uv0_x = @as(f32, @floatFromInt(render_info.source_x)) / @as(f32, @floatFromInt(tex.key.width));
-        var uv0_y = @as(f32, @floatFromInt(render_info.source_y)) / @as(f32, @floatFromInt(tex.key.height));
-        var uv1_x = @as(f32, @floatFromInt(render_info.source_x + render_info.source_width)) / @as(f32, @floatFromInt(tex.key.width));
-        var uv1_y = @as(f32, @floatFromInt(render_info.source_y + render_info.source_height)) / @as(f32, @floatFromInt(tex.key.height));
-        if (!clipTexturedQuad(&x, &y, &w, &h, &uv0_x, &uv0_y, &uv1_x, &uv1_y, pane_w, pane_h)) continue;
-
-        c.sgl_load_default_pipeline();
-        c.sgl_enable_texture();
-        c.sgl_texture(tex.view, self.atlas_ui_smp);
         c.sgl_begin_quads();
         c.sgl_c4b(255, 255, 255, 255);
         c.sgl_v2f_t2f(x, y, uv0_x, uv0_y);

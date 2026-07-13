@@ -584,10 +584,6 @@ pub fn copyModeClearSelection(self: *App) void {
     emitCopyModeChanged(self);
 }
 
-pub fn copyModeBeginSelection(self: *App) void {
-    copyModeBeginSelectionWithBlock(self, false);
-}
-
 pub fn copyModeBeginSelectionWithBlock(self: *App, block: bool) void {
     const pane = self.copy_mode_pane orelse return;
     if (self.copy_mode_anchor == null) self.copy_mode_anchor = self.copy_mode_cursor;

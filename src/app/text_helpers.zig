@@ -3,19 +3,6 @@ const fastmem = @import("../fastmem.zig");
 const ghostty = @import("../term/ghostty.zig");
 const FrameSnapshot = @import("../render/debug_backend.zig").FrameSnapshot;
 
-pub fn countUtf8Codepoints(text: []const u8) usize {
-    var i: usize = 0;
-    var count: usize = 0;
-    while (i < text.len) {
-        const b = text[i];
-        const step: usize = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
-        if (i + step > text.len) break;
-        i += step;
-        count += 1;
-    }
-    return count;
-}
-
 pub fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(render_mode);
@@ -96,13 +83,6 @@ pub fn appendGridRefText(runtime: *ghostty.Runtime, ref: *const ghostty.GridRef,
         fastmem.copy(u8, out[len.* .. len.* + encoded_len], utf8_buf[0..encoded_len]);
         len.* += encoded_len;
     }
-}
-
-pub fn captureCopyModeCellText(allocator: std.mem.Allocator, runtime: *ghostty.Runtime, row_cells: ?*anyopaque) ![]u8 {
-    var buf: [32]u8 = undefined;
-    var len: usize = 0;
-    appendCellText(runtime, row_cells, &buf, &len);
-    return try allocator.dupe(u8, buf[0..len]);
 }
 
 pub fn appendCopyModeCellBytes(out: []u8, len: *usize, cell_text: []const u8) void {
@@ -194,14 +174,6 @@ pub fn legacyPrintableKeyText(key: ghostty.Key, mods: u32, out: *[4]u8) ?[]const
     };
     out[0] = ch;
     return out[0..1];
-}
-
-test "app helpers count utf8 codepoints by leading byte" {
-    try std.testing.expectEqual(@as(usize, 0), countUtf8Codepoints(""));
-    try std.testing.expectEqual(@as(usize, 5), countUtf8Codepoints("hello"));
-    try std.testing.expectEqual(@as(usize, 3), countUtf8Codepoints("A\xc3\xa9\xe2\x82\xac"));
-    try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xf0\x9f\x98\x80"));
-    try std.testing.expectEqual(@as(usize, 1), countUtf8Codepoints("\xe2\x82"));
 }
 
 test "titleCString truncates and null terminates window titles" {

@@ -219,7 +219,6 @@ fn guiMain() !void {
     };
     defer if (cli.config_path) |path| allocator.free(path);
     defer if (cli.startup_command) |cmd| allocator.free(cmd);
-    defer if (cli.snapshot_dump_path) |path| allocator.free(path);
     defer if (cli.match_font) |query| allocator.free(query);
 
     if (cli.list_fonts or cli.match_font != null) {
@@ -229,7 +228,7 @@ fn guiMain() !void {
 
     var app = App.init(allocator);
     defer app.deinit();
-    try app.configureAutomation(cli.startup_command, cli.startup_command_delay_frames, cli.snapshot_dump_path);
+    try app.configureAutomation(cli.startup_command, cli.startup_command_delay_frames);
 
     app.bootstrap(cli.config_path) catch |err| {
         std.log.err("bootstrap failed: {s}", .{@errorName(err)});
@@ -268,7 +267,6 @@ fn launcherMain() !void {
     };
     defer if (cli.config_path) |path| allocator.free(path);
     defer if (cli.startup_command) |cmd| allocator.free(cmd);
-    defer if (cli.snapshot_dump_path) |path| allocator.free(path);
     defer if (cli.match_font) |query| allocator.free(query);
 
     if (cli.list_fonts or cli.match_font != null) {
@@ -347,7 +345,6 @@ const Cli = struct {
     renderer_disable_multi_pane_cache: bool = false,
     startup_command: ?[]u8 = null,
     startup_command_delay_frames: usize = 20,
-    snapshot_dump_path: ?[]u8 = null,
     list_fonts: bool = false,
     list_fonts_json: bool = false,
     match_font: ?[]u8 = null,
@@ -394,13 +391,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
             continue;
         }
 
-        if (std.mem.eql(u8, arg, "--snapshot-dump")) {
-            i += 1;
-            if (i >= args.len) return error.MissingSnapshotDumpPath;
-            cli.snapshot_dump_path = try allocator.dupe(u8, args[i]);
-            continue;
-        }
-
         if (std.mem.eql(u8, arg, "--list-fonts")) {
             cli.list_fonts = true;
             continue;
@@ -419,7 +409,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Cli {
         }
 
         if (std.mem.eql(u8, arg, "--help")) {
-            try writeConsoleText("usage: hollow [cli ...] [--config path] [--renderer-safe-mode] [--renderer-disable-swapchain-glyphs] [--renderer-disable-multi-pane-cache] [--startup-command text] [--startup-command-delay-frames n] [--snapshot-dump path] [--list-fonts] [--match-font query] [--json]\n");
+            try writeConsoleText("usage: hollow [cli ...] [--config path] [--renderer-safe-mode] [--renderer-disable-swapchain-glyphs] [--renderer-disable-multi-pane-cache] [--startup-command text] [--startup-command-delay-frames n] [--list-fonts] [--match-font query] [--json]\n");
             std.process.exit(0);
         }
     }
@@ -538,13 +528,6 @@ fn writeConsoleText(text: []const u8) !void {
     if (tryWriteWindowsStdHandle(win32.STD_OUTPUT_HANDLE, text)) return;
 
     return error.NoConsoleOutput;
-}
-
-fn ensureConsoleStdOut() ?std.fs.File {
-    if (builtin.os.tag != .windows) return std.fs.File.stdout();
-
-    if (windowsStdHandle(win32.STD_OUTPUT_HANDLE)) |file| return file;
-    return null;
 }
 
 fn tryWriteWindowsStdHandle(stream_id: win32.DWORD, text: []const u8) bool {

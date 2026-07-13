@@ -2,8 +2,8 @@
 ///
 /// Contains all the platform-specific font lookup logic (DirectWrite on
 /// Windows, filesystem search on Linux/macOS), the FreeType face loading
-/// helpers, and the public enumeration entry points
-/// (`listAvailableFontFamilies`, `listAvailableFontsDetailed`).
+/// helpers, and the public enumeration entry point
+/// (`listAvailableFontsDetailed`).
 ///
 /// Depends on `font_config.zig` for the shared types (`RequestedFontStyle`,
 /// `FontDiscoveryMatch`, `FontFamilyInfo`, `SeenFontFamilies`, …) and
@@ -171,19 +171,6 @@ pub fn discoverSystemFont(allocator: std.mem.Allocator, lib: ft.FT_Library, name
 }
 
 // ── Public enumeration API ───────────────────────────────────────────────────
-
-pub fn listAvailableFontFamilies(allocator: std.mem.Allocator) ![][]u8 {
-    const detailed = try listAvailableFontsDetailed(allocator);
-    defer {
-        for (detailed) |*family| family.deinit(allocator);
-        allocator.free(detailed);
-    }
-
-    const result = try allocator.alloc([]u8, detailed.len);
-    errdefer allocator.free(result);
-    for (detailed, 0..) |family, i| result[i] = try allocator.dupe(u8, family.family);
-    return result;
-}
 
 pub fn listAvailableFontsDetailed(allocator: std.mem.Allocator) ![]FontFamilyInfo {
     var seen = SeenFontFamilyDetails{ .allocator = allocator };

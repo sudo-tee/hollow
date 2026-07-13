@@ -199,16 +199,6 @@ pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint) void {
     };
 }
 
-pub fn hasHyperlinkAt(self: *App, pane: *Pane, point: CellPoint) bool {
-    var row_buf: [8192]u8 = undefined;
-    return hyperlinkTokenAt(self, pane, point, &row_buf) != null;
-}
-
-pub fn isHoveringHyperlink(self: *const App, pane: *const Pane, row: usize, col: usize) bool {
-    const hovered = self.hovered_hyperlink orelse return false;
-    return hovered.pane == pane and hovered.row == row and col >= hovered.start_col and col < hovered.end_col;
-}
-
 pub fn updateHoveredHyperlink(self: *App) void {
     if (!self.hover_probe_dirty) return;
     self.hover_probe_dirty = false;

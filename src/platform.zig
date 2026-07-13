@@ -190,14 +190,6 @@ pub fn openExternal(target: []const u8) !void {
     };
 }
 
-pub fn openExternalAsync(target: []const u8) !void {
-    const owned_target = try std.heap.page_allocator.dupe(u8, target);
-    errdefer std.heap.page_allocator.free(owned_target);
-
-    const thread = try std.Thread.spawn(.{}, openExternalThread, .{OpenExternalArgs{ .target = owned_target, .opener = null }});
-    thread.detach();
-}
-
 pub fn openExternalWithOpenerAsync(target: []const u8, opener: ?[]const u8) !void {
     const owned_target = try std.heap.page_allocator.dupe(u8, target);
     errdefer std.heap.page_allocator.free(owned_target);
@@ -544,45 +536,6 @@ pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
     };
 
     return hollow_dir;
-}
-
-/// Converts a Windows host path to the equivalent shell path for WSL or other shells.
-/// For WSL, converts C:\foo\bar to /mnt/c/foo/bar.
-/// For other shells, returns the path unchanged.
-/// Caller must free the returned path.
-pub fn runtimeDirForShell(allocator: std.mem.Allocator, host_path: []const u8) ![]u8 {
-    if (!isWindows()) {
-        // On non-Windows platforms, the path is already in the correct format
-        return allocator.dupe(u8, host_path);
-    }
-
-    // On Windows, check if we need to convert to WSL path
-    // For now, always convert to WSL format assuming WSL is the primary use case
-    // Format: C:\Users\... -> /mnt/c/Users/...
-
-    if (host_path.len >= 3 and host_path[1] == ':' and (host_path[2] == '\\' or host_path[2] == '/')) {
-        // Windows absolute path with drive letter
-        const drive = std.ascii.toLower(host_path[0]);
-        var wsl_path: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer wsl_path.deinit(allocator);
-
-        try wsl_path.appendSlice(allocator, "/mnt/");
-        try wsl_path.append(allocator, drive);
-
-        // Convert backslashes to forward slashes and skip the drive: part
-        for (host_path[2..]) |c| {
-            if (c == '\\') {
-                try wsl_path.append(allocator, '/');
-            } else {
-                try wsl_path.append(allocator, c);
-            }
-        }
-
-        return wsl_path.toOwnedSlice(allocator);
-    }
-
-    // If not a Windows path format, return as-is
-    return allocator.dupe(u8, host_path);
 }
 
 test "platform names are stable" {
