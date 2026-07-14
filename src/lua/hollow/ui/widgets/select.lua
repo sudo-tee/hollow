@@ -217,8 +217,8 @@ local function render_entry_rows(
   local tags = ui.tags
   local label_nodes = {
     ui.span(is_selected and "> " or "  ", {
-      fg = is_selected and theme.selected_fg or theme.fg,
-      bold = is_selected,
+      fg = is_selected and theme.selection_fg or theme.fg,
+      bold = true,
     }),
   }
 
@@ -244,15 +244,14 @@ local function render_entry_rows(
   return ui.rows(
     tags.overlay_row(
       {
-        fill_bg = is_selected and theme.selected_bg or nil,
+        fill_bg = is_selected and theme.selection_bg or nil,
         scrollbar_track = show_scrollbar,
         scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
         scrollbar_track_color = theme.scrollbar_track,
         scrollbar_thumb_color = theme.scrollbar_thumb,
       },
       ui.group(label_nodes, {
-        fg = is_selected and theme.selected_fg or theme.fg,
-        bold = is_selected,
+        fg = is_selected and theme.selection_fg or theme.fg,
       })
     ),
     detail_row

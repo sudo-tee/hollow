@@ -331,6 +331,8 @@ function M.resolve_widget(kind, theme)
       color.brighten_hex_color(panel_bg, 0.1, nil)
     ),
     selected_fg = color_or(terminal.foreground, nil),
+    selection_bg = color_or(terminal.selection_bg, nil),
+    selection_fg = color_or(terminal.selection_fg, nil),
     primary_bg = color_or(accent, nil),
     primary_fg = color_or(terminal.foreground, nil),
     destructive_bg = color_or(brights[2], nil),

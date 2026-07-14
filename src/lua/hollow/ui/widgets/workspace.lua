@@ -54,7 +54,7 @@ local function derived_palette()
   return {
     fg = palette.foreground,
     muted = color.darken_hex_color(palette.foreground, 0.35, palette.foreground),
-    subtle = color.darken_hex_color(palette.foreground, 0.6, palette.foreground),
+    subtle = color.brighten_hex_color(palette.background, 0.35, palette.foreground),
     open = palette.bright_green,
     user = palette.bright_blue,
   }
@@ -100,7 +100,7 @@ local function default_format_item(workspace)
       style = { fg = name_color, bold = workspace.is_active },
     },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
-    { text = cwd_text, width = cwd_width, style = { fg = palette.subtle } },
+    { text = cwd_text, width = cwd_width, style = { fg = palette.subtle, bold = false } },
   })
 end
 

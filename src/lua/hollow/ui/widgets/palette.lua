@@ -105,7 +105,6 @@ local function build_workspace_entries()
 end
 
 local function filtered_entries(all_entries, query)
-  local query_lower = query:lower()
   local out = {}
   for _, entry in ipairs(all_entries) do
     local matches, score
@@ -272,7 +271,7 @@ local function render_section_header(theme, label, is_selected, is_collapsed)
   local tags = ui.tags
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
   return tags.overlay_row(
-    { fill_bg = is_selected and theme.selected_bg or (theme.selected_detail_bg or theme.panel_bg) },
+    { fill_bg = is_selected and theme.selection_bg or (theme.selected_detail_bg or theme.panel_bg) },
     tags.text(
       { fg = theme.title, bold = true },
       (is_selected and "> " or "  ") .. arrow .. " " .. label
@@ -329,7 +328,7 @@ local function render_entry_row(
   end
 
   return ui.rows(tags.overlay_row({
-    fill_bg = is_selected and theme.selected_bg or nil,
+    fill_bg = is_selected and theme.selection_bg or nil,
     scrollbar_track = show_scrollbar,
     scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
     scrollbar_track_color = theme.scrollbar_track,
@@ -390,12 +389,8 @@ function ui.command_palette.open(opts)
           local entry = flat[idx]
           if entry._type == "header" then
             local is_selected = (idx == nav.index)
-            rows[#rows + 1] = render_section_header(
-              theme,
-              entry.label,
-              is_selected,
-              collapsed[entry.category]
-            )
+            rows[#rows + 1] =
+              render_section_header(theme, entry.label, is_selected, collapsed[entry.category])
           elseif entry._type == "item" then
             display_item_count = display_item_count + 1
             local is_selected = (idx == nav.index)
