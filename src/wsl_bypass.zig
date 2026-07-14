@@ -1,5 +1,6 @@
 const std = @import("std");
 const protocol = @import("pty/wsl_bypass_protocol.zig");
+const shell_integration = @import("shell_integration.zig");
 const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
@@ -71,7 +72,11 @@ pub fn main() !void {
 }
 
 fn run(allocator: std.mem.Allocator, options: Options) !void {
-    const shell_argv = try buildShellArgv(allocator, options.shell_args.items, options.launch);
+    const shell_path = if (options.shell_args.items.len > 0) options.shell_args.items[0] else try defaultShellPath(allocator);
+    defer if (options.shell_args.items.len == 0) allocator.free(shell_path);
+    const bundle = try shell_integration.install(allocator, shell_path);
+    if (bundle) |value| try shell_integration.setupEnv(allocator, value);
+    const shell_argv = try buildShellArgv(allocator, options.shell_args.items, options.launch, bundle);
     defer freeExecArgv(allocator, shell_argv);
 
     const stderr_copy = c.dup(std.fs.File.stderr().handle);
@@ -494,7 +499,7 @@ fn parseArgs(allocator: std.mem.Allocator) !Options {
     return options;
 }
 
-fn buildShellArgv(allocator: std.mem.Allocator, input_shell_args: []const []const u8, launch: LaunchCommand) ![:null]?[*:0]const u8 {
+fn buildShellArgv(allocator: std.mem.Allocator, input_shell_args: []const []const u8, launch: LaunchCommand, bundle: ?shell_integration.Bundle) ![:null]?[*:0]const u8 {
     var shell_args: std.ArrayListUnmanaged([]const u8) = .empty;
     defer shell_args.deinit(allocator);
     var default_shell_owned: ?[]u8 = null;
@@ -520,6 +525,16 @@ fn buildShellArgv(allocator: std.mem.Allocator, input_shell_args: []const []cons
     }
 
     const shell_name = std.fs.path.basename(shell_args.items[0]);
+    if (bundle) |value| {
+        const integration_argv = try shell_integration.argv(allocator, value, launch.command, launch.close_on_exit);
+        defer {
+            for (integration_argv) |arg| allocator.free(arg);
+            allocator.free(integration_argv);
+        }
+        for (integration_argv) |arg| try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
+        try argv.append(allocator, null);
+        return try argv.toOwnedSliceSentinel(allocator, null);
+    }
     if (launch.command) |command| {
         const trimmed = std.mem.trimRight(u8, command, "\r\n");
         if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {

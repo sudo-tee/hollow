@@ -5,6 +5,7 @@ const windows = std.os.windows;
 const kernel32 = windows.kernel32;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const wsl_bypass_protocol = @import("wsl_bypass_protocol.zig");
+const build_options = @import("build_options");
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
@@ -1084,6 +1085,30 @@ fn freeSentinelU16(allocator: std.mem.Allocator, bytes: [:0]u16) void {
     allocator.free(@as([*]u16, @ptrCast(bytes.ptr))[0 .. bytes.len + 1]);
 }
 
+fn writePowershellProfile(allocator: std.mem.Allocator) ![]u8 {
+    const temp_dir = std.process.getEnvVarOwned(allocator, "TEMP") catch
+        std.process.getEnvVarOwned(allocator, "TMP") catch
+        try allocator.dupe(u8, "C:\\Windows\\Temp");
+    defer allocator.free(temp_dir);
+
+    const pid = windows.GetCurrentProcessId();
+    const profile_dir = try std.fmt.allocPrint(allocator, "{s}\\hollow-{d}\\", .{ temp_dir, pid });
+    defer allocator.free(profile_dir);
+
+    const profile_path = try std.fmt.allocPrint(allocator, "{s}powershell.ps1", .{profile_dir});
+    errdefer allocator.free(profile_path);
+
+    std.fs.cwd().makePath(profile_dir) catch {};
+    if (std.fs.accessAbsolute(profile_path, .{})) |_| {} else |_| {
+        if (std.fs.createFileAbsolute(profile_path, .{})) |f| {
+            defer f.close();
+            f.writeAll(build_options.embedded_powershell_integration) catch {};
+        } else |_| {}
+    }
+
+    return profile_path;
+}
+
 const CommandSpec = struct {
     application_utf16: [:0]u16,
     command_line_utf16: [:0]u16,
@@ -1139,10 +1164,14 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
             try argv.append(allocator, try allocator.dupe(u8, if (cmd.close_on_exit) "/C" else "/K"));
             const wrapped = try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
-        } else if (std.mem.eql(u8, shell_name, "pwsh.exe") or std.mem.eql(u8, shell_name, "pwsh") or std.mem.eql(u8, shell_name, "powershell.exe") or std.mem.eql(u8, shell_name, "powershell")) {
+        } else if (isPowershell(shell_name)) {
+            const profile_path = try writePowershellProfile(allocator);
+            defer allocator.free(profile_path);
             if (!cmd.close_on_exit) try argv.append(allocator, try allocator.dupe(u8, "-NoExit"));
+            try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
+            try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
             try argv.append(allocator, try allocator.dupe(u8, "-Command"));
-            const wrapped = try allocator.dupe(u8, trimmed);
+            const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'; {s}", .{ profile_path, trimmed });
             try argv.append(allocator, wrapped);
         } else if (std.mem.eql(u8, shell_name, "wsl.exe") or std.mem.eql(u8, shell_name, "wsl")) {
             if (shell_wraps_ssh) {
@@ -1181,6 +1210,16 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
                 try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);
         }
+    } else if (isPowershell(shell_name)) {
+        const profile_path = try writePowershellProfile(allocator);
+        defer allocator.free(profile_path);
+        try argv.append(allocator, try allocator.dupe(u8, "-NoLogo"));
+        try argv.append(allocator, try allocator.dupe(u8, "-NoExit"));
+        try argv.append(allocator, try allocator.dupe(u8, "-ExecutionPolicy"));
+        try argv.append(allocator, try allocator.dupe(u8, "Bypass"));
+        try argv.append(allocator, try allocator.dupe(u8, "-Command"));
+        const wrapped = try std.fmt.allocPrint(allocator, ". '{s}'", .{profile_path});
+        try argv.append(allocator, wrapped);
     } else if ((std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd"))) {
         try argv.append(allocator, try allocator.dupe(u8, "/Q"));
         try argv.append(allocator, try allocator.dupe(u8, "/K"));
@@ -1191,6 +1230,13 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     }
 
     return try argv.toOwnedSlice(allocator);
+}
+
+fn isPowershell(shell_name: []const u8) bool {
+    return std.mem.eql(u8, shell_name, "pwsh.exe") or
+        std.mem.eql(u8, shell_name, "pwsh") or
+        std.mem.eql(u8, shell_name, "powershell.exe") or
+        std.mem.eql(u8, shell_name, "powershell");
 }
 
 fn freeArgv(allocator: std.mem.Allocator, argv: []const []const u8) void {

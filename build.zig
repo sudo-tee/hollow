@@ -15,6 +15,14 @@ fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
     };
 }
 
+fn addShellIntegrationOptions(options: *std.Build.Step.Options) void {
+    options.addOption([]const u8, "embedded_bash_integration", @embedFile("shell-integration/bash.sh"));
+    options.addOption([]const u8, "embedded_zsh_integration", @embedFile("shell-integration/zsh.zsh"));
+    options.addOption([]const u8, "embedded_fish_integration", @embedFile("shell-integration/fish.fish"));
+    options.addOption([]const u8, "embedded_powershell_integration", @embedFile("shell-integration/powershell.ps1"));
+    options.addOption([]const u8, "embedded_hollow_cli", @embedFile("scripts/hollow-cli"));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -76,6 +84,7 @@ pub fn build(b: *std.Build) void {
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    addShellIntegrationOptions(launcher_build_options);
     launcher_build_options.addOption(bool, "launcher_mode", true);
     launcher_root_module.addImport("fonts", fonts_module);
     launcher_root_module.addImport("icon_data", icon_module);
@@ -93,6 +102,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+    addShellIntegrationOptions(build_options);
     build_options.addOption(bool, "launcher_mode", false);
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
@@ -124,7 +134,7 @@ pub fn build(b: *std.Build) void {
             \\                    std.log.err("nightwatch.add_watch failed: {t}", .{e});
             \\                    return error.WatchFailed;
             \\                },
-                \\            };
+            \\            };
         ;
         if (std.mem.indexOf(u8, content, old)) |pos| {
             const replacement =
@@ -134,7 +144,7 @@ pub fn build(b: *std.Build) void {
                 \\                std.log.err("nightwatch.add_watch failed: errno={d}", .{@as(u32, @intCast(-wd_signed))});
                 \\                return error.WatchFailed;
                 \\            }
-                ;
+            ;
             const patched = std.fmt.allocPrint(b.allocator, "{s}{s}{s}", .{ content[0..pos], replacement, content[pos + old.len ..] }) catch |e| {
                 std.log.err("nightwatch-patch: allocPrint: {s}", .{@errorName(e)});
                 return;
@@ -180,8 +190,9 @@ pub fn build(b: *std.Build) void {
 
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
-        const res_obj = b.addSystemCommand(&.{ "x86_64-w64-mingw32-windres", 
-            b.path("assets/resources.rc").getPath(b), 
+        const res_obj = b.addSystemCommand(&.{
+            "x86_64-w64-mingw32-windres",
+            b.path("assets/resources.rc").getPath(b),
         });
         const res_file = res_obj.addOutputFileArg("resources.o");
 
@@ -194,6 +205,7 @@ pub fn build(b: *std.Build) void {
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
         gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
+        addShellIntegrationOptions(gui_build_options);
         gui_build_options.addOption(bool, "launcher_mode", false);
         gui_root_module.addImport("fonts", fonts_module);
         gui_root_module.addImport("icon_data", icon_module);
@@ -322,6 +334,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    const wsl_bypass_options = b.addOptions();
+    addShellIntegrationOptions(wsl_bypass_options);
+    wsl_bypass_module.addOptions("build_options", wsl_bypass_options);
     if (emit_pdb) wsl_bypass_module.strip = false;
     const wsl_bypass = b.addExecutable(.{
         .name = "hollow-wsl-bypass",

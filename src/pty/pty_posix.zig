@@ -1,6 +1,7 @@
 const std = @import("std");
 const app = @import("../app.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
+const shell_integration = @import("../shell_integration.zig");
 const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
@@ -51,7 +52,9 @@ pub const PosixPty = struct {
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
-            const argv = try buildArgv(std.heap.page_allocator, shell, launch_command);
+            const bundle = try shell_integration.install(std.heap.page_allocator, shell);
+            if (bundle) |value| try shell_integration.setupEnv(std.heap.page_allocator, value);
+            const argv = try buildArgv(std.heap.page_allocator, shell, launch_command, bundle);
             defer freeArgv(std.heap.page_allocator, argv);
             var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer env_arena.deinit();
@@ -97,7 +100,7 @@ pub const PosixPty = struct {
         return try std.process.createNullDelimitedEnvMap(allocator, &env_map);
     }
 
-    fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand) ![]?[*:0]const u8 {
+    fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand, bundle: ?shell_integration.Bundle) ![]?[*:0]const u8 {
         var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
         errdefer {
             freeArgvOwnedStrings(allocator, argv.items);
@@ -105,10 +108,21 @@ pub const PosixPty = struct {
         }
         try argv.append(allocator, shell.ptr);
 
+        if (bundle) |value| {
+            const integration_argv = try shell_integration.argv(allocator, value, if (launch_command) |cmd| cmd.command else null, if (launch_command) |cmd| cmd.close_on_exit else false);
+            defer {
+                for (integration_argv) |arg| allocator.free(arg);
+                allocator.free(integration_argv);
+            }
+            for (integration_argv) |arg| try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
+            try argv.append(allocator, null);
+            return try argv.toOwnedSlice(allocator);
+        }
+
         if (launch_command) |cmd| {
             const shell_name = std.fs.path.basename(shell);
             if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
-                try argv.append(allocator, "-lc");
+                try argv.append(allocator, (try allocator.dupeZ(u8, "-lc")).ptr);
                 const wrapped = if (cmd.close_on_exit)
                     try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimRight(u8, cmd.command, "\r\n")}, 0)
                 else
@@ -127,8 +141,8 @@ pub const PosixPty = struct {
     }
 
     fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]const u8) void {
-        if (argv.len > 2) {
-            if (argv[2]) |ptr| allocator.free(std.mem.span(ptr));
+        for (argv[1..]) |value| {
+            if (value) |ptr| allocator.free(std.mem.span(ptr));
         }
     }
 

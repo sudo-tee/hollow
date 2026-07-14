@@ -10,6 +10,7 @@ For the higher-level overview see
 - `shell-integration/bash.sh`
 - `shell-integration/zsh.zsh`
 - `shell-integration/fish.fish`
+- `shell-integration/powershell.ps1`
 
 The Python OSC transport client is at
 `scripts/hollow-cli`. See
@@ -65,8 +66,12 @@ hollow-cli emit close_pane '{}'
 
 ## PowerShell
 
-`shell-integration/` does not ship a PowerShell snippet.
-Drive Hollow from PowerShell by calling
+Hollow auto-dot-sources `shell-integration/powershell.ps1` when launching
+the `pwsh` or `powershell` domain — no manual setup required. The snippet
+reports cwd via OSC 7 and updates the window title via OSC 0 on every
+prompt.
+
+For queries and ad hoc emits, call
 [`hollow-cli`](reference/cli/hollow-cli.md) directly:
 
 ```powershell

@@ -107,11 +107,13 @@ Hollow ships snippets for the major shells under
 - `bash.sh`
 - `zsh.zsh`
 - `fish.fish`
+- `powershell.ps1` (auto-dot-sourced by the Windows pwsh launcher)
 
-Source the right one from your shell rc file. The snippets install
-prompt hooks that emit `cwd_changed` and `command_started` /
-`command_ended`. For queries and ad hoc emits, call
-[`hollow-cli`](reference/cli/hollow-cli.md).
+Source the right one from your shell rc file. The bash/zsh/fish snippets
+install prompt hooks that emit `cwd_changed` and `command_started` /
+`command_ended`. The PowerShell snippet reports cwd via OSC 7 and the
+window title via OSC 0 on every prompt. For queries and ad hoc emits,
+call [`hollow-cli`](reference/cli/hollow-cli.md).
 
 ## Choosing between OSC and the native CLI
 
