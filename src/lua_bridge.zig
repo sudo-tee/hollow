@@ -949,7 +949,10 @@ pub const Runtime = struct {
             api.push_number(self.state, @floatFromInt(mods));
             const rc = api.pcall(self.state, 2, 1, 0);
             if (rc != 0) {
-                std.log.err("fireOnKey: pcall failed rc={d}", .{rc});
+                var err_len: usize = 0;
+                const err_ptr = api.to_lstring(self.state, -1, &err_len);
+                const err_str = if (err_ptr) |ptr| ptr[0..err_len] else "unknown";
+                std.log.err("fireOnKey: pcall failed rc={d} err={s}", .{ rc, err_str });
                 pop(api, self.state, 1);
                 return false;
             }
