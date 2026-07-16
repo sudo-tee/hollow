@@ -884,6 +884,8 @@ pub const App = struct {
             };
         }
 
+        lua.runString("if type(hollow) == 'table' and type(hollow.keymap) == 'table' and type(hollow.keymap.apply_defaults) == 'function' then hollow.keymap.apply_defaults() end") catch {};
+
         self.lua = lua;
     }
 

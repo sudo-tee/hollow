@@ -186,6 +186,17 @@ hollow.config.set({
 `.hollow/workspace.json` rooted at the active pane cwd first, then
 falls back to `~/.config/hollow/layouts/default.json`.
 
+## Disable default keymaps
+
+```lua
+hollow.config.set({ load_default_keymaps = false })
+
+-- Now define only what you need
+hollow.keymap.set("<C-t>", "new_tab")
+hollow.keymap.set("<C-S-x>", "close_tab")
+hollow.keymap.set("<C-\\>", "split_vertical")
+```
+
 ## Custom env per domain
 
 ```lua

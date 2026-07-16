@@ -131,6 +131,18 @@ hollow.config.set({
 })
 ```
 
+### Default keymaps
+
+```lua
+hollow.config.set({
+  load_default_keymaps = false, -- disable all shipped keymaps
+})
+```
+
+When `false`, the shipped keymaps from `conf/init.lua` are not registered.
+Define your own from scratch with `hollow.keymap.set(...)`.
+Defaults to `true`.
+
 ### Domains and shells
 
 A *domain* is a named shell that Hollow knows how to spawn.

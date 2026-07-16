@@ -322,6 +322,7 @@
 ---@field vsync? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean
+---@field load_default_keymaps? boolean
 ---@field padding? integer
 ---@field alternate_screen_padding? integer
 ---@field alternate_padding_x? integer
@@ -1400,6 +1401,13 @@ local keymap = {}
 ---@param rhs HollowKeyAction
 ---@param opts? HollowKeymapOpts
 function keymap.set(chord, rhs, opts) end
+
+---@param chord HollowKeyChord
+---@param rhs HollowKeyAction
+---@param opts? HollowKeymapOpts
+function keymap.default(chord, rhs, opts) end
+
+function keymap.apply_defaults() end
 
 ---@param chord HollowKeyChord
 ---@param opts? HollowKeymapOpts

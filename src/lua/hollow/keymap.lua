@@ -902,6 +902,25 @@ function M.setup(hollow, host_api, state)
     reset_sequence_state(keymap_state)
   end
 
+  function hollow.keymap.default(chord, action, opts)
+    table.insert(keymap_state.pending_defaults, { chord = chord, action = action, opts = opts })
+  end
+
+  function hollow.keymap.apply_defaults()
+    local pending = keymap_state.pending_defaults
+    keymap_state.pending_defaults = {}
+
+    if state.config.values.load_default_keymaps ~= false then
+      for _, entry in ipairs(pending) do
+        hollow.keymap.set(entry.chord, entry.action, entry.opts)
+      end
+    end
+
+    if type(hollow.events) == "table" and type(hollow.events.emit) == "function" then
+      hollow.events.emit("config:ready", {})
+    end
+  end
+
   function hollow.keymap.is_leader_active()
     return is_sequence_active(keymap_state)
   end

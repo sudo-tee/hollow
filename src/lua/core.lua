@@ -57,6 +57,7 @@ for name, value in pairs(ui_exports) do
 end
 actions.setup(hollow, host_api)
 keymap.setup(hollow, host_api, state)
+state.config.values.load_default_keymaps = true
 local events_runtime = events.setup(hollow, state, term_helpers)
 copy_mode.setup()
 if type(hollow.ui._register_bar_invalidation_hooks) == "function" then

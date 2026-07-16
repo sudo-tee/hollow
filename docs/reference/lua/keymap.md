@@ -26,6 +26,8 @@ supported.
 
 ```lua
 hollow.keymap.set(chord, action, opts?)         -- set or replace
+hollow.keymap.default(chord, action, opts?)     -- queue as default (deferred)
+hollow.keymap.apply_defaults()                  -- register queued defaults
 hollow.keymap.del(chord, opts?)                 -- remove (returns boolean)
 hollow.keymap.get(chord, opts?)                 -- read current action
 
@@ -34,6 +36,15 @@ hollow.keymap.clear_leader()                    -- remove the leader
 hollow.keymap.is_leader_active()                -- boolean
 hollow.keymap.get_leader_state()                -- HollowLeaderState or nil
 ```
+
+`default` has the same signature as `set` but stores the binding as a
+*pending default* instead of registering it immediately. When
+`apply_defaults()` runs (automatically after config loading), each pending
+entry is registered via `set` unless `load_default_keymaps` is `false`.
+
+This is how `conf/init.lua` registers its shipped keymaps — they are
+deferred so the user's override config can disable them before they take
+effect.
 
 `set` options:
 

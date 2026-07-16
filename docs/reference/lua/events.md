@@ -24,6 +24,7 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | Event | Payload |
 | --- | --- |
 | `config:reloaded` | (empty) |
+| `config:ready` | (empty) — emitted once after config loading completes (including deferred defaults) |
 | `workspace:new` | `{ workspace, index }` |
 | `workspace:changed` | `{ workspace, index }` |
 | `workspace:closed` | `{ name }` — emitted when a workspace becomes empty and is auto-closed |

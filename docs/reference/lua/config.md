@@ -52,6 +52,7 @@ in the shipped base config.
 | `vsync` | boolean | Renderer vsync |
 | `backend` | string | Primary renderer backend (`"sokol"`) |
 | `command_timing` | boolean | On-screen command timing overlay |
+| `load_default_keymaps` | boolean | Register shipped keymaps (default `true`) |
 | `debug_overlay`, `debug_terminal_trace` | boolean | Debug overlays |
 | `bell` | table | Visual bell config |
 

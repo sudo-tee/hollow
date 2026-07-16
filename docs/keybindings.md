@@ -185,6 +185,34 @@ hollow.keymap.del("<leader>uu")
 Inline callbacks and string action names are equivalent.
 `desc` is used by the key-legend widget and by the workspace switcher.
 
+## Disabling default keymaps
+
+Set `load_default_keymaps` to `false` in your override config to prevent
+all shipped keymaps from registering. You can then define your own from
+scratch:
+
+```lua
+hollow.config.set({ load_default_keymaps = false })
+
+-- Define only the bindings you want
+hollow.keymap.set("<C-t>", "new_tab")
+hollow.keymap.set("<C-S-x>", "close_tab")
+```
+
+Note: `set_leader` is not affected by this flag — it is config, not a
+keymap binding. If you also want a custom leader, call
+`hollow.keymap.set_leader(...)` in your override config.
+
+The `config:ready` event fires after defaults are applied (or skipped).
+Use it to run code that depends on the final keymap state:
+
+```lua
+hollow.events.on("config:ready", function()
+  -- all keymaps are registered (or not) at this point
+  hollow.ui.notify.info("keymaps ready", { ttl = 1200 })
+end)
+```
+
 ## Adding copy-mode bindings
 
 ```lua
