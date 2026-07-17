@@ -93,12 +93,17 @@ end
 
 local function workspace_identity(name, cwd, domain)
   local normalized_domain = normalize_domain(domain) or current_domain_name() or "default"
+  local normalized_name = normalize_workspace_id(name)
   local normalized_cwd = trim_string(cwd)
+
+  if normalized_cwd ~= "" and normalized_name ~= "" then
+    return normalized_domain .. ":" .. normalized_name .. ":" .. normalized_cwd
+  end
+
   if normalized_cwd ~= "" then
     return normalized_domain .. ":" .. normalized_cwd
   end
 
-  local normalized_name = normalize_workspace_id(name)
   if normalized_name ~= "" then
     return normalized_domain .. ":name:" .. normalized_name
   end
