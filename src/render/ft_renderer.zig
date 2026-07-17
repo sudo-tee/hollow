@@ -586,7 +586,7 @@ pub const FtRenderer = struct {
         errdefer allocator.free(glyph_verts_cpu);
 
         // Emoji face index: after all bundled fonts.
-        const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 4);
+        const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 1);
 
         return .{
             .allocator = allocator,

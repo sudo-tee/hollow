@@ -410,19 +410,19 @@ pub fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) Select
     if (fontLikelySupportsText(self.face_cjk, utf8)) {
         return .{ .hb_font = self.hb_cjk, .raster_face_index = @intCast(bundled_base) };
     }
-    if (fontLikelySupportsText(self.face_symbols_nerd, utf8)) {
-        return .{ .hb_font = self.hb_symbols_nerd, .raster_face_index = @intCast(bundled_base + 1) };
-    }
-    if (fontLikelySupportsText(self.face_symbols, utf8)) {
-        return .{ .hb_font = self.hb_symbols, .raster_face_index = @intCast(bundled_base + 2) };
-    }
-    if (fontLikelySupportsText(self.face_nerd, utf8)) {
-        return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 3) };
-    }
     if (self.face_emoji) |emoji_face| {
         if (fontLikelySupportsText(emoji_face, utf8)) {
             return .{ .hb_font = self.hb_emoji, .raster_face_index = self.emoji_face_index };
         }
+    }
+    if (fontLikelySupportsText(self.face_symbols_nerd, utf8)) {
+        return .{ .hb_font = self.hb_symbols_nerd, .raster_face_index = @intCast(bundled_base + 2) };
+    }
+    if (fontLikelySupportsText(self.face_symbols, utf8)) {
+        return .{ .hb_font = self.hb_symbols, .raster_face_index = @intCast(bundled_base + 3) };
+    }
+    if (fontLikelySupportsText(self.face_nerd, utf8)) {
+        return .{ .hb_font = self.hb_nerd, .raster_face_index = @intCast(bundled_base + 4) };
     }
 
     return .{ .hb_font = primary_hb, .raster_face_index = face_idx };
@@ -438,12 +438,12 @@ pub fn faceForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?ft.FT_Face 
             const fallback_index = raster_face_index - 4;
             if (fallback_index < self.fallback_faces.len) break :blk self.fallback_faces[fallback_index];
             if (fallback_index == self.fallback_faces.len) break :blk self.face_cjk;
-            if (fallback_index == self.fallback_faces.len + 1) break :blk self.face_symbols_nerd;
-            if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_symbols;
-            if (fallback_index == self.fallback_faces.len + 3) break :blk self.face_nerd;
             if (self.face_emoji) |f| {
-                if (fallback_index == self.fallback_faces.len + 4) break :blk f;
+                if (fallback_index == self.fallback_faces.len + 1) break :blk f;
             }
+            if (fallback_index == self.fallback_faces.len + 2) break :blk self.face_symbols_nerd;
+            if (fallback_index == self.fallback_faces.len + 3) break :blk self.face_symbols;
+            if (fallback_index == self.fallback_faces.len + 4) break :blk self.face_nerd;
             break :blk null;
         },
     };
@@ -459,12 +459,12 @@ pub fn hbFontForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?*ft.hb_fo
             const fallback_index = raster_face_index - 4;
             if (fallback_index < self.fallback_hb_fonts.len) break :blk self.fallback_hb_fonts[fallback_index];
             if (fallback_index == self.fallback_hb_fonts.len) break :blk self.hb_cjk;
-            if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk self.hb_symbols_nerd;
-            if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_symbols;
-            if (fallback_index == self.fallback_hb_fonts.len + 3) break :blk self.hb_nerd;
             if (self.hb_emoji) |f| {
-                if (fallback_index == self.fallback_hb_fonts.len + 4) break :blk f;
+                if (fallback_index == self.fallback_hb_fonts.len + 1) break :blk f;
             }
+            if (fallback_index == self.fallback_hb_fonts.len + 2) break :blk self.hb_symbols_nerd;
+            if (fallback_index == self.fallback_hb_fonts.len + 3) break :blk self.hb_symbols;
+            if (fallback_index == self.fallback_hb_fonts.len + 4) break :blk self.hb_nerd;
             break :blk null;
         },
     };
