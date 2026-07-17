@@ -31,7 +31,7 @@ local CATEGORY_ORDER = {
   user = 8,
 }
 
-local DEFAULT_TOTAL_ROWS = 16
+local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
 
 local function resolve_palette_theme(theme, opts)
