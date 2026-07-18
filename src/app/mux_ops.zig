@@ -680,7 +680,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     var has_dead = false;
     var panes = mux.paneIterator();
     while (panes.next()) |pane| {
-        if (!pane.hasLiveChildForCleanup()) {
+        if (!pane.hasLiveChild()) {
             has_dead = true;
             break;
         }

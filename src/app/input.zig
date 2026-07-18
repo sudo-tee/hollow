@@ -586,6 +586,7 @@ fn leaderVisualActive(self: *App, now_ns: i128) bool {
 
 pub fn signalWake(self: *App) void {
     _ = self.wake_generation.fetchAdd(1, .release);
+    std.Thread.Futex.wake(&self.wake_generation, 1);
     self.last_visual_activity_ns = std.time.nanoTimestamp();
 }
 

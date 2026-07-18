@@ -625,7 +625,7 @@ pub const Mux = struct {
             var dead_buf: [64]*Pane = undefined;
             var dead_count: usize = 0;
             for (tab.panes.items) |pane| {
-                if (!pane.hasLiveChildForCleanup() and dead_count < dead_buf.len) {
+                if (!pane.hasLiveChild() and dead_count < dead_buf.len) {
                     dead_buf[dead_count] = pane;
                     dead_count += 1;
                 }

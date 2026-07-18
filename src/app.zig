@@ -1231,6 +1231,10 @@ pub const App = struct {
         return input.currentWakeGeneration(self);
     }
 
+    pub fn waitForWake(self: *const App, wake_generation: u32, timeout_ns: u64) void {
+        std.Thread.Futex.timedWait(&self.wake_generation, wake_generation, timeout_ns) catch {};
+    }
+
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
         return if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
             self.config.alternate_screen_padding

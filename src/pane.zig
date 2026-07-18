@@ -916,11 +916,6 @@ pub const Pane = struct {
         return self.child_alive_cached;
     }
 
-    pub fn hasLiveChildForCleanup(self: *Pane) bool {
-        self.refreshChildAliveCache(true);
-        return self.child_alive_cached;
-    }
-
     fn refreshChildAliveCache(self: *Pane, force: bool) void {
         const pty = if (self.pty) |*value| value else {
             self.child_alive_cached = false;

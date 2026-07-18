@@ -1488,7 +1488,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
             api.get_field(state, ui_idx, expires_field);
             const expires_type: LuaType = @enumFromInt(api.value_type(state, -1));
             if (expires_type == .number) {
-                const now_ms = std.time.milliTimestamp();
+                const now_ms = @divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms);
                 const expires_at = api.to_number(state, -1);
                 pop(api, state, 1);
                 if (expires_at <= @as(f64, @floatFromInt(now_ms))) {
@@ -2289,36 +2289,21 @@ fn rebuildFtRenderer(app: *App) void {
     }
 }
 
-fn sleepForFrameCap(app: *App, frame_start_ns: i128, frame_end_ns: i128, target_fps: u32) void {
+fn sleepForFrameCap(app: *App, wake_generation: u32, frame_start_ns: i128, frame_end_ns: i128, target_fps: u32) void {
     if (app.config.vsync or target_fps == 0 or app.hasPendingCommand()) return;
 
     const target_frame_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(target_fps)));
     const deadline_ns = frame_start_ns + target_frame_ns;
     if (frame_end_ns >= deadline_ns) return;
 
-    const wake_generation = app.currentWakeGeneration();
-    var now_ns = frame_end_ns;
-    while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
-        const remaining_ns = deadline_ns - now_ns;
-        const sleep_ns = @min(remaining_ns, @as(i128, 2_000_000));
-        if (sleep_ns > 0) {
-            std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
-        }
-        now_ns = std.time.nanoTimestamp();
-    }
+    sleepUntilWakeOrDeadline(app, wake_generation, deadline_ns);
 }
 
-fn sleepUntilWakeOrDeadline(app: *App, deadline_ns: i128) void {
-    const wake_generation = app.currentWakeGeneration();
+fn sleepUntilWakeOrDeadline(app: *App, wake_generation: u32, deadline_ns: i128) void {
     var now_ns = std.time.nanoTimestamp();
     while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
         const remaining_ns = deadline_ns - now_ns;
-        if (remaining_ns > 250_000) {
-            const sleep_ns = @min(remaining_ns, @as(i128, 2_000_000));
-            std.Thread.sleep(@as(u64, @intCast(sleep_ns)));
-        } else {
-            std.Thread.yield() catch {};
-        }
+        app.waitForWake(wake_generation, @intCast(remaining_ns));
         now_ns = std.time.nanoTimestamp();
     }
 }
@@ -2602,6 +2587,7 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const frame_start_ns = std.time.nanoTimestamp();
+    const frame_wake_generation = app.currentWakeGeneration();
     const collect_perf = app.config.debug_overlay;
     if (collect_perf) {
         updatePerfCounters(frame_start_ns);
@@ -2660,7 +2646,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
-        sleepUntilWakeOrDeadline(app, idle_deadline_ns);
+        sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
@@ -3578,7 +3564,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.config.idle_max_fps
     else
         app.config.max_fps;
-    sleepForFrameCap(app, frame_start_ns, after_commit_ns, frame_cap_fps);
+    sleepForFrameCap(app, frame_wake_generation, frame_start_ns, after_commit_ns, frame_cap_fps);
 
     if (collect_perf) {
         // ── Phase timing accumulation (logged every ~2 s) ─────────────────
