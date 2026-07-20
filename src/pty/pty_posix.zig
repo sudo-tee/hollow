@@ -52,9 +52,9 @@ pub const PosixPty = struct {
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
-            const bundle = try shell_integration.install(std.heap.page_allocator, shell);
-            if (bundle) |value| try shell_integration.setupEnv(std.heap.page_allocator, value);
-            const argv = try buildArgv(std.heap.page_allocator, shell, launch_command, bundle);
+            const bundle = shell_integration.install(std.heap.page_allocator, shell) catch c._exit(1);
+            if (bundle) |value| shell_integration.setupEnv(std.heap.page_allocator, value) catch c._exit(1);
+            const argv = buildArgv(std.heap.page_allocator, shell, launch_command, bundle) catch c._exit(1);
             defer freeArgv(std.heap.page_allocator, argv);
             var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer env_arena.deinit();
@@ -63,6 +63,11 @@ pub const PosixPty = struct {
             c._exit(1);
         }
         if (pid < 0) return error.ForkPtyFailed;
+        errdefer {
+            _ = c.kill(pid, c.SIGKILL);
+            _ = c.close(master);
+            _ = c.waitpid(pid, null, 0);
+        }
 
         const reader_state = try allocator.create(ReaderState);
         reader_state.* = .{};
