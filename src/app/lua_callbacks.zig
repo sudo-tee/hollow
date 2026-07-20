@@ -10,15 +10,16 @@ const PromptJumpDir = app_mod.PromptJumpDir;
 const BarSurface = app_mod.BarSurface;
 const cmd_ipc = @import("command_dispatcher.zig");
 const mux_ops = @import("mux_ops.zig");
+const input = @import("input.zig");
 
-pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) void {
+pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
     const mode: SplitCommandMode = if (std.mem.eql(u8, command_mode, "spawn")) .spawn else .send;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .split_pane = .{
+    var event: input.PendingInputEvent = .{ .split_pane = .{
         .direction = dir,
         .ratio = ratio,
         .domain_name = owned_domain,
@@ -33,7 +34,10 @@ pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f
         .width = if (has_bounds) width else null,
         .height = if (has_bounds) height else null,
         .callback_ref = callback_ref,
-    } });
+    } };
+    const queued = app.enqueueMouse(event);
+    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    return queued;
 }
 
 pub fn luaTogglePaneMaximizedCallback(app_ptr: *anyopaque, pane_id: usize, show_background: bool) void {
@@ -67,11 +71,14 @@ pub fn luaGetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, 
     return app.getPaneForegroundProcess(pane_id, out_buf);
 }
 
-pub fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
+pub fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } });
+    var event: input.PendingInputEvent = .{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } };
+    const queued = app.enqueueMouse(event);
+    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    return queued;
 }
 
 pub fn luaCloseTabCallback(app_ptr: *anyopaque) void {
@@ -99,13 +106,16 @@ pub fn luaPrevTabCallback(app_ptr: *anyopaque) void {
     _ = app.enqueueMouse(.prev_tab);
 }
 
-pub fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
+pub fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
-    _ = app.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = std.time.milliTimestamp() } });
+    var event: input.PendingInputEvent = .{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = std.time.milliTimestamp() } };
+    const queued = app.enqueueMouse(event);
+    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    return queued;
 }
 
 pub fn luaCloseWorkspaceCallback(app_ptr: *anyopaque, workspace_id: ?usize) void {
@@ -131,13 +141,15 @@ pub fn luaSwitchWorkspaceCallback(app_ptr: *anyopaque, index: usize) void {
 pub fn luaSetWorkspaceNameCallback(app_ptr: *anyopaque, name: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned = app.allocator.dupe(u8, name) catch return;
-    _ = app.enqueueMouse(.{ .set_workspace_name = owned });
+    var event: input.PendingInputEvent = .{ .set_workspace_name = owned };
+    if (!app.enqueueMouse(event)) input.deinitPendingInputEvent(app.allocator, &event);
 }
 
 pub fn luaSetWorkspaceDefaultCwdCallback(app_ptr: *anyopaque, cwd: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned = app.allocator.dupe(u8, cwd) catch return;
-    _ = app.enqueueMouse(.{ .set_workspace_default_cwd = owned });
+    var event: input.PendingInputEvent = .{ .set_workspace_default_cwd = owned };
+    if (!app.enqueueMouse(event)) input.deinitPendingInputEvent(app.allocator, &event);
 }
 
 pub fn luaFocusPaneCallback(app_ptr: *anyopaque, direction: []const u8) void {
@@ -515,7 +527,8 @@ pub fn luaCopyModeOpenSearchCallback(app_ptr: *anyopaque) void {
 pub fn luaCopyModeSearchSetQueryCallback(app_ptr: *anyopaque, query: []const u8) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const owned = app.allocator.dupe(u8, query) catch return;
-    _ = app.enqueueMouse(.{ .copy_mode_search_set_query = owned });
+    var event: input.PendingInputEvent = .{ .copy_mode_search_set_query = owned };
+    if (!app.enqueueMouse(event)) input.deinitPendingInputEvent(app.allocator, &event);
 }
 
 pub fn luaCopyModeSearchNextCallback(app_ptr: *anyopaque) void {

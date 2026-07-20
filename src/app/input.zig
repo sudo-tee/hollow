@@ -219,6 +219,46 @@ pub const PendingInputEvent = union(enum) {
     },
 };
 
+pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
+    switch (event.*) {
+        .new_tab => |payload| {
+            if (payload.domain_name) |value| allocator.free(value);
+            if (payload.command) |value| allocator.free(value);
+        },
+        .command_request => |*request| request.deinit(allocator),
+        .new_workspace => |payload| {
+            if (payload.cwd) |value| allocator.free(value);
+            if (payload.domain_name) |value| allocator.free(value);
+            if (payload.command) |value| allocator.free(value);
+            if (payload.name) |value| allocator.free(value);
+        },
+        .set_workspace_name, .set_workspace_default_cwd => |value| allocator.free(value),
+        .split_pane => |payload| {
+            if (payload.domain_name) |value| allocator.free(value);
+            if (payload.cwd) |value| allocator.free(value);
+            if (payload.command) |value| allocator.free(value);
+        },
+        .copy_mode_search_set_query => |value| allocator.free(value),
+        else => {},
+    }
+    event.* = .none;
+}
+
+pub fn deinitInputQueue(self: *App) void {
+    const tail = @atomicLoad(usize, &self.input_queue_tail, .acquire);
+    while (self.input_queue_head != tail) {
+        const event = &self.input_queue[self.input_queue_head];
+        if (self.lua) |*lua| switch (event.*) {
+            .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
+            else => {},
+        };
+        deinitPendingInputEvent(self.allocator, event);
+        self.input_queue_head = (self.input_queue_head + 1) % self.input_queue.len;
+    }
+}
+
 /// Drain all pending events and dispatch them.  Called from tick()
 /// on the frame thread, where it is safe to call into the ghostty DLL.
 pub fn processInputQueue(self: *App) void {
@@ -252,8 +292,6 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {
-                defer if (payload.domain_name) |owned| self.allocator.free(owned);
-                defer if (payload.command) |owned| self.allocator.free(owned);
                 mux_ops.newTab(self, payload.domain_name, payload.command, payload.callback_ref);
             },
             .close_tab => {
@@ -269,9 +307,7 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.focusPaneById(self, pane_id);
             },
             .command_request => |request| {
-                var owned = request;
-                defer owned.deinit(self.allocator);
-                _ = cmd_ipc.executeCommand(self, owned) catch |err| {
+                _ = cmd_ipc.executeCommand(self, request) catch |err| {
                     std.log.err("command-ipc: deferred command failed: {s}", .{@errorName(err)});
                 };
             },
@@ -285,10 +321,6 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.prevTab(self, );
             },
             .new_workspace => |payload| {
-                defer if (payload.cwd) |value| self.allocator.free(value);
-                defer if (payload.domain_name) |value| self.allocator.free(value);
-                defer if (payload.command) |value| self.allocator.free(value);
-                defer if (payload.name) |value| self.allocator.free(value);
                 std.log.info("app: new_workspace dispatch_lag_ms={d}", .{std.time.milliTimestamp() - payload.queued_at_ms});
                 mux_ops.newWorkspace(self, payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
             },
@@ -311,17 +343,12 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.movePaneToWorkspace(self, mev.pane_id, mev.workspace_index);
             },
             .set_workspace_name => |name| {
-                defer self.allocator.free(name);
                 mux_ops.setWorkspaceName(self, name);
             },
             .set_workspace_default_cwd => |cwd| {
-                defer self.allocator.free(cwd);
                 mux_ops.setWorkspaceDefaultCwd(self, cwd);
             },
             .split_pane => |split| {
-                defer if (split.domain_name) |owned| self.allocator.free(owned);
-                defer if (split.cwd) |owned| self.allocator.free(owned);
-                defer if (split.command) |owned| self.allocator.free(owned);
                 mux_ops.splitPane(self, split.direction, split.ratio, split.domain_name, split.cwd, split.command, split.command_mode, split.close_on_exit, split.floating, split.fullscreen, split.x, split.y, split.width, split.height, split.callback_ref);
             },
             .toggle_pane_maximized => |maximize| {
@@ -500,7 +527,6 @@ pub fn processInputQueue(self: *App) void {
                 self.emitLuaBuiltInEvent("copy_mode:search_requested", .none);
             },
             .copy_mode_search_set_query => |query| {
-                defer self.allocator.free(query);
                 copy_mode.copyModeSetSearchQuery(self, query) catch |err| {
                     std.log.err("copy mode search query failed: {s}", .{@errorName(err)});
                 };
@@ -516,6 +542,10 @@ pub fn processInputQueue(self: *App) void {
             },
         }
 
+        var consumed: usize = 0;
+        while (consumed < advance) : (consumed += 1) {
+            deinitPendingInputEvent(self.allocator, &self.input_queue[(head + consumed) % cap]);
+        }
         @atomicStore(usize, &self.input_queue_head, (head + advance) % cap, .release);
     }
 

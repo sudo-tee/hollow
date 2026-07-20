@@ -641,6 +641,7 @@ pub const App = struct {
         if (self.deinitialized) return;
         std.log.info("App.deinit begin", .{});
 
+        input.deinitInputQueue(self);
         self.shutdownRuntime();
         self.deinitialized = true;
         copy_mode.deinitCopyModeState(self);

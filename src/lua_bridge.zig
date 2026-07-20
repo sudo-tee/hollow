@@ -170,18 +170,18 @@ const embedded_lua_modules = [_]LuaModule{
 pub const AppCallbacks = struct {
     app: *anyopaque,
     refresh_live_config: *const fn (app: *anyopaque) void,
-    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) void,
+    split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
     set_pane_floating: *const fn (app: *anyopaque, pane_id: usize, floating: bool) void,
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
-    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void,
+    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
     prev_tab: *const fn (app: *anyopaque) void,
-    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void,
+    new_workspace: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) bool,
     close_workspace: *const fn (app: *anyopaque, workspace_id: ?usize) void,
     next_workspace: *const fn (app: *anyopaque) void,
     prev_workspace: *const fn (app: *anyopaque) void,
@@ -1072,6 +1072,13 @@ pub const Runtime = struct {
             logLuaError(api, self.state, "operation_callback");
             pop(api, self.state, 1);
         }
+    }
+
+    pub fn discardOperationCallback(self: *Runtime, callback_ref: c_int) void {
+        if (callback_ref == LUA_NOREF) return;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
     }
 
     fn fireCallback(api: Api, state: *State, ref: c_int, tag: []const u8) void {
@@ -4598,7 +4605,8 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command, callback_ref);
+    const queued = if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command, callback_ref) else false;
+    if (!queued and callback_ref != LUA_NOREF) api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     return 0;
 }
 
@@ -4651,7 +4659,8 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
         else => {},
     }
 
-    if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command, name, callback_ref);
+    const queued = if (ctx.app_callbacks) |cbs| cbs.new_workspace(cbs.app, cwd, domain_name, command, name, callback_ref) else false;
+    if (!queued and callback_ref != LUA_NOREF) api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     return 0;
 }
 
@@ -4843,7 +4852,9 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
         callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
     }
 
-    cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds, callback_ref);
+    if (!cbs.split_pane(cbs.app, direction, ratio, domain_name, cwd, command, command_mode, close_on_exit, floating, fullscreen, x, y, width, height, has_bounds, callback_ref) and callback_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, callback_ref);
+    }
     return 0;
 }
 
