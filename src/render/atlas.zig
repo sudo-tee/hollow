@@ -56,6 +56,10 @@ pub fn resetAtlasIfNeeded(self: *FtRenderer) void {
     self.atlas_row_h = 0;
     self.atlas_dirty = true;
     self.glyph_cache.clearRetainingCapacity();
+    var shape_it = self.shape_cache.valueIterator();
+    while (shape_it.next()) |val| {
+        self.allocator.free(val.glyphs);
+    }
     self.shape_cache.clearRetainingCapacity();
     var prepared_it = self.prepared_cache.valueIterator();
     while (prepared_it.next()) |val| {
