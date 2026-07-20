@@ -5,49 +5,27 @@ const lua_mod = @import("../lua_bridge.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const HtpQueryResult = lua_mod.HtpQueryResult;
+const codec_mod = @import("../htp/codec.zig");
 
-pub const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
-pub const HTP_ST = "\x1b\\";
-pub const HTP_MAX_CHUNK_PAYLOAD = 3072;
+pub const HTP_OSC_PREFIX = codec_mod.osc_prefix;
+pub const HTP_ST = codec_mod.string_terminator;
+pub const HTP_MAX_CHUNK_PAYLOAD = codec_mod.max_chunk_payload;
 pub const HTP_MAX_QUEUED_MESSAGES = 256;
 pub const HTP_MAX_QUEUED_BYTES = 1024 * 1024;
 pub const HTP_MAX_MESSAGES_PER_FRAME = 32;
 pub const HTP_MAX_BYTES_PER_FRAME = 256 * 1024;
-pub const HTP_MAX_CHUNKS = 256;
-pub const HTP_MAX_ASSEMBLY_BYTES = HTP_MAX_CHUNKS * HTP_MAX_CHUNK_PAYLOAD;
-pub const HTP_MAX_CHUNK_ASSEMBLIES = 32;
-pub const HTP_CHUNK_ASSEMBLY_MAX_AGE_NS: i128 = 30 * std.time.ns_per_s;
+pub const HTP_MAX_CHUNKS = codec_mod.max_chunks;
+pub const HTP_MAX_ASSEMBLY_BYTES = codec_mod.max_assembly_bytes;
 
 pub const HtpQueuedMessage = struct {
     pane_id: usize,
     payload: []u8,
 };
 
-pub const HtpChunkAssembly = struct {
-    pane_id: usize,
-    request_id: []u8,
-    total: usize,
-    next_index: usize,
-    created_at_ns: i128,
-    buffer: std.ArrayListUnmanaged(u8) = .empty,
-};
-
-pub const HtpEnvelope = struct {
-    v: u8 = 1,
-    id: u64,
-    kind: []const u8,
-    channel: ?[]const u8 = null,
-    request_id: ?std.json.Value = null,
-    status: ?[]const u8 = null,
-    @"error": ?[]const u8 = null,
-    payload: ?std.json.Value = null,
-    params: ?std.json.Value = null,
-};
-
-pub var htp_bridge: ?*App = null;
+pub const HtpEnvelope = codec_mod.Envelope;
 
 pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
-    const app = htp_bridge orelse return;
+    const app: *App = @ptrCast(@alignCast(pane.host_context orelse return));
     std.log.info("htp: received payload pane={x} bytes={d}", .{ @intFromPtr(pane), payload.len });
     queueHtpMessage(app, pane, payload);
 }
@@ -85,7 +63,7 @@ pub fn bindHtpHandlers(self: *App) void {
 }
 
 pub fn processHtpMessages(self: *App) void {
-    pruneExpiredChunkAssemblies(self, std.time.nanoTimestamp());
+    self.htp_codec.prune(std.time.nanoTimestamp());
 
     var processed_count: usize = 0;
     var processed_bytes: usize = 0;
@@ -100,7 +78,7 @@ pub fn processHtpMessages(self: *App) void {
         processed_bytes += message.payload.len;
         defer self.allocator.free(message.payload);
         const pane = self.findPaneById(message.pane_id) orelse {
-            removeChunkAssembliesForPane(self, message.pane_id);
+            self.htp_codec.removeSource(message.pane_id);
             continue;
         };
         handleHtpMessage(self, pane, message.payload);
@@ -214,22 +192,22 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
         return;
     }
 
-    var assembly = findOrCreateChunkAssembly(self, pane, request_id, total) catch |err| {
+    var assembly = self.htp_codec.findOrCreateAssembly(@intFromPtr(pane), request_id, total, std.time.nanoTimestamp()) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     if (assembly.total != total or assembly.next_index != index) {
-        removeChunkAssembly(self, pane, request_id);
+        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
         sendHtpProtocolError(self, pane, message_id, "invalid_message", "unexpected chunk order");
         return;
     }
     if (data.len > HTP_MAX_ASSEMBLY_BYTES - assembly.buffer.items.len) {
-        removeChunkAssembly(self, pane, request_id);
+        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
         sendHtpProtocolError(self, pane, message_id, "resource_limit", "chunk assembly too large");
         return;
     }
     assembly.buffer.appendSlice(self.allocator, data) catch |err| {
-        removeChunkAssembly(self, pane, request_id);
+        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -237,72 +215,13 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
     if (index < total) return;
 
     const joined = assembly.buffer.toOwnedSlice(self.allocator) catch |err| {
-        removeChunkAssembly(self, pane, request_id);
+        self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
     defer self.allocator.free(joined);
-    removeChunkAssembly(self, pane, request_id);
+    self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
     handleHtpMessage(self, pane, joined);
-}
-
-fn findOrCreateChunkAssembly(self: *App, pane: *Pane, request_id: []const u8, total: usize) !*HtpChunkAssembly {
-    for (self.htp_chunk_assemblies.items) |*assembly| {
-        if (assembly.pane_id == @intFromPtr(pane) and std.mem.eql(u8, assembly.request_id, request_id)) return assembly;
-    }
-    if (self.htp_chunk_assemblies.items.len >= HTP_MAX_CHUNK_ASSEMBLIES) return error.ResourceLimit;
-    const request_id_owned = try self.allocator.dupe(u8, request_id);
-    errdefer self.allocator.free(request_id_owned);
-    try self.htp_chunk_assemblies.append(self.allocator, .{
-        .pane_id = @intFromPtr(pane),
-        .request_id = request_id_owned,
-        .total = total,
-        .next_index = 1,
-        .created_at_ns = std.time.nanoTimestamp(),
-    });
-    return &self.htp_chunk_assemblies.items[self.htp_chunk_assemblies.items.len - 1];
-}
-
-pub fn deinitChunkAssembly(allocator: std.mem.Allocator, assembly: *HtpChunkAssembly) void {
-    allocator.free(assembly.request_id);
-    assembly.buffer.deinit(allocator);
-}
-
-fn removeChunkAssembly(self: *App, pane: *Pane, request_id: []const u8) void {
-    var index: usize = 0;
-    while (index < self.htp_chunk_assemblies.items.len) : (index += 1) {
-        const assembly = &self.htp_chunk_assemblies.items[index];
-        if (assembly.pane_id != @intFromPtr(pane) or !std.mem.eql(u8, assembly.request_id, request_id)) continue;
-        deinitChunkAssembly(self.allocator, assembly);
-        _ = self.htp_chunk_assemblies.swapRemove(index);
-        return;
-    }
-}
-
-fn removeChunkAssembliesForPane(self: *App, pane_id: usize) void {
-    var index: usize = 0;
-    while (index < self.htp_chunk_assemblies.items.len) {
-        const assembly = &self.htp_chunk_assemblies.items[index];
-        if (assembly.pane_id != pane_id) {
-            index += 1;
-            continue;
-        }
-        deinitChunkAssembly(self.allocator, assembly);
-        _ = self.htp_chunk_assemblies.swapRemove(index);
-    }
-}
-
-fn pruneExpiredChunkAssemblies(self: *App, now_ns: i128) void {
-    var index: usize = 0;
-    while (index < self.htp_chunk_assemblies.items.len) {
-        const assembly = &self.htp_chunk_assemblies.items[index];
-        if (now_ns >= assembly.created_at_ns and now_ns - assembly.created_at_ns >= HTP_CHUNK_ASSEMBLY_MAX_AGE_NS) {
-            deinitChunkAssembly(self.allocator, assembly);
-            _ = self.htp_chunk_assemblies.swapRemove(index);
-            continue;
-        }
-        index += 1;
-    }
 }
 
 fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value) void {
@@ -395,90 +314,16 @@ fn sendHtpEnvelope(self: *App, pane: *Pane, envelope: HtpEnvelope) void {
 }
 
 fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
-    if (json_text.len <= HTP_MAX_CHUNK_PAYLOAD) {
-        var writer: std.Io.Writer.Allocating = .init(self.allocator);
-        defer writer.deinit();
-        writer.writer.writeAll(HTP_OSC_PREFIX) catch return;
-        writer.writer.writeAll(json_text) catch return;
-        writer.writer.writeAll(HTP_ST) catch return;
-        pane.writeEscapeSequence(writer.written());
-        return;
-    }
+    self.htp_codec.writeFramed(json_text, pane, writeFramedHtp) catch |err| {
+        std.log.warn("htp: failed to frame response: {s}", .{@errorName(err)});
+    };
+}
 
-    const total = std.math.divCeil(usize, json_text.len, HTP_MAX_CHUNK_PAYLOAD) catch return;
-    if (total > HTP_MAX_CHUNKS) return;
-    const request_id = nextHtpMessageId(self);
-    var index: usize = 0;
-    while (index < total) : (index += 1) {
-        const start = index * HTP_MAX_CHUNK_PAYLOAD;
-        const end = @min(start + HTP_MAX_CHUNK_PAYLOAD, json_text.len);
-        var buf: std.Io.Writer.Allocating = .init(self.allocator);
-        defer buf.deinit();
-        const chunk_payload = chunkPayloadObject(self.allocator, json_text[start..end], index + 1, total) catch return;
-        defer app_mod.deinitJsonValue(self.allocator, .{ .object = chunk_payload });
-        std.json.Stringify.value(HtpEnvelope{
-            .id = nextHtpMessageId(self),
-            .kind = "chunk",
-            .request_id = .{ .integer = @intCast(request_id) },
-            .status = "partial",
-            .payload = .{ .object = chunk_payload },
-        }, .{}, &buf.writer) catch return;
-        var writer: std.Io.Writer.Allocating = .init(self.allocator);
-        defer writer.deinit();
-        writer.writer.writeAll(HTP_OSC_PREFIX) catch return;
-        writer.writer.writeAll(buf.written()) catch return;
-        writer.writer.writeAll(HTP_ST) catch return;
-        pane.writeEscapeSequence(writer.written());
-    }
+fn writeFramedHtp(context: *anyopaque, bytes: []const u8) void {
+    const pane: *Pane = @ptrCast(@alignCast(context));
+    pane.writeEscapeSequence(bytes);
 }
 
 fn nextHtpMessageId(self: *App) u64 {
-    const value = self.htp_next_message_id;
-    self.htp_next_message_id +%= 1;
-    return value;
-}
-
-fn chunkPayloadObject(allocator: std.mem.Allocator, chunk: []const u8, index: usize, total: usize) !std.json.ObjectMap {
-    var object = std.json.ObjectMap.init(allocator);
-    errdefer {
-        var it = object.iterator();
-        while (it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            app_mod.deinitJsonValue(allocator, entry.value_ptr.*);
-        }
-        object.deinit();
-    }
-    const index_key = try allocator.dupe(u8, "index");
-    object.put(index_key, .{ .integer = @intCast(index) }) catch |err| {
-        allocator.free(index_key);
-        return err;
-    };
-    const total_key = try allocator.dupe(u8, "total");
-    object.put(total_key, .{ .integer = @intCast(total) }) catch |err| {
-        allocator.free(total_key);
-        return err;
-    };
-    const data_key = try allocator.dupe(u8, "data");
-    const data = allocator.dupe(u8, chunk) catch |err| {
-        allocator.free(data_key);
-        return err;
-    };
-    object.put(data_key, .{ .string = data }) catch |err| {
-        allocator.free(data_key);
-        allocator.free(data);
-        return err;
-    };
-    return object;
-}
-
-test "chunkPayloadObject stores chunk metadata and owned payload" {
-    const object = try chunkPayloadObject(std.testing.allocator, "payload", 2, 5);
-    defer {
-        const value = std.json.Value{ .object = object };
-        app_mod.deinitJsonValue(std.testing.allocator, value);
-    }
-
-    try std.testing.expectEqual(@as(?usize, 2), app_mod.jsonObjectIndex(object, "index"));
-    try std.testing.expectEqual(@as(?usize, 5), app_mod.jsonObjectIndex(object, "total"));
-    try std.testing.expectEqualStrings("payload", app_mod.jsonObjectString(object, "data").?);
+    return self.htp_codec.nextMessageId();
 }

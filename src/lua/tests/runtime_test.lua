@@ -962,7 +962,9 @@ hollow.term.focus_pane_by_id(101)
 
 assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "workspace helper should resolve project-local path")
 
-recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "present"
+recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "__workspace_spec__"
+assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), nil, "workspace auto bootstrap should require explicit always mode")
+assert_true(hollow.workspace.bootstrap_project("/tmp/project"), "explicit project bootstrap should ignore startup auto-bootstrap mode")
 hollow.config.set({ workspace = { auto_bootstrap = "always", default_layout = "default" } })
 assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "auto bootstrap should prefer project-local workspace files")
 

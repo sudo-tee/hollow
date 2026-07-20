@@ -1,9 +1,9 @@
 const std = @import("std");
 const fastmem = @import("../fastmem.zig");
-const app = @import("../app.zig");
 const windows = std.os.windows;
 const kernel32 = windows.kernel32;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
+const Wake = @import("wake.zig").Wake;
 const wsl_bypass_protocol = @import("wsl_bypass_protocol.zig");
 const build_options = @import("build_options");
 
@@ -235,6 +235,7 @@ const ReaderState = struct {
     exit_status: ?u32 = null,
     closing: bool = false,
     out_of_memory: bool = false,
+    wake: Wake = .{},
 };
 
 pub const WindowsPty = struct {
@@ -255,12 +256,12 @@ pub const WindowsPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
-        return spawnWithShell(allocator, shell, cols, rows, cwd, env_block, launch_command);
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
+        return spawnWithShell(allocator, shell, cols, rows, cwd, env_block, launch_command, wake);
     }
 
-    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, fallbacks: []const []const u8) !WindowsPty {
-        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block, launch_command)) |pty| {
+    pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, fallbacks: []const []const u8, wake: Wake) !WindowsPty {
+        if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block, launch_command, wake)) |pty| {
             return pty;
         } else |err| switch (err) {
             error.CreateProcessFailed => {},
@@ -271,7 +272,7 @@ pub const WindowsPty = struct {
             if (std.mem.eql(u8, candidate, preferred_shell)) continue;
             const shell_z = try allocator.dupeZ(u8, candidate);
             defer allocator.free(shell_z);
-            if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block, launch_command)) |pty| {
+            if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block, launch_command, wake)) |pty| {
                 return pty;
             } else |err| switch (err) {
                 error.CreateProcessFailed => continue,
@@ -282,9 +283,9 @@ pub const WindowsPty = struct {
         return error.CreateProcessFailed;
     }
 
-    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
+    fn spawnWithShell(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
         if (isWslShell(shell)) {
-            if (spawnWithWslBypass(allocator, shell, cols, rows, cwd, env_block, launch_command)) |pty| {
+            if (spawnWithWslBypass(allocator, shell, cols, rows, cwd, env_block, launch_command, wake)) |pty| {
                 return pty;
             } else |err| switch (err) {
                 error.WslBypassUnavailable => {
@@ -390,7 +391,7 @@ pub const WindowsPty = struct {
         std.log.info("conpty: closed output_write (kept input_read open)", .{});
 
         const reader_state = try allocator.create(ReaderState);
-        reader_state.* = .{};
+        reader_state.* = .{ .wake = wake };
         errdefer allocator.destroy(reader_state);
 
         var pty = WindowsPty{
@@ -629,7 +630,7 @@ pub const WindowsPty = struct {
     }
 };
 
-fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !WindowsPty {
+fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
     const start_ms = std.time.milliTimestamp();
 
     {
@@ -709,7 +710,7 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
     child_stderr_write = windows.INVALID_HANDLE_VALUE;
 
     const reader_state = try allocator.create(ReaderState);
-    reader_state.* = .{};
+    reader_state.* = .{ .wake = wake };
 
     var pty = WindowsPty{
         .allocator = allocator,
@@ -892,10 +893,10 @@ fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) bool {
     }
     reader_state.buf.appendSlice(std.heap.page_allocator, bytes) catch {
         reader_state.out_of_memory = true;
-        app.signalExternalWake();
+        reader_state.wake.signal();
         return false;
     };
-    app.signalExternalWake();
+    reader_state.wake.signal();
     return true;
 }
 
@@ -903,7 +904,7 @@ fn markReaderEof(reader_state: *ReaderState) void {
     reader_state.mutex.lock();
     reader_state.eof = true;
     reader_state.mutex.unlock();
-    app.signalExternalWake();
+    reader_state.wake.signal();
 }
 
 fn markReaderExit(reader_state: *ReaderState, exit_status: ?u32) void {
@@ -911,7 +912,7 @@ fn markReaderExit(reader_state: *ReaderState, exit_status: ?u32) void {
     reader_state.exit_status = exit_status;
     reader_state.eof = true;
     reader_state.mutex.unlock();
-    app.signalExternalWake();
+    reader_state.wake.signal();
 }
 
 fn logAvailableBypassStderr(handle: windows.HANDLE) void {

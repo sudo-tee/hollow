@@ -756,6 +756,7 @@ pub const Runtime = struct {
         };
 
         const state = api.new_state() orelse return error.LuaStateInitFailed;
+        errdefer api.close(state);
         api.open_libs(state);
 
         const ctx = try allocator.create(BridgeContext);
@@ -768,15 +769,11 @@ pub const Runtime = struct {
             .deferred_callback_refs = .{},
             .timed_callback_refs = .{},
         };
-        std.debug.print("INIT: ctx={*} deferred.ptr={*} deferred.len={d} timed.ptr={*} timed.len={d}\n", .{
-            ctx,
-            ctx.deferred_callback_refs.items.ptr,
-            ctx.deferred_callback_refs.items.len,
-            ctx.timed_callback_refs.items.ptr,
-            ctx.timed_callback_refs.items.len,
-        });
-
         const lua_sources = discoverLuaSources(allocator);
+        errdefer if (lua_sources) |sources| {
+            var owned = sources;
+            owned.deinit(allocator);
+        };
         ctx.lua_sources = lua_sources;
         var runtime = Runtime{
             .allocator = allocator,
@@ -784,8 +781,6 @@ pub const Runtime = struct {
             .context = ctx,
             .lua_sources = lua_sources,
         };
-
-        active_context = ctx;
 
         wsl_distro_cache.ensureStarted();
 
@@ -811,7 +806,6 @@ pub const Runtime = struct {
         self.context.deferred_callback_refs.deinit(self.allocator);
         self.context.timed_callback_refs.deinit(self.allocator);
         self.context.api.close(self.state);
-        active_context = null;
         self.allocator.destroy(self.context);
     }
 
@@ -2106,21 +2100,18 @@ const BridgeContext = struct {
     timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .{},
 };
 
-var active_context: ?*BridgeContext = null;
-
 fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
-    const api = active_context.?.api;
-
     const module_name_index = luaUpvalueIndex(1);
-    const ctx_ptr = api.to_userdata(state, luaUpvalueIndex(2)) orelse {
-        _ = api.raise_error(state, "missing bridge context for module loader");
+    const ctx_ptr = lua_touserdata(state, luaUpvalueIndex(2)) orelse {
+        _ = luaL_error(state, "missing bridge context for module loader");
         return 0;
     };
+    const module_ctx: *BridgeContext = @ptrCast(@alignCast(ctx_ptr));
+    const api = module_ctx.api;
     const source_ptr = api.to_userdata(state, luaUpvalueIndex(3)) orelse {
         _ = api.raise_error(state, "missing embedded module source");
         return 0;
     };
-    const module_ctx: *BridgeContext = @ptrCast(@alignCast(ctx_ptr));
     const source_len = @as(usize, @intFromFloat(api.to_number(state, luaUpvalueIndex(4))));
     const source: [*]const u8 = @ptrCast(source_ptr);
     var module_name_len: usize = 0;
@@ -2349,8 +2340,10 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
 }
 
 fn bridgeContext(state: *State) *BridgeContext {
-    _ = state;
-    return active_context orelse @panic("missing bridge context");
+    const ptr = lua_touserdata(state, luaUpvalueIndex(1)) orelse @panic("missing bridge context");
+    // Coroutines have distinct lua_State pointers but share closure upvalues
+    // and the registry with their owning runtime.
+    return @ptrCast(@alignCast(ptr));
 }
 
 fn l_list_wsl_distros(state: *State) callconv(.c) c_int {

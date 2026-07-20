@@ -208,7 +208,7 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     hollow.term.set_pane_tags(first.tags)
   end
 
-  if reuse_existing == true or not is_first_tab then
+  if reuse_existing == true then
     send_startup_commands(first)
   end
 
@@ -430,7 +430,7 @@ function M.resolve_auto_bootstrap_path()
   local config = hollow.config.snapshot()
   local workspace_cfg = type(config.workspace) == "table" and config.workspace or {}
   local mode = trim_string(workspace_cfg.auto_bootstrap)
-  if mode == "never" then
+  if mode ~= "always" then
     return nil
   end
 
@@ -465,6 +465,21 @@ function M.auto_bootstrap_deferred()
   host_api.defer(function()
     M.auto_bootstrap()
   end)
+end
+
+function M.bootstrap_project(dir)
+  local path = M.project_local_path(dir)
+  if path == nil or not host_api.path_exists(path) then
+    local config = hollow.config.snapshot()
+    local workspace_cfg = type(config.workspace) == "table" and config.workspace or {}
+    path = default_layout_path(workspace_cfg.default_layout)
+    if path == nil or not host_api.path_exists(path) then
+      return false
+    end
+  end
+
+  M.load_and_bootstrap(path, { replace_current = false })
+  return true
 end
 
 return M

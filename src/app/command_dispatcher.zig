@@ -9,7 +9,7 @@ const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const htp = @import("htp.zig");
 const SplitCommandMode = app_mod.SplitCommandMode;
-const mux_ops = @import("mux_ops.zig");
+const mux_ops = @import("session_controller.zig");
 
 const LUA_NOREF: c_int = -1;
 

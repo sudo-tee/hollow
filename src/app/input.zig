@@ -8,7 +8,7 @@ const selection = @import("../selection.zig");
 const copy_mode = @import("copy_mode.zig");
 const hyperlinks = @import("hyperlinks.zig");
 const scroll_mod = @import("scroll.zig");
-const mux_ops = @import("mux_ops.zig");
+const mux_ops = @import("session_controller.zig");
 const cmd_ipc = @import("command_dispatcher.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
@@ -245,31 +245,24 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
 }
 
 pub fn deinitInputQueue(self: *App) void {
-    const tail = @atomicLoad(usize, &self.input_queue_tail, .acquire);
-    while (self.input_queue_head != tail) {
-        const event = &self.input_queue[self.input_queue_head];
-        if (self.lua) |*lua| switch (event.*) {
+    while (self.action_queue.pop()) |queued| {
+        var event = queued;
+        if (self.lua) |*lua| switch (event) {
             .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
             .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
             .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
             else => {},
         };
-        deinitPendingInputEvent(self.allocator, event);
-        self.input_queue_head = (self.input_queue_head + 1) % self.input_queue.len;
+        deinitPendingInputEvent(self.allocator, &event);
     }
 }
 
 /// Drain all pending events and dispatch them.  Called from tick()
 /// on the frame thread, where it is safe to call into the ghostty DLL.
 pub fn processInputQueue(self: *App) void {
-    const cap = self.input_queue.len;
-    while (true) {
-        const tail = @atomicLoad(usize, &self.input_queue_tail, .acquire);
-        if (self.input_queue_head == tail) break;
-
-        const head = self.input_queue_head;
-        const ev = self.input_queue[head];
-        var advance: usize = 1;
+    while (self.action_queue.pop()) |queued| {
+        var ev = queued;
+        defer deinitPendingInputEvent(self.allocator, &ev);
 
         switch (ev) {
             .none => {},
@@ -388,17 +381,16 @@ pub fn processInputQueue(self: *App) void {
             .key => |k| {
                 var text: ?[]const u8 = null;
                 var fallback_buf: [4]u8 = undefined;
+                var paired_char: ?PendingInputEvent = null;
+                defer if (paired_char) |*event| deinitPendingInputEvent(self.allocator, event);
                 if (k.action != .release) {
-                    const next = (head + 1) % cap;
-                    if (next != tail) {
-                        switch (self.input_queue[next]) {
-                            .char => |ch| {
-                                if (ch.len > 0) {
-                                    text = ch.bytes[0..ch.len];
-                                    advance = 2;
-                                }
+                    paired_char = self.action_queue.popIfChar();
+                    if (paired_char) |*event| {
+                        switch (event.*) {
+                            .char => |*ch| {
+                                if (ch.len > 0) text = ch.bytes[0..ch.len];
                             },
-                            else => {},
+                            else => unreachable,
                         }
                     }
                 }
@@ -542,11 +534,6 @@ pub fn processInputQueue(self: *App) void {
             },
         }
 
-        var consumed: usize = 0;
-        while (consumed < advance) : (consumed += 1) {
-            deinitPendingInputEvent(self.allocator, &self.input_queue[(head + consumed) % cap]);
-        }
-        @atomicStore(usize, &self.input_queue_head, (head + advance) % cap, .release);
     }
 
     cmd_ipc.drainPendingCommand(self);
@@ -565,7 +552,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.input_queue_head != @atomicLoad(usize, &self.input_queue_tail, .acquire)) {
+    if (!self.action_queue.isEmpty()) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }

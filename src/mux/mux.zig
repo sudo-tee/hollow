@@ -24,6 +24,8 @@ pub const Mux = struct {
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
     next_id: usize = 1,
+    host_context: ?*anyopaque = null,
+    host_wake: @import("../pty/wake.zig").Wake = .{},
     /// Set by removeWorkspace to the name of the workspace that was just removed.
     /// Caller must free and set to null after consuming.
     last_removed_workspace_name: ?[]u8 = null,
@@ -260,6 +262,8 @@ pub const Mux = struct {
     pub fn createPane(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !*Pane {
         const pane = try self.allocator.create(Pane);
         pane.* = Pane.init(self.allocator);
+        pane.host_context = self.host_context;
+        pane.host_wake = self.host_wake;
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
         try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);

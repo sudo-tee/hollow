@@ -359,7 +359,9 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     htp.bindHtpHandlers(self);
     self.syncActivePaneChange(previous, mux.activePane());
     if (command) |value| {
-        if (mux.activePane()) |pane| pane.sendText(value);
+        if (mux.activePane()) |pane| pane.queueStartupInput(value) catch |err| {
+            std.log.err("app: failed to queue workspace startup command: {s}", .{@errorName(err)});
+        };
     }
     self.emitLuaBuiltInEvent("workspace:new", .{ .workspace_index = mux.activeWorkspaceIndex() });
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
@@ -711,24 +713,23 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
 
 fn sendSplitPaneCommand(self: *App, pane: *Pane, command: []const u8, close_on_exit: bool) void {
     if (!close_on_exit) {
-        pane.sendText(command);
-        if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
-            pane.sendText("\r");
-        }
+        pane.queueStartupInput(command) catch |err| {
+            std.log.err("app: failed to queue split startup command: {s}", .{@errorName(err)});
+        };
         return;
     }
 
     const wrapped = wrapCommandForCloseOnExit(self, pane, command) catch |err| {
         std.log.err("app: failed to wrap split command for close_on_exit: {s}", .{@errorName(err)});
-        pane.sendText(command);
-        if (!std.mem.endsWith(u8, command, "\r") and !std.mem.endsWith(u8, command, "\n")) {
-            pane.sendText("\r");
-        }
+        pane.queueStartupInput(command) catch |queue_err| {
+            std.log.err("app: failed to queue split startup command after wrap error: {s}", .{@errorName(queue_err)});
+        };
         return;
     };
     defer self.allocator.free(wrapped);
-    pane.sendText(wrapped);
-    pane.sendText("\r");
+    pane.queueStartupInput(wrapped) catch |err| {
+        std.log.err("app: failed to queue wrapped split startup command: {s}", .{@errorName(err)});
+    };
 }
 
 fn wrapCommandForCloseOnExit(self: *App, pane: *Pane, command: []const u8) ![]u8 {

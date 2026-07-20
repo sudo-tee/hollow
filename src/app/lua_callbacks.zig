@@ -9,7 +9,7 @@ const CopyModeMoveKind = app_mod.CopyModeMoveKind;
 const PromptJumpDir = app_mod.PromptJumpDir;
 const BarSurface = app_mod.BarSurface;
 const cmd_ipc = @import("command_dispatcher.zig");
-const mux_ops = @import("mux_ops.zig");
+const mux_ops = @import("session_controller.zig");
 const input = @import("input.zig");
 
 pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool {

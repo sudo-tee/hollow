@@ -102,8 +102,10 @@ local function switch_to_workspace(workspace)
     cwd = workspace.cwd or current_pane_cwd(),
     domain = workspace.domain,
     source = workspace.source,
-    on_complete = function()
-      hollow.workspace.auto_bootstrap_deferred()
+    on_complete = function(result)
+      if result ~= nil and result.success == true and workspace.cwd ~= nil then
+        hollow.workspace.bootstrap_project(workspace.cwd)
+      end
     end,
   })
 end
@@ -179,11 +181,6 @@ local function open_workspace(opts)
   local source_name = trim_string(opts.source)
   if source_name == "" then
     opts = type(opts) == "table" and opts or {}
-    if type(opts.on_complete) ~= "function" then
-      opts.on_complete = function()
-        hollow.workspace.auto_bootstrap_deferred()
-      end
-    end
     open_new_workspace_from_item(opts)
     return
   end
@@ -205,11 +202,6 @@ local function open_workspace(opts)
     return
   end
 
-  if type(item.on_complete) ~= "function" then
-    item.on_complete = function()
-      hollow.workspace.auto_bootstrap_deferred()
-    end
-  end
   open_new_workspace_from_item(item)
 end
 

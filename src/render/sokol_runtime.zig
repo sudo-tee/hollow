@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
+const WindowHost = @import("window_host.zig").WindowHost;
 const icon_data = @import("icon_data");
 const fastmem = @import("../fastmem.zig");
 const App = @import("../app.zig").App;
@@ -21,7 +22,7 @@ const selection = @import("../selection.zig");
 const scroll = @import("../app/scroll.zig");
 const copy_mode = @import("../app/copy_mode.zig");
 const selection_mod = @import("../app/selection.zig");
-const mux_ops = @import("../app/mux_ops.zig");
+const mux_ops = @import("../app/session_controller.zig");
 const input = @import("../app/input.zig");
 const debug_timing = @import("debug_timing.zig");
 
@@ -155,7 +156,6 @@ const win32 = if (builtin.os.tag == .windows) struct {
 const WinLongPtr = if (builtin.os.tag == .windows) win32.LONG_PTR else isize;
 const WinHwnd = if (builtin.os.tag == .windows) win32.HWND else *anyopaque;
 
-var g_app: ?*App = null;
 var g_title_buf: [256]u8 = [_]u8{0} ** 256;
 var g_last_window_title: [256]u8 = [_]u8{0} ** 256;
 var g_renderer_ready = false;
@@ -2315,7 +2315,6 @@ fn shouldUseIdleFrameCap(app: *App, visually_active: bool, now_ns: i128) bool {
 }
 
 pub fn run(app: *App) !void {
-    g_app = app;
     g_renderer_ready = false;
     g_logged_first_frame = false;
     g_frame_index = 0;
@@ -2374,25 +2373,24 @@ pub fn run(app: *App) !void {
     g_drag_node = null;
     g_mouse_button_down = null;
 
-    var desc = std.mem.zeroes(c.sapp_desc);
-    desc.user_data = app;
-    desc.init_userdata_cb = initCb;
-    desc.frame_userdata_cb = frameCb;
-    desc.cleanup_userdata_cb = cleanupCb;
-    desc.event_userdata_cb = eventCb;
-    desc.width = @intCast(app.config.window_width);
-    desc.height = @intCast(app.config.window_height);
-    desc.high_dpi = true;
-    desc.enable_clipboard = true;
-    desc.clipboard_size = 1048576; // 1MB for large clipboard contents
-    desc.window_title = titleCString(app.config.windowTitle());
-    desc.no_vsync = !app.config.vsync;
-    desc.logger.func = c.slog_func;
+    var host = WindowHost.init(.{
+        .context = app,
+        .callbacks = .{
+            .init = initCb,
+            .frame = frameCb,
+            .cleanup = cleanupCb,
+            .event = eventCb,
+        },
+        .width = @intCast(app.config.window_width),
+        .height = @intCast(app.config.window_height),
+        .title = titleCString(app.config.windowTitle()),
+        .vsync = app.config.vsync,
+    });
     if (builtin.os.tag == .linux) {
         // Sokol defaults to a GL 4.3 core context on Linux. Some GLX drivers
         // reject that request even though they can run a 3.3 core context.
-        desc.gl.major_version = 3;
-        desc.gl.minor_version = 3;
+        host.desc.gl.major_version = 3;
+        host.desc.gl.minor_version = 3;
     }
     if (builtin.os.tag == .linux) {
         // On WSL2 the default Mesa DRI driver (virtio_gpu) can crash inside
@@ -2438,23 +2436,23 @@ pub fn run(app: *App) !void {
     }
 
     // Set the window icon from pre-resized RGBA pixel data.
-    desc.icon.images[0] = .{
+    host.desc.icon.images[0] = .{
         .width = 16,
         .height = 16,
         .pixels = .{ .ptr = &icon_data.icon_16x16_rgba, .size = icon_data.icon_16x16_rgba.len },
     };
-    desc.icon.images[1] = .{
+    host.desc.icon.images[1] = .{
         .width = 32,
         .height = 32,
         .pixels = .{ .ptr = &icon_data.icon_32x32_rgba, .size = icon_data.icon_32x32_rgba.len },
     };
-    desc.icon.images[2] = .{
+    host.desc.icon.images[2] = .{
         .width = 64,
         .height = 64,
         .pixels = .{ .ptr = &icon_data.icon_64x64_rgba, .size = icon_data.icon_64x64_rgba.len },
     };
 
-    c.sapp_run(&desc);
+    host.run();
 }
 
 fn initCb(user_data: ?*anyopaque) callconv(.c) void {
@@ -3801,12 +3799,10 @@ fn seamCoveredByFloating(leaves: []const LayoutLeaf, seam: PaneBounds) bool {
 }
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
-    _ = user_data;
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
-    if (g_app) |app| {
-        std.log.info("sokol cleanup: deinit via g_app", .{});
+    if (appFromUserData(user_data)) |app| {
+        std.log.info("sokol cleanup: deinit via callback context", .{});
         app.deinit();
-        g_app = null;
     }
     if (builtin.os.tag == .windows) {
         if (g_subclassed_hwnd) |hwnd| {
@@ -3997,7 +3993,7 @@ fn windowProc(hWnd: win32.HWND, Msg: u32, wParam: usize, lParam: isize) callconv
                 const local_y = getYLParam(lParam) - rect.top;
                 const width = rect.right - rect.left;
                 const height = rect.bottom - rect.top;
-                if (g_app) |app| {
+                if (appFromUserData(c.sapp_userdata())) |app| {
                     if (!app.config.window_titlebar_show) {
                         const border = windowFrameBorder();
                         const top_bar_h: i32 = @intCast(app.tabBarHeight());

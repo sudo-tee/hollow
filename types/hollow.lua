@@ -1197,6 +1197,10 @@ function workspace_api.resolve_auto_bootstrap_path() end
 ---@return boolean
 function workspace_api.auto_bootstrap() end
 
+---@param dir? string
+---@return boolean
+function workspace_api.bootstrap_project(dir) end
+
 ---@class HollowTermNamespace
 local term = {}
 

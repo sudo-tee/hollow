@@ -943,6 +943,10 @@ pub const Runtime = struct {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.write_pty), @ptrCast(callback));
     }
 
+    pub fn setTerminalUserdata(self: *Runtime, handle: ?*anyopaque, userdata: ?*anyopaque) void {
+        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.userdata), userdata);
+    }
+
     pub fn setBellCallback(self: *Runtime, handle: ?*anyopaque, callback: BellCallback) void {
         if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.bell), @ptrCast(callback));
     }

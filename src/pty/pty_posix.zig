@@ -1,6 +1,6 @@
 const std = @import("std");
-const app = @import("../app.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
+const Wake = @import("wake.zig").Wake;
 const shell_integration = @import("../shell_integration.zig");
 const c = @cImport({
     @cInclude("errno.h");
@@ -27,6 +27,7 @@ const ReaderState = struct {
     saw_read: bool = false,
     closing: bool = false,
     out_of_memory: bool = false,
+    wake: Wake = .{},
 };
 
 pub const PosixPty = struct {
@@ -38,7 +39,7 @@ pub const PosixPty = struct {
     alive: bool = true,
     closed: bool = false,
 
-    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand) !PosixPty {
+    pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !PosixPty {
         std.log.info("pty_posix.spawn shell={s} cwd={s} launch_command={}", .{
             shell,
             cwd orelse "<null>",
@@ -74,7 +75,7 @@ pub const PosixPty = struct {
         }
 
         const reader_state = try allocator.create(ReaderState);
-        reader_state.* = .{};
+        reader_state.* = .{ .wake = wake };
         errdefer allocator.destroy(reader_state);
 
         var pty = PosixPty{
@@ -313,18 +314,18 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
             reader_state.buf.appendSlice(std.heap.page_allocator, bytes) catch {
                 reader_state.out_of_memory = true;
                 reader_state.mutex.unlock();
-                app.signalExternalWake();
+                reader_state.wake.signal();
                 return;
             };
             reader_state.mutex.unlock();
-            app.signalExternalWake();
+            reader_state.wake.signal();
             continue;
         }
         if (result == 0) {
             reader_state.mutex.lock();
             reader_state.eof = true;
             reader_state.mutex.unlock();
-            app.signalExternalWake();
+            reader_state.wake.signal();
             return;
         }
         switch (std.posix.errno(-1)) {
@@ -338,7 +339,7 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
                     exited = true;
                 }
                 reader_state.mutex.unlock();
-                if (exited) app.signalExternalWake();
+                if (exited) reader_state.wake.signal();
                 return;
             },
         }

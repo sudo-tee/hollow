@@ -51,11 +51,14 @@ const text_helpers = @import("app/text_helpers.zig");
 const selection_mod = @import("app/selection.zig");
 const copy_mode = @import("app/copy_mode.zig");
 const htp = @import("app/htp.zig");
+const HtpCodec = @import("htp/codec.zig").Codec;
 const input = @import("app/input.zig");
+const ActionQueue = @import("app/action_queue.zig").ActionQueue;
+const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
 const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
-const mux_ops = @import("app/mux_ops.zig");
+const mux_ops = @import("app/session_controller.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
 const embedded_types: []const u8 = build_options.embedded_types;
@@ -219,10 +222,8 @@ pub fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.Objec
 /// Re-exported from input.zig (formerly PendingMouseEvent).
 pub const PendingInputEvent = input.PendingInputEvent;
 
-var wake_bridge: ?*App = null;
-
-pub fn signalExternalWake() void {
-    const app = wake_bridge orelse return;
+fn signalExternalWake(context: *anyopaque) void {
+    const app: *App = @ptrCast(@alignCast(context));
     app.signalWake();
 }
 
@@ -232,7 +233,7 @@ pub const App = struct {
 
     allocator: std.mem.Allocator,
     config: Config,
-    deinitialized: bool = false,
+    lifecycle: Lifecycle = .{},
     lua: ?LuaRuntime = null,
     ghostty: ?GhosttyRuntime = null,
     renderer: ?Backend = null,
@@ -304,8 +305,7 @@ pub const App = struct {
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
     htp_pending_message_bytes: usize = 0,
-    htp_chunk_assemblies: std.ArrayListUnmanaged(htp.HtpChunkAssembly) = .empty,
-    htp_next_message_id: u64 = 1,
+    htp_codec: HtpCodec,
     command_ipc_server: ?command_ipc.Server = null,
     pane_tags: std.ArrayListUnmanaged(cmd_ipc.PaneTagEntry) = .empty,
     command_mutex: std.Thread.Mutex = .{},
@@ -325,22 +325,7 @@ pub const App = struct {
     next_idle_render_poll_ns: i128 = 0,
     wake_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
-    // ── Pending input event queue ─────────────────────────────────────────────
-    // Sokol event callbacks run on the OS event thread; the ghostty DLL is NOT
-    // thread-safe.  We must never call encodeMouse / terminalScroll from the
-    // event thread while the frame thread may be inside updateRenderState /
-    // resizeTerminal for the same terminal objects.
-    //
-    // Instead, event callbacks write into this fixed-size ring buffer and
-    // tick() drains it on the frame thread before any DLL calls.
-    //
-    // Capacity: 64 slots.  At 120 fps we get one tick() per ~8 ms.  Between
-    // two frames the OS can fire at most a handful of mouse events (scroll,
-    // move, click), so 64 is more than enough.  If the queue is full, new
-    // events are silently dropped (better than a crash or a data race).
-    input_queue: [64]input.PendingInputEvent = [_]input.PendingInputEvent{.none} ** 64,
-    input_queue_head: usize = 0, // next slot to read  (frame thread)
-    input_queue_tail: usize = 0, // next slot to write (event thread)
+    action_queue: ActionQueue = .{},
 
     pub fn hasPendingCommand(self: *App) bool {
         return cmd_ipc.hasPendingCommand(self);
@@ -350,16 +335,10 @@ pub const App = struct {
     /// event thread.  Returns true on success, false if the queue is full
     /// (event is dropped — better than a crash or a data race).
     pub fn enqueueMouse(self: *App, ev: input.PendingInputEvent) bool {
-        const cap = self.input_queue.len;
-        const next_tail = (self.input_queue_tail + 1) % cap;
-        if (next_tail == @atomicLoad(usize, &self.input_queue_head, .acquire)) {
-            return false;
-        }
+        if (!self.action_queue.push(ev)) return false;
         const now_ns = std.time.nanoTimestamp();
         self.last_input_activity_ns = now_ns;
         self.last_visual_activity_ns = now_ns;
-        self.input_queue[self.input_queue_tail] = ev;
-        @atomicStore(usize, &self.input_queue_tail, next_tail, .release);
         input.signalWake(self);
         return true;
     }
@@ -592,20 +571,14 @@ pub const App = struct {
         return .{
             .allocator = allocator,
             .config = Config.init(allocator),
+            .htp_codec = HtpCodec.init(allocator),
         };
     }
 
     pub fn shutdownRuntime(self: *App) void {
-        if (self.deinitialized) return;
+        if (!self.lifecycle.beginRuntimeShutdown()) return;
+        defer self.lifecycle.finishRuntimeShutdown();
         std.log.info("App.shutdownRuntime begin", .{});
-
-        terminal_callbacks.write_bridge = null;
-        terminal_callbacks.size_bridge = null;
-        terminal_callbacks.attrs_bridge = null;
-        terminal_callbacks.title_bridge = null;
-        terminal_callbacks.bell_bridge = null;
-        htp.htp_bridge = null;
-        wake_bridge = null;
 
         if (self.command_ipc_server) |*server| {
             server.deinit();
@@ -636,22 +609,19 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
-        if (self.deinitialized) return;
+        if (self.lifecycle.isDeinitialized()) return;
         std.log.info("App.deinit begin", .{});
 
         input.deinitInputQueue(self);
         self.shutdownRuntime();
-        self.deinitialized = true;
+        self.lifecycle.finishDeinit();
         copy_mode.deinitCopyModeState(self);
 
         for (self.htp_pending_messages.items[self.htp_pending_message_head..]) |message| {
             self.allocator.free(message.payload);
         }
         self.htp_pending_messages.deinit(self.allocator);
-        for (self.htp_chunk_assemblies.items) |*assembly| {
-            htp.deinitChunkAssembly(self.allocator, assembly);
-        }
-        self.htp_chunk_assemblies.deinit(self.allocator);
+        self.htp_codec.deinit();
         cmd_ipc.deinitPaneTags(self);
 
         if (self.base_config_path) |path| {
@@ -721,18 +691,10 @@ pub const App = struct {
         _ = runtime.setSysDecodePng(hollow_decode_png);
 
         var mux = Mux.init(self.allocator);
+        mux.host_context = self;
+        mux.host_wake = .{ .context = self, .callback = signalExternalWake };
         errdefer mux.deinit(&runtime);
 
-        // Set bridge globals before bootstrapSingle so the callbacks are valid
-        // the moment ghostty can first invoke them (during resizeTerminal inside
-        // bootstrap).
-        terminal_callbacks.write_bridge = self;
-        terminal_callbacks.size_bridge = self;
-        terminal_callbacks.attrs_bridge = self;
-        terminal_callbacks.title_bridge = self;
-        terminal_callbacks.bell_bridge = self;
-        htp.htp_bridge = self;
-        wake_bridge = self;
         cmd_ipc.startCommandTransport(self);
         const cbs = terminal_callbacks.terminalCallbacks();
         try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);

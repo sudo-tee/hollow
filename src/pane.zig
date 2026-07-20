@@ -121,6 +121,8 @@ pub const Pane = struct {
     pub const HtpMessageHandler = *const fn (pane: *Pane, payload: []const u8) void;
 
     allocator: std.mem.Allocator,
+    host_context: ?*anyopaque = null,
+    host_wake: @import("pty/wake.zig").Wake = .{},
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
     render_state: ?*anyopaque = null,
@@ -260,6 +262,7 @@ pub const Pane = struct {
         runtime.freeRowCells(self.row_cells);
         runtime.freeRowIterator(self.row_iterator);
         runtime.freeRenderState(self.render_state);
+        runtime.setTerminalUserdata(self.terminal, null);
         runtime.freeTerminal(self.terminal);
         if (self.pty) |*pty| pty.deinit();
         if (self.title.len > 0) self.allocator.free(self.title);
@@ -281,6 +284,8 @@ pub const Pane = struct {
             .max_scrollback = cfg.scrollback,
         });
         errdefer runtime.freeTerminal(terminal);
+
+        runtime.setTerminalUserdata(terminal, self);
 
         runtime.setKittyImageStorageLimit(terminal, 64 * 1024 * 1024);
         runtime.setKittyImageMediumFile(terminal, true);
@@ -392,7 +397,7 @@ pub const Pane = struct {
         }
         self.is_remote = is_remote;
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, launch_command);
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, launch_command, self.host_wake);
         errdefer pty.deinit();
 
         self.terminal = terminal;
@@ -598,6 +603,18 @@ pub const Pane = struct {
                 std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
             };
         }
+    }
+
+    pub fn queueStartupInput(self: *Pane, text: []const u8) !void {
+        const append_enter = !std.mem.endsWith(u8, text, "\r") and !std.mem.endsWith(u8, text, "\n");
+        const old = self.pending_startup_input;
+        const queued = try self.allocator.alloc(u8, old.len + text.len + @intFromBool(append_enter));
+        std.mem.copyForwards(u8, queued[0..old.len], old);
+        std.mem.copyForwards(u8, queued[old.len..][0..text.len], text);
+        if (append_enter) queued[queued.len - 1] = '\r';
+        if (old.len > 0) self.allocator.free(old);
+        self.pending_startup_input = queued;
+        self.startup_input_quiet_ticks = 0;
     }
 
     pub fn setCwd(self: *Pane, cwd: []const u8) void {
