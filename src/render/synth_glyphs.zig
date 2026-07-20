@@ -217,7 +217,7 @@ pub fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
             self.atlas_data[dst + 3] = cov;
         }
     }
-    self.atlas_dirty = true;
+    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
 
     if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
@@ -256,60 +256,80 @@ pub fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
         0x256D => {
             const y1 = cy + cy / 2.0;
             const x2 = cx + cx / 2.0;
-            pts[npts] = .{ .x = cx, .y = ch_f }; npts += 1;
-            pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+            pts[npts] = .{ .x = cx, .y = ch_f };
+            npts += 1;
+            pts[npts] = .{ .x = cx, .y = y1 };
+            npts += 1;
             var i: usize = 1;
             while (i < segs) : (i += 1) {
                 const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
                 const omt = 1.0 - t;
                 const bx = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2;
                 const by = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy;
-                pts[npts] = .{ .x = bx, .y = by }; npts += 1;
+                pts[npts] = .{ .x = bx, .y = by };
+                npts += 1;
             }
-            pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
-            pts[npts] = .{ .x = cw_f, .y = cy }; npts += 1;
+            pts[npts] = .{ .x = x2, .y = cy };
+            npts += 1;
+            pts[npts] = .{ .x = cw_f, .y = cy };
+            npts += 1;
         },
         0x256E => {
             const y1 = cy + cy / 2.0;
             const x2 = cx - cx / 2.0;
-            pts[npts] = .{ .x = cx, .y = ch_f }; npts += 1;
-            pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+            pts[npts] = .{ .x = cx, .y = ch_f };
+            npts += 1;
+            pts[npts] = .{ .x = cx, .y = y1 };
+            npts += 1;
             var i: usize = 1;
             while (i < segs) : (i += 1) {
                 const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
                 const omt = 1.0 - t;
-                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy };
+                npts += 1;
             }
-            pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
-            pts[npts] = .{ .x = 0.0, .y = cy }; npts += 1;
+            pts[npts] = .{ .x = x2, .y = cy };
+            npts += 1;
+            pts[npts] = .{ .x = 0.0, .y = cy };
+            npts += 1;
         },
         0x256F => {
             const y1 = cy - cy / 2.0;
             const x2 = cx - cx / 2.0;
-            pts[npts] = .{ .x = cx, .y = 0.0 }; npts += 1;
-            pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+            pts[npts] = .{ .x = cx, .y = 0.0 };
+            npts += 1;
+            pts[npts] = .{ .x = cx, .y = y1 };
+            npts += 1;
             var i: usize = 1;
             while (i < segs) : (i += 1) {
                 const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
                 const omt = 1.0 - t;
-                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy };
+                npts += 1;
             }
-            pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
-            pts[npts] = .{ .x = 0.0, .y = cy }; npts += 1;
+            pts[npts] = .{ .x = x2, .y = cy };
+            npts += 1;
+            pts[npts] = .{ .x = 0.0, .y = cy };
+            npts += 1;
         },
         0x2570 => {
             const y1 = cy - cy / 2.0;
             const x2 = cx + cx / 2.0;
-            pts[npts] = .{ .x = cx, .y = 0.0 }; npts += 1;
-            pts[npts] = .{ .x = cx, .y = y1 }; npts += 1;
+            pts[npts] = .{ .x = cx, .y = 0.0 };
+            npts += 1;
+            pts[npts] = .{ .x = cx, .y = y1 };
+            npts += 1;
             var i: usize = 1;
             while (i < segs) : (i += 1) {
                 const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segs));
                 const omt = 1.0 - t;
-                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy }; npts += 1;
+                pts[npts] = .{ .x = omt * omt * cx + 2.0 * omt * t * cx + t * t * x2, .y = omt * omt * y1 + 2.0 * omt * t * cy + t * t * cy };
+                npts += 1;
             }
-            pts[npts] = .{ .x = x2, .y = cy }; npts += 1;
-            pts[npts] = .{ .x = cw_f, .y = cy }; npts += 1;
+            pts[npts] = .{ .x = x2, .y = cy };
+            npts += 1;
+            pts[npts] = .{ .x = cw_f, .y = cy };
+            npts += 1;
         },
         else => return null,
     }
@@ -384,7 +404,7 @@ pub fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
             self.atlas_data[dst + 3] = cov;
         }
     }
-    self.atlas_dirty = true;
+    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
 
     if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 

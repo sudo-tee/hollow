@@ -1,0 +1,215 @@
+diff --git a/sokol_gfx.h b/sokol_gfx.h
+index d02ac7b..851f6f4 100644
+--- a/sokol_gfx.h
++++ b/sokol_gfx.h
+@@ -3297,6 +3297,7 @@ typedef struct sg_image_usage {
+     bool immutable;
+     bool dynamic_update;
+     bool stream_update;
++    bool region_update;
+ } sg_image_usage;
+ 
+ /*
+@@ -3349,6 +3350,16 @@ typedef struct sg_image_data {
+     sg_range mip_levels[SG_MAX_MIPMAPS];
+ } sg_image_data;
+ 
++/* Hollow extension: tightly packed or row-strided RGBA8 mip-0 region update. */
++typedef struct sg_image_region {
++    int x;
++    int y;
++    int width;
++    int height;
++    int row_pitch;
++    sg_range data;
++} sg_image_region;
++
+ /*
+     sg_image_desc
+ 
+@@ -4544,7 +4555,7 @@ typedef struct sg_stats {
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDATA_NODATA, "sg_image_data: no data (.ptr and/or .size is zero)") \
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDATA_DATA_SIZE, "sg_image_data: data size doesn't match expected surface size") \
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_CANARY, "sg_image_desc not initialized") \
+-    _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_IMMUTABLE_DYNAMIC_STREAM, "sg_image_desc.usage: only one of .immutable, .dynamic_update, .stream_update can be true") \
++    _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_IMMUTABLE_DYNAMIC_STREAM, "sg_image_desc.usage: only one of .immutable, .dynamic_update, .stream_update, .region_update can be true") \
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_IMAGETYPE_2D_NUMSLICES, "sg_image_desc.num_slices must be exactly 1 for SG_IMAGETYPE_2D") \
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_IMAGETYPE_CUBE_NUMSLICES, "sg_image_desc.num_slices must be exactly 6 for SG_IMAGETYPE_CUBE") \
+     _SG_LOGITEM_XMACRO(VALIDATE_IMAGEDESC_IMAGETYPE_ARRAY_NUMSLICES, "sg_image_desc.num_slices must be ((>= 1) && (<= sg_limits.max_image_array_layers)) for SG_IMAGETYPE_ARRAY") \
+@@ -5096,6 +5107,7 @@ SOKOL_GFX_API_DECL void sg_destroy_pipeline(sg_pipeline pip);
+ SOKOL_GFX_API_DECL void sg_destroy_view(sg_view view);
+ SOKOL_GFX_API_DECL void sg_update_buffer(sg_buffer buf, const sg_range* data);
+ SOKOL_GFX_API_DECL void sg_update_image(sg_image img, const sg_image_data* data);
++SOKOL_GFX_API_DECL void sg_update_image_region(sg_image img, const sg_image_region* region);
+ SOKOL_GFX_API_DECL int sg_append_buffer(sg_buffer buf, const sg_range* data);
+ SOKOL_GFX_API_DECL bool sg_query_buffer_overflow(sg_buffer buf);
+ SOKOL_GFX_API_DECL bool sg_query_buffer_will_overflow(sg_buffer buf, size_t size);
+@@ -8102,7 +8114,7 @@ _SOKOL_PRIVATE void _sg_buffer_common_init(_sg_buffer_common_t* cmn, const sg_bu
+ 
+ _SOKOL_PRIVATE void _sg_image_common_init(_sg_image_common_t* cmn, const sg_image_desc* desc) {
+     cmn->upd_frame_index = 0;
+-    cmn->num_slots = desc->usage.immutable ? 1 : SG_NUM_INFLIGHT_FRAMES;
++    cmn->num_slots = (desc->usage.immutable || desc->usage.region_update) ? 1 : SG_NUM_INFLIGHT_FRAMES;
+     cmn->active_slot = 0;
+     cmn->type = desc->type;
+     cmn->width = desc->width;
+@@ -12198,6 +12210,19 @@ _SOKOL_PRIVATE void _sg_gl_update_image(_sg_image_t* img, const sg_image_data* d
+     _sg_gl_cache_restore_texture_sampler_binding(0);
+ }
+ 
++_SOKOL_PRIVATE void _sg_gl_update_image_region(_sg_image_t* img, const sg_image_region* region) {
++    SOKOL_ASSERT(img && region && region->data.ptr);
++    SOKOL_ASSERT(img->cmn.num_slots == 1);
++    SOKOL_ASSERT(0 != img->gl.tex[0]);
++    _sg_gl_cache_store_texture_sampler_binding(0);
++    _sg_gl_cache_bind_texture_sampler(0, img->gl.target, img->gl.tex[0], 0);
++    glPixelStorei(GL_UNPACK_ROW_LENGTH, region->row_pitch / 4);
++    glTexSubImage2D(img->gl.target, 0, region->x, region->y, region->width, region->height, GL_RGBA, GL_UNSIGNED_BYTE, region->data.ptr);
++    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++    _sg_gl_cache_restore_texture_sampler_binding(0);
++    _SG_GL_CHECK_ERROR();
++}
++
+ // ██████  ██████  ██████   ██  ██     ██████   █████   ██████ ██   ██ ███████ ███    ██ ██████
+ // ██   ██      ██ ██   ██ ███ ███     ██   ██ ██   ██ ██      ██  ██  ██      ████   ██ ██   ██
+ // ██   ██  █████  ██   ██  ██  ██     ██████  ███████ ██      █████   █████   ██ ██  ██ ██   ██
+@@ -12685,6 +12710,9 @@ static inline D3D_FEATURE_LEVEL _sg_d3d11_GetFeatureLevel(ID3D11Device* self) {
+ 
+ //-- enum translation functions ------------------------------------------------
+ _SOKOL_PRIVATE D3D11_USAGE _sg_d3d11_image_usage(const sg_image_usage* usg) {
++    if (usg->region_update) {
++        return D3D11_USAGE_DEFAULT;
++    }
+     if (usg->immutable) {
+         if (usg->color_attachment ||
+             usg->resolve_attachment ||
+@@ -12715,7 +12743,8 @@ _SOKOL_PRIVATE UINT _sg_d3d11_image_bind_flags(const sg_image_usage* usg) {
+ }
+ 
+ _SOKOL_PRIVATE UINT _sg_d3d11_image_cpu_access_flags(const sg_image_usage* usg) {
+-    if (usg->color_attachment ||
++    if (usg->region_update ||
++        usg->color_attachment ||
+         usg->resolve_attachment ||
+         usg->depth_stencil_attachment ||
+         usg->storage_image ||
+@@ -14511,6 +14540,26 @@ _SOKOL_PRIVATE void _sg_d3d11_update_image(_sg_image_t* img, const sg_image_data
+     }
+ }
+ 
++_SOKOL_PRIVATE void _sg_d3d11_update_image_region(_sg_image_t* img, const sg_image_region* region) {
++    SOKOL_ASSERT(img && region && region->data.ptr);
++    SOKOL_ASSERT(_sg.d3d11.ctx && img->d3d11.res);
++    D3D11_BOX box;
++    box.left = (UINT)region->x;
++    box.top = (UINT)region->y;
++    box.front = 0;
++    box.right = (UINT)(region->x + region->width);
++    box.bottom = (UINT)(region->y + region->height);
++    box.back = 1;
++    _sg_d3d11_UpdateSubresource(
++        _sg.d3d11.ctx,
++        img->d3d11.res,
++        0,
++        &box,
++        region->data.ptr,
++        (UINT)region->row_pitch,
++        0);
++}
++
+ // ███    ███ ███████ ████████  █████  ██          ██████   █████   ██████ ██   ██ ███████ ███    ██ ██████
+ // ████  ████ ██         ██    ██   ██ ██          ██   ██ ██   ██ ██      ██  ██  ██      ████   ██ ██   ██
+ // ██ ████ ██ █████      ██    ███████ ██          ██████  ███████ ██      █████   █████   ██ ██  ██ ██   ██
+@@ -22351,6 +22400,16 @@ static inline void _sg_update_image(_sg_image_t* img, const sg_image_data* data)
+     #endif
+ }
+ 
++static inline void _sg_update_image_region(_sg_image_t* img, const sg_image_region* region) {
++    #if defined(_SOKOL_ANY_GL)
++    _sg_gl_update_image_region(img, region);
++    #elif defined(SOKOL_D3D11)
++    _sg_d3d11_update_image_region(img, region);
++    #else
++    SOKOL_UNREACHABLE;
++    #endif
++}
++
+ static inline void _sg_push_debug_group(const char* name) {
+     #if defined(SOKOL_METAL)
+     _sg_mtl_push_debug_group(name);
+@@ -22395,6 +22454,10 @@ _SOKOL_PRIVATE bool _sg_one(bool b0, bool b1, bool b2) {
+     return (b0 && !b1 && !b2) || (!b0 && b1 && !b2) || (!b0 && !b1 && b2);
+ }
+ 
++_SOKOL_PRIVATE bool _sg_one4(bool b0, bool b1, bool b2, bool b3) {
++    return (b0 ? 1 : 0) + (b1 ? 1 : 0) + (b2 ? 1 : 0) + (b3 ? 1 : 0) == 1;
++}
++
+ _SOKOL_PRIVATE bool _sg_validate_buffer_desc(const sg_buffer_desc* desc) {
+     #if !defined(SOKOL_DEBUG)
+         _SOKOL_UNUSED(desc);
+@@ -22471,7 +22534,7 @@ _SOKOL_PRIVATE bool _sg_validate_image_desc(const sg_image_desc* desc) {
+         _sg_validate_begin();
+         _SG_VALIDATE(desc->_start_canary == 0, VALIDATE_IMAGEDESC_CANARY);
+         _SG_VALIDATE(desc->_end_canary == 0, VALIDATE_IMAGEDESC_CANARY);
+-        _SG_VALIDATE(_sg_one(usg->immutable, usg->dynamic_update, usg->stream_update), VALIDATE_IMAGEDESC_IMMUTABLE_DYNAMIC_STREAM);
++        _SG_VALIDATE(_sg_one4(usg->immutable, usg->dynamic_update, usg->stream_update, usg->region_update), VALIDATE_IMAGEDESC_IMMUTABLE_DYNAMIC_STREAM);
+         switch (desc->type) {
+             case SG_IMAGETYPE_2D:
+                 _SG_VALIDATE(desc->num_slices == 1, VALIDATE_IMAGEDESC_IMAGETYPE_2D_NUMSLICES);
+@@ -23996,7 +24059,7 @@ _SOKOL_PRIVATE sg_buffer_desc _sg_buffer_desc_defaults(const sg_buffer_desc* des
+ 
+ _SOKOL_PRIVATE sg_image_usage _sg_image_usage_defaults(const sg_image_usage *usg) {
+     sg_image_usage def = *usg;
+-    if (!(def.immutable || def.stream_update || def.dynamic_update)) {
++    if (!(def.immutable || def.stream_update || def.dynamic_update || def.region_update)) {
+         def.immutable = true;
+     }
+     return def;
+@@ -25755,6 +25818,46 @@ SOKOL_API_IMPL void sg_update_image(sg_image img_id, const sg_image_data* data)
+     _SG_TRACE_ARGS(update_image, img_id, data);
+ }
+ 
++SOKOL_API_IMPL void sg_update_image_region(sg_image img_id, const sg_image_region* region) {
++    SOKOL_ASSERT(_sg.valid);
++    SOKOL_ASSERT(region && region->data.ptr);
++    _sg_image_t* img = _sg_lookup_image(img_id.id);
++    if (img && img->slot.state == SG_RESOURCESTATE_VALID) {
++        const bool shape_valid =
++            region->width > 0 && region->height > 0 &&
++            region->x >= 0 && region->y >= 0 &&
++            region->width <= img->cmn.width &&
++            region->height <= img->cmn.height &&
++            region->x <= img->cmn.width - region->width &&
++            region->y <= img->cmn.height - region->height &&
++            region->row_pitch > 0 &&
++            (region->row_pitch % 4) == 0 &&
++            region->row_pitch >= region->width * 4;
++        size_t required_size = 0;
++        bool data_size_valid = false;
++        if (shape_valid) {
++            const size_t row_pitch = (size_t)region->row_pitch;
++            const size_t final_row_size = (size_t)region->width * 4;
++            const size_t preceding_rows = (size_t)(region->height - 1);
++            if (preceding_rows <= (SIZE_MAX - final_row_size) / row_pitch) {
++                required_size = preceding_rows * row_pitch + final_row_size;
++                data_size_valid = region->data.size >= required_size;
++            }
++        }
++        const bool valid = shape_valid && data_size_valid &&
++            img->cmn.usage.region_update &&
++            img->cmn.type == SG_IMAGETYPE_2D &&
++            img->cmn.pixel_format == SG_PIXELFORMAT_RGBA8 &&
++            img->cmn.num_mipmaps == 1 &&
++            img->cmn.upd_frame_index != _sg.frame_index;
++        SOKOL_ASSERT(valid);
++        if (valid) {
++            _sg_update_image_region(img, region);
++            img->cmn.upd_frame_index = _sg.frame_index;
++        }
++    }
++}
++
+ SOKOL_API_IMPL void sg_push_debug_group(const char* name) {
+     SOKOL_ASSERT(_sg.valid);
+     SOKOL_ASSERT(name);

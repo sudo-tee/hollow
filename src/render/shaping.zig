@@ -349,7 +349,7 @@ pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, r
             }
         }
     }
-    self.atlas_dirty = true;
+    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
     if (bh > self.atlas_row_h) self.atlas_row_h = bh;
 
     const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));

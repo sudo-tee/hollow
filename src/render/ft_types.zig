@@ -5,7 +5,6 @@
 /// diagnostic enum `RasterMode`.  Everything in this module is a pure type or
 /// constant — no logic — so it can be imported by every other renderer
 /// submodule without creating circular dependencies.
-
 const std = @import("std");
 const c = @import("sokol_c");
 const ghostty = @import("../term/ghostty.zig");
@@ -15,6 +14,63 @@ const ghostty = @import("../term/ghostty.zig");
 pub const ATLAS_W: u32 = 2048;
 pub const ATLAS_H: u32 = 2048;
 pub const ATLAS_BPP: u32 = 4; // RGBA8
+
+pub const AtlasDirtyRect = struct {
+    min_x: u32 = ATLAS_W,
+    min_y: u32 = ATLAS_H,
+    max_x: u32 = 0,
+    max_y: u32 = 0,
+
+    pub fn include(self: *AtlasDirtyRect, x: u32, y: u32, rect_width: u32, rect_height: u32) void {
+        if (rect_width == 0 or rect_height == 0) return;
+        std.debug.assert(x + rect_width <= ATLAS_W);
+        std.debug.assert(y + rect_height <= ATLAS_H);
+        self.min_x = @min(self.min_x, x);
+        self.min_y = @min(self.min_y, y);
+        self.max_x = @max(self.max_x, x + rect_width);
+        self.max_y = @max(self.max_y, y + rect_height);
+    }
+
+    pub fn clear(self: *AtlasDirtyRect) void {
+        self.* = .{};
+    }
+
+    pub fn valid(self: AtlasDirtyRect) bool {
+        return self.min_x < self.max_x and self.min_y < self.max_y;
+    }
+
+    pub fn width(self: AtlasDirtyRect) u32 {
+        return if (self.valid()) self.max_x - self.min_x else 0;
+    }
+
+    pub fn height(self: AtlasDirtyRect) u32 {
+        return if (self.valid()) self.max_y - self.min_y else 0;
+    }
+};
+
+test "AtlasDirtyRect unions writes and clears" {
+    var rect: AtlasDirtyRect = .{};
+    try std.testing.expect(!rect.valid());
+
+    rect.include(20, 30, 10, 5);
+    rect.include(5, 40, 7, 9);
+    try std.testing.expectEqual(@as(u32, 5), rect.min_x);
+    try std.testing.expectEqual(@as(u32, 30), rect.min_y);
+    try std.testing.expectEqual(@as(u32, 30), rect.max_x);
+    try std.testing.expectEqual(@as(u32, 49), rect.max_y);
+    try std.testing.expectEqual(@as(u32, 25), rect.width());
+    try std.testing.expectEqual(@as(u32, 19), rect.height());
+
+    rect.clear();
+    try std.testing.expect(!rect.valid());
+}
+
+test "AtlasDirtyRect handles full atlas" {
+    var rect: AtlasDirtyRect = .{};
+    rect.include(0, 0, ATLAS_W, ATLAS_H);
+    try std.testing.expectEqual(ATLAS_W, rect.width());
+    try std.testing.expectEqual(ATLAS_H, rect.height());
+}
 
 // ── Custom glyph shader types ─────────────────────────────────────────────────
 //

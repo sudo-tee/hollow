@@ -20,6 +20,10 @@ const RecentPreparedEntry = ft_types.RecentPreparedEntry;
 pub fn beginFrame(self: *FtRenderer) void {
     self.atlas_uploaded_this_frame = false;
     self.uploaded_glyph_verts = 0;
+    self.atlas_reset_this_frame = false;
+    // Evict only before any pane can rasterize or upload this frame. Resetting
+    // after the sole upload would make new UVs sample stale GPU contents.
+    self.resetAtlasIfNeeded();
 }
 
 /// Upload atlas to GPU if it has been modified and not yet uploaded this frame.
@@ -33,15 +37,30 @@ pub fn flushAtlasIfDirty(self: *FtRenderer) void {
 
 pub fn flushAtlas(self: *FtRenderer) void {
     if (self.atlas_uploaded_this_frame) return;
-    var upd = std.mem.zeroes(c.sg_image_data);
-    upd.mip_levels[0].ptr = self.atlas_data.ptr;
-    upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
-    c.sg_update_image(self.atlas_img, &upd);
+    const rect = self.atlas_dirty_rect;
+    if (!rect.valid()) return;
+    const row_pitch = ATLAS_W * ATLAS_BPP;
+    const offset = rect.min_y * row_pitch + rect.min_x * ATLAS_BPP;
+    var region = std.mem.zeroes(c.sg_image_region);
+    region.x = @intCast(rect.min_x);
+    region.y = @intCast(rect.min_y);
+    region.width = @intCast(rect.width());
+    region.height = @intCast(rect.height());
+    region.row_pitch = @intCast(row_pitch);
+    region.data.ptr = self.atlas_data.ptr + offset;
+    region.data.size = (rect.height() - 1) * row_pitch + rect.width() * ATLAS_BPP;
+    c.sg_update_image_region(self.atlas_img, &region);
+    self.atlas_dirty_rect.clear();
     self.atlas_uploaded_this_frame = true;
     // Appends do NOT move existing glyph UVs, so cached pane RT pixels stay
     // valid. Bump append_epoch only as an informational "atlas was uploaded"
     // counter; the pane cache invalidation counter is atlas_reset_epoch.
     self.atlas_append_epoch +%= 1;
+}
+
+pub fn markAtlasDirty(self: *FtRenderer, x: u32, y: u32, width: u32, height: u32) void {
+    self.atlas_dirty_rect.include(x, y, width, height);
+    self.atlas_dirty = true;
 }
 
 /// Evict the glyph atlas and all caches when the atlas is >=90% full.
@@ -56,7 +75,8 @@ pub fn resetAtlasIfNeeded(self: *FtRenderer) void {
     self.atlas_x = 1;
     self.atlas_y = 1;
     self.atlas_row_h = 0;
-    self.atlas_dirty = true;
+    self.markAtlasDirty(0, 0, ATLAS_W, ATLAS_H);
+    self.atlas_reset_this_frame = true;
     // Destructive eviction: every pane cache must do a full redraw because all
     // previously placed glyphs have had their UVs invalidated. Bump reset_epoch
     // (separate from atlas_append_epoch) so up-to-date pane caches stay valid

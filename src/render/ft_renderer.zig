@@ -187,6 +187,8 @@ pub const FtRenderer = struct {
     atlas_y: u32,
     atlas_row_h: u32,
     atlas_dirty: bool,
+    atlas_dirty_rect: ft_types.AtlasDirtyRect,
+    atlas_reset_this_frame: bool,
     /// Guards against calling sg_update_image more than once per frame.
     /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
     atlas_uploaded_this_frame: bool,
@@ -385,7 +387,7 @@ pub const FtRenderer = struct {
         img_desc.width = @intCast(ATLAS_W);
         img_desc.height = @intCast(ATLAS_H);
         img_desc.pixel_format = c.SG_PIXELFORMAT_RGBA8;
-        img_desc.usage.dynamic_update = true;
+        img_desc.usage.region_update = true;
         img_desc.label = "ft-atlas";
         const atlas_img = c.sg_make_image(&img_desc);
 
@@ -630,7 +632,11 @@ pub const FtRenderer = struct {
             .atlas_x = 1, // leave 1px gutter
             .atlas_y = 1,
             .atlas_row_h = 0,
-            .atlas_dirty = false,
+            // GPU image contents start undefined. First flush uploads full
+            // zeroed atlas; later flushes upload only accumulated dirty bounds.
+            .atlas_dirty = true,
+            .atlas_dirty_rect = .{ .min_x = 0, .min_y = 0, .max_x = ATLAS_W, .max_y = ATLAS_H },
+            .atlas_reset_this_frame = false,
             .atlas_uploaded_this_frame = false,
             .atlas_append_epoch = 0,
             .atlas_reset_epoch = 0,
@@ -932,9 +938,6 @@ pub const FtRenderer = struct {
         self.last_bg_rects = 0;
         self.last_atlas_flushed = false;
         self.frame_count += 1;
-
-        // Evict atlas if it is ≥90% full to prevent the "atlas full" hard stop.
-        self.resetAtlasIfNeeded();
 
         // Switch to this pane's sgl_context so draw commands go into its
         // own vertex / command buffers (isolated from the main context).
@@ -1244,6 +1247,10 @@ pub const FtRenderer = struct {
 
     pub fn flushAtlas(self: *FtRenderer) void {
         atlas_mod.flushAtlas(self);
+    }
+
+    pub fn markAtlasDirty(self: *FtRenderer, x: u32, y: u32, width: u32, height: u32) void {
+        atlas_mod.markAtlasDirty(self, x, y, width, height);
     }
 
     pub fn resetAtlasIfNeeded(self: *FtRenderer) void {

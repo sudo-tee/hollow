@@ -44,6 +44,7 @@ apply_patch() {
 }
 
 apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
+apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-image-region.patch"
 
 # `third_party/lua-zluajit` tracks upstream `negrel/zluajit` but Hollow uses a
 # local path dependency for `../luajit-upstream` plus a tiny Windows cross-build

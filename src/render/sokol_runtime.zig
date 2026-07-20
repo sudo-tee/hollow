@@ -2721,10 +2721,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var offscreen_terminal_ns: i128 = 0;
     var offscreen_bar_preraster_ns: i128 = 0;
 
+    if (g_ft_renderer) |*renderer| renderer.beginFrame();
+
     // Decide once whether to use direct rendering.
     // renderer_safe_mode forces the simpler direct path for all panes as a
     // diagnostic escape hatch from the cached RT pipeline.
-    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0;
+    const atlas_reset_this_frame = if (g_ft_renderer) |*renderer| renderer.atlas_reset_this_frame else false;
+    const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame;
     const use_safe_render = app.config.renderer_safe_mode;
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
@@ -2735,7 +2738,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         prunePaneCachesToVisible(leaves, single_visible_pane);
     }
     if (g_ft_renderer) |*renderer| {
-        renderer.beginFrame();
         // Reset frame-local queue/gpu accumulators for the debug overlay.
         g_frame_queue_ns = 0;
         g_frame_gpu_ns = 0;
