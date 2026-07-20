@@ -207,6 +207,13 @@ pub const PosixPty = struct {
         return self.reader_state.buf.items.len > self.reader_state.start;
     }
 
+    pub fn hasPendingOutputOrExit(self: *PosixPty) bool {
+        if (self.closed) return true;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.eof or self.reader_state.buf.items.len > self.reader_state.start;
+    }
+
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
         var offset: usize = 0;
         while (offset < bytes.len) {
@@ -280,15 +287,21 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
             reader_state.mutex.lock();
             reader_state.eof = true;
             reader_state.mutex.unlock();
+            app.signalExternalWake();
             return;
         }
         switch (std.posix.errno(-1)) {
             .INTR => {},
             .AGAIN => {},
             else => {
+                var exited = false;
                 reader_state.mutex.lock();
-                if (!reader_state.closing) reader_state.eof = true;
+                if (!reader_state.closing) {
+                    reader_state.eof = true;
+                    exited = true;
+                }
                 reader_state.mutex.unlock();
+                if (exited) app.signalExternalWake();
                 return;
             },
         }

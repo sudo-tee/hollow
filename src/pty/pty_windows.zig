@@ -478,6 +478,12 @@ pub const WindowsPty = struct {
         return self.reader_state.buf.items.len > self.reader_state.start;
     }
 
+    pub fn hasPendingOutputOrExit(self: *WindowsPty) bool {
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.eof or self.reader_state.buf.items.len > self.reader_state.start;
+    }
+
     pub fn writeAll(self: *WindowsPty, bytes: []const u8) !void {
         if (!self.shellProducedOutput()) {
             try self.pending_input.appendSlice(self.allocator, bytes);
@@ -727,9 +733,7 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
             const err = kernel32.GetLastError();
             std.log.warn("conpty ReadFile failed loop={d} err={d}", .{ loop_count, err });
             // Signal that the pipe is closed so isAlive() returns false.
-            reader_state.mutex.lock();
-            reader_state.eof = true;
-            reader_state.mutex.unlock();
+            markReaderEof(reader_state);
             return;
         }
         // Log every 60 seconds to show reader thread is still alive
@@ -877,6 +881,7 @@ fn markReaderEof(reader_state: *ReaderState) void {
     reader_state.mutex.lock();
     reader_state.eof = true;
     reader_state.mutex.unlock();
+    app.signalExternalWake();
 }
 
 fn markReaderExit(reader_state: *ReaderState, exit_status: ?u32) void {
@@ -884,6 +889,7 @@ fn markReaderExit(reader_state: *ReaderState, exit_status: ?u32) void {
     reader_state.exit_status = exit_status;
     reader_state.eof = true;
     reader_state.mutex.unlock();
+    app.signalExternalWake();
 }
 
 fn logAvailableBypassStderr(handle: windows.HANDLE) void {

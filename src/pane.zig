@@ -924,7 +924,7 @@ pub const Pane = struct {
         };
         if (!self.child_alive_cached) return;
         const now_ns = std.time.nanoTimestamp();
-        if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutput()) return;
+        if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutputOrExit()) return;
         self.last_child_alive_check_ns = now_ns;
         self.child_alive_cached = pty.isAlive();
     }
