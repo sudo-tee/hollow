@@ -58,7 +58,7 @@ pub const PosixPty = struct {
             defer freeArgv(std.heap.page_allocator, argv);
             var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer env_arena.deinit();
-            const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch null else null;
+            const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch c._exit(1) else null;
             _ = c.execve(shell.ptr, @ptrCast(@constCast(argv.ptr)), if (envp) |items| @ptrCast(items.ptr) else null);
             c._exit(1);
         }
