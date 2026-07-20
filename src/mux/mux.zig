@@ -558,11 +558,11 @@ pub const Mux = struct {
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target = self.workspaces.items[target_workspace_index];
         if (target == src) return false;
+        const insert_at = if (target.active_tab) |_| target.activeTabIndex() + 1 else target.tabs.items.len;
+        target.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
         src.detachTab(t);
-        target.insertTab(t) catch {
-            src.appendTab(t) catch {};
-            return false;
-        };
+        target.tabs.insertAssumeCapacity(insert_at, t);
+        target.active_tab = t;
         self.active_workspace = target;
         if (src.tabs.items.len == 0) _ = self.removeWorkspace(runtime, src);
         return true;
@@ -594,23 +594,29 @@ pub const Mux = struct {
         if (target_workspace_index >= self.workspaces.items.len) return false;
         const target_ws = self.workspaces.items[target_workspace_index];
         if (target_ws == src_ws) return false;
-        src_tab.detachPane(p);
-        const tab_empty = src_tab.panes.items.len == 0;
+        const insert_at = if (target_ws.active_tab) |_| target_ws.activeTabIndex() + 1 else target_ws.tabs.items.len;
+        target_ws.tabs.ensureUnusedCapacity(self.allocator, 1) catch return false;
         const new_tab = self.allocator.create(Tab) catch {
-            src_tab.appendPane(p) catch {};
             return false;
         };
         new_tab.* = Tab.init(self.allocator, self.allocId());
+        var new_tab_published = false;
+        defer if (!new_tab_published) {
+            if (new_tab.root_split) |root| {
+                root.deinit(self.allocator);
+                self.allocator.destroy(root);
+            }
+            new_tab.panes.deinit(self.allocator);
+            self.allocator.destroy(new_tab);
+        };
         new_tab.appendPane(p) catch {
-            self.allocator.destroy(new_tab);
-            src_tab.appendPane(p) catch {};
             return false;
         };
-        target_ws.insertTab(new_tab) catch {
-            self.allocator.destroy(new_tab);
-            src_tab.appendPane(p) catch {};
-            return false;
-        };
+        src_tab.detachPane(p);
+        const tab_empty = src_tab.panes.items.len == 0;
+        target_ws.tabs.insertAssumeCapacity(insert_at, new_tab);
+        target_ws.active_tab = new_tab;
+        new_tab_published = true;
         if (tab_empty) {
             src_ws.detachTab(src_tab);
             src_tab.deinit(runtime);
