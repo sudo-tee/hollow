@@ -107,7 +107,9 @@ pub const Server = struct {
     fn handleConnection(self: *Server, conn: *std.net.Server.Connection) !void {
         defer conn.stream.close();
 
-        var parsed = try command.parseEnvelope(self.allocator, try readFrame(self.allocator, conn.stream));
+        const frame = try readFrame(self.allocator, conn.stream);
+        defer self.allocator.free(frame);
+        var parsed = try command.parseEnvelope(self.allocator, frame);
         defer parsed.deinit(self.allocator);
 
         var response = self.handler(self.app, parsed.request);
