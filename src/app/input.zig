@@ -422,19 +422,21 @@ pub fn processInputQueue(self: *App) void {
                 }
             },
             .scroll_pane_delta => |scroll_ev| {
-                if (!self.hasPane(scroll_ev.pane)) continue;
-                if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
-                    copy_mode.copyModeScrollDelta(self, scroll_ev.delta);
-                } else {
-                    scroll_mod.scrollPaneViewport(self, scroll_ev.pane, scroll_ev.delta);
+                if (self.hasPane(scroll_ev.pane)) {
+                    if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
+                        copy_mode.copyModeScrollDelta(self, scroll_ev.delta);
+                    } else {
+                        scroll_mod.scrollPaneViewport(self, scroll_ev.pane, scroll_ev.delta);
+                    }
                 }
             },
             .scroll_pane_target => |scroll_ev| {
-                if (!self.hasPane(scroll_ev.pane)) continue;
-                if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
-                    copy_mode.copyModeScrollToRow(self, scroll_ev.top_row);
-                } else {
-                    scroll_mod.scrollPaneViewportToRow(self, scroll_ev.pane, scroll_ev.top_row);
+                if (self.hasPane(scroll_ev.pane)) {
+                    if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
+                        copy_mode.copyModeScrollToRow(self, scroll_ev.top_row);
+                    } else {
+                        scroll_mod.scrollPaneViewportToRow(self, scroll_ev.pane, scroll_ev.top_row);
+                    }
                 }
             },
             .scroll_active_delta => |delta| {
@@ -446,8 +448,9 @@ pub fn processInputQueue(self: *App) void {
             },
             .scroll_active_page => |pages| {
                 if (self.copy_mode_active) {
-                    const pane = self.copy_mode_pane orelse continue;
-                    copy_mode.copyModeScrollDelta(self, pages * scroll_mod.pageScrollRows(pane));
+                    if (self.copy_mode_pane) |pane| {
+                        copy_mode.copyModeScrollDelta(self, pages * scroll_mod.pageScrollRows(pane));
+                    }
                 } else {
                     mux_ops.scrollActiveViewportPage(self, pages);
                 }
