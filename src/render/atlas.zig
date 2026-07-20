@@ -3,7 +3,6 @@
 /// These are free functions taking `*FtRenderer`; the struct wraps them as
 /// one-line methods so existing call sites (`self.flushAtlas()`, etc.) work
 /// unchanged.
-
 const std = @import("std");
 const c = @import("sokol_c");
 
@@ -39,7 +38,10 @@ pub fn flushAtlas(self: *FtRenderer) void {
     upd.mip_levels[0].size = ATLAS_W * ATLAS_H * ATLAS_BPP;
     c.sg_update_image(self.atlas_img, &upd);
     self.atlas_uploaded_this_frame = true;
-    self.atlas_epoch +%= 1;
+    // Appends do NOT move existing glyph UVs, so cached pane RT pixels stay
+    // valid. Bump append_epoch only as an informational "atlas was uploaded"
+    // counter; the pane cache invalidation counter is atlas_reset_epoch.
+    self.atlas_append_epoch +%= 1;
 }
 
 /// Evict the glyph atlas and all caches when the atlas is >=90% full.
@@ -55,6 +57,11 @@ pub fn resetAtlasIfNeeded(self: *FtRenderer) void {
     self.atlas_y = 1;
     self.atlas_row_h = 0;
     self.atlas_dirty = true;
+    // Destructive eviction: every pane cache must do a full redraw because all
+    // previously placed glyphs have had their UVs invalidated. Bump reset_epoch
+    // (separate from atlas_append_epoch) so up-to-date pane caches stay valid
+    // through subsequent append-only flushes.
+    self.atlas_reset_epoch +%= 1;
     self.glyph_cache.clearRetainingCapacity();
     var shape_it = self.shape_cache.valueIterator();
     while (shape_it.next()) |val| {

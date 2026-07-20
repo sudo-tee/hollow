@@ -1,19 +1,12 @@
-From: ghostty-love patch
-Subject: [PATCH] add no_vsync field to sapp_desc to allow disabling vsync
+From: Hollow local patches
+Subject: [PATCH] add no-vsync and frame-present controls
 
-sokol_app has used _sapp_def(swap_interval, 1) since its inception, which
-treats swap_interval=0 as "unset, use default=1". This makes it impossible
-to pass SyncInterval=0 to DXGI Present (D3D11) or call glSwapInterval(0)
-on GL backends, permanently locking the frame rate to the display refresh.
-
-The upstream issue has been open since ~2019 with no resolution:
-  https://github.com/floooh/sokol/issues/284
-
-This patch adds a bool no_vsync to sapp_desc. When true, swap_interval is
-forced to 0 before the defaults pass runs, bypassing the _sapp_def clamp.
+The no_vsync field permits SyncInterval=0 instead of treating zero as an
+unset swap interval. sapp_skip_present lets an idle frame callback preserve
+the previous swapchain image instead of rotating to an unrendered buffer.
 
 diff --git a/sokol_app.h b/sokol_app.h
-index 111acdd..6329bf5 100644
+index 111acdd..2a1e028 100644
 --- a/sokol_app.h
 +++ b/sokol_app.h
 @@ -2042,6 +2042,7 @@ typedef struct sapp_desc {
@@ -24,7 +17,24 @@ index 111acdd..6329bf5 100644
      bool high_dpi;                      // whether the rendering canvas is full-resolution on HighDPI displays
      bool fullscreen;                    // whether the window should be created in fullscreen mode
      bool alpha;                         // whether the framebuffer should have an alpha channel (ignored on some platforms)
-@@ -3570,7 +3571,7 @@ _SOKOL_PRIVATE sapp_desc _sapp_desc_defaults(const sapp_desc* desc) {
+@@ -2180,6 +2181,8 @@ SOKOL_APP_API_DECL void sapp_request_quit(void);
+ SOKOL_APP_API_DECL void sapp_cancel_quit(void);
+ /* initiate a "hard quit" (quit application without sending SAPP_EVENTTYPE_QUIT_REQUESTED) */
+ SOKOL_APP_API_DECL void sapp_quit(void);
++/* suppress presenting/swapping the current frame, preserving the last frame */
++SOKOL_APP_API_DECL void sapp_skip_present(void);
+ /* call from inside event callback to consume the current event (don't forward to platform) */
+ SOKOL_APP_API_DECL void sapp_consume_event(void);
+ /* get the current frame counter (for comparison with sapp_event.frame_count) */
+@@ -3315,6 +3318,7 @@ typedef struct {
+     bool quit_requested;
+     bool quit_ordered;
+     bool event_consumed;
++    bool skip_present;
+     bool html5_ask_leave_site;
+     bool onscreen_keyboard_shown;
+     int window_width;
+@@ -3570,7 +3574,7 @@ _SOKOL_PRIVATE sapp_desc _sapp_desc_defaults(const sapp_desc* desc) {
      SOKOL_ASSERT((desc->allocator.alloc_fn && desc->allocator.free_fn) || (!desc->allocator.alloc_fn && !desc->allocator.free_fn));
      sapp_desc res = *desc;
      res.sample_count = _sapp_def(res.sample_count, 1);
@@ -33,3 +43,64 @@ index 111acdd..6329bf5 100644
      if (0 == res.gl.major_version) {
          #if defined(SOKOL_GLCORE)
              res.gl.major_version = 4;
+@@ -3698,6 +3702,7 @@ _SOKOL_PRIVATE void _sapp_frame(void) {
+         _sapp.first_frame = false;
+         _sapp_call_init();
+     }
++    _sapp.skip_present = false;
+     _sapp_call_frame();
+     _sapp.frame_count++;
+ }
+@@ -9561,13 +9566,15 @@ _SOKOL_PRIVATE void _sapp_win32_frame(bool from_winproc) {
+     #else
+         _sapp_frame();
+     #endif
+-    #if defined(SOKOL_D3D11)
+-        bool do_not_wait = from_winproc;
+-        _sapp_d3d11_present(do_not_wait);
+-    #endif
+-    #if defined(SOKOL_GLCORE)
+-        _sapp_wgl_swap_buffers();
+-    #endif
++    if (!_sapp.skip_present) {
++        #if defined(SOKOL_D3D11)
++            bool do_not_wait = from_winproc;
++            _sapp_d3d11_present(do_not_wait);
++        #endif
++        #if defined(SOKOL_GLCORE)
++            _sapp_wgl_swap_buffers();
++        #endif
++    }
+     if (!from_winproc) {
+         if (IsIconic(_sapp.win32.hwnd)) {
+             Sleep((DWORD)(16 * _sapp.swap_interval));
+@@ -13769,11 +13776,13 @@ _SOKOL_PRIVATE void _sapp_linux_frame(void) {
+         _sapp_vk_frame();
+     #else
+         _sapp_frame();
+-        #if defined(_SAPP_GLX)
+-            _sapp_glx_swap_buffers();
+-        #elif defined(_SAPP_EGL)
+-            eglSwapBuffers(_sapp.egl.display, _sapp.egl.surface);
+-        #endif
++        if (!_sapp.skip_present) {
++            #if defined(_SAPP_GLX)
++                _sapp_glx_swap_buffers();
++            #elif defined(_SAPP_EGL)
++                eglSwapBuffers(_sapp.egl.display, _sapp.egl.surface);
++            #endif
++        }
+     #endif
+ }
+
+@@ -14173,6 +14182,10 @@ SOKOL_API_IMPL void sapp_quit(void) {
+     _sapp.quit_ordered = true;
+ }
+
++SOKOL_API_IMPL void sapp_skip_present(void) {
++    _sapp.skip_present = true;
++}
++
+ SOKOL_API_IMPL void sapp_consume_event(void) {
+     _sapp.event_consumed = true;
+ }

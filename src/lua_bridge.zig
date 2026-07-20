@@ -258,7 +258,6 @@ pub const AppCallbacks = struct {
     copy_mode_search_prev: *const fn (app: *anyopaque) void,
 };
 
-
 // LUA_REGISTRYINDEX / LUA_GLOBALSINDEX constants (match the LuaJIT 2.1 ABI)
 const LUA_REGISTRYINDEX: c_int = -10000;
 const LUA_ENVIRONINDEX: c_int = -10001;
@@ -1094,20 +1093,27 @@ pub const Runtime = struct {
         timed_callback_refs: *std.ArrayListUnmanaged(TimedCallback),
         now: i64,
     ) std.ArrayListUnmanaged(TimedCallback) {
-        var existing = timed_callback_refs.*;
         var pending = std.ArrayListUnmanaged(TimedCallback){};
-        var remaining = std.ArrayListUnmanaged(TimedCallback){};
+        var expired_count: usize = 0;
+        for (timed_callback_refs.items) |entry| {
+            if (entry.expires_at_ms == 0 or now >= entry.expires_at_ms) expired_count += 1;
+        }
+        if (expired_count == 0) return pending;
 
-        for (existing.items) |tc_entry| {
-            if (tc_entry.expires_at_ms == 0 or now >= tc_entry.expires_at_ms) {
-                pending.append(allocator, tc_entry) catch {};
+        // Allocate expired storage before mutating the source. On OOM all
+        // callbacks remain registered and can be retried next frame.
+        pending.ensureTotalCapacity(allocator, expired_count) catch return pending;
+
+        var remaining_count: usize = 0;
+        for (timed_callback_refs.items) |entry| {
+            if (entry.expires_at_ms == 0 or now >= entry.expires_at_ms) {
+                pending.appendAssumeCapacity(entry);
             } else {
-                remaining.append(allocator, tc_entry) catch {};
+                timed_callback_refs.items[remaining_count] = entry;
+                remaining_count += 1;
             }
         }
-
-        timed_callback_refs.* = remaining;
-        existing.deinit(allocator);
+        timed_callback_refs.shrinkRetainingCapacity(remaining_count);
         return pending;
     }
 
@@ -6270,4 +6276,54 @@ test "drainExpiredTimedCallbacks keeps remaining timers reusable" {
     try timed_callback_refs.append(std.testing.allocator, .{ .ref = 33, .expires_at_ms = 40 });
     try std.testing.expectEqual(@as(usize, 2), timed_callback_refs.items.len);
     try std.testing.expectEqual(@as(c_int, 33), timed_callback_refs.items[1].ref);
+}
+
+test "drainExpiredTimedCallbacks does not allocate without expired timers" {
+    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    defer timed_callback_refs.deinit(std.testing.allocator);
+    try timed_callback_refs.append(std.testing.allocator, .{ .ref = 11, .expires_at_ms = 30 });
+
+    const original_ptr = timed_callback_refs.items.ptr;
+    const original_capacity = timed_callback_refs.capacity;
+    var pending = Runtime.drainExpiredTimedCallbacks(std.testing.failing_allocator, &timed_callback_refs, 20);
+    defer pending.deinit(std.testing.failing_allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    try std.testing.expectEqual(original_ptr, timed_callback_refs.items.ptr);
+    try std.testing.expectEqual(original_capacity, timed_callback_refs.capacity);
+    try std.testing.expectEqual(@as(c_int, 11), timed_callback_refs.items[0].ref);
+}
+
+test "drainExpiredTimedCallbacks leaves timers untouched on allocation failure" {
+    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    defer timed_callback_refs.deinit(std.testing.allocator);
+    try timed_callback_refs.appendSlice(std.testing.allocator, &.{
+        .{ .ref = 11, .expires_at_ms = 10 },
+        .{ .ref = 22, .expires_at_ms = 30 },
+    });
+
+    var pending = Runtime.drainExpiredTimedCallbacks(std.testing.failing_allocator, &timed_callback_refs, 20);
+    defer pending.deinit(std.testing.failing_allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    try std.testing.expectEqual(@as(usize, 2), timed_callback_refs.items.len);
+    try std.testing.expectEqual(@as(c_int, 11), timed_callback_refs.items[0].ref);
+    try std.testing.expectEqual(@as(c_int, 22), timed_callback_refs.items[1].ref);
+}
+
+test "drainExpiredTimedCallbacks preserves timer order" {
+    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    defer timed_callback_refs.deinit(std.testing.allocator);
+    try timed_callback_refs.appendSlice(std.testing.allocator, &.{
+        .{ .ref = 11, .expires_at_ms = 10 },
+        .{ .ref = 22, .expires_at_ms = 30 },
+        .{ .ref = 33, .expires_at_ms = 15 },
+        .{ .ref = 44, .expires_at_ms = 40 },
+    });
+
+    var pending = Runtime.drainExpiredTimedCallbacks(std.testing.allocator, &timed_callback_refs, 20);
+    defer pending.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualSlices(c_int, &.{ 11, 33 }, &.{ pending.items[0].ref, pending.items[1].ref });
+    try std.testing.expectEqualSlices(c_int, &.{ 22, 44 }, &.{ timed_callback_refs.items[0].ref, timed_callback_refs.items[1].ref });
 }

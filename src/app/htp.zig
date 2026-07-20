@@ -26,7 +26,6 @@ pub const HtpEnvelope = codec_mod.Envelope;
 
 pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
     const app: *App = @ptrCast(@alignCast(pane.host_context orelse return));
-    std.log.info("htp: received payload pane={x} bytes={d}", .{ @intFromPtr(pane), payload.len });
     queueHtpMessage(app, pane, payload);
 }
 
@@ -39,7 +38,6 @@ pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
         return;
     }
     const owned = self.allocator.dupe(u8, payload) catch return;
-    std.log.info("htp: queue pane={x} bytes={d}", .{ @intFromPtr(pane), payload.len });
     self.htp_pending_messages.append(self.allocator, .{
         .pane_id = @intFromPtr(pane),
         .payload = owned,
@@ -52,11 +50,9 @@ pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
 }
 
 pub fn bindHtpHandlers(self: *App) void {
-    std.log.info("htp: bind handlers mux_present={} panes_pending={}", .{ self.mux != null, if (self.mux) |_| true else false });
     if (self.mux) |*mux| {
         var panes = mux.paneIterator();
         while (panes.next()) |pane| {
-            std.log.info("htp: binding pane={x}", .{@intFromPtr(pane)});
             pane.setHtpMessageHandler(htpMessageCallback);
         }
     }
@@ -101,7 +97,6 @@ fn compactHtpMessageQueue(self: *App) void {
 }
 
 fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
-    std.log.info("htp: handle pane={x} payload={s}", .{ @intFromPtr(pane), payload });
     var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, payload, .{ .ignore_unknown_fields = true }) catch |err| {
         sendHtpProtocolError(self, pane, null, "invalid_json", @errorName(err));
         return;
@@ -225,7 +220,6 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
 }
 
 fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value) void {
-    std.log.info("htp: dispatch event pane={x} channel={s}", .{ @intFromPtr(pane), channel });
     const lua = if (self.lua) |*value| value else {
         sendHtpProtocolError(self, pane, message_id, "unavailable", "lua runtime unavailable");
         return;
@@ -243,7 +237,6 @@ fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: [
 }
 
 fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id: ?[]const u8, channel: []const u8, params: ?std.json.Value) void {
-    std.log.info("htp: dispatch query pane={x} channel={s}", .{ @intFromPtr(pane), channel });
     const result = dispatchHtpQuerySync(self, @intFromPtr(pane), channel, params) catch |err| {
         sendHtpQueryError(self, pane, message_id, request_id, "internal", @errorName(err));
         return;
@@ -309,7 +302,6 @@ fn sendHtpEnvelope(self: *App, pane: *Pane, envelope: HtpEnvelope) void {
     defer buf.deinit();
 
     std.json.Stringify.value(envelope, .{}, &buf.writer) catch return;
-    std.log.info("htp: send pane={x} payload={s}", .{ @intFromPtr(pane), buf.written() });
     sendHtpChunkedJson(self, pane, buf.written());
 }
 

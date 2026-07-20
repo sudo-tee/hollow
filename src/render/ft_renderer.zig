@@ -190,12 +190,19 @@ pub const FtRenderer = struct {
     /// Guards against calling sg_update_image more than once per frame.
     /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
     atlas_uploaded_this_frame: bool,
-    /// Monotonically increasing counter: incremented each time the atlas is
-    /// uploaded to the GPU.  Callers can compare a saved epoch against this
-    /// value to know whether the atlas changed since their last render — if
-    /// their saved epoch < atlas_epoch the pane must do a full redraw so the
-    /// new glyph bitmaps are visible.  Never reset to zero (only wraps at u64 max).
-    atlas_epoch: u64,
+    /// Monotonically increasing counter incremented on every atlas upload.
+    /// Informational: appends do NOT move existing glyph UVs, so pane caches
+    /// that were rendered before an append keep their cached pixels valid and
+    /// do NOT need a full redraw. Callers that only care whether cached pixels
+    /// became stale should compare `atlas_reset_epoch` instead.
+    atlas_append_epoch: u64,
+    /// Monotonically increasing counter incremented ONLY on the destructive
+    /// eviction in resetAtlasIfNeeded(). When this differs from a pane cache's
+    /// saved `last_atlas_reset_epoch`, every previously placed glyph has had
+    /// its UV moved (the atlas was zeroed and glyphs were re-rasterised into
+    /// new positions) and the pane must do a full redraw so its cached RT
+    /// pixels use the new UVs. Appends do NOT bump this counter.
+    atlas_reset_epoch: u64,
 
     // Glyph cache
     glyph_cache: std.HashMap(GlyphKey, Glyph, GlyphCacheContext, std.hash_map.default_max_load_percentage),
@@ -625,7 +632,8 @@ pub const FtRenderer = struct {
             .atlas_row_h = 0,
             .atlas_dirty = false,
             .atlas_uploaded_this_frame = false,
-            .atlas_epoch = 0,
+            .atlas_append_epoch = 0,
+            .atlas_reset_epoch = 0,
             .glyph_cache = std.HashMap(GlyphKey, Glyph, GlyphCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
             .shape_cache = std.HashMap(ShapeKey, ShapeResult, ShapeCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
             .prepared_cache = std.HashMap(PreparedKey, PreparedCacheEntry, PreparedCacheContext, std.hash_map.default_max_load_percentage).initContext(allocator, .{}),
@@ -1103,48 +1111,126 @@ pub const FtRenderer = struct {
 
     const SelectedShapeFont = shaping.SelectedShapeFont;
 
-    pub fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void { shaping.preRasterize(self, utf8, face_idx, raster_mode); }
-    pub fn preRasterizeShaped(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) void { shaping.preRasterizeShaped(self, result, raster_mode); }
-    pub fn prepareGlyphs(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun { return shaping.prepareGlyphs(self, utf8, face_idx, raster_mode); }
-    pub fn prepareShapedGlyphs(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) ?PreparedRun { return shaping.prepareShapedGlyphs(self, result, raster_mode); }
-    pub fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult { return shaping.getOrShape(self, utf8, face_idx); }
-    pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, raster_mode: RasterMode) ?Glyph { return shaping.getOrRasterize(self, glyph_id, raster_face_index, raster_mode); }
-    pub fn loadFlagsForRasterMode(self: *const FtRenderer, use_subpixel: bool) c_int { return shaping.loadFlagsForRasterMode(self, use_subpixel); }
-    pub fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) SelectedShapeFont { return shaping.selectShapeFont(self, utf8, face_idx); }
-    pub fn faceForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?ft.FT_Face { return shaping.faceForRasterIndex(self, raster_face_index); }
-    pub fn hbFontForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?*ft.hb_font_t { return shaping.hbFontForRasterIndex(self, raster_face_index); }
-    pub fn emboldenForRasterFace(self: *const FtRenderer, raster_face_index: u8) f32 { return shaping.emboldenForRasterFace(self, raster_face_index); }
-    pub fn recordShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8, prepared_start: usize, prepared_len: usize) void { shaping.recordShapedRun(self, utf8, face_idx, prepared_start, prepared_len); }
-    pub fn getPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun { return shaping.getPreparedCache(self, utf8, face_idx, raster_mode); }
-    pub fn appendPreparedRun(self: *FtRenderer, glyphs: []const PreparedGlyph) ?PreparedRun { return shaping.appendPreparedRun(self, glyphs); }
-    pub fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, glyphs: []const PreparedGlyph) void { shaping.putPreparedCache(self, utf8, face_idx, raster_mode, glyphs); }
-    pub fn makePreparedKey(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) PreparedKey { return shaping.makePreparedKey(self, utf8, face_idx, raster_mode); }
-    pub fn getRecentPrepared(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, fingerprint: u64) ?[]PreparedGlyph { return shaping.getRecentPrepared(self, utf8, face_idx, raster_mode, fingerprint); }
-    pub fn putRecentPrepared(self: *FtRenderer, key: PreparedKey, fingerprint: u64, glyphs: []PreparedGlyph) void { shaping.putRecentPrepared(self, key, fingerprint, glyphs); }
-    pub fn preparedFingerprint(utf8: []const u8, face_idx: u8, ligatures: bool, raster_mode: RasterMode) u64 { return shaping.preparedFingerprint(utf8, face_idx, ligatures, raster_mode); }
-    pub fn consumeShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?[]const PreparedGlyph { return shaping.consumeShapedRun(self, utf8, face_idx); }
+    pub fn preRasterize(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) void {
+        shaping.preRasterize(self, utf8, face_idx, raster_mode);
+    }
+    pub fn preRasterizeShaped(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) void {
+        shaping.preRasterizeShaped(self, result, raster_mode);
+    }
+    pub fn prepareGlyphs(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun {
+        return shaping.prepareGlyphs(self, utf8, face_idx, raster_mode);
+    }
+    pub fn prepareShapedGlyphs(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) ?PreparedRun {
+        return shaping.prepareShapedGlyphs(self, result, raster_mode);
+    }
+    pub fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResult {
+        return shaping.getOrShape(self, utf8, face_idx);
+    }
+    pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, raster_mode: RasterMode) ?Glyph {
+        return shaping.getOrRasterize(self, glyph_id, raster_face_index, raster_mode);
+    }
+    pub fn loadFlagsForRasterMode(self: *const FtRenderer, use_subpixel: bool) c_int {
+        return shaping.loadFlagsForRasterMode(self, use_subpixel);
+    }
+    pub fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) SelectedShapeFont {
+        return shaping.selectShapeFont(self, utf8, face_idx);
+    }
+    pub fn faceForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?ft.FT_Face {
+        return shaping.faceForRasterIndex(self, raster_face_index);
+    }
+    pub fn hbFontForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?*ft.hb_font_t {
+        return shaping.hbFontForRasterIndex(self, raster_face_index);
+    }
+    pub fn emboldenForRasterFace(self: *const FtRenderer, raster_face_index: u8) f32 {
+        return shaping.emboldenForRasterFace(self, raster_face_index);
+    }
+    pub fn recordShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8, prepared_start: usize, prepared_len: usize) void {
+        shaping.recordShapedRun(self, utf8, face_idx, prepared_start, prepared_len);
+    }
+    pub fn getPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) ?PreparedRun {
+        return shaping.getPreparedCache(self, utf8, face_idx, raster_mode);
+    }
+    pub fn appendPreparedRun(self: *FtRenderer, glyphs: []const PreparedGlyph) ?PreparedRun {
+        return shaping.appendPreparedRun(self, glyphs);
+    }
+    pub fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, glyphs: []const PreparedGlyph) void {
+        shaping.putPreparedCache(self, utf8, face_idx, raster_mode, glyphs);
+    }
+    pub fn makePreparedKey(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode) PreparedKey {
+        return shaping.makePreparedKey(self, utf8, face_idx, raster_mode);
+    }
+    pub fn getRecentPrepared(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_mode: RasterMode, fingerprint: u64) ?[]PreparedGlyph {
+        return shaping.getRecentPrepared(self, utf8, face_idx, raster_mode, fingerprint);
+    }
+    pub fn putRecentPrepared(self: *FtRenderer, key: PreparedKey, fingerprint: u64, glyphs: []PreparedGlyph) void {
+        shaping.putRecentPrepared(self, key, fingerprint, glyphs);
+    }
+    pub fn preparedFingerprint(utf8: []const u8, face_idx: u8, ligatures: bool, raster_mode: RasterMode) u64 {
+        return shaping.preparedFingerprint(utf8, face_idx, ligatures, raster_mode);
+    }
+    pub fn consumeShapedRun(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?[]const PreparedGlyph {
+        return shaping.consumeShapedRun(self, utf8, face_idx);
+    }
 
     // ── Glyph batch wrappers (implementations in glyph_batch.zig) ─────────────
 
-    pub fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void { glyph_batch.batchGlyphs(self, px, py, utf8, face_idx, fg, raster_mode, clip_y0, clip_y1); }
-    pub fn batchGlyphsShaped(self: *FtRenderer, px: f32, py: f32, result: ShapeResult, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void { glyph_batch.batchGlyphsShaped(self, px, py, result, fg, raster_mode, clip_y0, clip_y1); }
-    pub fn batchPreparedGlyphs(self: *FtRenderer, px: f32, py: f32, glyphs: []const PreparedGlyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void { glyph_batch.batchPreparedGlyphs(self, px, py, glyphs, fg, clip_y0, clip_y1); }
-    pub inline fn emitPreparedGlyph(self: *FtRenderer, px: f32, py: f32, x_offset: *f32, glyph_inst: GlyphInstance, glyph: Glyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void { glyph_batch.emitPreparedGlyph(self, px, py, x_offset, glyph_inst, glyph, fg, clip_y0, clip_y1); }
-    pub inline fn drawDirectGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) bool { return glyph_batch.drawDirectGlyph(self, px, py, cp, face_idx, fg, clip_y0, clip_y1); }
-    pub inline fn batchDirectGlyphSgl(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) bool { return glyph_batch.batchDirectGlyphSgl(self, px, py, cp, face_idx, fg, raster_mode); }
-    pub inline fn directGlyph(self: *FtRenderer, cp: u32, face_idx: u8) ?Glyph { return glyph_batch.directGlyph(self, cp, face_idx); }
-    pub inline fn directGlyphForMode(self: *FtRenderer, cp: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph { return glyph_batch.directGlyphForMode(self, cp, face_idx, raster_mode); }
-    pub inline fn emitGlyphQuad(self: *FtRenderer, gx: f32, gy: f32, w: f32, h: f32, s0: f32, t0: f32, s1: f32, t1: f32, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32, color_emoji: bool) void { glyph_batch.emitGlyphQuad(self, gx, gy, w, h, s0, t0, s1, t1, fg, clip_y0, clip_y1, color_emoji); }
-    pub fn uploadGlyphVerts(self: *FtRenderer) usize { return glyph_batch.uploadGlyphVerts(self); }
-    pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void { glyph_batch.drawGlyphQuads(self, pane_w, pane_h, offscreen, bg_linear); }
-    pub fn discardGlyphQuads(self: *FtRenderer) void { glyph_batch.discardGlyphQuads(self); }
-    pub fn flushGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void { glyph_batch.flushGlyphQuads(self, pane_w, pane_h, offscreen, bg_linear); }
-    pub inline fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void { glyph_batch.flushRasterRun(self, run_buf, run_start_col, run_len, face_idx, fg, py); }
-    pub inline fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void { glyph_batch.flushDrawRun(self, run_buf, run_start_col, run_len, face_idx, fg, py); }
-    pub inline fn styleCacheReset(self: *FtRenderer) void { glyph_batch.styleCacheReset(self); }
-    pub inline fn resolveCachedStyle(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, style_id: u16, selected: bool, default_fg: ghostty.ColorRgb, default_bg: ghostty.ColorRgb, selection_fg: ghostty.ColorRgb, palette: *const [256]ghostty.ColorRgb) ?*const CachedStyleInfo { return glyph_batch.resolveCachedStyle(self, runtime, row_cells, style_id, selected, default_fg, default_bg, selection_fg, palette); }
-    pub inline fn styleCacheSlot(self: *FtRenderer, style_id: u16, selected: bool) usize { return glyph_batch.styleCacheSlot(self, style_id, selected); }
-    pub inline fn isAsciiFastPathCandidate(cp: u32, face_idx: u8) bool { return glyph_batch.isAsciiFastPathCandidate(cp, face_idx); }
+    pub fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
+        glyph_batch.batchGlyphs(self, px, py, utf8, face_idx, fg, raster_mode, clip_y0, clip_y1);
+    }
+    pub fn batchGlyphsShaped(self: *FtRenderer, px: f32, py: f32, result: ShapeResult, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
+        glyph_batch.batchGlyphsShaped(self, px, py, result, fg, raster_mode, clip_y0, clip_y1);
+    }
+    pub fn batchPreparedGlyphs(self: *FtRenderer, px: f32, py: f32, glyphs: []const PreparedGlyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void {
+        glyph_batch.batchPreparedGlyphs(self, px, py, glyphs, fg, clip_y0, clip_y1);
+    }
+    pub inline fn emitPreparedGlyph(self: *FtRenderer, px: f32, py: f32, x_offset: *f32, glyph_inst: GlyphInstance, glyph: Glyph, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) void {
+        glyph_batch.emitPreparedGlyph(self, px, py, x_offset, glyph_inst, glyph, fg, clip_y0, clip_y1);
+    }
+    pub inline fn drawDirectGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32) bool {
+        return glyph_batch.drawDirectGlyph(self, px, py, cp, face_idx, fg, clip_y0, clip_y1);
+    }
+    pub inline fn batchDirectGlyphSgl(self: *FtRenderer, px: f32, py: f32, cp: u32, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) bool {
+        return glyph_batch.batchDirectGlyphSgl(self, px, py, cp, face_idx, fg, raster_mode);
+    }
+    pub inline fn directGlyph(self: *FtRenderer, cp: u32, face_idx: u8) ?Glyph {
+        return glyph_batch.directGlyph(self, cp, face_idx);
+    }
+    pub inline fn directGlyphForMode(self: *FtRenderer, cp: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph {
+        return glyph_batch.directGlyphForMode(self, cp, face_idx, raster_mode);
+    }
+    pub inline fn emitGlyphQuad(self: *FtRenderer, gx: f32, gy: f32, w: f32, h: f32, s0: f32, t0: f32, s1: f32, t1: f32, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32, color_emoji: bool) void {
+        glyph_batch.emitGlyphQuad(self, gx, gy, w, h, s0, t0, s1, t1, fg, clip_y0, clip_y1, color_emoji);
+    }
+    pub fn uploadGlyphVerts(self: *FtRenderer) usize {
+        return glyph_batch.uploadGlyphVerts(self);
+    }
+    pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void {
+        glyph_batch.drawGlyphQuads(self, pane_w, pane_h, offscreen, bg_linear);
+    }
+    pub fn discardGlyphQuads(self: *FtRenderer) void {
+        glyph_batch.discardGlyphQuads(self);
+    }
+    pub fn flushGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bool, bg_linear: [4]f32) void {
+        glyph_batch.flushGlyphQuads(self, pane_w, pane_h, offscreen, bg_linear);
+    }
+    pub inline fn flushRasterRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+        glyph_batch.flushRasterRun(self, run_buf, run_start_col, run_len, face_idx, fg, py);
+    }
+    pub inline fn flushDrawRun(self: *FtRenderer, run_buf: []u8, run_start_col: *usize, run_len: *usize, face_idx: u8, fg: ghostty.ColorRgb, py: f32) void {
+        glyph_batch.flushDrawRun(self, run_buf, run_start_col, run_len, face_idx, fg, py);
+    }
+    pub inline fn styleCacheReset(self: *FtRenderer) void {
+        glyph_batch.styleCacheReset(self);
+    }
+    pub inline fn resolveCachedStyle(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, style_id: u16, selected: bool, default_fg: ghostty.ColorRgb, default_bg: ghostty.ColorRgb, selection_fg: ghostty.ColorRgb, palette: *const [256]ghostty.ColorRgb) ?*const CachedStyleInfo {
+        return glyph_batch.resolveCachedStyle(self, runtime, row_cells, style_id, selected, default_fg, default_bg, selection_fg, palette);
+    }
+    pub inline fn styleCacheSlot(self: *FtRenderer, style_id: u16, selected: bool) usize {
+        return glyph_batch.styleCacheSlot(self, style_id, selected);
+    }
+    pub inline fn isAsciiFastPathCandidate(cp: u32, face_idx: u8) bool {
+        return glyph_batch.isAsciiFastPathCandidate(cp, face_idx);
+    }
 
     /// Call once at the start of each frame to allow atlas upload for that frame.
     pub fn beginFrame(self: *FtRenderer) void {

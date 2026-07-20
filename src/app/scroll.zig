@@ -63,7 +63,6 @@ pub fn refreshPaneScrollbar(self: *App, runtime: *GhosttyRuntime, pane: *Pane) g
 pub fn scrollPaneViewport(self: *App, pane: *Pane, delta: isize) void {
     if (delta == 0) return;
     const runtime = if (self.ghostty) |*rt| rt else return;
-    std.log.info("scrollPaneViewport pane={x} ui_delta={d}", .{ @intFromPtr(pane), delta });
     runtime.terminalScroll(pane.terminal, delta);
     pane.render_dirty = .full;
     pane.last_render_state_update_ns = 0;

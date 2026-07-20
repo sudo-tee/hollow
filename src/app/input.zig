@@ -288,10 +288,14 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.newTab(self, payload.domain_name, payload.command, payload.callback_ref);
             },
             .close_tab => {
-                mux_ops.closeTab(self, );
+                mux_ops.closeTab(
+                    self,
+                );
             },
             .close_pane => {
-                mux_ops.closeActivePane(self, );
+                mux_ops.closeActivePane(
+                    self,
+                );
             },
             .close_pane_by_id => |pane_id| {
                 mux_ops.closePaneById(self, pane_id);
@@ -308,10 +312,14 @@ pub fn processInputQueue(self: *App) void {
                 _ = self.reloadConfig();
             },
             .next_tab => {
-                mux_ops.nextTab(self, );
+                mux_ops.nextTab(
+                    self,
+                );
             },
             .prev_tab => {
-                mux_ops.prevTab(self, );
+                mux_ops.prevTab(
+                    self,
+                );
             },
             .new_workspace => |payload| {
                 std.log.info("app: new_workspace dispatch_lag_ms={d}", .{std.time.milliTimestamp() - payload.queued_at_ms});
@@ -321,10 +329,14 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeWorkspace(self, idx);
             },
             .next_workspace => {
-                mux_ops.nextWorkspace(self, );
+                mux_ops.nextWorkspace(
+                    self,
+                );
             },
             .prev_workspace => {
-                mux_ops.prevWorkspace(self, );
+                mux_ops.prevWorkspace(
+                    self,
+                );
             },
             .switch_workspace => |idx| {
                 mux_ops.switchWorkspace(self, idx);
@@ -478,14 +490,18 @@ pub fn processInputQueue(self: *App) void {
                 if (self.copy_mode_active) {
                     copy_mode.copyModeScrollToRow(self, 0);
                 } else {
-                    mux_ops.scrollActiveViewportTop(self, );
+                    mux_ops.scrollActiveViewportTop(
+                        self,
+                    );
                 }
             },
             .scroll_active_bottom => {
                 if (self.copy_mode_active) {
                     copy_mode.copyModeScrollToBottom(self);
                 } else {
-                    mux_ops.scrollActiveViewportBottom(self, );
+                    mux_ops.scrollActiveViewportBottom(
+                        self,
+                    );
                 }
             },
             .prompt_jump => |dir| {
@@ -533,7 +549,6 @@ pub fn processInputQueue(self: *App) void {
                 if (self.hasPane(open_ev.pane)) hyperlinks.openHyperlinkAt(self, open_ev.pane, open_ev.point);
             },
         }
-
     }
 
     cmd_ipc.drainPendingCommand(self);
@@ -665,7 +680,6 @@ fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, butt
     const final_char: u8 = if (action == .release) 'm' else 'M';
     var sgr_buf: [64]u8 = undefined;
     const sgr = std.fmt.bufPrint(&sgr_buf, "\x1b[<{d};{d};{d}{c}", .{ sgr_button, col, row, final_char }) catch return false;
-    std.log.info("encodeMouseForPane: SGR encoded action={s} btn={d} col={d} row={d}", .{ @tagName(action), sgr_button, col, row });
     pane.sendText(sgr);
     return true;
 }
@@ -752,7 +766,6 @@ pub fn scrollFloat(self: *App, x: f32, y: f32, raw_delta: f32, mods: u32) void {
     const steps = @as(isize, @intFromFloat(self.scroll_accum));
     if (steps != 0) {
         self.scroll_accum -= @as(f32, @floatFromInt(steps));
-        std.log.info("scroll: raw_delta={d:.3} accum_after={d:.3} steps={d}", .{ raw_delta, self.scroll_accum, steps });
         scroll(self, x, y, steps, mods);
     }
 }

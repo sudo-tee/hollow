@@ -330,11 +330,16 @@ const PaneCacheEntry = struct {
     last_cols: u16 = 0,
     last_rows: u16 = 0,
     validity: CacheValidity = .invalid,
-    /// The atlas_epoch value at the time this pane was last rendered to its RT.
-    /// When renderer.atlas_epoch > last_atlas_epoch, the atlas changed since the
-    /// last render and the pane must do a full redraw (force_full = true) to pick
-    /// up the new glyph bitmaps even if the pane's own content is unchanged.
-    last_atlas_epoch: u64 = 0,
+    /// This pane rendered after this frame's sole atlas upload, then rasterized
+    /// more glyphs into CPU atlas memory. Redraw it after those glyphs upload.
+    atlas_repair_pending: bool = false,
+    /// The renderer's `atlas_reset_epoch` at the time this pane was last
+    /// rendered to its RT. Only a destructive atlas eviction (which moves
+    /// existing glyph UVs) invalidates cached RT pixels — append-only glyph
+    /// uploads leave existing UVs untouched, so cached pixels stay valid
+    /// and appends do NOT force a full redraw. Compared against
+    /// `rend.atlas_reset_epoch`; mismatch → `atlas_stale` (force full redraw).
+    last_atlas_reset_epoch: u64 = 0,
     /// Cached terminal background color used for the RT. If this changes we need
     /// one full clear so the padding and any untouched pixels match the new theme.
     last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
@@ -383,6 +388,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     entry.last_cols = 0;
                     entry.last_rows = 0;
                     entry.validity = .invalid;
+                    entry.atlas_repair_pending = false;
                     @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
                     @memset(&entry.row_map_vals, 0);
                     entry.prev_cursor_row = std.math.maxInt(usize);
@@ -395,7 +401,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     entry.last_cursor_style = .block;
                     entry.last_cursor_focused = false;
                     entry.has_cursor_state = false;
-                    entry.last_atlas_epoch = 0; // size changed — force full redraw next frame
+                    entry.last_atlas_reset_epoch = 0; // size changed — force full redraw next frame
                     entry.has_bg_color = false;
                 }
                 return entry;
@@ -419,7 +425,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
         .last_cols = 0,
         .last_rows = 0,
         .validity = .invalid,
-        .last_atlas_epoch = 0,
+        .last_atlas_reset_epoch = 0,
     };
     new_entry.cache.clear();
     g_pane_caches[free_slot] = new_entry;
@@ -2552,7 +2558,8 @@ fn invalidateAllPaneCaches() void {
             entry.last_cols = 0;
             entry.last_rows = 0;
             entry.validity = .invalid;
-            entry.last_atlas_epoch = 0;
+            entry.atlas_repair_pending = false;
+            entry.last_atlas_reset_epoch = 0;
             entry.has_bg_color = false;
             @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
             @memset(&entry.row_map_vals, 0);
@@ -2572,7 +2579,8 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
             entry.last_cols = 0;
             entry.last_rows = 0;
             entry.validity = .invalid;
-            entry.last_atlas_epoch = 0;
+            entry.atlas_repair_pending = false;
+            entry.last_atlas_reset_epoch = 0;
             entry.has_bg_color = false;
             @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
             @memset(&entry.row_map_vals, 0);
@@ -2622,12 +2630,14 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Sokol's cleanup callback, otherwise PTY/process shutdown can stall
         // the live window and leave it in a "Not Responding" state.
         c.sapp_request_quit();
+        c.sapp_skip_present();
         return;
     }
 
     var visually_active = true;
     if (g_drag_node == null) {
-        visually_active = app.hasVisualActivity();
+        const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
+        visually_active = app.hasVisualActivity() or atlas_upload_pending;
     }
     const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -2645,19 +2655,27 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
-        // Recheck activity after wait: if nothing became visually active, skip
-        // the swapchain render+present so an idle, visually clean window does
-        // not render at near refresh rate (default idle_max_fps=0) — the last
-        // presented frame stays on screen.
-        if (g_drag_node == null and !app.hasVisualActivity()) return;
+        // Returning without also suppressing the backend present rotates to an
+        // unrendered flip-model buffer on D3D11, producing a black flash.
+        const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
+        if (g_drag_node == null and !app.hasVisualActivity() and !atlas_upload_pending) {
+            c.sapp_skip_present();
+            return;
+        }
     }
 
-    if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
+    if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
+        c.sapp_skip_present();
+        return;
+    }
 
     const fb = framebufferSize();
     const width = fb.width;
     const height = fb.height;
-    if (width <= 0 or height <= 0) return;
+    if (width <= 0 or height <= 0) {
+        c.sapp_skip_present();
+        return;
+    }
 
     if (app.pending_renderer_refresh) {
         app.pending_renderer_refresh = false;
@@ -2783,7 +2801,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // must be fully redrawn. Crucially we use the epoch (not the
                     // atlas_dirty bool) so that panes rendered AFTER the atlas flush
                     // in the same frame don't cause unnecessary full redraws.
-                    const atlas_stale = cache_entry.last_atlas_epoch != rend.atlas_epoch;
+                    const atlas_stale = cache_entry.last_atlas_reset_epoch != rend.atlas_reset_epoch or cache_entry.atlas_repair_pending;
 
                     // Resolve background colour for the clear.
                     var cr: f32 = 0.0;
@@ -3008,7 +3026,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // if this pane introduced new glyphs — record the post-render epoch so
                     // the pane is not forced into another full redraw next frame unless the
                     // atlas changes again.
-                    cache_entry.last_atlas_epoch = rend.atlas_epoch;
+                    cache_entry.last_atlas_reset_epoch = rend.atlas_reset_epoch;
+                    cache_entry.atlas_repair_pending = rend.atlas_uploaded_this_frame and rend.atlas_dirty;
                     cache_entry.layout_generation = layout_generation;
                     cache_entry.last_cols = pane.cols;
                     cache_entry.last_rows = pane.rows;
@@ -3053,7 +3072,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
                     const render_pad = paneRenderPadding(leaf.pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app,leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app, leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -3085,7 +3104,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 } else {
                     // Use cached RT path
                     const render_pad_single = paneRenderPadding(pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
@@ -3142,7 +3161,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app,leaf.pane),
+                            copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app, leaf.pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3195,7 +3214,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             null,
                             false,
-                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane),
+                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3302,7 +3321,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             height,
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
-                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app,pane),
+                            copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -4801,28 +4820,24 @@ fn handleScrollbackKey(app: *App, key: ghostty.Key, mods: u32) bool {
     switch (key) {
         .page_up => {
             if (mods == (ghostty.Mods.alt | ghostty.Mods.shift)) {
-                std.log.info("scrollback key: alt+shift+page_up", .{});
                 _ = app.enqueueMouse(.{ .scroll_active_page = -1 });
                 return true;
             }
         },
         .page_down => {
             if (mods == (ghostty.Mods.alt | ghostty.Mods.shift)) {
-                std.log.info("scrollback key: alt+shift+page_down", .{});
                 _ = app.enqueueMouse(.{ .scroll_active_page = 1 });
                 return true;
             }
         },
         .home => {
             if (mods == (ghostty.Mods.ctrl | ghostty.Mods.shift)) {
-                std.log.info("scrollback key: ctrl+shift+home", .{});
                 _ = app.enqueueMouse(.scroll_active_top);
                 return true;
             }
         },
         .end => {
             if (mods == (ghostty.Mods.ctrl | ghostty.Mods.shift)) {
-                std.log.info("scrollback key: ctrl+shift+end", .{});
                 _ = app.enqueueMouse(.scroll_active_bottom);
                 return true;
             }

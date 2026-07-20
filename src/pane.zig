@@ -1494,7 +1494,7 @@ pub const Pane = struct {
         var write_idx: usize = 0;
 
         while (read_idx < bytes.len) {
-        if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+            if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
                 const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
                     const span = bytes[read_idx..];
                     fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
@@ -1761,7 +1761,6 @@ pub const Pane = struct {
     fn finishHtpOscSequence(self: *Pane) void {
         if (!self.htp_osc_overflow and self.htp_osc_len > 0) {
             const payload = self.htp_osc_buf[0..self.htp_osc_len];
-            std.log.info("htp: received osc pane={x} payload={s}", .{ @intFromPtr(self), payload });
             if (self.htp_message_handler) |handler| handler(self, payload);
         } else if (self.htp_osc_overflow) {
             std.log.warn("htp: dropped oversized osc pane={x} bytes={d}", .{ @intFromPtr(self), self.htp_osc_len });
