@@ -5,6 +5,8 @@ const platform = @import("platform.zig");
 
 pub const EnvVar = "HOLLOW_COMMAND_ADDR";
 pub const TimingEnvVar = "HOLLOW_COMMAND_TIMING";
+const max_frame_size: u32 = 16 * 1024 * 1024;
+const server_timeout_ms: u64 = 5_000;
 
 const windows = if (builtin.os.tag == .windows) std.os.windows else void;
 
@@ -14,6 +16,8 @@ pub const Server = struct {
     handler: *const fn (app: *anyopaque, request: command.Request) command.Response,
     thread: ?std.Thread = null,
     stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    active_mutex: std.Thread.Mutex = .{},
+    active_stream: ?std.net.Stream = null,
     wake_stream: ?std.net.Stream = null,
     listen_address: ?std.net.Address = null,
     listen_address_text: ?[]u8 = null,
@@ -61,6 +65,9 @@ pub const Server = struct {
         if (!self.started) return;
 
         self.stop_flag.store(true, .release);
+        self.active_mutex.lock();
+        if (self.active_stream) |stream| std.posix.shutdown(stream.handle, .both) catch {};
+        self.active_mutex.unlock();
         self.wakeAcceptLoop();
         if (self.wake_stream) |stream| {
             stream.close();
@@ -93,19 +100,27 @@ pub const Server = struct {
                 std.log.warn("command-ipc: accept failed: {s}", .{@errorName(err)});
                 continue;
             };
+            self.active_mutex.lock();
             if (self.stop_flag.load(.acquire)) {
+                self.active_mutex.unlock();
                 conn.stream.close();
                 break;
             }
+            self.active_stream = conn.stream;
+            self.active_mutex.unlock();
             std.log.info("command-ipc: accepted connection from {f}", .{conn.address});
             handleConnection(self, &conn) catch |err| {
                 std.log.warn("command-ipc: request failed: {s}", .{@errorName(err)});
             };
+            self.active_mutex.lock();
+            conn.stream.close();
+            self.active_stream = null;
+            self.active_mutex.unlock();
         }
     }
 
     fn handleConnection(self: *Server, conn: *std.net.Server.Connection) !void {
-        defer conn.stream.close();
+        try setTimeouts(conn.stream, server_timeout_ms);
 
         const frame = try readFrame(self.allocator, conn.stream);
         defer self.allocator.free(frame);
@@ -249,6 +264,7 @@ fn decodeResponse(allocator: std.mem.Allocator, text: []const u8) !command.Respo
 }
 
 fn writeFrame(stream: std.net.Stream, payload: []const u8) !void {
+    if (payload.len > max_frame_size) return error.FrameTooLarge;
     var header: [4]u8 = undefined;
     std.mem.writeInt(u32, &header, @intCast(payload.len), .little);
     try writeAllSocket(stream, &header);
@@ -268,6 +284,7 @@ fn readFrame(allocator: std.mem.Allocator, stream: std.net.Stream) ![]u8 {
     }
 
     const payload_len = std.mem.readInt(u32, &header, .little);
+    if (payload_len > max_frame_size) return error.FrameTooLarge;
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
     const got = readExactSocket(stream, payload) catch |err| {
