@@ -637,10 +637,10 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         if (self.deinitialized) return;
-        self.deinitialized = true;
         std.log.info("App.deinit begin", .{});
 
         self.shutdownRuntime();
+        self.deinitialized = true;
         copy_mode.deinitCopyModeState(self);
 
         for (self.htp_pending_messages.items) |message| {
