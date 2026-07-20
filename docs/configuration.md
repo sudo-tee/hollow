@@ -12,7 +12,7 @@ For per-key exhaustive reference, see
 
 ## Config layers
 
-Hollow resolves up to three config files in this order:
+Hollow resolves two files in this order:
 
 1. **Base config** — `conf/init.lua` next to the executable, if present;
    otherwise the project copy at `./conf/init.lua`; otherwise the embedded
@@ -22,19 +22,10 @@ Hollow resolves up to three config files in this order:
    - Windows: `%APPDATA%\hollow\init.lua`
    - Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or
      `$HOME/.config/hollow/init.lua`
-3. **WSL config** (Windows only) — when `wsl_config = true` and
-   `--config` was not used, Hollow auto-detects the default WSL distro and
-   loads:
-   ```
-   \\wsl.localhost\<distro>\home\<user>\.config\hollow\init.lua
-   ```
-   Each WSL distro can have its own config that layers on top of the
-   Windows config. Opt in with `wsl_config = true` in your
-   `%APPDATA%\hollow\init.lua`.
 
-The base is loaded first; each subsequent layer merges on top with the same
-semantics as `hollow.config.set(opts)`. Last writer wins for scalars; tables
-merge key by key.
+The base is loaded first; the override merges on top with the same semantics
+as `hollow.config.set(opts)`. Last writer wins for scalars; tables merge
+key by key.
 
 That is the key rule: do not copy the whole shipped config into your
 personal config. Start with a few lines and override only what you change.
@@ -219,8 +210,8 @@ Programmatic reload:
 hollow.config.reload()
 ```
 
-Reloading re-runs base + override (+ WSL layer when applicable) and
-reapplies the merged result, so behaviour matches startup.
+Reloading re-runs base + override and reapplies the merged result, so
+behaviour matches startup.
 
 ## Source of truth
 

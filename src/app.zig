@@ -238,10 +238,8 @@ pub const App = struct {
     renderer: ?Backend = null,
     mux: ?Mux = null,
     using_embedded_base_config: bool = false,
-    config_override_used: bool = false,
     base_config_path: ?[]u8 = null,
     override_config_path: ?[]u8 = null,
-    wsl_config_path: ?[]u8 = null,
     frame_count: usize = 0,
     last_input_activity_ns: i128 = 0,
     last_visual_activity_ns: i128 = 0,
@@ -664,10 +662,6 @@ pub const App = struct {
             self.allocator.free(path);
             self.override_config_path = null;
         }
-        if (self.wsl_config_path) |path| {
-            self.allocator.free(path);
-            self.wsl_config_path = null;
-        }
         if (self.startup_command) |cmd| {
             self.allocator.free(cmd);
             self.startup_command = null;
@@ -692,7 +686,6 @@ pub const App = struct {
     pub fn bootstrap(self: *App, config_override: ?[]const u8) !void {
         const config_paths = try self.resolveConfigPaths(config_override);
         self.using_embedded_base_config = config_paths.use_embedded_base;
-        self.config_override_used = config_override != null;
         self.base_config_path = config_paths.base;
         self.override_config_path = config_paths.override;
 
@@ -893,24 +886,6 @@ pub const App = struct {
             };
         }
 
-        // Layer WSL Linux-side config on top when enabled and no --config override.
-        if (self.config.wsl_config and !self.config_override_used) {
-            if (self.wsl_config_path) |old| {
-                self.allocator.free(old);
-                self.wsl_config_path = null;
-            }
-            if (platform.wslDefaultConfigPath(self.allocator)) |wsl_path| {
-                if (pathExists(wsl_path)) {
-                    self.wsl_config_path = wsl_path;
-                    lua.runFile(wsl_path) catch |err| {
-                        std.log.warn("WSL config load failed, continuing without WSL layer: {s}", .{@errorName(err)});
-                    };
-                } else {
-                    self.allocator.free(wsl_path);
-                }
-            }
-        }
-
         lua.runString("if type(hollow) == 'table' and type(hollow.keymap) == 'table' and type(hollow.keymap.apply_defaults) == 'function' then hollow.keymap.apply_defaults() end") catch {};
 
         self.lua = lua;
@@ -1075,7 +1050,6 @@ pub const App = struct {
         std.log.info("embedded_base_config={}", .{self.using_embedded_base_config});
         if (self.base_config_path) |path| std.log.info("base_config={s}", .{path});
         if (self.override_config_path) |path| std.log.info("override_config={s}", .{path});
-        if (self.wsl_config_path) |path| std.log.info("wsl_config={s}", .{path});
         for (self.config.watch_dirs.items) |dir| std.log.info("watch_dir={s}", .{dir});
     }
 
@@ -1506,7 +1480,7 @@ pub const App = struct {
     }
 
     pub fn reloadConfig(self: *App) bool {
-        if (!self.using_embedded_base_config and self.base_config_path == null and self.override_config_path == null and self.wsl_config_path == null) return false;
+        if (!self.using_embedded_base_config and self.base_config_path == null and self.override_config_path == null) return false;
 
         const old_window_width = self.config.window_width;
         const old_window_height = self.config.window_height;
