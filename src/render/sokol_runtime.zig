@@ -2645,6 +2645,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
+        // Recheck activity after wait: if nothing became visually active, skip
+        // the swapchain render+present so an idle, visually clean window does
+        // not render at near refresh rate (default idle_max_fps=0) — the last
+        // presented frame stays on screen.
+        if (g_drag_node == null and !app.hasVisualActivity()) return;
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) return;
