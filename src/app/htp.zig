@@ -406,6 +406,7 @@ fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
     }
 
     const total = std.math.divCeil(usize, json_text.len, HTP_MAX_CHUNK_PAYLOAD) catch return;
+    if (total > HTP_MAX_CHUNKS) return;
     const request_id = nextHtpMessageId(self);
     var index: usize = 0;
     while (index < total) : (index += 1) {
