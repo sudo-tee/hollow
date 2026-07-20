@@ -97,11 +97,16 @@ pub const Tab = struct {
     }
 
     pub fn appendPane(self: *Tab, pane: *Pane) !void {
-        try self.panes.append(self.allocator, pane);
         if (self.active_pane == null) {
+            const root = try self.allocator.create(SplitNode);
+            errdefer self.allocator.destroy(root);
+            root.* = SplitNode.initPane(pane);
+            try self.panes.append(self.allocator, pane);
+            self.root_split = root;
             self.active_pane = pane;
-            try self.initRootSplitForPane(pane);
+            return;
         }
+        try self.panes.append(self.allocator, pane);
     }
 
     pub fn activePane(self: *Tab) ?*Pane {
@@ -118,8 +123,8 @@ pub const Tab = struct {
 
     pub fn splitActivePane(self: *Tab, new_pane: *Pane, direction: SplitDirection, ratio: f32) !void {
         const current_pane = self.active_pane orelse return error.NoActivePane;
-        current_pane.is_floating = false;
         const target = self.findPaneLeaf(current_pane) orelse return error.ActivePaneMissingFromLayout;
+        try self.panes.ensureUnusedCapacity(self.allocator, 1);
 
         const existing_leaf = try self.allocator.create(SplitNode);
         errdefer self.allocator.destroy(existing_leaf);
@@ -130,7 +135,8 @@ pub const Tab = struct {
         new_leaf.* = SplitNode.initPane(new_pane);
 
         target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
-        try self.panes.append(self.allocator, new_pane);
+        self.panes.appendAssumeCapacity(new_pane);
+        current_pane.is_floating = false;
         self.active_pane = new_pane;
         self.maximized_pane = null;
     }
@@ -341,13 +347,6 @@ pub const Tab = struct {
         first_leaf.pane = second_pane;
         second_leaf.pane = first_pane;
         return true;
-    }
-
-    fn initRootSplitForPane(self: *Tab, pane: *Pane) !void {
-        if (self.root_split != null) return;
-        const root = try self.allocator.create(SplitNode);
-        root.* = SplitNode.initPane(pane);
-        self.root_split = root;
     }
 
     fn findPaneLeaf(self: *Tab, pane: *Pane) ?*SplitNode {
