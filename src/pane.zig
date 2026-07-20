@@ -405,16 +405,7 @@ pub const Pane = struct {
         self.mouse_event = mouse_event;
         self.pty = pty;
 
-        if (self.is_remote and launch_command == null) {
-            if (inherited_cwd) |cwd| {
-                const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
-                defer self.allocator.free(quoted_cwd);
-                self.pending_startup_input = try std.fmt.allocPrint(self.allocator, "cd -- {s} && clear\r", .{quoted_cwd});
-                self.startup_input_quiet_ticks = 0;
-            }
-        }
-
-        // If anything below fails, null out fields so deinit() doesn't double-free.
+        // Bootstrap locals own these resources until every fallible step succeeds.
         errdefer {
             self.terminal = null;
             self.render_state = null;
@@ -425,6 +416,15 @@ pub const Pane = struct {
             self.mouse_encoder = null;
             self.mouse_event = null;
             self.pty = null;
+        }
+
+        if (self.is_remote and launch_command == null) {
+            if (inherited_cwd) |cwd| {
+                const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
+                defer self.allocator.free(quoted_cwd);
+                self.pending_startup_input = try std.fmt.allocPrint(self.allocator, "cd -- {s} && clear\r", .{quoted_cwd});
+                self.startup_input_quiet_ticks = 0;
+            }
         }
 
         // Defer terminal resize/render-state initialization until the first
