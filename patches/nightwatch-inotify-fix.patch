@@ -1,16 +1,21 @@
+diff --git a/src/backend/INotify.zig b/src/backend/INotify.zig
+index e08bdf3..7d6e6a8 100644
 --- a/src/backend/INotify.zig
 +++ b/src/backend/INotify.zig
-@@ -141,9 +141,10 @@
-         pub fn add_watch(self: *@This(), allocator: std.mem.Allocator, path: []const u8) error{ OutOfMemory, WatchFailed }!void {
+@@ -142,12 +142,10 @@ pub fn Create(comptime variant: InterfaceType) type {
              const path_z = try allocator.dupeZ(u8, path);
              defer allocator.free(path_z);
--            const wd = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
+             const wd = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
 -            switch (std.posix.errno(wd)) {
 -                .SUCCESS => {},
-+            const wd_unsigned = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
-+            const wd_signed: isize = @bitCast(wd_unsigned);
-+            switch (wd_signed < 0) {
-+                true => {
-                     std.log.err("nightwatch.add_watch failed: {t}", .{e});
-                     return error.WatchFailed;
-                 },
+-                else => |e| {
+-                    std.log.err("nightwatch.add_watch failed: {t}", .{e});
+-                    return error.WatchFailed;
+-                },
++            const wd_signed: isize = @bitCast(wd);
++            if (wd_signed < 0) {
++                std.log.err("nightwatch.add_watch failed: errno={d}", .{@as(u32, @intCast(-wd_signed))});
++                return error.WatchFailed;
+             }
+             const is_dir = blk: {
+                 var d = std.fs.openDirAbsolute(path, .{}) catch break :blk false;

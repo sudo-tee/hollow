@@ -9,3 +9,7 @@
 [submodule "third_party/luajit-upstream"]
 	path = third_party/luajit-upstream
 	url = https://github.com/LuaJIT/LuaJIT.git
+[submodule "third_party/nightwatch"]
+	path = third_party/nightwatch
+	url = https://github.com/neurocyte/nightwatch.git
+	branch = zig-0.15

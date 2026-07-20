@@ -111,57 +111,6 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
 
-    // Patch nightwatch's inotify backend on Linux: std.os.linux.inotify_add_watch
-    // returns usize; errors come back as maxInt(usize)-errno which libc's errno()
-    // (rc==-1) misses, so the subsequent @intCast(wd) from usize to i32 panics.
-    if (target.result.os.tag == .linux) {
-        const inotify_path = nightwatch_dep.path("src/backend/INotify.zig").getPath(b);
-        const f = std.fs.cwd().openFile(inotify_path, .{ .mode = .read_write }) catch |e| blk: {
-            std.log.err("nightwatch-patch: open {s}: {s}", .{ inotify_path, @errorName(e) });
-            break :blk null;
-        } orelse return;
-        defer f.close();
-        const content = f.readToEndAlloc(b.allocator, 1 << 16) catch |e| {
-            std.log.err("nightwatch-patch: read {s}: {s}", .{ inotify_path, @errorName(e) });
-            return;
-        };
-        defer b.allocator.free(content);
-        const old =
-            \\            const wd = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
-            \\            switch (std.posix.errno(wd)) {
-            \\                .SUCCESS => {},
-            \\                else => |e| {
-            \\                    std.log.err("nightwatch.add_watch failed: {t}", .{e});
-            \\                    return error.WatchFailed;
-            \\                },
-            \\            };
-        ;
-        if (std.mem.indexOf(u8, content, old)) |pos| {
-            const replacement =
-                \\            const wd = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
-                \\            const wd_signed: isize = @bitCast(wd);
-                \\            if (wd_signed < 0) {
-                \\                std.log.err("nightwatch.add_watch failed: errno={d}", .{@as(u32, @intCast(-wd_signed))});
-                \\                return error.WatchFailed;
-                \\            }
-            ;
-            const patched = std.fmt.allocPrint(b.allocator, "{s}{s}{s}", .{ content[0..pos], replacement, content[pos + old.len ..] }) catch |e| {
-                std.log.err("nightwatch-patch: allocPrint: {s}", .{@errorName(e)});
-                return;
-            };
-            defer b.allocator.free(patched);
-            f.seekTo(0) catch {};
-            f.writeAll(patched) catch |e| {
-                std.log.err("nightwatch-patch: write {s}: {s}", .{ inotify_path, @errorName(e) });
-                return;
-            };
-            f.setEndPos(@intCast(patched.len)) catch {};
-            std.log.info("nightwatch-patch: applied to {s}", .{inotify_path});
-        } else {
-            std.log.info("nightwatch-patch: already applied to {s}", .{inotify_path});
-        }
-    }
-
     const translate = b.addTranslateC(.{
         .root_source_file = b.path("src/render/sokol_bindings.h"),
         .target = target,

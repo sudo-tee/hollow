@@ -50,3 +50,10 @@ apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
 # tweak in `build/luajit.zig`. Keep these as repo-level patches so the eventual
 # submodule flow matches the existing `sokol` model.
 apply_patch "third_party/lua-zluajit" "$PATCHES_DIR/lua-zluajit-local.patch"
+
+# `third_party/nightwatch` tracks upstream `neurocyte/nightwatch` (zig-0.15
+# branch) but std.os.linux.inotify_add_watch returns usize; the libc errno()
+# check in the library misses the negative-return encoding, so the subsequent
+# @intCast(wd) panics on a watch failure. Patched locally until upstream ships
+# a fix.
+apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-inotify-fix.patch"
