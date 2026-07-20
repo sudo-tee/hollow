@@ -54,7 +54,7 @@ pub fn luaSetFloatingPaneBoundsCallback(app_ptr: *anyopaque, pane_id: usize, x: 
 pub fn luaMovePaneCallback(app_ptr: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: FocusDirection = if (std.mem.eql(u8, direction, "left")) .left else if (std.mem.eql(u8, direction, "right")) .right else if (std.mem.eql(u8, direction, "up")) .up else .down;
-    mux_ops.movePaneById(app, pane_id, dir, amount);
+    _ = app.enqueueMouse(.{ .move_pane = .{ .pane_id = pane_id, .direction = dir, .amount = amount } });
 }
 
 pub fn luaSetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, process: []const u8) void {
@@ -160,7 +160,7 @@ pub fn luaResizePaneCallback(app_ptr: *anyopaque, direction: []const u8, delta: 
 
 pub fn luaSwitchTabCallback(app_ptr: *anyopaque, index: usize) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    mux_ops.switchTab(app, index);
+    _ = app.enqueueMouse(.{ .switch_tab = index });
 }
 
 pub fn luaSetTabTitleCallback(app_ptr: *anyopaque, title: []const u8) void {
