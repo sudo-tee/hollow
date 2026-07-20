@@ -288,12 +288,14 @@ fn cloneOwnedOptionalJson(self: *App, value: ?std.json.Value) !?std.json.Value {
 fn cloneOwnedOptionalStringSlice(self: *App, value: ?[]const []const u8) !?[]const []const u8 {
     const items = value orelse return null;
     var out = try self.allocator.alloc([]const u8, items.len);
+    var initialized_len: usize = 0;
     errdefer {
-        for (out[0..items.len]) |item| self.allocator.free(item);
+        for (out[0..initialized_len]) |item| self.allocator.free(item);
         self.allocator.free(out);
     }
     for (items, 0..) |item, index| {
         out[index] = try self.allocator.dupe(u8, item);
+        initialized_len += 1;
     }
     return out;
 }

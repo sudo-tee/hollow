@@ -293,14 +293,18 @@ fn jsonObjectStringArrayClone(allocator: std.mem.Allocator, object: std.json.Obj
     };
 
     var out = try allocator.alloc([]const u8, items.len);
+    var initialized_len: usize = 0;
     errdefer {
-        for (out[0..]) |item| allocator.free(item);
+        for (out[0..initialized_len]) |item| allocator.free(item);
         allocator.free(out);
     }
 
     for (items, 0..) |item, index| {
         switch (item) {
-            .string => |text| out[index] = try allocator.dupe(u8, text),
+            .string => |text| {
+                out[index] = try allocator.dupe(u8, text);
+                initialized_len += 1;
+            },
             else => return error.InvalidCommandEnvelope,
         }
     }
@@ -337,4 +341,9 @@ test "parseEnvelope loads command envelope" {
     try std.testing.expectEqual(.pane_send_text, parsed.request.kind);
     try std.testing.expectEqual(@as(usize, 7), parsed.request.pane_id);
     try std.testing.expectEqualStrings("ls\n", parsed.request.text.?);
+}
+
+test "parseEnvelope rejects mixed tags without invalid cleanup" {
+    const text = "{\"kind\":\"pane_set_tags\",\"tags\":[\"one\",1]}";
+    try std.testing.expectError(error.InvalidCommandEnvelope, parseEnvelope(std.testing.allocator, text));
 }
