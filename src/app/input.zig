@@ -539,7 +539,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.htp_pending_messages.items.len > 0) {
+    if (self.htp_pending_message_head < self.htp_pending_messages.items.len) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }

@@ -304,6 +304,8 @@ pub const App = struct {
     copy_mode_block_selection: bool = false,
     copy_mode_restore_top_row: usize = 0,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
+    htp_pending_message_head: usize = 0,
+    htp_pending_message_bytes: usize = 0,
     htp_chunk_assemblies: std.ArrayListUnmanaged(htp.HtpChunkAssembly) = .empty,
     htp_next_message_id: u64 = 1,
     command_ipc_server: ?command_ipc.Server = null,
@@ -643,13 +645,12 @@ pub const App = struct {
         self.deinitialized = true;
         copy_mode.deinitCopyModeState(self);
 
-        for (self.htp_pending_messages.items) |message| {
+        for (self.htp_pending_messages.items[self.htp_pending_message_head..]) |message| {
             self.allocator.free(message.payload);
         }
         self.htp_pending_messages.deinit(self.allocator);
         for (self.htp_chunk_assemblies.items) |*assembly| {
-            self.allocator.free(assembly.request_id);
-            assembly.buffer.deinit(self.allocator);
+            htp.deinitChunkAssembly(self.allocator, assembly);
         }
         self.htp_chunk_assemblies.deinit(self.allocator);
         cmd_ipc.deinitPaneTags(self);
