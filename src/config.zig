@@ -334,6 +334,9 @@ pub const Config = struct {
     idle_max_fps: u32 = 0,
     /// Emit command IPC timing logs and export timing to child CLI processes.
     command_timing: bool = false,
+    /// When true, layer the WSL Linux-side config on top of the Windows config
+    /// if a `~/.config/hollow/init.lua` exists in the default WSL distro.
+    wsl_config: bool = false,
     /// Allow single-pane mode to skip the offscreen render-target cache and
     /// render directly into the swapchain.  Defaulting to false preserves the
     /// cached-RT path which gives smoother frame pacing.  Set to true to

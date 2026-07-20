@@ -104,6 +104,49 @@ build.
 
 If you do nothing, WSL panes still work — they just use ConPTY.
 
+## WSL config layering
+
+When enabled, Hollow auto-detects your default WSL distro and checks for a
+Linux-side config:
+
+```
+\\wsl.localhost\<distro>\home\<user>\.config\hollow\init.lua
+```
+
+If it exists, it is loaded as a **third config layer** on top of the
+Windows `%APPDATA%\hollow\init.lua`. This means each WSL distro can have
+its own `~/.config/hollow/init.lua` with distro-specific overrides — no
+file copying between Windows and Linux.
+
+The full load order is:
+
+1. Base config (`conf/init.lua` / embedded)
+2. Windows override (`%APPDATA%\hollow\init.lua`)
+3. WSL config (`\\wsl.localhost\<distro>\home\<user>\.config\hollow\init.lua`)
+
+### Enabling WSL config layering
+
+WSL config layering is disabled by default so startup never launches WSL
+for config discovery unless requested. Enable it in
+`%APPDATA%\hollow\init.lua`:
+
+```lua
+hollow.config.set({ wsl_config = true })
+```
+
+### Notes
+
+- The WSL config is **not** live-reloaded. Because WSL UNC paths are not
+  compatible with Windows `ReadDirectoryChangesW`, the file watcher does
+  not watch the WSL path. Edit the WSL config and restart Hollow (or use
+  `<leader>uu` to reload) to pick up changes.
+- When `--config <path>` is passed on the CLI, WSL config layering is
+  skipped entirely.
+- The distro is auto-detected from `wsl.exe -l -q` (the first entry,
+  which is the default distro). The Linux home directory is resolved by
+  querying `wsl.exe -d <distro> --exec printenv HOME`, falling back to
+  `/home/<windows_username>`.
+
 ## WSL workflow patterns
 
 ### Linux-first on a Windows host
@@ -179,12 +222,12 @@ echo "$HOLLOW_PANE_ID $HOLLOW_TRANSPORT"
 
 ## Troubleshooting
 
-| Problem | Fix |
-| --- | --- |
-| `wsl.exe not found` | Install WSL with `wsl --install` from elevated PowerShell |
-| Bypass helper does not activate | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
-| Wrong distro launches | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()` |
-| `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane` |
+| Problem                                 | Fix                                                                                                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wsl.exe not found`                     | Install WSL with `wsl --install` from elevated PowerShell                                                                                                                                                               |
+| Bypass helper does not activate         | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
+| Wrong distro launches                   | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()`                                                                                                         |
+| `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane`                                                                                                                 |
 
 ## See also
 

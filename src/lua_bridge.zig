@@ -3855,6 +3855,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.command_timing = value;
         return;
     }
+    if (std.mem.eql(u8, key, "wsl_config")) {
+        cfg.wsl_config = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "renderer_single_pane_direct")) {
         cfg.renderer_single_pane_direct = value;
         return;

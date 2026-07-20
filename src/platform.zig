@@ -538,6 +538,162 @@ pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
     return hollow_dir;
 }
 
+// ---------------------------------------------------------------------------
+// WSL config path discovery (Windows only)
+// ---------------------------------------------------------------------------
+
+/// Run a command and return its stdout/stderr plus exit term.
+/// Caller must free stdout/stderr. Returns null on spawn failure (e.g. wsl.exe not found).
+fn runWslCommand(allocator: std.mem.Allocator, argv: []const []const u8) ?struct { stdout: []u8, stderr: []u8, term: std.process.Child.Term } {
+    const timeout_ms = 3000;
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.create_no_window = true;
+
+    child.spawn() catch return null;
+    errdefer {
+        _ = child.kill() catch {};
+    }
+
+    if (builtin.os.tag == .windows) {
+        const wait_result = std.os.windows.kernel32.WaitForSingleObject(child.id, timeout_ms);
+        if (wait_result != std.os.windows.WAIT_OBJECT_0) {
+            std.log.warn("WSL command timed out after {d}ms", .{timeout_ms});
+            _ = child.kill() catch {};
+            return null;
+        }
+    }
+
+    var stdout: std.ArrayList(u8) = .empty;
+    defer stdout.deinit(allocator);
+    var stderr: std.ArrayList(u8) = .empty;
+    defer stderr.deinit(allocator);
+
+    child.collectOutput(allocator, &stdout, &stderr, 4096) catch return null;
+    const term = child.wait() catch return null;
+
+    return .{
+        .stdout = stdout.toOwnedSlice(allocator) catch return null,
+        .stderr = stderr.toOwnedSlice(allocator) catch return null,
+        .term = term,
+    };
+}
+
+/// Parse `wsl.exe -l -q` output (UTF-16LE) and return the first distro name.
+/// Caller must free the returned slice.
+fn wslDefaultDistro(allocator: std.mem.Allocator) ?[]u8 {
+    const result = runWslCommand(allocator, &.{ "wsl.exe", "-l", "-q" }) orelse return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const success = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!success or result.stdout.len == 0) return null;
+
+    // wsl.exe -l -q outputs UTF-16LE. Detect by checking for frequent null bytes.
+    var stdout_utf8 = result.stdout;
+    var decoded: ?[]u8 = null;
+    defer if (decoded) |d| allocator.free(d);
+
+    if (result.stdout.len % 2 == 0) {
+        var null_count: usize = 0;
+        for (result.stdout) |b| {
+            if (b == 0) null_count += 1;
+        }
+        if (null_count > result.stdout.len / 4) {
+            const wide = allocator.alloc(u16, result.stdout.len / 2) catch return null;
+            defer allocator.free(wide);
+            for (wide, 0..) |*code_unit, index| {
+                const lo = @as(u16, result.stdout[index * 2]);
+                const hi = @as(u16, result.stdout[index * 2 + 1]) << 8;
+                code_unit.* = lo | hi;
+            }
+            decoded = std.unicode.utf16LeToUtf8Alloc(allocator, wide) catch return null;
+            stdout_utf8 = decoded.?;
+        }
+    }
+
+    // First non-empty line is the default distro.
+    var iter = std.mem.splitSequence(u8, stdout_utf8, "\n");
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r\t");
+        if (trimmed.len > 0) return allocator.dupe(u8, trimmed) catch null;
+    }
+    return null;
+}
+
+/// Get the Windows USERNAME env var (used as a fast-path for Linux home).
+fn windowsUsername(allocator: std.mem.Allocator) ?[]u8 {
+    return envOwnedOrNull(allocator, "USERNAME");
+}
+
+/// Build a WSL UNC config path: `\\wsl.localhost\<distro>\home\<user>\.config\hollow\init.lua`.
+fn buildWslConfigPath(allocator: std.mem.Allocator, distro: []const u8, linux_home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "\\\\wsl.localhost\\{s}{s}\\.config\\hollow\\init.lua", .{ distro, linux_home });
+}
+
+/// Build a WSL UNC home path: `\\wsl.localhost\<distro>\home\<user>`.
+fn buildWslHomePath(allocator: std.mem.Allocator, distro: []const u8, linux_home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "\\\\wsl.localhost\\{s}{s}", .{ distro, linux_home });
+}
+
+/// Query the Linux HOME directory for a WSL distro by running `printenv HOME`.
+/// Falls back to `/home/<windows_username>` if the query fails.
+fn wslLinuxHome(allocator: std.mem.Allocator, distro: []const u8) ?[]u8 {
+    // Try querying the actual Linux HOME (handles custom usernames).
+    if (runWslCommand(allocator, &.{ "wsl.exe", "-d", distro, "--exec", "printenv", "HOME" })) |result| {
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        const trimmed = std.mem.trim(u8, result.stdout, " \r\t\n");
+        if (trimmed.len > 0 and trimmed[0] == '/') {
+            return allocator.dupe(u8, trimmed) catch null;
+        }
+    }
+
+    // Fall back to /home/<windows_username>.
+    if (windowsUsername(allocator)) |username| {
+        defer allocator.free(username);
+        return std.fmt.allocPrint(allocator, "/home/{s}", .{username}) catch null;
+    }
+
+    return null;
+}
+
+/// Return the WSL Linux-side config path for the default distro, or null.
+/// Checks `\\wsl.localhost\<distro>\home\<user>\.config\hollow\init.lua`.
+/// Caller must free the returned path.
+pub fn wslDefaultConfigPath(allocator: std.mem.Allocator) ?[]u8 {
+    if (!isWindows()) return null;
+
+    const distro = wslDefaultDistro(allocator) orelse return null;
+    defer allocator.free(distro);
+
+    const linux_home = wslLinuxHome(allocator, distro) orelse return null;
+    defer allocator.free(linux_home);
+
+    return buildWslConfigPath(allocator, distro, linux_home) catch null;
+}
+
+/// Return the WSL Linux-side home directory for the default distro, or null.
+/// Caller must free the returned path.
+pub fn wslHomeDir(allocator: std.mem.Allocator) ?[]u8 {
+    if (!isWindows()) return null;
+
+    const distro = wslDefaultDistro(allocator) orelse return null;
+    defer allocator.free(distro);
+
+    const linux_home = wslLinuxHome(allocator, distro) orelse return null;
+    defer allocator.free(linux_home);
+
+    return buildWslHomePath(allocator, distro, linux_home) catch null;
+}
+
 test "platform names are stable" {
     try std.testing.expect(name().len > 0);
     try std.testing.expect(defaultShell().len > 0);

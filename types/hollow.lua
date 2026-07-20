@@ -322,6 +322,7 @@
 ---@field vsync? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean
+---@field wsl_config? boolean
 ---@field load_default_keymaps? boolean
 ---@field padding? integer
 ---@field alternate_screen_padding? integer
