@@ -16,13 +16,17 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
+const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+
 const ReaderState = struct {
     mutex: std.Thread.Mutex = .{},
+    ready: std.Thread.Condition = .{},
     buf: std.ArrayListUnmanaged(u8) = .empty,
     start: usize = 0,
     eof: bool = false,
     saw_read: bool = false,
     closing: bool = false,
+    out_of_memory: bool = false,
 };
 
 pub const PosixPty = struct {
@@ -188,7 +192,14 @@ pub const PosixPty = struct {
         defer self.reader_state.mutex.unlock();
 
         const pending = self.reader_state.buf.items.len - self.reader_state.start;
-        if (pending == 0) return 0;
+        if (pending == 0) {
+            if (self.reader_state.out_of_memory) {
+                self.reader_state.out_of_memory = false;
+                self.reader_state.eof = true;
+                return error.OutOfMemory;
+            }
+            return 0;
+        }
 
         const count = @min(buffer.len, pending);
         @memcpy(buffer[0..count], self.reader_state.buf.items[self.reader_state.start .. self.reader_state.start + count]);
@@ -202,6 +213,7 @@ pub const PosixPty = struct {
             self.reader_state.buf.items.len = remaining;
             self.reader_state.start = 0;
         }
+        self.reader_state.ready.signal();
         return count;
     }
 
@@ -216,7 +228,7 @@ pub const PosixPty = struct {
         if (self.closed) return true;
         self.reader_state.mutex.lock();
         defer self.reader_state.mutex.unlock();
-        return self.reader_state.eof or self.reader_state.buf.items.len > self.reader_state.start;
+        return self.reader_state.eof or self.reader_state.out_of_memory or self.reader_state.buf.items.len > self.reader_state.start;
     }
 
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
@@ -248,6 +260,7 @@ pub const PosixPty = struct {
         if (self.closed) return;
         self.reader_state.mutex.lock();
         self.reader_state.closing = true;
+        self.reader_state.ready.broadcast();
         self.reader_state.mutex.unlock();
         if (self.isAlive()) _ = c.kill(self.pid, c.SIGTERM);
         _ = c.close(self.fd);
@@ -282,8 +295,27 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
         const result = c.read(fd, &temp, temp.len);
         if (result > 0) {
             reader_state.mutex.lock();
+            const bytes = temp[0..@intCast(result)];
+            while (!reader_state.closing and reader_state.buf.items.len - reader_state.start + bytes.len > READER_HIGH_WATER_BYTES) {
+                reader_state.ready.wait(&reader_state.mutex);
+            }
+            if (reader_state.closing) {
+                reader_state.mutex.unlock();
+                return;
+            }
+            if (reader_state.start > 0 and reader_state.start + bytes.len > reader_state.buf.capacity) {
+                const remaining = reader_state.buf.items.len - reader_state.start;
+                std.mem.copyForwards(u8, reader_state.buf.items[0..remaining], reader_state.buf.items[reader_state.start..]);
+                reader_state.buf.items.len = remaining;
+                reader_state.start = 0;
+            }
             reader_state.saw_read = true;
-            reader_state.buf.appendSlice(std.heap.page_allocator, temp[0..@intCast(result)]) catch {};
+            reader_state.buf.appendSlice(std.heap.page_allocator, bytes) catch {
+                reader_state.out_of_memory = true;
+                reader_state.mutex.unlock();
+                app.signalExternalWake();
+                return;
+            };
             reader_state.mutex.unlock();
             app.signalExternalWake();
             continue;
