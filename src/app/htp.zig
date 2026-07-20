@@ -413,12 +413,14 @@ fn sendHtpChunkedJson(self: *App, pane: *Pane, json_text: []const u8) void {
         const end = @min(start + HTP_MAX_CHUNK_PAYLOAD, json_text.len);
         var buf: std.Io.Writer.Allocating = .init(self.allocator);
         defer buf.deinit();
+        const chunk_payload = chunkPayloadObject(self.allocator, json_text[start..end], index + 1, total) catch return;
+        defer app_mod.deinitJsonValue(self.allocator, .{ .object = chunk_payload });
         std.json.Stringify.value(HtpEnvelope{
             .id = nextHtpMessageId(self),
             .kind = "chunk",
             .request_id = .{ .integer = @intCast(request_id) },
             .status = "partial",
-            .payload = std.json.Value{ .object = chunkPayloadObject(self.allocator, json_text[start..end], index + 1, total) catch return },
+            .payload = .{ .object = chunk_payload },
         }, .{}, &buf.writer) catch return;
         var writer: std.Io.Writer.Allocating = .init(self.allocator);
         defer writer.deinit();
@@ -445,9 +447,26 @@ fn chunkPayloadObject(allocator: std.mem.Allocator, chunk: []const u8, index: us
         }
         object.deinit();
     }
-    try object.put(try allocator.dupe(u8, "index"), .{ .integer = @intCast(index) });
-    try object.put(try allocator.dupe(u8, "total"), .{ .integer = @intCast(total) });
-    try object.put(try allocator.dupe(u8, "data"), .{ .string = try allocator.dupe(u8, chunk) });
+    const index_key = try allocator.dupe(u8, "index");
+    object.put(index_key, .{ .integer = @intCast(index) }) catch |err| {
+        allocator.free(index_key);
+        return err;
+    };
+    const total_key = try allocator.dupe(u8, "total");
+    object.put(total_key, .{ .integer = @intCast(total) }) catch |err| {
+        allocator.free(total_key);
+        return err;
+    };
+    const data_key = try allocator.dupe(u8, "data");
+    const data = allocator.dupe(u8, chunk) catch |err| {
+        allocator.free(data_key);
+        return err;
+    };
+    object.put(data_key, .{ .string = data }) catch |err| {
+        allocator.free(data_key);
+        allocator.free(data);
+        return err;
+    };
     return object;
 }
 
