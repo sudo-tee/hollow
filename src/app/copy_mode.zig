@@ -241,18 +241,30 @@ fn refreshCopyModeSnapshot(self: *App) !void {
     const runtime = if (self.ghostty) |*rt| rt else return;
     if (!self.hasPane(pane)) return;
 
-    for (self.copy_mode_history.items) |line| freeCopyModeLine(self, line);
-    self.copy_mode_history.clearRetainingCapacity();
-    self.copy_mode_matches.clearRetainingCapacity();
-    self.copy_mode_match_index = null;
-
     const scrollbar = scroll.refreshPaneScrollbar(self, runtime, pane);
     const total_rows: usize = @intCast(scrollbar.total);
+    var replacement: std.ArrayListUnmanaged(CopyModeLine) = .empty;
+    var committed = false;
+    errdefer if (!committed) {
+        for (replacement.items) |line| freeCopyModeLine(self, line);
+        replacement.deinit(self.allocator);
+    };
     var history_row: usize = 0;
     while (history_row < total_rows) : (history_row += 1) {
         const line = try captureCopyModeLine(self, pane, history_row);
-        try self.copy_mode_history.append(self.allocator, line);
+        replacement.append(self.allocator, line) catch |err| {
+            freeCopyModeLine(self, line);
+            return err;
+        };
     }
+
+    var previous = self.copy_mode_history;
+    self.copy_mode_history = replacement;
+    committed = true;
+    for (previous.items) |line| freeCopyModeLine(self, line);
+    previous.deinit(self.allocator);
+    self.copy_mode_matches.clearRetainingCapacity();
+    self.copy_mode_match_index = null;
 
     try refreshCopyModeVisibleSlice(self, pane);
 
@@ -282,8 +294,10 @@ pub fn refreshCopyModeVisibleSlice(self: *App, pane: *Pane) !void {
     var row_index: usize = 0;
     while (runtime.nextRow(pane.row_iterator) and row_index < visible_rows and start_row + row_index < self.copy_mode_history.items.len) : (row_index += 1) {
         const target_row = start_row + row_index;
-        freeCopyModeLine(self, self.copy_mode_history.items[target_row]);
-        self.copy_mode_history.items[target_row] = try captureCopyModeVisibleLine(self, pane, target_row, runtime, pane.row_iterator, &pane.row_cells);
+        const replacement = try captureCopyModeVisibleLine(self, pane, target_row, runtime, pane.row_iterator, &pane.row_cells);
+        const previous = self.copy_mode_history.items[target_row];
+        self.copy_mode_history.items[target_row] = replacement;
+        freeCopyModeLine(self, previous);
     }
 
     if (self.copy_mode_query.len > 0) {
@@ -317,6 +331,9 @@ fn captureCopyModeLine(self: *App, pane: *Pane, history_row: usize) !CopyModeLin
     var offsets: [4097]u32 = [_]u32{0} ** 4097;
     var cell_buf: [512]CopyModeCell = undefined;
     var row_cols: usize = 0;
+    errdefer for (cell_buf[0..row_cols]) |cell| {
+        if (cell.text.len > 0) self.allocator.free(cell.text);
+    };
     const row_ref = selection_mod.gridRefForHistoryRow(self, pane, history_row) orelse return .{};
     const row = runtime.gridRefRow(&row_ref) orelse return .{};
 
@@ -342,10 +359,16 @@ fn captureCopyModeLine(self: *App, pane: *Pane, history_row: usize) !CopyModeLin
         text_helpers.appendCopyModeCellBytes(row_text[0..], &len, cell_text);
     }
     offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
+    const captured_cols = row_cols;
     while (len > 0 and row_text[len - 1] == ' ') len -= 1;
     while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
+    for (cell_buf[row_cols..captured_cols]) |cell| {
+        if (cell.text.len > 0) self.allocator.free(cell.text);
+    }
     const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
+    errdefer self.allocator.free(owned_offsets);
     const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
+    errdefer self.allocator.free(owned_cells);
     for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
     for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
     return .{
@@ -369,6 +392,9 @@ fn captureCopyModeVisibleLine(
     var offsets: [4097]u32 = [_]u32{0} ** 4097;
     var cell_buf: [512]CopyModeCell = undefined;
     var row_cols: usize = 0;
+    errdefer for (cell_buf[0..row_cols]) |cell| {
+        if (cell.text.len > 0) self.allocator.free(cell.text);
+    };
     var row: u64 = 0;
     if (row_iterator != null) row = runtime.rowRaw(row_iterator);
 
@@ -399,10 +425,16 @@ fn captureCopyModeVisibleLine(
     }
 
     offsets[@min(offsets.len - 1, row_cols)] = @intCast(len);
+    const captured_cols = row_cols;
     while (len > 0 and row_text[len - 1] == ' ') len -= 1;
     while (row_cols > 0 and offsets[row_cols] > len) row_cols -= 1;
+    for (cell_buf[row_cols..captured_cols]) |cell| {
+        if (cell.text.len > 0) self.allocator.free(cell.text);
+    }
     const owned_offsets = try self.allocator.alloc(u32, row_cols + 1);
+    errdefer self.allocator.free(owned_offsets);
     const owned_cells = try self.allocator.alloc(CopyModeCell, row_cols);
+    errdefer self.allocator.free(owned_cells);
     for (owned_offsets, 0..) |*dst, idx| dst.* = offsets[idx];
     for (owned_cells, 0..) |*dst, idx| dst.* = cell_buf[idx];
     return .{
