@@ -88,6 +88,7 @@ pub const Workspace = struct {
 
     pub fn newTab(self: *Workspace, id: usize) !*Tab {
         const tab = try self.allocator.create(Tab);
+        errdefer self.allocator.destroy(tab);
         tab.* = Tab.init(self.allocator, id);
         const insert_at = if (self.active_tab) |_| self.activeTabIndex() + 1 else self.tabs.items.len;
         try self.tabs.insert(self.allocator, insert_at, tab);
@@ -169,16 +170,17 @@ pub const Workspace = struct {
     }
 
     pub fn setName(self: *Workspace, value: []const u8) !void {
+        const replacement = if (value.len > 0) try self.allocator.dupe(u8, value) else null;
         if (self.name) |name| self.allocator.free(name);
-        self.name = if (value.len > 0) try self.allocator.dupe(u8, value) else null;
+        self.name = replacement;
     }
 
     pub fn setDefaultCwd(self: *Workspace, value: ?[]const u8) !void {
+        const replacement = if (value) |cwd|
+            if (cwd.len > 0) try self.allocator.dupe(u8, cwd) else null
+        else
+            null;
         if (self.default_cwd) |cwd| self.allocator.free(cwd);
-        if (value) |cwd| {
-            self.default_cwd = if (cwd.len > 0) try self.allocator.dupe(u8, cwd) else null;
-        } else {
-            self.default_cwd = null;
-        }
+        self.default_cwd = replacement;
     }
 };
