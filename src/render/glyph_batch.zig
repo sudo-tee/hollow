@@ -29,6 +29,8 @@ const ATLAS_W = ft_types.ATLAS_W;
 const ATLAS_H = ft_types.ATLAS_H;
 const MAX_GLYPH_VERTS = ft_types.MAX_GLYPH_VERTS;
 const GLYPH_VBUF_RING_LEN = ft_types.GLYPH_VBUF_RING_LEN;
+const MAX_ATLAS_DRAW_RUNS = ft_types.MAX_ATLAS_DRAW_RUNS;
+const AtlasDrawRun = ft_types.AtlasDrawRun;
 
 const color_math = @import("color_math.zig");
 const text_util = @import("text_util.zig");
@@ -65,7 +67,7 @@ pub inline fn emitPreparedGlyph(self: *FtRenderer, px: f32, py: f32, x_offset: *
     const w = @as(f32, @floatFromInt(glyph.bw));
     const h = @as(f32, @floatFromInt(glyph.bh));
     if (w > 0 and h > 0) {
-        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji);
+        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji, glyph.atlas_id);
     }
 
     x_offset.* += glyph_inst.x_advance;
@@ -84,7 +86,7 @@ pub inline fn drawDirectGlyph(self: *FtRenderer, px: f32, py: f32, cp: u32, face
         // Snap to integer pixels to prevent subpixel sampling artifacts.
         const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
         const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
-        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji);
+        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, glyph.color_emoji, glyph.atlas_id);
     }
     return true;
 }
@@ -97,6 +99,12 @@ pub inline fn batchDirectGlyphSgl(self: *FtRenderer, px: f32, py: f32, cp: u32, 
     if (w > 0 and h > 0) {
         const gx = @round(px + @as(f32, @floatFromInt(glyph.bear_x)));
         const gy = @round(py + self.ascender - @as(f32, @floatFromInt(glyph.bear_y)));
+        if (glyph.atlas_id != self.sgl_bound_atlas) {
+            c.sgl_end();
+            c.sgl_texture(self.atlas_pages[glyph.atlas_id].view, self.atlas_ui_smp);
+            self.sgl_bound_atlas = glyph.atlas_id;
+            c.sgl_begin_quads();
+        }
         if (glyph.color_emoji) {
             c.sgl_c4b(255, 255, 255, 255);
         } else {
@@ -130,11 +138,11 @@ pub inline fn directGlyphForMode(self: *FtRenderer, cp: u32, face_idx: u8, raste
             const face = self.faceForRasterIndex(face_idx) orelse return null;
             const glyph_id = ft.FT_Get_Char_Index(face, cp);
             if (glyph_id == 0) {
-                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
+                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = -1, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .atlas_id = 0, .color_emoji = false };
                 return null;
             }
             const g = self.getOrRasterize(glyph_id, face_idx, .terminal) orelse {
-                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
+                self.ascii_glyphs[fi][cp] = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .atlas_id = 0, .color_emoji = false };
                 break :blk self.ascii_glyphs[fi][cp].?;
             };
             self.ascii_glyphs[fi][cp] = g;
@@ -173,8 +181,14 @@ pub inline fn emitGlyphQuad(
     clip_y0: f32,
     clip_y1: f32,
     color_emoji: bool,
+    atlas_id: u8,
 ) void {
     if (self.glyph_verts_count + 4 > MAX_GLYPH_VERTS) return;
+    if (self.glyph_atlas_run_count >= MAX_ATLAS_DRAW_RUNS and
+        self.glyph_atlas_runs[self.glyph_atlas_run_count - 1].atlas_id != atlas_id)
+    {
+        return;
+    }
 
     const base = self.glyph_verts_count;
     const verts = self.glyph_verts_cpu;
@@ -184,6 +198,7 @@ pub inline fn emitGlyphQuad(
     const VFgColor = struct { r: u8, g: u8, b: u8, a: u8 };
     const vfg = if (color_emoji) VFgColor{ .r = 255, .g = 255, .b = 255, .a = 0 } else VFgColor{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
 
+    var emitted: u32 = 0;
     // Common case: the glyph quad is already fully contained within the row's
     // clip bounds, so avoid the extra clipping/interpolation math.
     if (gy >= clip_y0 and gy + h <= clip_y1) {
@@ -191,27 +206,45 @@ pub inline fn emitGlyphQuad(
         verts[base + 1] = .{ .x = gx + w, .y = gy, .u = s1, .v = t0, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
         verts[base + 2] = .{ .x = gx + w, .y = gy + h, .u = s1, .v = t1, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
         verts[base + 3] = .{ .x = gx, .y = gy + h, .u = s0, .v = t1, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
-        self.glyph_verts_count += 4;
-        return;
+        emitted = 4;
+    } else {
+        // Clip the quad vertically to [clip_y0, clip_y1] and adjust UVs.
+        const bottom = gy + h;
+        const clipped_top = @max(gy, clip_y0);
+        const clipped_bot = @min(bottom, clip_y1);
+        if (clipped_top >= clipped_bot) return; // fully outside, skip
+
+        const inv_h = if (h > 0.0) 1.0 / h else 0.0;
+        const tc_top = t0 + (clipped_top - gy) * inv_h * (t1 - t0);
+        const tc_bot = t0 + (clipped_bot - gy) * inv_h * (t1 - t0);
+
+        verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        verts[base + 3] = .{ .x = gx, .y = clipped_bot, .u = s0, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
+        emitted = 4;
     }
 
-    // Clip the quad vertically to [clip_y0, clip_y1] and adjust UVs.
-    const bottom = gy + h;
-    const clipped_top = @max(gy, clip_y0);
-    const clipped_bot = @min(bottom, clip_y1);
-    if (clipped_top >= clipped_bot) return; // fully outside, skip
+    self.glyph_verts_count += emitted;
+    recordAtlasRun(self, atlas_id, emitted);
+}
 
-    // Map clipped pixel positions back to UV space.
-    // t spans [t0, t1] over [gy, gy+h]; interpolate linearly.
-    const inv_h = if (h > 0.0) 1.0 / h else 0.0;
-    const tc_top = t0 + (clipped_top - gy) * inv_h * (t1 - t0);
-    const tc_bot = t0 + (clipped_bot - gy) * inv_h * (t1 - t0);
-
-    verts[base + 0] = .{ .x = gx, .y = clipped_top, .u = s0, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
-    verts[base + 1] = .{ .x = gx + w, .y = clipped_top, .u = s1, .v = tc_top, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
-    verts[base + 2] = .{ .x = gx + w, .y = clipped_bot, .u = s1, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
-    verts[base + 3] = .{ .x = gx, .y = clipped_bot, .u = s0, .v = tc_bot, .r = vfg.r, .g = vfg.g, .b = vfg.b, .a = vfg.a };
-    self.glyph_verts_count += 4;
+fn recordAtlasRun(self: *FtRenderer, atlas_id: u8, n_verts: u32) void {
+    if (n_verts == 0) return;
+    if (self.glyph_atlas_run_count > 0) {
+        const last = &self.glyph_atlas_runs[self.glyph_atlas_run_count - 1];
+        if (last.atlas_id == atlas_id) {
+            last.n_verts += n_verts;
+            return;
+        }
+    }
+    std.debug.assert(self.glyph_atlas_run_count < MAX_ATLAS_DRAW_RUNS);
+    self.glyph_atlas_runs[self.glyph_atlas_run_count] = AtlasDrawRun{
+        .atlas_id = atlas_id,
+        .start_vert = @intCast(self.glyph_verts_count - n_verts),
+        .n_verts = n_verts,
+    };
+    self.glyph_atlas_run_count += 1;
 }
 
 /// Upload accumulated glyph vertices to the GPU vertex buffer.
@@ -275,7 +308,7 @@ pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bo
     const mvp = [16]f32{
         sx,   0.0, 0.0, 0.0,
         0.0,  sy,  0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
+        0.0,  0.0, 1.0, 0.0,
         -1.0, 1.0, 0.0, 1.0,
     };
 
@@ -288,20 +321,7 @@ pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bo
 
     c.sg_apply_pipeline(if (offscreen) self.glyph_pip_offscreen else self.glyph_pip);
 
-    var bindings = std.mem.zeroes(c.sg_bindings);
-    bindings.vertex_buffers[0] = self.uploaded_glyph_vbuf;
-    bindings.index_buffer = self.glyph_ibuf;
-    bindings.views[0] = self.atlas_view;
-    bindings.samplers[0] = self.atlas_smp;
-    c.sg_apply_bindings(&bindings);
-
-    var vs_range = std.mem.zeroes(c.sg_range);
-    vs_range.ptr = &vs_params;
-    vs_range.size = @sizeOf(VsParams);
-    c.sg_apply_uniforms(0, &vs_range);
-
     // FsParams: bg_linear is the terminal background colour in linear space.
-    // Callers convert from sRGB before passing.  Zero alpha falls back gracefully.
     const fs_params = FsParams{
         .bg_linear = bg_linear,
         .fs_use_linear_correction = if (self.use_linear_correction) 1 else 0,
@@ -309,17 +329,51 @@ pub fn drawGlyphQuads(self: *FtRenderer, pane_w: f32, pane_h: f32, offscreen: bo
         ._pad1 = 0,
         ._pad2 = 0,
     };
+    var vs_range = std.mem.zeroes(c.sg_range);
+    vs_range.ptr = &vs_params;
+    vs_range.size = @sizeOf(VsParams);
     var fs_range = std.mem.zeroes(c.sg_range);
     fs_range.ptr = &fs_params;
     fs_range.size = @sizeOf(FsParams);
-    c.sg_apply_uniforms(1, &fs_range);
 
-    c.sg_draw(0, @intCast(n_indices), 1);
+    // One draw per atlas run (bind page texture, draw that vert range).
+    const runs = self.glyph_atlas_runs[0..self.glyph_atlas_run_count];
+    if (runs.len == 0) {
+        // Fallback: single draw with current gray page (should be rare).
+        var bindings = std.mem.zeroes(c.sg_bindings);
+        bindings.vertex_buffers[0] = self.uploaded_glyph_vbuf;
+        bindings.index_buffer = self.glyph_ibuf;
+        bindings.views[0] = self.atlas_pages[self.atlas_current_gray].view;
+        bindings.samplers[0] = self.atlas_smp;
+        c.sg_apply_bindings(&bindings);
+        c.sg_apply_uniforms(0, &vs_range);
+        c.sg_apply_uniforms(1, &fs_range);
+        c.sg_draw(0, @intCast(n_indices), 1);
+    } else {
+        for (runs) |run| {
+            if (run.n_verts < 4) continue;
+            const page_id = run.atlas_id;
+            if (page_id >= self.atlas_page_count) continue;
+            var bindings = std.mem.zeroes(c.sg_bindings);
+            bindings.vertex_buffers[0] = self.uploaded_glyph_vbuf;
+            bindings.index_buffer = self.glyph_ibuf;
+            bindings.views[0] = self.atlas_pages[page_id].view;
+            bindings.samplers[0] = self.atlas_smp;
+            c.sg_apply_bindings(&bindings);
+            c.sg_apply_uniforms(0, &vs_range);
+            c.sg_apply_uniforms(1, &fs_range);
+            const base_element: u32 = (run.start_vert / 4) * 6;
+            const run_indices: u32 = (run.n_verts / 4) * 6;
+            c.sg_draw(@intCast(base_element), @intCast(run_indices), 1);
+        }
+    }
+    self.glyph_atlas_run_count = 0;
 }
 
 pub fn discardGlyphQuads(self: *FtRenderer) void {
     self.glyph_verts_count = 0;
     self.uploaded_glyph_verts = 0;
+    self.glyph_atlas_run_count = 0;
 }
 
 /// Convenience wrapper: upload + draw in one call.
@@ -411,6 +465,9 @@ pub inline fn styleCacheSlot(self: *FtRenderer, style_id: u16, selected: bool) u
 /// sgl_end.  Used exclusively by drawLabelFace for the tab bar / UI text
 /// so that it does NOT touch glyph_verts_cpu (which is for the custom
 /// gamma-correct pipeline only).
+///
+/// UI glyphs live on the RGBA UI atlas page so sgl's vertex*texture multiply
+/// works. Rebinds texture if a glyph lands on a different page.
 pub fn batchGlyphsSgl(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode) void {
     if (utf8.len > 0 and utf8.len <= 4) {
         const cp_len = utf8CodepointLen(utf8[0]);
@@ -427,30 +484,33 @@ pub fn batchGlyphsSgl(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, fac
     var x_offset: f32 = 0;
     for (result.glyphs) |glyph_inst| {
         const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
-
-        // Snap to integer pixels to prevent subpixel sampling artifacts.
-        const gx = @round(px + x_offset + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
-        const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
-
-        const w = @as(f32, @floatFromInt(glyph.bw));
-        const h = @as(f32, @floatFromInt(glyph.bh));
-        if (w > 0 and h > 0) {
-            // Color emoji: use white foreground so atlas RGBA shows through.
-            // Grayscale: use the specified foreground colour.
-            if (glyph.color_emoji) {
-                c.sgl_c4b(255, 255, 255, 255);
-            } else {
-                c.sgl_c4b(fg.r, fg.g, fg.b, 255);
-            }
-            // Emit quad as two triangles via sokol_gl.
-            c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
-            c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
-            c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
-            c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
-        }
-
-        x_offset += glyph_inst.x_advance;
+        emitSglGlyph(self, px, py, &x_offset, glyph_inst, glyph, fg);
     }
+}
+
+fn emitSglGlyph(self: *FtRenderer, px: f32, py: f32, x_offset: *f32, glyph_inst: GlyphInstance, glyph: Glyph, fg: ghostty.ColorRgb) void {
+    const gx = @round(px + x_offset.* + glyph_inst.x_offset + @as(f32, @floatFromInt(glyph.bear_x)));
+    const gy = @round(py + self.ascender - glyph_inst.y_offset - @as(f32, @floatFromInt(glyph.bear_y)));
+    const w = @as(f32, @floatFromInt(glyph.bw));
+    const h = @as(f32, @floatFromInt(glyph.bh));
+    if (w > 0 and h > 0) {
+        if (glyph.atlas_id != self.sgl_bound_atlas) {
+            c.sgl_end();
+            c.sgl_texture(self.atlas_pages[glyph.atlas_id].view, self.atlas_ui_smp);
+            self.sgl_bound_atlas = glyph.atlas_id;
+            c.sgl_begin_quads();
+        }
+        if (glyph.color_emoji) {
+            c.sgl_c4b(255, 255, 255, 255);
+        } else {
+            c.sgl_c4b(fg.r, fg.g, fg.b, 255);
+        }
+        c.sgl_v2f_t2f(gx, gy, glyph.s0, glyph.t0);
+        c.sgl_v2f_t2f(gx + w, gy, glyph.s1, glyph.t0);
+        c.sgl_v2f_t2f(gx + w, gy + h, glyph.s1, glyph.t1);
+        c.sgl_v2f_t2f(gx, gy + h, glyph.s0, glyph.t1);
+    }
+    x_offset.* += glyph_inst.x_advance;
 }
 
 pub inline fn isAsciiFastPathCandidate(cp: u32, face_idx: u8) bool {

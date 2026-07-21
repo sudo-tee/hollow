@@ -18,9 +18,7 @@ const PreparedKey = ft_types.PreparedKey;
 const PreparedCacheEntry = ft_types.PreparedCacheEntry;
 const RecentPreparedEntry = ft_types.RecentPreparedEntry;
 const RasterMode = ft_types.RasterMode;
-const ATLAS_W = ft_types.ATLAS_W;
-const ATLAS_H = ft_types.ATLAS_H;
-const ATLAS_BPP = ft_types.ATLAS_BPP;
+const AtlasKind = ft_types.AtlasKind;
 const RECENT_PREPARED_CACHE_LEN = ft_types.RECENT_PREPARED_CACHE_LEN;
 
 const fontLikelySupportsText = font_discovery.fontLikelySupportsText;
@@ -155,11 +153,17 @@ pub fn prepareGlyphs(self: *FtRenderer, utf8: []const u8, face_idx: u8, raster_m
 }
 
 pub fn prepareShapedGlyphs(self: *FtRenderer, result: ShapeResult, raster_mode: RasterMode) ?PreparedRun {
+    // Mid-frame atlas eviction clears prepared_glyphs; restart once if that
+    // happens so prepared_start stays consistent with the backing array.
+    const epoch_at_start = self.atlas_reset_epoch;
     const prepared_start = self.prepared_glyphs.items.len;
     self.prepared_glyphs.ensureUnusedCapacity(self.allocator, result.glyphs.len) catch return null;
     var prepared_len: usize = 0;
     for (result.glyphs) |glyph_inst| {
         const glyph = self.getOrRasterize(glyph_inst.glyph_id, result.raster_face_index, raster_mode) orelse continue;
+        if (self.atlas_reset_epoch != epoch_at_start) {
+            return prepareShapedGlyphs(self, result, raster_mode);
+        }
         self.prepared_glyphs.appendAssumeCapacity(.{ .inst = glyph_inst, .glyph = glyph });
         prepared_len += 1;
     }
@@ -236,25 +240,25 @@ pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, r
     const is_emoji = self.face_emoji != null and raster_face_index == self.emoji_face_index;
     const load_flags_actual: ft.FT_Int32 = if (is_emoji) @intCast(load_flags | ft.FT_LOAD_COLOR) else @intCast(load_flags);
     if (ft.FT_Load_Glyph(primary_face, glyph_id, load_flags_actual) != 0 or glyph_id == 0) {
-        const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
+        const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .atlas_id = 0, .color_emoji = false };
         self.glyph_cache.put(key, miss) catch {};
         return null;
     }
 
-    const slot = primary_face.*.glyph;
+    const ft_slot = primary_face.*.glyph;
     const embolden = self.emboldenForRasterFace(raster_face_index);
-    if (embolden > 0.0 and slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
+    if (embolden > 0.0 and ft_slot.*.format == ft.FT_GLYPH_FORMAT_OUTLINE) {
         const strength: ft.FT_Pos = @intFromFloat(embolden * 64.0);
-        _ = ft.FT_Outline_Embolden(&slot.*.outline, strength);
+        _ = ft.FT_Outline_Embolden(&ft_slot.*.outline, strength);
     }
-    if (ft.FT_Render_Glyph(slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
-        if (ft.FT_Render_Glyph(slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
-            const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .color_emoji = false };
+    if (ft.FT_Render_Glyph(ft_slot, if (use_subpixel) ft.FT_RENDER_MODE_LCD else ft.FT_RENDER_MODE_NORMAL) != 0) {
+        if (ft.FT_Render_Glyph(ft_slot, ft.FT_RENDER_MODE_NORMAL) != 0) {
+            const miss = Glyph{ .s0 = 0, .t0 = 0, .s1 = 0, .t1 = 0, .bw = 0, .bh = 0, .bear_x = 0, .bear_y = 0, .advance_x = 0, .atlas_id = 0, .color_emoji = false };
             self.glyph_cache.put(key, miss) catch {};
             return null;
         }
     }
-    const bmp = &slot.*.bitmap;
+    const bmp = &ft_slot.*.bitmap;
 
     // Handle grey, LCD, and BGRA (color emoji) bitmaps.
     // Space characters and some glyphs produce zero-size bitmaps — cache them
@@ -270,9 +274,10 @@ pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, r
             .t1 = 0,
             .bw = 0,
             .bh = 0,
-            .bear_x = slot.*.bitmap_left,
-            .bear_y = slot.*.bitmap_top,
-            .advance_x = @as(f32, @floatFromInt(slot.*.advance.x)) / 64.0,
+            .bear_x = ft_slot.*.bitmap_left,
+            .bear_y = ft_slot.*.bitmap_top,
+            .advance_x = @as(f32, @floatFromInt(ft_slot.*.advance.x)) / 64.0,
+            .atlas_id = 0,
             .color_emoji = false,
         };
         self.glyph_cache.put(key, g) catch {};
@@ -284,80 +289,74 @@ pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, r
     // pitch can be negative for bottom-up bitmaps; stride is always |pitch|.
     const stride: u32 = @intCast(@abs(bmp.*.pitch));
 
-    // Pack into atlas (with 1px gutter between glyphs)
-    if (self.atlas_x + bw + 1 >= ATLAS_W) {
-        self.atlas_x = 1;
-        self.atlas_y += self.atlas_row_h + 1;
-        self.atlas_row_h = 0;
-    }
-    if (self.atlas_y + bh >= ATLAS_H) {
-        std.log.warn("ft_renderer: glyph atlas full!", .{});
-        return null;
-    }
+    const atlas_kind: AtlasKind = if (is_bgra) .color else if (raster_mode == .ui) .ui else .gray;
+    const atlas_slot = self.reserveAtlasSlot(atlas_kind, bw, bh) orelse return null;
+    const page_id = atlas_slot.page_id;
+    const pack_x = atlas_slot.x;
+    const pack_y = atlas_slot.y;
+    const page = &self.atlas_pages[page_id];
+    const page_w = page.w;
+    const page_h = page.h;
+    const bpp = page.bpp;
 
-    // Blit FreeType grey bitmap into atlas as RGBA (coverage in all channels).
-    // For color emoji (BGRA), convert to premultiplied RGBA.
+    // Blit into page: R8 coverage (gray), RGBA coverage (ui), or premult RGBA (emoji).
     var row: u32 = 0;
     while (row < bh) : (row += 1) {
-        // For positive pitch: rows go top-to-bottom.
-        // For negative pitch: buffer points to last row; rows go bottom-to-top.
         const src_row_idx: u32 = if (bmp.*.pitch >= 0) row else (bh - 1 - row);
         const src_ptr = bmp.*.buffer + @as(usize, src_row_idx) * @as(usize, stride);
-        const dst_base = (self.atlas_y + row) * ATLAS_W * ATLAS_BPP + self.atlas_x * ATLAS_BPP;
+        const dst_base = (pack_y + row) * page_w * bpp + pack_x * bpp;
 
         var col: u32 = 0;
         while (col < bw) : (col += 1) {
-            const dst = dst_base + col * ATLAS_BPP;
+            const dst = dst_base + col * bpp;
             if (is_bgra) {
-                // BGRA → premultiplied RGBA
                 const b = src_ptr[col * 4 + 0];
-                const g = src_ptr[col * 4 + 1];
+                const gch = src_ptr[col * 4 + 1];
                 const r = src_ptr[col * 4 + 2];
                 const a = src_ptr[col * 4 + 3];
                 if (a == 0) {
-                    self.atlas_data[dst + 0] = 0;
-                    self.atlas_data[dst + 1] = 0;
-                    self.atlas_data[dst + 2] = 0;
-                    self.atlas_data[dst + 3] = 0;
+                    page.data[dst + 0] = 0;
+                    page.data[dst + 1] = 0;
+                    page.data[dst + 2] = 0;
+                    page.data[dst + 3] = 0;
                 } else if (a == 255) {
-                    self.atlas_data[dst + 0] = r;
-                    self.atlas_data[dst + 1] = g;
-                    self.atlas_data[dst + 2] = b;
-                    self.atlas_data[dst + 3] = 255;
+                    page.data[dst + 0] = r;
+                    page.data[dst + 1] = gch;
+                    page.data[dst + 2] = b;
+                    page.data[dst + 3] = 255;
                 } else {
-                    // Premultiply: out = src * (a/255)
                     const fa = @as(f32, @floatFromInt(a)) / 255.0;
-                    self.atlas_data[dst + 0] = @intFromFloat(@as(f32, @floatFromInt(r)) * fa);
-                    self.atlas_data[dst + 1] = @intFromFloat(@as(f32, @floatFromInt(g)) * fa);
-                    self.atlas_data[dst + 2] = @intFromFloat(@as(f32, @floatFromInt(b)) * fa);
-                    self.atlas_data[dst + 3] = a;
+                    page.data[dst + 0] = @intFromFloat(@as(f32, @floatFromInt(r)) * fa);
+                    page.data[dst + 1] = @intFromFloat(@as(f32, @floatFromInt(gch)) * fa);
+                    page.data[dst + 2] = @intFromFloat(@as(f32, @floatFromInt(b)) * fa);
+                    page.data[dst + 3] = a;
                 }
             } else if (is_lcd) {
+                // LCD: store RGB coverage; shader uses R, alpha = max for blend.
                 const r = self.boostCoverage(src_ptr[col * 3]);
-                const g = self.boostCoverage(src_ptr[col * 3 + 1]);
+                const gch = self.boostCoverage(src_ptr[col * 3 + 1]);
                 const b = self.boostCoverage(src_ptr[col * 3 + 2]);
-                self.atlas_data[dst + 0] = r;
-                self.atlas_data[dst + 1] = g;
-                self.atlas_data[dst + 2] = b;
-                self.atlas_data[dst + 3] = @max(r, @max(g, b));
+                page.data[dst + 0] = r;
+                page.data[dst + 1] = gch;
+                page.data[dst + 2] = b;
+                page.data[dst + 3] = @max(r, @max(gch, b));
             } else {
+                // Gray/UI: coverage in all channels (sgl multiply + shader tex.r).
                 const cov = self.boostCoverage(src_ptr[col]);
-                self.atlas_data[dst + 0] = cov;
-                self.atlas_data[dst + 1] = cov;
-                self.atlas_data[dst + 2] = cov;
-                self.atlas_data[dst + 3] = cov;
+                page.data[dst + 0] = cov;
+                page.data[dst + 1] = cov;
+                page.data[dst + 2] = cov;
+                page.data[dst + 3] = cov;
             }
         }
     }
-    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
-    if (bh > self.atlas_row_h) self.atlas_row_h = bh;
+    self.markPageDirty(page_id, pack_x, pack_y, bw, bh);
+    self.commitAtlasSlot(page_id, bw, bh);
 
-    const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t0 = @as(f32, @floatFromInt(self.atlas_y)) / @as(f32, @floatFromInt(ATLAS_H));
-    const s1 = @as(f32, @floatFromInt(self.atlas_x + bw)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t1 = @as(f32, @floatFromInt(self.atlas_y + bh)) / @as(f32, @floatFromInt(ATLAS_H));
-
-    self.atlas_x += bw + 1;
+    const s0 = @as(f32, @floatFromInt(pack_x)) / @as(f32, @floatFromInt(page_w));
+    const t0 = @as(f32, @floatFromInt(pack_y)) / @as(f32, @floatFromInt(page_h));
+    const s1 = @as(f32, @floatFromInt(pack_x + bw)) / @as(f32, @floatFromInt(page_w));
+    const t1 = @as(f32, @floatFromInt(pack_y + bh)) / @as(f32, @floatFromInt(page_h));
 
     const g = Glyph{
         .s0 = s0,
@@ -366,9 +365,10 @@ pub fn getOrRasterize(self: *FtRenderer, glyph_id: u32, raster_face_index: u8, r
         .t1 = t1,
         .bw = @intCast(bw),
         .bh = @intCast(bh),
-        .bear_x = slot.*.bitmap_left,
-        .bear_y = slot.*.bitmap_top,
-        .advance_x = @as(f32, @floatFromInt(slot.*.advance.x)) / 64.0,
+        .bear_x = ft_slot.*.bitmap_left,
+        .bear_y = ft_slot.*.bitmap_top,
+        .advance_x = @as(f32, @floatFromInt(ft_slot.*.advance.x)) / 64.0,
+        .atlas_id = page_id,
         .color_emoji = is_bgra,
     };
     self.glyph_cache.put(key, g) catch {};

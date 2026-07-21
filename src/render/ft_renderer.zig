@@ -4,9 +4,8 @@
 ///   FT_Face  →  HarfBuzz shape  →  FT_Load_Glyph / FT_Render_Glyph
 ///   →  grey bitmap  →  sokol RGBA8 texture atlas  →  sokol_gl textured quads
 ///
-/// One atlas texture (ATLAS_W × ATLAS_H, RGBA8) is shared for all
-/// faces and sizes. Glyphs are packed left-to-right, row-by-row. The atlas is
-/// never evicted — it is large enough for a full session at one font size.
+/// Multi-atlas pages: gray R8 (terminal), color RGBA8 (emoji), UI RGBA8 (sgl).
+/// Full page → allocate another (capped). Never repacks live pages.
 ///
 /// The FreeType grey bitmap (FT_PIXEL_MODE_GRAY) produces coverage values 0–255.
 /// We store coverage in all four RGBA channels so sokol_gl's built-in shader,
@@ -78,7 +77,10 @@ const PaneCache = pane_cache_mod.PaneCache;
 // (e.g. `Glyph`, `GlyphKey`, `RasterMode`) compiling unchanged.
 const ATLAS_W = ft_types.ATLAS_W;
 const ATLAS_H = ft_types.ATLAS_H;
-const ATLAS_BPP = ft_types.ATLAS_BPP;
+const MAX_ATLAS_PAGES = ft_types.MAX_ATLAS_PAGES;
+const MAX_ATLAS_DRAW_RUNS = ft_types.MAX_ATLAS_DRAW_RUNS;
+const AtlasDrawRun = ft_types.AtlasDrawRun;
+const AtlasKind = ft_types.AtlasKind;
 const GlyphVertex = ft_types.GlyphVertex;
 const VsParams = ft_types.VsParams;
 const FsParams = ft_types.FsParams;
@@ -153,14 +155,18 @@ pub const FtRenderer = struct {
     // HarfBuzz buffer (reused each cell)
     hb_buf: ?*ft.hb_buffer_t,
 
-    // Atlas texture (sokol, RGBA8)
-    atlas_img: c.sg_image,
-    atlas_view: c.sg_view,
+    // Multi-atlas pages (gray R8 / color RGBA / ui RGBA).
+    atlas_pages: [MAX_ATLAS_PAGES]atlas_mod.AtlasPage = undefined,
+    atlas_page_count: u8 = 0,
+    atlas_current_gray: u8 = 0,
+    atlas_current_color: u8 = 0,
+    atlas_current_ui: u8 = 0,
     atlas_smp: c.sg_sampler,
     atlas_ui_smp: c.sg_sampler,
     kitty_image_smp: c.sg_sampler,
     atlas_pip: c.sgl_pipeline,
-    atlas_data: []u8, // CPU-side atlas, ATLAS_W * ATLAS_H * 4 bytes
+    /// Atlas page currently bound for sgl UI draws.
+    sgl_bound_atlas: u8 = 0,
 
     // Custom glyph pipeline (raw sg_pipeline, gamma-correct shader).
     glyph_shd: c.sg_shader,
@@ -179,18 +185,18 @@ pub const FtRenderer = struct {
     // CPU-side glyph vertex staging array.
     glyph_verts_cpu: []GlyphVertex,
     glyph_verts_count: usize,
+    /// Consecutive quad runs sharing an atlas page (multi-bind draw).
+    glyph_atlas_runs: [MAX_ATLAS_DRAW_RUNS]AtlasDrawRun = undefined,
+    glyph_atlas_run_count: usize = 0,
     // Linear correction feature flag (true = on by default).
     use_linear_correction: bool,
 
-    // Atlas packing state
-    atlas_x: u32,
-    atlas_y: u32,
-    atlas_row_h: u32,
+    // Atlas dirty / epoch state (pages hold their own pack cursors).
     atlas_dirty: bool,
-    atlas_dirty_rect: ft_types.AtlasDirtyRect,
     atlas_reset_this_frame: bool,
-    /// Guards against calling sg_update_image more than once per frame.
-    /// Reset by beginFrame(); set true by the first flushAtlas() each frame.
+    /// Rate-limit "atlas full" warnings within a single fill cycle.
+    atlas_full_logged: bool,
+    /// True if any page uploaded this frame.
     atlas_uploaded_this_frame: bool,
     /// Monotonically increasing counter incremented on every atlas upload.
     /// Informational: appends do NOT move existing glyph UVs, so pane caches
@@ -379,18 +385,7 @@ pub const FtRenderer = struct {
             cfg.font_size, cfg.dpi_scale, line_height, cell_w, cell_h, baseline_ascender,
         });
 
-        // ── Atlas texture ──────────────────────────────────────────────────
-        const atlas_data = try allocator.alloc(u8, ATLAS_W * ATLAS_H * ATLAS_BPP);
-        @memset(atlas_data, 0);
-
-        var img_desc = std.mem.zeroes(c.sg_image_desc);
-        img_desc.width = @intCast(ATLAS_W);
-        img_desc.height = @intCast(ATLAS_H);
-        img_desc.pixel_format = c.SG_PIXELFORMAT_RGBA8;
-        img_desc.usage.region_update = true;
-        img_desc.label = "ft-atlas";
-        const atlas_img = c.sg_make_image(&img_desc);
-
+        // ── Atlas samplers (pages created after self is partially built) ──
         var smp_desc = std.mem.zeroes(c.sg_sampler_desc);
         smp_desc.min_filter = c.SG_FILTER_NEAREST;
         smp_desc.mag_filter = c.SG_FILTER_NEAREST;
@@ -409,16 +404,8 @@ pub const FtRenderer = struct {
         kitty_smp_desc.label = "kitty-image-sampler";
         const kitty_image_smp = c.sg_make_sampler(&kitty_smp_desc);
 
-        // Create a view over the atlas image (required by sgl_texture in this sokol version).
-        var view_desc = std.mem.zeroes(c.sg_view_desc);
-        view_desc.texture.image = atlas_img;
-        const atlas_view = c.sg_make_view(&view_desc);
-
         // Pipeline: alpha-blend using the coverage stored in the alpha channel.
-        // sokol_gl's built-in shader multiplies vertex colour by sampled RGBA.
-        // We store grey coverage in all 4 channels, so:
-        //   out_rgb  = vertex_rgb * sampled_r   (= vertex_rgb * coverage)
-        //   out_alpha = sampled_a               (= coverage)
+        // UI atlas stores grey coverage in all 4 RGBA channels for sgl multiply.
         var pip_desc = std.mem.zeroes(c.sg_pipeline_desc);
         pip_desc.colors[0].blend.enabled = true;
         pip_desc.colors[0].blend.src_factor_rgb = c.SG_BLENDFACTOR_ONE;
@@ -597,7 +584,7 @@ pub const FtRenderer = struct {
         // Emoji face index: after all bundled fonts.
         const emoji_face_index: u8 = @intCast(4 + fallback_faces.len + 1);
 
-        return .{
+        var self: FtRenderer = .{
             .allocator = allocator,
             .ft_lib = ft_lib,
             .face_regular = face_regular,
@@ -622,21 +609,14 @@ pub const FtRenderer = struct {
             .emoji_face_index = emoji_face_index,
             .fallback_hb_fonts = fallback_hb_fonts,
             .hb_buf = hb_buf,
-            .atlas_img = atlas_img,
-            .atlas_view = atlas_view,
             .atlas_smp = atlas_smp,
             .atlas_ui_smp = atlas_ui_smp,
             .kitty_image_smp = kitty_image_smp,
             .atlas_pip = atlas_pip,
-            .atlas_data = atlas_data,
-            .atlas_x = 1, // leave 1px gutter
-            .atlas_y = 1,
-            .atlas_row_h = 0,
-            // GPU image contents start undefined. First flush uploads full
-            // zeroed atlas; later flushes upload only accumulated dirty bounds.
+            .sgl_bound_atlas = 0,
             .atlas_dirty = true,
-            .atlas_dirty_rect = .{ .min_x = 0, .min_y = 0, .max_x = ATLAS_W, .max_y = ATLAS_H },
             .atlas_reset_this_frame = false,
+            .atlas_full_logged = false,
             .atlas_uploaded_this_frame = false,
             .atlas_append_epoch = 0,
             .atlas_reset_epoch = 0,
@@ -671,14 +651,15 @@ pub const FtRenderer = struct {
             .glyph_ibuf = glyph_ibuf,
             .glyph_verts_cpu = glyph_verts_cpu,
             .glyph_verts_count = 0,
+            .glyph_atlas_run_count = 0,
             .use_linear_correction = cfg.use_linear_correction,
         };
+        try atlas_mod.initPages(&self);
+        return self;
     }
 
     /// Rasterize all printable ASCII characters across all four base faces so
-    /// that the atlas is fully populated before any frame is rendered.  This
-    /// prevents mid-session atlas uploads (which transfer the full 16 MB
-    /// texture) from spiking frame times during normal editing.
+    /// that the gray atlas is warm before any frame is rendered.
     pub fn warmupAtlas(self: *FtRenderer) void {
         var utf8: [4]u8 = undefined;
         // Printable ASCII (U+0020–U+007E)
@@ -741,7 +722,9 @@ pub const FtRenderer = struct {
         // uploaded and would corrupt the next frame's glyph draw.
         c.sgl_load_pipeline(self.atlas_pip);
         c.sgl_enable_texture();
-        c.sgl_texture(self.atlas_view, self.atlas_ui_smp);
+        // UI glyphs pack into the RGBA UI page (sgl vertex*texture multiply).
+        self.sgl_bound_atlas = self.atlas_current_ui;
+        c.sgl_texture(self.atlas_pages[self.atlas_current_ui].view, self.atlas_ui_smp);
         c.sgl_begin_quads();
 
         const fg = ghostty.ColorRgb{ .r = r, .g = g, .b = b };
@@ -788,9 +771,7 @@ pub const FtRenderer = struct {
         }
         self.shape_cache.deinit();
         self.glyph_cache.deinit();
-        self.allocator.free(self.atlas_data);
-        c.sg_destroy_view(self.atlas_view);
-        c.sg_destroy_image(self.atlas_img);
+        atlas_mod.deinitPages(self);
         c.sg_destroy_sampler(self.atlas_smp);
         c.sg_destroy_sampler(self.atlas_ui_smp);
         c.sg_destroy_sampler(self.kitty_image_smp);
@@ -1201,8 +1182,8 @@ pub const FtRenderer = struct {
     pub inline fn directGlyphForMode(self: *FtRenderer, cp: u32, face_idx: u8, raster_mode: RasterMode) ?Glyph {
         return glyph_batch.directGlyphForMode(self, cp, face_idx, raster_mode);
     }
-    pub inline fn emitGlyphQuad(self: *FtRenderer, gx: f32, gy: f32, w: f32, h: f32, s0: f32, t0: f32, s1: f32, t1: f32, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32, color_emoji: bool) void {
-        glyph_batch.emitGlyphQuad(self, gx, gy, w, h, s0, t0, s1, t1, fg, clip_y0, clip_y1, color_emoji);
+    pub inline fn emitGlyphQuad(self: *FtRenderer, gx: f32, gy: f32, w: f32, h: f32, s0: f32, t0: f32, s1: f32, t1: f32, fg: ghostty.ColorRgb, clip_y0: f32, clip_y1: f32, color_emoji: bool, atlas_id: u8) void {
+        glyph_batch.emitGlyphQuad(self, gx, gy, w, h, s0, t0, s1, t1, fg, clip_y0, clip_y1, color_emoji, atlas_id);
     }
     pub fn uploadGlyphVerts(self: *FtRenderer) usize {
         return glyph_batch.uploadGlyphVerts(self);
@@ -1249,12 +1230,20 @@ pub const FtRenderer = struct {
         atlas_mod.flushAtlas(self);
     }
 
-    pub fn markAtlasDirty(self: *FtRenderer, x: u32, y: u32, width: u32, height: u32) void {
-        atlas_mod.markAtlasDirty(self, x, y, width, height);
+    pub fn markPageDirty(self: *FtRenderer, page_id: u8, x: u32, y: u32, width: u32, height: u32) void {
+        atlas_mod.markPageDirty(self, page_id, x, y, width, height);
     }
 
     pub fn resetAtlasIfNeeded(self: *FtRenderer) void {
         atlas_mod.resetAtlasIfNeeded(self);
+    }
+
+    pub fn reserveAtlasSlot(self: *FtRenderer, kind: AtlasKind, bw: u32, bh: u32) ?atlas_mod.AtlasSlot {
+        return atlas_mod.reserveAtlasSlot(self, kind, bw, bh);
+    }
+
+    pub fn commitAtlasSlot(self: *FtRenderer, page_id: u8, bw: u32, bh: u32) void {
+        atlas_mod.commitAtlasSlot(self, page_id, bw, bh);
     }
 
     pub fn boostCoverage(self: *const FtRenderer, cov: u8) u8 {
@@ -1288,7 +1277,7 @@ pub const FtRenderer = struct {
         if (w <= 0 or h <= 0) return false;
         const gx = @round(px);
         const gy = @round(py);
-        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, false);
+        self.emitGlyphQuad(gx, gy, w, h, glyph.s0, glyph.t0, glyph.s1, glyph.t1, fg, clip_y0, clip_y1, false, glyph.atlas_id);
         return true;
     }
 

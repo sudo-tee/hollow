@@ -2473,7 +2473,7 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // simple demos and start failing once a realistic multi-project workspace has
     // many tabs plus split panes alive at once, even if only one tab is visible.
     sg_desc.buffer_pool_size = MAX_PANE_CACHES * 2 + 64;
-    sg_desc.image_pool_size = MAX_PANE_CACHES * 2 + 32;
+    sg_desc.image_pool_size = MAX_PANE_CACHES * 2 + 32 + @import("ft_types.zig").MAX_ATLAS_PAGES;
     sg_desc.sampler_pool_size = MAX_PANE_CACHES * 3 + 32;
     sg_desc.shader_pool_size = 64;
     sg_desc.view_pool_size = MAX_PANE_CACHES * 4 + 64;
@@ -3091,9 +3091,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // We'll render directly in the swapchain pass for lower latency.
                     // Still need to flush atlas if dirty so glyphs are available.
                     const atlas_was_dirty = renderer.atlas_dirty;
-                    if (atlas_was_dirty and !renderer.atlas_uploaded_this_frame) {
+                    if (atlas_was_dirty) {
                         renderer.flushAtlas();
-                        renderer.atlas_dirty = false;
                         g_phase_accum_atlas_flushes += 1;
                     }
                     // Track if we're rendering this frame (capture atlas state before clear).

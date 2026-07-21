@@ -10,21 +10,48 @@ const c = @import("sokol_c");
 const ghostty = @import("../term/ghostty.zig");
 
 // ── Atlas constants ───────────────────────────────────────────────────────────
+//
+// Multi-atlas layout (never repack; allocate another page up to cap):
+//   gray  — RGBA8 4096² (~64MB) terminal coverage (R used by shader; RGBA
+//            kept for D3D11 region-update reliability + sgl-safe samples)
+//   color — RGBA8 2048² (~16MB) color emoji
+//   ui    — RGBA8 1024² (~4MB)  sgl UI labels (needs RGBA multiply)
+//
+// Over cap → collapse that kind back to one empty page (bounded memory).
+//
+// NOTE: pure R8 was tried but produced blank glyphs on D3D11 (region upload /
+// sampling). Revisit R8 once validated on that backend.
 
-pub const ATLAS_W: u32 = 2048;
-pub const ATLAS_H: u32 = 2048;
-pub const ATLAS_BPP: u32 = 4; // RGBA8
+pub const GRAY_ATLAS_W: u32 = 4096;
+pub const GRAY_ATLAS_H: u32 = 4096;
+pub const COLOR_ATLAS_W: u32 = 2048;
+pub const COLOR_ATLAS_H: u32 = 2048;
+pub const UI_ATLAS_W: u32 = 1024;
+pub const UI_ATLAS_H: u32 = 1024;
+
+pub const GRAY_BPP: u32 = 4;
+pub const COLOR_BPP: u32 = 4;
+pub const UI_BPP: u32 = 4;
+
+pub const MAX_GRAY_ATLASES: u8 = 4;
+pub const MAX_COLOR_ATLASES: u8 = 2;
+pub const MAX_UI_ATLASES: u8 = 1;
+pub const MAX_ATLAS_PAGES: u8 = MAX_GRAY_ATLASES + MAX_COLOR_ATLASES + MAX_UI_ATLASES;
+
+/// Default size used by shaders / VsParams (gray page geometry).
+pub const ATLAS_W: u32 = GRAY_ATLAS_W;
+pub const ATLAS_H: u32 = GRAY_ATLAS_H;
+
+pub const AtlasKind = enum { gray, color, ui };
 
 pub const AtlasDirtyRect = struct {
-    min_x: u32 = ATLAS_W,
-    min_y: u32 = ATLAS_H,
+    min_x: u32 = std.math.maxInt(u32),
+    min_y: u32 = std.math.maxInt(u32),
     max_x: u32 = 0,
     max_y: u32 = 0,
 
     pub fn include(self: *AtlasDirtyRect, x: u32, y: u32, rect_width: u32, rect_height: u32) void {
         if (rect_width == 0 or rect_height == 0) return;
-        std.debug.assert(x + rect_width <= ATLAS_W);
-        std.debug.assert(y + rect_height <= ATLAS_H);
         self.min_x = @min(self.min_x, x);
         self.min_y = @min(self.min_y, y);
         self.max_x = @max(self.max_x, x + rect_width);
@@ -67,9 +94,9 @@ test "AtlasDirtyRect unions writes and clears" {
 
 test "AtlasDirtyRect handles full atlas" {
     var rect: AtlasDirtyRect = .{};
-    rect.include(0, 0, ATLAS_W, ATLAS_H);
-    try std.testing.expectEqual(ATLAS_W, rect.width());
-    try std.testing.expectEqual(ATLAS_H, rect.height());
+    rect.include(0, 0, GRAY_ATLAS_W, GRAY_ATLAS_H);
+    try std.testing.expectEqual(GRAY_ATLAS_W, rect.width());
+    try std.testing.expectEqual(GRAY_ATLAS_H, rect.height());
 }
 
 // ── Custom glyph shader types ─────────────────────────────────────────────────
@@ -132,7 +159,7 @@ pub const RasterMode = enum {
 // ── Glyph cache entry ─────────────────────────────────────────────────────────
 
 pub const Glyph = struct {
-    /// Atlas UV coordinates (0..1).
+    /// Atlas UV coordinates (0..1) within `atlas_id` page.
     s0: f32,
     t0: f32,
     s1: f32,
@@ -145,9 +172,20 @@ pub const Glyph = struct {
     bear_y: i32,
     /// Horizontal advance, in pixels (26.6 fixed → pixels).
     advance_x: f32,
+    /// Index into FtRenderer.atlas_pages.
+    atlas_id: u8 = 0,
     /// True if this glyph is a color emoji bitmap (BGRA pixel data).
     color_emoji: bool,
 };
+
+/// One consecutive run of glyph quads sharing the same atlas page (for multi-bind draw).
+pub const AtlasDrawRun = struct {
+    atlas_id: u8,
+    start_vert: u32,
+    n_verts: u32,
+};
+
+pub const MAX_ATLAS_DRAW_RUNS: usize = 64;
 
 pub const CachedStyleInfo = struct {
     style_id: u16,

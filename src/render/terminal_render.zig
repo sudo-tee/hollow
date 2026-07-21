@@ -237,9 +237,8 @@ pub fn queueInViewport(
     const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
     queueBackgroundAndRasterPass(self, runtime, &queue, pane_w, pane_h, &hash_skip_bits, run_buf);
 
-    if (self.atlas_dirty and !self.atlas_uploaded_this_frame) {
+    if (self.atlas_dirty) {
         self.flushAtlas();
-        self.atlas_dirty = false;
         self.last_atlas_flushed = true;
     }
     const t_pass2_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
@@ -315,9 +314,8 @@ pub fn queueCopyModeSnapshot(
         queueCopyModeSnapshotRowText(self, line, row_info, cfg, default_fg, selection_fg, run_buf, .raster);
     }
 
-    if (self.atlas_dirty and !self.atlas_uploaded_this_frame) {
+    if (self.atlas_dirty) {
         self.flushAtlas();
-        self.atlas_dirty = false;
         self.last_atlas_flushed = true;
     }
 

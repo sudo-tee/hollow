@@ -81,15 +81,16 @@ pub const glsl_fs: [:0]const u8 =
     \\
     \\void main() {
     \\    vec4 tex = texture(atlas, v_uv);
-    \\    if (tex.a == 0.0) discard;
     \\
     \\    // v_fg.a == 0 signals color-emoji glyph: output premultiplied RGBA directly.
+    \\    // R8 gray atlases expand as (r,0,0,1) so alpha-discard would kill all text.
     \\    if (v_fg.a < 0.5) {
+    \\        if (tex.a == 0.0) discard;
     \\        out_color = tex;
     \\        return;
     \\    }
     \\
-    \\    // Grayscale path: coverage from atlas R channel.
+    \\    // Grayscale path: coverage from atlas R channel (R8 or RGBA coverage).
     \\    float a = tex.r;
     \\    if (a == 0.0) discard;
     \\
@@ -188,14 +189,15 @@ pub const hlsl_fs: [:0]const u8 =
     \\
     \\float4 main(PSIn In) : SV_Target0 {
     \\    float4 tex = atlas.Sample(atlas_s, In.uv);
-    \\    if (tex.a == 0.0f) discard;
     \\
     \\    // In.fg.a == 0 signals color-emoji glyph: output premultiplied RGBA directly.
+    \\    // R8 gray atlases expand as (r,0,0,1) so alpha-discard would kill all text.
     \\    if (In.fg.a < 0.5f) {
+    \\        if (tex.a == 0.0f) discard;
     \\        return tex;
     \\    }
     \\
-    \\    // Grayscale path: coverage from atlas R channel.
+    \\    // Grayscale path: coverage from atlas R channel (R8 or RGBA coverage).
     \\    float a = tex.r;
     \\    if (a == 0.0f) discard;
     \\

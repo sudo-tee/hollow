@@ -22,9 +22,6 @@ const firstRenderableCodepoint = @import("font_discovery.zig").firstRenderableCo
 
 const Glyph = ft_types.Glyph;
 const GlyphKey = ft_types.GlyphKey;
-const ATLAS_W = ft_types.ATLAS_W;
-const ATLAS_H = ft_types.ATLAS_H;
-const ATLAS_BPP = ft_types.ATLAS_BPP;
 
 /// Face index used for synthesized (CPU-drawn) glyphs in the glyph cache.
 /// Chosen to not collide with real FreeType face indices (0..~250).
@@ -194,41 +191,37 @@ pub fn ensureSynthesizedBoxGlyph(self: *FtRenderer, cp: u32) ?Glyph {
     };
     box_draw.draw(cp, metrics, &canvas);
 
-    if (self.atlas_x + bw + 1 >= ATLAS_W) {
-        self.atlas_x = 1;
-        self.atlas_y += self.atlas_row_h + 1;
-        self.atlas_row_h = 0;
-    }
-    if (self.atlas_y + bh >= ATLAS_H) {
-        std.log.warn("ft_renderer: glyph atlas full (box glyph)!", .{});
-        return null;
-    }
+    const slot = self.reserveAtlasSlot(.gray, bw, bh) orelse return null;
+    const page_id = slot.page_id;
+    const pack_x = slot.x;
+    const pack_y = slot.y;
+    const page = &self.atlas_pages[page_id];
+    const page_w = page.w;
+    const page_h = page.h;
+    const bpp = page.bpp;
 
     var row: u32 = 0;
     while (row < bh) : (row += 1) {
-        const dst_base = (self.atlas_y + row) * ATLAS_W * ATLAS_BPP + self.atlas_x * ATLAS_BPP;
+        const dst_base = (pack_y + row) * page_w * bpp + pack_x * bpp;
         var col: u32 = 0;
         while (col < bw) : (col += 1) {
             const cov = self.boostCoverage(buf[row * bw + col]);
-            const dst = dst_base + col * ATLAS_BPP;
-            self.atlas_data[dst + 0] = cov;
-            self.atlas_data[dst + 1] = cov;
-            self.atlas_data[dst + 2] = cov;
-            self.atlas_data[dst + 3] = cov;
+            const dst = dst_base + col * bpp;
+            page.data[dst + 0] = cov;
+            page.data[dst + 1] = cov;
+            page.data[dst + 2] = cov;
+            page.data[dst + 3] = cov;
         }
     }
-    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
+    self.markPageDirty(page_id, pack_x, pack_y, bw, bh);
+    self.commitAtlasSlot(page_id, bw, bh);
 
-    if (bh > self.atlas_row_h) self.atlas_row_h = bh;
+    const s0 = @as(f32, @floatFromInt(pack_x)) / @as(f32, @floatFromInt(page_w));
+    const t0 = @as(f32, @floatFromInt(pack_y)) / @as(f32, @floatFromInt(page_h));
+    const s1 = @as(f32, @floatFromInt(pack_x + bw)) / @as(f32, @floatFromInt(page_w));
+    const t1 = @as(f32, @floatFromInt(pack_y + bh)) / @as(f32, @floatFromInt(page_h));
 
-    const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t0 = @as(f32, @floatFromInt(self.atlas_y)) / @as(f32, @floatFromInt(ATLAS_H));
-    const s1 = @as(f32, @floatFromInt(self.atlas_x + bw)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t1 = @as(f32, @floatFromInt(self.atlas_y + bh)) / @as(f32, @floatFromInt(ATLAS_H));
-
-    self.atlas_x += bw + 1;
-
-    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = self.cell_w, .color_emoji = false };
+    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = self.cell_w, .atlas_id = page_id, .color_emoji = false };
     self.glyph_cache.put(key, g) catch {};
     return g;
 }
@@ -381,41 +374,37 @@ pub fn ensureSynthesizedRoundedArcGlyph(self: *FtRenderer, cp: u32) ?Glyph {
         }
     }
 
-    if (self.atlas_x + bw + 1 >= ATLAS_W) {
-        self.atlas_x = 1;
-        self.atlas_y += self.atlas_row_h + 1;
-        self.atlas_row_h = 0;
-    }
-    if (self.atlas_y + bh >= ATLAS_H) {
-        std.log.warn("ft_renderer: glyph atlas full (arc glyph)!", .{});
-        return null;
-    }
+    const slot = self.reserveAtlasSlot(.gray, bw, bh) orelse return null;
+    const page_id = slot.page_id;
+    const pack_x = slot.x;
+    const pack_y = slot.y;
+    const page = &self.atlas_pages[page_id];
+    const page_w = page.w;
+    const page_h = page.h;
+    const bpp = page.bpp;
 
     var row: u32 = 0;
     while (row < bh) : (row += 1) {
-        const dst_base = (self.atlas_y + row) * ATLAS_W * ATLAS_BPP + self.atlas_x * ATLAS_BPP;
+        const dst_base = (pack_y + row) * page_w * bpp + pack_x * bpp;
         var col: u32 = 0;
         while (col < bw) : (col += 1) {
             const cov = self.boostCoverage(buf[row * bw + col]);
-            const dst = dst_base + col * ATLAS_BPP;
-            self.atlas_data[dst + 0] = cov;
-            self.atlas_data[dst + 1] = cov;
-            self.atlas_data[dst + 2] = cov;
-            self.atlas_data[dst + 3] = cov;
+            const dst = dst_base + col * bpp;
+            page.data[dst + 0] = cov;
+            page.data[dst + 1] = cov;
+            page.data[dst + 2] = cov;
+            page.data[dst + 3] = cov;
         }
     }
-    self.markAtlasDirty(self.atlas_x, self.atlas_y, bw, bh);
+    self.markPageDirty(page_id, pack_x, pack_y, bw, bh);
+    self.commitAtlasSlot(page_id, bw, bh);
 
-    if (bh > self.atlas_row_h) self.atlas_row_h = bh;
+    const s0 = @as(f32, @floatFromInt(pack_x)) / @as(f32, @floatFromInt(page_w));
+    const t0 = @as(f32, @floatFromInt(pack_y)) / @as(f32, @floatFromInt(page_h));
+    const s1 = @as(f32, @floatFromInt(pack_x + bw)) / @as(f32, @floatFromInt(page_w));
+    const t1 = @as(f32, @floatFromInt(pack_y + bh)) / @as(f32, @floatFromInt(page_h));
 
-    const s0 = @as(f32, @floatFromInt(self.atlas_x)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t0 = @as(f32, @floatFromInt(self.atlas_y)) / @as(f32, @floatFromInt(ATLAS_H));
-    const s1 = @as(f32, @floatFromInt(self.atlas_x + bw)) / @as(f32, @floatFromInt(ATLAS_W));
-    const t1 = @as(f32, @floatFromInt(self.atlas_y + bh)) / @as(f32, @floatFromInt(ATLAS_H));
-
-    self.atlas_x += bw + 1;
-
-    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = cw_f, .color_emoji = false };
+    const g = Glyph{ .s0 = s0, .t0 = t0, .s1 = s1, .t1 = t1, .bw = @intCast(bw), .bh = @intCast(bh), .bear_x = 0, .bear_y = @intFromFloat(@ceil(self.ascender)), .advance_x = cw_f, .atlas_id = page_id, .color_emoji = false };
     self.glyph_cache.put(key, g) catch {};
     return g;
 }
