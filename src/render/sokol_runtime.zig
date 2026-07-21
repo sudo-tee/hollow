@@ -4722,7 +4722,6 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
             .tracking = hit.pane.last_mouse_tracking,
             .layout_generation = app.currentLayoutGeneration(),
         };
-        if (g_last_motion_cell != null and std.meta.eql(g_last_motion_cell.?, motion)) return;
         if (app.enqueueMouse(.{ .motion = .{
             .held_button = g_mouse_button_down,
             .x = event.mouse_x,

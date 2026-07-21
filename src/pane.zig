@@ -768,7 +768,7 @@ pub const Pane = struct {
             .padding_left = padding_left,
             .padding_right = padding_right,
         });
-        runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, false);
+        runtime.setMouseEncoderTrackLastCell(self.mouse_encoder, true);
     }
 
     pub fn writeEscapeSequence(self: *Pane, sequence: []const u8) void {

@@ -657,30 +657,23 @@ pub fn hoveredHyperlinkAtPointer(self: *App) ?struct {
 }
 
 fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, button: ?ghostty.MouseButton, x: f32, y: f32, mods: u32) !bool {
-    if (pane.last_mouse_tracking == 0) return false;
-    if (action == .motion and button == null) return false;
-    if (button == null) return false;
-    const cell_w: f32 = @floatFromInt(self.cell_width_px);
-    const cell_h: f32 = @floatFromInt(self.cell_height_px);
-    if (cell_w <= 0 or cell_h <= 0) return false;
-    const col: u32 = @max(1, @as(u32, @intFromFloat(@max(0.0, x) / cell_w)) + 1);
-    const row: u32 = @max(1, @as(u32, @intFromFloat(@max(0.0, y) / cell_h)) + 1);
-    var sgr_button: u32 = switch (button.?) {
-        .left => 0,
-        .middle => 1,
-        .right => 2,
-        .four => 64, // scroll up
-        .five => 65, // scroll down
-        else => return false,
-    };
-    if (action == .motion) sgr_button |= 32;
-    if ((mods & ghostty.Mods.shift) != 0) sgr_button |= 4;
-    if ((mods & ghostty.Mods.alt) != 0) sgr_button |= 8;
-    if ((mods & ghostty.Mods.ctrl) != 0) sgr_button |= 16;
-    const final_char: u8 = if (action == .release) 'm' else 'M';
-    var sgr_buf: [64]u8 = undefined;
-    const sgr = std.fmt.bufPrint(&sgr_buf, "\x1b[<{d};{d};{d}{c}", .{ sgr_button, col, row, final_char }) catch return false;
-    pane.sendText(sgr);
+    const runtime = if (self.ghostty) |*rt| rt else return false;
+    runtime.setMouseEncoderAnyButtonPressed(pane.mouse_encoder, action != .release and button != null);
+
+    var buf: [64]u8 = undefined;
+    const bytes = runtime.encodeMouse(
+        pane.mouse_encoder,
+        pane.mouse_event,
+        action,
+        button,
+        mods,
+        .{
+            .x = x,
+            .y = y,
+        },
+        &buf,
+    ) orelse return false;
+    pane.sendText(bytes);
     return true;
 }
 
@@ -693,7 +686,15 @@ pub fn sendMouse(self: *App, action: ghostty.MouseAction, button: ?ghostty.Mouse
             self.syncActivePaneChange(was_active, hit.pane);
         }
     }
-    return try encodeMouseForPane(self, hit.pane, action, button, hit.x, hit.y, mods);
+    return try encodeMouseForPane(
+        self,
+        hit.pane,
+        action,
+        button,
+        x - @as(f32, @floatFromInt(hit.pane.x_px)),
+        y - @as(f32, @floatFromInt(hit.pane.y_px)),
+        mods,
+    );
 }
 
 pub fn hitTestScrollbar(self: *App, x: f32, y: f32) ?App.ScrollbarMetrics {
@@ -750,10 +751,12 @@ pub fn scroll(self: *App, x: f32, y: f32, delta: isize, mods: u32) void {
     const count: usize = @intCast(if (delta < 0) -delta else delta);
     if (count > 0) {
         const button: ghostty.MouseButton = if (delta < 0) .four else .five;
-        if (encodeMouseForPane(self, hit.pane, .press, button, hit.x, hit.y, mods) catch false) {
+        const pane_x = x - @as(f32, @floatFromInt(hit.pane.x_px));
+        const pane_y = y - @as(f32, @floatFromInt(hit.pane.y_px));
+        if (encodeMouseForPane(self, hit.pane, .press, button, pane_x, pane_y, mods) catch false) {
             var i: usize = 1;
             while (i < count) : (i += 1) {
-                _ = encodeMouseForPane(self, hit.pane, .press, button, hit.x, hit.y, mods) catch false;
+                _ = encodeMouseForPane(self, hit.pane, .press, button, pane_x, pane_y, mods) catch false;
             }
             return;
         }
