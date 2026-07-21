@@ -251,6 +251,17 @@ var g_frames_since_drag_release: usize = std.math.maxInt(usize);
 var g_idle_frame_ns: i128 = 8_000_000;
 var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
+/// Tracks modifier keys we have observed a physical key-up for while
+/// focused.  The OS can report stuck modifiers after focus loss or modal
+/// loops (e.g. GetKeyState on Windows) — if we saw the release but the OS
+/// still reports the bit, ghosttyMods() suppresses it.
+///
+/// We track *released* bits rather than *held* bits so that modifiers held
+/// before the window gains focus (Alt-Tab into hollow, Ctrl+click to focus)
+/// are trusted: no key-down fires for an already-held modifier, so a
+/// held-bit model would wrongly strip them.  Cleared on focus loss so the
+/// OS report is authoritative again on refocus.
+var g_released_mods: u32 = 0;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
 const MotionCell = struct {
@@ -4148,14 +4159,24 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
             c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
             c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-            c.SAPP_EVENTTYPE_ICONIFIED => @atomicStore(bool, &g_window_iconified, true, .release),
+            c.SAPP_EVENTTYPE_ICONIFIED => {
+                // Focus is lost: trust the OS modifier report again on
+                // restore (any pending key-ups went to another window).
+                g_released_mods = 0;
+                @atomicStore(bool, &g_window_iconified, true, .release);
+            },
             c.SAPP_EVENTTYPE_RESTORED => {
                 @atomicStore(bool, &g_window_iconified, false, .release);
                 @atomicStore(bool, &g_restore_pending, true, .release);
                 g_ignore_resize_frames = 2;
             },
             c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
-            c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
+            c.SAPP_EVENTTYPE_UNFOCUSED => {
+                // Focus is lost: trust the OS modifier report again on
+                // refocus (any pending key-ups went to another window).
+                g_released_mods = 0;
+                _ = app.enqueueMouse(.{ .focus = false });
+            },
             c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
             else => {},
         }
@@ -4171,14 +4192,24 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_MOUSE_MOVE => handleMouseMove(app, event),
         c.SAPP_EVENTTYPE_MOUSE_SCROLL => handleScroll(app, event),
         c.SAPP_EVENTTYPE_RESIZED => handleResize(app, event),
-        c.SAPP_EVENTTYPE_ICONIFIED => @atomicStore(bool, &g_window_iconified, true, .release),
+        c.SAPP_EVENTTYPE_ICONIFIED => {
+            // Focus is lost: trust the OS modifier report again on
+            // restore (any pending key-ups went to another window).
+            g_released_mods = 0;
+            @atomicStore(bool, &g_window_iconified, true, .release);
+        },
         c.SAPP_EVENTTYPE_RESTORED => {
             @atomicStore(bool, &g_window_iconified, false, .release);
             @atomicStore(bool, &g_restore_pending, true, .release);
             g_ignore_resize_frames = 2;
         },
         c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
-        c.SAPP_EVENTTYPE_UNFOCUSED => _ = app.enqueueMouse(.{ .focus = false }),
+        c.SAPP_EVENTTYPE_UNFOCUSED => {
+            // Focus is lost: trust the OS modifier report again on
+            // refocus (any pending key-ups went to another window).
+            g_released_mods = 0;
+            _ = app.enqueueMouse(.{ .focus = false });
+        },
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
         else => {},
     }
@@ -4191,8 +4222,11 @@ fn flushPendingMouseMove(app: *App) void {
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
-    const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
+    // Physical key-down: this modifier is genuinely held, clear any stale
+    // "released" flag so its OS bit is trusted again.
+    g_released_mods &= ~modifierBitForKey(key);
+    const mods = ghosttyMods(event.modifiers);
 
     if (copy_mode.copyModeActive(app) and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
@@ -4248,8 +4282,12 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
 }
 
 fn handleKeyUp(app: *App, event: c.sapp_event) void {
-    const mods = ghosttyMods(event.modifiers);
     const key = mapKey(event.key_code);
+    // Compute mods before recording the release so the modifier's own
+    // release event still carries its bit (encoders expect the mod flag on
+    // the key-up that releases it).
+    const mods = ghosttyMods(event.modifiers);
+    g_released_mods |= modifierBitForKey(key);
     if (key != .unidentified) _ = app.enqueueKey(key, mods, .release);
 }
 
@@ -4889,13 +4927,26 @@ fn mapKey(key_code: c.sapp_keycode) ghostty.Key {
     };
 }
 
+fn modifierBitForKey(key: ghostty.Key) u32 {
+    return switch (key) {
+        .shift_left, .shift_right => ghostty.Mods.shift,
+        .control_left, .control_right => ghostty.Mods.ctrl,
+        .alt_left, .alt_right => ghostty.Mods.alt,
+        .meta_left, .meta_right => ghostty.Mods.super,
+        else => 0,
+    };
+}
+
 fn ghosttyMods(modifiers: u32) u32 {
     var mods: u32 = ghostty.Mods.none;
     if ((modifiers & c.SAPP_MODIFIER_SHIFT) != 0) mods |= ghostty.Mods.shift;
     if ((modifiers & c.SAPP_MODIFIER_CTRL) != 0) mods |= ghostty.Mods.ctrl;
     if ((modifiers & c.SAPP_MODIFIER_ALT) != 0) mods |= ghostty.Mods.alt;
     if ((modifiers & c.SAPP_MODIFIER_SUPER) != 0) mods |= ghostty.Mods.super;
-    return mods;
+    // Suppress bits the OS still reports but which we saw physically
+    // released (stale modifiers after focus loss or modal loops). Bits we
+    // never saw released are trusted, so modifiers held before focus work.
+    return mods & ~g_released_mods;
 }
 
 fn handleClipboardShortcut(app: *App, key: ghostty.Key, mods: u32) bool {
