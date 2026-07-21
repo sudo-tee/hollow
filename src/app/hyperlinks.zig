@@ -201,9 +201,27 @@ pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint) void {
 
 pub fn updateHoveredHyperlink(self: *App) void {
     if (!self.hover_probe_dirty) return;
+    if (!self.config.hyperlinks.enabled) {
+        self.hover_probe_dirty = false;
+        self.hover_probe_defer_until_ns = 0;
+        self.hovered_hyperlink = null;
+        return;
+    }
+    if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
+        if (hit.pane.pty_wrote_this_frame) {
+            const now_ns = std.time.nanoTimestamp();
+            if (self.hover_probe_defer_until_ns == 0) {
+                self.hover_probe_defer_until_ns = now_ns + 50 * std.time.ns_per_ms;
+            }
+            if (now_ns < self.hover_probe_defer_until_ns) {
+                self.hovered_hyperlink = null;
+                return;
+            }
+        }
+    }
+    self.hover_probe_defer_until_ns = 0;
     self.hover_probe_dirty = false;
     self.hovered_hyperlink = null;
-    if (!self.config.hyperlinks.enabled) return;
     if (self.hitTestPane(self.pointer_x, self.pointer_y)) |hit| {
         const point = selection_mod.cellPointFromPaneLocal(self, hit.pane, hit.x, hit.y);
         var row_buf: [8192]u8 = undefined;

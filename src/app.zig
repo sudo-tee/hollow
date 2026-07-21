@@ -284,6 +284,7 @@ pub const App = struct {
     pointer_y: f32 = 0,
     pointer_mods: u32 = 0,
     hover_probe_dirty: bool = true,
+    hover_probe_defer_until_ns: i128 = 0,
     selection_pane: ?*Pane = null,
     selection_anchor: ?selection.CellPoint = null,
     selection_head: ?selection.CellPoint = null,

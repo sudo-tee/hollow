@@ -109,7 +109,7 @@ pub fn selectionBegin(self: *App, pane: *Pane, point: selection.CellPoint, exten
     if (previous_selection_pane) |prev| {
         if (prev != pane) prev.render_dirty = .full;
     }
-    pane.render_dirty = .full;
+    pane.render_dirty = if (self.config.renderer_single_pane_direct) .full else .true_value;
     self.selection_generation +%= 1;
     if (had_selection) {
         self.emitLuaBuiltInEvent("selection:cleared", .none);
@@ -123,7 +123,7 @@ pub fn selectionUpdate(self: *App, pane: *Pane, point: selection.CellPoint) void
         if (head.row == history_point.row and head.col == history_point.col) return;
     }
     self.selection_head = history_point;
-    pane.render_dirty = .full;
+    pane.render_dirty = if (self.config.renderer_single_pane_direct) .full else .true_value;
     self.selection_generation +%= 1;
 }
 

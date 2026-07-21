@@ -823,7 +823,7 @@ pub const FtRenderer = struct {
         screen_w: f32,
         screen_h: f32,
     ) void {
-        self.queueInViewport(runtime, cfg, app, null, terminal, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, std.math.maxInt(usize));
+        self.queueInViewport(runtime, cfg, app, null, terminal, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, null, std.math.maxInt(usize));
         // Note: sgl_draw() and flushGlyphQuads() are called by the caller
         // (sokol_runtime) after all draw calls, still inside the active sg_pass.
     }
@@ -850,6 +850,7 @@ pub const FtRenderer = struct {
         is_focused: bool,
         force_full: bool,
         selection_range: ?selection.Range,
+        redraw_range: ?selection.Range,
         hovered_hyperlink: ?App.HoveredHyperlink,
         prev_cursor_row: usize,
     ) void {
@@ -862,7 +863,7 @@ pub const FtRenderer = struct {
         self.last_atlas_flushed = false;
         // Queue to default context and draw immediately (no row hash optimisation
         // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, hovered_hyperlink, prev_cursor_row);
+        self.queueInViewport(runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, redraw_range, hovered_hyperlink, prev_cursor_row);
         // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
         // after this returns, still inside the active swapchain sg_pass.
     }
@@ -905,6 +906,7 @@ pub const FtRenderer = struct {
         row_map_vals: ?[]u64,
         row_map_skip: bool,
         selection_range: ?selection.Range,
+        redraw_range: ?selection.Range,
         hovered_hyperlink: ?App.HoveredHyperlink,
         /// Cursor row from the previous rendered frame; used to erase ghost
         /// cursor pixels when the cursor moves and ghostty doesn't mark the old
@@ -953,6 +955,7 @@ pub const FtRenderer = struct {
             row_map_vals,
             row_map_skip,
             selection_range,
+            redraw_range,
             hovered_hyperlink,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
@@ -1085,10 +1088,11 @@ pub const FtRenderer = struct {
         row_map_vals: ?[]u64,
         row_map_skip: bool,
         selection_range: ?selection.Range,
+        redraw_range: ?selection.Range,
         hovered_hyperlink: ?App.HoveredHyperlink,
         prev_cursor_row: usize,
     ) void {
-        terminal_render.queueInViewport(self, runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, pane_w, pane_h, fb_w, fb_h, is_focused, force_full, row_map_keys, row_map_vals, row_map_skip, selection_range, hovered_hyperlink, prev_cursor_row);
+        terminal_render.queueInViewport(self, runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, pane_w, pane_h, fb_w, fb_h, is_focused, force_full, row_map_keys, row_map_vals, row_map_skip, selection_range, redraw_range, hovered_hyperlink, prev_cursor_row);
     }
 
     // ── Shaping wrappers (implementations in shaping.zig) ──────────────────────

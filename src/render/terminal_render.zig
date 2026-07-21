@@ -76,6 +76,7 @@ const QueueContext = struct {
     col_count: usize,
     force_full: bool,
     selection_range: ?selection.Range,
+    redraw_range: ?selection.Range,
     hovered_hyperlink: ?App.HoveredHyperlink,
     prev_cursor_row: usize,
     cursor_row: usize,
@@ -94,6 +95,10 @@ const QueueContext = struct {
 
     inline fn helpersReady(self: @This()) bool {
         return self.render_state != null and self.row_iterator.* != null and self.row_cells.* != null;
+    }
+
+    inline fn rowNeedsRedraw(self: @This(), row: usize) bool {
+        return if (self.redraw_range) |range| selection.rowIntersects(range, row) else false;
     }
 };
 
@@ -153,6 +158,7 @@ pub fn queueInViewport(
     row_map_vals: ?[]u64,
     row_map_skip: bool,
     selection_range: ?selection.Range,
+    redraw_range: ?selection.Range,
     hovered_hyperlink: ?App.HoveredHyperlink,
     prev_cursor_row: usize,
 ) void {
@@ -191,6 +197,7 @@ pub fn queueInViewport(
         .force_full = force_full,
         .app = app,
         .selection_range = selection_range,
+        .redraw_range = redraw_range,
         .hovered_hyperlink = hovered_hyperlink,
         .prev_cursor_row = prev_cursor_row,
         .cursor_row = if (runtime.cursorPos(render_state)) |cp| @intCast(cp.y) else std.math.maxInt(usize),
@@ -492,7 +499,7 @@ pub fn queueBackgroundAndRasterPass(
         c.sgl_v2f(0.0, pane_h);
     }
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-        if (!queue.force_full and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row and row_y != queue.cursor_row) continue;
+        if (!queue.force_full and !queue.rowNeedsRedraw(row_y) and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row and row_y != queue.cursor_row) continue;
         if (shouldSkipRowByHash(self, runtime, queue, row_y, hash_skip_bits)) continue;
 
         const row = makeRowRenderInfo(self, queue, row_y);
@@ -692,7 +699,7 @@ pub fn queueGlyphPass(
 
     var row_y: usize = 0;
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-        const row_is_dirty = queue.force_full or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row or row_y == queue.cursor_row;
+        const row_is_dirty = queue.force_full or queue.rowNeedsRedraw(row_y) or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row or row_y == queue.cursor_row;
         if (!row_is_dirty) {
             self.last_rows_skipped += 1;
             continue;
@@ -1028,7 +1035,7 @@ pub fn shouldSkipRowByHash(
     const vals = queue.row_map_vals.?;
     const slot = rowMapProbe(keys, row_raw);
     if (runtime.rowHashCells(queue.row_iterator.*, queue.row_cells)) |new_hash| {
-        if (queue.row_map_skip and new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
+        if (!queue.rowNeedsRedraw(row_y) and queue.row_map_skip and new_hash != 0 and keys[slot] == row_raw and vals[slot] == new_hash) {
             skipSetSet(hash_skip_bits, row_y);
             return true;
         }

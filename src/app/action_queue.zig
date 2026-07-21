@@ -13,6 +13,25 @@ pub const ActionQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        if (self.head != self.tail) {
+            const last = if (self.tail == 0) capacity - 1 else self.tail - 1;
+            const replace = switch (event) {
+                .motion => switch (self.items[last]) {
+                    .motion => true,
+                    else => false,
+                },
+                .selection_update => |update| switch (self.items[last]) {
+                    .selection_update => |queued| queued.pane == update.pane,
+                    else => false,
+                },
+                else => false,
+            };
+            if (replace) {
+                self.items[last] = event;
+                return true;
+            }
+        }
+
         const next_tail = (self.tail + 1) % capacity;
         if (next_tail == self.head) return false;
         self.items[self.tail] = event;
@@ -52,3 +71,23 @@ pub const ActionQueue = struct {
         return self.head == self.tail;
     }
 };
+
+test "coalesces consecutive mouse motion without crossing event boundaries" {
+    var queue = ActionQueue{};
+    const first = PendingInputEvent{ .motion = .{ .held_button = null, .x = 1, .y = 2, .mods = 0 } };
+    const latest = PendingInputEvent{ .motion = .{ .held_button = null, .x = 3, .y = 4, .mods = 0 } };
+    const button = PendingInputEvent{ .button = .{ .action = .press, .button = .left, .x = 3, .y = 4, .mods = 0 } };
+
+    try std.testing.expect(queue.push(first));
+    try std.testing.expect(queue.push(latest));
+    const motion = queue.pop() orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(f32, 3), motion.motion.x);
+    try std.testing.expect(queue.pop() == null);
+
+    try std.testing.expect(queue.push(latest));
+    try std.testing.expect(queue.push(button));
+    try std.testing.expect(queue.push(first));
+    try std.testing.expect(queue.pop().? == .motion);
+    try std.testing.expect(queue.pop().? == .button);
+    try std.testing.expect(queue.pop().? == .motion);
+}

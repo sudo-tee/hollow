@@ -253,6 +253,17 @@ var g_swallow_char_pending: u8 = 0;
 var g_swallow_char_until_frame: u64 = 0;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
+const MotionCell = struct {
+    pane: *Pane,
+    point: selection.CellPoint,
+    held_button: ?ghostty.MouseButton,
+    mods: u32,
+    tracking: u32,
+    layout_generation: u32,
+};
+var g_last_motion_cell: ?MotionCell = null;
+var g_motion_outside_terminal = false;
+var g_pending_mouse_move: ?c.sapp_event = null;
 var g_linux_window_resize_active = false;
 // Double/triple click tracking (event thread only)
 var g_click_count: u32 = 0;
@@ -314,6 +325,32 @@ fn blinkVisibleNow(now_ns: i128) bool {
     return @mod(blink_phase, @as(i128, 2)) == 0;
 }
 
+const SelectionRowBounds = struct { start: usize, end: usize };
+
+fn selectionBoundsForRow(range: ?selection.Range, row: usize) ?SelectionRowBounds {
+    const value = range orelse return null;
+    if (!selection.rowIntersects(value, row)) return null;
+    if (value.block or value.start.row == value.end.row) return .{ .start = value.start.col, .end = value.end.col };
+    if (row == value.start.row) return .{ .start = value.start.col, .end = std.math.maxInt(usize) };
+    if (row == value.end.row) return .{ .start = 0, .end = value.end.col };
+    return .{ .start = 0, .end = std.math.maxInt(usize) };
+}
+
+fn selectionRedrawRange(previous: ?selection.Range, current: ?selection.Range) ?selection.Range {
+    if (std.meta.eql(previous, current)) return null;
+    const first = previous orelse current.?;
+    const second = current orelse previous.?;
+    var start_row = @min(first.start.row, second.start.row);
+    var end_row = @max(first.end.row, second.end.row);
+    while (start_row <= end_row and std.meta.eql(selectionBoundsForRow(previous, start_row), selectionBoundsForRow(current, start_row))) start_row += 1;
+    if (start_row > end_row) return null;
+    while (end_row > start_row and std.meta.eql(selectionBoundsForRow(previous, end_row), selectionBoundsForRow(current, end_row))) end_row -= 1;
+    return .{
+        .start = .{ .row = start_row, .col = 0 },
+        .end = .{ .row = end_row, .col = std.math.maxInt(usize) },
+    };
+}
+
 const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
@@ -365,6 +402,7 @@ const PaneCacheEntry = struct {
     last_cursor_style: ghostty.CursorVisualStyle = .block,
     last_cursor_focused: bool = false,
     has_cursor_state: bool = false,
+    last_selection_range: ?selection.Range = null,
 };
 var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = [_]?PaneCacheEntry{null} ** MAX_PANE_CACHES;
 
@@ -401,6 +439,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     entry.last_cursor_style = .block;
                     entry.last_cursor_focused = false;
                     entry.has_cursor_state = false;
+                    entry.last_selection_range = null;
                     entry.last_atlas_reset_epoch = 0; // size changed — force full redraw next frame
                     entry.has_bg_color = false;
                 }
@@ -2335,6 +2374,9 @@ pub fn run(app: *App) !void {
     g_ignore_resize_frames = 0;
     g_selection_pointer_active = false;
     g_selection_pointer_pane = null;
+    g_last_motion_cell = null;
+    g_motion_outside_terminal = false;
+    g_pending_mouse_move = null;
     g_scrollbar_drag_pane = null;
     g_scrollbar_drag_metrics = null;
     g_scrollbar_drag_grab_y = 0.0;
@@ -2592,6 +2634,7 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
 
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    flushPendingMouseMove(app);
     const frame_start_ns = std.time.nanoTimestamp();
     const frame_wake_generation = app.currentWakeGeneration();
     const collect_perf = app.config.debug_overlay;
@@ -2797,6 +2840,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // dirty level.
                     _ = ox; // suppress unused warning
                     const dirty_level = pane.render_dirty;
+                    const selection_redraw_range = selectionRedrawRange(cache_entry.last_selection_range, selection_range);
                     const geometry_stale = cache_entry.force_full_frames > 0 or g_drag_node != null or cache_entry.layout_generation != layout_generation;
                     // Atlas-epoch check: if the atlas was flushed since this pane's
                     // last render, its existing RT content has stale glyph UVs and
@@ -2866,7 +2910,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
-                    const settled_clean = dirty_level == .false_value and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
+                    const settled_clean = dirty_level == .false_value and selection_redraw_range == null and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         if (cfg.debug_terminal_trace and focused) {
                             std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
@@ -2999,6 +3043,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         if (use_row_map) &cache_entry.row_map_vals else null,
                         use_row_map,
                         selection_range,
+                        selection_redraw_range,
                         hovered_hyperlink,
                         cache_entry.prev_cursor_row,
                     );
@@ -3055,6 +3100,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.last_cursor_style = cursor_style;
                     cache_entry.last_cursor_focused = focused;
                     cache_entry.has_cursor_state = true;
+                    cache_entry.last_selection_range = selection_range;
 
                     // Clear the pane-level dirty flag so subsequent clean frames
                     // are skipped.
@@ -3163,6 +3209,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             false,
                             copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app, leaf.pane),
+                            null,
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3216,6 +3263,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             null,
                             false,
                             copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
+                            null,
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -3323,6 +3371,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             true,
                             pane.render_dirty == .full or pane.pty_wrote_this_frame or renderer.atlas_dirty,
                             copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane),
+                            null,
                             app.hovered_hyperlink,
                             std.math.maxInt(usize),
                         );
@@ -4079,6 +4128,12 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
 
+    if (event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE) {
+        g_pending_mouse_move = event;
+        return;
+    }
+    flushPendingMouseMove(app);
+
     if (event.type == c.SAPP_EVENTTYPE_QUIT_REQUESTED) {
         std.log.info("sokol quit requested", .{});
     }
@@ -4127,6 +4182,12 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
         else => {},
     }
+}
+
+fn flushPendingMouseMove(app: *App) void {
+    const event = g_pending_mouse_move orelse return;
+    g_pending_mouse_move = null;
+    handleMouseMove(app, event);
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
@@ -4494,12 +4555,10 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         return;
     }
     if (g_block_all_mouse_until_up) {
-        c.sapp_consume_event();
         return;
     }
 
     if (g_block_left_mouse_until_up) {
-        c.sapp_consume_event();
         return;
     }
 
@@ -4632,18 +4691,58 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (g_selection_pointer_active) {
         if (g_selection_pointer_pane) |pane| {
             if (app.cellPointInPane(pane, event.mouse_x, event.mouse_y)) |point| {
-                _ = app.enqueueMouse(.{ .selection_update = .{ .pane = pane, .point = point } });
+                const mods = ghosttyMods(event.modifiers);
+                const motion = MotionCell{
+                    .pane = pane,
+                    .point = point,
+                    .held_button = .left,
+                    .mods = mods,
+                    .tracking = pane.last_mouse_tracking,
+                    .layout_generation = app.currentLayoutGeneration(),
+                };
+                if (g_last_motion_cell == null or !std.meta.eql(g_last_motion_cell.?, motion)) {
+                    if (app.enqueueMouse(.{ .selection_update = .{ .pane = pane, .point = point } })) {
+                        g_last_motion_cell = motion;
+                        g_motion_outside_terminal = false;
+                    }
+                }
                 return;
             }
         }
     }
 
-    _ = app.enqueueMouse(.{ .motion = .{
-        .held_button = g_mouse_button_down,
-        .x = event.mouse_x,
-        .y = event.mouse_y,
-        .mods = ghosttyMods(event.modifiers),
-    } });
+    const mods = ghosttyMods(event.modifiers);
+    if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
+        const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
+        const motion = MotionCell{
+            .pane = hit.pane,
+            .point = point,
+            .held_button = g_mouse_button_down,
+            .mods = mods,
+            .tracking = hit.pane.last_mouse_tracking,
+            .layout_generation = app.currentLayoutGeneration(),
+        };
+        if (g_last_motion_cell != null and std.meta.eql(g_last_motion_cell.?, motion)) return;
+        if (app.enqueueMouse(.{ .motion = .{
+            .held_button = g_mouse_button_down,
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .mods = mods,
+        } })) {
+            g_last_motion_cell = motion;
+            g_motion_outside_terminal = false;
+        }
+    } else if (!g_motion_outside_terminal) {
+        if (app.enqueueMouse(.{ .motion = .{
+            .held_button = g_mouse_button_down,
+            .x = event.mouse_x,
+            .y = event.mouse_y,
+            .mods = mods,
+        } })) {
+            g_last_motion_cell = null;
+            g_motion_outside_terminal = true;
+        }
+    }
 }
 
 fn handleScroll(app: *App, event: c.sapp_event) void {
