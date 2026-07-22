@@ -8,6 +8,7 @@ your personal config.
 For the full action list, see
 [Built-in keymap actions](reference/actions.md).
 For the API, see [`hollow.keymap`](reference/lua/keymap.md).
+See [Quick select](quick-select.md) for keyboard-driven link opening.
 
 ## Chord syntax
 
@@ -149,6 +150,7 @@ See [Copy mode](copy-mode.md) for the modal bindings.
 | `<leader>r`  | Rename current tab       |
 | `<leader>uu` | Reload config            |
 | `<leader>p`  | Open the command palette |
+| `<leader>q`  | Quick select a visible URL |
 
 ### Font size
 
@@ -237,3 +239,4 @@ hollow.keymap.set("<Esc>", "copy_mode_exit",       { mode = "copy_mode" })
 - [`hollow.keymap`](reference/lua/keymap.md) — full API
 - [Built-in keymap actions](reference/actions.md) — every action name
 - [Copy mode](copy-mode.md) — the modal binding surface
+- [Quick select](quick-select.md) — visible-link hints

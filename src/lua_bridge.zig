@@ -256,6 +256,7 @@ pub const AppCallbacks = struct {
     copy_mode_search_set_query: *const fn (app: *anyopaque, query: []const u8) void,
     copy_mode_search_next: *const fn (app: *anyopaque) void,
     copy_mode_search_prev: *const fn (app: *anyopaque) void,
+    quick_select_start: *const fn (app: *anyopaque, action: []const u8) void,
 };
 
 // LUA_REGISTRYINDEX / LUA_GLOBALSINDEX constants (match the LuaJIT 2.1 ABI)
@@ -578,6 +579,10 @@ pub const BuiltInPayload = union(enum) {
         match_index: ?usize = null,
         selecting: bool = false,
         block: bool = false,
+    },
+    quick_select: struct {
+        active: bool,
+        action: []const u8,
     },
     workspace_closed: struct {
         name: []const u8,
@@ -1881,6 +1886,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "copy_mode_search_prev");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_quick_select_start, 1);
+        api.set_field(self.state, -2, "quick_select_start");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_current_tab_id, 1);
         api.set_field(self.state, -2, "current_tab_id");
 
@@ -2336,6 +2345,13 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "selecting");
             api.push_boolean(state, if (value.block) 1 else 0);
             api.set_field(state, -2, "block");
+        },
+        .quick_select => |value| {
+            api.create_table(state, 0, 2);
+            api.push_boolean(state, if (value.active) 1 else 0);
+            api.set_field(state, -2, "active");
+            try pushOwnedString(allocator, api, state, value.action);
+            api.set_field(state, -2, "action");
         },
         .workspace_closed => |value| {
             api.create_table(state, 0, 1);
@@ -6074,6 +6090,20 @@ fn l_copy_mode_search_next(state: *State) callconv(.c) c_int {
 fn l_copy_mode_search_prev(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.copy_mode_search_prev(cbs.app);
+    return 0;
+}
+
+fn l_quick_select_start(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse return 0;
+    var action_len: usize = 0;
+    const action_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+        api.to_lstring(state, 1, &action_len)
+    else
+        null;
+    const action: []const u8 = if (action_ptr) |ptr| ptr[0..action_len] else "open";
+    cbs.quick_select_start(cbs.app, action);
     return 0;
 }
 

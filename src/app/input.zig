@@ -6,6 +6,7 @@ const text_helpers = @import("text_helpers.zig");
 const selection_mod = @import("selection.zig");
 const selection = @import("../selection.zig");
 const copy_mode = @import("copy_mode.zig");
+const quick_select = @import("quick_select.zig");
 const hyperlinks = @import("hyperlinks.zig");
 const scroll_mod = @import("scroll.zig");
 const mux_ops = @import("session_controller.zig");
@@ -213,6 +214,8 @@ pub const PendingInputEvent = union(enum) {
     copy_mode_search_set_query: []u8,
     copy_mode_search_next,
     copy_mode_search_prev,
+    quick_select_start: quick_select.Action,
+    quick_select_input: quick_select.Input,
     open_hyperlink: struct {
         pane: *Pane,
         point: selection.CellPoint,
@@ -545,6 +548,12 @@ pub fn processInputQueue(self: *App) void {
             .copy_mode_search_prev => {
                 copy_mode.copyModeJumpMatch(self, false);
             },
+            .quick_select_start => |action| {
+                quick_select.start(self, action);
+            },
+            .quick_select_input => |value| {
+                quick_select.handleInput(self, value);
+            },
             .open_hyperlink => |open_ev| {
                 if (self.hasPane(open_ev.pane)) hyperlinks.openHyperlinkAt(self, open_ev.pane, open_ev.point);
             },
@@ -575,7 +584,7 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         self.last_visual_activity_ns = now_ns;
         return true;
     }
-    if (self.selection_drag_active or self.hovered_tab_index != null or self.hovered_close_tab_index != null) {
+    if (self.quick_select_active or self.selection_drag_active or self.hovered_tab_index != null or self.hovered_close_tab_index != null) {
         self.last_visual_activity_ns = now_ns;
         return true;
     }

@@ -11,6 +11,7 @@ const BarSurface = app_mod.BarSurface;
 const cmd_ipc = @import("command_dispatcher.zig");
 const mux_ops = @import("session_controller.zig");
 const input = @import("input.zig");
+const quick_select = @import("quick_select.zig");
 
 pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
@@ -539,6 +540,13 @@ pub fn luaCopyModeSearchNextCallback(app_ptr: *anyopaque) void {
 pub fn luaCopyModeSearchPrevCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_mode_search_prev);
+}
+
+pub fn luaQuickSelectStartCallback(app_ptr: *anyopaque, action: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const selected: quick_select.Action = if (std.mem.eql(u8, action, "copy")) .copy else .open;
+    quick_select.armInput(app);
+    if (!app.enqueueMouse(.{ .quick_select_start = selected })) quick_select.disarmInput(app);
 }
 
 pub fn luaMoveTabToWorkspaceCallback(app_ptr: *anyopaque, tab_id: usize, workspace_index: usize) bool {

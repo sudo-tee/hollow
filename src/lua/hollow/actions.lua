@@ -565,6 +565,22 @@ function M.setup(hollow, host_api)
     category = "general",
   })
 
+  register(hollow, "quick_select", {
+    run = function()
+      host_api.quick_select_start("open")
+    end,
+    desc = "Open a visible URL by hint",
+    category = "general",
+  })
+
+  register(hollow, "quick_select_copy", {
+    run = function()
+      host_api.quick_select_start("copy")
+    end,
+    desc = "Copy a visible URL by hint",
+    category = "general",
+  })
+
   register(hollow, "reload_config", {
     run = function()
       hollow.config.reload()

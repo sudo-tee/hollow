@@ -193,6 +193,14 @@ local function copy_mode_state()
   return nil
 end
 
+local function quick_select_state()
+  local value = state.quick_select
+  if type(value) == "table" and value.active == true then
+    return value
+  end
+  return nil
+end
+
 local function special_mode_theme()
   local resolved = shared.resolve_theme().ui
   local all = resolved.widgets.all
@@ -210,6 +218,7 @@ local function special_mode_theme()
     divider = color.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
     counter = color.normalize_hex_color(all.counter, all.muted),
     copy_bg = mode_copy_bg,
+    quick_select_bg = color.normalize_hex_color(color.brighten_hex_color(base_bg, 0.12, base_bg), base_bg),
     leader_bg = mode_leader_bg,
     hint_key_bg = hint_key_bg,
   }
@@ -297,8 +306,8 @@ local function copy_mode_search_chip(copy_mode, theme)
   })
 end
 
-local function special_mode_legend(copy_mode, theme)
-  local leader = copy_mode == nil and leader_state() or nil
+local function special_mode_legend(copy_mode, quick_select, theme)
+  local leader = copy_mode == nil and quick_select == nil and leader_state() or nil
   local hints = copy_mode ~= nil and {
     special_mode_hint("h/j/k/l", "move", theme),
     special_mode_hint("gg/G", "ends", theme),
@@ -307,6 +316,10 @@ local function special_mode_legend(copy_mode, theme)
     special_mode_hint("n/N", "match", theme),
     special_mode_hint("y", "copy", theme),
     special_mode_hint("q", "exit", theme),
+  } or quick_select ~= nil and {
+    special_mode_hint("a-z", "choose", theme),
+    special_mode_hint("Backspace", "undo", theme),
+    special_mode_hint("Esc", "exit", theme),
   } or (leader ~= nil and leader.next_display and #leader.next_display > 0) and (function()
     local leader_hints = {}
     for _, item in ipairs(leader.next_display) do
@@ -317,7 +330,7 @@ local function special_mode_legend(copy_mode, theme)
   end)() or {}
 
   return ui.bar.custom({
-    id = copy_mode ~= nil and "mode:copy-legend" or "mode:leader-legend",
+    id = copy_mode ~= nil and "mode:copy-legend" or quick_select ~= nil and "mode:quick-select-legend" or "mode:leader-legend",
     cache_ttl_ms = leader ~= nil and math.max(1, tonumber(leader.remaining_ms) or 0) or nil,
     render = function()
       return flatten_nodes(hints)
@@ -335,8 +348,9 @@ local function configured_bottombar_widget()
     },
     render = function()
       local copy_mode = copy_mode_state()
-      local leader = copy_mode == nil and leader_state() or nil
-      if copy_mode == nil and leader == nil then
+      local quick_select = copy_mode == nil and quick_select_state() or nil
+      local leader = copy_mode == nil and quick_select == nil and leader_state() or nil
+      if copy_mode == nil and quick_select == nil and leader == nil then
         return {}
       end
 
@@ -358,6 +372,25 @@ local function configured_bottombar_widget()
             return copy_mode_search_chip(copy_mode, theme)
           end,
         })
+      elseif quick_select ~= nil then
+        items[#items + 1] = ui.bar.custom({
+          id = "mode:quick-select",
+          render = function()
+            return special_mode_chip(" QUICK SELECT ", {
+              bg = theme.quick_select_bg,
+              fg = theme.accent,
+            })
+          end,
+        })
+        items[#items + 1] = ui.bar.custom({
+          id = "mode:quick-select-action",
+          render = function()
+            return special_mode_chip(" " .. (quick_select.action == "copy" and "copy" or "open") .. " ", {
+              bg = theme.chip_bg,
+              fg = theme.chip_fg,
+            })
+          end,
+        })
       elseif leader ~= nil then
         items[#items + 1] = ui.bar.custom({
           id = "mode:leader",
@@ -371,7 +404,7 @@ local function configured_bottombar_widget()
       end
 
       items[#items + 1] = ui.spacer()
-      items[#items + 1] = special_mode_legend(copy_mode, theme)
+      items[#items + 1] = special_mode_legend(copy_mode, quick_select, theme)
       return items
     end,
   })
@@ -1086,7 +1119,7 @@ end
 ---@return HollowUiSegment
 local function serialize_key_legend(surface, node)
   local copy_mode = copy_mode_state()
-  if copy_mode ~= nil then
+  if copy_mode ~= nil or quick_select_state() ~= nil then
     return nil, nil
   end
 
@@ -1552,6 +1585,7 @@ function ui._register_bar_invalidation_hooks()
 
   for _, event_name in ipairs({
     "copy_mode:changed",
+    "quick_select:changed",
     "term:tab_activated",
     "term:tab_closed",
     "term:pane_focused",

@@ -21,10 +21,15 @@ const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
 const scroll = @import("../app/scroll.zig");
 const copy_mode = @import("../app/copy_mode.zig");
+const quick_select = @import("../app/quick_select.zig");
 const selection_mod = @import("../app/selection.zig");
 const mux_ops = @import("../app/session_controller.zig");
 const input = @import("../app/input.zig");
 const debug_timing = @import("debug_timing.zig");
+
+fn enqueueQuickSelectInput(app: *App, value: quick_select.Input) void {
+    if (!app.enqueueMouse(.{ .quick_select_input = value })) quick_select.disarmInput(app);
+}
 
 const LUA_GLOBALSINDEX: c_int = -10002;
 const Api = lua_mod.Api;
@@ -4228,6 +4233,16 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     g_released_mods &= ~modifierBitForKey(key);
     const mods = ghosttyMods(event.modifiers);
 
+    if (quick_select.inputActive(app)) {
+        if (key == .escape) {
+            enqueueQuickSelectInput(app, .cancel);
+        } else if (key == .backspace) {
+            enqueueQuickSelectInput(app, .backspace);
+        }
+        c.sapp_consume_event();
+        return;
+    }
+
     if (copy_mode.copyModeActive(app) and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
         g_swallow_char_pending = 1;
@@ -4288,6 +4303,10 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
     // the key-up that releases it).
     const mods = ghosttyMods(event.modifiers);
     g_released_mods |= modifierBitForKey(key);
+    if (quick_select.inputActive(app)) {
+        c.sapp_consume_event();
+        return;
+    }
     if (key != .unidentified) _ = app.enqueueKey(key, mods, .release);
 }
 
@@ -4303,6 +4322,11 @@ fn handleChar(app: *App, event: c.sapp_event) void {
 
     var utf8_buf: [5]u8 = [_]u8{0} ** 5;
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
+    if (quick_select.inputActive(app)) {
+        if (utf8.len == 1) enqueueQuickSelectInput(app, .{ .character = utf8[0] });
+        c.sapp_consume_event();
+        return;
+    }
     const mods = ghosttyMods(event.modifiers);
     if (copy_mode.copyModeActive(app) and (mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] == 0x16) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
@@ -4325,6 +4349,12 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         c.SAPP_MOUSEBUTTON_MIDDLE => ghostty.MouseButton.middle,
         else => null,
     };
+
+    if (quick_select.inputActive(app)) {
+        if (action == .press) enqueueQuickSelectInput(app, .cancel);
+        c.sapp_consume_event();
+        return;
+    }
 
     if (action == .press) {
         g_mouse_button_down = button;

@@ -50,6 +50,7 @@ local function make_host_api()
     reload_config = 0,
     scroll = nil,
     copy_mode = nil,
+    quick_select = nil,
     workspace_default_cwd = nil,
     send_text = {},
     files = {},
@@ -618,6 +619,10 @@ local function make_host_api()
     return nil
   end
 
+  function host_api.quick_select_start(action)
+    recorded.quick_select = action
+  end
+
   function host_api.switch_tab_by_id(tab_id)
     recorded.switch_tab_by_id = tab_id
     return true
@@ -995,6 +1000,11 @@ hollow.keymap.set("<C-S-t>", "new_tab")
 local key, mods = hollow.keymap.parse_chord("<C-S-t>")
 assert_true(on_key(key, mods), "registered key bindings should consume mapped keys")
 assert_equal(recorded.new_tab_calls, 1, "registered action bindings should invoke host actions")
+
+hollow.action.quick_select()
+assert_equal(recorded.quick_select, "open", "quick_select action should request URL opening")
+hollow.action.quick_select_copy()
+assert_equal(recorded.quick_select, "copy", "quick_select_copy action should request clipboard copy")
 
 local mode_hits = {}
 hollow.keymap.set("x", function()
@@ -1537,5 +1547,15 @@ assert_true(copy_bar.items[#copy_bar.items].text:find("move", 1, true) ~= nil, "
 
 hollow.action.copy_mode_exit()
 assert_true(hollow.ui._bottombar_state() == nil, "bottombar should hide again after special modes clear")
+
+hollow._emit_builtin_event("quick_select:changed", { active = true, action = "open" })
+local quick_select_bar = hollow.ui._bottombar_state()
+assert_true(quick_select_bar ~= nil, "bottombar should show in quick select mode")
+assert_true(quick_select_bar.items[1].text:find("QUICK SELECT", 1, true) ~= nil, "quick select widget should identify mode")
+assert_true(quick_select_bar.items[2].text:find("open", 1, true) ~= nil, "quick select widget should identify action")
+assert_true(quick_select_bar.items[#quick_select_bar.items].text:find("choose", 1, true) ~= nil, "quick select should show key legend hints")
+
+hollow._emit_builtin_event("quick_select:changed", { active = false, action = "open" })
+assert_true(hollow.ui._bottombar_state() == nil, "bottombar should hide after quick select exits")
 
 print("runtime_test.lua: ok")

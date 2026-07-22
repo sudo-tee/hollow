@@ -174,6 +174,10 @@ hollow.events.on("workspace:closed", function(ev)
   hollow.ui.notify.info(label .. " closed", { ttl = 2400 })
 end)
 
+hollow.events.on("quick_select:no_matches", function()
+  hollow.ui.notify.info("Quick select: no links in visible pane", { ttl = 1800 })
+end)
+
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
 -- hollow.keymap.default("<C-S-c>", "copy_selection")
 -- hollow.keymap.default("<C-S-v>", "paste_clipboard")
@@ -216,6 +220,7 @@ hollow.keymap.default("<C-S-X>", "copy_mode")
 hollow.keymap.default("<A-S-Up>", "prompt_jump_prev")
 hollow.keymap.default("<A-S-Down>", "prompt_jump_next")
 hollow.keymap.default("<leader>/", "copy_mode_search", { desc = "search" })
+hollow.keymap.default("<leader>q", "quick_select", { desc = "quick select URL" })
 
 hollow.keymap.default("h", "copy_mode_move_left", { mode = "copy_mode" })
 hollow.keymap.default("j", "copy_mode_move_down", { mode = "copy_mode" })

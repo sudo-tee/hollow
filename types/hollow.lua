@@ -163,6 +163,8 @@
 ---| "window:blurred"
 ---| "copy_mode:changed"
 ---| "copy_mode:search_requested"
+---| "quick_select:changed"
+---| "quick_select:no_matches"
 ---| "topbar:hover"
 ---| "topbar:leave"
 ---| "topbar:click"
@@ -197,6 +199,8 @@
 ---@field ["window:blurred"] {}
 ---@field ["copy_mode:changed"] { active: boolean, query: string, match_count: integer, match_index: integer|nil, selecting: boolean, block: boolean }
 ---@field ["copy_mode:search_requested"] {}
+---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
+---@field ["quick_select:no_matches"] {}
 ---@field ["topbar:hover"] { id: string }
 ---@field ["topbar:leave"] {}
 ---@field ["topbar:click"] { id: string }
@@ -1055,6 +1059,7 @@
 ---@field keymap HollowKeymapState
 ---@field ui HollowUiState
 ---@field copy_mode HollowCopyModeState|nil
+---@field quick_select { active: boolean, action: "open"|"copy" }|nil
 
 ---@class HtpQueryContext
 ---@field pane HollowPane
@@ -1919,6 +1924,7 @@ function plugins.sync() end
 ---@field copy_mode_search_set_query fun(query: string)
 ---@field copy_mode_search_next fun()
 ---@field copy_mode_search_prev fun()
+---@field quick_select_start fun(action: "open"|"copy")
 ---@field platform HollowPlatformInfo
 
 ---@class HollowUiModuleExports

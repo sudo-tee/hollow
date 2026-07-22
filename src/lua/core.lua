@@ -60,6 +60,11 @@ keymap.setup(hollow, host_api, state)
 state.config.values.load_default_keymaps = true
 local events_runtime = events.setup(hollow, state, term_helpers)
 copy_mode.setup()
+state.quick_select = state.quick_select or { active = false, action = "open" }
+hollow.events.on("quick_select:changed", function(payload)
+  state.quick_select.active = payload and payload.active == true
+  state.quick_select.action = payload and payload.action or "open"
+end)
 if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
   hollow.ui._register_bar_invalidation_hooks()
 end

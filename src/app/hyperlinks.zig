@@ -43,7 +43,7 @@ fn rowTextForHyperlinks(self: *App, pane: *Pane, row: usize, out: []u8) ?[]const
     return null;
 }
 
-fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]const u8 {
+pub fn hyperlinkUriAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?[]const u8 {
     const rt = self.ghostty orelse return null;
     const terminal = pane.terminal orelse return null;
 

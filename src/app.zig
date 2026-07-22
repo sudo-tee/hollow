@@ -50,6 +50,7 @@ const lua_callbacks = @import("app/lua_callbacks.zig");
 const text_helpers = @import("app/text_helpers.zig");
 const selection_mod = @import("app/selection.zig");
 const copy_mode = @import("app/copy_mode.zig");
+const quick_select = @import("app/quick_select.zig");
 const htp = @import("app/htp.zig");
 const HtpCodec = @import("htp/codec.zig").Codec;
 const input = @import("app/input.zig");
@@ -303,6 +304,17 @@ pub const App = struct {
     copy_mode_top_row: usize = 0,
     copy_mode_block_selection: bool = false,
     copy_mode_restore_top_row: usize = 0,
+    quick_select_active: bool = false,
+    quick_select_pending_capture: bool = false,
+    quick_select_input_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    quick_select_pane: ?*Pane = null,
+    quick_select_action: quick_select.Action = .open,
+    quick_select_candidates: std.ArrayListUnmanaged(quick_select.Candidate) = .empty,
+    quick_select_prefix: [2]u8 = undefined,
+    quick_select_prefix_len: usize = 0,
+    quick_select_pending_inputs: [64]quick_select.Input = undefined,
+    quick_select_pending_input_len: usize = 0,
+    quick_select_layout_generation: u32 = 0,
     htp_pending_messages: std.ArrayListUnmanaged(htp.HtpQueuedMessage) = .empty,
     htp_pending_message_head: usize = 0,
     htp_pending_message_bytes: usize = 0,
@@ -359,8 +371,6 @@ pub const App = struct {
         fastmem.copy(u8, ev.char.bytes[0..bytes.len], bytes);
         return self.enqueueMouse(ev);
     }
-
-
 
     pub fn currentPaneIdValue(self: *App) usize {
         const pane = self.activePane() orelse return 0;
@@ -617,6 +627,7 @@ pub const App = struct {
         self.shutdownRuntime();
         self.lifecycle.finishDeinit();
         copy_mode.deinitCopyModeState(self);
+        quick_select.deinit(self);
 
         for (self.htp_pending_messages.items[self.htp_pending_message_head..]) |message| {
             self.allocator.free(message.payload);
@@ -812,6 +823,7 @@ pub const App = struct {
             .copy_mode_search_set_query = lua_callbacks.luaCopyModeSearchSetQueryCallback,
             .copy_mode_search_next = lua_callbacks.luaCopyModeSearchNextCallback,
             .copy_mode_search_prev = lua_callbacks.luaCopyModeSearchPrevCallback,
+            .quick_select_start = lua_callbacks.luaQuickSelectStartCallback,
         });
     }
 
@@ -880,6 +892,7 @@ pub const App = struct {
             const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             selection_mod.pruneSelectionIfInvalid(self);
             copy_mode.pruneCopyModeIfInvalid(self);
+            quick_select.pruneIfInvalid(self);
             if (self.config.debug_overlay) prune_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
@@ -910,6 +923,7 @@ pub const App = struct {
         if (self.ghostty) |*runtime| {
             const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
+            quick_select.refreshAfterPanes(self);
             if (self.config.debug_overlay) tick_panes_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
@@ -919,7 +933,9 @@ pub const App = struct {
         }
         {
             const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-            mux_ops.maybeRunStartupCommand(self, );
+            mux_ops.maybeRunStartupCommand(
+                self,
+            );
             if (self.config.debug_overlay) startup_ns = std.time.nanoTimestamp() - start_ns;
         }
         {
@@ -1445,6 +1461,8 @@ pub const App = struct {
     pub fn reloadConfig(self: *App) bool {
         if (!self.using_embedded_base_config and self.base_config_path == null and self.override_config_path == null) return false;
 
+        quick_select.cancel(self);
+
         const old_window_width = self.config.window_width;
         const old_window_height = self.config.window_height;
         const old_cell_width = self.cell_width_px;
@@ -1643,7 +1661,9 @@ pub const App = struct {
     }
 
     pub fn shouldDrawWorkspaceSwitcher(self: *App) bool {
-        return mux_ops.workspaceCount(self, ) > 0;
+        return mux_ops.workspaceCount(
+            self,
+        ) > 0;
     }
 
     pub fn tabCount(self: *App) usize {
@@ -1656,7 +1676,9 @@ pub const App = struct {
         if (self.lua) |*lua| {
             return lua.resolveTopBarTitle(
                 index,
-                index == mux_ops.activeTabIndex(self, ),
+                index == mux_ops.activeTabIndex(
+                    self,
+                ),
                 self.hovered_tab_index != null and self.hovered_tab_index.? == index,
                 hover_close,
                 fallback,
@@ -1671,7 +1693,9 @@ pub const App = struct {
         if (self.lua) |*lua| {
             return lua.resolveTopBarTitle(
                 index,
-                index == mux_ops.activeTabIndex(self, ),
+                index == mux_ops.activeTabIndex(
+                    self,
+                ),
                 self.hovered_tab_index != null and self.hovered_tab_index.? == index,
                 hover_close,
                 fallback,
@@ -1680,7 +1704,6 @@ pub const App = struct {
         }
         return .{ .text = fallback };
     }
-
 
     pub fn workspaceName(self: *App, index: usize, out_buf: []u8) []const u8 {
         if (self.mux) |*mux| {
@@ -1708,7 +1731,9 @@ pub const App = struct {
 
     pub fn topBarStatus(self: *App, side: bar.Side, segments: []bar.Segment, text_buf: []u8) []bar.Segment {
         if (self.lua) |*lua| {
-            return lua.resolveTopBarStatus(side, segments, text_buf, mux_ops.activeTabIndex(self, ), self.tabCount());
+            return lua.resolveTopBarStatus(side, segments, text_buf, mux_ops.activeTabIndex(
+                self,
+            ), self.tabCount());
         }
         return segments[0..0];
     }
@@ -1945,11 +1970,11 @@ pub const App = struct {
                 const needs_update = pane.pty_received_data or
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
-                    if (needs_update) {
-                        const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-                        if (pane.render_state_fresh) {
-                            pane.render_state_fresh = false;
-                            pane.pty_received_data = false;
+                if (needs_update) {
+                    const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    if (pane.render_state_fresh) {
+                        pane.render_state_fresh = false;
+                        pane.pty_received_data = false;
                     } else {
                         pane.pty_received_data = false;
                         pane.last_render_state_update_ns = now_ns;
@@ -1957,9 +1982,9 @@ pub const App = struct {
                         runtime.updateRenderState(pane.render_state, pane.terminal) catch |err| {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
-                        }
-                        if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
-                        const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
+                    }
+                    if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
+                    const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (self.config.debug_terminal_trace and pane_is_active) {
                         const cursor_pos = runtime.cursorPos(pane.render_state);
                         std.log.info("terminal-trace render-state pane={x} fresh={} pty_received={} render_dirty_before={s} post_dirty={s} cursor_visible={} cursor_blinking={} cursor_password={} cursor_style={s} cursor_pos={any}", .{
@@ -1991,9 +2016,9 @@ pub const App = struct {
                             });
                         }
                     }
-                        const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
-                        _ = scroll.refreshPaneScrollbar(self, runtime, pane);
-                        if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
+                    const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    _ = scroll.refreshPaneScrollbar(self, runtime, pane);
+                    if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
@@ -2076,7 +2101,6 @@ pub const App = struct {
         }
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
     }
-
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
         const mux = if (self.mux) |*m| m else return;

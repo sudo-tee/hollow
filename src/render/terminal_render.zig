@@ -2,7 +2,6 @@
 ///
 /// Extracted from ft_renderer.zig for code organisation.  Contains the
 /// terminal-rendering pipeline (pass 1 background/rasterise, pass 2 glyph draw).
-
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
@@ -14,6 +13,7 @@ const App = @import("../app.zig").App;
 const CopyModeSnapshotLine = @import("../app/copy_mode.zig").CopyModeSnapshotLine;
 const SearchHighlight = @import("../app/copy_mode.zig").SearchHighlight;
 const copy_mode = @import("../app/copy_mode.zig");
+const quick_select = @import("../app/quick_select.zig");
 const Pane = @import("../pane.zig").Pane;
 const selection = @import("../selection.zig");
 
@@ -243,6 +243,7 @@ pub fn queueInViewport(
 
     const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
     queueBackgroundAndRasterPass(self, runtime, &queue, pane_w, pane_h, &hash_skip_bits, run_buf);
+    queueQuickSelectBackgrounds(self, app, pane, pane_w, pane_h);
 
     if (self.atlas_dirty) {
         self.flushAtlas();
@@ -273,6 +274,26 @@ pub fn queueInViewport(
     self.last_pass2_decoration_ns = pass2_decoration_ns;
 }
 
+fn queueQuickSelectBackgrounds(self: *FtRenderer, app: *const App, pane: ?*const Pane, pane_w: f32, pane_h: f32) void {
+    const value = pane orelse return;
+    if (!app.quick_select_active or app.quick_select_pane != value or app.quick_select_pending_capture) return;
+    c.sgl_begin_quads();
+    c.sgl_c4b(67, 56, 120, 255);
+    for (app.quick_select_candidates.items) |*candidate| {
+        const label = quick_select.candidateLabelRemainder(app, candidate);
+        if (label.len == 0) continue;
+        const x = self.padding_x + @as(f32, @floatFromInt(candidate.start_col)) * self.cell_w;
+        const y = self.padding_y + @as(f32, @floatFromInt(candidate.row)) * self.cell_h;
+        const w = @as(f32, @floatFromInt(label.len)) * self.cell_w;
+        if (x >= pane_w or y + self.cell_h > pane_h) continue;
+        c.sgl_v2f(x, y);
+        c.sgl_v2f(@min(x + w, pane_w), y);
+        c.sgl_v2f(@min(x + w, pane_w), y + self.cell_h);
+        c.sgl_v2f(x, y + self.cell_h);
+    }
+    c.sgl_end();
+}
+
 pub fn queueCopyModeSnapshot(
     self: *FtRenderer,
     cfg: *const Config,
@@ -294,7 +315,8 @@ pub fn queueCopyModeSnapshot(
     else
         default_fg;
     const search_bg = mixColor(default_bg, default_fg, 0.18);
-    const search_active_bg = mixColor(default_bg, default_fg, 0.42);    const selection_range = copy_mode.copyModeSelectionRange(app, pane);
+    const search_active_bg = mixColor(default_bg, default_fg, 0.42);
+    const selection_range = copy_mode.copyModeSelectionRange(app, pane);
 
     setupViewport(self, offset_x, offset_y, pane_w, pane_h);
     resetQueueState(self);
@@ -309,14 +331,14 @@ pub fn queueCopyModeSnapshot(
     var row: usize = 0;
     while (row < visible_rows) : (row += 1) {
         const row_info = makeCopyModeSnapshotRowInfo(self, app, pane, selection_range, row, visible_rows);
-        const line = copy_mode.copyModeSnapshotLineForRow(app,pane, row);
+        const line = copy_mode.copyModeSnapshotLineForRow(app, pane, row);
         queueCopyModeSnapshotRowBackground(self, line, row_info, default_bg, cfg, selection_bg, search_bg, search_active_bg, selection_fg);
     }
     c.sgl_end();
 
     row = 0;
     while (row < visible_rows) : (row += 1) {
-        const line = copy_mode.copyModeSnapshotLineForRow(app,pane, row) orelse continue;
+        const line = copy_mode.copyModeSnapshotLineForRow(app, pane, row) orelse continue;
         const row_info = makeCopyModeSnapshotRowInfo(self, app, pane, selection_range, row, visible_rows);
         queueCopyModeSnapshotRowText(self, line, row_info, cfg, default_fg, selection_fg, run_buf, .raster);
     }
@@ -328,7 +350,7 @@ pub fn queueCopyModeSnapshot(
 
     row = 0;
     while (row < visible_rows) : (row += 1) {
-        const line = copy_mode.copyModeSnapshotLineForRow(app,pane, row) orelse continue;
+        const line = copy_mode.copyModeSnapshotLineForRow(app, pane, row) orelse continue;
         const row_info = makeCopyModeSnapshotRowInfo(self, app, pane, selection_range, row, visible_rows);
         queueCopyModeSnapshotRowText(self, line, row_info, cfg, default_fg, selection_fg, run_buf, .draw);
     }
@@ -565,7 +587,7 @@ pub fn queueBackgroundAndRasterRow(
         else
             false;
         const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
-        const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app,queue.pane.?)));
+        const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app, queue.pane.?)));
         const style_needs_background = if (style_id != 0)
             if (cached_style) |style|
                 style.has_non_default_bg or style.renders_background_without_text
@@ -762,7 +784,19 @@ pub fn queueGlyphRow(
             break :blk &last_style_info;
         } else null;
         const has_cursor = if (row.cursor_col) |cursor_col| col_x == cursor_col else false;
-        const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app,queue.pane.?)));
+        const has_block_cursor = has_cursor and (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app, queue.pane.?)));
+
+        if (quickSelectLabelAt(queue, row.row_y, col_x)) |label_ch| {
+            flushQueuedRun(self, .draw, run_buf, &run, row.py);
+            self.last_glyph_runs += 1;
+            const fg = ghostty.ColorRgb{ .r = 255, .g = 255, .b = 255 };
+            const direct = self.drawDirectGlyph(col_px, row.py, label_ch, 0, fg, row.py, row.py + self.cell_h);
+            if (!direct) {
+                const text = [1]u8{label_ch};
+                self.batchGlyphs(col_px, row.py, &text, 0, fg, .terminal, row.py, row.py + self.cell_h);
+            }
+            continue;
+        }
 
         switch (content_tag) {
             .codepoint => {
@@ -878,6 +912,19 @@ pub fn queueGlyphRow(
     const row_decoration_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
     if (row_needs_decorations) drawRowDecorations(self, runtime, queue, row);
     if (queue.cfg.debug_overlay) stats.decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
+}
+
+fn quickSelectLabelAt(queue: *const QueueContext, row: usize, col: usize) ?u8 {
+    const pane = queue.pane orelse return null;
+    if (!queue.app.quick_select_active or queue.app.quick_select_pane != pane or queue.app.quick_select_pending_capture) return null;
+    for (queue.app.quick_select_candidates.items) |*candidate| {
+        if (candidate.row != row or !quick_select.candidateVisible(queue.app, candidate.*)) continue;
+        const label = quick_select.candidateLabelRemainder(queue.app, candidate);
+        if (col >= candidate.start_col and col - candidate.start_col < label.len) {
+            return label[col - candidate.start_col];
+        }
+    }
+    return null;
 }
 
 pub fn queueCursorShapeRow(self: *FtRenderer, queue: *const QueueContext, row: RowRenderInfo, run_buf: []u8) void {
@@ -1026,6 +1073,9 @@ pub fn shouldSkipRowByHash(
     hash_skip_bits: *HashSkipBits,
 ) bool {
     _ = self;
+    if (queue.pane) |pane| {
+        if (queue.app.quick_select_active and queue.app.quick_select_pane == pane) return false;
+    }
     if (!queue.useRowMap() or row_y == queue.cursor_row or row_y == queue.prev_cursor_row) return false;
 
     const row_raw = runtime.rowRaw(queue.row_iterator.*);
@@ -1086,7 +1136,7 @@ pub fn queueCellBackground(
         }
     }
 
-    if (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app,queue.pane.?))) {
+    if (queue.cursor_style == .block or (queue.cursor_style == null and queue.pane != null and copy_mode.copyModeActiveForPane(queue.app, queue.pane.?))) {
         if (row.cursor_col) |cursor_col| {
             const cursor_end = cursor_col + (if (row.cursor_wide) @as(usize, 2) else 1);
             if (col_px >= self.padding_x + @as(f32, @floatFromInt(cursor_col)) * self.cell_w and col_px < self.padding_x + @as(f32, @floatFromInt(cursor_end)) * self.cell_w) {
@@ -1157,9 +1207,9 @@ pub fn makeRowRenderInfo(self: *FtRenderer, queue: *const QueueContext, row_y: u
         .row_y = row_y,
         .py = self.padding_y + row_y_px,
         .selection = if (queue.selection_range) |range| rowSelectionBounds(range, row_y) else null,
-        .search_highlight = if (queue.pane) |pane| copy_mode.searchHighlightForRow(queue.app,pane, row_y) else null,
+        .search_highlight = if (queue.pane) |pane| copy_mode.searchHighlightForRow(queue.app, pane, row_y) else null,
         .cursor_col = if (queue.pane) |pane|
-            copy_mode.copyModeCursorColForRow(queue.app,pane, row_y) orelse
+            copy_mode.copyModeCursorColForRow(queue.app, pane, row_y) orelse
                 if (!copy_mode.copyModeActiveForPane(queue.app, pane) and row_y == queue.cursor_row)
                     queue.cursor_col -| @intFromBool(queue.cursor_wide)
                 else
