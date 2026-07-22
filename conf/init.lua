@@ -171,11 +171,18 @@ end)
 
 hollow.events.on("workspace:closed", function(ev)
   local label = ev.name ~= "" and ("'" .. ev.name .. "'") or "workspace"
-  hollow.ui.notify.info(label .. " closed", { ttl = 2400 })
+  hollow.ui.notify.info("Workspace [" .. label .. "] has been closed", { ttl = 2400 })
 end)
 
 hollow.events.on("quick_select:no_matches", function()
-  hollow.ui.notify.info("Quick select: no matches in visible pane", { ttl = 1800 })
+  hollow.ui.notify.info("Quick select: no matches in visible pane", { ttl = 2400 })
+end)
+
+hollow.events.on("quick_select:action_executed", function(event)
+  hollow.ui.notify.info(
+    string.format("Quick select %s: %s", event.action, event.text),
+    { ttl = 2400 }
+  )
 end)
 
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
