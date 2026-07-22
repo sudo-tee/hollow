@@ -77,8 +77,8 @@ The full list, grouped by intent:
 | --- | --- |
 | `copy_selection` | Copy the current selection |
 | `paste_clipboard` | Paste from the clipboard |
-| `quick_select` | Open a visible URL by keyboard hint |
-| `quick_select_copy` | Copy a visible URL by keyboard hint |
+| `quick_select` | Open visible links or copy matched text by keyboard hint |
+| `quick_select_copy` | Copy any visible quick-select match by keyboard hint |
 
 ## Scrollback
 

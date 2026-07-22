@@ -73,6 +73,7 @@ function M.new(host_api)
         ["copy_mode:search_requested"] = true,
         ["quick_select:changed"] = true,
         ["quick_select:no_matches"] = true,
+        ["quick_select:action_executed"] = true,
       },
       handles = {},
       listeners = {},

@@ -200,6 +200,68 @@ pub fn openExternalWithOpenerAsync(target: []const u8, opener: ?[]const u8) !voi
     thread.detach();
 }
 
+pub fn runCommandAsync(argv: []const []const u8) !void {
+    if (argv.len == 0) return error.MissingCommand;
+    if (!commandExists(argv[0])) return error.FileNotFound;
+    const owned = try std.heap.page_allocator.alloc([]u8, argv.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |arg| std.heap.page_allocator.free(arg);
+        std.heap.page_allocator.free(owned);
+    }
+    for (argv, 0..) |arg, index| {
+        owned[index] = try std.heap.page_allocator.dupe(u8, arg);
+        initialized += 1;
+    }
+    var child = std.process.Child.init(owned, std.heap.page_allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+    const thread = std.Thread.spawn(.{}, waitCommandThread, .{ child, owned }) catch |err| {
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        return err;
+    };
+    thread.detach();
+}
+
+fn commandExists(command: []const u8) bool {
+    if (std.fs.path.isAbsolute(command) or std.mem.indexOfAny(u8, command, "/\\") != null) return commandPathExists(command);
+    const path = std.process.getEnvVarOwned(std.heap.page_allocator, "PATH") catch return false;
+    defer std.heap.page_allocator.free(path);
+    var entries = std.mem.tokenizeScalar(u8, path, if (builtin.os.tag == .windows) ';' else ':');
+    while (entries.next()) |entry| {
+        const candidate = std.fs.path.join(std.heap.page_allocator, &.{ entry, command }) catch continue;
+        defer std.heap.page_allocator.free(candidate);
+        if (commandPathExists(candidate)) return true;
+    }
+    return false;
+}
+
+fn commandPathExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch {
+        if (builtin.os.tag != .windows or std.fs.path.extension(path).len > 0) return false;
+        for ([_][]const u8{ ".exe", ".cmd", ".bat", ".com" }) |extension| {
+            const candidate = std.mem.concat(std.heap.page_allocator, u8, &.{ path, extension }) catch continue;
+            defer std.heap.page_allocator.free(candidate);
+            std.fs.cwd().access(candidate, .{}) catch continue;
+            return true;
+        }
+        return false;
+    };
+    return true;
+}
+
+fn waitCommandThread(child_value: std.process.Child, argv: [][]u8) void {
+    defer {
+        for (argv) |arg| std.heap.page_allocator.free(arg);
+        std.heap.page_allocator.free(argv);
+    }
+    var child = child_value;
+    _ = child.wait() catch |err| std.log.err("wait for command failed: {s}", .{@errorName(err)});
+}
+
 fn openExternalThread(args: OpenExternalArgs) void {
     defer std.heap.page_allocator.free(args.target);
     defer if (args.opener) |value| std.heap.page_allocator.free(value);
@@ -541,4 +603,10 @@ pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
 test "platform names are stable" {
     try std.testing.expect(name().len > 0);
     try std.testing.expect(defaultShell().len > 0);
+}
+
+test "async command reports spawn failure" {
+    if (runCommandAsync(&.{"hollow-command-that-must-not-exist-7f53e2"})) |_| {
+        return error.TestExpectedError;
+    } else |_| {}
 }

@@ -10,7 +10,13 @@ end
 
 local function assert_equal(actual, expected, message)
   if actual ~= expected then
-    fail((message or "values differ") .. ": expected " .. tostring(expected) .. ", got " .. tostring(actual))
+    fail(
+      (message or "values differ")
+        .. ": expected "
+        .. tostring(expected)
+        .. ", got "
+        .. tostring(actual)
+    )
   end
 end
 
@@ -563,13 +569,33 @@ local function make_host_api()
 
   function host_api.copy_mode_enter()
     recorded.copy_mode = { kind = "enter" }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = "",
+        match_count = 0,
+        match_index = nil,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
   function host_api.copy_mode_exit()
     recorded.copy_mode = { kind = "exit" }
-    hollow._emit_builtin_event("copy_mode:changed", { active = false, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = false,
+        query = "",
+        match_count = 0,
+        match_index = nil,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
@@ -580,13 +606,33 @@ local function make_host_api()
 
   function host_api.copy_mode_begin_selection(block)
     recorded.copy_mode = { kind = "begin_selection", block = block == true }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = true, block = block == true })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = "",
+        match_count = 0,
+        match_index = nil,
+        selecting = true,
+        block = block == true,
+      }
+    )
     return nil
   end
 
   function host_api.copy_mode_clear_selection()
     recorded.copy_mode = { kind = "clear_selection" }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 0, match_index = nil, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = "",
+        match_count = 0,
+        match_index = nil,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
@@ -603,24 +649,59 @@ local function make_host_api()
 
   function host_api.copy_mode_search_set_query(query)
     recorded.copy_mode = { kind = "search_set_query", query = query }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = query, match_count = 0, match_index = nil, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = query,
+        match_count = 0,
+        match_index = nil,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
   function host_api.copy_mode_search_next()
     recorded.copy_mode = { kind = "search_next" }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 3, match_index = 1, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = "",
+        match_count = 3,
+        match_index = 1,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
   function host_api.copy_mode_search_prev()
     recorded.copy_mode = { kind = "search_prev" }
-    hollow._emit_builtin_event("copy_mode:changed", { active = true, query = "", match_count = 3, match_index = 3, selecting = false, block = false })
+    hollow._emit_builtin_event(
+      "copy_mode:changed",
+      {
+        active = true,
+        query = "",
+        match_count = 3,
+        match_index = 3,
+        selecting = false,
+        block = false,
+      }
+    )
     return nil
   end
 
   function host_api.quick_select_start(action)
     recorded.quick_select = action
+  end
+
+  function host_api.quick_select_handlers(match_handler, action_handler)
+    recorded.quick_select_match_handler = match_handler
+    recorded.quick_select_action_handler = action_handler
   end
 
   function host_api.switch_tab_by_id(tab_id)
@@ -660,19 +741,23 @@ local function make_host_api()
         return nil
       end
     end,
-  }), recorded, function()
-    return key_handler
-  end, function()
-    return gui_ready_handler
-  end, function()
-    while #deferred > 0 do
-      local queued = deferred
-      deferred = {}
-      for _, callback in ipairs(queued) do
-        callback()
+  }),
+    recorded,
+    function()
+      return key_handler
+    end,
+    function()
+      return gui_ready_handler
+    end,
+    function()
+      while #deferred > 0 do
+        local queued = deferred
+        deferred = {}
+        for _, callback in ipairs(queued) do
+          callback()
+        end
       end
     end
-  end
 end
 
 reset_modules()
@@ -683,25 +768,25 @@ _G.host_api = host_api
 require("core")
 
 local hollow = _G.hollow
-local state = require("hollow.state")
-local util = require("hollow.util")
-local config = require("hollow.config")
-local term = require("hollow.term")
 local actions = require("hollow.actions")
-local keymap = require("hollow.keymap")
+local config = require("hollow.config")
 local events = require("hollow.events")
 local htp = require("hollow.htp")
+local keymap = require("hollow.keymap")
+local state = require("hollow.state")
+local term = require("hollow.term")
+local theme_api = require("hollow.theme")
 local ui = require("hollow.ui")
-local ui_runtime = require("hollow.ui.runtime")
 local ui_primitives = require("hollow.ui.primitives")
-local ui_widgets_core = require("hollow.ui.widgets.core")
+local ui_runtime = require("hollow.ui.runtime")
 local ui_widgets_bars = require("hollow.ui.widgets.bars")
-local ui_widgets_overlay = require("hollow.ui.widgets.overlay")
-local ui_widgets_notify = require("hollow.ui.widgets.notify")
+local ui_widgets_core = require("hollow.ui.widgets.core")
 local ui_widgets_input = require("hollow.ui.widgets.input")
+local ui_widgets_notify = require("hollow.ui.widgets.notify")
+local ui_widgets_overlay = require("hollow.ui.widgets.overlay")
 local ui_widgets_select = require("hollow.ui.widgets.select")
 local ui_widgets_workspace = require("hollow.ui.widgets.workspace")
-local theme_api = require("hollow.theme")
+local util = require("hollow.util")
 
 assert_true(hollow ~= nil, "core should initialize the global hollow table")
 assert_equal(state.get().host_api, host_api, "state should retain the host bridge")
@@ -712,7 +797,10 @@ assert_true(type(actions.setup) == "function", "actions module should load")
 assert_true(type(keymap.setup) == "function", "keymap module should load")
 assert_true(type(events.setup) == "function", "events module should load")
 assert_true(type(htp.setup) == "function", "htp module should load")
-assert_true(type(ui.dispatch_widget_event) == "function", "ui exports should be merged onto hollow.ui")
+assert_true(
+  type(ui.dispatch_widget_event) == "function",
+  "ui exports should be merged onto hollow.ui"
+)
 assert_true(ui_runtime == true, "ui runtime should be loadable")
 assert_true(ui_primitives == true, "ui primitives should be loadable")
 assert_true(type(ui_widgets_core.mount_widget) == "function", "widget core helpers should load")
@@ -730,8 +818,12 @@ local w = require("hollow.ui.builder")
 local enter_called = false
 local escape_called = false
 local k = w.keys({
-  enter = function() enter_called = true end,
-  escape = function() escape_called = true end,
+  enter = function()
+    enter_called = true
+  end,
+  escape = function()
+    escape_called = true
+  end,
 })
 assert_true(k("enter", "") == true, "w.keys should dispatch enter")
 assert_true(enter_called, "enter handler should fire")
@@ -742,7 +834,9 @@ assert_true(k("unknown", "") == false, "w.keys should not dispatch unknown keys"
 -- Test w.keys with behavior
 local nav = w.list_nav(5)
 local k2 = w.keys(nav, {
-  enter = function() enter_called = true end,
+  enter = function()
+    enter_called = true
+  end,
 })
 -- nav should have tab/arrow_right/arrow_left/shift_tab
 assert_true(k2("tab", "") == true, "w.keys should dispatch tab from nav")
@@ -759,27 +853,49 @@ local ti = w.text_input({ initial = "test" })
 local ti_enter = false
 local ti_escape = false
 local k3 = w.keys(ti, {
-  enter = function() ti_enter = true end,
-  escape = function() ti_escape = true end,
+  enter = function()
+    ti_enter = true
+  end,
+  escape = function()
+    ti_escape = true
+  end,
 })
 -- text_input handlers should work
 assert_true(k3("arrow_left", "") == true, "w.keys should dispatch arrow_left from text_input")
 assert_true(k3("arrow_right", "") == true, "w.keys should dispatch arrow_right from text_input")
 assert_true(k3("backspace", "") == true, "w.keys should dispatch backspace from text_input")
 -- enter/escape from second arg
-assert_true(k3("enter", "") == true, "w.keys should dispatch enter from second arg (with text_input)")
+assert_true(
+  k3("enter", "") == true,
+  "w.keys should dispatch enter from second arg (with text_input)"
+)
 assert_true(ti_enter, "enter handler should fire with text_input")
-assert_true(k3("escape", "") == true, "w.keys should dispatch escape from second arg (with text_input)")
+assert_true(
+  k3("escape", "") == true,
+  "w.keys should dispatch escape from second arg (with text_input)"
+)
 assert_true(ti_escape, "escape handler should fire with text_input")
 -- _else catches non-special keys (printable)
 assert_true(k3("x", "") == true, "w.keys should dispatch printable via _else")
 
 assert_equal(util.host_now_ms(host_api), 1234, "host_now_ms should prefer the host clock")
-assert_equal(util.join_path("alpha", "beta"), "alpha/beta", "join_path should normalize path segments")
+assert_equal(
+  util.join_path("alpha", "beta"),
+  "alpha/beta",
+  "join_path should normalize path segments"
+)
 
 hollow.config.set({ theme = { ui = { accent = "#abcdef" } } })
-assert_equal(recorded.config.theme.ui.accent, "#abcdef", "config.set should forward config to the host")
-assert_equal(hollow.config.get("theme").ui.accent, "#abcdef", "config.set should update stored state")
+assert_equal(
+  recorded.config.theme.ui.accent,
+  "#abcdef",
+  "config.set should forward config to the host"
+)
+assert_equal(
+  hollow.config.get("theme").ui.accent,
+  "#abcdef",
+  "config.set should update stored state"
+)
 
 local snapshot = hollow.config.snapshot()
 snapshot.theme.ui.accent = "#000000"
@@ -789,25 +905,67 @@ local derived_theme = theme_api.create({
   terminal = {
     foreground = "#eeeeee",
     background = "#111111",
-    ansi = { "#010101", "#020202", "#030303", "#040404", "#050505", "#060606", "#070707", "#080808" },
-    brights = { "#111111", "#121212", "#131313", "#141414", "#151515", "#161616", "#171717", "#181818" },
+    ansi = {
+      "#010101",
+      "#020202",
+      "#030303",
+      "#040404",
+      "#050505",
+      "#060606",
+      "#070707",
+      "#080808",
+    },
+    brights = {
+      "#111111",
+      "#121212",
+      "#131313",
+      "#141414",
+      "#151515",
+      "#161616",
+      "#171717",
+      "#181818",
+    },
   },
 })
-assert_equal(derived_theme.palette.background, "#111111", "theme.create should derive background palette entries")
-assert_equal(derived_theme.palette.bright_blue, "#151515", "theme.create should expose named bright ANSI colors")
-assert_equal(derived_theme.ui.scrollbar.thumb, "#111111", "theme.create should derive scrollbar theme from the palette")
+assert_equal(
+  derived_theme.palette.background,
+  "#111111",
+  "theme.create should derive background palette entries"
+)
+assert_equal(
+  derived_theme.palette.bright_blue,
+  "#151515",
+  "theme.create should expose named bright ANSI colors"
+)
+assert_equal(
+  derived_theme.ui.scrollbar.thumb,
+  "#111111",
+  "theme.create should derive scrollbar theme from the palette"
+)
 
 local built_in_theme = theme_api.get("kanagawa-wave")
 assert_equal(built_in_theme.terminal.background, "#1f1f28", "theme.get should load built-in themes")
-assert_equal(built_in_theme.palette.bright_red, "#e82424", "theme.get should derive palette names from terminal themes")
+assert_equal(
+  built_in_theme.palette.bright_red,
+  "#e82424",
+  "theme.get should derive palette names from terminal themes"
+)
 
-assert_equal(require("user_module").source, "config", "config directory should be added to package.path")
+assert_equal(
+  require("user_module").source,
+  "config",
+  "config directory should be added to package.path"
+)
 
 hollow.config.set({ lib_dir = "src/lua/tests/fixtures/lib" })
 assert_equal(require("custom.module").source, "lib", "lib_dir should be added to package.path")
 
 local external_theme = theme_api.get("external")
-assert_equal(external_theme.terminal.background, "#121212", "theme.get should load themes from runtime package paths")
+assert_equal(
+  external_theme.terminal.background,
+  "#121212",
+  "theme.get should load themes from runtime package paths"
+)
 
 local repo_root = assert(os.getenv("PWD"), "PWD should be set for runtime tests")
 local plugin_root = repo_root .. "/src/lua/tests/fixtures/plugins/localplugin"
@@ -824,13 +982,28 @@ hollow.plugins.setup({
 })
 assert_true(_G.__plugin_autoloaded == true, "plugin autoload files should be sourced")
 assert_equal(_G.__plugin_setup_opts.greeting, "hello", "plugin setup should receive opts")
-assert_equal(hollow.plugins._specs[1].source, "local", "plugin setup should normalize local plugin specs")
-assert_equal(hollow.plugins._specs[1].path, plugin_root, "plugin setup should keep absolute local plugin paths")
+assert_equal(
+  hollow.plugins._specs[1].source,
+  "local",
+  "plugin setup should normalize local plugin specs"
+)
+assert_equal(
+  hollow.plugins._specs[1].path,
+  plugin_root,
+  "plugin setup should keep absolute local plugin paths"
+)
 
 local current_theme = theme_api.current()
-assert_equal(current_theme.ui.accent, "#abcdef", "theme.current should reflect the active configured theme")
+assert_equal(
+  current_theme.ui.accent,
+  "#abcdef",
+  "theme.current should reflect the active configured theme"
+)
 local select_theme = theme_api.resolve_widget("select")
-assert_true(type(select_theme) == "table", "theme.resolve_widget should expose flat widget theme values")
+assert_true(
+  type(select_theme) == "table",
+  "theme.resolve_widget should expose flat widget theme values"
+)
 assert_equal(
   select_theme.panel_bg,
   current_theme.ui.tab_bar.background,
@@ -841,32 +1014,64 @@ local current_pane = hollow.term.current_pane()
 local current_domain = hollow.term.current_domain()
 assert_equal(current_pane.id, 101, "current_pane should return the focused pane")
 assert_equal(#current_pane.tags, 0, "current_pane should expose pane tags")
-assert_equal(hollow.term.get_pane_text(101), "line one\nline two", "get_pane_text should return pane text")
+assert_equal(
+  hollow.term.get_pane_text(101),
+  "line one\nline two",
+  "get_pane_text should return pane text"
+)
 assert_equal(#hollow.term.get_pane_tags(101), 0, "get_pane_tags should default to an empty list")
 hollow.term.add_pane_tag("test-runner", 101)
-assert_equal(hollow.term.get_pane_tags(101)[1], "test-runner", "add_pane_tag should attach tags to panes")
+assert_equal(
+  hollow.term.get_pane_tags(101)[1],
+  "test-runner",
+  "add_pane_tag should attach tags to panes"
+)
 hollow.term.add_pane_tag("build", 101)
 hollow.term.remove_pane_tag("build", 101)
 assert_equal(#hollow.term.get_pane_tags(101), 1, "remove_pane_tag should delete a single tag")
-assert_equal(hollow.term.pane_by_id(101).tags[1], "test-runner", "pane snapshots should include tags")
+assert_equal(
+  hollow.term.pane_by_id(101).tags[1],
+  "test-runner",
+  "pane snapshots should include tags"
+)
 assert_equal(current_domain.name, "main", "current_domain should snapshot the focused pane domain")
 assert_equal(current_domain.is_active, true, "current_domain should mark the active domain")
-assert_equal(hollow.term.current_workspace().name, "main", "current_workspace should snapshot workspace state")
-assert_equal(hollow.term.current_workspace().domain, "main", "current_workspace should expose its active domain")
+assert_equal(
+  hollow.term.current_workspace().name,
+  "main",
+  "current_workspace should snapshot workspace state"
+)
+assert_equal(
+  hollow.term.current_workspace().domain,
+  "main",
+  "current_workspace should expose its active domain"
+)
 hollow.term.close_workspace(41)
 assert_equal(recorded.close_workspace, 41, "close_workspace should forward workspace ids")
 hollow.term.close_workspace()
-assert_equal(recorded.close_workspace, nil, "close_workspace should allow closing the active workspace")
+assert_equal(
+  recorded.close_workspace,
+  nil,
+  "close_workspace should allow closing the active workspace"
+)
 
 local process_result = hollow.term.run_domain_process({ "echo", "ok" })
 assert_equal(process_result.domain, "main", "run_domain_process should infer the current domain")
-assert_equal(recorded.domain_process.args[1], "echo", "run_domain_process should pass through arguments")
+assert_equal(
+  recorded.domain_process.args[1],
+  "echo",
+  "run_domain_process should pass through arguments"
+)
 
 hollow.process.run_child_process({ "echo", "ok" }, { hide_window = true })
 assert_equal(recorded.child_process.opts.hide_window, true, "run_child_process should forward opts")
 
 hollow.term.run_domain_process({ "echo", "ok" }, "main", { hide_window = true })
-assert_equal(recorded.domain_process.opts.hide_window, true, "run_domain_process should forward opts")
+assert_equal(
+  recorded.domain_process.opts.hide_window,
+  true,
+  "run_domain_process should forward opts"
+)
 
 local font_list = hollow.fonts.list()
 assert_equal(font_list[1].family, "Consolas", "fonts.list should return host-provided families")
@@ -874,9 +1079,20 @@ assert_equal(font_list[2].styles[2], "Italic", "fonts.list should preserve style
 assert_true(#hollow.fonts.find("mono") >= 1, "fonts.find should match normalized family names")
 assert_true(hollow.fonts.has("Cascadia Mono"), "fonts.has should detect installed families")
 assert_true(hollow.fonts.has("Cascadia Mono", "Italic"), "fonts.has should detect installed styles")
-assert_true(not hollow.fonts.has("Cascadia Mono", "Black"), "fonts.has should reject missing styles")
-assert_equal(hollow.fonts.pick({ "Missing Font", "Cascadia Mono", "Consolas" }), "Cascadia Mono", "fonts.pick should return the first available family")
-assert_equal(hollow.fonts.pick({ "Missing Font" }), nil, "fonts.pick should return nil when no candidate exists")
+assert_true(
+  not hollow.fonts.has("Cascadia Mono", "Black"),
+  "fonts.has should reject missing styles"
+)
+assert_equal(
+  hollow.fonts.pick({ "Missing Font", "Cascadia Mono", "Consolas" }),
+  "Cascadia Mono",
+  "fonts.pick should return the first available family"
+)
+assert_equal(
+  hollow.fonts.pick({ "Missing Font" }),
+  nil,
+  "fonts.pick should return nil when no candidate exists"
+)
 
 assert_true(type(hollow.json.encode) == "function", "json.encode should be exposed")
 assert_true(type(hollow.json.decode) == "function", "json.decode should be exposed")
@@ -914,10 +1130,26 @@ hollow.workspace.bootstrap({
   },
 }, { base_dir = "/tmp/project" })
 flush_deferred()
-assert_equal(recorded.workspace_default_cwd, "/tmp/project", "workspace bootstrap should set workspace default cwd")
-assert_equal(recorded.split_pane.command, "npm run dev", "workspace bootstrap should create split panes")
-assert_equal(recorded.split_pane.ratio, 0.25, "workspace bootstrap should map pane size to split ratio")
-assert_equal(#recorded.split_pane_calls, 1, "workspace bootstrap should create one split for a two-pane tab")
+assert_equal(
+  recorded.workspace_default_cwd,
+  "/tmp/project",
+  "workspace bootstrap should set workspace default cwd"
+)
+assert_equal(
+  recorded.split_pane.command,
+  "npm run dev",
+  "workspace bootstrap should create split panes"
+)
+assert_equal(
+  recorded.split_pane.ratio,
+  0.25,
+  "workspace bootstrap should map pane size to split ratio"
+)
+assert_equal(
+  #recorded.split_pane_calls,
+  1,
+  "workspace bootstrap should create one split for a two-pane tab"
+)
 
 hollow.workspace.bootstrap({
   tabs = {
@@ -930,10 +1162,18 @@ hollow.workspace.bootstrap({
   },
 })
 flush_deferred()
-assert_equal(recorded.focus_pane_by_id, 103, "workspace bootstrap should focus the pane marked main")
+assert_equal(
+  recorded.focus_pane_by_id,
+  103,
+  "workspace bootstrap should focus the pane marked main"
+)
 
 local exported_main = hollow.workspace.export_current()
-assert_equal(exported_main.tabs[1].panes[3].main, true, "workspace export should mark the focused pane as main")
+assert_equal(
+  exported_main.tabs[1].panes[3].main,
+  true,
+  "workspace export should mark the focused pane as main"
+)
 
 local split_count_before_linear = #recorded.split_pane_calls
 hollow.workspace.bootstrap({
@@ -948,9 +1188,21 @@ hollow.workspace.bootstrap({
   },
 })
 flush_deferred()
-assert_equal(#recorded.split_pane_calls - split_count_before_linear, 2, "workspace bootstrap should create each linear split in sequence")
-assert_equal(recorded.split_pane_calls[split_count_before_linear + 1].direction, "horizontal", "workspace bootstrap should preserve the second pane split direction")
-assert_equal(recorded.split_pane_calls[split_count_before_linear + 2].direction, "vertical", "workspace bootstrap should preserve the third pane split direction")
+assert_equal(
+  #recorded.split_pane_calls - split_count_before_linear,
+  2,
+  "workspace bootstrap should create each linear split in sequence"
+)
+assert_equal(
+  recorded.split_pane_calls[split_count_before_linear + 1].direction,
+  "horizontal",
+  "workspace bootstrap should preserve the second pane split direction"
+)
+assert_equal(
+  recorded.split_pane_calls[split_count_before_linear + 2].direction,
+  "vertical",
+  "workspace bootstrap should preserve the third pane split direction"
+)
 
 local split_result = nil
 hollow.term.split_pane({
@@ -959,39 +1211,85 @@ hollow.term.split_pane({
     split_result = result
   end,
 })
-assert_true(split_result ~= nil and split_result.success == true, "split_pane on_complete should receive a success result")
-assert_true(type(split_result.pane_id) == "number", "split_pane on_complete should receive the created pane id")
+assert_true(
+  split_result ~= nil and split_result.success == true,
+  "split_pane on_complete should receive a success result"
+)
+assert_true(
+  type(split_result.pane_id) == "number",
+  "split_pane on_complete should receive the created pane id"
+)
 
 hollow.term.set_pane_tags({ "test-runner", "primary" }, 101)
 hollow.term.focus_pane_by_id(101)
 
-assert_equal(hollow.workspace.project_local_path("/tmp/project"), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "workspace helper should resolve project-local path")
+assert_equal(
+  hollow.workspace.project_local_path("/tmp/project"),
+  "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json",
+  "workspace helper should resolve project-local path"
+)
 
-recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "__workspace_spec__"
-assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), nil, "workspace auto bootstrap should require explicit always mode")
-assert_true(hollow.workspace.bootstrap_project("/tmp/project"), "explicit project bootstrap should ignore startup auto-bootstrap mode")
+recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] =
+  "__workspace_spec__"
+assert_equal(
+  hollow.workspace.resolve_auto_bootstrap_path(),
+  nil,
+  "workspace auto bootstrap should require explicit always mode"
+)
+assert_true(
+  hollow.workspace.bootstrap_project("/tmp/project"),
+  "explicit project bootstrap should ignore startup auto-bootstrap mode"
+)
 hollow.config.set({ workspace = { auto_bootstrap = "always", default_layout = "default" } })
-assert_equal(hollow.workspace.resolve_auto_bootstrap_path(), "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json", "auto bootstrap should prefer project-local workspace files")
+assert_equal(
+  hollow.workspace.resolve_auto_bootstrap_path(),
+  "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json",
+  "auto bootstrap should prefer project-local workspace files"
+)
 
 local gui_ready = get_gui_ready_handler()
 assert_true(type(gui_ready) == "function", "core should register a gui ready handler")
-recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] = "__workspace_spec__"
+recorded.files["\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json"] =
+  "__workspace_spec__"
 gui_ready()
-assert_equal(recorded.new_workspace.cwd, "/tmp/project", "auto bootstrap should run on gui ready using the active pane cwd")
+assert_equal(
+  recorded.new_workspace.cwd,
+  "/tmp/project",
+  "auto bootstrap should run on gui ready using the active pane cwd"
+)
 
 recorded.new_workspace = nil
 local deferred_calls_before_workspace_new = recorded.deferred_calls
 hollow._emit_builtin_event("workspace:new", { workspace_index = 2 })
-assert_true(recorded.deferred_calls > deferred_calls_before_workspace_new, "workspace:new auto bootstrap should defer layout restore")
+assert_true(
+  recorded.deferred_calls > deferred_calls_before_workspace_new,
+  "workspace:new auto bootstrap should defer layout restore"
+)
 assert_equal(recorded.new_workspace, nil, "workspace:new auto bootstrap should not run immediately")
 flush_deferred()
-assert_equal(recorded.new_workspace.cwd, "/tmp/project", "workspace:new auto bootstrap should run on the deferred tick")
+assert_equal(
+  recorded.new_workspace.cwd,
+  "/tmp/project",
+  "workspace:new auto bootstrap should run on the deferred tick"
+)
 
 local exported = hollow.workspace.export_current()
 assert_equal(exported.name, "main", "workspace export should include active workspace name")
-assert_equal(exported.tabs[1].panes[1].cwd, "/tmp/project", "workspace export should include pane cwd")
-assert_equal(exported.tabs[1].panes[1].tags[1], "primary", "workspace export should include pane tags")
-assert_equal(exported.tabs[1].panes[1].tags[2], "test-runner", "workspace export should preserve pane tags")
+assert_equal(
+  exported.tabs[1].panes[1].cwd,
+  "/tmp/project",
+  "workspace export should include pane cwd"
+)
+assert_equal(
+  exported.tabs[1].panes[1].tags[1],
+  "primary",
+  "workspace export should include pane tags"
+)
+assert_equal(
+  exported.tabs[1].panes[1].tags[2],
+  "test-runner",
+  "workspace export should preserve pane tags"
+)
 
 local on_key = get_key_handler()
 assert_true(type(on_key) == "function", "keymap setup should register a key handler")
@@ -1004,7 +1302,67 @@ assert_equal(recorded.new_tab_calls, 1, "registered action bindings should invok
 hollow.action.quick_select()
 assert_equal(recorded.quick_select, "open", "quick_select action should request URL opening")
 hollow.action.quick_select_copy()
-assert_equal(recorded.quick_select, "copy", "quick_select_copy action should request clipboard copy")
+assert_equal(
+  recorded.quick_select,
+  "copy",
+  "quick_select_copy action should request clipboard copy"
+)
+
+local selected_custom_text = nil
+hollow.config.set({
+  quick_select = {
+    actions = {
+      filename = "open",
+    },
+    patterns = {
+      {
+        pattern = "ISSUE%-%d+",
+        action = function(text, context)
+          selected_custom_text = text .. ":" .. context.kind
+        end,
+      },
+      {
+        pattern = "FILE:%S+",
+        action = { command = { "code", "{match}" } },
+      },
+    },
+  },
+})
+local configured_matches = recorded.quick_select_match_handler("open ISSUE-42 FILE:notes.txt")
+assert_equal(#configured_matches, 2, "configured quick-select patterns should add matches")
+assert_equal(
+  configured_matches[1].text,
+  "ISSUE-42",
+  "configured pattern should return matched text"
+)
+assert_equal(
+  configured_matches[1].start_col,
+  5,
+  "configured pattern should return zero-based start column"
+)
+assert_equal(
+  recorded.quick_select_action_handler("filename", 0, "src/main.zig", "copy"),
+  "open",
+  "built-in pattern actions should be configurable"
+)
+assert_equal(
+  recorded.quick_select_action_handler("custom", 1, "ISSUE-42", "copy"),
+  "handled",
+  "custom callback action should handle match"
+)
+assert_equal(
+  selected_custom_text,
+  "ISSUE-42:custom",
+  "custom callback should receive text and context"
+)
+local configured_command =
+  recorded.quick_select_action_handler("custom", 2, "FILE:notes.txt", "copy")
+assert_equal(configured_command[1], "code", "command action should return configured executable")
+assert_equal(
+  configured_command[2],
+  "FILE:notes.txt",
+  "command action should substitute matched text"
+)
 
 local mode_hits = {}
 hollow.keymap.set("x", function()
@@ -1017,15 +1375,25 @@ end, { mode = "copy_mode" })
 assert_true(on_key("x", 0), "normal mode bindings should dispatch through the shared keymap")
 assert_equal(mode_hits[#mode_hits], "normal", "normal mode should prefer the normal binding bucket")
 assert_true(hollow.keymap.get("x") ~= nil, "keymap.get should read normal bindings by default")
-assert_true(hollow.keymap.get("x", { mode = "copy_mode" }) ~= nil, "keymap.get should read mode-specific bindings")
+assert_true(
+  hollow.keymap.get("x", { mode = "copy_mode" }) ~= nil,
+  "keymap.get should read mode-specific bindings"
+)
 
 hollow.action.copy_mode()
 assert_equal(recorded.copy_mode.kind, "enter", "copy_mode action should enter copy mode")
 assert_true(state.get().copy_mode.active, "copy_mode should become active after enter")
 assert_equal(state.get().copy_mode.match_count, 0, "copy mode should initialize match count")
 
-assert_true(on_key("x", 0), "copy mode should dispatch mode-specific bindings through the shared keymap")
-assert_equal(mode_hits[#mode_hits], "copy_mode", "copy mode should prefer the copy_mode binding bucket")
+assert_true(
+  on_key("x", 0),
+  "copy mode should dispatch mode-specific bindings through the shared keymap"
+)
+assert_equal(
+  mode_hits[#mode_hits],
+  "copy_mode",
+  "copy mode should prefer the copy_mode binding bucket"
+)
 
 hollow.keymap.set("j", "copy_mode_move_down", { mode = "copy_mode" })
 hollow.keymap.set("gg", "copy_mode_top", { mode = "copy_mode" })
@@ -1041,7 +1409,11 @@ hollow.keymap.set("y", "copy_mode_copy_selection", { mode = "copy_mode" })
 assert_true(on_key("j", 0), "copy mode should consume modal movement")
 assert_equal(recorded.copy_mode.kind, "move", "copy mode movement should dispatch host move")
 assert_equal(recorded.copy_mode.direction, "down", "copy mode j should move down")
-assert_equal(recorded.copy_mode.extend, false, "copy mode movement should not extend before selection")
+assert_equal(
+  recorded.copy_mode.extend,
+  false,
+  "copy mode movement should not extend before selection"
+)
 
 recorded.copy_mode = nil
 assert_true(on_key("g", 0), "copy mode should consume the first g in gg")
@@ -1068,7 +1440,11 @@ assert_true(recorded.copy_mode.block, "copy mode ctrl-v should request block sel
 assert_true(state.get().copy_mode.block, "copy mode should track block selection state")
 
 assert_true(on_key("j", 0), "copy mode should extend movement while selecting")
-assert_equal(recorded.copy_mode.extend, true, "copy mode movement should extend after selection begins")
+assert_equal(
+  recorded.copy_mode.extend,
+  true,
+  "copy mode movement should extend after selection begins"
+)
 
 assert_true(on_key("space", 0), "copy mode should clear selection")
 assert_equal(recorded.copy_mode.kind, "clear_selection", "copy mode space should clear selection")
@@ -1081,8 +1457,15 @@ assert_true(hollow.ui.overlay.depth() > 0, "copy mode search should open an inpu
 
 local overlay_before_confirm = hollow.ui.overlay.depth()
 assert_true(on_key("enter", 0), "search overlay should consume confirm")
-assert_true(hollow.ui.overlay.depth() < overlay_before_confirm, "confirming search should close the input overlay")
-assert_equal(recorded.copy_mode.kind, "search_set_query", "search confirm should set the host query")
+assert_true(
+  hollow.ui.overlay.depth() < overlay_before_confirm,
+  "confirming search should close the input overlay"
+)
+assert_equal(
+  recorded.copy_mode.kind,
+  "search_set_query",
+  "search confirm should set the host query"
+)
 assert_equal(recorded.copy_mode.query, "", "search confirm should forward the current query")
 
 hollow.ui.workspace.configure({
@@ -1103,27 +1486,65 @@ hollow.ui.workspace.configure({
   end,
 })
 local workspace_items = hollow.ui.workspace.items(true)
-assert_equal(#workspace_items, 2, "workspace switcher should include open workspaces and UNC-scanned roots")
-assert_equal(workspace_items[1].name, "main", "workspace switcher should dedupe an opened workspace against its known root entry")
-assert_equal(workspace_items[1].cwd, "/tmp/project", "workspace switcher should preserve the remembered cwd for the opened workspace entry")
-assert_equal(workspace_items[2].name, "alpha", "workspace switcher should keep UNC root entries without per-item path stats")
-assert_equal(workspace_items[2].cwd, "/home/francis/Projects/alpha", "workspace switcher should still resolve UNC cwd for launch")
+assert_equal(
+  #workspace_items,
+  2,
+  "workspace switcher should include open workspaces and UNC-scanned roots"
+)
+assert_equal(
+  workspace_items[1].name,
+  "main",
+  "workspace switcher should dedupe an opened workspace against its known root entry"
+)
+assert_equal(
+  workspace_items[1].cwd,
+  "/tmp/project",
+  "workspace switcher should preserve the remembered cwd for the opened workspace entry"
+)
+assert_equal(
+  workspace_items[2].name,
+  "alpha",
+  "workspace switcher should keep UNC root entries without per-item path stats"
+)
+assert_equal(
+  workspace_items[2].cwd,
+  "/home/francis/Projects/alpha",
+  "workspace switcher should still resolve UNC cwd for launch"
+)
 
 assert_true(on_key("n", 0), "copy mode should jump to next match")
 assert_equal(recorded.copy_mode.kind, "search_next", "copy mode n should jump to next match")
-assert_equal(state.get().copy_mode.match_count, 3, "copy mode should track match counts from host state")
-assert_equal(state.get().copy_mode.match_index, 1, "copy mode should track active match index from host state")
+assert_equal(
+  state.get().copy_mode.match_count,
+  3,
+  "copy mode should track match counts from host state"
+)
+assert_equal(
+  state.get().copy_mode.match_index,
+  1,
+  "copy mode should track active match index from host state"
+)
 
 assert_true(on_key("n", 1), "copy mode should jump to previous match on shifted n")
 assert_equal(recorded.copy_mode.kind, "search_prev", "copy mode N should jump to previous match")
-assert_equal(state.get().copy_mode.match_index, 3, "copy mode should update active match index on previous search")
+assert_equal(
+  state.get().copy_mode.match_index,
+  3,
+  "copy mode should update active match index on previous search"
+)
 
 assert_true(on_key("y", 0), "copy mode should copy and exit")
 assert_equal(recorded.copy_mode.kind, "exit", "copy mode copy should exit after copying")
 assert_true(not state.get().copy_mode.active, "copy mode should be inactive after copy+exit")
 
-assert_true(hollow.keymap.del("x", { mode = "copy_mode" }), "keymap.del should remove mode-specific bindings")
-assert_true(hollow.keymap.get("x", { mode = "copy_mode" }) == nil, "deleted mode-specific bindings should not resolve")
+assert_true(
+  hollow.keymap.del("x", { mode = "copy_mode" }),
+  "keymap.del should remove mode-specific bindings"
+)
+assert_true(
+  hollow.keymap.get("x", { mode = "copy_mode" }) == nil,
+  "deleted mode-specific bindings should not resolve"
+)
 
 local event_payload = nil
 hollow.events.once("custom:event", function(payload)
@@ -1154,12 +1575,28 @@ hollow.events.once("term:foreground_process_changed", function(payload)
   process_event = payload
 end)
 hollow.term.set_pane_foreground_process(101, "zig build")
-assert_equal(process_event.old_process, "nvim", "foreground_process_changed should expose the previous process")
-assert_equal(process_event.new_process, "zig build", "foreground_process_changed should expose the updated process")
+assert_equal(
+  process_event.old_process,
+  "nvim",
+  "foreground_process_changed should expose the previous process"
+)
+assert_equal(
+  process_event.new_process,
+  "zig build",
+  "foreground_process_changed should expose the updated process"
+)
 assert_equal(process_event.pane.id, 101, "foreground_process_changed should adapt pane snapshots")
 
-assert_equal(state.get().ui.topbar_cache_dirty, true, "foreground_process_changed should invalidate the topbar cache")
-assert_equal(state.get().ui.bottombar_cache_dirty, true, "foreground_process_changed should invalidate the bottombar cache")
+assert_equal(
+  state.get().ui.topbar_cache_dirty,
+  true,
+  "foreground_process_changed should invalidate the topbar cache"
+)
+assert_equal(
+  state.get().ui.bottombar_cache_dirty,
+  true,
+  "foreground_process_changed should invalidate the bottombar cache"
+)
 
 local bell_event = nil
 hollow.events.once("term:bell", function(payload)
@@ -1186,7 +1623,8 @@ local ok_panes_query, panes_query = hollow.htp._handle_query("panes", nil, 101)
 assert_true(ok_panes_query, "built-in HTP panes query should succeed")
 assert_equal(panes_query[1].id, 101, "HTP panes query should expose pane snapshots")
 
-local ok_tagged_panes_query, tagged_panes_query = hollow.htp._handle_query("panes", { tag = "test-runner" }, 101)
+local ok_tagged_panes_query, tagged_panes_query =
+  hollow.htp._handle_query("panes", { tag = "test-runner" }, 101)
 assert_true(ok_tagged_panes_query, "HTP tagged panes query should succeed")
 assert_equal(tagged_panes_query[1].id, 101, "HTP tagged panes query should filter by tag")
 
@@ -1206,27 +1644,42 @@ local ok_focus_pane = hollow.htp._handle_emit("focus_pane", { direction = "right
 assert_true(ok_focus_pane, "HTP focus_pane should succeed")
 assert_equal(recorded.focus_pane, "right", "HTP focus_pane should forward direction")
 
-local ok_resize_pane = hollow.htp._handle_emit("resize_pane", { axis = "horizontal", delta = 5 }, 101)
+local ok_resize_pane =
+  hollow.htp._handle_emit("resize_pane", { axis = "horizontal", delta = 5 }, 101)
 assert_true(ok_resize_pane, "HTP resize_pane should succeed")
 assert_equal(recorded.resize_pane.axis, "horizontal", "HTP resize_pane should forward axis")
 assert_equal(recorded.resize_pane.amount, 5, "HTP resize_pane should forward delta")
 
 local ok_send_text = hollow.htp._handle_emit("send_text", { text = "ls\n", id = 101 }, 101)
 assert_true(ok_send_text, "HTP send_text should succeed")
-assert_equal(recorded.send_text[#recorded.send_text], "ls\n", "HTP send_text should forward text to the pane")
+assert_equal(
+  recorded.send_text[#recorded.send_text],
+  "ls\n",
+  "HTP send_text should forward text to the pane"
+)
 
 local ok_add_pane_tag = hollow.htp._handle_emit("add_pane_tag", { id = 101, tag = "ci" }, 101)
 assert_true(ok_add_pane_tag, "HTP add_pane_tag should succeed")
 assert_equal(hollow.term.get_pane_tags(101)[1], "ci", "HTP add_pane_tag should add a pane tag")
 
-local ok_set_pane_tags = hollow.htp._handle_emit("set_pane_tags", { id = 101, tags = { "runner", "slow" } }, 101)
+local ok_set_pane_tags =
+  hollow.htp._handle_emit("set_pane_tags", { id = 101, tags = { "runner", "slow" } }, 101)
 assert_true(ok_set_pane_tags, "HTP set_pane_tags should succeed")
-assert_equal(hollow.term.get_pane_tags(101)[1], "runner", "HTP set_pane_tags should replace pane tags")
+assert_equal(
+  hollow.term.get_pane_tags(101)[1],
+  "runner",
+  "HTP set_pane_tags should replace pane tags"
+)
 assert_equal(hollow.term.get_pane_tags(101)[2], "slow", "HTP set_pane_tags should keep all tags")
 
-local ok_remove_pane_tag = hollow.htp._handle_emit("remove_pane_tag", { id = 101, tag = "runner" }, 101)
+local ok_remove_pane_tag =
+  hollow.htp._handle_emit("remove_pane_tag", { id = 101, tag = "runner" }, 101)
 assert_true(ok_remove_pane_tag, "HTP remove_pane_tag should succeed")
-assert_equal(hollow.term.get_pane_tags(101)[1], "slow", "HTP remove_pane_tag should remove only the requested tag")
+assert_equal(
+  hollow.term.get_pane_tags(101)[1],
+  "slow",
+  "HTP remove_pane_tag should remove only the requested tag"
+)
 
 local ok_pane_text, pane_text = hollow.htp._handle_query("pane_text", { id = 101 }, 101)
 assert_true(ok_pane_text, "HTP pane_text should succeed")
@@ -1240,22 +1693,30 @@ local ok_focus_tab = hollow.htp._handle_emit("focus_tab", { id = 201 }, 101)
 assert_true(ok_focus_tab, "HTP focus_tab should succeed")
 assert_equal(recorded.switch_tab_by_id, 201, "HTP focus_tab should target tab ids")
 
-local ok_set_tab_title = hollow.htp._handle_emit("set_tab_title", { id = 201, title = "editor" }, 101)
+local ok_set_tab_title =
+  hollow.htp._handle_emit("set_tab_title", { id = 201, title = "editor" }, 101)
 assert_true(ok_set_tab_title, "HTP set_tab_title should succeed")
 assert_equal(recorded.set_tab_title_by_id.title, "editor", "HTP set_tab_title should forward title")
 
-local ok_new_tab = hollow.htp._handle_emit("new_tab", { domain = "dev", command = "npm run dev" }, 101)
+local ok_new_tab =
+  hollow.htp._handle_emit("new_tab", { domain = "dev", command = "npm run dev" }, 101)
 assert_true(ok_new_tab, "HTP new_tab should succeed")
 assert_equal(recorded.new_tab.domain, "dev", "HTP new_tab should forward domain")
 assert_equal(recorded.new_tab.command, "npm run dev", "HTP new_tab should forward command")
 
-local ok_new_workspace = hollow.htp._handle_emit("new_workspace", { cwd = "/tmp/project", name = "proj" }, 101)
+local ok_new_workspace =
+  hollow.htp._handle_emit("new_workspace", { cwd = "/tmp/project", name = "proj" }, 101)
 assert_true(ok_new_workspace, "HTP new_workspace should succeed")
 assert_equal(recorded.new_workspace.name, "proj", "HTP new_workspace should forward payload")
 
-local ok_set_workspace_name = hollow.htp._handle_emit("set_workspace_name", { id = 41, name = "renamed" }, 101)
+local ok_set_workspace_name =
+  hollow.htp._handle_emit("set_workspace_name", { id = 41, name = "renamed" }, 101)
 assert_true(ok_set_workspace_name, "HTP set_workspace_name should succeed")
-assert_equal(hollow.term.current_workspace().name, "renamed", "HTP set_workspace_name should update the active workspace")
+assert_equal(
+  hollow.term.current_workspace().name,
+  "renamed",
+  "HTP set_workspace_name should update the active workspace"
+)
 
 local ok_reload_config = hollow.htp._handle_emit("reload_config", {}, 101)
 assert_true(ok_reload_config, "HTP reload_config should succeed")
@@ -1306,7 +1767,10 @@ for _, row in ipairs(workspace_overlay[1].rows or {}) do
   end
   filtered_workspace_text = filtered_workspace_text .. "\n"
 end
-assert_true(filtered_workspace_text:find("alpha", 1, true) ~= nil, "workspace switcher should match alpha on the first key")
+assert_true(
+  filtered_workspace_text:find("alpha", 1, true) ~= nil,
+  "workspace switcher should match alpha on the first key"
+)
 hollow.ui.overlay.clear()
 
 hollow.ui.select.open({
@@ -1332,7 +1796,10 @@ for _, row in ipairs(search_text_overlay[1].rows or {}) do
   end
   search_text_overlay_text = search_text_overlay_text .. "\n"
 end
-assert_true(search_text_overlay_text:find("hollow", 1, true) ~= nil, "select should match using custom search_text")
+assert_true(
+  search_text_overlay_text:find("hollow", 1, true) ~= nil,
+  "select should match using custom search_text"
+)
 hollow.ui.overlay.clear()
 
 hollow.ui.workspace.open_switcher()
@@ -1341,7 +1808,10 @@ assert_true(workspace_overlay ~= nil, "workspace switcher should reopen for base
 assert_true(on_key("h", 0), "workspace switcher should consume first key for basename search")
 assert_true(on_key("o", 0), "workspace switcher should consume second key for basename search")
 workspace_overlay = hollow.ui._overlay_state()
-assert_true(workspace_overlay ~= nil, "workspace switcher should remain open during basename search")
+assert_true(
+  workspace_overlay ~= nil,
+  "workspace switcher should remain open during basename search"
+)
 local basename_search_text = ""
 for _, row in ipairs(workspace_overlay[1].rows or {}) do
   for _, segment in ipairs(row.segments or {}) do
@@ -1349,7 +1819,10 @@ for _, row in ipairs(workspace_overlay[1].rows or {}) do
   end
   basename_search_text = basename_search_text .. "\n"
 end
-assert_true(basename_search_text:find("alpha", 1, true) == nil, "workspace switcher search should not match every /home path entry")
+assert_true(
+  basename_search_text:find("alpha", 1, true) == nil,
+  "workspace switcher search should not match every /home path entry"
+)
 hollow.ui.overlay.clear()
 
 hollow.ui.select.open({
@@ -1379,7 +1852,10 @@ for _, row in ipairs(input_overlay[1].rows or {}) do
   end
   input_overlay_text = input_overlay_text .. "\n"
 end
-assert_true(input_overlay_text:find("maixn", 1, true) ~= nil, "input overlay should insert at the caret after moving left")
+assert_true(
+  input_overlay_text:find("maixn", 1, true) ~= nil,
+  "input overlay should insert at the caret after moving left"
+)
 assert_true(on_key("f1", 0), "input overlay with backdrop should consume unmatched keys")
 hollow.ui.overlay.clear()
 
@@ -1413,7 +1889,10 @@ for _, row in ipairs(select_cursor_overlay[1].rows or {}) do
   end
   select_cursor_text = select_cursor_text .. "\n"
 end
-assert_true(select_cursor_text:find("Filter: xa", 1, true) ~= nil, "select filter should insert at the caret after moving left")
+assert_true(
+  select_cursor_text:find("Filter: xa", 1, true) ~= nil,
+  "select filter should insert at the caret after moving left"
+)
 hollow.ui.overlay.clear()
 
 hollow.ui.topbar.configure({
@@ -1431,9 +1910,21 @@ hollow.ui.topbar.configure({
 
 local configured_topbar = hollow.ui._topbar_state()
 assert_true(configured_topbar ~= nil, "topbar.configure should provide a default topbar widget")
-assert_equal(configured_topbar.items[1].kind, "segment", "configured topbar should serialize workspace content")
-assert_equal(configured_topbar.items[2].kind, "segment", "configured topbar should serialize separators")
-assert_equal(configured_topbar.items[3].kind, "tabs", "configured topbar should serialize tabs content")
+assert_equal(
+  configured_topbar.items[1].kind,
+  "segment",
+  "configured topbar should serialize workspace content"
+)
+assert_equal(
+  configured_topbar.items[2].kind,
+  "segment",
+  "configured topbar should serialize separators"
+)
+assert_equal(
+  configured_topbar.items[3].kind,
+  "tabs",
+  "configured topbar should serialize tabs content"
+)
 
 hollow.ui.topbar.configure({
   separator = false,
@@ -1454,13 +1945,29 @@ hollow.ui.topbar.configure({
 })
 
 local topbar_with_max_width = hollow.ui._topbar_state()
-assert_equal(topbar_with_max_width.items[1].kind, "tabs", "tabs-only topbar should serialize a tabs item")
-assert_equal(topbar_with_max_width.items[1].max_width, 20, "tabs max_width should be preserved in serialized topbar state")
-assert_equal(topbar_with_max_width.items[1].tabs[1].text, "prefix shell", "short tab labels should remain unchanged under max_width")
+assert_equal(
+  topbar_with_max_width.items[1].kind,
+  "tabs",
+  "tabs-only topbar should serialize a tabs item"
+)
+assert_equal(
+  topbar_with_max_width.items[1].max_width,
+  20,
+  "tabs max_width should be preserved in serialized topbar state"
+)
+assert_equal(
+  topbar_with_max_width.items[1].tabs[1].text,
+  "prefix shell",
+  "short tab labels should remain unchanged under max_width"
+)
 
 _G.host_api.set_tab_title_by_id(201, "this is a very looooong name that should be shorter")
 topbar_with_max_width = hollow.ui._topbar_state()
-assert_equal(topbar_with_max_width.items[1].tabs[1].text, "prefix this is a...", "tabs max_width should truncate serialized tab text")
+assert_equal(
+  topbar_with_max_width.items[1].tabs[1].text,
+  "prefix this is a...",
+  "tabs max_width should truncate serialized tab text"
+)
 assert_true(
   topbar_with_max_width.items[1].tabs[1].segments ~= nil
     and topbar_with_max_width.items[1].tabs[1].segments[1].text == "prefix "
@@ -1474,7 +1981,10 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
   end,
 }))
 assert_true(hollow.ui._topbar_state() == nil, "topbar should auto-hide when no widgets render")
-assert_true(hollow.ui._topbar_layout() == nil, "topbar layout should auto-hide when no widgets render")
+assert_true(
+  hollow.ui._topbar_layout() == nil,
+  "topbar layout should auto-hide when no widgets render"
+)
 hollow.ui.topbar.unmount()
 
 hollow.ui.topbar.configure({
@@ -1512,16 +2022,23 @@ assert_equal(
 hollow.ui.topbar.mount(hollow.ui.topbar.new({
   render = function()
     return {
-      hollow.ui.span("mounted")
+      hollow.ui.span("mounted"),
     }
   end,
 }))
 
 local mounted_topbar = hollow.ui._topbar_state()
-assert_equal(mounted_topbar.items[1].text, "mounted", "mounted topbar should override configured defaults")
+assert_equal(
+  mounted_topbar.items[1].text,
+  "mounted",
+  "mounted topbar should override configured defaults"
+)
 hollow.ui.topbar.unmount()
 
-assert_true(hollow.ui._bottombar_state() == nil, "bottombar should auto-hide when no special widgets render")
+assert_true(
+  hollow.ui._bottombar_state() == nil,
+  "bottombar should auto-hide when no special widgets render"
+)
 assert_true(hollow.ui._bottombar_layout() == nil, "bottombar layout should auto-hide when inactive")
 
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
@@ -1530,32 +2047,94 @@ local leader_key, leader_mods = hollow.keymap.parse_chord("<C-Space>")
 assert_true(on_key(leader_key, leader_mods), "leader key should activate leader mode")
 local leader_bar = hollow.ui._bottombar_state()
 assert_true(leader_bar ~= nil, "bottombar should show in leader mode")
-assert_true(leader_bar.items[1].text:find("LEADER", 1, true) ~= nil, "leader mode widget should identify leader mode")
+assert_true(
+  leader_bar.items[1].text:find("LEADER", 1, true) ~= nil,
+  "leader mode widget should identify leader mode"
+)
 assert_true(#leader_bar.items >= 2, "leader mode should render the mode widget and legend region")
-assert_true(leader_bar.items[#leader_bar.items].text:find("x", 1, true) ~= nil, "leader mode should show the next leader keys")
+assert_true(
+  leader_bar.items[#leader_bar.items].text:find("x", 1, true) ~= nil,
+  "leader mode should show the next leader keys"
+)
 assert_true(on_key("z", 0), "unmatched leader continuation should clear leader mode")
-assert_true(hollow.ui._bottombar_state() == nil, "bottombar should clear immediately after leader mode resets")
+assert_true(
+  hollow.ui._bottombar_state() == nil,
+  "bottombar should clear immediately after leader mode resets"
+)
 
 assert_true(on_key(leader_key, leader_mods), "leader key should activate leader mode again")
 
 hollow.action.copy_mode()
 local copy_bar = hollow.ui._bottombar_state()
 assert_true(copy_bar ~= nil, "bottombar should show in copy mode")
-assert_true(copy_bar.items[1].text:find("COPY", 1, true) ~= nil, "copy mode widget should identify copy mode")
-assert_true(copy_bar.items[2].text:find("/search", 1, true) ~= nil, "copy mode should show search status")
-assert_true(copy_bar.items[#copy_bar.items].text:find("move", 1, true) ~= nil, "copy mode should show key legend hints")
+assert_true(
+  copy_bar.items[1].text:find("COPY", 1, true) ~= nil,
+  "copy mode widget should identify copy mode"
+)
+assert_true(
+  copy_bar.items[2].text:find("/search", 1, true) ~= nil,
+  "copy mode should show search status"
+)
+assert_true(
+  copy_bar.items[#copy_bar.items].text:find("move", 1, true) ~= nil,
+  "copy mode should show key legend hints"
+)
 
 hollow.action.copy_mode_exit()
-assert_true(hollow.ui._bottombar_state() == nil, "bottombar should hide again after special modes clear")
+assert_true(
+  hollow.ui._bottombar_state() == nil,
+  "bottombar should hide again after special modes clear"
+)
 
 hollow._emit_builtin_event("quick_select:changed", { active = true, action = "open" })
 local quick_select_bar = hollow.ui._bottombar_state()
 assert_true(quick_select_bar ~= nil, "bottombar should show in quick select mode")
-assert_true(quick_select_bar.items[1].text:find("QUICK SELECT", 1, true) ~= nil, "quick select widget should identify mode")
-assert_true(quick_select_bar.items[2].text:find("open", 1, true) ~= nil, "quick select widget should identify action")
-assert_true(quick_select_bar.items[#quick_select_bar.items].text:find("choose", 1, true) ~= nil, "quick select should show key legend hints")
+assert_true(
+  quick_select_bar.items[1].text:find("QUICK SELECT", 1, true) ~= nil,
+  "quick select widget should identify mode"
+)
+assert_true(
+  quick_select_bar.items[2].text:find("open/copy", 1, true) ~= nil,
+  "quick select widget should identify mixed action"
+)
+assert_true(
+  quick_select_bar.items[#quick_select_bar.items].text:find("choose", 1, true) ~= nil,
+  "quick select should show key legend hints"
+)
 
 hollow._emit_builtin_event("quick_select:changed", { active = false, action = "open" })
 assert_true(hollow.ui._bottombar_state() == nil, "bottombar should hide after quick select exits")
+
+local quick_select_action_event = nil
+local quick_select_was_inactive_during_action = false
+hollow.events.once("quick_select:action_executed", function(payload)
+  quick_select_action_event = payload
+  quick_select_was_inactive_during_action = state.get().quick_select.active == false
+end)
+hollow._emit_builtin_event("quick_select:action_executed", {
+  text = "src/main.zig",
+  kind = "filename",
+  action = "command",
+  pattern_index = nil,
+})
+assert_equal(
+  quick_select_action_event.text,
+  "src/main.zig",
+  "quick-select action event should expose matched text"
+)
+assert_equal(
+  quick_select_action_event.kind,
+  "filename",
+  "quick-select action event should expose match kind"
+)
+assert_equal(
+  quick_select_action_event.action,
+  "command",
+  "quick-select action event should expose executed action"
+)
+assert_true(
+  quick_select_was_inactive_during_action,
+  "quick-select should exit before action event dispatch"
+)
 
 print("runtime_test.lua: ok")

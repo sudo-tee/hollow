@@ -385,7 +385,7 @@ local function configured_bottombar_widget()
         items[#items + 1] = ui.bar.custom({
           id = "mode:quick-select-action",
           render = function()
-            return special_mode_chip(" " .. (quick_select.action == "copy" and "copy" or "open") .. " ", {
+            return special_mode_chip(" " .. (quick_select.action == "copy" and "copy" or "open/copy") .. " ", {
               bg = theme.chip_bg,
               fg = theme.chip_fg,
             })

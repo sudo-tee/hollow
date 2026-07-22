@@ -3,6 +3,7 @@ const c = @import("sokol_c");
 const platform = @import("../platform.zig");
 const text_helpers = @import("text_helpers.zig");
 const hyperlinks = @import("hyperlinks.zig");
+const lua_bridge = @import("../lua_bridge.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
@@ -21,12 +22,23 @@ pub const Input = union(enum) {
     cancel,
 };
 
+pub const CandidateKind = enum {
+    url,
+    ip,
+    quote,
+    filename,
+    custom,
+};
+
 pub const Candidate = struct {
     row: usize,
     start_col: usize,
     end_col: usize,
     text: []u8,
     open_target: ?[]u8 = null,
+    default_action: Action,
+    kind: CandidateKind,
+    pattern_index: usize = 0,
     label: [2]u8 = undefined,
     label_len: u8 = 0,
 };
@@ -45,10 +57,6 @@ pub fn disarmInput(self: *App) void {
 
 pub fn start(self: *App, action: Action) void {
     resetState(self);
-    if (!self.config.hyperlinks.enabled) {
-        std.log.info("quick-select: disabled by hyperlinks.enabled=false", .{});
-        return disarmInput(self);
-    }
     const pane = self.activePane() orelse {
         std.log.info("quick-select: no active pane", .{});
         return disarmInput(self);
@@ -204,12 +212,36 @@ pub fn candidateLabelRemainder(self: *const App, candidate: *const Candidate) []
 }
 
 fn execute(self: *App, candidate: Candidate) void {
-    const action = self.quick_select_action;
+    var action = selectedAction(self.quick_select_action, candidate.default_action);
     const text = candidate.text;
     const open_target = candidate.open_target orelse text;
+    if (self.quick_select_action != .copy) {
+        if (self.lua) |*lua| {
+            var command: std.ArrayListUnmanaged([]u8) = .empty;
+            defer {
+                for (command.items) |arg| self.allocator.free(arg);
+                command.deinit(self.allocator);
+            }
+            switch (lua.runQuickSelectAction(@tagName(candidate.kind), candidate.pattern_index, text, @tagName(candidate.default_action), &command)) {
+                .open => action = .open,
+                .copy => action = .copy,
+                .handled => return finishAction(self, candidate, "callback"),
+                .command => {
+                    platform.runCommandAsync(command.items) catch |err| {
+                        std.log.err("quick select command failed: {s}", .{@errorName(err)});
+                        return;
+                    };
+                    return finishAction(self, candidate, "command");
+                },
+                .failed => return,
+                .fallback => {},
+            }
+        }
+    }
     switch (action) {
         .open => platform.openExternalWithOpenerAsync(open_target, self.config.hyperlinks.opener) catch |err| {
             std.log.err("quick select open failed: {s}", .{@errorName(err)});
+            return;
         },
         .copy => {
             const clipboard = self.allocator.alloc(u8, text.len + 1) catch {
@@ -222,7 +254,28 @@ fn execute(self: *App, candidate: Candidate) void {
             c.sapp_set_clipboard_string(@ptrCast(clipboard.ptr));
         },
     }
+    finishAction(self, candidate, @tagName(action));
+}
+
+fn finishAction(self: *App, candidate: Candidate, action: []const u8) void {
+    const text = self.allocator.dupe(u8, candidate.text) catch {
+        cancel(self);
+        return;
+    };
+    defer self.allocator.free(text);
+    const kind = @tagName(candidate.kind);
+    const pattern_index: ?usize = if (candidate.kind == .custom) candidate.pattern_index else null;
     cancel(self);
+    self.emitLuaBuiltInEvent("quick_select:action_executed", .{ .quick_select_action = .{
+        .text = text,
+        .kind = kind,
+        .action = action,
+        .pattern_index = pattern_index,
+    } });
+}
+
+fn selectedAction(mode_action: Action, candidate_action: Action) Action {
+    return if (mode_action == .copy) .copy else candidate_action;
 }
 
 fn invalidatePane(self: *App, pane: *Pane) void {
@@ -265,31 +318,33 @@ fn capture(self: *App, pane: *Pane) !void {
 
 fn captureRow(self: *App, pane: *Pane, row: usize, ascii_cols: []const u8, covered: []bool) !void {
     @memset(covered, false);
+    const cfg = self.config.hyperlinks;
     var active_uri: ?[]u8 = null;
     var active_start: usize = 0;
     defer if (active_uri) |uri| self.allocator.free(uri);
 
-    var col: usize = 0;
-    while (col <= ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) : (col += 1) {
-        var uri_buf: [8192]u8 = undefined;
-        const uri = if (col < ascii_cols.len) hyperlinks.hyperlinkUriAt(self, pane, .{ .row = row, .col = col }, &uri_buf) else null;
-        const same = if (active_uri) |current| if (uri) |value| std.mem.eql(u8, current, value) else false else uri == null;
-        if (same) continue;
-        if (active_uri) |current| {
-            for (covered[active_start..col]) |*value| value.* = true;
-            active_uri = null;
-            try appendOwnedCandidate(self, .{ .row = row, .start_col = active_start, .end_col = col, .text = current });
-        }
-        if (uri) |value| {
-            active_uri = try self.allocator.dupe(u8, value);
-            active_start = col;
+    if (cfg.enabled) {
+        var col: usize = 0;
+        while (col <= ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) : (col += 1) {
+            var uri_buf: [8192]u8 = undefined;
+            const uri = if (col < ascii_cols.len) hyperlinks.hyperlinkUriAt(self, pane, .{ .row = row, .col = col }, &uri_buf) else null;
+            const same = if (active_uri) |current| if (uri) |value| std.mem.eql(u8, current, value) else false else uri == null;
+            if (same) continue;
+            if (active_uri) |current| {
+                markCovered(covered, active_start, col);
+                active_uri = null;
+                try appendOwnedCandidate(self, .{ .row = row, .start_col = active_start, .end_col = col, .text = current, .default_action = .open, .kind = .url });
+            }
+            if (uri) |value| {
+                active_uri = try self.allocator.dupe(u8, value);
+                active_start = col;
+            }
         }
     }
 
-    const cfg = self.config.hyperlinks;
     const delimiters = cfg.delimitersOrDefault();
     var token_scan_start: usize = 0;
-    while (token_scan_start < ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) {
+    while (cfg.enabled and token_scan_start < ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) {
         while (token_scan_start < ascii_cols.len and isDelimiter(delimiters, ascii_cols[token_scan_start])) token_scan_start += 1;
         if (token_scan_start >= ascii_cols.len) break;
         var end = token_scan_start;
@@ -315,9 +370,102 @@ fn captureRow(self: *App, pane: *Pane, row: usize, ascii_cols: []const u8, cover
                 .end_col = token_end,
                 .text = owned,
                 .open_target = open_target,
+                .default_action = .open,
+                .kind = .url,
             });
+            markCovered(covered, token_start, token_end);
         }
         token_scan_start = @max(end, token_scan_start + 1);
+    }
+
+    try captureConfiguredPatterns(self, row, ascii_cols, covered);
+
+    var quote_start: usize = 0;
+    while (quote_start < ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) : (quote_start += 1) {
+        const quote = ascii_cols[quote_start];
+        if (quote != '\'' and quote != '"' and quote != '`') continue;
+        const quote_end = findClosingQuote(ascii_cols, quote_start + 1, quote) orelse continue;
+        const content_start = quote_start + 1;
+        if (content_start < quote_end and std.mem.indexOfScalar(u8, ascii_cols[content_start..quote_end], 0) == null and !rangeCovered(covered, quote_start, quote_end + 1)) {
+            const owned = try self.allocator.dupe(u8, ascii_cols[content_start..quote_end]);
+            try appendOwnedCandidate(self, .{
+                .row = row,
+                .start_col = content_start,
+                .end_col = quote_end,
+                .text = owned,
+                .default_action = .copy,
+                .kind = .quote,
+            });
+            markCovered(covered, quote_start, quote_end + 1);
+        }
+        quote_start = quote_end;
+    }
+
+    var copy_scan_start: usize = 0;
+    while (copy_scan_start < ascii_cols.len and self.quick_select_candidates.items.len < max_candidates) {
+        while (copy_scan_start < ascii_cols.len and isCopyTokenDelimiter(ascii_cols[copy_scan_start])) copy_scan_start += 1;
+        if (copy_scan_start >= ascii_cols.len) break;
+        var copy_end = copy_scan_start;
+        while (copy_end < ascii_cols.len and !isCopyTokenDelimiter(ascii_cols[copy_end])) copy_end += 1;
+        const raw_copy_end = copy_end;
+        var copy_start = copy_scan_start;
+        while (copy_start < copy_end and isCopyTokenTrim(ascii_cols[copy_start])) copy_start += 1;
+        while (copy_end > copy_start and isCopyTokenTrim(ascii_cols[copy_end - 1])) copy_end -= 1;
+        var token = ascii_cols[copy_start..copy_end];
+        if (std.mem.lastIndexOfScalar(u8, token, '=')) |equals| {
+            const value = token[equals + 1 ..];
+            if (isIpAddress(value) or isFilename(value)) {
+                copy_start += equals + 1;
+                token = value;
+            }
+        }
+        const token_complete = raw_copy_end == ascii_cols.len or ascii_cols[raw_copy_end] != 0;
+        const kind: ?CandidateKind = if (isIpAddress(token)) .ip else if (isFilename(token)) .filename else null;
+        if (token_complete and token.len > 0 and !rangeCovered(covered, copy_start, copy_end) and kind != null) {
+            const owned = try self.allocator.dupe(u8, token);
+            try appendOwnedCandidate(self, .{
+                .row = row,
+                .start_col = copy_start,
+                .end_col = copy_end,
+                .text = owned,
+                .default_action = .copy,
+                .kind = kind.?,
+            });
+            markCovered(covered, copy_start, copy_end);
+        }
+        copy_scan_start = @max(raw_copy_end, copy_scan_start + 1);
+    }
+}
+
+fn captureConfiguredPatterns(self: *App, row: usize, ascii_cols: []const u8, covered: []bool) !void {
+    const lua = if (self.lua) |*runtime| runtime else return;
+    var matches: std.ArrayListUnmanaged(lua_bridge.QuickSelectMatch) = .empty;
+    defer matches.deinit(self.allocator);
+    lua.resolveQuickSelectMatches(ascii_cols, &matches);
+    std.mem.sort(lua_bridge.QuickSelectMatch, matches.items, {}, struct {
+        fn lessThan(_: void, a: lua_bridge.QuickSelectMatch, b: lua_bridge.QuickSelectMatch) bool {
+            return a.pattern_index < b.pattern_index or (a.pattern_index == b.pattern_index and a.start_col < b.start_col);
+        }
+    }.lessThan);
+
+    var match_index: usize = 0;
+    errdefer for (matches.items[match_index + 1 ..]) |match| self.allocator.free(match.text);
+    while (match_index < matches.items.len) : (match_index += 1) {
+        const match = matches.items[match_index];
+        if (match.end_col > ascii_cols.len or match.end_col <= match.start_col or std.mem.indexOfScalar(u8, match.text, 0) != null or rangeCovered(covered, match.start_col, match.end_col)) {
+            self.allocator.free(match.text);
+            continue;
+        }
+        try appendOwnedCandidate(self, .{
+            .row = row,
+            .start_col = match.start_col,
+            .end_col = match.end_col,
+            .text = match.text,
+            .default_action = .copy,
+            .kind = .custom,
+            .pattern_index = match.pattern_index,
+        });
+        markCovered(covered, match.start_col, match.end_col);
     }
 }
 
@@ -348,6 +496,85 @@ fn isDelimiter(delimiters: []const u8, ch: u8) bool {
 
 fn rangeCovered(covered: []const bool, range_start: usize, range_end: usize) bool {
     for (covered[range_start..range_end]) |value| if (value) return true;
+    return false;
+}
+
+fn markCovered(covered: []bool, range_start: usize, range_end: usize) void {
+    for (covered[range_start..range_end]) |*value| value.* = true;
+}
+
+fn findClosingQuote(text: []const u8, search_start: usize, quote: u8) ?usize {
+    var index = search_start;
+    while (index < text.len) : (index += 1) {
+        if (text[index] != quote) continue;
+        var slash_count: usize = 0;
+        var previous = index;
+        while (previous > search_start and text[previous - 1] == '\\') : (previous -= 1) slash_count += 1;
+        if (slash_count % 2 == 0) return index;
+    }
+    return null;
+}
+
+fn isCopyTokenDelimiter(ch: u8) bool {
+    return ch == 0 or std.ascii.isWhitespace(ch) or std.mem.indexOfScalar(u8, "\"'`<>|", ch) != null;
+}
+
+fn isCopyTokenTrim(ch: u8) bool {
+    return std.mem.indexOfScalar(u8, ",;!?()[]{}", ch) != null;
+}
+
+fn isIpAddress(token: []const u8) bool {
+    var address = token;
+    if (std.mem.lastIndexOfScalar(u8, token, ':')) |colon| {
+        if (std.mem.indexOfScalar(u8, token, ':') != colon) return false;
+        const port = token[colon + 1 ..];
+        if (port.len == 0 or port.len > 5) return false;
+        const port_number = std.fmt.parseInt(u16, port, 10) catch return false;
+        if (port_number == 0) return false;
+        address = token[0..colon];
+    }
+
+    var octets = std.mem.splitScalar(u8, address, '.');
+    var count: usize = 0;
+    while (octets.next()) |octet| {
+        if (octet.len == 0 or octet.len > 3) return false;
+        _ = std.fmt.parseInt(u8, octet, 10) catch return false;
+        count += 1;
+    }
+    return count == 4;
+}
+
+fn isFilename(token: []const u8) bool {
+    if (token.len < 2) return false;
+    if (std.mem.indexOf(u8, token, "://") != null) return false;
+    var path = token;
+    var location_parts: usize = 0;
+    while (location_parts < 2) : (location_parts += 1) {
+        const colon = std.mem.lastIndexOfScalar(u8, path, ':') orelse break;
+        const suffix = path[colon + 1 ..];
+        if (suffix.len == 0) break;
+        var numeric = true;
+        for (suffix) |ch| if (!std.ascii.isDigit(ch)) {
+            numeric = false;
+            break;
+        };
+        if (!numeric) break;
+        path = path[0..colon];
+    }
+    if (path.len < 2) return false;
+    if (std.mem.startsWith(u8, path, "/") or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../") or std.mem.startsWith(u8, path, "~/")) return path[path.len - 1] != '/' and containsAlphabetic(path);
+    if (path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/')) return path[path.len - 1] != '\\' and path[path.len - 1] != '/';
+    if (std.mem.indexOfAny(u8, path, "/\\") != null) return path[path.len - 1] != '\\' and path[path.len - 1] != '/' and containsAlphabetic(path);
+    if (path[0] == '.') return path.len > 1 and path[1] != '.' and (std.ascii.isAlphabetic(path[1]) or path[1] == '_');
+    const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
+    if (dot == 0 or dot + 1 >= path.len or path.len - dot - 1 > 16) return false;
+    if (!std.ascii.isAlphabetic(path[dot + 1])) return false;
+    for (path[dot + 1 ..]) |ch| if (!std.ascii.isAlphanumeric(ch)) return false;
+    return true;
+}
+
+fn containsAlphabetic(text: []const u8) bool {
+    for (text) |ch| if (std.ascii.isAlphabetic(ch)) return true;
     return false;
 }
 
@@ -398,4 +625,40 @@ test "quick select prefix matching" {
     try std.testing.expect(hasPrefixMatch(&candidates, "a"));
     try std.testing.expect(hasPrefixMatch(&candidates, "sa"));
     try std.testing.expect(!hasPrefixMatch(&candidates, "zz"));
+}
+
+test "quick select pattern actions" {
+    try std.testing.expectEqual(Action.open, selectedAction(.open, .open));
+    try std.testing.expectEqual(Action.copy, selectedAction(.open, .copy));
+    try std.testing.expectEqual(Action.copy, selectedAction(.copy, .open));
+}
+
+test "quick select recognizes IPv4 addresses" {
+    try std.testing.expect(isIpAddress("127.0.0.1"));
+    try std.testing.expect(isIpAddress("192.168.1.20:8080"));
+    try std.testing.expect(!isIpAddress("256.1.1.1"));
+    try std.testing.expect(!isIpAddress("1.2.3"));
+    try std.testing.expect(!isIpAddress("1.2.3.4:0"));
+}
+
+test "quick select recognizes filenames and paths" {
+    try std.testing.expect(isFilename("src/main.zig"));
+    try std.testing.expect(isFilename("./build.sh"));
+    try std.testing.expect(isFilename("C:\\Users\\me\\notes.txt"));
+    try std.testing.expect(isFilename("config.lua:42:7"));
+    try std.testing.expect(isFilename("README.md"));
+    try std.testing.expect(isFilename(".gitignore"));
+    try std.testing.expect(!isFilename("README"));
+    try std.testing.expect(!isFilename("directory/"));
+    try std.testing.expect(!isFilename("3/4"));
+    try std.testing.expect(!isFilename(".5"));
+    try std.testing.expect(!isFilename("v1.2"));
+    try std.testing.expect(!isFilename("https://example.com"));
+}
+
+test "quick select finds closing quotes" {
+    try std.testing.expectEqual(@as(?usize, 6), findClosingQuote("'hello'", 1, '\''));
+    try std.testing.expectEqual(@as(?usize, 9), findClosingQuote("\"say \\\"hi\"", 1, '"'));
+    try std.testing.expectEqual(@as(?usize, 7), findClosingQuote("\"path\\\\\"", 1, '"'));
+    try std.testing.expectEqual(@as(?usize, null), findClosingQuote("`open", 1, '`'));
 }

@@ -36,7 +36,7 @@ If you are new to the repo, start with [the docs index](docs/README.md).
   `hollow.events`, `hollow.keymap`, `hollow.ui`, `hollow.htp`, and more)
 - Ghostty's VT core for fast, accurate terminal emulation
 - Tabs, split panes, floating panes, maximized panes, workspaces, customizable top bar
-- Keyboard quick select for visible URLs and OSC 8 hyperlinks
+- Keyboard quick select for visible links, IPs, paths, filenames, and quoted text
 - Scrollback, selection, clipboard, hyperlink handling, font discovery, ligature, nerd fonts and emoji support
 - Basic support for Kitty images and Sixel
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`

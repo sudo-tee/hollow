@@ -569,7 +569,7 @@ function M.setup(hollow, host_api)
     run = function()
       host_api.quick_select_start("open")
     end,
-    desc = "Open a visible URL by hint",
+    desc = "Open links or copy visible text by hint",
     category = "general",
   })
 
@@ -577,7 +577,7 @@ function M.setup(hollow, host_api)
     run = function()
       host_api.quick_select_start("copy")
     end,
-    desc = "Copy a visible URL by hint",
+    desc = "Copy a visible quick-select match by hint",
     category = "general",
   })
 

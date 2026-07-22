@@ -150,7 +150,7 @@ See [Copy mode](copy-mode.md) for the modal bindings.
 | `<leader>r`  | Rename current tab       |
 | `<leader>uu` | Reload config            |
 | `<leader>p`  | Open the command palette |
-| `<leader>q`  | Quick select a visible URL |
+| `<leader>q`  | Quick select visible text |
 
 ### Font size
 

@@ -165,6 +165,7 @@
 ---| "copy_mode:search_requested"
 ---| "quick_select:changed"
 ---| "quick_select:no_matches"
+---| "quick_select:action_executed"
 ---| "topbar:hover"
 ---| "topbar:leave"
 ---| "topbar:click"
@@ -201,6 +202,7 @@
 ---@field ["copy_mode:search_requested"] {}
 ---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
 ---@field ["quick_select:no_matches"] {}
+---@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command", pattern_index: integer|nil }
 ---@field ["topbar:hover"] { id: string }
 ---@field ["topbar:leave"] {}
 ---@field ["topbar:click"] { id: string }
@@ -319,6 +321,26 @@
 ---@field trim_leading? string
 ---@field trim_trailing? string
 
+---@alias HollowQuickSelectKind "url"|"ip"|"quote"|"filename"|"custom"
+
+---@class HollowQuickSelectActionContext
+---@field kind HollowQuickSelectKind
+---@field pattern_index integer|nil
+
+---@class HollowQuickSelectCommandAction
+---@field command string[] Command arguments; `{match}` is replaced with matched text
+
+---@alias HollowQuickSelectAction "open"|"copy"|HollowQuickSelectCommandAction|fun(text:string, context:HollowQuickSelectActionContext)
+
+---@class HollowQuickSelectPattern
+---@field pattern string Lua string pattern
+---@field action? HollowQuickSelectAction
+---@field enabled? boolean
+
+---@class HollowQuickSelectConfig
+---@field actions? { url?: HollowQuickSelectAction, ip?: HollowQuickSelectAction, quote?: HollowQuickSelectAction, filename?: HollowQuickSelectAction }
+---@field patterns? (string|HollowQuickSelectPattern)[] Additional Lua patterns; strings default to copy
+
 ---@class HollowConfig
 ---@field debug_overlay? boolean
 ---@field debug_terminal_trace? boolean
@@ -353,6 +375,7 @@
 ---@field bottom_bar_draw_status? boolean
 ---@field scrollbar? HollowScrollbarConfig
 ---@field hyperlinks? HollowHyperlinksConfig
+---@field quick_select? HollowQuickSelectConfig
 ---@field cursor? HollowCursorConfig
 ---@field unfocused_pane? HollowUnfocusedPaneConfig
 ---@field shell? string|string[]
@@ -1925,6 +1948,7 @@ function plugins.sync() end
 ---@field copy_mode_search_next fun()
 ---@field copy_mode_search_prev fun()
 ---@field quick_select_start fun(action: "open"|"copy")
+---@field quick_select_handlers fun(match_handler:fun(row_text:string):table[], action_handler:fun(kind:string, pattern_index:integer, text:string, fallback:string):string)
 ---@field platform HollowPlatformInfo
 
 ---@class HollowUiModuleExports

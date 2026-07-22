@@ -24,7 +24,6 @@ if package ~= nil and package.loaded ~= nil then
   package.loaded.hollow = hollow
 end
 
-local tbl = require("hollow.tbl")
 local actions = require("hollow.actions")
 local async = require("hollow.async")
 local config = require("hollow.config")
@@ -35,6 +34,7 @@ local json = require("hollow.json")
 local keymap = require("hollow.keymap")
 local plugins = require("hollow.plugins")
 local state = require("hollow.state").new(host_api)
+local tbl = require("hollow.tbl")
 local term = require("hollow.term")
 local theme = require("hollow.theme")
 local util = require("hollow.util")
@@ -64,6 +64,83 @@ state.quick_select = state.quick_select or { active = false, action = "open" }
 hollow.events.on("quick_select:changed", function(payload)
   state.quick_select.active = payload and payload.active == true
   state.quick_select.action = payload and payload.action or "open"
+end)
+host_api.quick_select_handlers(function(row_text)
+  local quick_select = state.config.values.quick_select
+  local patterns = type(quick_select) == "table" and quick_select.patterns or nil
+  if type(patterns) ~= "table" then
+    return {}
+  end
+
+  local matches = {}
+  for pattern_index, spec in ipairs(patterns) do
+    local pattern = type(spec) == "string" and spec or type(spec) == "table" and spec.pattern or nil
+    local enabled = type(spec) ~= "table" or spec.enabled ~= false
+    if enabled and type(pattern) == "string" and pattern ~= "" then
+      local offset = 1
+      while offset <= #row_text and #matches < 676 do
+        local ok, first, last = pcall(string.find, row_text, pattern, offset)
+        if not ok then
+          hollow.log("quick-select pattern " .. pattern_index .. " failed: " .. tostring(first))
+          break
+        end
+        if first == nil then
+          break
+        end
+        if last >= first then
+          matches[#matches + 1] = {
+            start_col = first - 1,
+            end_col = last,
+            text = row_text:sub(first, last),
+            pattern_index = pattern_index,
+          }
+        end
+        offset = math.max(first + 1, last + 1)
+      end
+    end
+  end
+  return matches
+end, function(kind, pattern_index, text, fallback)
+  local quick_select = state.config.values.quick_select
+  if type(quick_select) ~= "table" then
+    return fallback
+  end
+
+  local action
+  if kind == "custom" then
+    local spec = type(quick_select.patterns) == "table" and quick_select.patterns[pattern_index]
+      or nil
+    action = type(spec) == "table" and spec.action or nil
+  else
+    action = type(quick_select.actions) == "table" and quick_select.actions[kind] or nil
+  end
+  if action == nil then
+    return fallback
+  end
+  if action == "open" or action == "copy" then
+    return action
+  end
+
+  local context = { kind = kind, pattern_index = kind == "custom" and pattern_index or nil }
+  if type(action) == "function" then
+    local ok, err = pcall(action, text, context)
+    if not ok then
+      hollow.log("quick-select action failed: " .. tostring(err))
+      hollow.ui.notify.error("Quick select action failed", { ttl = 2400 })
+      return "failed"
+    end
+    return "handled"
+  end
+  if type(action) == "table" and type(action.command) == "table" then
+    local args = {}
+    for index, arg in ipairs(action.command) do
+      args[index] = tostring(arg):gsub("{match}", function()
+        return text
+      end)
+    end
+    return args
+  end
+  return fallback
 end)
 if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
   hollow.ui._register_bar_invalidation_hooks()

@@ -584,9 +584,31 @@ pub const BuiltInPayload = union(enum) {
         active: bool,
         action: []const u8,
     },
+    quick_select_action: struct {
+        text: []const u8,
+        kind: []const u8,
+        action: []const u8,
+        pattern_index: ?usize = null,
+    },
     workspace_closed: struct {
         name: []const u8,
     },
+};
+
+pub const QuickSelectMatch = struct {
+    start_col: usize,
+    end_col: usize,
+    text: []u8,
+    pattern_index: usize,
+};
+
+pub const QuickSelectActionResult = enum {
+    fallback,
+    open,
+    copy,
+    command,
+    handled,
+    failed,
 };
 
 pub const SidebarLayoutSide = enum {
@@ -801,6 +823,8 @@ pub const Runtime = struct {
         if (self.context.workspace_title_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.workspace_title_ref);
         if (self.context.status_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.status_ref);
         if (self.context.gui_ready_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.gui_ready_ref);
+        if (self.context.quick_select_match_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_match_ref);
+        if (self.context.quick_select_action_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_action_ref);
         for (self.context.deferred_callback_refs.items) |callback_ref| {
             if (callback_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         }
@@ -1242,6 +1266,102 @@ pub const Runtime = struct {
             HtpQueryResult{ .success = false, .error_message = luaValueToOwnedString(self.allocator, api, self.state, -1) };
         pop(api, self.state, 4);
         return result;
+    }
+
+    pub fn resolveQuickSelectMatches(self: *Runtime, row_text: []const u8, out: *std.ArrayListUnmanaged(QuickSelectMatch)) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const ref = self.context.quick_select_match_ref;
+        if (ref == LUA_NOREF) return;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        api.push_lstring(self.state, row_text.ptr, row_text.len);
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "quick_select_match");
+            return;
+        }
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return;
+
+        const results_idx = absoluteIndex(api, self.state, -1);
+        api.push_nil(self.state);
+        while (api.next(self.state, results_idx) != 0) {
+            defer pop(api, self.state, 1);
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) continue;
+            const match_idx = absoluteIndex(api, self.state, -1);
+            const start_col = luaNonNegativeIntegerField(api, self.state, match_idx, "start_col") orelse continue;
+            const end_col = luaNonNegativeIntegerField(api, self.state, match_idx, "end_col") orelse continue;
+            const pattern_index = luaNonNegativeIntegerField(api, self.state, match_idx, "pattern_index") orelse continue;
+            if (end_col <= start_col or pattern_index == 0) continue;
+
+            api.get_field(self.state, match_idx, "text");
+            var text_len: usize = 0;
+            const text_ptr = api.to_lstring(self.state, -1, &text_len);
+            if (text_ptr == null or text_len == 0) {
+                pop(api, self.state, 1);
+                continue;
+            }
+            const text = self.allocator.dupe(u8, text_ptr.?[0..text_len]) catch {
+                pop(api, self.state, 1);
+                continue;
+            };
+            pop(api, self.state, 1);
+            out.append(self.allocator, .{
+                .start_col = start_col,
+                .end_col = end_col,
+                .text = text,
+                .pattern_index = pattern_index,
+            }) catch self.allocator.free(text);
+        }
+    }
+
+    pub fn runQuickSelectAction(self: *Runtime, kind: []const u8, pattern_index: usize, text: []const u8, fallback: []const u8, command: *std.ArrayListUnmanaged([]u8)) QuickSelectActionResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const ref = self.context.quick_select_action_ref;
+        if (ref == LUA_NOREF) return .fallback;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        api.push_lstring(self.state, kind.ptr, kind.len);
+        api.push_number(self.state, @floatFromInt(pattern_index));
+        api.push_lstring(self.state, text.ptr, text.len);
+        api.push_lstring(self.state, fallback.ptr, fallback.len);
+        if (api.pcall(self.state, 4, 1, 0) != 0) {
+            logLuaError(api, self.state, "quick_select_action");
+            return .failed;
+        }
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .table) {
+            const command_idx = absoluteIndex(api, self.state, -1);
+            var index: c_int = 1;
+            while (true) : (index += 1) {
+                api.rawgeti(self.state, command_idx, index);
+                defer pop(api, self.state, 1);
+                const value_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+                if (value_type == .nil_type) break;
+                if (value_type != .string) return .failed;
+                var arg_len: usize = 0;
+                const arg_ptr = api.to_lstring(self.state, -1, &arg_len) orelse return .failed;
+                const arg = self.allocator.dupe(u8, arg_ptr[0..arg_len]) catch return .failed;
+                command.append(self.allocator, arg) catch {
+                    self.allocator.free(arg);
+                    return .failed;
+                };
+            }
+            return if (command.items.len > 0) .command else .failed;
+        }
+        var result_len: usize = 0;
+        const result_ptr = api.to_lstring(self.state, -1, &result_len) orelse return .fallback;
+        const result = result_ptr[0..result_len];
+        if (std.mem.eql(u8, result, "open")) return .open;
+        if (std.mem.eql(u8, result, "copy")) return .copy;
+        if (std.mem.eql(u8, result, "handled")) return .handled;
+        if (std.mem.eql(u8, result, "failed")) return .failed;
+        return .fallback;
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, is_hovered: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
@@ -1890,6 +2010,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "quick_select_start");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_quick_select_handlers, 1);
+        api.set_field(self.state, -2, "quick_select_handlers");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_current_tab_id, 1);
         api.set_field(self.state, -2, "current_tab_id");
 
@@ -2110,6 +2234,8 @@ const BridgeContext = struct {
     workspace_title_ref: c_int = -1,
     status_ref: c_int = -1,
     gui_ready_ref: c_int = -1,
+    quick_select_match_ref: c_int = -1,
+    quick_select_action_ref: c_int = -1,
     gui_ready_fired: bool = false,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .{},
     timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .{},
@@ -2352,6 +2478,21 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "active");
             try pushOwnedString(allocator, api, state, value.action);
             api.set_field(state, -2, "action");
+        },
+        .quick_select_action => |value| {
+            api.create_table(state, 0, 4);
+            try pushOwnedString(allocator, api, state, value.text);
+            api.set_field(state, -2, "text");
+            try pushOwnedString(allocator, api, state, value.kind);
+            api.set_field(state, -2, "kind");
+            try pushOwnedString(allocator, api, state, value.action);
+            api.set_field(state, -2, "action");
+            if (value.pattern_index) |pattern_index| {
+                api.push_number(state, @floatFromInt(pattern_index));
+            } else {
+                api.push_nil(state);
+            }
+            api.set_field(state, -2, "pattern_index");
         },
         .workspace_closed => |value| {
             api.create_table(state, 0, 1);
@@ -3354,6 +3495,9 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             applyHyperlinksTable(ctx.cfg, api, state, hyperlinks_idx) catch |err| std.log.err("config hyperlinks field failed: {s}", .{@errorName(err)});
             continue;
         }
+
+        // Quick-select patterns and callbacks live in Lua state.
+        if (std.mem.eql(u8, key, "quick_select") and value_type == .table) continue;
 
         if (std.mem.eql(u8, key, "unfocused_pane") and value_type == .table) {
             const unfocused_pane_idx = absoluteIndex(api, state, -1);
@@ -4592,6 +4736,15 @@ pub fn pop(api: Api, state: *State, count: c_int) void {
 pub fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
     if (idx > 0 or idx <= LUA_REGISTRYINDEX) return idx;
     return api.get_top(state) + idx + 1;
+}
+
+fn luaNonNegativeIntegerField(api: Api, state: *State, table_idx: c_int, field: [:0]const u8) ?usize {
+    api.get_field(state, table_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return null;
+    const value = api.to_number(state, -1);
+    if (value < 0 or value > @as(f64, @floatFromInt(std.math.maxInt(usize))) or @floor(value) != value) return null;
+    return @intFromFloat(value);
 }
 
 /// hollow.new_tab([domain|string|opts])
@@ -6104,6 +6257,28 @@ fn l_quick_select_start(state: *State) callconv(.c) c_int {
         null;
     const action: []const u8 = if (action_ptr) |ptr| ptr[0..action_len] else "open";
     cbs.quick_select_start(cbs.app, action);
+    return 0;
+}
+
+fn l_quick_select_handlers(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (ctx.quick_select_match_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.quick_select_match_ref);
+        ctx.quick_select_match_ref = LUA_NOREF;
+    }
+    if (ctx.quick_select_action_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.quick_select_action_ref);
+        ctx.quick_select_action_ref = LUA_NOREF;
+    }
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function or @as(LuaType, @enumFromInt(api.value_type(state, 2))) != .function) {
+        std.log.err("lua: quick_select_handlers expects match and action functions", .{});
+        return 0;
+    }
+    api.push_value(state, 1);
+    ctx.quick_select_match_ref = api.ref(state, LUA_REGISTRYINDEX);
+    api.push_value(state, 2);
+    ctx.quick_select_action_ref = api.ref(state, LUA_REGISTRYINDEX);
     return 0;
 }
 
