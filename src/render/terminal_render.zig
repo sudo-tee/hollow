@@ -721,7 +721,7 @@ pub fn queueGlyphPass(
 
     var row_y: usize = 0;
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
-        const row_is_dirty = queue.force_full or queue.rowNeedsRedraw(row_y) or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row or row_y == queue.cursor_row;
+        const row_is_dirty = queue.force_full or queue.rowNeedsRedraw(row_y) or runtime.rowDirty(queue.row_iterator.*) or row_y == queue.prev_cursor_row or row_y == queue.cursor_row or quickSelectLabelRow(queue, row_y);
         if (!row_is_dirty) {
             self.last_rows_skipped += 1;
             continue;
@@ -912,6 +912,16 @@ pub fn queueGlyphRow(
     const row_decoration_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
     if (row_needs_decorations) drawRowDecorations(self, runtime, queue, row);
     if (queue.cfg.debug_overlay) stats.decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
+}
+
+fn quickSelectLabelRow(queue: *const QueueContext, row: usize) bool {
+    const pane = queue.pane orelse return false;
+    if (!queue.app.quick_select_active or queue.app.quick_select_pane != pane or queue.app.quick_select_pending_capture) return false;
+    for (queue.app.quick_select_candidates.items) |*candidate| {
+        if (candidate.row != row) continue;
+        if (quick_select.candidateVisible(queue.app, candidate.*)) return true;
+    }
+    return false;
 }
 
 fn quickSelectLabelAt(queue: *const QueueContext, row: usize, col: usize) ?u8 {
