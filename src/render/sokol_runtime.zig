@@ -145,15 +145,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
     extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
-    extern "user32" fn LoadCursorW(hInstance: ?*anyopaque, lpCursorName: usize) callconv(.c) ?*anyopaque;
-    extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.c) ?*anyopaque;
     extern "dwmapi" fn DwmExtendFrameIntoClientArea(hWnd: HWND, pMarInset: *const MARGINS) callconv(.c) i32;
     extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.c) i32;
-    // Standard cursor IDs (as usize for use with LoadCursorW's lpCursorName param)
-    const IDC_ARROW: usize = 32512;
-    const IDC_IBEAM: usize = 32513;
-    const IDC_SIZEWE: usize = 32644;
-    const IDC_SIZENS: usize = 32645;
     // winmm — multimedia timer resolution
     extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.c) c_uint;
     extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.c) c_uint;
@@ -4651,9 +4644,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
                 .pane = pane,
                 .top_row = target_row,
             } });
-            if (builtin.os.tag == .windows) {
-                _ = win32.SetCursor(win32.LoadCursorW(null, win32.IDC_ARROW));
-            }
+            setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
             return;
         }
     }
@@ -4700,13 +4691,10 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
                 .ratio = new_ratio,
             } });
             // Keep the resize cursor active while dragging.
-            if (builtin.os.tag == .windows) {
-                const cursor_id: usize = switch (g_drag_direction) {
-                    .vertical => win32.IDC_SIZEWE,
-                    .horizontal => win32.IDC_SIZENS,
-                };
-                _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
-            }
+            setMouseCursor(switch (g_drag_direction) {
+                .vertical => c.SAPP_MOUSECURSOR_RESIZE_EW,
+                .horizontal => c.SAPP_MOUSECURSOR_RESIZE_NS,
+            });
             return;
         }
     }
@@ -4730,29 +4718,26 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |scrollbar_hit| {
         g_scrollbar_hover_pane = scrollbar_hit.pane;
         g_hover_hyperlink = false;
-        if (builtin.os.tag == .windows) setTextSelectionCursor(.arrow);
+        setTextSelectionCursor(.arrow);
         return;
     }
     g_scrollbar_hover_pane = null;
 
     // Check if hovering over a split divider to show resize cursor.
-    if (builtin.os.tag == .windows) {
-        if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
-            const cursor_id: usize = switch (hit.node.direction) {
-                .vertical => win32.IDC_SIZEWE,
-                .horizontal => win32.IDC_SIZENS,
-            };
-            _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+    if (app.hitTestDividerAt(event.mouse_x, event.mouse_y, 6.0)) |hit| {
+        setMouseCursor(switch (hit.node.direction) {
+            .vertical => c.SAPP_MOUSECURSOR_RESIZE_EW,
+            .horizontal => c.SAPP_MOUSECURSOR_RESIZE_NS,
+        });
+    } else {
+        if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
+            const hover_link = hyperlinkHoverActive(app, event.modifiers);
+            g_hover_hyperlink = hover_link;
+            const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
+            setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
         } else {
-            if (app.hitTestPane(event.mouse_x, event.mouse_y)) |hit| {
-                const hover_link = hyperlinkHoverActive(app, event.modifiers);
-                g_hover_hyperlink = hover_link;
-                const wants_text_cursor = g_selection_pointer_active or selectionModifierActive(event.modifiers) or hit.pane.last_mouse_tracking == 0;
-                setTextSelectionCursor(if (hover_link) .hand else if (wants_text_cursor) .ibeam else .arrow);
-            } else {
-                g_hover_hyperlink = false;
-                setTextSelectionCursor(.arrow);
-            }
+            g_hover_hyperlink = false;
+            setTextSelectionCursor(.arrow);
         }
     }
 
@@ -5062,14 +5047,20 @@ const SelectionCursor = enum {
     hand,
 };
 
+var g_current_mouse_cursor: ?c.sapp_mouse_cursor = null;
+
+fn setMouseCursor(cursor: c.sapp_mouse_cursor) void {
+    if (g_current_mouse_cursor == cursor) return;
+    g_current_mouse_cursor = cursor;
+    c.sapp_set_mouse_cursor(cursor);
+}
+
 fn setTextSelectionCursor(cursor: SelectionCursor) void {
-    if (builtin.os.tag != .windows) return;
-    const cursor_id: usize = switch (cursor) {
-        .arrow => win32.IDC_ARROW,
-        .ibeam => win32.IDC_IBEAM,
-        .hand => 32649,
-    };
-    _ = win32.SetCursor(win32.LoadCursorW(null, cursor_id));
+    setMouseCursor(switch (cursor) {
+        .arrow => c.SAPP_MOUSECURSOR_ARROW,
+        .ibeam => c.SAPP_MOUSECURSOR_IBEAM,
+        .hand => c.SAPP_MOUSECURSOR_POINTING_HAND,
+    });
 }
 
 fn titleCString(text: []const u8) [*:0]const u8 {

@@ -2045,7 +2045,7 @@ pub const App = struct {
                                 pane.rows,
                                 pane.cols,
                             });
-                            pane.nudgeResize(runtime, self.cell_width_px, self.cell_height_px);
+                            pane.nudgePty();
                             pane.pending_alt_screen_nudge = false;
                             pane.alt_screen_nudge_quiet_ticks = 0;
                             self.last_visual_activity_ns = now_ns;

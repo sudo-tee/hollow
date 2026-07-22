@@ -723,20 +723,12 @@ pub const Pane = struct {
         }
     }
 
-    /// Force a repaint by briefly bumping the terminal and PTY row count and then
-    /// restoring it. This mirrors a user resize more closely than a PTY-only nudge.
-    pub fn nudgeResize(self: *Pane, runtime: *GhosttyRuntime, cell_width_px: u32, cell_height_px: u32) void {
+    /// Force a repaint by briefly bumping the PTY row count and restoring it.
+    /// Keep Ghostty's terminal grid stable while processing alternate-screen entry.
+    pub fn nudgePty(self: *Pane) void {
         if (self.cols == 0 or self.rows == 0) return;
         const bump_rows: u16 = if (self.rows > 1) self.rows - 1 else self.rows + 1;
-        std.log.info("pane.nudgeResize: row-bump cols={d} rows={d}->{}->{}", .{ self.cols, self.rows, bump_rows, self.rows });
-        if (self.terminal) |terminal| {
-            runtime.resizeTerminal(terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
-            runtime.resizeTerminal(terminal, self.cols, self.rows, cell_width_px, cell_height_px);
-        }
-        runtime.updateRenderState(self.render_state, self.terminal) catch {};
-        self.render_dirty = .full;
-        runtime.syncKeyEncoder(self.key_encoder, self.terminal);
-        runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
+        std.log.info("pane.nudgePty: row-bump cols={d} rows={d}->{}->{}", .{ self.cols, self.rows, bump_rows, self.rows });
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
                 pty.resize(self.cols, bump_rows);
