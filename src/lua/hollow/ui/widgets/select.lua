@@ -2,6 +2,7 @@ local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 local w = require("hollow.ui.builder")
+local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local table_unpack = table.unpack or unpack
 
@@ -211,7 +212,8 @@ local function render_entry_rows(
   theme,
   show_scrollbar,
   visible_index,
-  thumb_index
+  thumb_index,
+  row_id
 )
   ---@type HollowUiTags
   local tags = ui.tags
@@ -236,7 +238,7 @@ local function render_entry_rows(
     end
 
     detail_row = tags.overlay_row(
-      { fill_bg = is_selected and theme.selected_detail_bg or nil },
+      { id = row_id, fill_bg = is_selected and theme.selected_detail_bg or nil },
       ui.group(detail_nodes, { fg = is_selected and theme.selected_muted or theme.detail })
     )
   end
@@ -244,6 +246,7 @@ local function render_entry_rows(
   return ui.rows(
     tags.overlay_row(
       {
+        id = row_id,
         fill_bg = is_selected and theme.selection_bg or nil,
         scrollbar_track = show_scrollbar,
         scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
@@ -384,6 +387,12 @@ function ui.select.open(opts)
         local entry = entries[i] --[[@as HollowUiSelectEntry]]
         visible_index = visible_index + 1
         local is_selected = (i == nav.index)
+        local entry_index = i
+        local row_id = "select:item:" .. tostring(entry.source_index)
+        click_registry.register(row_id, function()
+          nav.index = entry_index
+          invoke_action(opts, filter.value, filter.value:lower(), nav.index, 1, prepared)
+        end)
         append_rows(
           rows,
           render_entry_rows(
@@ -392,7 +401,8 @@ function ui.select.open(opts)
             render_theme,
             show_scrollbar,
             visible_index,
-            thumb_index
+            thumb_index,
+            row_id
           )
         )
       end

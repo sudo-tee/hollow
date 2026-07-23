@@ -103,6 +103,7 @@ end
 ---@return HollowUiOverlayRowOptions
 local function overlay_row_options(props)
   return {
+    id = props.id,
     fill_bg = props.fill_bg,
     divider = props.divider,
     scrollbar_track = props.scrollbar_track,
@@ -138,6 +139,7 @@ function overlay_row.make(nodes, opts)
   opts = opts or {}
   return {
     _overlay_row = true,
+    id = opts.id,
     nodes = nodes or {},
     fill_bg = opts.fill_bg,
     divider = opts.divider,

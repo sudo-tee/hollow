@@ -1757,6 +1757,11 @@ assert_equal(
   resolved_select_theme.selected_bg,
   "workspace switcher should use the select selected background for the active row"
 )
+assert_true(
+  type(workspace_overlay[1].rows[5].id) == "string"
+    and workspace_overlay[1].rows[5].id:find("select:item:", 1, true) == 1,
+  "workspace switcher entries should expose stable semantic row ids"
+)
 assert_true(on_key("a", 0), "workspace switcher should consume first-key filtering")
 workspace_overlay = hollow.ui._overlay_state()
 assert_true(workspace_overlay ~= nil, "workspace switcher should remain open while filtering")

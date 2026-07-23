@@ -8,6 +8,7 @@ const FocusDirection = mux_mod.FocusDirection;
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const htp = @import("htp.zig");
+const ui_semantics = @import("../ui/semantics.zig");
 const SplitCommandMode = app_mod.SplitCommandMode;
 const mux_ops = @import("session_controller.zig");
 
@@ -194,6 +195,9 @@ fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
     return switch (kind) {
         .get_pane,
         .get_pane_text,
+        .get_screen,
+        .get_ui_nodes,
+        .get_revision,
         .get_current_pane,
         .get_tab,
         .get_current_tab,
@@ -204,7 +208,8 @@ fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
         .get_workspaces,
         .get_domain,
         .get_htp,
-            => .sync,
+        .ui_click,
+        => .sync,
         else => .deferred,
     };
 }
@@ -321,6 +326,11 @@ fn cloneCommandRequest(self: *App, request: command_mod.Request) !command_mod.Re
         .tag = try cloneOwnedOptionalString(self, request.tag),
         .tags = try cloneOwnedOptionalStringSlice(self, request.tags),
         .channel = try cloneOwnedOptionalString(self, request.channel),
+        .surface = try cloneOwnedOptionalString(self, request.surface),
+        .node_id = try cloneOwnedOptionalString(self, request.node_id),
+        .generation = request.generation,
+        .revision = request.revision,
+        .timeout_ms = request.timeout_ms,
         .params = try cloneOwnedOptionalJson(self, request.params),
         .payload = try cloneOwnedOptionalJson(self, request.payload),
     };
@@ -591,6 +601,9 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
     return switch (request.kind) {
         .get_pane => .ok(try self.snapshotPaneValue(request.id orelse request.pane_id)),
         .get_pane_text => .ok(try self.paneTextValue(request.id orelse request.pane_id)),
+        .get_screen => .ok(try self.paneScreenValue(request.id orelse request.pane_id)),
+        .get_ui_nodes => .ok(try self.uiNodesValue()),
+        .get_revision => revisionResponse(self),
         .get_current_pane => .ok(try self.currentPaneValue()),
         .get_tab => .ok(try self.snapshotTabValue(request.id)),
         .get_current_tab => .ok(try self.currentTabValue()),
@@ -624,6 +637,8 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .pane_set_tag => execPaneSetTag(self, request),
         .pane_remove_tag => execPaneRemoveTag(self, request),
         .pane_set_tags => execPaneSetTags(self, request),
+        .ui_click => execUiClick(self, request),
+        .wait_revision => command_mod.Response.fail("internal", "wait_revision dispatched on frame thread"),
         .focus => execFocus(self, request),
         .scroll => execScroll(self, request),
         .get_htp => execGetHtp(self, request),
@@ -636,7 +651,44 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
 
 fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_mod.Response {
     const app: *App = @ptrCast(@alignCast(app_ptr));
+    if (request.kind == .wait_revision) return execWaitRevision(app, request);
     return runCommandSync(app, request);
+}
+
+fn revisionResponse(self: *App) command_mod.Response {
+    var object = std.json.ObjectMap.init(self.allocator);
+    const key = self.allocator.dupe(u8, "revision") catch return command_mod.Response.fail("internal", "oom");
+    object.put(key, .{ .integer = @intCast(self.currentAutomationRevision()) }) catch {
+        self.allocator.free(key);
+        return command_mod.Response.fail("internal", "oom");
+    };
+    return .ok(.{ .object = object });
+}
+
+fn execWaitRevision(self: *App, request: command_mod.Request) command_mod.Response {
+    const revision = request.revision orelse return command_mod.Response.fail("invalid_args", "missing revision");
+    const timeout_ms = @min(request.timeout_ms orelse 250, 250);
+    return switch (self.waitForAutomationRevision(revision, timeout_ms)) {
+        .changed => revisionResponse(self),
+        .timeout => command_mod.Response.fail("timeout", "revision did not change before timeout"),
+        .shutting_down => command_mod.Response.fail("shutting_down", "Hollow is shutting down"),
+    };
+}
+
+fn execUiClick(self: *App, request: command_mod.Request) command_mod.Response {
+    const node_id = request.node_id orelse return command_mod.Response.fail("invalid_args", "missing UI node id");
+    const surface = if (request.surface) |value|
+        ui_semantics.Surface.parse(value) orelse return command_mod.Response.fail("invalid_args", "invalid UI surface")
+    else
+        null;
+    return switch (self.clickUiNode(node_id, surface, request.generation)) {
+        .clicked => revisionResponse(self),
+        .unavailable => command_mod.Response.fail("ui_unavailable", "UI snapshot is not available"),
+        .stale => command_mod.Response.fail("stale_ui", "UI generation changed"),
+        .unknown => command_mod.Response.fail("unknown_ui_node", "UI node was not found"),
+        .ambiguous => command_mod.Response.fail("ambiguous_ui_node", "UI node id exists on multiple surfaces; specify surface"),
+        .not_actionable => command_mod.Response.fail("ui_node_not_actionable", "UI node does not support click"),
+    };
 }
 
 fn execWorkspaceNew(self: *App, request: command_mod.Request) command_mod.Response {
@@ -650,12 +702,16 @@ fn execWorkspaceClose(self: *App, request: command_mod.Request) command_mod.Resp
 }
 
 fn execWorkspaceNext(self: *App) command_mod.Response {
-    mux_ops.nextWorkspace(self, );
+    mux_ops.nextWorkspace(
+        self,
+    );
     return okNull();
 }
 
 fn execWorkspacePrev(self: *App) command_mod.Response {
-    mux_ops.prevWorkspace(self, );
+    mux_ops.prevWorkspace(
+        self,
+    );
     return okNull();
 }
 
@@ -685,18 +741,24 @@ fn execTabClose(self: *App, request: command_mod.Request) command_mod.Response {
         const index = mux_ops.tabIndexById(self, tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
         mux_ops.closeTabAt(self, index);
     } else {
-        mux_ops.closeTab(self, );
+        mux_ops.closeTab(
+            self,
+        );
     }
     return okNull();
 }
 
 fn execTabNext(self: *App) command_mod.Response {
-    mux_ops.nextTab(self, );
+    mux_ops.nextTab(
+        self,
+    );
     return okNull();
 }
 
 fn execTabPrev(self: *App) command_mod.Response {
-    mux_ops.prevTab(self, );
+    mux_ops.prevTab(
+        self,
+    );
     return okNull();
 }
 
@@ -724,7 +786,8 @@ fn execPaneClose(self: *App, request: command_mod.Request) command_mod.Response 
 fn execPaneSplit(self: *App, request: command_mod.Request) command_mod.Response {
     const direction_text = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
     const direction = parseSplitDirection(direction_text) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
-    mux_ops.splitPane(self, 
+    mux_ops.splitPane(
+        self,
         direction,
         @floatCast(request.ratio orelse 0.5),
         request.domain,
@@ -745,7 +808,8 @@ fn execPaneSplit(self: *App, request: command_mod.Request) command_mod.Response 
 
 fn execPanePopup(self: *App, request: command_mod.Request) command_mod.Response {
     const cmd = request.cmd orelse return command_mod.Response.fail("invalid_args", "missing popup command");
-    mux_ops.splitPane(self, 
+    mux_ops.splitPane(
+        self,
         .vertical,
         0.5,
         request.domain,
@@ -830,9 +894,13 @@ fn execFocus(self: *App, request: command_mod.Request) command_mod.Response {
 fn execScroll(self: *App, request: command_mod.Request) command_mod.Response {
     const target = request.direction orelse return command_mod.Response.fail("invalid_args", "missing scroll target");
     if (std.mem.eql(u8, target, "top")) {
-        mux_ops.scrollActiveViewportTop(self, );
+        mux_ops.scrollActiveViewportTop(
+            self,
+        );
     } else if (std.mem.eql(u8, target, "bottom")) {
-        mux_ops.scrollActiveViewportBottom(self, );
+        mux_ops.scrollActiveViewportBottom(
+            self,
+        );
     } else if (std.mem.eql(u8, target, "page-up")) {
         mux_ops.scrollActiveViewportPage(self, -1);
     } else if (std.mem.eql(u8, target, "page-down")) {

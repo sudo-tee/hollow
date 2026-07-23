@@ -43,6 +43,7 @@ const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
 const bar = @import("ui/bar.zig");
+const ui_semantics = @import("ui/semantics.zig");
 const ConfigWatcher = @import("config_watcher.zig").ConfigWatcher;
 const selection = @import("selection.zig");
 const terminal_callbacks = @import("app/terminal_callbacks.zig");
@@ -95,6 +96,21 @@ pub const CopyModeMoveKind = enum {
 pub const PromptJumpDir = enum {
     prev,
     next,
+};
+
+pub const AutomationWaitResult = enum {
+    changed,
+    timeout,
+    shutting_down,
+};
+
+pub const UiClickResult = enum {
+    clicked,
+    unavailable,
+    stale,
+    unknown,
+    ambiguous,
+    not_actionable,
 };
 
 fn viewportIteratorRowIndex(visual_row: usize, visible_rows: usize) ?usize {
@@ -215,6 +231,20 @@ pub fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void
     }
 }
 
+fn putJsonField(allocator: std.mem.Allocator, object: *std.json.ObjectMap, key: []const u8, value: std.json.Value) !void {
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+    errdefer deinitJsonValue(allocator, value);
+    try object.put(owned_key, value);
+}
+
+fn appendJsonValue(allocator: std.mem.Allocator, array: *std.json.Array, value: std.json.Value) !void {
+    array.append(value) catch |err| {
+        deinitJsonValue(allocator, value);
+        return err;
+    };
+}
+
 pub fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?std.json.Value {
     const value = jsonObjectValue(object, key) orelse return null;
     return try cloneJsonValue(allocator, value);
@@ -325,6 +355,12 @@ pub const App = struct {
     command_ready: std.Thread.Condition = .{},
     command_done: std.Thread.Condition = .{},
     pending_command: ?*cmd_ipc.PendingCommandRequest = null,
+    automation_mutex: std.Thread.Mutex = .{},
+    automation_changed: std.Thread.Condition = .{},
+    automation_revision: u64 = 1,
+    automation_shutting_down: bool = false,
+    ui_semantic_mutex: std.Thread.Mutex = .{},
+    ui_semantic_store: ui_semantics.Store = .{},
     leader_visual_active: bool = false,
     leader_visual_expires_at_ns: i128 = 0,
     topbar_cache_visible: bool = false,
@@ -370,6 +406,65 @@ pub const App = struct {
         var ev: input.PendingInputEvent = .{ .char = .{ .bytes = [_]u8{0} ** 5, .len = @intCast(bytes.len) } };
         fastmem.copy(u8, ev.char.bytes[0..bytes.len], bytes);
         return self.enqueueMouse(ev);
+    }
+
+    pub fn currentAutomationRevision(self: *App) u64 {
+        self.automation_mutex.lock();
+        defer self.automation_mutex.unlock();
+        return self.automation_revision;
+    }
+
+    pub fn markAutomationChanged(self: *App) void {
+        self.automation_mutex.lock();
+        defer self.automation_mutex.unlock();
+        if (self.automation_shutting_down) return;
+        if (self.automation_revision < std.math.maxInt(i64)) self.automation_revision += 1;
+        self.automation_changed.broadcast();
+    }
+
+    pub fn waitForAutomationRevision(self: *App, revision: u64, timeout_ms: u64) AutomationWaitResult {
+        self.automation_mutex.lock();
+        defer self.automation_mutex.unlock();
+
+        if (self.automation_revision > revision) return .changed;
+        if (self.automation_shutting_down) return .shutting_down;
+        if (timeout_ms == 0) return .timeout;
+
+        const timeout_ns = timeout_ms *| std.time.ns_per_ms;
+        const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(timeout_ns));
+        while (self.automation_revision <= revision and !self.automation_shutting_down) {
+            const now = std.time.nanoTimestamp();
+            if (now >= deadline) return .timeout;
+            const remaining: u64 = @intCast(deadline - now);
+            self.automation_changed.timedWait(&self.automation_mutex, remaining) catch return .timeout;
+        }
+        return if (self.automation_shutting_down) .shutting_down else .changed;
+    }
+
+    pub fn beginUiSemanticFrame(self: *App) void {
+        self.ui_semantic_mutex.lock();
+        defer self.ui_semantic_mutex.unlock();
+        self.ui_semantic_store.begin();
+    }
+
+    pub fn appendUiSemanticNode(self: *App, surface: ui_semantics.Surface, role: ui_semantics.Role, clickable: bool, id: []const u8, label: []const u8, bounds: ui_semantics.Bounds) void {
+        self.ui_semantic_mutex.lock();
+        defer self.ui_semantic_mutex.unlock();
+        self.ui_semantic_store.append(surface, role, clickable, id, label, bounds);
+    }
+
+    pub fn publishUiSemanticFrame(self: *App) void {
+        self.ui_semantic_mutex.lock();
+        const changed = self.ui_semantic_store.publish();
+        self.ui_semantic_mutex.unlock();
+        if (changed) self.markAutomationChanged();
+    }
+
+    pub fn invalidateUiSemanticFrame(self: *App) void {
+        self.ui_semantic_mutex.lock();
+        const changed = self.ui_semantic_store.invalidate();
+        self.ui_semantic_mutex.unlock();
+        if (changed) self.markAutomationChanged();
     }
 
     pub fn currentPaneIdValue(self: *App) usize {
@@ -459,6 +554,180 @@ pub const App = struct {
         defer self.allocator.free(buf);
         const text = self.getPaneText(pane_id, buf);
         return .{ .string = try self.allocator.dupe(u8, text) };
+    }
+
+    fn screenLineValue(self: *App, row: usize, text: []const u8) !std.json.Value {
+        var line = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = line });
+        try putJsonField(self.allocator, &line, "row", .{ .integer = @intCast(row) });
+        try putJsonField(self.allocator, &line, "text", .{ .string = try dupeJsonSafeString(self.allocator, text) });
+        return .{ .object = line };
+    }
+
+    fn screenLinesValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane, rows: u16, cols: u16) !std.json.Value {
+        var lines = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = lines });
+        const row_buffer = try self.allocator.alloc(u8, @max(@as(usize, cols) * 64, 1));
+        defer self.allocator.free(row_buffer);
+
+        var iterator_index: usize = 0;
+        while (iterator_index < rows and runtime.nextRow(pane.row_iterator)) : (iterator_index += 1) {
+            if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
+            var row_len: usize = 0;
+            while (runtime.nextCell(pane.row_cells)) {
+                text_helpers.appendCellText(runtime, pane.row_cells, row_buffer, &row_len);
+            }
+            while (row_len > 0 and row_buffer[row_len - 1] == ' ') row_len -= 1;
+            const visual_row = viewportIteratorRowIndex(iterator_index, rows) orelse continue;
+            try appendJsonValue(self.allocator, &lines, try self.screenLineValue(visual_row, row_buffer[0..row_len]));
+        }
+
+        if (builtin.os.tag == .linux) {
+            std.mem.reverse(std.json.Value, lines.items);
+        }
+        return .{ .array = lines };
+    }
+
+    fn cursorPositionValue(self: *App, row: u16, col: u16) !std.json.Value {
+        var point = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = point });
+        try putJsonField(self.allocator, &point, "row", .{ .integer = row });
+        try putJsonField(self.allocator, &point, "col", .{ .integer = col });
+        return .{ .object = point };
+    }
+
+    fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !std.json.Value {
+        var cursor = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = cursor });
+        if (runtime.cursorPos(pane.render_state)) |position| {
+            try putJsonField(self.allocator, &cursor, "position", try self.cursorPositionValue(position.y, position.x));
+        } else {
+            try putJsonField(self.allocator, &cursor, "position", .null);
+        }
+        try putJsonField(self.allocator, &cursor, "visible", .{ .bool = runtime.cursorVisible(pane.render_state) });
+        try putJsonField(self.allocator, &cursor, "blinking", .{ .bool = runtime.cursorBlinking(pane.render_state) });
+        try putJsonField(self.allocator, &cursor, "password_input", .{ .bool = runtime.cursorPasswordInput(pane.render_state) });
+        try putJsonField(self.allocator, &cursor, "wide_tail", .{ .bool = runtime.cursorWideTail(pane.render_state) });
+        try putJsonField(self.allocator, &cursor, "style", .{ .string = try self.allocator.dupe(u8, @tagName(runtime.cursorVisualStyle(pane.render_state))) });
+        return .{ .object = cursor };
+    }
+
+    pub fn paneScreenValue(self: *App, pane_id: usize) !?std.json.Value {
+        const runtime = if (self.ghostty) |*value| value else return null;
+        const pane = if (pane_id == 0) self.activePane() orelse return null else self.findPaneById(pane_id) orelse return null;
+        if (!paneRenderHelpersReady(pane)) return null;
+
+        const rows = runtime.renderStateRows(pane.render_state) orelse pane.rows;
+        const cols = runtime.renderStateCols(pane.render_state) orelse pane.cols;
+        if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
+
+        var screen = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = screen });
+        try putJsonField(self.allocator, &screen, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
+        try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(@intFromPtr(pane)) });
+        try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
+        try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
+        try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
+        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
+        try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, pane));
+        try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, pane, rows, cols));
+        return .{ .object = screen };
+    }
+
+    fn uiBoundsValue(self: *App, bounds_value: ui_semantics.Bounds) !std.json.Value {
+        var bounds = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = bounds });
+        try putJsonField(self.allocator, &bounds, "x", .{ .float = bounds_value.x });
+        try putJsonField(self.allocator, &bounds, "y", .{ .float = bounds_value.y });
+        try putJsonField(self.allocator, &bounds, "width", .{ .float = bounds_value.width });
+        try putJsonField(self.allocator, &bounds, "height", .{ .float = bounds_value.height });
+        return .{ .object = bounds };
+    }
+
+    fn uiActionsValue(self: *App, clickable: bool) !std.json.Value {
+        var actions = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = actions });
+        if (clickable) try appendJsonValue(self.allocator, &actions, .{ .string = try self.allocator.dupe(u8, "click") });
+        return .{ .array = actions };
+    }
+
+    fn uiNodeValue(self: *App, node: *const ui_semantics.Node) !std.json.Value {
+        var value = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = value });
+        try putJsonField(self.allocator, &value, "id", .{ .string = try self.allocator.dupe(u8, node.id()) });
+        try putJsonField(self.allocator, &value, "name", .{ .string = try self.allocator.dupe(u8, node.label()) });
+        try putJsonField(self.allocator, &value, "surface", .{ .string = try self.allocator.dupe(u8, @tagName(node.surface)) });
+        try putJsonField(self.allocator, &value, "role", .{ .string = try self.allocator.dupe(u8, @tagName(node.role)) });
+        try putJsonField(self.allocator, &value, "bounds", try self.uiBoundsValue(node.bounds));
+        try putJsonField(self.allocator, &value, "actions", try self.uiActionsValue(node.clickable));
+        return .{ .object = value };
+    }
+
+    fn uiNodeArrayValue(self: *App, snapshot: *const ui_semantics.Snapshot) !std.json.Value {
+        var nodes = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = nodes });
+        for (snapshot.nodes[0..snapshot.len]) |*node| {
+            try appendJsonValue(self.allocator, &nodes, try self.uiNodeValue(node));
+        }
+        return .{ .array = nodes };
+    }
+
+    pub fn uiNodesValue(self: *App) !std.json.Value {
+        self.ui_semantic_mutex.lock();
+        defer self.ui_semantic_mutex.unlock();
+        const snapshot = &self.ui_semantic_store.published;
+        var result = std.json.ObjectMap.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .object = result });
+        try putJsonField(self.allocator, &result, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
+        try putJsonField(self.allocator, &result, "generation", .{ .integer = @intCast(snapshot.generation) });
+        try putJsonField(self.allocator, &result, "valid", .{ .bool = snapshot.valid });
+        try putJsonField(self.allocator, &result, "truncated", .{ .bool = snapshot.truncated });
+        try putJsonField(self.allocator, &result, "nodes", try self.uiNodeArrayValue(snapshot));
+        return .{ .object = result };
+    }
+
+    pub fn clickUiNode(self: *App, id: []const u8, surface_filter: ?ui_semantics.Surface, generation: ?u64) UiClickResult {
+        self.ui_semantic_mutex.lock();
+        const snapshot = &self.ui_semantic_store.published;
+        var result: UiClickResult = .unknown;
+        var matched_surface: ?ui_semantics.Surface = null;
+        var matched_clickable = false;
+        if (!snapshot.valid) {
+            result = .unavailable;
+        }
+        if (result == .unknown) {
+            if (generation) |expected| {
+                if (snapshot.generation != expected) result = .stale;
+            }
+        }
+
+        if (result == .unknown) {
+            for (snapshot.nodes[0..snapshot.len]) |*node| {
+                if (!std.mem.eql(u8, node.id(), id)) continue;
+                if (surface_filter) |surface| {
+                    if (node.surface != surface) continue;
+                }
+                if (matched_surface != null and matched_surface.? != node.surface) {
+                    result = .ambiguous;
+                    break;
+                }
+                matched_surface = node.surface;
+                matched_clickable = matched_clickable or node.clickable;
+            }
+            if (result == .unknown and matched_surface != null) result = if (matched_clickable) .clicked else .not_actionable;
+        }
+        self.ui_semantic_mutex.unlock();
+
+        if (result != .clicked) return result;
+        const surface = matched_surface.?;
+
+        switch (surface) {
+            .topbar => self.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = id } }),
+            .bottombar => self.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = id } }),
+            .overlay => self.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = id } }),
+        }
+        self.markAutomationChanged();
+        return .clicked;
     }
 
     pub fn snapshotTab(self: *App, tab: *Tab, index: usize) !std.json.Value {
@@ -590,6 +859,11 @@ pub const App = struct {
         if (!self.lifecycle.beginRuntimeShutdown()) return;
         defer self.lifecycle.finishRuntimeShutdown();
         std.log.info("App.shutdownRuntime begin", .{});
+
+        self.automation_mutex.lock();
+        self.automation_shutting_down = true;
+        self.automation_changed.broadcast();
+        self.automation_mutex.unlock();
 
         if (self.command_ipc_server) |*server| {
             server.deinit();
@@ -1851,6 +2125,7 @@ pub const App = struct {
 
     fn tickPanes(self: *App, runtime: *GhosttyRuntime) !void {
         var has_dead = false;
+        var automation_changed = false;
         var next_idle_render_poll_ns: i128 = 0;
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
@@ -1879,6 +2154,7 @@ pub const App = struct {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                 };
                 if (pane.active_screen != active_screen_before) {
+                    automation_changed = true;
                     std.log.info("app: pane screen changed pane={x} {d}->{d}, resizing layout", .{
                         @intFromPtr(pane),
                         active_screen_before,
@@ -1894,6 +2170,7 @@ pub const App = struct {
                     self.requestLayoutResize(false);
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
+                if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty) automation_changed = true;
                 total_pty_read_ns += pane.last_pty_read_ns;
                 total_terminal_write_ns += pane.last_terminal_write_ns;
                 total_terminal_write_bytes += pane.last_terminal_write_bytes;
@@ -2099,6 +2376,7 @@ pub const App = struct {
                 self.requestLayoutResize(false);
             }
         }
+        if (automation_changed) self.markAutomationChanged();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
     }
 

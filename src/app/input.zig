@@ -263,7 +263,9 @@ pub fn deinitInputQueue(self: *App) void {
 /// Drain all pending events and dispatch them.  Called from tick()
 /// on the frame thread, where it is safe to call into the ghostty DLL.
 pub fn processInputQueue(self: *App) void {
+    var processed_event = false;
     while (self.action_queue.pop()) |queued| {
+        processed_event = true;
         var ev = queued;
         defer deinitPendingInputEvent(self.allocator, &ev);
 
@@ -559,6 +561,8 @@ pub fn processInputQueue(self: *App) void {
             },
         }
     }
+
+    if (processed_event) self.markAutomationChanged();
 
     cmd_ipc.drainPendingCommand(self);
 }

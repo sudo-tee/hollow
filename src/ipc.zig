@@ -21,6 +21,7 @@ pub const Server = struct {
     wake_stream: ?std.net.Stream = null,
     listen_address: ?std.net.Address = null,
     listen_address_text: ?[]u8 = null,
+    address_file_path: ?[]u8 = null,
     started: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, app: *anyopaque, handler: *const fn (app: *anyopaque, request: command.Request) command.Response) Server {
@@ -33,6 +34,7 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         self.stop();
+        if (self.address_file_path) |value| self.allocator.free(value);
         if (self.listen_address_text) |value| self.allocator.free(value);
     }
 
@@ -59,6 +61,9 @@ pub const Server = struct {
 
         self.thread = try std.Thread.spawn(.{}, acceptLoop, .{ self, listener });
         self.started = true;
+        self.publishAddress() catch |err| {
+            std.log.warn("command-ipc: failed to publish address: {s}", .{@errorName(err)});
+        };
     }
 
     pub fn stop(self: *Server) void {
@@ -74,6 +79,7 @@ pub const Server = struct {
             self.wake_stream = null;
         }
         if (self.thread) |thread| thread.join();
+        self.unpublishAddress();
         self.thread = null;
         self.listen_address = null;
         self.started = false;
@@ -81,6 +87,38 @@ pub const Server = struct {
 
     pub fn address(self: *const Server) ?[]const u8 {
         return self.listen_address_text;
+    }
+
+    fn publishAddress(self: *Server) !void {
+        const address_text = self.listen_address_text orelse return;
+        if (self.address_file_path) |old_path| {
+            self.allocator.free(old_path);
+            self.address_file_path = null;
+        }
+        const path = try addressFilePath(self.allocator);
+        errdefer self.allocator.free(path);
+        const temp_path = try std.fmt.allocPrint(self.allocator, "{s}.{d}.tmp", .{ path, std.time.nanoTimestamp() });
+        defer self.allocator.free(temp_path);
+        errdefer std.fs.deleteFileAbsolute(temp_path) catch {};
+
+        {
+            const file = try std.fs.createFileAbsolute(temp_path, .{});
+            defer file.close();
+            try file.writeAll(address_text);
+            try file.writeAll("\n");
+            try file.sync();
+        }
+        try replaceFileAtomic(self.allocator, temp_path, path);
+        self.address_file_path = path;
+    }
+
+    fn unpublishAddress(self: *Server) void {
+        const path = self.address_file_path orelse return;
+        const address_text = self.listen_address_text orelse return;
+        const current = readAddressFileAtPath(self.allocator, path) catch return;
+        defer self.allocator.free(current);
+        if (!std.mem.eql(u8, current, address_text)) return;
+        std.fs.deleteFileAbsolute(path) catch {};
     }
 
     fn wakeAcceptLoop(self: *Server) void {
@@ -136,10 +174,50 @@ pub const Server = struct {
     }
 };
 
+fn addressFilePath(allocator: std.mem.Allocator) ![]u8 {
+    const runtime_dir = try platform.ensureHollowRuntimeDir(allocator);
+    defer allocator.free(runtime_dir);
+    return std.fs.path.join(allocator, &.{ runtime_dir, "command-ipc-address" });
+}
+
+fn replaceFileAtomic(allocator: std.mem.Allocator, source: []const u8, destination: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        const source_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, source);
+        defer allocator.free(source_w);
+        const destination_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, destination);
+        defer allocator.free(destination_w);
+        const MOVEFILE_REPLACE_EXISTING: windows.DWORD = 0x1;
+        const MOVEFILE_WRITE_THROUGH: windows.DWORD = 0x8;
+        if (windows.kernel32.MoveFileExW(source_w.ptr, destination_w.ptr, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == windows.FALSE) {
+            return error.AtomicReplaceFailed;
+        }
+        return;
+    }
+    try std.fs.renameAbsolute(source, destination);
+}
+
+fn readAddressFileAtPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 1024);
+    defer allocator.free(contents);
+    const address = std.mem.trim(u8, contents, " \t\r\n");
+    if (address.len == 0) return error.CommandAddrUnavailable;
+    return allocator.dupe(u8, address);
+}
+
+fn resolveAddress(allocator: std.mem.Allocator) ![]u8 {
+    return std.process.getEnvVarOwned(allocator, EnvVar) catch {
+        const path = addressFilePath(allocator) catch return error.CommandAddrUnavailable;
+        defer allocator.free(path);
+        return readAddressFileAtPath(allocator, path) catch return error.CommandAddrUnavailable;
+    };
+}
+
 pub fn send(allocator: std.mem.Allocator, request: command.Request, timeout_ms: u64) !command.Response {
     const timing_enabled = commandTimingEnabled();
     const total_start_ns = if (timing_enabled) std.time.nanoTimestamp() else 0;
-    const addr_text = std.process.getEnvVarOwned(allocator, EnvVar) catch return error.CommandAddrUnavailable;
+    const addr_text = try resolveAddress(allocator);
     defer allocator.free(addr_text);
 
     const connect_start_ns = if (timing_enabled) std.time.nanoTimestamp() else 0;
@@ -227,6 +305,11 @@ fn encodeRequest(allocator: std.mem.Allocator, request: command.Request) ![]u8 {
         .tag = request.tag,
         .tags = request.tags,
         .channel = request.channel,
+        .surface = request.surface,
+        .node_id = request.node_id,
+        .generation = request.generation,
+        .revision = request.revision,
+        .timeout_ms = request.timeout_ms,
         .params = request.params,
         .payload = request.payload,
     }, .{}, &writer.writer);
@@ -356,4 +439,14 @@ fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?std.json.Value {
     const value = object.get(key) orelse return null;
     return try command.cloneJsonValue(allocator, value);
+}
+
+test "encoded request round trips absent automation fields" {
+    const payload = try encodeRequest(std.testing.allocator, .{ .kind = .get_revision });
+    defer std.testing.allocator.free(payload);
+    var parsed = try command.parseEnvelope(std.testing.allocator, payload);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(command.Kind.get_revision, parsed.request.kind);
+    try std.testing.expect(parsed.request.revision == null);
+    try std.testing.expect(parsed.request.generation == null);
 }

@@ -8,6 +8,7 @@ const App = @import("../app.zig").App;
 const lua_mod = @import("../lua_bridge.zig");
 const ghostty = @import("../term/ghostty.zig");
 const bar = @import("../ui/bar.zig");
+const ui_semantics = @import("../ui/semantics.zig");
 const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const SplitNode = @import("../mux.zig").SplitNode;
@@ -1102,6 +1103,47 @@ fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, 
     return api.to_boolean(state, -1) != 0;
 }
 
+fn overlayRowStringField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?[]const u8 {
+    api.get_field(state, row_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, -1, &len) orelse return null;
+    return ptr[0..len];
+}
+
+fn overlaySegmentsLabel(segments: []const bar.Segment, out: []u8) []const u8 {
+    var len: usize = 0;
+    for (segments) |segment| {
+        if (segment.spacer or segment.text.len == 0 or len == out.len) continue;
+        const copy_len = @min(segment.text.len, out.len - len);
+        fastmem.copy(u8, out[len .. len + copy_len], segment.text[0..copy_len]);
+        len += copy_len;
+    }
+    return out[0..len];
+}
+
+fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32) void {
+    if (!g_overlay_hit_cache.enabled or id.len == 0 or width <= 0 or height <= 0) return;
+    if (g_overlay_hit_cache.hit_count >= g_overlay_hit_cache.hits.len) return;
+    g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
+        .x = x,
+        .width = width,
+        .y = y,
+        .height = height,
+        .node_id = id,
+    };
+    g_overlay_hit_cache.hit_count += 1;
+    if (g_widget_render_ctx) |ctx| {
+        ctx.app.appendUiSemanticNode(.overlay, .button, true, id, label, .{
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        });
+    }
+}
+
 fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
     const cell_h = @max(@as(f32, 1.0), renderer.cell_h - 2.0);
     var right_w: f32 = 0;
@@ -1140,20 +1182,7 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         renderer.drawLabelFace(seg_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
-        if (g_overlay_hit_cache.enabled) {
-            if (seg.id) |id| {
-                if (g_overlay_hit_cache.hit_count < g_overlay_hit_cache.hits.len) {
-                    g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
-                        .x = seg_x,
-                        .width = seg_w,
-                        .y = bg_y,
-                        .height = cell_h,
-                        .node_id = id,
-                    };
-                    g_overlay_hit_cache.hit_count += 1;
-                }
-            }
-        }
+        if (seg.id) |id| cacheOverlayHitRegion(id, seg.text, seg_x, bg_y, seg_w, cell_h);
     }
 }
 
@@ -1923,6 +1952,16 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         drawRectOutline(panel_x, panel_y, panel_w, panel_h, panel_border_size, panel_border.r, panel_border.g, panel_border.b, 255);
                     }
                 }
+                var panel_id_buf: [64]u8 = undefined;
+                const panel_id = std.fmt.bufPrint(&panel_id_buf, "overlay:{d}", .{stack_i}) catch "overlay";
+                var panel_name_buf: [64]u8 = undefined;
+                const panel_name = std.fmt.bufPrint(&panel_name_buf, "Overlay {d}", .{stack_i}) catch "Overlay";
+                ctx.app.appendUiSemanticNode(.overlay, .dialog, false, panel_id, panel_name, .{
+                    .x = panel_x,
+                    .y = panel_y,
+                    .width = panel_w,
+                    .height = panel_h,
+                });
 
                 var row_i: c_int = 1;
                 while (true) : (row_i += 1) {
@@ -1943,6 +1982,20 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_scrollbar_track_color = overlayRowColorField(api, state, row_idx, "scrollbar_track_color") orelse ghostty.ColorRgb{ .r = 90, .g = 99, .b = 117 };
                         const row_scrollbar_thumb_color = overlayRowColorField(api, state, row_idx, "scrollbar_thumb_color") orelse panel_border;
                         const row_x = content_x;
+                        var label_buf: [ui_semantics.max_label_len]u8 = undefined;
+                        const label = overlaySegmentsLabel(row_segments, &label_buf);
+                        if (overlayRowStringField(api, state, row_idx, "id")) |id| {
+                            cacheOverlayHitRegion(id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
+                        } else {
+                            var row_id_buf: [64]u8 = undefined;
+                            const row_id = std.fmt.bufPrint(&row_id_buf, "overlay:{d}:row:{d}", .{ stack_i, row_i }) catch "overlay:row";
+                            ctx.app.appendUiSemanticNode(.overlay, .listitem, false, row_id, label, .{
+                                .x = row_x,
+                                .y = text_y + 1.0,
+                                .width = row_w,
+                                .height = @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0),
+                            });
+                        }
                         if (row_fill_bg) |bg| {
                             drawBorderRect(row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 255);
                         }
@@ -2097,6 +2150,17 @@ fn cacheBarHitRegion(cache: *BarCache, x: f32, width: f32, close_x: ?f32, close_
         .node_id = node_id,
     };
     cache.hit_count += 1;
+    if (node_id) |id| {
+        if (g_widget_render_ctx) |ctx| {
+            const surface: ui_semantics.Surface = if (cache == &g_top_bar_cache) .topbar else .bottombar;
+            ctx.app.appendUiSemanticNode(surface, .button, true, id, "", .{
+                .x = x,
+                .y = cache.y,
+                .width = width,
+                .height = cache.height,
+            });
+        }
+    }
 }
 
 fn hitTestBar(cache: *const BarCache, surface: BarSurface, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
@@ -2682,6 +2746,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         // Sokol's cleanup callback, otherwise PTY/process shutdown can stall
         // the live window and leave it in a "Not Responding" state.
         c.sapp_request_quit();
+        app.invalidateUiSemanticFrame();
         c.sapp_skip_present();
         return;
     }
@@ -2717,6 +2782,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
+        app.invalidateUiSemanticFrame();
         c.sapp_skip_present();
         return;
     }
@@ -2725,6 +2791,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const width = fb.width;
     const height = fb.height;
     if (width <= 0 or height <= 0) {
+        app.invalidateUiSemanticFrame();
         c.sapp_skip_present();
         return;
     }
@@ -3568,6 +3635,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const bbh_u = app.bottomBarHeight();
     resetBarCache(&g_top_bar_cache, width, 0.0, @floatFromInt(tbh_u));
     resetBarCache(&g_bottom_bar_cache, width, height - @as(f32, @floatFromInt(bbh_u)), @floatFromInt(bbh_u));
+    app.beginUiSemanticFrame();
     if (g_ft_renderer) |*renderer| {
         const fw: i32 = @intFromFloat(width);
         const fh: i32 = @intFromFloat(height);
@@ -3606,6 +3674,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
         }
+    }
+    if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
+        app.invalidateUiSemanticFrame();
+    } else {
+        app.publishUiSemanticFrame();
     }
 
     // Flush all queued geometry — exactly once per frame.
@@ -4162,6 +4235,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // restore (any pending key-ups went to another window).
                 g_released_mods = 0;
                 @atomicStore(bool, &g_window_iconified, true, .release);
+                app.invalidateUiSemanticFrame();
             },
             c.SAPP_EVENTTYPE_RESTORED => {
                 @atomicStore(bool, &g_window_iconified, false, .release);
@@ -4195,6 +4269,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // restore (any pending key-ups went to another window).
             g_released_mods = 0;
             @atomicStore(bool, &g_window_iconified, true, .release);
+            app.invalidateUiSemanticFrame();
         },
         c.SAPP_EVENTTYPE_RESTORED => {
             @atomicStore(bool, &g_window_iconified, false, .release);

@@ -15,7 +15,7 @@ ui.overlay = ui.overlay or {}
 ---@param row HollowUiRow
 ---@return HollowUiOverlaySerializedRow
 local function serialize_overlay_row(row)
-  local serialized = { segments = {} }
+  local serialized = { segments = {}, id = row.id }
 
   for _, node in ipairs(shared.flatten_span_nodes(ui.overlay_row.nodes(row))) do
     if node.spacer then

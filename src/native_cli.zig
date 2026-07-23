@@ -221,6 +221,8 @@ const Runner = struct {
         if (std.mem.eql(u8, command_name, "run")) return try self.executeRun(args);
         if (std.mem.eql(u8, command_name, "send-keys")) return try self.executeSendKeys(args);
         if (std.mem.eql(u8, command_name, "emit")) return try self.executeEmit(args);
+        if (std.mem.eql(u8, command_name, "ui")) return try self.executeUi(args);
+        if (std.mem.eql(u8, command_name, "wait")) return try self.executeWait(args);
         return self.failFmt("unknown command: {s}", .{command_name}, "invalid_args", 2);
     }
 
@@ -238,6 +240,19 @@ const Runner = struct {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
             return try self.printQuery(.{ .kind = .get_pane_text, .id = id });
+        }
+        if (std.mem.eql(u8, sub, "screen")) {
+            var id: ?usize = null;
+            try self.parseOnlyId(rest, &id);
+            return try self.printQuery(.{ .kind = .get_screen, .id = id });
+        }
+        if (std.mem.eql(u8, sub, "ui-nodes")) {
+            if (rest.len != 0) return self.fail("ui-nodes takes no arguments", "invalid_args", 2);
+            return try self.printQuery(.{ .kind = .get_ui_nodes });
+        }
+        if (std.mem.eql(u8, sub, "revision")) {
+            if (rest.len != 0) return self.fail("revision takes no arguments", "invalid_args", 2);
+            return try self.printQuery(.{ .kind = .get_revision });
         }
         if (std.mem.eql(u8, sub, "current-pane")) {
             if (rest.len != 0) return self.fail("current-pane takes no arguments", "invalid_args", 2);
@@ -547,6 +562,59 @@ const Runner = struct {
         if (args.len == 0 or args.len > 2) return self.fail("usage: cli emit <channel> [payload-json]", "invalid_args", 2);
         const payload = if (args.len == 2) args[1] else "{}";
         return try self.printEvent(.{ .kind = .emit, .channel = try self.allocator.dupe(u8, args[0]), .payload = try parseJsonObjectArg(self.allocator, payload, "payload") });
+    }
+
+    fn executeUi(self: *Runner, args: []const []const u8) !void {
+        if (args.len < 2 or !std.mem.eql(u8, args[0], "click")) {
+            return self.fail("usage: cli ui click <id> [--surface topbar|bottombar|overlay] [--generation N]", "invalid_args", 2);
+        }
+
+        var surface: ?[]const u8 = null;
+        var generation: ?u64 = null;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--surface")) {
+                i += 1;
+                if (i >= args.len or !isOneOf(args[i], &.{ "topbar", "bottombar", "overlay" })) return self.fail("invalid UI surface", "invalid_args", 2);
+                surface = args[i];
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--generation")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing UI generation", "invalid_args", 2);
+                generation = try std.fmt.parseInt(u64, args[i], 10);
+                continue;
+            }
+            return self.failFmt("unknown ui click option: {s}", .{args[i]}, "invalid_args", 2);
+        }
+
+        return try self.printEvent(.{
+            .kind = .ui_click,
+            .node_id = try self.allocator.dupe(u8, args[1]),
+            .surface = if (surface) |value| try self.allocator.dupe(u8, value) else null,
+            .generation = generation,
+        });
+    }
+
+    fn executeWait(self: *Runner, args: []const []const u8) !void {
+        if (args.len != 1) return self.fail("usage: cli wait <revision>", "invalid_args", 2);
+        const revision = try std.fmt.parseInt(u64, args[0], 10);
+        const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(self.options.timeout_ms *| std.time.ns_per_ms));
+        while (true) {
+            const now = std.time.nanoTimestamp();
+            if (now >= deadline) return self.fail("timed out waiting for revision change", "timeout", 1);
+            const remaining_ms: u64 = @intCast(@max(@as(i128, 1), @divFloor(deadline - now, std.time.ns_per_ms)));
+            var reply = try self.sendRequest(.{
+                .kind = .wait_revision,
+                .revision = revision,
+                .timeout_ms = @min(remaining_ms, 250),
+            });
+            defer reply.deinit(self.allocator);
+            if (reply.success) return try self.emitOutput(&reply, true);
+            if (!std.mem.eql(u8, reply.status, "timeout")) {
+                return self.failFmt("{s}", .{reply.error_message orelse "revision wait failed"}, "wait_error", 1);
+            }
+        }
     }
 
     fn printQuery(self: *Runner, request: command.Request) !void {
@@ -917,9 +985,8 @@ const Runner = struct {
 };
 
 fn helpText() []const u8 {
-    return
-        "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
-        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit\n";
+    return "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
+        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, ui, wait\n";
 }
 
 fn emptyObject(allocator: std.mem.Allocator) ![]u8 {
@@ -1028,7 +1095,7 @@ fn parseFloatArg(text: []const u8, _: []const u8) !f64 {
 
 fn parseTimeoutMs(text: []const u8) !u64 {
     const seconds = try std.fmt.parseFloat(f64, text);
-    if (seconds < 0) return error.InvalidTimeout;
+    if (!std.math.isFinite(seconds) or seconds < 0 or seconds > 300) return error.InvalidTimeout;
     return @intFromFloat(seconds * 1000.0);
 }
 
@@ -1044,6 +1111,13 @@ fn firstOptionIndex(args: []const []const u8) usize {
         if (std.mem.startsWith(u8, arg, "--")) return index;
     }
     return args.len;
+}
+
+test "timeout parser rejects non-finite and excessive values" {
+    try std.testing.expectError(error.InvalidTimeout, parseTimeoutMs("nan"));
+    try std.testing.expectError(error.InvalidTimeout, parseTimeoutMs("inf"));
+    try std.testing.expectError(error.InvalidTimeout, parseTimeoutMs("301"));
+    try std.testing.expectEqual(@as(u64, 1500), try parseTimeoutMs("1.5"));
 }
 
 fn resizeDelta(direction: []const u8, amount: f64) f64 {

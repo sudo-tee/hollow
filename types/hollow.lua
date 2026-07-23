@@ -578,6 +578,7 @@
 ---@field align? "left"|"right"
 
 ---@class HollowUiOverlayRowOptions
+---@field id? string
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track? boolean
@@ -587,6 +588,7 @@
 
 ---@class HollowUiOverlayRow
 ---@field _overlay_row true
+---@field id? string
 ---@field nodes HollowUiRenderableNode[]
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor

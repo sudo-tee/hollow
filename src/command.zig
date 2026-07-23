@@ -3,6 +3,9 @@ const std = @import("std");
 pub const Kind = enum {
     get_pane,
     get_pane_text,
+    get_screen,
+    get_ui_nodes,
+    get_revision,
     get_current_pane,
     get_tab,
     get_current_tab,
@@ -38,6 +41,8 @@ pub const Kind = enum {
     pane_remove_tag,
     pane_set_tags,
     send_keys,
+    ui_click,
+    wait_revision,
     focus,
     scroll,
     config_reload,
@@ -82,6 +87,11 @@ pub const Request = struct {
     tag: ?[]const u8 = null,
     tags: ?[]const []const u8 = null,
     channel: ?[]const u8 = null,
+    surface: ?[]const u8 = null,
+    node_id: ?[]const u8 = null,
+    generation: ?u64 = null,
+    revision: ?u64 = null,
+    timeout_ms: ?u64 = null,
     params: ?std.json.Value = null,
     payload: ?std.json.Value = null,
 
@@ -94,6 +104,8 @@ pub const Request = struct {
         if (self.text) |value| allocator.free(value);
         if (self.tag) |value| allocator.free(value);
         if (self.channel) |value| allocator.free(value);
+        if (self.surface) |value| allocator.free(value);
+        if (self.node_id) |value| allocator.free(value);
         if (self.tags) |values| {
             for (values) |value| allocator.free(value);
             allocator.free(values);
@@ -236,6 +248,7 @@ pub fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void
 
 fn requestFromObject(allocator: std.mem.Allocator, root: std.json.ObjectMap, kind_text: []const u8) !Request {
     var request = Request{ .kind = try parseKind(kind_text) };
+    errdefer request.deinit(allocator);
     request.pane_id = jsonObjectIndex(root, "pane_id") orelse 0;
     request.id = jsonObjectIndex(root, "id");
     request.index = jsonObjectIndex(root, "index");
@@ -254,6 +267,11 @@ fn requestFromObject(allocator: std.mem.Allocator, root: std.json.ObjectMap, kin
     request.text = try jsonObjectStringOwned(allocator, root, "text");
     request.tag = try jsonObjectStringOwned(allocator, root, "tag");
     request.channel = try jsonObjectStringOwned(allocator, root, "channel");
+    request.surface = try jsonObjectStringOwned(allocator, root, "surface");
+    request.node_id = try jsonObjectStringOwned(allocator, root, "node_id");
+    request.generation = try jsonObjectU64(root, "generation");
+    request.revision = try jsonObjectU64(root, "revision");
+    request.timeout_ms = try jsonObjectU64(root, "timeout_ms");
     request.params = try jsonObjectValueClone(allocator, root, "params");
     request.payload = try jsonObjectValueClone(allocator, root, "payload");
     request.tags = try jsonObjectStringArrayClone(allocator, root, "tags");
@@ -320,6 +338,15 @@ fn jsonObjectIndex(object: std.json.ObjectMap, key: []const u8) ?usize {
     };
 }
 
+fn jsonObjectU64(object: std.json.ObjectMap, key: []const u8) !?u64 {
+    const value = object.get(key) orelse return null;
+    return switch (value) {
+        .null => null,
+        .integer => |n| if (n >= 0) @intCast(n) else error.InvalidCommandEnvelope,
+        else => error.InvalidCommandEnvelope,
+    };
+}
+
 fn jsonObjectFloat(object: std.json.ObjectMap, key: []const u8) ?f64 {
     const value = object.get(key) orelse return null;
     return switch (value) {
@@ -346,4 +373,16 @@ test "parseEnvelope loads command envelope" {
 test "parseEnvelope rejects mixed tags without invalid cleanup" {
     const text = "{\"kind\":\"pane_set_tags\",\"tags\":[\"one\",1]}";
     try std.testing.expectError(error.InvalidCommandEnvelope, parseEnvelope(std.testing.allocator, text));
+}
+
+test "parseEnvelope requires integer automation fields" {
+    try std.testing.expectError(error.InvalidCommandEnvelope, parseEnvelope(std.testing.allocator, "{\"kind\":\"wait_revision\",\"revision\":1.0,\"timeout_ms\":100}"));
+}
+
+test "parseEnvelope accepts null optional automation fields" {
+    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"get_revision\",\"revision\":null,\"generation\":null,\"timeout_ms\":null}");
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.request.revision == null);
+    try std.testing.expect(parsed.request.generation == null);
+    try std.testing.expect(parsed.request.timeout_ms == null);
 }
