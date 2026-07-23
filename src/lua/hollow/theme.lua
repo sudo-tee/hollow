@@ -198,7 +198,8 @@ local function create_ui(spec, palette)
   scrollbar.thumb_active = color_or(scrollbar.thumb_active, palette.bright_blue)
   scrollbar.border = color_or(scrollbar.border, palette.background)
 
-  ui.split_active = color_or(ui.split_active, palette.magenta)
+  ui.split_active =
+    color.darken_hex_color(color_or(ui.split_active, palette.magenta), 0.2, palette.magenta)
   ui.split_inactive =
     color_or(ui.split_inactive, color.brighten_hex_color(palette.black, 0.08, palette.black))
   ui.floating_active = color_or(ui.floating_active, palette.magenta)
