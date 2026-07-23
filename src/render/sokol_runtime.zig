@@ -37,6 +37,8 @@ const Api = lua_mod.Api;
 const State = lua_mod.State;
 const LuaType = lua_mod.LuaType;
 
+const OVERLAY_HOVER_BG = ghostty.ColorRgb{ .r = 60, .g = 66, .b = 82 };
+
 fn paneRenderHelpersReady(pane: *const Pane) bool {
     return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
 }
@@ -205,6 +207,17 @@ var g_overlay_hit_cache: struct {
     hit_count: usize = 0,
     hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = [_]CachedOverlayHitRegion{.{}} ** MAX_OVERLAY_HIT_REGIONS,
 } = .{};
+var g_overlay_hit_id_pool: [MAX_OVERLAY_HIT_REGIONS][64]u8 = undefined;
+var g_overlay_hovered_id: ?[]const u8 = null;
+var g_overlay_render_stack_index: usize = 0;
+var g_overlay_scrollbar_cache: struct {
+    count: usize = 0,
+    scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = [_]CachedOverlayScrollbar{.{}} ** MAX_OVERLAY_SCROLLBARS,
+} = .{};
+var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
+var g_overlay_scrollbar_drag_id_len: usize = 0;
+var g_overlay_scrollbar_drag_grab_y: f32 = 0;
+var g_overlay_scrollbar_drag_stack_index: usize = 0;
 
 // Per-phase timing accumulators (logged every 2 seconds).
 var g_phase_accum_tick_ns: i128 = 0;
@@ -554,6 +567,7 @@ const BarHit = struct {
 
 const MAX_BAR_HIT_REGIONS = 256;
 const MAX_OVERLAY_HIT_REGIONS = 128;
+const MAX_OVERLAY_SCROLLBARS = 16;
 
 const CachedOverlayHitRegion = struct {
     x: f32 = 0,
@@ -561,6 +575,28 @@ const CachedOverlayHitRegion = struct {
     y: f32 = 0,
     height: f32 = 0,
     node_id: ?[]const u8 = null,
+    stack_index: usize = 0,
+};
+
+const OverlayHit = struct {
+    id: []const u8,
+    stack_index: usize,
+};
+
+const CachedOverlayScrollbar = struct {
+    id: ?[]const u8 = null,
+    x: f32 = 0,
+    width: f32 = 0,
+    y: f32 = 0,
+    height: f32 = 0,
+    thumb_y: f32 = 0,
+    thumb_height: f32 = 0,
+    has_thumb: bool = false,
+    stack_index: usize = 0,
+    thumb_ratio: ?f32 = null,
+    thumb_size: ?f32 = null,
+    track_color: ghostty.ColorRgb = .{ .r = 90, .g = 99, .b = 117 },
+    thumb_color: ghostty.ColorRgb = .{ .r = 160, .g = 170, .b = 190 },
 };
 
 const CachedBarHitRegion = struct {
@@ -1103,6 +1139,13 @@ fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, 
     return api.to_boolean(state, -1) != 0;
 }
 
+fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?f32 {
+    api.get_field(state, row_idx, field);
+    defer pop(api, state, 1);
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return null;
+    return @floatCast(api.to_number(state, -1));
+}
+
 fn overlayRowStringField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?[]const u8 {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
@@ -1132,6 +1175,7 @@ fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, widt
         .y = y,
         .height = height,
         .node_id = id,
+        .stack_index = g_overlay_render_stack_index,
     };
     g_overlay_hit_cache.hit_count += 1;
     if (g_widget_render_ctx) |ctx| {
@@ -1141,6 +1185,90 @@ fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, widt
             .width = width,
             .height = height,
         });
+    }
+}
+
+fn cacheOverlayScrollbarRow(
+    id: []const u8,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    is_thumb: bool,
+    thumb_ratio: ?f32,
+    thumb_size: ?f32,
+    track_color: ghostty.ColorRgb,
+    thumb_color: ghostty.ColorRgb,
+) void {
+    if (id.len == 0 or id.len > ui_semantics.max_id_len or width <= 0 or height <= 0) return;
+
+    const scrollbar: *CachedOverlayScrollbar = blk: {
+        for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*cached| {
+            if (cached.id) |cached_id| {
+                if (cached.stack_index == g_overlay_render_stack_index and std.mem.eql(u8, cached_id, id)) break :blk cached;
+            }
+        }
+        if (g_overlay_scrollbar_cache.count >= MAX_OVERLAY_SCROLLBARS) return;
+        const cached = &g_overlay_scrollbar_cache.scrollbars[g_overlay_scrollbar_cache.count];
+        g_overlay_scrollbar_cache.count += 1;
+        cached.* = .{
+            .id = id,
+            .x = x,
+            .width = width,
+            .y = y,
+            .height = height,
+            .stack_index = g_overlay_render_stack_index,
+            .thumb_ratio = thumb_ratio,
+            .thumb_size = thumb_size,
+            .track_color = track_color,
+            .thumb_color = thumb_color,
+        };
+        break :blk cached;
+    };
+
+    const bottom = @max(scrollbar.y + scrollbar.height, y + height);
+    scrollbar.y = @min(scrollbar.y, y);
+    scrollbar.height = bottom - scrollbar.y;
+    if (is_thumb) {
+        if (scrollbar.has_thumb) {
+            const thumb_bottom = @max(scrollbar.thumb_y + scrollbar.thumb_height, y + height);
+            scrollbar.thumb_y = @min(scrollbar.thumb_y, y);
+            scrollbar.thumb_height = thumb_bottom - scrollbar.thumb_y;
+        } else {
+            scrollbar.thumb_y = y;
+            scrollbar.thumb_height = height;
+            scrollbar.has_thumb = true;
+        }
+    }
+}
+
+fn finalizeAndDrawOverlayScrollbars(stack_index: usize) void {
+    for (g_overlay_scrollbar_cache.scrollbars[0..g_overlay_scrollbar_cache.count]) |*scrollbar| {
+        if (scrollbar.stack_index != stack_index) continue;
+
+        const bar_width = @min(@as(f32, 5), @max(@as(f32, 3), scrollbar.width - 2));
+        const track_x = scrollbar.x + scrollbar.width - bar_width - 1;
+        const track_y = scrollbar.y + 2;
+        const track_height = @max(@as(f32, 1), scrollbar.height - 4);
+
+        if (scrollbar.thumb_ratio) |raw_ratio| {
+            const ratio = std.math.clamp(raw_ratio, 0, 1);
+            const size = std.math.clamp(scrollbar.thumb_size orelse 1, 0, 1);
+            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 12), track_height * size));
+            scrollbar.thumb_y = track_y + ratio * (track_height - scrollbar.thumb_height);
+            scrollbar.has_thumb = true;
+        } else if (scrollbar.has_thumb) {
+            scrollbar.thumb_y = @max(track_y, scrollbar.thumb_y + 2);
+            scrollbar.thumb_height = @min(track_height, @max(@as(f32, 8), scrollbar.thumb_height - 4));
+        }
+
+        scrollbar.y = track_y;
+        scrollbar.height = track_height;
+
+        drawRoundedRect(track_x, track_y, bar_width, track_height, bar_width * 0.5, scrollbar.track_color.r, scrollbar.track_color.g, scrollbar.track_color.b, 100);
+        if (scrollbar.has_thumb) {
+            drawRoundedRect(track_x, scrollbar.thumb_y, bar_width, scrollbar.thumb_height, bar_width * 0.5, scrollbar.thumb_color.r, scrollbar.thumb_color.g, scrollbar.thumb_color.b, 255);
+        }
     }
 }
 
@@ -1707,6 +1835,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     pop(api, state, 1);
 
     g_overlay_hit_cache = .{ .enabled = true };
+    g_overlay_scrollbar_cache = .{};
 
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
@@ -1719,6 +1848,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 break;
             }
             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                g_overlay_render_stack_index = @intCast(stack_i);
                 const overlay_idx = absoluteIndex(api, state, -1);
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
@@ -1975,26 +2105,41 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
                         const text_y = content_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i - 1));
-                        const row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
                         const row_divider = overlayRowColorField(api, state, row_idx, "divider");
                         const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
                         const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
+                        const row_scrollbar_id = overlayRowStringField(api, state, row_idx, "scrollbar_id");
+                        const row_scrollbar_thumb_ratio = overlayRowNumberField(api, state, row_idx, "scrollbar_thumb_ratio");
+                        const row_scrollbar_thumb_size = overlayRowNumberField(api, state, row_idx, "scrollbar_thumb_size");
                         const row_scrollbar_track_color = overlayRowColorField(api, state, row_idx, "scrollbar_track_color") orelse ghostty.ColorRgb{ .r = 90, .g = 99, .b = 117 };
                         const row_scrollbar_thumb_color = overlayRowColorField(api, state, row_idx, "scrollbar_thumb_color") orelse panel_border;
                         const row_x = content_x;
                         var label_buf: [ui_semantics.max_label_len]u8 = undefined;
                         const label = overlaySegmentsLabel(row_segments, &label_buf);
-                        if (overlayRowStringField(api, state, row_idx, "id")) |id| {
-                            cacheOverlayHitRegion(id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
-                        } else {
-                            var row_id_buf: [64]u8 = undefined;
-                            const row_id = std.fmt.bufPrint(&row_id_buf, "overlay:{d}:row:{d}", .{ stack_i, row_i }) catch "overlay:row";
-                            ctx.app.appendUiSemanticNode(.overlay, .listitem, false, row_id, label, .{
-                                .x = row_x,
-                                .y = text_y + 1.0,
-                                .width = row_w,
-                                .height = @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0),
-                            });
+                        var row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
+                        const row_id = overlayRowStringField(api, state, row_idx, "id");
+                        if (overlayRowBoolField(api, state, row_idx, "hoverable")) {
+                            if (row_id) |id| {
+                                cacheOverlayHitRegion(id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
+                                if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, id, g_overlay_hovered_id.?)) {
+                                    row_fill_bg = OVERLAY_HOVER_BG;
+                                }
+                            } else {
+                                const pool_idx = g_overlay_hit_cache.hit_count;
+                                if (pool_idx < MAX_OVERLAY_HIT_REGIONS) {
+                                    const auto_id = std.fmt.bufPrint(&g_overlay_hit_id_pool[pool_idx], "overlay:{d}:row:{d}", .{ stack_i, row_i }) catch "overlay:row";
+                                    cacheOverlayHitRegion(auto_id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
+                                    ctx.app.appendUiSemanticNode(.overlay, .listitem, false, auto_id, label, .{
+                                        .x = row_x,
+                                        .y = text_y + 1.0,
+                                        .width = row_w,
+                                        .height = @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0),
+                                    });
+                                    if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, auto_id, g_overlay_hovered_id.?)) {
+                                        row_fill_bg = OVERLAY_HOVER_BG;
+                                    }
+                                }
+                            }
                         }
                         if (row_fill_bg) |bg| {
                             drawBorderRect(row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 255);
@@ -2003,15 +2148,32 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             drawBorderRect(row_x, text_y + ctx.renderer.cell_h * 0.5, row_w, 1.0, divider.r, divider.g, divider.b, 255);
                         }
                         if (row_scrollbar_track) {
-                            const sc = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
-                            drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), sc.r, sc.g, sc.b, if (row_scrollbar_thumb) 255 else 120);
+                            if (row_scrollbar_id) |id| {
+                                const hit_width = @max(@as(f32, 8.0), ctx.renderer.cell_w);
+                                cacheOverlayScrollbarRow(
+                                    id,
+                                    row_x + row_w - hit_width,
+                                    text_y,
+                                    hit_width,
+                                    ctx.renderer.cell_h,
+                                    row_scrollbar_thumb,
+                                    row_scrollbar_thumb_ratio,
+                                    row_scrollbar_thumb_size,
+                                    row_scrollbar_track_color,
+                                    row_scrollbar_thumb_color,
+                                );
+                            } else {
+                                const color = if (row_scrollbar_thumb) row_scrollbar_thumb_color else row_scrollbar_track_color;
+                                drawBorderRect(row_x + row_w - 2.0, text_y + 2.0, 1.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), color.r, color.g, color.b, if (row_scrollbar_thumb) 255 else 120);
+                            }
                         }
-                        const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 4.0), ctx.renderer.cell_w * 0.5) else 0.0;
+                        const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 8.0), ctx.renderer.cell_w) else 0.0;
                         drawRowSegments(ctx.renderer, row_x, text_y, row_w - seg_right_pad, row_segments);
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);
                 }
+                finalizeAndDrawOverlayScrollbars(@intCast(stack_i));
                 pop(api, state, 1);
             }
             pop(api, state, 1);
@@ -2237,6 +2399,7 @@ fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) B
 fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
     const cache = &g_overlay_hit_cache;
     if (!cache.enabled or cache.hit_count == 0) {
+        g_overlay_hovered_id = null;
         app.emitLuaBuiltInEvent("overlay:leave", .none);
         return;
     }
@@ -2248,14 +2411,19 @@ fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
         if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
         if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
         if (region.node_id) |id| {
-            app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{ .id = id } });
+            g_overlay_hovered_id = id;
+            app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{
+                .id = id,
+                .index = region.stack_index,
+            } });
         }
         return;
     }
+    g_overlay_hovered_id = null;
     app.emitLuaBuiltInEvent("overlay:leave", .none);
 }
 
-fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?[]const u8 {
+fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?OverlayHit {
     const cache = &g_overlay_hit_cache;
     if (!cache.enabled or cache.hit_count == 0) return null;
     var idx = cache.hit_count;
@@ -2265,9 +2433,56 @@ fn hitTestOverlay(mouse_x: f32, mouse_y: f32) ?[]const u8 {
         if (region.width <= 0) continue;
         if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
         if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
-        return region.node_id;
+        if (region.node_id) |id| return .{ .id = id, .stack_index = region.stack_index };
     }
     return null;
+}
+
+fn findOverlayScrollbar(id: []const u8, stack_index: usize) ?*const CachedOverlayScrollbar {
+    var idx = g_overlay_scrollbar_cache.count;
+    while (idx > 0) {
+        idx -= 1;
+        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
+        if (scrollbar.id) |scrollbar_id| {
+            if (scrollbar.stack_index == stack_index and std.mem.eql(u8, scrollbar_id, id)) return scrollbar;
+        }
+    }
+    return null;
+}
+
+fn hitTestOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScrollbar {
+    var idx = g_overlay_scrollbar_cache.count;
+    while (idx > 0) {
+        idx -= 1;
+        const scrollbar = &g_overlay_scrollbar_cache.scrollbars[idx];
+        if (mouse_x < scrollbar.x or mouse_x >= scrollbar.x + scrollbar.width) continue;
+        if (mouse_y < scrollbar.y or mouse_y >= scrollbar.y + scrollbar.height) continue;
+        return scrollbar;
+    }
+    return null;
+}
+
+fn overlayScrollbarRatio(scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
+    const thumb_height = if (scrollbar.has_thumb) scrollbar.thumb_height else 0;
+    const travel = @max(@as(f32, 0), scrollbar.height - thumb_height);
+    if (travel == 0) return 0;
+    const thumb_y = std.math.clamp(pointer_y - grab_y, scrollbar.y, scrollbar.y + travel);
+    return (thumb_y - scrollbar.y) / travel;
+}
+
+fn emitOverlayScrollbar(app: *App, scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) void {
+    const id = scrollbar.id orelse return;
+    app.emitLuaBuiltInEvent("overlay:scrollbar", .{ .overlay_scrollbar = .{
+        .id = id,
+        .ratio = overlayScrollbarRatio(scrollbar, pointer_y, grab_y),
+        .index = scrollbar.stack_index,
+    } });
+}
+
+fn cancelOverlayScrollbarDrag() void {
+    g_overlay_scrollbar_drag_id_len = 0;
+    g_overlay_scrollbar_drag_grab_y = 0;
+    g_overlay_scrollbar_drag_stack_index = 0;
 }
 
 fn scrollbarTrackRowForPosition(metrics: App.ScrollbarMetrics, pointer_y: f32, grab_offset_y: f32) u64 {
@@ -4234,6 +4449,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // restore (any pending key-ups went to another window).
                 g_released_mods = 0;
+                cancelOverlayScrollbarDrag();
                 @atomicStore(bool, &g_window_iconified, true, .release);
                 app.invalidateUiSemanticFrame();
             },
@@ -4247,6 +4463,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // refocus (any pending key-ups went to another window).
                 g_released_mods = 0;
+                cancelOverlayScrollbarDrag();
                 _ = app.enqueueMouse(.{ .focus = false });
             },
             c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
@@ -4268,6 +4485,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // restore (any pending key-ups went to another window).
             g_released_mods = 0;
+            cancelOverlayScrollbarDrag();
             @atomicStore(bool, &g_window_iconified, true, .release);
             app.invalidateUiSemanticFrame();
         },
@@ -4281,6 +4499,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // refocus (any pending key-ups went to another window).
             g_released_mods = 0;
+            cancelOverlayScrollbarDrag();
             _ = app.enqueueMouse(.{ .focus = false });
         },
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
@@ -4417,6 +4636,9 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         c.SAPP_MOUSEBUTTON_MIDDLE => ghostty.MouseButton.middle,
         else => null,
     };
+    const releasing_overlay_scrollbar = action == .release and
+        event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT and
+        g_overlay_scrollbar_drag_id_len > 0;
 
     if (quick_select.inputActive(app)) {
         if (action == .press) enqueueQuickSelectInput(app, .cancel);
@@ -4478,6 +4700,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
             g_scrollbar_drag_metrics = null;
             g_scrollbar_drag_grab_y = 0.0;
         }
+        cancelOverlayScrollbarDrag();
         if (g_selection_pointer_active) {
             g_selection_pointer_active = false;
             g_selection_pointer_pane = null;
@@ -4508,6 +4731,11 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
         g_drag_node = null;
         if (builtin.os.tag == .windows) _ = win32.ReleaseCapture();
+        if (releasing_overlay_scrollbar) {
+            g_mouse_button_down = null;
+            c.sapp_consume_event();
+            return;
+        }
     }
 
     const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
@@ -4543,8 +4771,31 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-        if (hitTestOverlay(event.mouse_x, event.mouse_y)) |id| {
-            app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{ .id = id } });
+        if (hitTestOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
+            const overlay_hit = hitTestOverlay(event.mouse_x, event.mouse_y);
+            if (overlay_hit != null and overlay_hit.?.stack_index == scrollbar.stack_index) {
+                const id = scrollbar.id orelse return;
+                g_overlay_scrollbar_drag_id_len = id.len;
+                fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
+                g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
+                const on_thumb = scrollbar.has_thumb and event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
+                g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
+                if (builtin.os.tag == .windows) {
+                    const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
+                    if (hwnd_raw) |raw| {
+                        const hwnd: win32.HWND = @ptrCast(@constCast(raw));
+                        _ = win32.SetCapture(hwnd);
+                    }
+                }
+                emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
+                return;
+            }
+        }
+        if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
+            app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{
+                .id = hit.id,
+                .index = hit.stack_index,
+            } });
             return;
         }
     }
@@ -4728,6 +4979,16 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         g_scrollbar_hover_pane = metrics.pane;
     }
 
+    if (g_overlay_scrollbar_drag_id_len > 0) {
+        const id = g_overlay_scrollbar_drag_id[0..g_overlay_scrollbar_drag_id_len];
+        if (findOverlayScrollbar(id, g_overlay_scrollbar_drag_stack_index)) |scrollbar| {
+            emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
+            setMouseCursor(c.SAPP_MOUSECURSOR_ARROW);
+            return;
+        }
+        cancelOverlayScrollbarDrag();
+    }
+
     // If we are currently dragging a divider, update the split ratio and skip
     // forwarding the event to the terminal (the cursor is a resize cursor, not
     // a text cursor).
@@ -4880,6 +5141,17 @@ fn handleScroll(app: *App, event: c.sapp_event) void {
 
     if (topBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
     if (bottomBarHitTest(app, event.mouse_x, event.mouse_y, c.sapp_widthf()).inBar()) return;
+
+    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
+        if (event.scroll_y == 0) return;
+        app.emitLuaBuiltInEvent("overlay:scroll", .{ .overlay_scroll = .{
+            .id = hit.id,
+            .delta = event.scroll_y,
+            .index = hit.stack_index,
+        } });
+        return;
+    }
+
     if (g_scrollbar_drag_pane != null) return;
     if (app.hitTestScrollbar(event.mouse_x, event.mouse_y)) |_| {
         _ = app.enqueueMouse(.{ .scroll = .{

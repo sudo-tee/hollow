@@ -1,3 +1,4 @@
+local click_registry = require("hollow.ui.builder.internal.click_registry")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -15,13 +16,14 @@ ui.overlay = ui.overlay or {}
 ---@param row HollowUiRow
 ---@return HollowUiOverlaySerializedRow
 local function serialize_overlay_row(row)
-  local serialized = { segments = {}, id = row.id }
+  local serialized = { segments = {}, id = row.id, hoverable = row.hoverable ~= false }
 
   for _, node in ipairs(shared.flatten_span_nodes(ui.overlay_row.nodes(row))) do
     if node.spacer then
       serialized.segments[#serialized.segments + 1] = { spacer = true }
     else
-      serialized.segments[#serialized.segments + 1] = shared.style_to_segment(node.text or "", node.style)
+      serialized.segments[#serialized.segments + 1] =
+        shared.style_to_segment(node.text or "", node.style)
     end
   end
 
@@ -30,6 +32,9 @@ local function serialize_overlay_row(row)
     serialized.divider = row.divider
     serialized.scrollbar_track = row.scrollbar_track == true
     serialized.scrollbar_thumb = row.scrollbar_thumb == true
+    serialized.scrollbar_id = row.scrollbar_id
+    serialized.scrollbar_thumb_ratio = row.scrollbar_thumb_ratio
+    serialized.scrollbar_thumb_size = row.scrollbar_thumb_size
     serialized.scrollbar_track_color = row.scrollbar_track_color
     serialized.scrollbar_thumb_color = row.scrollbar_thumb_color
   end
@@ -71,6 +76,24 @@ end
 
 ---@param opts HollowUiWidgetOptions
 function ui.overlay.new(opts)
+  local hover_state = { hovered_id = nil }
+  local orig_render = opts.render
+  opts.render = function()
+    return orig_render(hover_state)
+  end
+  if not opts.on_event then
+    opts.on_event = function(name, payload)
+      if name == "overlay:hover" then
+        hover_state.hovered_id = payload and payload.id or nil
+      elseif name == "overlay:leave" then
+        hover_state.hovered_id = nil
+      elseif name == "overlay:click" then
+        if payload and payload.id then
+          click_registry.dispatch(payload.id, payload.value)
+        end
+      end
+    end
+  end
   return ui.new_widget("overlay", opts)
 end
 
@@ -117,5 +140,10 @@ function ui._overlay_state()
     return nil
   end
 
-  return hollow.tbl(overlay_stack):map(function(w) return serialize_overlay_widget(w) end):get()
+  return hollow
+    .tbl(overlay_stack)
+    :map(function(w)
+      return serialize_overlay_widget(w)
+    end)
+    :get()
 end

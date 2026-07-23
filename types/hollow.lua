@@ -175,6 +175,8 @@
 ---| "overlay:hover"
 ---| "overlay:leave"
 ---| "overlay:click"
+---| "overlay:scroll"
+---| "overlay:scrollbar"
 ---| "selection:begin"
 ---| "selection:cleared"
 ---| "window:focused"
@@ -209,9 +211,11 @@
 ---@field ["bottombar:hover"] { id: string }
 ---@field ["bottombar:leave"] {}
 ---@field ["bottombar:click"] { id: string }
----@field ["overlay:hover"] { id: string }
+---@field ["overlay:hover"] { id: string, index: integer|nil }
 ---@field ["overlay:leave"] {}
----@field ["overlay:click"] { id: string }
+---@field ["overlay:click"] { id: string, index: integer|nil }
+---@field ["overlay:scroll"] { id: string, delta: number, index: integer }
+---@field ["overlay:scrollbar"] { id: string, ratio: number, index: integer }
 ---@field ["selection:begin"] {}
 ---@field ["selection:cleared"] {}
 
@@ -579,21 +583,29 @@
 
 ---@class HollowUiOverlayRowOptions
 ---@field id? string
+---@field hoverable? boolean
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
+---@field scrollbar_id? string
+---@field scrollbar_thumb_ratio? number
+---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
 ---@class HollowUiOverlayRow
 ---@field _overlay_row true
 ---@field id? string
+---@field hoverable boolean
 ---@field nodes HollowUiRenderableNode[]
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
+---@field scrollbar_id? string
+---@field scrollbar_thumb_ratio? number
+---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
@@ -605,9 +617,13 @@
 ---@field children? any[]
 ---@field color? HollowColor
 ---@field divider? HollowColor
+---@field hoverable? boolean
 ---@field fill_bg? HollowColor
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
+---@field scrollbar_id? string
+---@field scrollbar_thumb_ratio? number
+---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 ---@field style? HollowStyle
@@ -725,10 +741,14 @@
 
 ---@class HollowUiOverlaySerializedRow
 ---@field segments HollowUiSegment[]
+---@field hoverable boolean
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
+---@field scrollbar_id? string
+---@field scrollbar_thumb_ratio? number
+---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
@@ -906,7 +926,8 @@
 ---@field index integer
 ---@field count integer
 ---@field resize fun(new_n: integer)
----@field visible_range fun(items: any[], budget: integer): integer, integer, boolean, integer
+---@field visible_range fun(items: any[], budget: integer): integer, integer, boolean, integer, number, number
+---@field scroll_to_ratio fun(items: any[], ratio: number, budget: integer)
 ---@field page_down fun()
 ---@field page_up fun()
 ---@field handlers table<string, function>

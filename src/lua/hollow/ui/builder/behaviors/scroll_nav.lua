@@ -27,9 +27,27 @@ function M.scroll_nav(n, opts)
 
   function self.visible_range(items, budget)
     self.count = math.max(1, #items)
-    local s, e, bar, thumb = sv:update(items, self.index, budget)
+    local s, e, bar, thumb, thumb_ratio, thumb_size = sv:update(items, self.index, budget)
     self._visible_count = math.max(1, e - s + 1)
-    return s, e, bar, thumb
+    return s, e, bar, thumb, thumb_ratio, thumb_size
+  end
+
+  function self.scroll_to_ratio(items, ratio, budget)
+    local n = #items
+    if n == 0 then
+      self.index = 0
+      return
+    end
+
+    local max_top = sv:max_scroll_top(items, budget)
+    local target = 1 + math.floor(math.max(0, math.min(1, ratio)) * (max_top - 1) + 0.5)
+    sv.scroll_top = target
+    self.index = target
+  end
+
+  function self.scroll_by(items, direction, budget)
+    local start_idx, end_idx = sv:scroll_by(items, direction, budget)
+    self.index = math.max(start_idx, math.min(end_idx, self.index))
   end
 
   function self.page_down()

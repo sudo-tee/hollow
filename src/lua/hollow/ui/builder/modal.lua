@@ -5,8 +5,8 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local ui = _G.hollow.ui
-local click_registry = require("hollow.ui.builder.internal.click_registry")
 local button_component = require("hollow.ui.builder.components.button")
+local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
@@ -48,8 +48,10 @@ function M.modal(spec)
         end
       end
 
-      if spec.on_event then
-        spec.on_event(name, payload)
+      local consumed = spec.on_event and spec.on_event(name, payload)
+      local scroll_delta = payload and payload.delta or 0
+      if name == "overlay:scroll" and scroll_delta ~= 0 and not consumed and spec.keys then
+        spec.keys(scroll_delta < 0 and "arrow_down" or "arrow_up", 0)
       end
     end,
     width = spec.width,

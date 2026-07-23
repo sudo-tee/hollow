@@ -156,6 +156,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.builder.fire", .source = @embedFile("lua/hollow/ui/builder/fire.lua") },
     .{ .name = "hollow.ui.builder.internal.click_registry", .source = @embedFile("lua/hollow/ui/builder/internal/click_registry.lua") },
     .{ .name = "hollow.ui.builder.behaviors.scroll_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/scroll_nav.lua") },
+    .{ .name = "hollow.ui.builder.behaviors.selectable_list", .source = @embedFile("lua/hollow/ui/builder/behaviors/selectable_list.lua") },
     .{ .name = "hollow.ui.builder.behaviors.text_input", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_input.lua") },
     .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
     .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
@@ -571,6 +572,17 @@ pub const BuiltInPayload = union(enum) {
     },
     overlay_node: struct {
         id: []const u8,
+        index: usize = 0,
+    },
+    overlay_scroll: struct {
+        id: []const u8,
+        delta: f32,
+        index: usize = 0,
+    },
+    overlay_scrollbar: struct {
+        id: []const u8,
+        ratio: f32,
+        index: usize = 0,
     },
     copy_mode: struct {
         active: bool,
@@ -2449,9 +2461,33 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "id");
         },
         .overlay_node => |value| {
-            api.create_table(state, 0, 1);
+            api.create_table(state, 0, 2);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
+            if (value.index > 0) {
+                api.push_number(state, @floatFromInt(value.index));
+            } else {
+                api.push_nil(state);
+            }
+            api.set_field(state, -2, "index");
+        },
+        .overlay_scroll => |value| {
+            api.create_table(state, 0, 3);
+            try pushOwnedString(allocator, api, state, value.id);
+            api.set_field(state, -2, "id");
+            api.push_number(state, value.delta);
+            api.set_field(state, -2, "delta");
+            api.push_number(state, @floatFromInt(value.index));
+            api.set_field(state, -2, "index");
+        },
+        .overlay_scrollbar => |value| {
+            api.create_table(state, 0, 3);
+            try pushOwnedString(allocator, api, state, value.id);
+            api.set_field(state, -2, "id");
+            api.push_number(state, value.ratio);
+            api.set_field(state, -2, "ratio");
+            api.push_number(state, @floatFromInt(value.index));
+            api.set_field(state, -2, "index");
         },
         .copy_mode => |value| {
             api.create_table(state, 0, 6);

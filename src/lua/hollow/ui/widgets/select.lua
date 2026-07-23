@@ -2,7 +2,6 @@ local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 local w = require("hollow.ui.builder")
-local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local table_unpack = table.unpack or unpack
 
@@ -201,26 +200,29 @@ end
 
 ---@param entry HollowUiSelectEntry
 ---@param is_selected boolean
+---@param is_hovered boolean
 ---@param theme HollowUiTheme
----@param show_scrollbar boolean
----@param visible_index integer
----@param thumb_index integer
+---@param row_options table
 ---@return HollowUiRows
-local function render_entry_rows(
-  entry,
-  is_selected,
-  theme,
-  show_scrollbar,
-  visible_index,
-  thumb_index,
-  row_id
-)
+local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options)
   ---@type HollowUiTags
   local tags = ui.tags
+
+  local indicator
+  if is_selected then
+    indicator = "> "
+  elseif is_hovered then
+    indicator = "▎ "
+  else
+    indicator = "  "
+  end
+  local indicator_fg = is_selected and theme.selection_fg
+    or (is_hovered and theme.selection_fg or theme.fg)
+
   local label_nodes = {
-    ui.span(is_selected and "> " or "  ", {
-      fg = is_selected and theme.selection_fg or theme.fg,
-      bold = true,
+    ui.span(indicator, {
+      fg = indicator_fg,
+      bold = is_selected or is_hovered,
     }),
   }
 
@@ -228,33 +230,55 @@ local function render_entry_rows(
     label_nodes[#label_nodes + 1] = node
   end
 
+  local row_fill_bg
+  if is_selected then
+    row_fill_bg = theme.selection_bg
+  elseif is_hovered then
+    row_fill_bg = theme.hover_bg
+  end
+  local row_fg = is_selected and theme.selection_fg or (is_hovered and theme.hover_fg or theme.fg)
+
   local detail_row
   if entry.detail_text and entry.detail_text ~= "" then
+    local detail_fg = is_selected and theme.selected_muted
+      or (is_hovered and theme.selected_muted or theme.detail)
+    local detail_bg = is_selected and theme.selected_detail_bg
+      or (is_hovered and theme.hover_bg or nil)
     local detail_nodes = {
-      ui.span("   ", { fg = is_selected and theme.selected_muted or theme.detail }),
+      ui.span("   ", { fg = detail_fg }),
     }
     for _, node in ipairs(entry.detail_nodes or {}) do
       detail_nodes[#detail_nodes + 1] = node
     end
 
-    detail_row = tags.overlay_row(
-      { id = row_id, fill_bg = is_selected and theme.selected_detail_bg or nil },
-      ui.group(detail_nodes, { fg = is_selected and theme.selected_muted or theme.detail })
-    )
+    detail_row = tags.overlay_row({
+      id = row_options.id,
+      fill_bg = detail_bg,
+      scrollbar_track = row_options.scrollbar_track,
+      scrollbar_thumb = row_options.scrollbar_thumb,
+      scrollbar_id = row_options.scrollbar_id,
+      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
+      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
+      scrollbar_track_color = theme.scrollbar_track,
+      scrollbar_thumb_color = theme.scrollbar_thumb,
+    }, ui.group(detail_nodes, { fg = detail_fg }))
   end
 
   return ui.rows(
     tags.overlay_row(
       {
-        id = row_id,
-        fill_bg = is_selected and theme.selection_bg or nil,
-        scrollbar_track = show_scrollbar,
-        scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
+        id = row_options.id,
+        fill_bg = row_fill_bg,
+        scrollbar_track = row_options.scrollbar_track,
+        scrollbar_thumb = row_options.scrollbar_thumb,
+        scrollbar_id = row_options.scrollbar_id,
+        scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
+        scrollbar_thumb_size = row_options.scrollbar_thumb_size,
         scrollbar_track_color = theme.scrollbar_track,
         scrollbar_thumb_color = theme.scrollbar_thumb,
       },
       ui.group(label_nodes, {
-        fg = is_selected and theme.selection_fg or theme.fg,
+        fg = row_fg,
       })
     ),
     detail_row
@@ -325,18 +349,30 @@ function ui.select.open(opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local prepared = prepared_entries(opts)
 
-  local nav = w.scroll_nav(0, { row_count_fn = entry_row_count })
-
+  local selectable
   local filter = w.text_input({
     initial = opts.query or "",
     on_change = function()
-      nav.index = 1
+      selectable.nav.index = 1
     end,
   })
 
   local function current_entries()
     return filtered_entries(opts, filter.value, filter.value:lower(), prepared)
   end
+
+  selectable = w.selectable_list({
+    id_prefix = "select",
+    items = current_entries,
+    row_budget = function()
+      return list_row_budget(opts)
+    end,
+    row_count_fn = entry_row_count,
+    on_activate = function(index)
+      invoke_action(opts, filter.value, filter.value:lower(), index, 1, prepared)
+    end,
+  })
+  local nav = selectable.nav
 
   local action_keys = {}
   for i, action in ipairs(opts.actions or {}) do
@@ -353,25 +389,24 @@ function ui.select.open(opts)
   local m
   m = w.modal({
     theme = theme,
-    render = function(render_theme)
+    render = function(render_theme, state)
       local tags = ui.tags
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
 
-      local budget = list_row_budget(opts)
-      local start_idx, end_idx, show_scrollbar, thumb_index = nav.visible_range(entries, budget)
+      local viewport = selectable.visible_range()
 
       local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
 
       local rows = {
         tags.overlay_row(
-          nil,
+          { hoverable = false },
           tags.text({ fg = render_theme.title, bold = true }, (opts.prompt or "Select") .. ":"),
           tags.text({ fg = render_theme.counter }, counter and ("  " .. counter) or "")
         ),
         tags.divider({ color = render_theme.divider }),
         tags.overlay_row(
-          nil,
+          { hoverable = false },
           tags.text({ fg = render_theme.title, bold = true }, "Filter: "),
           table_unpack(filter.render(render_theme))
         ),
@@ -383,27 +418,15 @@ function ui.select.open(opts)
       end
 
       local visible_index = 0
-      for i = start_idx, end_idx do
+      for i = viewport.start_idx, viewport.end_idx do
         local entry = entries[i] --[[@as HollowUiSelectEntry]]
         visible_index = visible_index + 1
         local is_selected = (i == nav.index)
-        local entry_index = i
-        local row_id = "select:item:" .. tostring(entry.source_index)
-        click_registry.register(row_id, function()
-          nav.index = entry_index
-          invoke_action(opts, filter.value, filter.value:lower(), nav.index, 1, prepared)
-        end)
+        local row_id, row_options = selectable.row(i, entry.source_index, visible_index, viewport)
+        local is_hovered = (state and state.hovered_id == row_id)
         append_rows(
           rows,
-          render_entry_rows(
-            entry,
-            is_selected,
-            render_theme,
-            show_scrollbar,
-            visible_index,
-            thumb_index,
-            row_id
-          )
+          render_entry_rows(entry, is_selected, is_hovered, render_theme, row_options)
         )
       end
 
@@ -436,6 +459,7 @@ function ui.select.open(opts)
         invoke_action(opts, filter.value, filter.value:lower(), nav.index, 1, prepared)
       end,
     }, action_keys),
+    on_event = selectable.on_event,
   })
 end
 

@@ -1,5 +1,5 @@
-local util = require("hollow.util")
 local shared = require("hollow.ui.shared")
+local util = require("hollow.util")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -104,10 +104,14 @@ end
 local function overlay_row_options(props)
   return {
     id = props.id,
+    hoverable = props.hoverable,
     fill_bg = props.fill_bg,
     divider = props.divider,
     scrollbar_track = props.scrollbar_track,
     scrollbar_thumb = props.scrollbar_thumb,
+    scrollbar_id = props.scrollbar_id,
+    scrollbar_thumb_ratio = props.scrollbar_thumb_ratio,
+    scrollbar_thumb_size = props.scrollbar_thumb_size,
     scrollbar_track_color = props.scrollbar_track_color,
     scrollbar_thumb_color = props.scrollbar_thumb_color,
   }
@@ -117,13 +121,16 @@ end
 ---@return HollowUiOverlayRow
 local function build_overlay_row(props)
   -- Preserve the leading padding segment used by existing overlays.
-  return overlay_row.make(ui.row(" ", table_unpack(props.children or {})), overlay_row_options(props))
+  return overlay_row.make(
+    ui.row(" ", table_unpack(props.children or {})),
+    overlay_row_options(props)
+  )
 end
 
 ---@param props HollowUiTagProps
 ---@return HollowUiOverlayRow
 local function build_overlay_divider(props)
-  return overlay_row.make({}, { divider = props.color or props.divider })
+  return overlay_row.make({}, { divider = props.color or props.divider, hoverable = false })
 end
 
 ---@param opts HollowUiBarNodeOptionsBase|nil
@@ -140,11 +147,15 @@ function overlay_row.make(nodes, opts)
   return {
     _overlay_row = true,
     id = opts.id,
+    hoverable = opts.hoverable ~= false,
     nodes = nodes or {},
     fill_bg = opts.fill_bg,
     divider = opts.divider,
     scrollbar_track = opts.scrollbar_track == true,
     scrollbar_thumb = opts.scrollbar_thumb == true,
+    scrollbar_id = opts.scrollbar_id,
+    scrollbar_thumb_ratio = opts.scrollbar_thumb_ratio,
+    scrollbar_thumb_size = opts.scrollbar_thumb_size,
     scrollbar_track_color = opts.scrollbar_track_color,
     scrollbar_thumb_color = opts.scrollbar_thumb_color,
   }

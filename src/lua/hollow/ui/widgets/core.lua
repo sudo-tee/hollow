@@ -126,6 +126,22 @@ end
 ---@param name string
 ---@param payload HollowUiNodeEventPayload
 function ui.dispatch_widget_event(name, payload)
+  if name:find("overlay:", 1, true) == 1 then
+    if name == "overlay:leave" then
+      for _, widget in ipairs(overlay_stack) do
+        if type(widget.on_event) == "function" then
+          widget.on_event(name, payload)
+        end
+      end
+      return
+    end
+    local widget = overlay_stack[payload and payload.index] or overlay_stack[#overlay_stack]
+    if widget and type(widget.on_event) == "function" then
+      widget.on_event(name, payload)
+    end
+    return
+  end
+
   for _, widget in ipairs(mounted_widgets()) do
     if type(widget.on_event) == "function" then
       widget.on_event(name, payload)

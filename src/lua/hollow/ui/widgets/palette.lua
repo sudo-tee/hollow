@@ -34,6 +34,13 @@ local CATEGORY_ORDER = {
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
 
+local function list_row_budget(opts)
+  local total = shared.normalize_overlay_size(opts.height)
+    or shared.normalize_overlay_size(opts.max_height)
+    or DEFAULT_TOTAL_ROWS
+  return math.max(1, total - 5)
+end
+
 local function resolve_palette_theme(theme, opts)
   if type(opts.theme) == "table" then
     local u = require("hollow.util")
@@ -265,35 +272,47 @@ end
 ---@param theme HollowUiTheme
 ---@param label string
 ---@param is_selected boolean
+---@param is_hovered boolean
 ---@param is_collapsed boolean
+---@param row_options table
 ---@return HollowUiOverlayRow
-local function render_section_header(theme, label, is_selected, is_collapsed)
+local function render_section_header(
+  theme,
+  label,
+  is_selected,
+  is_hovered,
+  is_collapsed,
+  row_options
+)
   local tags = ui.tags
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
   return tags.overlay_row(
-    { fill_bg = is_selected and theme.selection_bg or (theme.selected_detail_bg or theme.panel_bg) },
+    {
+      id = row_options.id,
+      fill_bg = is_selected and theme.selection_bg
+        or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg)),
+      scrollbar_track = row_options.scrollbar_track,
+      scrollbar_thumb = row_options.scrollbar_thumb,
+      scrollbar_id = row_options.scrollbar_id,
+      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
+      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
+      scrollbar_track_color = theme.scrollbar_track,
+      scrollbar_thumb_color = theme.scrollbar_thumb,
+    },
     tags.text(
       { fg = theme.title, bold = true },
-      (is_selected and "> " or "  ") .. arrow .. " " .. label
+      (is_selected and "> " or (is_hovered and "\226\150\142 " or "  ")) .. arrow .. " " .. label
     )
   )
 end
 
 ---@param entry table
 ---@param is_selected boolean
+---@param is_hovered boolean
 ---@param theme HollowUiTheme
----@param show_scrollbar boolean
----@param visible_index integer
----@param thumb_index integer
+---@param row_options table
 ---@return HollowUiRows
-local function render_entry_row(
-  entry,
-  is_selected,
-  theme,
-  show_scrollbar,
-  visible_index,
-  thumb_index
-)
+local function render_entry_row(entry, is_selected, is_hovered, theme, row_options)
   local tags = ui.tags
   local chord_text = ""
   if #entry.chords > 0 then
@@ -311,12 +330,12 @@ local function render_entry_row(
   end
 
   local label_nodes = {
-    ui.span(is_selected and "  > " or "    ", {
-      fg = is_selected and theme.selected_fg or theme.fg,
-      bold = is_selected,
+    ui.span(is_selected and "  > " or (is_hovered and "  \226\150\142 " or "    "), {
+      fg = (is_selected or is_hovered) and theme.selected_fg or theme.fg,
+      bold = is_selected or is_hovered,
     }),
     ui.span(label_text, {
-      fg = is_selected and theme.selected_fg or theme.fg,
+      fg = (is_selected or is_hovered) and theme.selected_fg or theme.fg,
     }),
   }
 
@@ -328,9 +347,13 @@ local function render_entry_row(
   end
 
   return ui.rows(tags.overlay_row({
-    fill_bg = is_selected and theme.selection_bg or nil,
-    scrollbar_track = show_scrollbar,
-    scrollbar_thumb = show_scrollbar and visible_index == thumb_index,
+    id = row_options.id,
+    fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil),
+    scrollbar_track = row_options.scrollbar_track,
+    scrollbar_thumb = row_options.scrollbar_thumb,
+    scrollbar_id = row_options.scrollbar_id,
+    scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
+    scrollbar_thumb_size = row_options.scrollbar_thumb_size,
     scrollbar_track_color = theme.scrollbar_track,
     scrollbar_thumb_color = theme.scrollbar_thumb,
   }, ui.group(label_nodes)))
@@ -344,37 +367,65 @@ function ui.command_palette.open(opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local all_entries = opts.entries or build_entries()
 
-  local nav = w.scroll_nav(0, { row_budget = DEFAULT_TOTAL_ROWS - 5 })
-
   local filter = w.text_input({ initial = opts.query or "" })
   local collapsed = {}
 
-  local widget
-  widget = ui.overlay.new({
-    render = function()
+  local function current_flat()
+    return grouped_entries(filtered_entries(all_entries, filter.value), collapsed)
+  end
+
+  local modal
+  local nav
+  local function activate(index)
+    local flat = current_flat()
+    nav.index = clamp_cursor(flat, index or nav.index)
+    local entry = flat[nav.index]
+    if entry and entry._type == "header" then
+      collapsed[entry.category] = not collapsed[entry.category]
+      return
+    end
+    local item = selected_item(flat, nav.index)
+    if item ~= nil then
+      modal.close()
+      if type(item.run) == "function" then
+        item.run()
+      end
+      if type(opts.on_confirm) == "function" then
+        opts.on_confirm(item)
+      end
+    end
+  end
+
+  local selectable = w.selectable_list({
+    id_prefix = "palette",
+    items = current_flat,
+    row_budget = function()
+      return list_row_budget(opts)
+    end,
+    on_activate = activate,
+  })
+  nav = selectable.nav
+
+  modal = w.modal({
+    theme = theme,
+    render = function(_, state)
       local tags = ui.tags
-      local filtered = filtered_entries(all_entries, filter.value)
-      local flat = grouped_entries(filtered, collapsed)
+      local flat = current_flat()
       nav.index = clamp_cursor(flat, nav.index)
       local item_idx, total_items = flat_item_index(flat, nav.index)
       local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
 
-      local budget = shared.normalize_overlay_size(opts.height)
-        or shared.normalize_overlay_size(opts.max_height)
-        or DEFAULT_TOTAL_ROWS
-      local row_budget = budget - 5
-
-      local start_idx, end_idx, show_scrollbar, thumb_index = nav.visible_range(flat, row_budget)
+      local viewport = selectable.visible_range()
 
       local rows = ui.rows(
         tags.overlay_row(
-          nil,
+          { hoverable = false },
           tags.text({ fg = theme.title, bold = true }, (opts.prompt or "Command Palette") .. ":"),
           tags.text({ fg = theme.counter }, counter and ("  " .. counter) or "")
         ),
         tags.divider({ color = theme.divider }),
         tags.overlay_row(
-          nil,
+          { hoverable = false },
           tags.text({ fg = theme.title, bold = true }, "Filter: "),
           table_unpack(filter.render(theme))
         ),
@@ -384,26 +435,26 @@ function ui.command_palette.open(opts)
       if #flat == 0 then
         rows[#rows + 1] = tags.overlay_row(nil, tags.text({ fg = theme.empty }, " No matches"))
       else
-        local display_item_count = 0
-        for idx = start_idx, end_idx do
+        local visible_index = 0
+        for idx = viewport.start_idx, viewport.end_idx do
           local entry = flat[idx]
+          visible_index = visible_index + 1
+          local row_id, row_options = selectable.row(idx, idx, visible_index, viewport)
+          local is_selected = (idx == nav.index)
+          local is_hovered = state and state.hovered_id == row_id
           if entry._type == "header" then
-            local is_selected = (idx == nav.index)
-            rows[#rows + 1] =
-              render_section_header(theme, entry.label, is_selected, collapsed[entry.category])
+            rows[#rows + 1] = render_section_header(
+              theme,
+              entry.label,
+              is_selected,
+              is_hovered,
+              collapsed[entry.category],
+              row_options
+            )
           elseif entry._type == "item" then
-            display_item_count = display_item_count + 1
-            local is_selected = (idx == nav.index)
             append_rows(
               rows,
-              render_entry_row(
-                entry.item,
-                is_selected,
-                theme,
-                show_scrollbar,
-                display_item_count,
-                thumb_index
-              )
+              render_entry_row(entry.item, is_selected, is_hovered, theme, row_options)
             )
           end
         end
@@ -423,58 +474,38 @@ function ui.command_palette.open(opts)
 
       return rows
     end,
-    on_key = w.keys(filter, nav, {
+    keys = w.keys(filter, nav, {
       escape = function()
-        ui.overlay.pop()
+        modal.close()
         if type(opts.on_cancel) == "function" then
           opts.on_cancel()
         end
       end,
       arrow_down = function()
-        local filtered = filtered_entries(all_entries, filter.value)
-        local flat = grouped_entries(filtered, collapsed)
+        local flat = current_flat()
         nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
           nav.index = next_item(flat, nav.index)
         end
       end,
       arrow_up = function()
-        local filtered = filtered_entries(all_entries, filter.value)
-        local flat = grouped_entries(filtered, collapsed)
+        local flat = current_flat()
         nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
           nav.index = prev_item(flat, nav.index)
         end
       end,
       enter = function()
-        local filtered = filtered_entries(all_entries, filter.value)
-        local flat = grouped_entries(filtered, collapsed)
-        nav.index = clamp_cursor(flat, nav.index)
-        local entry = flat[nav.index]
-        if entry and entry._type == "header" then
-          collapsed[entry.category] = not collapsed[entry.category]
-          return
-        end
-        local item = selected_item(flat, nav.index)
-        if item ~= nil then
-          ui.overlay.pop()
-          if type(item.run) == "function" then
-            item.run()
-          end
-          if type(opts.on_confirm) == "function" then
-            opts.on_confirm(item)
-          end
-        end
+        activate(nav.index)
       end,
     }),
+    on_event = selectable.on_event,
     width = opts.width or DEFAULT_WIDTH,
     height = opts.height,
     max_height = opts.max_height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
   })
-
-  ui.overlay.push(widget)
 end
 
 function ui.command_palette.close()

@@ -569,33 +569,27 @@ local function make_host_api()
 
   function host_api.copy_mode_enter()
     recorded.copy_mode = { kind = "enter" }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = "",
-        match_count = 0,
-        match_index = nil,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = "",
+      match_count = 0,
+      match_index = nil,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
   function host_api.copy_mode_exit()
     recorded.copy_mode = { kind = "exit" }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = false,
-        query = "",
-        match_count = 0,
-        match_index = nil,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = false,
+      query = "",
+      match_count = 0,
+      match_index = nil,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
@@ -606,33 +600,27 @@ local function make_host_api()
 
   function host_api.copy_mode_begin_selection(block)
     recorded.copy_mode = { kind = "begin_selection", block = block == true }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = "",
-        match_count = 0,
-        match_index = nil,
-        selecting = true,
-        block = block == true,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = "",
+      match_count = 0,
+      match_index = nil,
+      selecting = true,
+      block = block == true,
+    })
     return nil
   end
 
   function host_api.copy_mode_clear_selection()
     recorded.copy_mode = { kind = "clear_selection" }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = "",
-        match_count = 0,
-        match_index = nil,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = "",
+      match_count = 0,
+      match_index = nil,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
@@ -649,49 +637,40 @@ local function make_host_api()
 
   function host_api.copy_mode_search_set_query(query)
     recorded.copy_mode = { kind = "search_set_query", query = query }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = query,
-        match_count = 0,
-        match_index = nil,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = query,
+      match_count = 0,
+      match_index = nil,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
   function host_api.copy_mode_search_next()
     recorded.copy_mode = { kind = "search_next" }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = "",
-        match_count = 3,
-        match_index = 1,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = "",
+      match_count = 3,
+      match_index = 1,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
   function host_api.copy_mode_search_prev()
     recorded.copy_mode = { kind = "search_prev" }
-    hollow._emit_builtin_event(
-      "copy_mode:changed",
-      {
-        active = true,
-        query = "",
-        match_count = 3,
-        match_index = 3,
-        selecting = false,
-        block = false,
-      }
-    )
+    hollow._emit_builtin_event("copy_mode:changed", {
+      active = true,
+      query = "",
+      match_count = 3,
+      match_index = 3,
+      selecting = false,
+      block = false,
+    })
     return nil
   end
 
@@ -1741,6 +1720,8 @@ assert_equal(hollow.ui.overlay.depth(), 0, "notify.clear should remove notify wi
 hollow.ui.workspace.open_switcher()
 local workspace_overlay = hollow.ui._overlay_state()
 assert_true(workspace_overlay ~= nil, "workspace switcher should create an overlay")
+assert_equal(workspace_overlay[1].rows[1].hoverable, false, "select title should not be hoverable")
+assert_equal(workspace_overlay[1].rows[3].hoverable, false, "select filter should not be hoverable")
 local resolved_select_theme = hollow.ui.resolve_theme("select")
 assert_equal(
   workspace_overlay[1].chrome.bg,
@@ -1804,6 +1785,143 @@ end
 assert_true(
   search_text_overlay_text:find("hollow", 1, true) ~= nil,
   "select should match using custom search_text"
+)
+hollow.ui.overlay.clear()
+
+hollow.ui.select.open({
+  items = {
+    "item 1",
+    "item 2",
+    "item 3",
+    "item 4",
+    "item 5",
+    "item 6",
+    "item 7",
+    "item 8",
+  },
+  max_height = 8,
+})
+local scroll_select_overlay = hollow.ui._overlay_state()
+assert_true(scroll_select_overlay ~= nil, "scrollable select should serialize")
+local scroll_select_id = scroll_select_overlay[1].rows[5].scrollbar_id
+assert_true(type(scroll_select_id) == "string", "select scrollbar should expose an interaction id")
+assert_equal(
+  scroll_select_overlay[1].rows[5].scrollbar_thumb_ratio,
+  0,
+  "select scrollbar thumb should begin at top"
+)
+assert_equal(
+  scroll_select_overlay[1].rows[5].scrollbar_thumb_size,
+  0.5,
+  "select scrollbar thumb should represent visible list fraction"
+)
+assert_true(on_key("arrow_down", 0), "select should move selection before wheel test")
+assert_true(on_key("arrow_down", 0), "select should move selection inside viewport")
+hollow._emit_builtin_event(
+  "overlay:scroll",
+  { id = scroll_select_overlay[1].rows[5].id, delta = -1 }
+)
+scroll_select_overlay = hollow.ui._overlay_state()
+local scroll_select_counter = scroll_select_overlay[1].rows[1].segments[3].text
+assert_true(
+  scroll_select_counter:find("3/8", 1, true) ~= nil,
+  "mouse wheel should preserve selection while it remains visible"
+)
+assert_equal(
+  scroll_select_overlay[1].rows[5].scrollbar_thumb_ratio,
+  0.25,
+  "mouse wheel should move select viewport and scrollbar"
+)
+hollow._emit_builtin_event("overlay:scrollbar", { id = scroll_select_id, ratio = 1 })
+scroll_select_overlay = hollow.ui._overlay_state()
+scroll_select_counter = scroll_select_overlay[1].rows[1].segments[3].text
+assert_true(
+  scroll_select_counter:find("5/8", 1, true) ~= nil,
+  "dragging select scrollbar to bottom should select final viewport start"
+)
+assert_equal(
+  scroll_select_overlay[1].rows[5].scrollbar_thumb_ratio,
+  1,
+  "select scrollbar thumb should reach bottom"
+)
+hollow.ui.overlay.clear()
+
+local palette_entries = {}
+for i = 1, 8 do
+  palette_entries[#palette_entries + 1] = {
+    name = "palette_item_" .. i,
+    display_name = "Palette item " .. i,
+    mode_label = "",
+    desc = "Palette item " .. i,
+    category = "general",
+    category_label = "General",
+    chords = {},
+    searchable = "Palette item " .. i,
+  }
+end
+
+local selected_palette_item = nil
+hollow.ui.command_palette.open({
+  entries = palette_entries,
+  max_height = 8,
+  on_confirm = function(item)
+    selected_palette_item = item.name
+  end,
+})
+local scroll_palette_overlay = hollow.ui._overlay_state()
+assert_true(scroll_palette_overlay ~= nil, "scrollable command palette should serialize")
+assert_equal(
+  scroll_palette_overlay[1].rows[1].hoverable,
+  false,
+  "command palette title should not be hoverable"
+)
+assert_equal(
+  scroll_palette_overlay[1].rows[3].hoverable,
+  false,
+  "command palette filter should not be hoverable"
+)
+local scroll_palette_id = scroll_palette_overlay[1].rows[5].scrollbar_id
+assert_true(
+  type(scroll_palette_overlay[1].rows[5].id) == "string",
+  "command palette rows should expose interaction ids"
+)
+assert_true(
+  type(scroll_palette_id) == "string",
+  "command palette scrollbar should expose an interaction id"
+)
+hollow._emit_builtin_event("overlay:scroll", {
+  id = scroll_palette_overlay[1].rows[5].id,
+  delta = -1,
+})
+scroll_palette_overlay = hollow.ui._overlay_state()
+local scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[3].text
+assert_true(
+  scroll_palette_counter:find("1/8", 1, true) ~= nil,
+  "mouse wheel should clamp command palette selection when it leaves viewport"
+)
+local first_palette_item_id = scroll_palette_overlay[1].rows[5].id
+hollow._emit_builtin_event("overlay:click", { id = first_palette_item_id })
+assert_equal(
+  selected_palette_item,
+  "palette_item_1",
+  "mouse click should activate command palette item"
+)
+assert_equal(hollow.ui.overlay.depth(), 0, "command palette click should close overlay")
+
+hollow.ui.command_palette.open({ entries = palette_entries, max_height = 8 })
+scroll_palette_overlay = hollow.ui._overlay_state()
+scroll_palette_id = scroll_palette_overlay[1].rows[5].scrollbar_id
+hollow._emit_builtin_event("overlay:scrollbar", { id = scroll_palette_id, ratio = 1 })
+scroll_palette_overlay = hollow.ui._overlay_state()
+scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[3].text
+assert_true(
+  scroll_palette_counter:find("6/8", 1, true) ~= nil,
+  "dragging command palette scrollbar should update selection"
+)
+assert_equal(
+  scroll_palette_overlay[1].rows[5].scrollbar_thumb_ratio,
+  1,
+  "command palette scrollbar thumb should reach bottom"
 )
 hollow.ui.overlay.clear()
 
