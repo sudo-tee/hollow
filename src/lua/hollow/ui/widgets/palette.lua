@@ -49,7 +49,9 @@ local function new_entry(fields)
   return fields
 end
 
-local function build_entries()
+local providers = {}
+
+function providers.actions()
   local action_list = hollow.action.list()
   local entries = {}
   for _, a in ipairs(action_list) do
@@ -86,7 +88,7 @@ local function build_entries()
   return entries
 end
 
-local function build_workspace_entries()
+function providers.workspaces()
   local workspaces = hollow.term.workspaces()
   local entries = {}
   for _, ws in ipairs(workspaces) do
@@ -104,7 +106,7 @@ local function build_workspace_entries()
   return entries
 end
 
-local function build_domain_entries()
+function providers.domains()
   local domains = hollow.config.get("domains") or {}
   local current = util.safe_call(hollow.term.current_domain, nil)
   local current_domain = current and current.name or nil
@@ -254,7 +256,7 @@ function ui.command_palette.open(opts)
     u.merge_tables(theme, u.clone_value(opts.theme))
   end
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
-  local all_entries = opts.entries or build_entries()
+  local all_entries = opts.entries or providers.actions()
   local filter = w.text_input({ initial = opts.query or "" })
   local collapsed = {}
   local nav
@@ -401,6 +403,6 @@ function ui.command_palette.close()
   ui.overlay.pop()
 end
 
-ui.command_palette.build_workspace_entries = build_workspace_entries
-ui.command_palette.build_domain_entries = build_domain_entries
+ui.command_palette.build_workspace_entries = providers.workspaces
+ui.command_palette.build_domain_entries = providers.domains
 return {}
