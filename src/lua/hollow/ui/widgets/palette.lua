@@ -18,6 +18,14 @@ local CATEGORIES = {
   user = { label = "User", order = 8 },
 }
 
+local function category_label(cat)
+  return CATEGORIES[cat] and CATEGORIES[cat].label or cat
+end
+
+local function category_order(cat)
+  return CATEGORIES[cat] and CATEGORIES[cat].order or 99
+end
+
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
 
@@ -35,9 +43,7 @@ local function new_entry(fields)
   fields.chords = fields.chords or {}
   fields.workspace_targetable = fields.workspace_targetable or false
   fields.category = fields.category or "general"
-  fields.category_label = fields.category_label
-    or (CATEGORIES[fields.category] and CATEGORIES[fields.category].label)
-    or fields.category
+  fields.category_label = fields.category_label or category_label(fields.category)
   fields.searchable = fields.searchable or fields.name
   fields.searchable_lower = fields.searchable:lower()
   return fields
@@ -53,9 +59,6 @@ local function build_entries()
       chords[#chords + 1] = c
     end
     local category = a.category or "general"
-    local category_label = (CATEGORIES[a.category] and CATEGORIES[a.category].label)
-      or a.category
-      or "General"
     local display_name = a.name:gsub("_", " ")
     local mode_label = ""
     if a.category == "copy_mode" then
@@ -68,11 +71,16 @@ local function build_entries()
       mode_label = mode_label,
       desc = a.desc or "",
       category = category,
-      category_label = category_label,
       chords = chords,
       run = a.run,
       workspace_targetable = a.workspace_targetable or false,
-      searchable = a.name .. " " .. (a.desc or "") .. " " .. category_label .. " " .. category,
+      searchable = a.name
+        .. " "
+        .. (a.desc or "")
+        .. " "
+        .. category_label(category)
+        .. " "
+        .. category,
     })
   end
   return entries
@@ -166,8 +174,7 @@ local function grouped_entries(entries, collapsed)
     groups[cat].items[#groups[cat].items + 1] = entry
   end
   table.sort(order, function(a, b)
-    return (CATEGORIES[a] and CATEGORIES[a].order or 99)
-      < (CATEGORIES[b] and CATEGORIES[b].order or 99)
+    return category_order(a) < category_order(b)
   end)
   local flat = {}
   for _, cat in ipairs(order) do
