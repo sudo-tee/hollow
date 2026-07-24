@@ -24,10 +24,7 @@ end
 
 local function notify_warn(message, ttl)
   local notify = ui.notify
-  local warn = notify and notify.warn
-  if type(warn) == "function" then
-    warn(message, { ttl = ttl or 1800 })
-  end
+  notify.warn(message, { ttl = ttl or 1800 })
 end
 
 local function path_exists(path)

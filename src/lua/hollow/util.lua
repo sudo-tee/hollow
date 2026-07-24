@@ -10,6 +10,7 @@ local M = {}
 ---@field join_path fun(...:string): string
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
+---@field safe_call fun(fn:function|nil, default:any, ...:any): any
 ---@field has_any_key fun(t:table, keys:table): boolean
 ---@field utf8_len fun(s:string): integer
 ---@field pad_right fun(value:string, width:integer): string
@@ -54,6 +55,21 @@ function M.merge_tables(dst, src)
     end
   end
   return dst
+end
+
+---@param fn (function|nil)
+---@param default any
+---@vararg any
+---@return any
+function M.safe_call(fn, default, ...)
+  if type(fn) ~= "function" then
+    return default
+  end
+  local ok, value = pcall(fn, ...)
+  if ok and value ~= nil then
+    return value
+  end
+  return default
 end
 
 ---@param name string

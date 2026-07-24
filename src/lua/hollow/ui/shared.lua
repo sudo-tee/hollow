@@ -189,22 +189,6 @@ function M.resolve_theme()
   return theme_api.create()
 end
 
----@param fn function|nil
----@param default any
----@return any
-local function safe_call(fn, default)
-  if type(fn) ~= "function" then
-    return default
-  end
-
-  local ok, value = pcall(fn)
-  if ok and value ~= nil then
-    return value
-  end
-
-  return default
-end
-
 ---@param text string
 ---@param style HollowUiNodeStyle
 ---@param out HollowUiFlatNode[]
@@ -840,16 +824,16 @@ end
 
 ---@return HollowWidgetCtx
 function M.widget_ctx()
-  local current_tab = safe_call(hollow.term.current_tab, nil)
-  local current_pane = safe_call(hollow.term.current_pane, nil)
+  local current_tab = util.safe_call(hollow.term.current_tab, nil)
+  local current_pane = util.safe_call(hollow.term.current_pane, nil)
 
   return {
     term = {
       tab = current_tab,
       pane = current_pane,
-      tabs = safe_call(hollow.term.tabs, {}),
-      workspace = safe_call(hollow.term.current_workspace, nil),
-      workspaces = safe_call(hollow.term.workspaces, {}),
+      tabs = util.safe_call(hollow.term.tabs, {}),
+      workspace = util.safe_call(hollow.term.current_workspace, nil),
+      workspaces = util.safe_call(hollow.term.workspaces, {}),
     },
     size = M.window_size_snapshot(),
     time = {
