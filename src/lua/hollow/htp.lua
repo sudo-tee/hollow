@@ -445,6 +445,16 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     hollow.term.reload_config()
   end)
 
+  hollow.htp.on_emit("notify", function(ctx)
+    local payload = event_payload(ctx)
+    local message = payload.message or ""
+    hollow.ui.notify.show(message, {
+      level = payload.level,
+      title = payload.title,
+      ttl = payload.ttl,
+    })
+  end)
+
   hollow.htp.on_emit("set_theme", function(ctx)
     local payload = event_payload(ctx)
     local name = payload.name or payload.theme

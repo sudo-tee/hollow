@@ -59,6 +59,7 @@ class HollowCli:
         self.add_run(sub)
         self.add_send_keys(sub)
         self.add_emit(sub)
+        self.add_notify(sub)
         return parser
 
     def build_common_parser(self):
@@ -300,6 +301,14 @@ class HollowCli:
         p.add_argument("payload_json", nargs="?", default="{}")
         p.set_defaults(handler=self.handle_emit)
 
+    def add_notify(self, sub):
+        p = sub.add_parser("notify", parents=[self.common_parser])
+        p.add_argument("message")
+        p.add_argument("--level", choices=["info", "warn", "error", "success"], default=None)
+        p.add_argument("--ttl", type=int, default=None, help="time to live in milliseconds")
+        p.add_argument("--title", default=None)
+        p.set_defaults(handler=self.handle_notify)
+
     def handle_get_pane(self, args):
         return self.print_query("pane", self.id_payload(args.id))
 
@@ -386,6 +395,15 @@ class HollowCli:
 
     def handle_emit(self, args):
         return self.print_event(args.channel, self.parse_json_arg(args.payload_json, "payload"))
+
+    def handle_notify(self, args):
+        payload = self.clean({
+            "message": args.message,
+            "level": args.level,
+            "title": args.title,
+            "ttl": args.ttl,
+        })
+        return self.print_event("notify", payload)
 
     def handle_send_keys(self, args):
         return self.emit_to_matching_panes("send_text", {"text": self.decode_key_sequence(args.keys)}, args.id, args.tag)

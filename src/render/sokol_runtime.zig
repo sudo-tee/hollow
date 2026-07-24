@@ -1840,6 +1840,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
+        var top_stack_accum: f32 = 0;
+        var bottom_stack_accum: f32 = 0;
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
             api.rawgeti(state, stacks_idx, stack_i);
@@ -2024,7 +2026,11 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 const content_width = @max(@as(f32, 1.0), content_right - content_left);
                 const overlay_margin_x = ctx.renderer.cell_w;
                 const overlay_margin_y = ctx.renderer.cell_h;
-                const stack_offset = ctx.renderer.cell_h * 0.75 * @as(f32, @floatFromInt(stack_i - 1));
+                const overlay_is_bottom = switch (overlay_align) {
+                    .bottom_left, .bottom_center, .bottom_right => true,
+                    else => false,
+                };
+                const stack_offset = if (overlay_is_bottom) bottom_stack_accum else top_stack_accum;
 
                 var outer_x = content_left + (content_width - occupied_w) * 0.5;
                 var outer_y = top_h + overlay_margin_y + stack_offset;
@@ -2061,6 +2067,15 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 const max_outer_y = @max(min_outer_y, ctx.height - bottom_h - occupied_h - overlay_margin_y);
                 outer_x = std.math.clamp(outer_x, min_outer_x, max_outer_x);
                 outer_y = std.math.clamp(outer_y, min_outer_y, max_outer_y);
+
+                {
+                    const gap = overlay_margin_y;
+                    if (overlay_is_bottom) {
+                        bottom_stack_accum += occupied_h + gap;
+                    } else {
+                        top_stack_accum += occupied_h + gap;
+                    }
+                }
                 const panel_x = outer_x + panel_margin.left;
                 const panel_y = outer_y + panel_margin.top;
                 const content_x = panel_x + panel_inner_left;

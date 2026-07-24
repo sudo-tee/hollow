@@ -103,13 +103,14 @@ Query state. All `get` commands print JSON.
 | `hollow cli config reload`                            |      |
 | `hollow cli config theme <name>`                      |      |
 
-### `run`, `send-keys`, `emit`
+### `run`, `send-keys`, `emit`, `notify`
 
-| Command                       | Args                   |
-| ----------------------------- | ---------------------- |
-| `hollow cli run <cmd>`        | `[--domain NAME]`      |
-| `hollow cli send-keys <keys>` | `[--id ID\|--tag TAG]` |
-| `hollow cli emit <channel>`   | `[payload-json]`       |
+| Command                                      | Args                                                            |
+| -------------------------------------------- | --------------------------------------------------------------- |
+| `hollow cli run <cmd>`                       | `[--domain NAME]`                                               |
+| `hollow cli send-keys <keys>`                | `[--id ID\|--tag TAG]`                                          |
+| `hollow cli emit <channel>`                  | `[payload-json]`                                                |
+| `hollow cli notify <message>`                | `[--level info\|warn\|error\|success] [--ttl MS] [--title TEXT]` |
 
 ### UI automation
 
@@ -171,7 +172,10 @@ hollow.exe cli config reload
 hollow.exe cli config theme rose-pine
 
 # Custom HTP emit
-hollow.exe cli emit notify '{"text":"build done","ttl":2000}'
+hollow.exe cli emit custom-channel '{"key":"value"}'
+
+# Send a notification
+hollow.exe cli notify "Build succeeded" --level success --ttl 5000
 
 # Custom HTP query
 hollow.exe cli get htp echo '{"value":42}'

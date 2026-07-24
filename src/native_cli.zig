@@ -221,6 +221,7 @@ const Runner = struct {
         if (std.mem.eql(u8, command_name, "run")) return try self.executeRun(args);
         if (std.mem.eql(u8, command_name, "send-keys")) return try self.executeSendKeys(args);
         if (std.mem.eql(u8, command_name, "emit")) return try self.executeEmit(args);
+        if (std.mem.eql(u8, command_name, "notify")) return try self.executeNotify(args);
         if (std.mem.eql(u8, command_name, "ui")) return try self.executeUi(args);
         if (std.mem.eql(u8, command_name, "wait")) return try self.executeWait(args);
         return self.failFmt("unknown command: {s}", .{command_name}, "invalid_args", 2);
@@ -562,6 +563,61 @@ const Runner = struct {
         if (args.len == 0 or args.len > 2) return self.fail("usage: cli emit <channel> [payload-json]", "invalid_args", 2);
         const payload = if (args.len == 2) args[1] else "{}";
         return try self.printEvent(.{ .kind = .emit, .channel = try self.allocator.dupe(u8, args[0]), .payload = try parseJsonObjectArg(self.allocator, payload, "payload") });
+    }
+
+    fn executeNotify(self: *Runner, args: []const []const u8) !void {
+        if (args.len < 1) return self.fail("usage: cli notify <message> [--level info|warn|error|success] [--ttl ms] [--title text]", "invalid_args", 2);
+
+        var level: ?[]const u8 = null;
+        var ttl: ?u64 = null;
+        var title: ?[]const u8 = null;
+        var message: ?[]const u8 = null;
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--level")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing level value", "invalid_args", 2);
+                level = args[i];
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--ttl")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing ttl value", "invalid_args", 2);
+                ttl = try std.fmt.parseInt(u64, args[i], 10);
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--title")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing title value", "invalid_args", 2);
+                title = args[i];
+                continue;
+            }
+            if (message == null) {
+                message = args[i];
+                continue;
+            }
+            return self.failFmt("unexpected argument: {s}", .{args[i]}, "invalid_args", 2);
+        }
+
+        const msg = message orelse return self.fail("missing notification message", "invalid_args", 2);
+
+        var payload = std.json.ObjectMap.init(self.allocator);
+        try payload.put("message", .{ .string = msg });
+        if (level) |lvl| {
+            try payload.put("level", .{ .string = lvl });
+        }
+        if (title) |t| {
+            try payload.put("title", .{ .string = t });
+        }
+        if (ttl) |t| {
+            try payload.put("ttl", .{ .integer = @intCast(t) });
+        }
+
+        return try self.printEvent(.{
+            .kind = .emit,
+            .channel = try self.allocator.dupe(u8, "notify"),
+            .payload = .{ .object = payload },
+        });
     }
 
     fn executeUi(self: *Runner, args: []const []const u8) !void {
@@ -986,7 +1042,7 @@ const Runner = struct {
 
 fn helpText() []const u8 {
     return "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
-        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, ui, wait\n";
+        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, ui, wait\n";
 }
 
 fn emptyObject(allocator: std.mem.Allocator) ![]u8 {

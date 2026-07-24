@@ -113,6 +113,7 @@ hollow-cli config theme <name>
 hollow-cli run <cmd> [--domain NAME]
 hollow-cli send-keys <keys> [--id ID|--tag TAG]
 hollow-cli emit <channel> [payload-json]
+hollow-cli notify <message> [--level info|warn|error|success] [--ttl MS] [--title TEXT]
 ```
 
 ## Examples
@@ -128,7 +129,8 @@ hollow-cli focus left
 hollow-cli scroll page-down
 hollow-cli config reload
 hollow-cli get htp echo '{"value":42}'
-hollow-cli emit notify '{"text":"done"}'
+hollow-cli emit custom-channel '{"key":"value"}'
+hollow-cli notify "Task complete" --level success --ttl 3000
 ```
 
 ## How it differs from `hollow cli …`

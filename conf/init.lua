@@ -166,23 +166,20 @@ hollow.ui.topbar.configure({
 })
 
 hollow.events.on("config:reloaded", function()
-  hollow.ui.notify.info("Config reloaded", { ttl = 1200 })
+  hollow.ui.notify.info("Config reloaded")
 end)
 
 hollow.events.on("workspace:closed", function(ev)
   local label = ev.name ~= "" and ("'" .. ev.name .. "'") or "workspace"
-  hollow.ui.notify.info("Workspace [" .. label .. "] has been closed", { ttl = 2400 })
+  hollow.ui.notify.info("Workspace [" .. label .. "] has been closed")
 end)
 
 hollow.events.on("quick_select:no_matches", function()
-  hollow.ui.notify.info("Quick select: no matches in visible pane", { ttl = 2400 })
+  hollow.ui.notify.info("Quick select: no matches in visible pane")
 end)
 
 hollow.events.on("quick_select:action_executed", function(event)
-  hollow.ui.notify.info(
-    string.format("Quick select %s: %s", event.action, event.text),
-    { ttl = 2400 }
-  )
+  hollow.ui.notify.info(string.format("Quick select %s: %s", event.action, event.text))
 end)
 
 hollow.keymap.set_leader("<C-Space>", { timeout_ms = 1200 })
@@ -196,8 +193,8 @@ hollow.keymap.default("<C-S-x>", "close_tab")
 hollow.keymap.default("<C-S-w>", "close_pane")
 hollow.keymap.default("<C-Tab>", "next_tab")
 hollow.keymap.default("<C-S-Tab>", "prev_tab")
-hollow.keymap.default("<C-A-Right>", "next_tab")
-hollow.keymap.default("<C-A-Left>", "prev_tab")
+hollow.keymap.default("<S-A-Right>", "next_tab")
+hollow.keymap.default("<S-A-Left>", "prev_tab")
 hollow.keymap.default("<C-S-n>", "new_workspace")
 hollow.keymap.default("<C-S-p>", "workspace_switcher")
 hollow.keymap.default("<C-S-r>", "rename_workspace")
@@ -215,8 +212,8 @@ hollow.keymap.default("<C-A-h>", "move_pane_left")
 hollow.keymap.default("<C-A-l>", "move_pane_right")
 hollow.keymap.default("<C-A-k>", "move_pane_up")
 hollow.keymap.default("<C-A-j>", "move_pane_down")
-hollow.keymap.default("<C-A-S-Left>", "resize_pane_left")
-hollow.keymap.default("<C-A-S-Right>", "resize_pane_right")
+hollow.keymap.default("<C-A-Left>", "resize_pane_left")
+hollow.keymap.default("<C-A-Right>", "resize_pane_right")
 hollow.keymap.default("<C-A-Up>", "resize_pane_up")
 hollow.keymap.default("<C-A-Down>", "resize_pane_down")
 hollow.keymap.default("<A-S-PageUp>", "scrollback_page_up")
