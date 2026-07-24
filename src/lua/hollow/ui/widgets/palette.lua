@@ -211,6 +211,8 @@ local function render_section_header(
   local final_opts = util.merge_tables(util.clone_value(row_options), {
     fill_bg = is_selected and theme.selection_bg
       or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg)),
+    scrollbar_track_color = theme.scrollbar_track,
+    scrollbar_thumb_color = theme.scrollbar_thumb,
   })
   return tags.overlay_row(
     final_opts,
@@ -247,6 +249,8 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
 
   local final_opts = util.merge_tables(util.clone_value(row_options), {
     fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil),
+    scrollbar_track_color = theme.scrollbar_track,
+    scrollbar_thumb_color = theme.scrollbar_thumb,
   })
   return ui.rows(tags.overlay_row(final_opts, ui.group(label_nodes)))
 end
