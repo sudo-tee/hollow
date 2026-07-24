@@ -5,6 +5,7 @@ local w = require("hollow.ui.builder")
 local table_unpack = table.unpack or unpack
 local hollow = _G.hollow
 local ui = hollow.ui
+local tags = ui.tags
 ui.command_palette = ui.command_palette or {}
 
 local CATEGORIES = {
@@ -206,7 +207,6 @@ local function render_section_header(
   is_collapsed,
   row_options
 )
-  local tags = ui.tags
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
   row_options.fill_bg = is_selected and theme.selection_bg
     or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg))
@@ -226,7 +226,6 @@ end
 ---@param row_options table
 ---@return HollowUiRows
 local function render_entry_row(entry, is_selected, is_hovered, theme, row_options)
-  local tags = ui.tags
   local chord_text = #entry.chords > 0 and ("  " .. table.concat(entry.chords, " ")) or ""
   local label_text = (entry.mode_label ~= "" and (entry.mode_label .. " ") or "")
     .. (entry.desc ~= "" and entry.desc or entry.display_name)
@@ -293,7 +292,6 @@ function ui.command_palette.open(opts)
   nav = selectable.nav
 
   local function render_content(_, state)
-    local tags = ui.tags
     local flat = current_flat()
     nav.index = math.max(1, math.min(#flat, nav.index or 1))
     local item_idx, total_items = 0, 0
