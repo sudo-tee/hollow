@@ -131,33 +131,34 @@ function providers.domains()
 end
 
 local function filtered_entries(all_entries, query)
-  if query == "" then
-    return hollow
-      .tbl(all_entries)
-      :map(function(entry)
-        return util.merge_tables(entry, { score = 0 })
-      end)
-      :get()
-  end
-  return hollow
+  local scored = hollow
     .tbl(all_entries)
     :filter_map(function(entry)
+      if query == "" then
+        return util.merge_tables(entry, { score = 0 })
+      end
       local matches, score = shared.select_item_matches(query, entry.searchable, true)
       if not matches then
         return
       end
       return util.merge_tables(entry, { score = score or 0 })
     end)
-    :sort(function(a, b)
-      if a.score ~= b.score then
-        return a.score > b.score
-      end
-      if a.name ~= b.name then
-        return a.name < b.name
-      end
-      return a.category < b.category
-    end)
     :get()
+
+  if query == "" then
+    return scored
+  end
+
+  table.sort(scored, function(a, b)
+    if a.score ~= b.score then
+      return a.score > b.score
+    end
+    if a.name ~= b.name then
+      return a.name < b.name
+    end
+    return a.category < b.category
+  end)
+  return scored
 end
 
 local function grouped_entries(entries, collapsed)
