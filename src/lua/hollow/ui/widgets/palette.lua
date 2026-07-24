@@ -208,10 +208,12 @@ local function render_section_header(
   row_options
 )
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
-  row_options.fill_bg = is_selected and theme.selection_bg
-    or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg))
+  local final_opts = util.merge_tables(util.clone_value(row_options), {
+    fill_bg = is_selected and theme.selection_bg
+      or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg)),
+  })
   return tags.overlay_row(
-    row_options,
+    final_opts,
     tags.text(
       { fg = theme.title, bold = true },
       (is_selected and "> " or (is_hovered and "\226\150\142 " or "  ")) .. arrow .. " " .. label
@@ -243,8 +245,10 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
     label_nodes[#label_nodes + 1] = ui.span(chord_text, { fg = theme.panel_border or theme.muted })
   end
 
-  row_options.fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil)
-  return ui.rows(tags.overlay_row(row_options, ui.group(label_nodes)))
+  local final_opts = util.merge_tables(util.clone_value(row_options), {
+    fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil),
+  })
+  return ui.rows(tags.overlay_row(final_opts, ui.group(label_nodes)))
 end
 
 ---@param opts table|nil
