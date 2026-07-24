@@ -1,34 +1,21 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
+local util = require("src.lua.hollow.util")
 local w = require("hollow.ui.builder")
-
 local table_unpack = table.unpack or unpack
-
 local hollow = _G.hollow
 local ui = hollow.ui
-
 ui.command_palette = ui.command_palette or {}
 
-local CATEGORY_LABELS = {
-  tab = "Tab",
-  pane = "Pane",
-  workspace = "Workspace",
-  window = "Window",
-  scroll = "Scroll",
-  copy_mode = "Copy Mode",
-  general = "General",
-  user = "User",
-}
-
-local CATEGORY_ORDER = {
-  tab = 1,
-  pane = 2,
-  workspace = 3,
-  window = 4,
-  scroll = 5,
-  copy_mode = 6,
-  general = 7,
-  user = 8,
+local CATEGORIES = {
+  tab = { label = "Tab", order = 1 },
+  pane = { label = "Pane", order = 2 },
+  workspace = { label = "Workspace", order = 3 },
+  window = { label = "Window", order = 4 },
+  scroll = { label = "Scroll", order = 5 },
+  copy_mode = { label = "Copy Mode", order = 6 },
+  general = { label = "General", order = 7 },
+  user = { label = "User", order = 8 },
 }
 
 local DEFAULT_TOTAL_ROWS = 24
@@ -41,47 +28,52 @@ local function list_row_budget(opts)
   return math.max(1, total - 5)
 end
 
-local function resolve_palette_theme(theme, opts)
-  if type(opts.theme) == "table" then
-    local u = require("hollow.util")
-    u.merge_tables(theme, u.clone_value(opts.theme))
-  end
-  return theme
+local function new_entry(fields)
+  fields.display_name = fields.display_name or fields.name
+  fields.mode_label = fields.mode_label or ""
+  fields.desc = fields.desc or ""
+  fields.chords = fields.chords or {}
+  fields.workspace_targetable = fields.workspace_targetable or false
+  fields.category = fields.category or "general"
+  fields.category_label = fields.category_label
+    or (CATEGORIES[fields.category] and CATEGORIES[fields.category].label)
+    or fields.category
+  fields.searchable = fields.searchable or fields.name
+  fields.searchable_lower = fields.searchable:lower()
+  return fields
 end
 
 local function build_entries()
   local action_list = hollow.action.list()
   local entries = {}
   for _, a in ipairs(action_list) do
-    local chords = {}
-    if type(hollow.keymap.find_by_action) == "function" then
-      chords = hollow.keymap.find_by_action(a.name, "normal")
-      local copy_chords = hollow.keymap.find_by_action(a.name, "copy_mode")
-      for _, c in ipairs(copy_chords) do
-        chords[#chords + 1] = c
-      end
+    local chords = util.safe_call(hollow.keymap.find_by_action, {}, a.name, "normal")
+    local copy_chords = util.safe_call(hollow.keymap.find_by_action, {}, a.name, "copy_mode")
+    for _, c in ipairs(copy_chords) do
+      chords[#chords + 1] = c
     end
-    local category_label = CATEGORY_LABELS[a.category] or a.category or "General"
+    local category = a.category or "general"
+    local category_label = (CATEGORIES[a.category] and CATEGORIES[a.category].label)
+      or a.category
+      or "General"
     local display_name = a.name:gsub("_", " ")
     local mode_label = ""
     if a.category == "copy_mode" then
       display_name = display_name:gsub("^copy mode ", "")
       mode_label = "[cm]"
     end
-    local searchable = a.name .. " " .. (a.desc or "") .. " " .. category_label .. " " .. a.category
-    entries[#entries + 1] = {
+    entries[#entries + 1] = new_entry({
       name = a.name,
       display_name = display_name,
       mode_label = mode_label,
       desc = a.desc or "",
-      category = a.category or "general",
+      category = category,
       category_label = category_label,
       chords = chords,
       run = a.run,
       workspace_targetable = a.workspace_targetable or false,
-      searchable = searchable,
-      searchable_lower = searchable:lower(),
-    }
+      searchable = a.name .. " " .. (a.desc or "") .. " " .. category_label .. " " .. category,
+    })
   end
   return entries
 end
@@ -91,57 +83,62 @@ local function build_workspace_entries()
   local entries = {}
   for _, ws in ipairs(workspaces) do
     local name = ws.name or ("Workspace " .. ws.index)
-    local searchable = name .. " " .. ws.index .. " workspace"
-    entries[#entries + 1] = {
+    entries[#entries + 1] = new_entry({
       name = name,
-      display_name = name,
       mode_label = ws.is_active and "[current]" or "",
-      desc = "",
       category = "workspace",
       category_label = "Workspace",
-      chords = {},
-      run = nil,
-      workspace_targetable = false,
       workspace_index = ws.index,
       workspace_id = ws.id,
-      searchable = searchable,
-      searchable_lower = searchable:lower(),
-    }
+      searchable = name .. " " .. ws.index .. " workspace",
+    })
   end
   return entries
 end
 
-local function filtered_entries(all_entries, query)
-  local out = {}
-  for _, entry in ipairs(all_entries) do
-    local matches, score
-    if query == "" then
-      matches = true
-      score = 0
-    else
-      matches, score = shared.select_item_matches(query, entry.searchable, true)
-    end
-    if matches then
-      out[#out + 1] = {
-        name = entry.name,
-        display_name = entry.display_name,
-        mode_label = entry.mode_label,
-        desc = entry.desc,
-        category = entry.category,
-        category_label = entry.category_label,
-        chords = entry.chords,
-        run = entry.run,
-        workspace_targetable = entry.workspace_targetable,
-        workspace_index = entry.workspace_index,
-        workspace_id = entry.workspace_id,
-        domain_name = entry.domain_name,
-        searchable = entry.searchable,
-        score = score or 0,
-      }
-    end
+local function build_domain_entries()
+  local domains = hollow.config.get("domains") or {}
+  local current = util.safe_call(hollow.term.current_domain, nil)
+  local current_domain = current and current.name or nil
+  local entries = {}
+  for name, config in pairs(domains) do
+    local shell = type(config) == "table" and config.shell or config
+    local shell_str = type(shell) == "string" and shell or ""
+    entries[#entries + 1] = new_entry({
+      name = name,
+      mode_label = (name == current_domain) and "[current]" or "",
+      desc = shell_str ~= "" and ("(" .. shell_str .. ")") or "",
+      category = "general",
+      category_label = "Domain",
+      domain_name = name,
+      searchable = name .. " " .. shell_str .. " domain",
+    })
   end
-  if query ~= "" then
-    table.sort(out, function(a, b)
+  table.sort(entries, function(a, b)
+    return a.name < b.name
+  end)
+  return entries
+end
+
+local function filtered_entries(all_entries, query)
+  if query == "" then
+    return hollow
+      .tbl(all_entries)
+      :map(function(entry)
+        return util.merge_tables(entry, { score = 0 })
+      end)
+      :get()
+  end
+  return hollow
+    .tbl(all_entries)
+    :filter_map(function(entry)
+      local matches, score = shared.select_item_matches(query, entry.searchable, true)
+      if not matches then
+        return
+      end
+      return util.merge_tables(entry, { score = score or 0 })
+    end)
+    :sort(function(a, b)
       if a.score ~= b.score then
         return a.score > b.score
       end
@@ -150,8 +147,7 @@ local function filtered_entries(all_entries, query)
       end
       return a.category < b.category
     end)
-  end
-  return out
+    :get()
 end
 
 local function grouped_entries(entries, collapsed)
@@ -170,7 +166,8 @@ local function grouped_entries(entries, collapsed)
     groups[cat].items[#groups[cat].items + 1] = entry
   end
   table.sort(order, function(a, b)
-    return (CATEGORY_ORDER[a] or 99) < (CATEGORY_ORDER[b] or 99)
+    return (CATEGORIES[a] and CATEGORIES[a].order or 99)
+      < (CATEGORIES[b] and CATEGORIES[b].order or 99)
   end)
   local flat = {}
   for _, cat in ipairs(order) do
@@ -182,91 +179,6 @@ local function grouped_entries(entries, collapsed)
     end
   end
   return flat
-end
-
-local function selected_item(flat, cursor)
-  if cursor < 1 or cursor > #flat then
-    return nil
-  end
-  local entry = flat[cursor]
-  if entry._type ~= "item" then
-    return nil
-  end
-  return entry.item
-end
-
----@param rows HollowUiRows
----@param value any
-local function append_rows(rows, value)
-  if value == nil then
-    return
-  end
-  for _, row in ipairs(ui.rows(value)) do
-    rows[#rows + 1] = row
-  end
-end
-
----@param flat table
----@param cursor integer
----@return integer, integer
-local function flat_item_index(flat, cursor)
-  local item_count = 0
-  for _, entry in ipairs(flat) do
-    if entry._type == "item" then
-      item_count = item_count + 1
-    end
-  end
-  if cursor < 1 or cursor > #flat then
-    return 0, item_count
-  end
-  local count = 0
-  for idx = 1, cursor do
-    if flat[idx]._type == "item" then
-      count = count + 1
-    end
-  end
-  return count, item_count
-end
-
-local function clamp_cursor(flat, cursor)
-  if #flat == 0 then
-    return 0
-  end
-  if cursor < 1 then
-    return 1
-  end
-  if cursor > #flat then
-    return #flat
-  end
-  return cursor
-end
-
----@param flat table
----@param cursor integer
----@return integer
-local function prev_item(flat, cursor)
-  if #flat == 0 then
-    return 0
-  end
-  cursor = cursor - 1
-  if cursor < 1 then
-    cursor = #flat
-  end
-  return cursor
-end
-
----@param flat table
----@param cursor integer
----@return integer
-local function next_item(flat, cursor)
-  if #flat == 0 then
-    return 0
-  end
-  cursor = cursor + 1
-  if cursor > #flat then
-    cursor = 1
-  end
-  return cursor
 end
 
 ---@param theme HollowUiTheme
@@ -286,19 +198,10 @@ local function render_section_header(
 )
   local tags = ui.tags
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
+  row_options.fill_bg = is_selected and theme.selection_bg
+    or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg))
   return tags.overlay_row(
-    {
-      id = row_options.id,
-      fill_bg = is_selected and theme.selection_bg
-        or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg)),
-      scrollbar_track = row_options.scrollbar_track,
-      scrollbar_thumb = row_options.scrollbar_thumb,
-      scrollbar_id = row_options.scrollbar_id,
-      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
-      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
-      scrollbar_track_color = theme.scrollbar_track,
-      scrollbar_thumb_color = theme.scrollbar_thumb,
-    },
+    row_options,
     tags.text(
       { fg = theme.title, bold = true },
       (is_selected and "> " or (is_hovered and "\226\150\142 " or "  ")) .. arrow .. " " .. label
@@ -314,85 +217,58 @@ end
 ---@return HollowUiRows
 local function render_entry_row(entry, is_selected, is_hovered, theme, row_options)
   local tags = ui.tags
-  local chord_text = ""
-  if #entry.chords > 0 then
-    chord_text = "  " .. table.concat(entry.chords, " ")
-  end
+  local chord_text = #entry.chords > 0 and ("  " .. table.concat(entry.chords, " ")) or ""
+  local label_text = (entry.mode_label ~= "" and (entry.mode_label .. " ") or "")
+    .. (entry.desc ~= "" and entry.desc or entry.display_name)
 
-  local label_text = ""
-  if entry.mode_label and entry.mode_label ~= "" then
-    label_text = entry.mode_label .. " "
-  end
-  if entry.desc and entry.desc ~= "" then
-    label_text = label_text .. entry.desc
-  else
-    label_text = label_text .. entry.display_name
-  end
-
+  local emphasize = is_selected or is_hovered
   local label_nodes = {
     ui.span(is_selected and "  > " or (is_hovered and "  \226\150\142 " or "    "), {
-      fg = (is_selected or is_hovered) and theme.selected_fg or theme.fg,
-      bold = is_selected or is_hovered,
+      fg = emphasize and theme.selected_fg or theme.fg,
+      bold = emphasize,
     }),
-    ui.span(label_text, {
-      fg = (is_selected or is_hovered) and theme.selected_fg or theme.fg,
-    }),
+    ui.span(label_text, { fg = emphasize and theme.selected_fg or theme.fg }),
   }
-
   if chord_text ~= "" then
     label_nodes[#label_nodes + 1] = ui.spacer()
-    label_nodes[#label_nodes + 1] = ui.span(chord_text, {
-      fg = theme.panel_border or theme.muted,
-    })
+    label_nodes[#label_nodes + 1] = ui.span(chord_text, { fg = theme.panel_border or theme.muted })
   end
 
-  return ui.rows(tags.overlay_row({
-    id = row_options.id,
-    fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil),
-    scrollbar_track = row_options.scrollbar_track,
-    scrollbar_thumb = row_options.scrollbar_thumb,
-    scrollbar_id = row_options.scrollbar_id,
-    scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
-    scrollbar_thumb_size = row_options.scrollbar_thumb_size,
-    scrollbar_track_color = theme.scrollbar_track,
-    scrollbar_thumb_color = theme.scrollbar_thumb,
-  }, ui.group(label_nodes)))
+  row_options.fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil)
+  return ui.rows(tags.overlay_row(row_options, ui.group(label_nodes)))
 end
 
 ---@param opts table|nil
 function ui.command_palette.open(opts)
   opts = opts or {}
-
-  local theme = resolve_palette_theme(theme_api.resolve_widget("select"), opts)
+  local theme = theme_api.resolve_widget("select")
+  if type(opts.theme) == "table" then
+    local u = require("hollow.util")
+    u.merge_tables(theme, u.clone_value(opts.theme))
+  end
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local all_entries = opts.entries or build_entries()
-
   local filter = w.text_input({ initial = opts.query or "" })
   local collapsed = {}
+  local nav
+  local modal
 
   local function current_flat()
     return grouped_entries(filtered_entries(all_entries, filter.value), collapsed)
   end
 
-  local modal
-  local nav
   local function activate(index)
     local flat = current_flat()
-    nav.index = clamp_cursor(flat, index or nav.index)
-    local entry = flat[nav.index]
+    index = math.max(1, math.min(#flat, index or nav.index))
+    local entry = flat[index]
     if entry and entry._type == "header" then
       collapsed[entry.category] = not collapsed[entry.category]
       return
     end
-    local item = selected_item(flat, nav.index)
-    if item ~= nil then
+    if entry and entry._type == "item" then
       modal.close()
-      if type(item.run) == "function" then
-        item.run()
-      end
-      if type(opts.on_confirm) == "function" then
-        opts.on_confirm(item)
-      end
+      util.safe_call(entry.item.run)
+      util.safe_call(opts.on_confirm, nil, entry.item)
     end
   end
 
@@ -406,63 +282,63 @@ function ui.command_palette.open(opts)
   })
   nav = selectable.nav
 
-  modal = w.modal({
-    theme = theme,
-    render = function(_, state)
-      local tags = ui.tags
-      local flat = current_flat()
-      nav.index = clamp_cursor(flat, nav.index)
-      local item_idx, total_items = flat_item_index(flat, nav.index)
-      local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
-
-      local viewport = selectable.visible_range()
-
-      local rows = ui.rows(
-        tags.overlay_row(
-          { hoverable = false },
-          tags.text({ fg = theme.title, bold = true }, (opts.prompt or "Command Palette") .. ":"),
-          tags.text({ fg = theme.counter }, counter and ("  " .. counter) or "")
-        ),
-        tags.divider({ color = theme.divider }),
-        tags.overlay_row(
-          { hoverable = false },
-          tags.text({ fg = theme.title, bold = true }, "Filter: "),
-          table_unpack(filter.render(theme))
-        ),
-        tags.divider({ color = theme.divider })
-      )
-
-      if #flat == 0 then
-        rows[#rows + 1] = tags.overlay_row(nil, tags.text({ fg = theme.empty }, " No matches"))
-      else
-        local visible_index = 0
-        for idx = viewport.start_idx, viewport.end_idx do
-          local entry = flat[idx]
-          visible_index = visible_index + 1
-          local row_id, row_options = selectable.row(idx, idx, visible_index, viewport)
-          local is_selected = (idx == nav.index)
-          local is_hovered = state and state.hovered_id == row_id
-          if entry._type == "header" then
-            rows[#rows + 1] = render_section_header(
-              theme,
-              entry.label,
-              is_selected,
-              is_hovered,
-              collapsed[entry.category],
-              row_options
-            )
-          elseif entry._type == "item" then
-            append_rows(
-              rows,
-              render_entry_row(entry.item, is_selected, is_hovered, theme, row_options)
-            )
-          end
+  local function render_content(_, state)
+    local tags = ui.tags
+    local flat = current_flat()
+    nav.index = math.max(1, math.min(#flat, nav.index or 1))
+    local item_idx, total_items = 0, 0
+    for idx, entry in ipairs(flat) do
+      if entry._type == "item" then
+        total_items = total_items + 1
+        if idx <= nav.index then
+          item_idx = total_items
         end
       end
-
-      append_rows(rows, tags.divider({ color = theme.divider }))
-      append_rows(
-        rows,
+    end
+    local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
+    local viewport = selectable.visible_range()
+    local rows = ui.rows(
+      tags.overlay_row(
+        { hoverable = false },
+        tags.text({ fg = theme.title, bold = true }, (opts.prompt or "Command Palette") .. ":"),
+        tags.text({ fg = theme.counter }, counter and ("  " .. counter) or "")
+      ),
+      tags.divider({ color = theme.divider }),
+      tags.overlay_row(
+        { hoverable = false },
+        tags.text({ fg = theme.title, bold = true }, "Filter: "),
+        table_unpack(filter.render(theme))
+      ),
+      tags.divider({ color = theme.divider })
+    )
+    if #flat == 0 then
+      rows[#rows + 1] = tags.overlay_row(nil, tags.text({ fg = theme.empty }, " No matches"))
+    else
+      local visible_index = 0
+      for idx = viewport.start_idx, viewport.end_idx do
+        local entry = flat[idx]
+        visible_index = visible_index + 1
+        local row_id, row_options = selectable.row(idx, idx, visible_index, viewport)
+        local is_selected = (idx == nav.index)
+        local is_hovered = state and state.hovered_id == row_id
+        if entry._type == "header" then
+          rows[#rows + 1] = render_section_header(
+            theme,
+            entry.label,
+            is_selected,
+            is_hovered,
+            collapsed[entry.category],
+            row_options
+          )
+        elseif entry._type == "item" then
+          hollow.tbl(rows):concat(
+            ui.rows(render_entry_row(entry.item, is_selected, is_hovered, theme, row_options))
+          )
+        end
+      end
+    end
+    hollow.tbl(rows):concat(ui.rows(tags.divider({ color = theme.divider }))):concat(
+      ui.rows(
         tags.overlay_row(
           nil,
           tags.text({ fg = theme.panel_border, bold = true }, "<CR>"),
@@ -471,28 +347,34 @@ function ui.command_palette.open(opts)
           tags.text({ fg = theme.muted }, " dismiss")
         )
       )
+    )
+    return rows
+  end
 
-      return rows
-    end,
+  modal = w.modal({
+    theme = theme,
+    render = render_content,
     keys = w.keys(filter, nav, {
       escape = function()
         modal.close()
-        if type(opts.on_cancel) == "function" then
-          opts.on_cancel()
-        end
+        util.safe_call(opts.on_cancel)
       end,
       arrow_down = function()
         local flat = current_flat()
-        nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
-          nav.index = next_item(flat, nav.index)
+          nav.index = nav.index + 1
+          if nav.index > #flat then
+            nav.index = 1
+          end
         end
       end,
       arrow_up = function()
         local flat = current_flat()
-        nav.index = clamp_cursor(flat, nav.index)
         if #flat > 0 then
-          nav.index = prev_item(flat, nav.index)
+          nav.index = nav.index - 1
+          if nav.index < 1 then
+            nav.index = #flat
+          end
         end
       end,
       enter = function()
@@ -512,40 +394,6 @@ function ui.command_palette.close()
   ui.overlay.pop()
 end
 
-local function build_domain_entries()
-  local domains = hollow.config.get("domains") or {}
-  local current_domain = nil
-  local current_pane_id = host_api.current_pane_id and host_api.current_pane_id() or nil
-  if current_pane_id and host_api.get_pane_domain then
-    current_domain = host_api.get_pane_domain(current_pane_id)
-  end
-  local entries = {}
-  for name, config in pairs(domains) do
-    local shell = type(config) == "table" and config.shell or config
-    local desc = type(shell) == "string" and ("(" .. shell .. ")") or ""
-    local searchable = name .. " " .. (type(shell) == "string" and shell or "") .. " domain"
-    entries[#entries + 1] = {
-      name = name,
-      display_name = name,
-      mode_label = (name == current_domain) and "[current]" or "",
-      desc = desc,
-      category = "general",
-      category_label = "Domain",
-      chords = {},
-      run = nil,
-      workspace_targetable = false,
-      domain_name = name,
-      searchable = searchable,
-      searchable_lower = searchable:lower(),
-    }
-  end
-  table.sort(entries, function(a, b)
-    return a.name < b.name
-  end)
-  return entries
-end
-
 ui.command_palette.build_workspace_entries = build_workspace_entries
 ui.command_palette.build_domain_entries = build_domain_entries
-
 return {}
