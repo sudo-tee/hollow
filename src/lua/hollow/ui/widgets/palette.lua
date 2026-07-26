@@ -1,8 +1,10 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
-local util = require("src.lua.hollow.util")
+local util = require("hollow.util")
+
 local hollow = _G.hollow
 local ui = hollow.ui
+
 ui.command_palette = ui.command_palette or {}
 
 local CATEGORIES = {
@@ -24,20 +26,17 @@ local function category_order(cat)
   return CATEGORIES[cat] and CATEGORIES[cat].order or 99
 end
 
---- Joins the truthy, non-empty arguments with spaces. Built for assembling
---- `searchable` strings without a chain of `(x or "") .. " " .. ...`.
 local function words(...)
-  local parts = {}
-  for _, value in ipairs({ ... }) do
-    if value ~= nil and value ~= "" then
-      parts[#parts + 1] = tostring(value)
-    end
-  end
-  return table.concat(parts, " ")
+  local values = { ... }
+  return hollow.tbl
+    .range(1, select("#", ...))
+    :filter_map(function(index)
+      local value = values[index]
+      return value ~= nil and value ~= "" and tostring(value) or nil
+    end)
+    :join(" ")
 end
 
---- Advances `index` by `delta` positions, wrapping around a list of `count`
---- items. Returns `index` unchanged when there's nothing to cycle through.
 local function cycle_index(index, delta, count)
   if count == 0 then
     return index
@@ -45,30 +44,13 @@ local function cycle_index(index, delta, count)
   return (index + delta - 1) % count + 1
 end
 
---- The fill color for a selectable row: selection beats hover beats fallback.
-local function row_bg(theme, is_selected, is_hovered, fallback)
-  if is_selected then
-    return theme.selection_bg
-  elseif is_hovered then
-    return theme.hover_bg
-  end
-  return fallback
-end
-
 local MARKER_SELECTED = "> "
 local MARKER_HOVERED = "\226\150\142 " -- ▎
 local MARKER_NONE = "  "
 
---- The leading cursor glyph for a row, optionally indented (entry rows sit
---- two columns deeper than section headers).
 local function marker(is_selected, is_hovered, indent)
-  indent = indent or ""
-  if is_selected then
-    return indent .. MARKER_SELECTED
-  elseif is_hovered then
-    return indent .. MARKER_HOVERED
-  end
-  return indent .. MARKER_NONE
+  return (indent or "")
+    .. util.state_value(is_selected, is_hovered, MARKER_SELECTED, MARKER_HOVERED, MARKER_NONE)
 end
 
 local DEFAULT_TOTAL_ROWS = 24
@@ -79,6 +61,22 @@ local function list_row_budget(opts)
     or shared.normalize_overlay_size(opts.max_height)
     or DEFAULT_TOTAL_ROWS
   return math.max(1, total - 5)
+end
+
+local function resolve_theme(opts)
+  local theme = theme_api.resolve_widget("select")
+  if type(opts.theme) == "table" then
+    util.merge_tables(theme, util.clone_value(opts.theme))
+  end
+  return theme
+end
+
+local function styled_row_options(row_options, theme, fill_bg)
+  return util.merge_tables(hollow.tbl(row_options):entries(), {
+    fill_bg = fill_bg,
+    scrollbar_track_color = theme.scrollbar_track,
+    scrollbar_thumb_color = theme.scrollbar_thumb,
+  })
 end
 
 local ENTRY_DEFAULTS = {
@@ -94,7 +92,6 @@ local function new_entry(fields)
   entry.display_name = entry.display_name or entry.name
   entry.category_label = entry.category_label or category_label(entry.category)
   entry.searchable = entry.searchable or entry.name
-  entry.searchable_lower = entry.searchable:lower()
   return entry
 end
 
@@ -151,8 +148,6 @@ function providers.workspaces()
 end
 
 function providers.domains()
-  -- A dict of name -> config, not a list, so it doesn't fit `map` -- it still
-  -- needs its own pass to become an array, then a sort.
   local domains = hollow.config.get("domains") or {}
   local current = util.safe_call(hollow.term.current_domain, nil)
   local current_domain = current and current.name or nil
@@ -171,41 +166,41 @@ function providers.domains()
       searchable = words(name, shell_str, "domain"),
     })
   end
-  table.sort(entries, function(a, b)
-    return a.name < b.name
-  end)
-  return entries
+  return hollow
+    .tbl(entries)
+    :sort(function(a, b)
+      return a.name < b.name
+    end)
+    :get()
 end
 
 local function filtered_entries(all_entries, query)
-  local scored = hollow
+  local entries = hollow
     .tbl(all_entries)
     :filter_map(function(entry)
       if query == "" then
-        return util.merge_tables(entry, { score = 0 })
+        return util.merge_tables(hollow.tbl(entry):entries(), { score = 0 })
       end
       local matches, score = shared.select_item_matches(query, entry.searchable, true)
       if not matches then
         return
       end
-      return util.merge_tables(entry, { score = score or 0 })
+      return util.merge_tables(hollow.tbl(entry):entries(), { score = score or 0 })
     end)
     :get()
 
-  if query == "" then
-    return scored
+  if query ~= "" then
+    hollow.tbl(entries):sort(function(a, b)
+      if a.score ~= b.score then
+        return a.score > b.score
+      elseif a.name ~= b.name then
+        return a.name < b.name
+      end
+      return a.category < b.category
+    end)
   end
 
-  table.sort(scored, function(a, b)
-    if a.score ~= b.score then
-      return a.score > b.score
-    end
-    if a.name ~= b.name then
-      return a.name < b.name
-    end
-    return a.category < b.category
-  end)
-  return scored
+  return entries
 end
 
 local function grouped_entries(entries, collapsed)
@@ -213,36 +208,35 @@ local function grouped_entries(entries, collapsed)
   local groups, order = util.group_by(entries, function(entry)
     return entry.category
   end)
-  table.sort(order, function(a, b)
-    return category_order(a) < category_order(b)
-  end)
-
-  local flat = {}
-  for _, cat in ipairs(order) do
-    local items = groups[cat]
-    flat[#flat + 1] = { _type = "header", label = items[1].category_label, category = cat }
-    if not collapsed[cat] then
-      for _, item in ipairs(items) do
-        flat[#flat + 1] = { _type = "item", item = item }
-      end
-    end
-  end
-  return flat
+  return hollow
+    .tbl(order)
+    :sort(function(a, b)
+      return category_order(a) < category_order(b)
+    end)
+    :flat_map(function(category)
+      local items = groups[category]
+      local children = collapsed[category] and {}
+        or hollow
+          .tbl(items)
+          :map(function(item)
+            return { _type = "item", item = item }
+          end)
+          :get()
+      return hollow
+        .tbl({
+          { _type = "header", label = items[1].category_label, category = category },
+        })
+        :concat(children)
+        :get()
+    end)
+    :get()
 end
 
---- Where `index` sits among just the selectable items in `flat` (headers
---- don't count), plus how many selectable items there are in total.
 local function item_position(flat, index)
-  local position, total = 0, 0
-  for idx, entry in ipairs(flat) do
-    if entry._type == "item" then
-      total = total + 1
-      if idx <= index then
-        position = total
-      end
-    end
+  local is_item = function(entry)
+    return entry._type == "item"
   end
-  return position, total
+  return hollow.tbl(flat):take(index):count(is_item), hollow.tbl(flat):count(is_item)
 end
 
 ---@param theme HollowUiTheme
@@ -261,17 +255,25 @@ local function render_section_header(
   row_options
 )
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
-  local final_opts = util.merge_tables(util.clone_value(row_options), {
-    fill_bg = row_bg(theme, is_selected, is_hovered, theme.selected_detail_bg or theme.panel_bg),
-    scrollbar_track_color = theme.scrollbar_track,
-    scrollbar_thumb_color = theme.scrollbar_thumb,
-  })
-  return ui.row({
-    ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {
-      fg = theme.title,
-      bold = true,
-    }),
-  }, final_opts)
+  return ui.row(
+    {
+      ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {
+        fg = theme.title,
+        bold = true,
+      }),
+    },
+    styled_row_options(
+      row_options,
+      theme,
+      util.state_value(
+        is_selected,
+        is_hovered,
+        theme.selection_bg,
+        theme.hover_bg,
+        theme.selected_detail_bg or theme.panel_bg
+      )
+    )
+  )
 end
 
 ---@param entry table
@@ -285,32 +287,26 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
   local label_text = (entry.mode_label ~= "" and (entry.mode_label .. " ") or "")
     .. (entry.desc ~= "" and entry.desc or entry.display_name)
   local emphasize = is_selected or is_hovered
-  local fg = emphasize and theme.selected_fg or theme.fg
-
-  local label_nodes = {
-    ui.span(marker(is_selected, is_hovered, "  "), { fg = fg, bold = emphasize }),
-    ui.span(label_text, { fg = fg }),
-  }
-  if chord_text ~= "" then
-    label_nodes[#label_nodes + 1] = ui.spacer()
-    label_nodes[#label_nodes + 1] = ui.span(chord_text, { fg = theme.panel_border or theme.muted })
-  end
-
-  local final_opts = util.merge_tables(util.clone_value(row_options), {
-    fill_bg = row_bg(theme, is_selected, is_hovered, nil),
-    scrollbar_track_color = theme.scrollbar_track,
-    scrollbar_thumb_color = theme.scrollbar_thumb,
-  })
-  return ui.row({ ui.group(label_nodes) }, final_opts)
+  local fg =
+    util.state_value(is_selected, is_hovered, theme.selected_fg, theme.selected_fg, theme.fg)
+  local label_nodes = hollow
+    .tbl({
+      ui.span(marker(is_selected, is_hovered, "  "), { fg = fg, bold = emphasize }),
+      ui.span(label_text, { fg = fg }),
+    })
+    :concat(chord_text ~= "" and {
+      ui.spacer(),
+      ui.span(chord_text, { fg = theme.panel_border or theme.muted }),
+    } or {})
+    :get()
+  local fill_bg = util.state_value(is_selected, is_hovered, theme.selection_bg, theme.hover_bg)
+  return ui.row({ ui.group(label_nodes) }, styled_row_options(row_options, theme, fill_bg))
 end
 
 ---@param opts table|nil
 function ui.command_palette.open(opts)
   opts = opts or {}
-  local theme = theme_api.resolve_widget("select")
-  if type(opts.theme) == "table" then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
+  local theme = resolve_theme(opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local all_entries = opts.entries or providers.actions()
   local filter = ui.text_input({ initial = opts.query or "" })
@@ -353,53 +349,58 @@ function ui.command_palette.open(opts)
     local item_idx, total_items = item_position(flat, nav.index)
     local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
     local viewport = selectable.visible_range()
+    local entry_rows = #flat > 0
+        and hollow.tbl
+          .range(viewport.start_idx, viewport.end_idx)
+          :filter_map(function(index, visible_index)
+            local entry = flat[index]
+            local row_id, row_options = selectable.row(index, index, visible_index, viewport)
+            local is_selected = index == nav.index
+            local is_hovered = state and state.hovered_id == row_id
+            if entry._type == "header" then
+              return render_section_header(
+                theme,
+                entry.label,
+                is_selected,
+                is_hovered,
+                collapsed[entry.category],
+                row_options
+              )
+            elseif entry._type == "item" then
+              return render_entry_row(entry.item, is_selected, is_hovered, theme, row_options)
+            end
+          end)
+          :get()
+      or {
+        ui.row({ ui.text("No matches", { fg = theme.empty }) }),
+      }
 
-    local rows = {
-      ui.row({
-        ui.text((opts.prompt or "Command Palette") .. ":", { fg = theme.title, bold = true }),
-        ui.text(counter and ("  " .. counter) or "", { fg = theme.counter }),
-      }),
-      ui.divider(theme.divider),
-      ui.row({
-        ui.text("Filter: ", { fg = theme.title, bold = true }),
-        ui.group(filter.render(theme)),
-      }),
-      ui.divider(theme.divider),
-    }
-
-    if #flat == 0 then
-      rows[#rows + 1] = ui.row({ ui.text("No matches", { fg = theme.empty }) })
-    else
-      local visible_index = 0
-      for idx = viewport.start_idx, viewport.end_idx do
-        local entry = flat[idx]
-        visible_index = visible_index + 1
-        local row_id, row_options = selectable.row(idx, idx, visible_index, viewport)
-        local is_selected = (idx == nav.index)
-        local is_hovered = state and state.hovered_id == row_id
-        if entry._type == "header" then
-          rows[#rows + 1] = render_section_header(
-            theme,
-            entry.label,
-            is_selected,
-            is_hovered,
-            collapsed[entry.category],
-            row_options
-          )
-        elseif entry._type == "item" then
-          rows[#rows + 1] =
-            render_entry_row(entry.item, is_selected, is_hovered, theme, row_options)
-        end
-      end
-    end
-
-    rows[#rows + 1] = ui.divider(theme.divider)
-    rows[#rows + 1] = ui.row({
-      ui.text("<CR>", { fg = theme.panel_border, bold = true }),
-      ui.text(" execute  ", { fg = theme.muted }),
-      ui.text("<Esc>", { fg = theme.panel_border, bold = true }),
-      ui.text(" dismiss", { fg = theme.muted }),
-    })
+    local rows = hollow
+      .tbl({
+        ui.row({
+          ui.text((opts.prompt or "Command Palette") .. ":", {
+            fg = theme.title,
+            bold = true,
+          }),
+          ui.text(counter and ("  " .. counter) or "", { fg = theme.counter }),
+        }),
+        ui.divider(theme.divider),
+        ui.row({
+          ui.text("Filter: ", { fg = theme.title, bold = true }),
+          ui.group(filter.render(theme)),
+        }),
+        ui.divider(theme.divider),
+      })
+      :concat(entry_rows, {
+        ui.divider(theme.divider),
+        ui.row({
+          ui.text("<CR>", { fg = theme.panel_border, bold = true }),
+          ui.text(" execute  ", { fg = theme.muted }),
+          ui.text("<Esc>", { fg = theme.panel_border, bold = true }),
+          ui.text(" dismiss", { fg = theme.muted }),
+        }),
+      })
+      :get()
     return ui.column(rows)
   end
 

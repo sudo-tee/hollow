@@ -305,7 +305,7 @@ hollow.keymap.default("<leader>p", "command_palette", { desc = "command palette"
 -- hollow.ui.workspace.configure({
 --   sources = {
 --     {
---       domain = "wsl",
+--       domain = "UbuntuWSL",
 --       cwd_resolver = "wsl_unc",
 --       roots = {
 --         "\\\\wsl$\\Ubuntu\\home\\me\\Projects",

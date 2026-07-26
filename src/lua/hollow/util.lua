@@ -11,6 +11,7 @@ local M = {}
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
 ---@field safe_call fun(fn:function|nil, default:any, ...:any): any
+---@field state_value fun(is_selected:boolean, is_hovered:boolean, selected:any, hovered:any, fallback:any): any
 ---@field group_by fun(list:table, key_fn:fun(item:any):any): table, any[]
 ---@field has_any_key fun(t:table, keys:table): boolean
 ---@field utf8_len fun(s:string): integer
@@ -71,6 +72,21 @@ function M.safe_call(fn, default, ...)
     return value
   end
   return default
+end
+
+---@param is_selected boolean
+---@param is_hovered boolean
+---@param selected any
+---@param hovered any
+---@param fallback any
+---@return any
+function M.state_value(is_selected, is_hovered, selected, hovered, fallback)
+  if is_selected then
+    return selected
+  elseif is_hovered then
+    return hovered
+  end
+  return fallback
 end
 
 ---@param name string

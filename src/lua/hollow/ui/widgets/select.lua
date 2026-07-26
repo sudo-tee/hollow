@@ -11,10 +11,10 @@ ui.select = ui.select or {}
 
 local DEFAULT_TOTAL_ROWS = 14
 
----@param theme HollowUiTheme
 ---@param opts HollowUiSelectOptions
 ---@return HollowUiTheme
-local function resolve_select_theme(theme, opts)
+local function resolve_select_theme(opts)
+  local theme = theme_api.resolve_widget("select")
   if type(opts.theme) == "table" then
     util.merge_tables(theme, util.clone_value(opts.theme))
   end
@@ -33,13 +33,51 @@ local function list_row_budget(opts)
   local total = shared.normalize_overlay_size(opts.height)
     or shared.normalize_overlay_size(opts.max_height)
     or DEFAULT_TOTAL_ROWS
-  local reserved = 4
+  local footer_rows = #(opts.actions or {}) > 0 and 2 or 0
+  return math.max(1, total - 4 - footer_rows)
+end
 
-  if #(opts.actions or {}) > 0 then
-    reserved = reserved + 2
-  end
+---@param value any
+---@return HollowUiRenderableNode[], string
+local function inline_content(value)
+  local nodes = shared.normalize_inline_nodes(value)
+  return nodes, shared.nodes_plain_text(nodes)
+end
 
-  return math.max(1, total - reserved)
+---@param opts HollowUiSelectOptions
+---@return HollowUiSelectEntry[]
+local function prepare_entries(opts)
+  return hollow
+    .tbl(opts.items or {})
+    :map(function(item, source_index)
+      local label_nodes, label_text = inline_content((opts.label or tostring)(item))
+      local detail_nodes, detail_text
+      if type(opts.detail) == "function" then
+        detail_nodes, detail_text = inline_content(opts.detail(item))
+        if detail_text == "" then
+          detail_nodes, detail_text = nil, nil
+        end
+      end
+
+      local searchable = type(opts.search_text) == "function"
+          and tostring(opts.search_text(item) or "")
+        or ""
+      if searchable == "" then
+        searchable = detail_text and (label_text .. "\n" .. detail_text) or label_text
+      end
+
+      return {
+        item = item,
+        label_nodes = label_nodes,
+        label_text = label_text,
+        detail_nodes = detail_nodes,
+        detail_text = detail_text,
+        searchable = searchable,
+        searchable_lower = searchable:lower(),
+        source_index = source_index,
+      }
+    end)
+    :get()
 end
 
 ---@param raw string
@@ -60,98 +98,34 @@ local function normalize_hint_chord(raw)
 end
 
 ---@param opts HollowUiSelectOptions
----@param item any
----@return HollowUiRenderableNode[], string, HollowUiRenderableNode[]|nil, string|nil, string
-local function build_entry_text(opts, item)
-  local label_value = (opts.label or tostring)(item)
-  local label_nodes = shared.normalize_inline_nodes(label_value)
-  local label_text = shared.nodes_plain_text(label_nodes)
-
-  local detail_nodes = nil
-  local detail_text = nil
-  if type(opts.detail) == "function" then
-    detail_nodes = shared.normalize_inline_nodes(opts.detail(item))
-    detail_text = shared.nodes_plain_text(detail_nodes)
-    if detail_text == "" then
-      detail_nodes = nil
-      detail_text = nil
-    end
-  end
-
-  local searchable = nil
-  if type(opts.search_text) == "function" then
-    searchable = tostring(opts.search_text(item) or "")
-  end
-  if searchable == nil or searchable == "" then
-    searchable = label_text
-    if detail_text then
-      searchable = searchable .. "\n" .. detail_text
-    end
-  end
-
-  return label_nodes, label_text, detail_nodes, detail_text, searchable
-end
-
----@param opts HollowUiSelectOptions
----@return HollowUiSelectEntry[]
-local function prepared_entries(opts)
-  local entries = {}
-
-  for source_index, item in ipairs(opts.items or {}) do
-    local label_nodes, label_text, detail_nodes, detail_text, searchable =
-      build_entry_text(opts, item)
-
-    entries[#entries + 1] = {
-      item = item,
-      label_nodes = label_nodes,
-      label_text = label_text,
-      detail_nodes = detail_nodes,
-      detail_text = detail_text,
-      searchable = searchable,
-      searchable_lower = tostring(searchable):lower(),
-      source_index = source_index,
-    }
-  end
-
-  return entries
-end
-
----@param opts HollowUiSelectOptions
 ---@param query string
----@param query_lower string
 ---@param prepared HollowUiSelectEntry[]
 ---@return HollowUiSelectEntry[]
-local function filtered_entries(opts, query, query_lower, prepared)
-  local entries = {}
+local function filtered_entries(opts, query, prepared)
   local fuzzy = opts.fuzzy ~= false
-
-  for _, prepared_entry in ipairs(prepared) do
-    local matches, score
-    if fuzzy then
-      matches, score = shared.select_item_matches(query, prepared_entry.searchable, true)
-    else
-      score = shared.plain_match_score_lower(prepared_entry.searchable_lower, query_lower)
-      matches = score ~= nil
-    end
-    if matches then
-      entries[#entries + 1] = {
-        item = prepared_entry.item,
-        label_nodes = prepared_entry.label_nodes,
-        label_text = prepared_entry.label_text,
-        detail_nodes = prepared_entry.detail_nodes,
-        detail_text = prepared_entry.detail_text,
-        source_index = prepared_entry.source_index,
-        score = score or 0,
-      }
-    end
-  end
+  local query_lower = query:lower()
+  local entries = hollow
+    .tbl(prepared)
+    :filter_map(function(entry)
+      local matches, score
+      if fuzzy then
+        matches, score = shared.select_item_matches(query, entry.searchable, true)
+      else
+        score = shared.plain_match_score_lower(entry.searchable_lower, query_lower)
+        matches = score ~= nil
+      end
+      if not matches then
+        return
+      end
+      return util.merge_tables(hollow.tbl(entry):entries(), { score = score or 0 })
+    end)
+    :get()
 
   if fuzzy and query ~= "" then
-    table.sort(entries, function(a, b)
+    hollow.tbl(entries):sort(function(a, b)
       if a.score ~= b.score then
         return a.score > b.score
-      end
-      if a.label_text ~= b.label_text then
+      elseif a.label_text ~= b.label_text then
         return a.label_text < b.label_text
       end
       return a.source_index < b.source_index
@@ -175,28 +149,18 @@ local function clamp_index(index, entries)
   return index
 end
 
----@param rows HollowUiRows
----@param value any
-local function append_rows(rows, value)
-  if value == nil then
-    return
-  end
-
-  if value._type == "row" then
-    rows[#rows + 1] = value
-  elseif value._type == "column" then
-    for _, row in ipairs(value.children) do
-      rows[#rows + 1] = row
-    end
-  else
-    error("append_rows expects ui.row() or ui.column()")
-  end
-end
-
 ---@param theme HollowUiTheme
 ---@return HollowUiRowNode
 local function render_empty_row(theme)
   return ui.row({ ui.text("No matches", { fg = theme.empty }) })
+end
+
+local function styled_row_options(row_options, theme, fill_bg)
+  return util.merge_tables(hollow.tbl(row_options):entries(), {
+    fill_bg = fill_bg,
+    scrollbar_track_color = theme.scrollbar_track,
+    scrollbar_thumb_color = theme.scrollbar_thumb,
+  })
 end
 
 ---@param entry HollowUiSelectEntry
@@ -206,139 +170,88 @@ end
 ---@param row_options table
 ---@return HollowUiRows
 local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options)
-  local indicator
-  if is_selected then
-    indicator = "> "
-  elseif is_hovered then
-    indicator = "▎ "
-  else
-    indicator = "  "
-  end
-  local indicator_fg = is_selected and theme.selection_fg
-    or (is_hovered and theme.selection_fg or theme.fg)
-
-  local label_nodes = {
-    ui.span(indicator, {
-      fg = indicator_fg,
-      bold = is_selected or is_hovered,
-    }),
-  }
-
-  for _, node in ipairs(entry.label_nodes or {}) do
-    label_nodes[#label_nodes + 1] = node
-  end
-
-  local row_fill_bg
-  if is_selected then
-    row_fill_bg = theme.selection_bg
-  elseif is_hovered then
-    row_fill_bg = theme.hover_bg
-  end
-  local row_fg = is_selected and theme.selection_fg or (is_hovered and theme.hover_fg or theme.fg)
-
-  local detail_row
-  if entry.detail_text and entry.detail_text ~= "" then
-    local detail_fg = is_selected and theme.selected_muted
-      or (is_hovered and theme.selected_muted or theme.detail)
-    local detail_bg = is_selected and theme.selected_detail_bg
-      or (is_hovered and theme.hover_bg or nil)
-    local detail_nodes = {
-      ui.span("   ", { fg = detail_fg }),
-    }
-    for _, node in ipairs(entry.detail_nodes or {}) do
-      detail_nodes[#detail_nodes + 1] = node
-    end
-
-    detail_row = ui.row({ ui.group(detail_nodes, { fg = detail_fg }) }, {
-      id = row_options.id,
-      fill_bg = detail_bg,
-      scrollbar_track = row_options.scrollbar_track,
-      scrollbar_thumb = row_options.scrollbar_thumb,
-      scrollbar_id = row_options.scrollbar_id,
-      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
-      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
-      scrollbar_track_color = theme.scrollbar_track,
-      scrollbar_thumb_color = theme.scrollbar_thumb,
-    })
-  end
+  local emphasized = is_selected or is_hovered
+  local indicator = util.state_value(is_selected, is_hovered, "> ", "▎ ", "  ")
+  local indicator_fg =
+    util.state_value(is_selected, is_hovered, theme.selection_fg, theme.selection_fg, theme.fg)
+  local row_fg =
+    util.state_value(is_selected, is_hovered, theme.selection_fg, theme.hover_fg, theme.fg)
+  local row_bg = util.state_value(is_selected, is_hovered, theme.selection_bg, theme.hover_bg)
+  local label_nodes = hollow
+    .tbl({ ui.span(indicator, { fg = indicator_fg, bold = emphasized }) })
+    :concat(entry.label_nodes or {})
+    :get()
 
   local rows = {
-    ui.row({ ui.group(label_nodes, { fg = row_fg }) }, {
-      id = row_options.id,
-      fill_bg = row_fill_bg,
-      scrollbar_track = row_options.scrollbar_track,
-      scrollbar_thumb = row_options.scrollbar_thumb,
-      scrollbar_id = row_options.scrollbar_id,
-      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
-      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
-      scrollbar_track_color = theme.scrollbar_track,
-      scrollbar_thumb_color = theme.scrollbar_thumb,
-    }),
+    ui.row(
+      { ui.group(label_nodes, { fg = row_fg }) },
+      styled_row_options(row_options, theme, row_bg)
+    ),
   }
-  if detail_row then
-    rows[#rows + 1] = detail_row
+
+  if entry.detail_text and entry.detail_text ~= "" then
+    local detail_fg = util.state_value(
+      is_selected,
+      is_hovered,
+      theme.selected_muted,
+      theme.selected_muted,
+      theme.detail
+    )
+    local detail_bg =
+      util.state_value(is_selected, is_hovered, theme.selected_detail_bg, theme.hover_bg)
+    local detail_nodes =
+      hollow.tbl({ ui.span("   ", { fg = detail_fg }) }):concat(entry.detail_nodes or {}):get()
+    rows[#rows + 1] = ui.row(
+      { ui.group(detail_nodes, { fg = detail_fg }) },
+      styled_row_options(row_options, theme, detail_bg)
+    )
   end
-  return ui.column(rows)
+
+  return rows
 end
 
----@param opts HollowUiSelectOptions
+---@param actions HollowUiSelectAction[]
 ---@param theme HollowUiTheme
 ---@return HollowUiRows|nil
-local function render_hint_rows(opts, theme)
-  local hint_nodes = {}
-
-  for _, action in ipairs(opts.actions or {}) do
-    local key_hint = action.key
-      or (action.name == (opts.actions[1] and opts.actions[1].name) and "<CR>" or nil)
-    if key_hint then
-      local chord = normalize_hint_chord(key_hint)
-      local description = action.desc or action.name or "action"
-      if #hint_nodes > 0 then
-        hint_nodes[#hint_nodes + 1] = ui.text("  ", { fg = theme.divider })
+local function render_hint_rows(actions, theme)
+  local hints = hollow
+    .tbl(actions)
+    :filter_map(function(action, index)
+      local key_hint = action.key or (index == 1 and "<CR>" or nil)
+      if not key_hint then
+        return
       end
-      hint_nodes[#hint_nodes + 1] = ui.text(chord, { fg = theme.panel_border, bold = true })
-      hint_nodes[#hint_nodes + 1] = ui.text(" " .. description, { fg = theme.muted })
-    end
-  end
+      return {
+        ui.text(normalize_hint_chord(key_hint), { fg = theme.panel_border, bold = true }),
+        ui.text(" " .. (action.desc or action.name or "action"), { fg = theme.muted }),
+      }
+    end)
+    :get()
 
-  if #hint_nodes == 0 then
+  if #hints == 0 then
     return nil
   end
 
-  return ui.column({ ui.divider(theme.divider), ui.row(hint_nodes) })
-end
-
----@param opts HollowUiSelectOptions
----@param query string
----@param query_lower string
----@param selected_index integer
----@param action_index integer
----@param prepared HollowUiSelectEntry[]
----@return boolean
-local function invoke_action(opts, query, query_lower, selected_index, action_index, prepared)
-  local entries = filtered_entries(opts, query, query_lower, prepared)
-  local idx = clamp_index(selected_index, entries)
-
-  local action = opts.actions and opts.actions[action_index]
-  if action == nil then
-    return false
-  end
-
-  local entry = entries[idx]
-  if type(action.fn) == "function" then
-    action.fn(entry and entry.item or nil)
-  end
-
-  return true
+  local hint_nodes = hollow
+    .tbl(hints)
+    :flat_map(function(nodes, index)
+      if index == 1 then
+        return nodes
+      end
+      return hollow.tbl({ ui.text("  ", { fg = theme.divider }) }):concat(nodes):get()
+    end)
+    :get()
+  return { ui.divider(theme.divider), ui.row(hint_nodes) }
 end
 
 ---@param opts HollowUiSelectOptions|nil
 function ui.select.open(opts)
   opts = opts or {} --[[@as HollowUiSelectOptions]]
 
-  local theme = resolve_select_theme(theme_api.resolve_widget("select"), opts)
+  local theme = resolve_select_theme(opts)
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
-  local prepared = prepared_entries(opts)
+  local prepared = prepare_entries(opts)
+  local actions = opts.actions or {}
 
   local selectable
   local filter = ui.text_input({
@@ -349,7 +262,19 @@ function ui.select.open(opts)
   })
 
   local function current_entries()
-    return filtered_entries(opts, filter.value, filter.value:lower(), prepared)
+    return filtered_entries(opts, filter.value, prepared)
+  end
+
+  local function activate(action_index, selected_index)
+    local action = actions[action_index]
+    if not action then
+      return
+    end
+    local entries = current_entries()
+    local entry = entries[clamp_index(selected_index, entries)]
+    if type(action.fn) == "function" then
+      action.fn(entry and entry.item or nil)
+    end
   end
 
   selectable = ui.selectable_list({
@@ -360,65 +285,74 @@ function ui.select.open(opts)
     end,
     row_count_fn = entry_row_count,
     on_activate = function(index)
-      invoke_action(opts, filter.value, filter.value:lower(), index, 1, prepared)
+      activate(1, index)
     end,
   })
   local nav = selectable.nav
 
-  local action_keys = {}
-  for i, action in ipairs(opts.actions or {}) do
-    local hint = action.key
-    if hint and hint ~= "" then
-      local idx = i
-      action_keys[hint] = function()
-        invoke_action(opts, filter.value, filter.value:lower(), nav.index, idx, prepared)
+  local action_keys = hollow.tbl(actions):reduce(function(keys, action, action_index)
+    if action.key and action.key ~= "" then
+      keys[action.key] = function()
+        activate(action_index, nav.index)
       end
+    end
+    return keys
+  end, {})
+
+  local function move_selection(delta)
+    local count = #current_entries()
+    if count > 0 then
+      nav.index = (nav.index + delta - 1) % count + 1
     end
   end
 
   ---@type HollowUiModalHandle
-  local m
-  m = ui.modal({
+  local modal
+  modal = ui.modal({
     theme = theme,
     render = function(render_theme, state)
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-
       local viewport = selectable.visible_range()
-
       local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
+      local entry_rows = hollow.tbl
+        .range(viewport.start_idx, viewport.end_idx)
+        :flat_map(function(index, visible_index)
+          local entry = entries[index] --[[@as HollowUiSelectEntry]]
+          local row_id, row_options =
+            selectable.row(index, entry.source_index, visible_index, viewport)
+          return render_entry_rows(
+            entry,
+            index == nav.index,
+            state and state.hovered_id == row_id,
+            render_theme,
+            row_options
+          )
+        end)
+        :get()
 
-      local rows = {
-        ui.row({
-          ui.text((opts.prompt or "Select") .. ":", { fg = render_theme.title, bold = true }),
-          ui.text(counter and ("  " .. counter) or "", { fg = render_theme.counter }),
-        }),
-        ui.divider(render_theme.divider),
-        ui.row({
-          ui.text("Filter: ", { fg = render_theme.title, bold = true }),
-          ui.group(filter.render(render_theme)),
-        }),
-        ui.divider(render_theme.divider),
-      }
-
-      if #entries == 0 then
-        rows[#rows + 1] = render_empty_row(render_theme)
-      end
-
-      local visible_index = 0
-      for i = viewport.start_idx, viewport.end_idx do
-        local entry = entries[i] --[[@as HollowUiSelectEntry]]
-        visible_index = visible_index + 1
-        local is_selected = (i == nav.index)
-        local row_id, row_options = selectable.row(i, entry.source_index, visible_index, viewport)
-        local is_hovered = (state and state.hovered_id == row_id)
-        append_rows(
-          rows,
-          render_entry_rows(entry, is_selected, is_hovered, render_theme, row_options)
+      local rows = hollow
+        .tbl({
+          ui.row({
+            ui.text((opts.prompt or "Select") .. ":", {
+              fg = render_theme.title,
+              bold = true,
+            }),
+            ui.text(counter and ("  " .. counter) or "", { fg = render_theme.counter }),
+          }),
+          ui.divider(render_theme.divider),
+          ui.row({
+            ui.text("Filter: ", { fg = render_theme.title, bold = true }),
+            ui.group(filter.render(render_theme)),
+          }),
+          ui.divider(render_theme.divider),
+        })
+        :concat(
+          #entries == 0 and { render_empty_row(render_theme) } or {},
+          entry_rows,
+          render_hint_rows(actions, render_theme) or {}
         )
-      end
-
-      append_rows(rows, render_hint_rows(opts, render_theme))
+        :get()
       return ui.column(rows)
     end,
     width = opts.width,
@@ -428,23 +362,17 @@ function ui.select.open(opts)
     backdrop = backdrop,
     keys = ui.keys(filter, nav, {
       escape = function()
-        m.close()
+        modal.close()
         ui.fire(opts.on_cancel)
       end,
       arrow_down = function()
-        local entries = current_entries()
-        if #entries > 0 then
-          nav.index = (nav.index >= #entries) and 1 or math.max(1, nav.index) + 1
-        end
+        move_selection(1)
       end,
       arrow_up = function()
-        local entries = current_entries()
-        if #entries > 0 then
-          nav.index = (nav.index <= 1) and #entries or math.max(1, nav.index - 1)
-        end
+        move_selection(-1)
       end,
       enter = function()
-        invoke_action(opts, filter.value, filter.value:lower(), nav.index, 1, prepared)
+        activate(1, nav.index)
       end,
     }, action_keys),
     on_event = selectable.on_event,

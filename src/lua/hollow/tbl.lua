@@ -273,15 +273,20 @@ end
 ---@vararg any
 ---@return HollowTblInstance
 function Tbl:concat(...)
-  for _, other in ipairs({ ... }) do
+  local data = self._data
+
+  for i = 1, select("#", ...) do
+    local other = select(i, ...)
+
     if type(other) == "table" then
-      for _, v in ipairs(other) do
-        self._data[#self._data + 1] = v
+      for j = 1, #other do
+        data[#data + 1] = other[j]
       end
     else
-      self._data[#self._data + 1] = other
+      data[#data + 1] = other
     end
   end
+
   return self
 end
 

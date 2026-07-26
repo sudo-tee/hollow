@@ -33,10 +33,9 @@ local function workspace_name_color(name)
     return custom_fn(name)
   end
   local theme = shared.resolve_theme()
-  local hash = 0
-  for i = 1, #name do
-    hash = (hash * 31 + name:byte(i)) % 2147483647
-  end
+  local hash = hollow.tbl.range(1, #name):reduce(function(value, index)
+    return (value * 31 + name:byte(index)) % 2147483647
+  end, 0)
   -- Golden angle (~222.5deg) for maximal hue distance between workspaces
   local hue = ((hash / 2147483647) * 360 + 222.5) % 360
   local bg_luminance = color.hex_luminance(theme.palette.background)
@@ -63,8 +62,13 @@ end
 local function default_format_item(workspace)
   local switcher = switcher_state()
   local palette = derived_palette()
-  local name_color = workspace.is_active and palette.open
-    or (workspace.is_open and palette.user or palette.muted)
+  local name_color = util.state_value(
+    workspace.is_active,
+    workspace.is_open,
+    palette.open,
+    palette.user,
+    palette.muted
+  )
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
@@ -74,8 +78,13 @@ local function default_format_item(workspace)
 
   local cwd_text = source.trim_string(workspace.cwd)
   if cwd_text == "" then
-    cwd_text = workspace.is_active and "Current workspace"
-      or (workspace.is_open and "Open workspace" or "Known workspace")
+    cwd_text = util.state_value(
+      workspace.is_active,
+      workspace.is_open,
+      "Current workspace",
+      "Open workspace",
+      "Known workspace"
+    )
   end
 
   local domain = source.normalize_domain(workspace.domain)
@@ -122,27 +131,17 @@ local function workspace_parts(prefix, suffix)
 end
 
 local function search_text_for_item(workspace)
-  local parts = { workspace.name }
   local cwd = source.trim_string(workspace.cwd)
-  if cwd ~= "" then
-    local basename = util.basename(cwd)
-    basename = source.trim_string(basename)
-    if basename ~= "" and basename ~= workspace.name then
-      parts[#parts + 1] = basename
-    end
-  end
-
+  local basename = source.trim_string(cwd ~= "" and util.basename(cwd) or nil)
   local domain = source.normalize_domain(workspace.domain)
   local current_domain = source.normalize_domain(source.current_domain_name())
-  if domain ~= nil and domain ~= current_domain then
-    parts[#parts + 1] = domain
-  end
-
-  return table.concat(parts, "\n")
-end
-
-local function detail_for_item(_workspace)
-  return nil
+  return hollow
+    .tbl({ workspace.name })
+    :concat(
+      basename ~= "" and basename ~= workspace.name and { basename } or {},
+      domain ~= nil and domain ~= current_domain and { domain } or {}
+    )
+    :join("\n")
 end
 
 local function switcher_actions()
@@ -221,9 +220,9 @@ end
 function ui.workspace.open_switcher(opts)
   opts = opts or {}
   local force_refresh = opts.force_refresh == true
-  opts.force_refresh = nil
-  if next(opts) ~= nil then
-    source.configure(opts)
+  local config = hollow.tbl(opts):omit("force_refresh")
+  if next(config) ~= nil then
+    source.configure(config)
   end
 
   local items = source.items(force_refresh)
@@ -242,24 +241,17 @@ function ui.workspace.open_switcher(opts)
       return item_formatter()(item)
     end,
     search_text = search_text_for_item,
-    detail = detail_for_item,
     actions = switcher_actions(),
   })
 end
 
 function ui.workspace.topbar_button(opts)
   opts = opts or {}
-  local style = {}
+  local style = hollow.tbl(type(opts.style) == "table" and opts.style or {}):entries()
   if opts.colorize ~= false then
     local current = hollow.term.current_workspace()
     local colors = workspace_name_color(current and current.name or "workspace")
-    style.bg = colors.bg
-    style.fg = colors.fg
-  end
-  if type(opts.style) == "table" then
-    for k, v in pairs(opts.style) do
-      style[k] = v
-    end
+    style = util.merge_tables({ bg = colors.bg, fg = colors.fg }, style)
   end
 
   if opts.text ~= nil then
