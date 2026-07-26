@@ -1,9 +1,6 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
-local w = require("hollow.ui.builder")
-
-local table_unpack = table.unpack or unpack
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -185,17 +182,21 @@ local function append_rows(rows, value)
     return
   end
 
-  for _, row in ipairs(ui.rows(value)) do
-    rows[#rows + 1] = row
+  if value._type == "row" then
+    rows[#rows + 1] = value
+  elseif value._type == "column" then
+    for _, row in ipairs(value.children) do
+      rows[#rows + 1] = row
+    end
+  else
+    error("append_rows expects ui.row() or ui.column()")
   end
 end
 
 ---@param theme HollowUiTheme
----@return HollowUiOverlayRow
+---@return HollowUiRowNode
 local function render_empty_row(theme)
-  ---@type HollowUiTags
-  local tags = ui.tags
-  return tags.overlay_row(nil, tags.text({ fg = theme.empty }, " No matches"))
+  return ui.row({ ui.text("No matches", { fg = theme.empty }) })
 end
 
 ---@param entry HollowUiSelectEntry
@@ -205,9 +206,6 @@ end
 ---@param row_options table
 ---@return HollowUiRows
 local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options)
-  ---@type HollowUiTags
-  local tags = ui.tags
-
   local indicator
   if is_selected then
     indicator = "> "
@@ -251,7 +249,7 @@ local function render_entry_rows(entry, is_selected, is_hovered, theme, row_opti
       detail_nodes[#detail_nodes + 1] = node
     end
 
-    detail_row = tags.overlay_row({
+    detail_row = ui.row({ ui.group(detail_nodes, { fg = detail_fg }) }, {
       id = row_options.id,
       fill_bg = detail_bg,
       scrollbar_track = row_options.scrollbar_track,
@@ -261,36 +259,32 @@ local function render_entry_rows(entry, is_selected, is_hovered, theme, row_opti
       scrollbar_thumb_size = row_options.scrollbar_thumb_size,
       scrollbar_track_color = theme.scrollbar_track,
       scrollbar_thumb_color = theme.scrollbar_thumb,
-    }, ui.group(detail_nodes, { fg = detail_fg }))
+    })
   end
 
-  return ui.rows(
-    tags.overlay_row(
-      {
-        id = row_options.id,
-        fill_bg = row_fill_bg,
-        scrollbar_track = row_options.scrollbar_track,
-        scrollbar_thumb = row_options.scrollbar_thumb,
-        scrollbar_id = row_options.scrollbar_id,
-        scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
-        scrollbar_thumb_size = row_options.scrollbar_thumb_size,
-        scrollbar_track_color = theme.scrollbar_track,
-        scrollbar_thumb_color = theme.scrollbar_thumb,
-      },
-      ui.group(label_nodes, {
-        fg = row_fg,
-      })
-    ),
-    detail_row
-  )
+  local rows = {
+    ui.row({ ui.group(label_nodes, { fg = row_fg }) }, {
+      id = row_options.id,
+      fill_bg = row_fill_bg,
+      scrollbar_track = row_options.scrollbar_track,
+      scrollbar_thumb = row_options.scrollbar_thumb,
+      scrollbar_id = row_options.scrollbar_id,
+      scrollbar_thumb_ratio = row_options.scrollbar_thumb_ratio,
+      scrollbar_thumb_size = row_options.scrollbar_thumb_size,
+      scrollbar_track_color = theme.scrollbar_track,
+      scrollbar_thumb_color = theme.scrollbar_thumb,
+    }),
+  }
+  if detail_row then
+    rows[#rows + 1] = detail_row
+  end
+  return ui.column(rows)
 end
 
 ---@param opts HollowUiSelectOptions
 ---@param theme HollowUiTheme
 ---@return HollowUiRows|nil
 local function render_hint_rows(opts, theme)
-  ---@type HollowUiTags
-  local tags = ui.tags
   local hint_nodes = {}
 
   for _, action in ipairs(opts.actions or {}) do
@@ -300,10 +294,10 @@ local function render_hint_rows(opts, theme)
       local chord = normalize_hint_chord(key_hint)
       local description = action.desc or action.name or "action"
       if #hint_nodes > 0 then
-        hint_nodes[#hint_nodes + 1] = tags.text({ fg = theme.divider }, "  ")
+        hint_nodes[#hint_nodes + 1] = ui.text("  ", { fg = theme.divider })
       end
-      hint_nodes[#hint_nodes + 1] = tags.text({ fg = theme.panel_border, bold = true }, chord)
-      hint_nodes[#hint_nodes + 1] = tags.text({ fg = theme.muted }, " " .. description)
+      hint_nodes[#hint_nodes + 1] = ui.text(chord, { fg = theme.panel_border, bold = true })
+      hint_nodes[#hint_nodes + 1] = ui.text(" " .. description, { fg = theme.muted })
     end
   end
 
@@ -311,10 +305,7 @@ local function render_hint_rows(opts, theme)
     return nil
   end
 
-  return ui.rows(
-    tags.divider({ color = theme.divider }),
-    tags.overlay_row(nil, table_unpack(hint_nodes))
-  )
+  return ui.column({ ui.divider(theme.divider), ui.row(hint_nodes) })
 end
 
 ---@param opts HollowUiSelectOptions
@@ -350,7 +341,7 @@ function ui.select.open(opts)
   local prepared = prepared_entries(opts)
 
   local selectable
-  local filter = w.text_input({
+  local filter = ui.text_input({
     initial = opts.query or "",
     on_change = function()
       selectable.nav.index = 1
@@ -361,7 +352,7 @@ function ui.select.open(opts)
     return filtered_entries(opts, filter.value, filter.value:lower(), prepared)
   end
 
-  selectable = w.selectable_list({
+  selectable = ui.selectable_list({
     id_prefix = "select",
     items = current_entries,
     row_budget = function()
@@ -385,12 +376,11 @@ function ui.select.open(opts)
     end
   end
 
-  ---@type HollowUiBuilderModal
+  ---@type HollowUiModalHandle
   local m
-  m = w.modal({
+  m = ui.modal({
     theme = theme,
     render = function(render_theme, state)
-      local tags = ui.tags
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
 
@@ -399,18 +389,16 @@ function ui.select.open(opts)
       local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
 
       local rows = {
-        tags.overlay_row(
-          { hoverable = false },
-          tags.text({ fg = render_theme.title, bold = true }, (opts.prompt or "Select") .. ":"),
-          tags.text({ fg = render_theme.counter }, counter and ("  " .. counter) or "")
-        ),
-        tags.divider({ color = render_theme.divider }),
-        tags.overlay_row(
-          { hoverable = false },
-          tags.text({ fg = render_theme.title, bold = true }, "Filter: "),
-          table_unpack(filter.render(render_theme))
-        ),
-        tags.divider({ color = render_theme.divider }),
+        ui.row({
+          ui.text((opts.prompt or "Select") .. ":", { fg = render_theme.title, bold = true }),
+          ui.text(counter and ("  " .. counter) or "", { fg = render_theme.counter }),
+        }),
+        ui.divider(render_theme.divider),
+        ui.row({
+          ui.text("Filter: ", { fg = render_theme.title, bold = true }),
+          ui.group(filter.render(render_theme)),
+        }),
+        ui.divider(render_theme.divider),
       }
 
       if #entries == 0 then
@@ -431,17 +419,17 @@ function ui.select.open(opts)
       end
 
       append_rows(rows, render_hint_rows(opts, render_theme))
-      return rows
+      return ui.column(rows)
     end,
     width = opts.width,
     height = opts.height,
     max_height = opts.max_height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
-    keys = w.keys(filter, nav, {
+    keys = ui.keys(filter, nav, {
       escape = function()
         m.close()
-        w.fire(opts.on_cancel)
+        ui.fire(opts.on_cancel)
       end,
       arrow_down = function()
         local entries = current_entries()

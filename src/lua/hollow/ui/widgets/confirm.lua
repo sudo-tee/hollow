@@ -13,8 +13,6 @@
 --- ```
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
-local w = require("hollow.ui.builder")
-
 local ui = _G.hollow.ui
 
 ui.confirm = ui.confirm or {}
@@ -59,24 +57,32 @@ function ui.confirm.open(opts)
   local m
 
   local function confirm_and_close(btn)
-    w.fire(opts.on_confirm, btn.value)
-    w.fire(btn.on_confirm, btn.value)
+    ui.fire(opts.on_confirm, btn.value)
+    ui.fire(btn.on_confirm, btn.value)
     m.close()
   end
 
-  local footer_buttons = w.buttons(raw_buttons, function(btn)
-    return { on_click = function() confirm_and_close(btn) end }
-  end)
+  local footer_buttons = {}
+  for index, btn in ipairs(raw_buttons) do
+    footer_buttons[index] = {
+      id = btn.id or ("confirm:button:" .. index),
+      text = btn.text,
+      kind = btn.kind or btn.style,
+      on_click = function()
+        confirm_and_close(btn)
+      end,
+    }
+  end
 
-  local nav = w.list_nav(#footer_buttons)
+  local nav = ui.list_nav(#footer_buttons)
 
-  m = w.modal({
+  m = ui.modal({
     theme = base_theme,
     render = function(theme, state)
       local hovered = state and find_hovered_index(state.hovered_id, footer_buttons)
-      return w.dialog({
+      return ui.dialog({
         title = opts.title,
-        body = { w.text(opts.prompt) },
+        body = { ui.text(opts.prompt) },
         footer = footer_buttons,
         selected = nav.index,
         hovered = hovered,
@@ -87,14 +93,14 @@ function ui.confirm.open(opts)
     chrome = opts.chrome,
     align = opts.align or "center",
     backdrop = opts.backdrop ~= nil and opts.backdrop or true,
-    keys = w.keys(nav, {
+    keys = ui.keys(nav, {
       enter = function()
         local btn = raw_buttons[nav.index]
         confirm_and_close(btn)
       end,
       escape = function()
         m.close()
-        w.fire(opts.on_cancel)
+        ui.fire(opts.on_cancel)
       end,
     }),
   })

@@ -27,9 +27,10 @@ A widget is a table:
 }
 ```
 
-`render(ctx)` returns a list of nodes (or rows of nodes).
-The runtime draws the widget, then delivers `on_event` callbacks for
-clicks and lifecycle events.
+Sidebar and overlay `render(ctx)` functions return one explicit
+`hollow.ui.row` or `hollow.ui.column`. Bars return their specialized item
+lists. The runtime draws the widget, then delivers `on_event` callbacks
+for clicks and lifecycle events.
 
 `ctx` provides:
 
@@ -49,8 +50,9 @@ hollow.ui.icon(name, style?)     -- a font icon by name
 hollow.ui.group(children, style?) -- nested children
 ```
 
-A shorthand for inline colored text is `hollow.ui.text(value, style?)`,
-and `hollow.ui.row(...)` and `hollow.ui.rows(...)` build row lists.
+A shorthand for inline colored text is `hollow.ui.text(value, style?)`.
+`hollow.ui.row(children, opts?)` lays out inline nodes and
+`hollow.ui.column(rows)` lays out rows vertically.
 
 A span style is a table:
 
@@ -128,10 +130,10 @@ hollow.ui.sidebar.mount(hollow.ui.sidebar.new({
   reserve = false,     -- true: shrinks the tiled layout
   hidden = false,
   render = function(ctx)
-    return {
+    return hollow.ui.column({
       hollow.ui.row({ hollow.ui.text("title", { bold = true, fg = "#7e9cd8" }) }),
       hollow.ui.row({ hollow.ui.text(ctx.term.pane.cwd or "", { fg = "#727169" }) }),
-    }
+    })
   end,
 }))
 ```
@@ -146,8 +148,8 @@ hollow.ui.overlay.push(hollow.ui.overlay.new({
   align = "center",
   backdrop = { color = "#000000", alpha = 96 },
   chrome = { bg = "#1f1f28", border = "#3a3a52", radius = 6 },
-  width = 600,
-  render = function(ctx) return { ... } end,
+  width = 60,
+  render = function(ctx) return hollow.ui.column({ ... }) end,
   on_key = function(key, mods)
     if key == "<Esc>" then
       hollow.ui.overlay.pop()
@@ -157,23 +159,23 @@ hollow.ui.overlay.push(hollow.ui.overlay.new({
 }))
 ```
 
-For overlays with buttons, text input, or list navigation there is a
-**Builder API** that reduces boilerplate:
+Overlays with buttons, text input, or list navigation use composition
+helpers from the same `hollow.ui` namespace:
 
 ```lua
-local w = require("hollow.ui.builder")
-
-local m = w.modal({
+local m = hollow.ui.modal({
   render = function(theme)
-    return w.dialog({
+    return hollow.ui.dialog({
       title = "Pick one",
-      body = { w.text("Choose an option:") },
-      footer = w.buttons(items, function(item)
-        return { on_click = function() choose(item); m.close() end }
-      end),
+      body = { hollow.ui.text("Choose an option:") },
+      footer = {
+        { id = "choose", text = "Choose", kind = "primary", on_click = function()
+          choose(items[nav.index]); m.close()
+        end },
+      },
     }, theme)
   end,
-  keys = w.keys(nav, {
+  keys = hollow.ui.keys(nav, {
     escape = function() m.close() end,
     enter = function() confirm(selected); m.close() end,
   }),
@@ -181,12 +183,12 @@ local m = w.modal({
 })
 ```
 
-Behaviors (`w.list_nav`, `w.scroll_nav`, `w.text_input`) encapsulate
-state and key handlers.  Components (`w.dialog`, `w.button`,
-`w.buttons`) produce renderable layouts.  See
+Behaviors (`hollow.ui.list_nav`, `hollow.ui.scroll_nav`,
+`hollow.ui.text_input`) encapsulate state and key handlers, while
+`hollow.ui.dialog` produces a renderable column. See
 [`hollow.ui`](reference/lua/ui.md) for the full reference.
 
-Built on top of overlays / the builder:
+Built on top of overlays and the composition helpers:
 
 - `hollow.ui.notify.show / .info / .warn / .error / .clear`
 - `hollow.ui.input.open / .close`

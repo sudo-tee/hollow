@@ -49,19 +49,12 @@ function ui.notify.show(message, opts)
 
   widget = ui.overlay.new({
     render = function()
-      ---@type HollowUiTags
-      local tags = ui.tags
-      return {
-        tags.overlay_row(
-          nil,
-          tags.group(
-            tags.text(
-              { fg = level_color, bold = true },
-              notify_text(level, opts.title, message, action)
-            )
-          )
-        ),
-      }
+      return ui.row({
+        ui.text(notify_text(level, opts.title, message, action), {
+          fg = level_color,
+          bold = true,
+        }),
+      })
     end,
     align = opts.align or "top_right",
     chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color, 2),

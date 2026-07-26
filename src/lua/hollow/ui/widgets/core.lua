@@ -59,7 +59,7 @@ end
 ---@param max_chars number|nil
 ---@return HollowUiSegment[]
 local function trim_row_for_width(row, max_chars)
-  local flattened = shared.flatten_span_nodes(ui.overlay_row.nodes(row))
+  local flattened = shared.flatten_span_nodes(row.children or {})
   local segments = {}
   local remaining = math.max(0, math.floor(max_chars or 0))
 

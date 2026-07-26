@@ -17,15 +17,15 @@ function M.reset()
 end
 
 ---@param opts { id?: string, text: string, kind?: "default"|"primary"|"destructive", on_click?: fun(e: { id: string }) }
----@return HollowUiBuilderButton
+---@return HollowUiDialogButton
 function M.button(opts)
   opts = opts or {}
   if type(opts.text) ~= "string" or opts.text == "" then
-    error("w.button() requires a 'text' string")
+    error("dialog buttons require a 'text' string")
   end
 
   counter = counter + 1
-  local id = opts.id or ("builder:btn:" .. counter)
+  local id = opts.id or ("dialog:button:" .. counter)
 
   return {
     _button = true,
@@ -37,7 +37,7 @@ function M.button(opts)
 end
 
 ---@param theme table
----@param btn HollowUiBuilderButton
+---@param btn HollowUiDialogButton
 ---@param selected boolean
 ---@param hovered boolean
 ---@return { fg: string, bg?: string, bold?: boolean, radius: integer }
@@ -67,26 +67,6 @@ function M.button_style(theme, btn, selected, hovered)
     end
   end
 
-  return result
-end
-
---- Create an array of builder buttons from raw button specs.
---- Each item should have `text`, optionally `kind` / `id` / other fields.
---- The optional `map` fn receives `(raw_spec, i)` and returns `{ on_click = fn, ... }`.
----@param items { id?: string, text: string, kind?: "default"|"primary"|"destructive", style?: string, on_click?: fun(e: { id: string }), on_confirm?: fun() }[]
----@param map fun(item: table, i: integer): { on_click?: fun(e: { id: string }) }|nil
----@return HollowUiBuilderButton[]
-function M.buttons(items, map)
-  local result = {}
-  for i, item in ipairs(items or {}) do
-    local overrides = map and map(item, i) or {}
-    result[i] = M.button({
-      id = item.id,
-      text = item.text,
-      kind = item.kind or item.style or "default",
-      on_click = overrides.on_click or item.on_click or item.on_confirm,
-    })
-  end
   return result
 end
 

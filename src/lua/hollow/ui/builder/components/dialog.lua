@@ -1,20 +1,18 @@
 --- Dialog component.
 ---
 --- Layout helper: title row, divider, body rows, footer row with buttons.
---- Footer items are wrapped with w.button() if they are raw button specs.
+--- Raw footer specs are normalized into themed dialog buttons.
 --- Supports selected/hovered styling on footer buttons.
 
 local shared = require("hollow.ui.shared")
 local ui = _G.hollow.ui
-local tags = ui.tags
-local table_unpack = table.unpack or unpack
 local button_component = require("hollow.ui.builder.components.button")
 local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
----@param items (HollowUiBuilderButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[]
----@return HollowUiBuilderButton[]
+---@param items (HollowUiDialogButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[]
+---@return HollowUiDialogButton[]
 local function normalize_footer_items(items)
   local result = {}
   for _, item in ipairs(items or {}) do
@@ -37,35 +35,33 @@ local function append_body_item(rows, item, theme)
   local default_style = theme and { fg = theme.fg } or nil
 
   if type(item) ~= "table" then
-    rows[#rows + 1] = tags.overlay_row(nil, tags.text(default_style or {}, tostring(item)))
+    rows[#rows + 1] = ui.row({ ui.text(tostring(item), default_style) })
     return
   end
 
-  if item._overlay_row then
+  if item._type == "row" then
     rows[#rows + 1] = item
     return
   end
 
-  if shared.is_span_node(item) or shared.is_text_shorthand(item) then
-    local node = default_style and ui.group(ui.row(item), default_style) or item
-    rows[#rows + 1] = tags.overlay_row(nil, node)
+  if item._type == "column" then
+    for _, row in ipairs(item.children) do
+      rows[#rows + 1] = row
+    end
     return
   end
 
-  local children = {}
-  for _, v in ipairs(item) do
-    children[#children + 1] = v
+  if shared.is_span_node(item) or shared.is_text_shorthand(item) then
+    local node = default_style and ui.group({ item }, default_style) or item
+    rows[#rows + 1] = ui.row({ node })
+    return
   end
-  if #children > 0 then
-    local node = default_style and ui.group(ui.row(table_unpack(children)), default_style)
-      or ui.row(table_unpack(children))
-    rows[#rows + 1] = tags.overlay_row(nil, node)
-  else
-    rows[#rows + 1] = tags.overlay_row(nil, ui.group(item))
-  end
+
+  local node = default_style and ui.group(item, default_style) or ui.group(item)
+  rows[#rows + 1] = ui.row({ node })
 end
 
----@param opts { title?: string, body?: table[], footer?: (HollowUiBuilderButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[], selected?: integer, hovered?: integer }
+---@param opts { title?: string, body?: table[], footer?: (HollowUiDialogButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[], selected?: integer, hovered?: integer }
 ---@param theme table
 ---@return table
 function M.dialog(opts, theme)
@@ -78,10 +74,10 @@ function M.dialog(opts, theme)
   local rows = {}
 
   if title and title ~= "" then
-    rows = ui.rows(
-      tags.overlay_row(nil, tags.group(tags.text({ fg = theme.title, bold = true }, title))),
-      tags.divider({ color = theme.divider })
-    )
+    rows = {
+      ui.row({ ui.text(title, { fg = theme.title, bold = true }) }),
+      ui.divider(theme.divider),
+    }
   end
 
   for _, item in ipairs(body) do
@@ -89,14 +85,14 @@ function M.dialog(opts, theme)
   end
 
   if #footer > 0 then
-    rows[#rows + 1] = tags.overlay_row(nil, tags.text({}, " "))
+    rows[#rows + 1] = ui.row({ ui.text(" ") })
 
     local button_nodes = {}
     button_nodes[#button_nodes + 1] = ui.spacer()
 
     for i, btn in ipairs(footer) do
       if #button_nodes > 1 then
-        button_nodes[#button_nodes + 1] = tags.text({}, "  ")
+        button_nodes[#button_nodes + 1] = ui.text("  ")
       end
       local is_selected = selected and i == selected
       local is_hovered = hovered and i == hovered
@@ -106,13 +102,13 @@ function M.dialog(opts, theme)
 
       click_registry.register(style.id, btn.on_click)
 
-      button_nodes[#button_nodes + 1] = tags.text(style, " " .. btn.text .. " ")
+      button_nodes[#button_nodes + 1] = ui.text(" " .. btn.text .. " ", style)
     end
 
-    rows[#rows + 1] = tags.overlay_row(nil, table_unpack(button_nodes))
+    rows[#rows + 1] = ui.row(button_nodes)
   end
 
-  return rows
+  return ui.column(rows)
 end
 
 return M

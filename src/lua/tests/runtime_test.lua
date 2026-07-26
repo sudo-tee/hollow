@@ -792,11 +792,23 @@ assert_true(ui_widgets_workspace == true, "workspace widget module should be loa
 assert_true(type(theme_api.create) == "function", "theme module should expose create")
 assert_true(type(theme_api.get) == "function", "theme module should expose get")
 
--- Test w.keys dispatch
-local w = require("hollow.ui.builder")
+-- Test the unified composition API.
+local sample_row = hollow.ui.row({ "hello", hollow.ui.text(" world", { bold = true }) }, {
+  id = "sample-row",
+})
+local sample_column = hollow.ui.column({ sample_row, hollow.ui.divider("#112233") })
+assert_equal(sample_row._type, "row", "ui.row should create an explicit row node")
+assert_equal(sample_row.children[1].text, "hello", "ui.row should normalize inline strings")
+assert_equal(sample_row.hoverable, true, "rows with ids should be hoverable by default")
+assert_equal(sample_column._type, "column", "ui.column should create an explicit column node")
+assert_equal(#sample_column.children, 2, "ui.column should retain its rows")
+assert_true(hollow.ui.tags == nil, "the ambiguous tag facade should not be exposed")
+assert_true(hollow.ui.rows == nil, "anonymous row-list inference should not be exposed")
+
+-- Test ui.keys dispatch
 local enter_called = false
 local escape_called = false
-local k = w.keys({
+local k = hollow.ui.keys({
   enter = function()
     enter_called = true
   end,
@@ -804,34 +816,34 @@ local k = w.keys({
     escape_called = true
   end,
 })
-assert_true(k("enter", "") == true, "w.keys should dispatch enter")
+assert_true(k("enter", "") == true, "ui.keys should dispatch enter")
 assert_true(enter_called, "enter handler should fire")
-assert_true(k("escape", "") == true, "w.keys should dispatch escape")
+assert_true(k("escape", "") == true, "ui.keys should dispatch escape")
 assert_true(escape_called, "escape handler should fire")
-assert_true(k("unknown", "") == false, "w.keys should not dispatch unknown keys")
+assert_true(k("unknown", "") == false, "ui.keys should not dispatch unknown keys")
 
--- Test w.keys with behavior
-local nav = w.list_nav(5)
-local k2 = w.keys(nav, {
+-- Test ui.keys with behavior
+local nav = hollow.ui.list_nav(5)
+local k2 = hollow.ui.keys(nav, {
   enter = function()
     enter_called = true
   end,
 })
 -- nav should have tab/arrow_right/arrow_left/shift_tab
-assert_true(k2("tab", "") == true, "w.keys should dispatch tab from nav")
-assert_true(k2("arrow_right", "") == true, "w.keys should dispatch arrow_right from nav")
-assert_true(k2("arrow_left", "") == true, "w.keys should dispatch arrow_left from nav")
-assert_true(k2("shift_tab", "") == true, "w.keys should dispatch shift_tab from nav")
+assert_true(k2("tab", "") == true, "ui.keys should dispatch tab from nav")
+assert_true(k2("arrow_right", "") == true, "ui.keys should dispatch arrow_right from nav")
+assert_true(k2("arrow_left", "") == true, "ui.keys should dispatch arrow_left from nav")
+assert_true(k2("shift_tab", "") == true, "ui.keys should dispatch shift_tab from nav")
 -- enter from second arg
-assert_true(k2("enter", "") == true, "w.keys should dispatch enter from second arg")
+assert_true(k2("enter", "") == true, "ui.keys should dispatch enter from second arg")
 -- unknown should not dispatch
-assert_true(k2("unknown", "") == false, "w.keys should not dispatch unknown")
+assert_true(k2("unknown", "") == false, "ui.keys should not dispatch unknown")
 
--- Test w.keys with text_input behavior + enter/escape (exact input.lua pattern)
-local ti = w.text_input({ initial = "test" })
+-- Test ui.keys with text_input behavior + enter/escape (exact input.lua pattern)
+local ti = hollow.ui.text_input({ initial = "test" })
 local ti_enter = false
 local ti_escape = false
-local k3 = w.keys(ti, {
+local k3 = hollow.ui.keys(ti, {
   enter = function()
     ti_enter = true
   end,
@@ -840,22 +852,22 @@ local k3 = w.keys(ti, {
   end,
 })
 -- text_input handlers should work
-assert_true(k3("arrow_left", "") == true, "w.keys should dispatch arrow_left from text_input")
-assert_true(k3("arrow_right", "") == true, "w.keys should dispatch arrow_right from text_input")
-assert_true(k3("backspace", "") == true, "w.keys should dispatch backspace from text_input")
+assert_true(k3("arrow_left", "") == true, "ui.keys should dispatch arrow_left from text_input")
+assert_true(k3("arrow_right", "") == true, "ui.keys should dispatch arrow_right from text_input")
+assert_true(k3("backspace", "") == true, "ui.keys should dispatch backspace from text_input")
 -- enter/escape from second arg
 assert_true(
   k3("enter", "") == true,
-  "w.keys should dispatch enter from second arg (with text_input)"
+  "ui.keys should dispatch enter from second arg (with text_input)"
 )
 assert_true(ti_enter, "enter handler should fire with text_input")
 assert_true(
   k3("escape", "") == true,
-  "w.keys should dispatch escape from second arg (with text_input)"
+  "ui.keys should dispatch escape from second arg (with text_input)"
 )
 assert_true(ti_escape, "escape handler should fire with text_input")
 -- _else catches non-special keys (printable)
-assert_true(k3("x", "") == true, "w.keys should dispatch printable via _else")
+assert_true(k3("x", "") == true, "ui.keys should dispatch printable via _else")
 
 assert_equal(util.host_now_ms(host_api), 1234, "host_now_ms should prefer the host clock")
 assert_equal(
@@ -1717,6 +1729,34 @@ assert_true(hollow.ui._overlay_state() ~= nil, "overlay state should serialize a
 hollow.ui.notify.clear()
 assert_equal(hollow.ui.overlay.depth(), 0, "notify.clear should remove notify widgets")
 
+local direct_button_clicked = false
+local direct_overlay_event = false
+local direct_overlay = hollow.ui.overlay.new({
+  render = function()
+    return hollow.ui.row({
+      hollow.ui.button({
+        id = "direct-overlay-button",
+        text = "Run",
+        on_click = function()
+          direct_button_clicked = true
+        end,
+      }),
+    })
+  end,
+  on_event = function(name)
+    direct_overlay_event = name == "overlay:click"
+  end,
+})
+hollow.ui.overlay.push(direct_overlay)
+hollow.ui._overlay_state()
+hollow._emit_builtin_event("overlay:click", { id = "direct-overlay-button" })
+assert_true(direct_button_clicked, "ui.button callbacks should work in direct overlays")
+assert_true(
+  direct_overlay_event,
+  "ui.button dispatch should preserve custom overlay event handlers"
+)
+hollow.ui.overlay.clear()
+
 hollow.ui.workspace.open_switcher()
 local workspace_overlay = hollow.ui._overlay_state()
 assert_true(workspace_overlay ~= nil, "workspace switcher should create an overlay")
@@ -1822,7 +1862,7 @@ hollow._emit_builtin_event(
   { id = scroll_select_overlay[1].rows[5].id, delta = -1 }
 )
 scroll_select_overlay = hollow.ui._overlay_state()
-local scroll_select_counter = scroll_select_overlay[1].rows[1].segments[3].text
+local scroll_select_counter = scroll_select_overlay[1].rows[1].segments[2].text
 assert_true(
   scroll_select_counter:find("3/8", 1, true) ~= nil,
   "mouse wheel should preserve selection while it remains visible"
@@ -1834,7 +1874,7 @@ assert_equal(
 )
 hollow._emit_builtin_event("overlay:scrollbar", { id = scroll_select_id, ratio = 1 })
 scroll_select_overlay = hollow.ui._overlay_state()
-scroll_select_counter = scroll_select_overlay[1].rows[1].segments[3].text
+scroll_select_counter = scroll_select_overlay[1].rows[1].segments[2].text
 assert_true(
   scroll_select_counter:find("5/8", 1, true) ~= nil,
   "dragging select scrollbar to bottom should select final viewport start"
@@ -1894,7 +1934,7 @@ hollow._emit_builtin_event("overlay:scroll", {
   delta = -1,
 })
 scroll_palette_overlay = hollow.ui._overlay_state()
-local scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[3].text
+local scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[2].text
 assert_true(
   scroll_palette_counter:find("1/8", 1, true) ~= nil,
   "mouse wheel should clamp command palette selection when it leaves viewport"
@@ -1913,7 +1953,7 @@ scroll_palette_overlay = hollow.ui._overlay_state()
 scroll_palette_id = scroll_palette_overlay[1].rows[5].scrollbar_id
 hollow._emit_builtin_event("overlay:scrollbar", { id = scroll_palette_id, ratio = 1 })
 scroll_palette_overlay = hollow.ui._overlay_state()
-scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[3].text
+scroll_palette_counter = scroll_palette_overlay[1].rows[1].segments[2].text
 assert_true(
   scroll_palette_counter:find("6/8", 1, true) ~= nil,
   "dragging command palette scrollbar should update selection"

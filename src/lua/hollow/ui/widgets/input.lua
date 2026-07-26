@@ -10,10 +10,8 @@
 ---   end,
 --- })
 --- ```
-local util = require("hollow.util")
 local theme_api = require("hollow.theme")
-local w = require("hollow.ui.builder")
-
+local util = require("hollow.util")
 local ui = _G.hollow.ui
 
 ui.input = ui.input or {}
@@ -27,16 +25,16 @@ function ui.input.open(opts)
     util.merge_tables(base_theme, util.clone_value(opts.theme))
   end
 
-  local input = w.text_input({
+  local input = ui.text_input({
     initial = opts.default,
   })
 
   local m
 
-  m = w.modal({
+  m = ui.modal({
     theme = base_theme,
     render = function(theme)
-      return w.dialog({
+      return ui.dialog({
         title = opts.prompt,
         body = {
           input.render(theme),
@@ -48,19 +46,16 @@ function ui.input.open(opts)
     chrome = opts.chrome,
     align = opts.align or "center",
     backdrop = opts.backdrop ~= nil and opts.backdrop or base_theme.backdrop,
-    keys = w.keys(
-      input,
-      {
-        enter = function()
-          m.close()
-          w.fire(opts.on_confirm, input.value)
-        end,
-        escape = function()
-          m.close()
-          w.fire(opts.on_cancel)
-        end,
-      }
-    ),
+    keys = ui.keys(input, {
+      enter = function()
+        m.close()
+        ui.fire(opts.on_confirm, input.value)
+      end,
+      escape = function()
+        m.close()
+        ui.fire(opts.on_cancel)
+      end,
+    }),
   })
 end
 

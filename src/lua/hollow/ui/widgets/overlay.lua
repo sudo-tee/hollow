@@ -18,16 +18,23 @@ ui.overlay = ui.overlay or {}
 local function serialize_overlay_row(row)
   local serialized = { segments = {}, id = row.id, hoverable = row.hoverable ~= false }
 
-  for _, node in ipairs(shared.flatten_span_nodes(ui.overlay_row.nodes(row))) do
+  for _, node in ipairs(shared.flatten_span_nodes(row.children or {})) do
     if node.spacer then
       serialized.segments[#serialized.segments + 1] = { spacer = true }
     else
+      if
+        type(node.style) == "table"
+        and type(node.style.id) == "string"
+        and type(node.style.on_click) == "function"
+      then
+        click_registry.register(node.style.id, node.style.on_click)
+      end
       serialized.segments[#serialized.segments + 1] =
         shared.style_to_segment(node.text or "", node.style)
     end
   end
 
-  if type(row) == "table" and row._overlay_row == true then
+  if type(row) == "table" and row._type == "row" then
     serialized.fill_bg = row.fill_bg
     serialized.divider = row.divider
     serialized.scrollbar_track = row.scrollbar_track == true
@@ -78,20 +85,23 @@ end
 function ui.overlay.new(opts)
   local hover_state = { hovered_id = nil }
   local orig_render = opts.render
+  local orig_on_event = opts.on_event
   opts.render = function()
     return orig_render(hover_state)
   end
-  if not opts.on_event then
-    opts.on_event = function(name, payload)
-      if name == "overlay:hover" then
-        hover_state.hovered_id = payload and payload.id or nil
-      elseif name == "overlay:leave" then
-        hover_state.hovered_id = nil
-      elseif name == "overlay:click" then
-        if payload and payload.id then
-          click_registry.dispatch(payload.id, payload.value)
-        end
+  opts.on_event = function(name, payload)
+    if name == "overlay:hover" then
+      hover_state.hovered_id = payload and payload.id or nil
+    elseif name == "overlay:leave" then
+      hover_state.hovered_id = nil
+    elseif name == "overlay:click" then
+      if payload and payload.id then
+        click_registry.dispatch(payload.id, payload)
       end
+    end
+
+    if orig_on_event then
+      return orig_on_event(name, payload)
     end
   end
   return ui.new_widget("overlay", opts)

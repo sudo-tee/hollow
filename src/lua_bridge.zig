@@ -140,6 +140,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.core", .source = @embedFile("lua/hollow/ui/widgets/core.lua") },
     .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("lua/hollow/ui/widgets/bars.lua") },
     .{ .name = "hollow.ui.widgets.overlay", .source = @embedFile("lua/hollow/ui/widgets/overlay.lua") },
+    .{ .name = "hollow.ui.composition", .source = @embedFile("lua/hollow/ui/composition.lua") },
     .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("lua/hollow/ui/widgets/notify.lua") },
     .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
     .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
@@ -150,7 +151,6 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
     .{ .name = "hollow.ui.workspace.source", .source = @embedFile("lua/hollow/ui/workspace/source.lua") },
-    .{ .name = "hollow.ui.builder", .source = @embedFile("lua/hollow/ui/builder/init.lua") },
     .{ .name = "hollow.ui.builder.modal", .source = @embedFile("lua/hollow/ui/builder/modal.lua") },
     .{ .name = "hollow.ui.builder.keys", .source = @embedFile("lua/hollow/ui/builder/keys.lua") },
     .{ .name = "hollow.ui.builder.fire", .source = @embedFile("lua/hollow/ui/builder/fire.lua") },
@@ -161,7 +161,6 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
     .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
     .{ .name = "hollow.ui.builder.components.button", .source = @embedFile("lua/hollow/ui/builder/components/button.lua") },
-    .{ .name = "hollow.ui.builder.components.text", .source = @embedFile("lua/hollow/ui/builder/components/text.lua") },
     .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
 };

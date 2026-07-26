@@ -238,18 +238,23 @@ end
 ---@param rendered any
 ---@return HollowUiRows
 local function normalize_widget_rows(rendered)
-  if type(rendered) ~= "table" then
-    return { {} }
+  if rendered == nil then
+    return {}
   end
 
-  local first = rendered[1]
-  if first == nil or M.is_span_node(first) then
+  if type(rendered) ~= "table" then
+    error("widget render() must return ui.row() or ui.column()")
+  end
+
+  if rendered._type == "row" then
     return { rendered }
   end
 
-  local rows = hollow.tbl(rendered):filter(function(row) return type(row) == "table" end):get()
+  if rendered._type == "column" then
+    return rendered.children
+  end
 
-  return rows
+  error("widget render() must return ui.row() or ui.column()")
 end
 
 -- ---------------------------------------------------------------------------
@@ -876,7 +881,7 @@ end
 function M.render_widget_rows(widget)
   local rendered = M.render_widget(widget)
   if rendered == nil then
-    return { {} }
+    return {}
   end
 
   return normalize_widget_rows(rendered)

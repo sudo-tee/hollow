@@ -11,7 +11,7 @@ local click_registry = require("hollow.ui.builder.internal.click_registry")
 local M = {}
 
 ---@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any }
----@return HollowUiBuilderModal
+---@return HollowUiModalHandle
 function M.modal(spec)
   local theme
   if type(spec.theme) == "table" then
@@ -42,10 +42,6 @@ function M.modal(spec)
         state.hovered_id = payload and payload.id or nil
       elseif name == "overlay:leave" then
         state.hovered_id = nil
-      elseif name == "overlay:click" then
-        if payload and payload.id then
-          click_registry.dispatch(payload.id, payload.value)
-        end
       end
 
       local consumed = spec.on_event and spec.on_event(name, payload)

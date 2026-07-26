@@ -1,11 +1,8 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("src.lua.hollow.util")
-local w = require("hollow.ui.builder")
-local table_unpack = table.unpack or unpack
 local hollow = _G.hollow
 local ui = hollow.ui
-local tags = ui.tags
 ui.command_palette = ui.command_palette or {}
 
 local CATEGORIES = {
@@ -27,6 +24,53 @@ local function category_order(cat)
   return CATEGORIES[cat] and CATEGORIES[cat].order or 99
 end
 
+--- Joins the truthy, non-empty arguments with spaces. Built for assembling
+--- `searchable` strings without a chain of `(x or "") .. " " .. ...`.
+local function words(...)
+  local parts = {}
+  for _, value in ipairs({ ... }) do
+    if value ~= nil and value ~= "" then
+      parts[#parts + 1] = tostring(value)
+    end
+  end
+  return table.concat(parts, " ")
+end
+
+--- Advances `index` by `delta` positions, wrapping around a list of `count`
+--- items. Returns `index` unchanged when there's nothing to cycle through.
+local function cycle_index(index, delta, count)
+  if count == 0 then
+    return index
+  end
+  return (index + delta - 1) % count + 1
+end
+
+--- The fill color for a selectable row: selection beats hover beats fallback.
+local function row_bg(theme, is_selected, is_hovered, fallback)
+  if is_selected then
+    return theme.selection_bg
+  elseif is_hovered then
+    return theme.hover_bg
+  end
+  return fallback
+end
+
+local MARKER_SELECTED = "> "
+local MARKER_HOVERED = "\226\150\142 " -- ▎
+local MARKER_NONE = "  "
+
+--- The leading cursor glyph for a row, optionally indented (entry rows sit
+--- two columns deeper than section headers).
+local function marker(is_selected, is_hovered, indent)
+  indent = indent or ""
+  if is_selected then
+    return indent .. MARKER_SELECTED
+  elseif is_hovered then
+    return indent .. MARKER_HOVERED
+  end
+  return indent .. MARKER_NONE
+end
+
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
 
@@ -37,80 +81,82 @@ local function list_row_budget(opts)
   return math.max(1, total - 5)
 end
 
+local ENTRY_DEFAULTS = {
+  mode_label = "",
+  desc = "",
+  chords = {},
+  workspace_targetable = false,
+  category = "general",
+}
+
 local function new_entry(fields)
-  fields.display_name = fields.display_name or fields.name
-  fields.mode_label = fields.mode_label or ""
-  fields.desc = fields.desc or ""
-  fields.chords = fields.chords or {}
-  fields.workspace_targetable = fields.workspace_targetable or false
-  fields.category = fields.category or "general"
-  fields.category_label = fields.category_label or category_label(fields.category)
-  fields.searchable = fields.searchable or fields.name
-  fields.searchable_lower = fields.searchable:lower()
-  return fields
+  local entry = util.merge_tables(util.clone_value(ENTRY_DEFAULTS), fields)
+  entry.display_name = entry.display_name or entry.name
+  entry.category_label = entry.category_label or category_label(entry.category)
+  entry.searchable = entry.searchable or entry.name
+  entry.searchable_lower = entry.searchable:lower()
+  return entry
 end
 
 local providers = {}
 
 function providers.actions()
-  local action_list = hollow.action.list()
-  local entries = {}
-  for _, a in ipairs(action_list) do
-    local chords = util.safe_call(hollow.keymap.find_by_action, {}, a.name, "normal")
-    local copy_chords = util.safe_call(hollow.keymap.find_by_action, {}, a.name, "copy_mode")
-    for _, c in ipairs(copy_chords) do
-      chords[#chords + 1] = c
-    end
-    local category = a.category or "general"
-    local display_name = a.name:gsub("_", " ")
-    local mode_label = ""
-    if a.category == "copy_mode" then
-      display_name = display_name:gsub("^copy mode ", "")
-      mode_label = "[cm]"
-    end
-    entries[#entries + 1] = new_entry({
-      name = a.name,
-      display_name = display_name,
-      mode_label = mode_label,
-      desc = a.desc or "",
-      category = category,
-      chords = chords,
-      run = a.run,
-      workspace_targetable = a.workspace_targetable or false,
-      searchable = a.name
-        .. " "
-        .. (a.desc or "")
-        .. " "
-        .. category_label(category)
-        .. " "
-        .. category,
-    })
-  end
-  return entries
+  return hollow
+    .tbl(hollow.action.list())
+    :map(function(a)
+      local chords = hollow
+        .tbl(hollow.keymap.find_by_action(a.name, "normal"))
+        :concat(hollow.keymap.find_by_action(a.name, "copy_mode"))
+        :get()
+
+      local category = a.category or "general"
+      local display_name = a.name:gsub("_", " ")
+      local mode_label = ""
+      if category == "copy_mode" then
+        display_name = display_name:gsub("^copy mode ", "")
+        mode_label = "[cm]"
+      end
+
+      return new_entry({
+        name = a.name,
+        display_name = display_name,
+        mode_label = mode_label,
+        desc = a.desc or "",
+        category = category,
+        chords = chords,
+        run = a.run,
+        workspace_targetable = a.workspace_targetable or false,
+        searchable = words(a.name, a.desc, category_label(category), category),
+      })
+    end)
+    :get()
 end
 
 function providers.workspaces()
-  local workspaces = hollow.term.workspaces()
-  local entries = {}
-  for _, ws in ipairs(workspaces) do
-    local name = ws.name or ("Workspace " .. ws.index)
-    entries[#entries + 1] = new_entry({
-      name = name,
-      mode_label = ws.is_active and "[current]" or "",
-      category = "workspace",
-      category_label = "Workspace",
-      workspace_index = ws.index,
-      workspace_id = ws.id,
-      searchable = name .. " " .. ws.index .. " workspace",
-    })
-  end
-  return entries
+  return hollow
+    .tbl(hollow.term.workspaces())
+    :map(function(ws)
+      local name = ws.name or ("Workspace " .. ws.index)
+      return new_entry({
+        name = name,
+        mode_label = ws.is_active and "[current]" or "",
+        category = "workspace",
+        category_label = "Workspace",
+        workspace_index = ws.index,
+        workspace_id = ws.id,
+        searchable = words(name, ws.index, "workspace"),
+      })
+    end)
+    :get()
 end
 
 function providers.domains()
+  -- A dict of name -> config, not a list, so it doesn't fit `map` -- it still
+  -- needs its own pass to become an array, then a sort.
   local domains = hollow.config.get("domains") or {}
   local current = util.safe_call(hollow.term.current_domain, nil)
   local current_domain = current and current.name or nil
+
   local entries = {}
   for name, config in pairs(domains) do
     local shell = type(config) == "table" and config.shell or config
@@ -122,7 +168,7 @@ function providers.domains()
       category = "general",
       category_label = "Domain",
       domain_name = name,
-      searchable = name .. " " .. shell_str .. " domain",
+      searchable = words(name, shell_str, "domain"),
     })
   end
   table.sort(entries, function(a, b)
@@ -163,33 +209,40 @@ local function filtered_entries(all_entries, query)
 end
 
 local function grouped_entries(entries, collapsed)
-  if #entries == 0 then
-    return {}
-  end
   collapsed = collapsed or {}
-  local groups = {}
-  local order = {}
-  for _, entry in ipairs(entries) do
-    local cat = entry.category
-    if not groups[cat] then
-      groups[cat] = { label = entry.category_label, items = {} }
-      order[#order + 1] = cat
-    end
-    groups[cat].items[#groups[cat].items + 1] = entry
-  end
+  local groups, order = util.group_by(entries, function(entry)
+    return entry.category
+  end)
   table.sort(order, function(a, b)
     return category_order(a) < category_order(b)
   end)
+
   local flat = {}
   for _, cat in ipairs(order) do
-    flat[#flat + 1] = { _type = "header", label = groups[cat].label, category = cat }
+    local items = groups[cat]
+    flat[#flat + 1] = { _type = "header", label = items[1].category_label, category = cat }
     if not collapsed[cat] then
-      for _, item in ipairs(groups[cat].items) do
+      for _, item in ipairs(items) do
         flat[#flat + 1] = { _type = "item", item = item }
       end
     end
   end
   return flat
+end
+
+--- Where `index` sits among just the selectable items in `flat` (headers
+--- don't count), plus how many selectable items there are in total.
+local function item_position(flat, index)
+  local position, total = 0, 0
+  for idx, entry in ipairs(flat) do
+    if entry._type == "item" then
+      total = total + 1
+      if idx <= index then
+        position = total
+      end
+    end
+  end
+  return position, total
 end
 
 ---@param theme HollowUiTheme
@@ -198,7 +251,7 @@ end
 ---@param is_hovered boolean
 ---@param is_collapsed boolean
 ---@param row_options table
----@return HollowUiOverlayRow
+---@return HollowUiRowNode
 local function render_section_header(
   theme,
   label,
@@ -209,18 +262,16 @@ local function render_section_header(
 )
   local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
   local final_opts = util.merge_tables(util.clone_value(row_options), {
-    fill_bg = is_selected and theme.selection_bg
-      or (is_hovered and theme.hover_bg or (theme.selected_detail_bg or theme.panel_bg)),
+    fill_bg = row_bg(theme, is_selected, is_hovered, theme.selected_detail_bg or theme.panel_bg),
     scrollbar_track_color = theme.scrollbar_track,
     scrollbar_thumb_color = theme.scrollbar_thumb,
   })
-  return tags.overlay_row(
-    final_opts,
-    tags.text(
-      { fg = theme.title, bold = true },
-      (is_selected and "> " or (is_hovered and "\226\150\142 " or "  ")) .. arrow .. " " .. label
-    )
-  )
+  return ui.row({
+    ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {
+      fg = theme.title,
+      bold = true,
+    }),
+  }, final_opts)
 end
 
 ---@param entry table
@@ -228,19 +279,17 @@ end
 ---@param is_hovered boolean
 ---@param theme HollowUiTheme
 ---@param row_options table
----@return HollowUiRows
+---@return HollowUiRowNode
 local function render_entry_row(entry, is_selected, is_hovered, theme, row_options)
   local chord_text = #entry.chords > 0 and ("  " .. table.concat(entry.chords, " ")) or ""
   local label_text = (entry.mode_label ~= "" and (entry.mode_label .. " ") or "")
     .. (entry.desc ~= "" and entry.desc or entry.display_name)
-
   local emphasize = is_selected or is_hovered
+  local fg = emphasize and theme.selected_fg or theme.fg
+
   local label_nodes = {
-    ui.span(is_selected and "  > " or (is_hovered and "  \226\150\142 " or "    "), {
-      fg = emphasize and theme.selected_fg or theme.fg,
-      bold = emphasize,
-    }),
-    ui.span(label_text, { fg = emphasize and theme.selected_fg or theme.fg }),
+    ui.span(marker(is_selected, is_hovered, "  "), { fg = fg, bold = emphasize }),
+    ui.span(label_text, { fg = fg }),
   }
   if chord_text ~= "" then
     label_nodes[#label_nodes + 1] = ui.spacer()
@@ -248,11 +297,11 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
   end
 
   local final_opts = util.merge_tables(util.clone_value(row_options), {
-    fill_bg = is_selected and theme.selection_bg or (is_hovered and theme.hover_bg or nil),
+    fill_bg = row_bg(theme, is_selected, is_hovered, nil),
     scrollbar_track_color = theme.scrollbar_track,
     scrollbar_thumb_color = theme.scrollbar_thumb,
   })
-  return ui.rows(tags.overlay_row(final_opts, ui.group(label_nodes)))
+  return ui.row({ ui.group(label_nodes) }, final_opts)
 end
 
 ---@param opts table|nil
@@ -260,12 +309,11 @@ function ui.command_palette.open(opts)
   opts = opts or {}
   local theme = theme_api.resolve_widget("select")
   if type(opts.theme) == "table" then
-    local u = require("hollow.util")
-    u.merge_tables(theme, u.clone_value(opts.theme))
+    util.merge_tables(theme, util.clone_value(opts.theme))
   end
   local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
   local all_entries = opts.entries or providers.actions()
-  local filter = w.text_input({ initial = opts.query or "" })
+  local filter = ui.text_input({ initial = opts.query or "" })
   local collapsed = {}
   local nav
   local modal
@@ -289,7 +337,7 @@ function ui.command_palette.open(opts)
     end
   end
 
-  local selectable = w.selectable_list({
+  local selectable = ui.selectable_list({
     id_prefix = "palette",
     items = current_flat,
     row_budget = function()
@@ -302,33 +350,25 @@ function ui.command_palette.open(opts)
   local function render_content(_, state)
     local flat = current_flat()
     nav.index = math.max(1, math.min(#flat, nav.index or 1))
-    local item_idx, total_items = 0, 0
-    for idx, entry in ipairs(flat) do
-      if entry._type == "item" then
-        total_items = total_items + 1
-        if idx <= nav.index then
-          item_idx = total_items
-        end
-      end
-    end
+    local item_idx, total_items = item_position(flat, nav.index)
     local counter = (total_items > 0) and string.format(" %d/%d", item_idx, total_items) or nil
     local viewport = selectable.visible_range()
-    local rows = ui.rows(
-      tags.overlay_row(
-        { hoverable = false },
-        tags.text({ fg = theme.title, bold = true }, (opts.prompt or "Command Palette") .. ":"),
-        tags.text({ fg = theme.counter }, counter and ("  " .. counter) or "")
-      ),
-      tags.divider({ color = theme.divider }),
-      tags.overlay_row(
-        { hoverable = false },
-        tags.text({ fg = theme.title, bold = true }, "Filter: "),
-        table_unpack(filter.render(theme))
-      ),
-      tags.divider({ color = theme.divider })
-    )
+
+    local rows = {
+      ui.row({
+        ui.text((opts.prompt or "Command Palette") .. ":", { fg = theme.title, bold = true }),
+        ui.text(counter and ("  " .. counter) or "", { fg = theme.counter }),
+      }),
+      ui.divider(theme.divider),
+      ui.row({
+        ui.text("Filter: ", { fg = theme.title, bold = true }),
+        ui.group(filter.render(theme)),
+      }),
+      ui.divider(theme.divider),
+    }
+
     if #flat == 0 then
-      rows[#rows + 1] = tags.overlay_row(nil, tags.text({ fg = theme.empty }, " No matches"))
+      rows[#rows + 1] = ui.row({ ui.text("No matches", { fg = theme.empty }) })
     else
       local visible_index = 0
       for idx = viewport.start_idx, viewport.end_idx do
@@ -347,51 +387,35 @@ function ui.command_palette.open(opts)
             row_options
           )
         elseif entry._type == "item" then
-          hollow.tbl(rows):concat(
-            ui.rows(render_entry_row(entry.item, is_selected, is_hovered, theme, row_options))
-          )
+          rows[#rows + 1] =
+            render_entry_row(entry.item, is_selected, is_hovered, theme, row_options)
         end
       end
     end
-    hollow.tbl(rows):concat(ui.rows(tags.divider({ color = theme.divider }))):concat(
-      ui.rows(
-        tags.overlay_row(
-          nil,
-          tags.text({ fg = theme.panel_border, bold = true }, "<CR>"),
-          tags.text({ fg = theme.muted }, " execute  "),
-          tags.text({ fg = theme.panel_border, bold = true }, "<Esc>"),
-          tags.text({ fg = theme.muted }, " dismiss")
-        )
-      )
-    )
-    return rows
+
+    rows[#rows + 1] = ui.divider(theme.divider)
+    rows[#rows + 1] = ui.row({
+      ui.text("<CR>", { fg = theme.panel_border, bold = true }),
+      ui.text(" execute  ", { fg = theme.muted }),
+      ui.text("<Esc>", { fg = theme.panel_border, bold = true }),
+      ui.text(" dismiss", { fg = theme.muted }),
+    })
+    return ui.column(rows)
   end
 
-  modal = w.modal({
+  modal = ui.modal({
     theme = theme,
     render = render_content,
-    keys = w.keys(filter, nav, {
+    keys = ui.keys(filter, nav, {
       escape = function()
         modal.close()
         util.safe_call(opts.on_cancel)
       end,
       arrow_down = function()
-        local flat = current_flat()
-        if #flat > 0 then
-          nav.index = nav.index + 1
-          if nav.index > #flat then
-            nav.index = 1
-          end
-        end
+        nav.index = cycle_index(nav.index, 1, #current_flat())
       end,
       arrow_up = function()
-        local flat = current_flat()
-        if #flat > 0 then
-          nav.index = nav.index - 1
-          if nav.index < 1 then
-            nav.index = #flat
-          end
-        end
+        nav.index = cycle_index(nav.index, -1, #current_flat())
       end,
       enter = function()
         activate(nav.index)

@@ -67,7 +67,7 @@ hollow.ui.sidebar.mount(hollow.ui.sidebar.new({
   width = 32,
   render = function(ctx)
     local tab = ctx.term.tab
-    if not tab then return {} end
+    if not tab then return hollow.ui.column({}) end
 
     local rows = {
       hollow.ui.row({
@@ -87,7 +87,7 @@ hollow.ui.sidebar.mount(hollow.ui.sidebar.new({
       })
     end
 
-    return rows
+    return hollow.ui.column(rows)
   end,
 }))
 ```

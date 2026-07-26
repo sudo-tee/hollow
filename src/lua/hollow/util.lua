@@ -11,6 +11,7 @@ local M = {}
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
 ---@field safe_call fun(fn:function|nil, default:any, ...:any): any
+---@field group_by fun(list:table, key_fn:fun(item:any):any): table, any[]
 ---@field has_any_key fun(t:table, keys:table): boolean
 ---@field utf8_len fun(s:string): integer
 ---@field pad_right fun(value:string, width:integer): string
@@ -254,6 +255,26 @@ function M.basename(path)
 
   path = path:gsub("[/\\]+$", "")
   return (path:gsub("(.*[/\\])(.*)", "%2"))
+end
+
+--- Buckets `list` by `key_fn(item)`, preserving first-seen key order.
+--- Returns (groups, ordered_keys).
+---@param list table
+---@param key_fn fun(item:any):any
+---@return table groups
+---@return any[] ordered_keys
+function M.group_by(list, key_fn)
+  local groups, order = {}, {}
+  for _, item in ipairs(list) do
+    local key = key_fn(item)
+    if not groups[key] then
+      groups[key] = {}
+      order[#order + 1] = key
+    end
+    local bucket = groups[key]
+    bucket[#bucket + 1] = item
+  end
+  return groups, order
 end
 
 ---@param t table

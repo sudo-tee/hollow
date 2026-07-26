@@ -581,7 +581,7 @@
 ---@field width? integer
 ---@field align? "left"|"right"
 
----@class HollowUiOverlayRowOptions
+---@class HollowUiRowOptions
 ---@field id? string
 ---@field hoverable? boolean
 ---@field fill_bg? HollowColor
@@ -594,11 +594,11 @@
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
----@class HollowUiOverlayRow
----@field _overlay_row true
+---@class HollowUiRowNode
+---@field _type "row"
+---@field children HollowUiRenderableNode[]
 ---@field id? string
 ---@field hoverable boolean
----@field nodes HollowUiRenderableNode[]
 ---@field fill_bg? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
@@ -609,24 +609,12 @@
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
 
----@alias HollowUiRow HollowUiRenderableNode[]|HollowUiOverlayRow
----@alias HollowUiRows HollowUiRow[]
+---@class HollowUiColumnNode
+---@field _type "column"
+---@field children HollowUiRowNode[]
 
----@class HollowUiTagProps: HollowStyle
----@field name? string
----@field children? any[]
----@field color? HollowColor
----@field divider? HollowColor
----@field hoverable? boolean
----@field fill_bg? HollowColor
----@field scrollbar_track? boolean
----@field scrollbar_thumb? boolean
----@field scrollbar_id? string
----@field scrollbar_thumb_ratio? number
----@field scrollbar_thumb_size? number
----@field scrollbar_track_color? HollowColor
----@field scrollbar_thumb_color? HollowColor
----@field style? HollowStyle
+---@alias HollowUiRow HollowUiRowNode
+---@alias HollowUiRows HollowUiRowNode[]
 
 ---@class HollowUiTabState
 ---@field id integer|nil
@@ -767,7 +755,7 @@
 ---@field reserve boolean
 ---@field rows HollowUiSegment[][]
 
----@alias HollowWidgetRenderResult HollowUiRows|HollowUiRenderableNode[]|HollowUiRenderableNode|nil
+---@alias HollowWidgetRenderResult HollowUiColumnNode|HollowUiRowNode|nil
 
 ---@class HollowWidget
 ---@field _kind? string
@@ -879,7 +867,7 @@
 ---@field style? "default"|"primary"|"secondary"|"destructive"
 ---@field on_confirm? fun()
 
----@class (exact) HollowUiBuilderButton
+---@class (exact) HollowUiDialogButton
 ---@field _button true
 ---@field id string
 ---@field text string
@@ -899,18 +887,18 @@
 ---@field on_confirm? fun(value: any)
 ---@field on_cancel? fun()
 
----@class HollowUiBuilderModal
+---@class HollowUiModalHandle
 ---@field widget table
 ---@field close fun()
 ---@field invalidate fun()
 
----@class HollowUiBuilderButtonOptions
+---@class HollowUiDialogButtonOptions
 ---@field id? string
 ---@field text string
 ---@field kind? "default"|"primary"|"destructive"
 ---@field on_click? fun(e: { id: string })
 
----@class (exact) HollowUiBuilderListNav
+---@class (exact) HollowUiListNav
 ---@field index integer
 ---@field count integer
 ---@field resize fun(new_n: integer)
@@ -922,7 +910,7 @@
 ---@field last fun()
 ---@field handlers table<string, function>
 
----@class (exact) HollowUiBuilderScrollNav
+---@class (exact) HollowUiScrollNav
 ---@field index integer
 ---@field count integer
 ---@field resize fun(new_n: integer)
@@ -932,7 +920,7 @@
 ---@field page_up fun()
 ---@field handlers table<string, function>
 
----@class (exact) HollowUiBuilderTextInput
+---@class (exact) HollowUiTextInput
 ---@field value string
 ---@field cursor integer
 ---@field on_change? fun(value: string)
@@ -940,14 +928,14 @@
 ---@field render fun(theme: table): any[]
 ---@field handlers table<string, function>
 
----@class (exact) HollowUiBuilderDialogOptions
+---@class (exact) HollowUiDialogOptions
 ---@field title? string
 ---@field body? table[]
----@field footer? (HollowUiBuilderButton|{ text: string, kind?: string, id?: string, on_click?: fun(e: { id: string }) })[]
+---@field footer? (HollowUiDialogButton|{ text: string, kind?: string, id?: string, on_click?: fun(e: { id: string }) })[]
 ---@field selected? integer
 ---@field hovered? integer
 
----@class HollowUiBuilderModalSpec
+---@class HollowUiModalSpec
 ---@field theme? table|string
 ---@field render fun(theme: table, state?: table): any
 ---@field keys? function
@@ -958,18 +946,6 @@
 ---@field align? string
 ---@field backdrop? any
 ---@field on_event? function
-
----@class HollowUiBuilderNamespace
----@field modal fun(spec: HollowUiBuilderModalSpec): HollowUiBuilderModal
----@field keys fun(...: table): function
----@field fire fun(fn: function|nil, value?: any)
----@field list_nav fun(n: integer): HollowUiBuilderListNav
----@field scroll_nav fun(n: integer, opts?: { row_count_fn?: fun(item: any): integer, row_budget?: integer }): HollowUiBuilderScrollNav
----@field text_input fun(opts?: { initial?: string, on_change?: fun(value: string) }): HollowUiBuilderTextInput
----@field dialog fun(opts: HollowUiBuilderDialogOptions, theme: table): table
----@field button fun(opts: HollowUiBuilderButtonOptions): HollowUiBuilderButton
----@field buttons fun(items: { id?: string, text: string, kind?: string, style?: string, on_click?: fun(e: { id: string }), on_confirm?: fun() }[], map?: fun(item: table, i: integer): { on_click?: fun(e: { id: string }) }|nil): HollowUiBuilderButton[]
----@field text fun(value: any, style?: any): any
 
 ---@class HollowUiSelectState
 ---@field index integer
@@ -1718,24 +1694,6 @@ local workspace = {}
 ---@class HollowUi
 local ui = {}
 
----@class HollowUiOverlayRowNamespace
----@field make fun(nodes:HollowUiRenderableNode[]|nil, opts:HollowUiOverlayRowOptions|nil):HollowUiOverlayRow
----@field nodes fun(row:HollowUiRow):HollowUiRenderableNode[]
-
----@alias HollowUiTagBuilder fun(props:HollowUiTagProps|HollowUiInlineNode|string|number|nil, ...:any):any
-
----@class HollowUiTags
----@field overlay_row fun(props:HollowUiTagProps|nil, ...:any):HollowUiOverlayRow
----@field divider fun(props:HollowUiTagProps|nil):HollowUiOverlayRow
----@field text HollowUiTagBuilder
----@field span HollowUiTagBuilder
----@field group HollowUiTagBuilder
----@field row HollowUiTagBuilder
----@field rows HollowUiTagBuilder
----@field icon HollowUiTagBuilder
----@field spacer HollowUiTagBuilder
----@field button HollowUiTagBuilder
-
 ---@param text string
 ---@param style? HollowUiNodeStyle|HollowHexColor
 ---@return HollowUiSpanNode
@@ -1746,16 +1704,18 @@ function ui.span(text, style) end
 ---@return HollowUiRenderableNode
 function ui.text(value, style) end
 
----@param ... HollowUiInlineNode|HollowUiInlineNode[]
----@return HollowUiRenderableNode[]
-function ui.row(...) end
+---@param children HollowUiInlineNode[]
+---@param opts? HollowUiRowOptions
+---@return HollowUiRowNode
+function ui.row(children, opts) end
 
----@param ... any
----@return HollowUiRows
-function ui.rows(...) end
+---@param children HollowUiRowNode[]
+---@return HollowUiColumnNode
+function ui.column(children) end
 
----@type HollowUiTags
-ui.tags = {}
+---@param color? HollowColor
+---@return HollowUiRowNode
+function ui.divider(color) end
 
 ---@return HollowUiSpacerNode
 function ui.spacer() end
@@ -1774,8 +1734,39 @@ function ui.group(children, style) end
 ---@return HollowUiSpanNode
 function ui.button(opts) end
 
----@type HollowUiOverlayRowNamespace
-ui.overlay_row = {}
+---@param spec HollowUiModalSpec
+---@return HollowUiModalHandle
+function ui.modal(spec) end
+
+---@param ... table
+---@return function
+function ui.keys(...) end
+
+---@param fn function|nil
+---@param value? any
+function ui.fire(fn, value) end
+
+---@param n integer
+---@return HollowUiListNav
+function ui.list_nav(n) end
+
+---@param n integer
+---@param opts? { row_count_fn?: fun(item: any): integer, row_budget?: integer }
+---@return HollowUiScrollNav
+function ui.scroll_nav(n, opts) end
+
+---@param opts? { initial?: string, on_change?: fun(value: string) }
+---@return HollowUiTextInput
+function ui.text_input(opts) end
+
+---@param opts { id_prefix: string, items: fun(): any[], row_budget: fun(): integer, row_count_fn?: fun(item: any): integer, on_activate: fun(index: integer) }
+---@return table
+function ui.selectable_list(opts) end
+
+---@param opts HollowUiDialogOptions
+---@param theme table
+---@return HollowUiColumnNode
+function ui.dialog(opts, theme) end
 
 ui.bar = bar
 ui.topbar = topbar
@@ -2052,6 +2043,7 @@ hollow.platform = {
 ---@field join_path fun(...:string): string
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
+---@field group_by fun(list:table, key_fn:fun(item:any):any): table, any[]
 ---@field has_any_key fun(t:table, keys:table): boolean
 
 ---@class HollowTbl

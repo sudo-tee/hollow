@@ -78,34 +78,34 @@ from WSL.
 
 `hollow.exe` and the wrapper accept the following flags:
 
-| Flag | Effect |
-| --- | --- |
-| `--config path` | Use `path` as the override config |
-| `--renderer-safe-mode` | Disable swapchain glyphs and the multi-pane cache |
-| `--renderer-disable-swapchain-glyphs` | Only disable the swapchain glyph path |
-| `--renderer-disable-multi-pane-cache` | Only disable the multi-pane cache |
-| `--startup-command text` | Send `text` to the first pane after startup |
-| `--startup-command-delay-frames n` | Wait `n` frames before sending (default 20) |
-| `--snapshot-dump path` | Dump a frame snapshot to `path` for headless debugging |
-| `--list-fonts` | Print available font families |
-| `--match-font query` | Filter `--list-fonts` output |
-| `--json` | Emit JSON for `--list-fonts` |
-| `--help` | Print the usage line |
-| `cli …` | Run the [native CLI subcommand](reference/cli/native.md) instead of opening the GUI |
+| Flag                                  | Effect                                                                              |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| `--config path`                       | Use `path` as the override config                                                   |
+| `--renderer-safe-mode`                | Disable swapchain glyphs and the multi-pane cache                                   |
+| `--renderer-disable-swapchain-glyphs` | Only disable the swapchain glyph path                                               |
+| `--renderer-disable-multi-pane-cache` | Only disable the multi-pane cache                                                   |
+| `--startup-command text`              | Send `text` to the first pane after startup                                         |
+| `--startup-command-delay-frames n`    | Wait `n` frames before sending (default 20)                                         |
+| `--snapshot-dump path`                | Dump a frame snapshot to `path` for headless debugging                              |
+| `--list-fonts`                        | Print available font families                                                       |
+| `--match-font query`                  | Filter `--list-fonts` output                                                        |
+| `--json`                              | Emit JSON for `--list-fonts`                                                        |
+| `--help`                              | Print the usage line                                                                |
+| `cli …`                               | Run the [native CLI subcommand](reference/cli/native.md) instead of opening the GUI |
 
 ### Wrapper flags
 
-| Flag | Effect |
-| --- | --- |
-| `--no-build` | Skip the `zig build` step |
-| `--build-only` | Build, then exit without running |
-| `--debug` | `-Doptimize=Debug` |
-| `--target=TARGET` | Override the build target (default `x86_64-windows-gnu`) |
-| `--safe-render` | Implies `--renderer-safe-mode` and `--renderer-disable-swapchain-glyphs` |
-| `--no-swapchain-glyphs` | Forward `--renderer-disable-swapchain-glyphs` |
-| `--no-multi-pane-cache` | Forward `--renderer-disable-multi-pane-cache` |
-| `--list-fonts`, `--match-font QUERY`, `--json` | Forward to the executable |
-| `--app-arg=ARG` | Forward `ARG` to the executable |
+| Flag                                           | Effect                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------ |
+| `--no-build`                                   | Skip the `zig build` step                                                |
+| `--build-only`                                 | Build, then exit without running                                         |
+| `--debug`                                      | `-Doptimize=Debug`                                                       |
+| `--target=TARGET`                              | Override the build target (default `x86_64-windows-gnu`)                 |
+| `--safe-render`                                | Implies `--renderer-safe-mode` and `--renderer-disable-swapchain-glyphs` |
+| `--no-swapchain-glyphs`                        | Forward `--renderer-disable-swapchain-glyphs`                            |
+| `--no-multi-pane-cache`                        | Forward `--renderer-disable-multi-pane-cache`                            |
+| `--list-fonts`, `--match-font QUERY`, `--json` | Forward to the executable                                                |
+| `--app-arg=ARG`                                | Forward `ARG` to the executable                                          |
 
 ## Tests
 
@@ -133,7 +133,8 @@ next to your config or plugin:
   "runtime.version": "LuaJIT",
   "workspace.library": [
     "%APPDATA%/hollow/types",  // Windows
-    "~/.config/hollow/types"   // Linux/macOS
+    "~/.config/hollow/types",  // Linux/macOS
+    "/mnt/c/Users/YOUR_USER/AppData/Roaming/hollow/types" // WSL
   ]
 }
 ```
