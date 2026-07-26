@@ -145,11 +145,11 @@ See [Copy mode](copy-mode.md) for the modal bindings.
 
 ### Leader bindings
 
-| Chord        | Action                   |
-| ------------ | ------------------------ |
-| `<leader>r`  | Rename current tab       |
-| `<leader>uu` | Reload config            |
-| `<leader>p`  | Open the command palette |
+| Chord        | Action                    |
+| ------------ | ------------------------- |
+| `<leader>r`  | Rename current tab        |
+| `<leader>uu` | Reload config             |
+| `<leader>p`  | Open the command palette  |
 | `<leader>q`  | Quick select visible text |
 
 ### Font size
@@ -171,7 +171,7 @@ local hollow = require("hollow")
 
 -- Replace an action
 hollow.keymap.set("<C-t>", function()
-  hollow.term.new_tab({ domain = "wsl" })
+  hollow.term.new_tab({ domain = "UbuntuWsl" })
 end, { desc = "new tab in wsl" })
 
 -- Remove a binding

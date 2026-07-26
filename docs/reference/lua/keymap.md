@@ -9,14 +9,14 @@ For the action list see [Built-in keymap actions](../actions.md).
 
 ## Chord syntax
 
-| Form | Meaning |
-| --- | --- |
-| `j` | Single printable key |
-| `<C-t>` | `Ctrl` + `t` |
-| `<C-S-Tab>` | `Ctrl` + `Shift` + `Tab` |
-| `<A-PageDown>` | `Alt` + `PageDown` |
-| `<leader>r` | Leader key followed by `r` |
-| `<leader>uu` | Leader sequence (two `u`s) |
+| Form           | Meaning                    |
+| -------------- | -------------------------- |
+| `j`            | Single printable key       |
+| `<C-t>`        | `Ctrl` + `t`               |
+| `<C-S-Tab>`    | `Ctrl` + `Shift` + `Tab`   |
+| `<A-PageDown>` | `Alt` + `PageDown`         |
+| `<leader>r`    | Leader key followed by `r` |
+| `<leader>uu`   | Leader sequence (two `u`s) |
 
 Mods: `C-` (Ctrl), `S-` (Shift), `A-` (Alt).
 Legacy `ctrl+...`, `leader+...`, and split `mods`/`key` APIs are not
@@ -38,7 +38,7 @@ hollow.keymap.get_leader_state()                -- HollowLeaderState or nil
 ```
 
 `default` has the same signature as `set` but stores the binding as a
-*pending default* instead of registering it immediately. When
+_pending default_ instead of registering it immediately. When
 `apply_defaults()` runs (automatically after config loading), each pending
 entry is registered via `set` unless `load_default_keymaps` is `false`.
 
@@ -65,7 +65,7 @@ Replace a built-in action:
 
 ```lua
 hollow.keymap.set("<C-t>", function()
-  hollow.term.new_tab({ domain = "wsl" })
+  hollow.term.new_tab({ domain = "UbuntuWSL" })
 end, { desc = "new tab in wsl" })
 ```
 

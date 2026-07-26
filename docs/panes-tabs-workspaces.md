@@ -12,11 +12,11 @@ For the keymap surface see [Keybindings](keybindings.md).
 
 ## The three primitives
 
-| Primitive | Lifetime | What it contains |
-| --- | --- | --- |
-| Workspace | Lives until closed | One or more tabs |
-| Tab | Lives until closed | One or more panes (tiled + optional floating) |
-| Pane | Lives until closed | One shell process + scrollback |
+| Primitive | Lifetime           | What it contains                              |
+| --------- | ------------------ | --------------------------------------------- |
+| Workspace | Lives until closed | One or more tabs                              |
+| Tab       | Lives until closed | One or more panes (tiled + optional floating) |
+| Pane      | Lives until closed | One shell process + scrollback                |
 
 A typical flow: open a workspace, open a tab in it, split the tab into
 panes. A workspace is the unit of "I'm switching contexts" — close a
@@ -62,7 +62,7 @@ Tabs are inside a workspace. New tabs use the active workspace's
 `default_domain` unless you pass one explicitly.
 
 ```lua
-hollow.term.new_tab({ domain = "wsl", title = "server" })
+hollow.term.new_tab({ domain = "UbuntuWSL", title = "server" })
 hollow.term.focus_tab(tab.id)
 hollow.term.close_tab(tab.id)
 hollow.term.next_tab()
@@ -88,7 +88,7 @@ Panes are shells. Create one with `hollow.term.split_pane(opts)`:
 hollow.term.split_pane({
   direction = "vertical",   -- or "horizontal"
   ratio = 0.4,              -- size of the new pane (0..1)
-  domain = "wsl",
+  domain = "UbuntuWSL",
   cwd = "C:/code/side",
   command = "npm run dev",
   command_mode = "send",    -- or "spawn" (no echo in pane)
@@ -103,7 +103,7 @@ hollow.term.split_pane({
 
 ### Floating and maximized
 
-A *floating* pane is a child of the tab but does not participate in the
+A _floating_ pane is a child of the tab but does not participate in the
 tiled split tree. Bounds are normalized 0..1 in window space.
 
 ```lua
@@ -114,7 +114,7 @@ hollow.term.split_pane({
 hollow.term.set_floating_pane_bounds(pane_id, { x = 0.05, y = 0.1, width = 0.5, height = 0.6 })
 ```
 
-A *maximized* pane covers the tiled area; other tiled panes are hidden
+A _maximized_ pane covers the tiled area; other tiled panes are hidden
 unless `show_background = true` is passed to `toggle_pane_maximized`.
 
 ### Move and resize

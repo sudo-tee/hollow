@@ -27,34 +27,34 @@ in the shipped base config.
 
 ## Top-level keys
 
-| Key | Type | Notes |
-| --- | --- | --- |
-| `fonts` | table | Font family, size, hinting, smoothing, embolden, fallbacks |
-| `theme` | string or table | Built-in theme name or inline spec |
-| `scrollback` | integer | Lines of history |
-| `cols`, `rows` | integer | Initial grid size |
-| `padding` | integer | Cell padding in pixels |
-| `window_title`, `window_width`, `window_height` | string, integer | Window geometry |
-| `window_titlebar_show` | boolean | Show the OS title bar |
-| `top_bar_mode` | `"always"` \| `"tabs"` | When to show the top bar |
-| `top_bar_height`, `top_bar_bg` | integer, color | Top bar geometry |
-| `bottom_bar_show`, `bottom_bar_height`, `bottom_bar_bg`, `bottom_bar_draw_status` | mixed | Bottom bar |
-| `scrollbar` | table | Scrollbar config |
-| `hyperlinks` | table | OSC 8 hyperlink config |
-| `cursor` | table | Cursor style, blink |
-| `unfocused_pane` | table | Cursor and dim style for unfocused panes |
-| `shell` | string or string[] | Default shell (when no domain is set) |
-| `default_domain` | string | Domain used for new tabs / panes |
-| `domains` | table<string, string or table> | Domain table |
-| `env` | table<string, string> | Extra env vars injected into guests |
-| `workspace` | table | `auto_bootstrap`, `default_layout` |
-| `max_fps`, `idle_max_fps` | integer | Renderer framerate cap |
-| `vsync` | boolean | Renderer vsync |
-| `backend` | string | Primary renderer backend (`"sokol"`) |
-| `command_timing` | boolean | On-screen command timing overlay |
-| `load_default_keymaps` | boolean | Register shipped keymaps (default `true`) |
-| `debug_overlay`, `debug_terminal_trace` | boolean | Debug overlays |
-| `bell` | table | Visual bell config |
+| Key                                                                               | Type                           | Notes                                                      |
+| --------------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `fonts`                                                                           | table                          | Font family, size, hinting, smoothing, embolden, fallbacks |
+| `theme`                                                                           | string or table                | Built-in theme name or inline spec                         |
+| `scrollback`                                                                      | integer                        | Lines of history                                           |
+| `cols`, `rows`                                                                    | integer                        | Initial grid size                                          |
+| `padding`                                                                         | integer                        | Cell padding in pixels                                     |
+| `window_title`, `window_width`, `window_height`                                   | string, integer                | Window geometry                                            |
+| `window_titlebar_show`                                                            | boolean                        | Show the OS title bar                                      |
+| `top_bar_mode`                                                                    | `"always"` \| `"tabs"`         | When to show the top bar                                   |
+| `top_bar_height`, `top_bar_bg`                                                    | integer, color                 | Top bar geometry                                           |
+| `bottom_bar_show`, `bottom_bar_height`, `bottom_bar_bg`, `bottom_bar_draw_status` | mixed                          | Bottom bar                                                 |
+| `scrollbar`                                                                       | table                          | Scrollbar config                                           |
+| `hyperlinks`                                                                      | table                          | OSC 8 hyperlink config                                     |
+| `cursor`                                                                          | table                          | Cursor style, blink                                        |
+| `unfocused_pane`                                                                  | table                          | Cursor and dim style for unfocused panes                   |
+| `shell`                                                                           | string or string[]             | Default shell (when no domain is set)                      |
+| `default_domain`                                                                  | string                         | Domain used for new tabs / panes                           |
+| `domains`                                                                         | table<string, string or table> | Domain table                                               |
+| `env`                                                                             | table<string, string>          | Extra env vars injected into guests                        |
+| `workspace`                                                                       | table                          | `auto_bootstrap`, `default_layout`                         |
+| `max_fps`, `idle_max_fps`                                                         | integer                        | Renderer framerate cap                                     |
+| `vsync`                                                                           | boolean                        | Renderer vsync                                             |
+| `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                       |
+| `command_timing`                                                                  | boolean                        | On-screen command timing overlay                           |
+| `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                  |
+| `debug_overlay`, `debug_terminal_trace`                                           | boolean                        | Debug overlays                                             |
+| `bell`                                                                            | table                          | Visual bell config                                         |
 
 ### Fonts
 
@@ -140,13 +140,13 @@ hollow.config.set({
 
 ## Domains
 
-A *domain* is a named shell the runtime can spawn. `domains` maps a
+A _domain_ is a named shell the runtime can spawn. `domains` maps a
 domain name to either a shell string or a table with per-domain
 options.
 
 ```lua
 hollow.config.set({
-  default_domain = "wsl",
+  default_domain = "UbuntuWSL",
   domains = {
     pwsh       = { shell = "pwsh.exe" },
     powershell = { shell = "powershell.exe" },
@@ -184,7 +184,7 @@ hollow.config.set({
         alias = "devbox",            -- SSH config host alias
         host = "10.0.0.8",           -- or use `host` directly
         user = "root",
-        backend = "wsl",             -- "native" or "wsl"
+        backend = "UbuntuWSL",             -- "native" or "wsl"
         reuse = "auto",              -- "none" or "auto"
       },
     },

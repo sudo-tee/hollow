@@ -43,7 +43,7 @@ This enumerates `wsl.exe -l` and creates one domain per distro named
 Make WSL the default:
 
 ```lua
-hollow.config.set({ default_domain = "wsl" })
+hollow.config.set({ default_domain = "UbuntuWSL" })
 ```
 
 Customize the WSL domain:
@@ -112,7 +112,7 @@ Use `wsl` as the default domain. Most shell, toolchain, and SSH setup
 lives in Linux; Hollow remains a Windows desktop app.
 
 ```lua
-hollow.config.set({ default_domain = "wsl" })
+hollow.config.set({ default_domain = "UbuntuWSL" })
 ```
 
 ### WSL-backed SSH
@@ -150,7 +150,7 @@ hollow.ui.workspace.configure({
     {
       name = "Ubuntu",
       resolver = "local",   -- not "wsl": we want to read Windows UNC paths
-      domain = "wsl",
+      domain = "UbuntuWSL",
       cwd_resolver = "wsl_unc",
       roots = {
         "\\\\wsl$\\Ubuntu\\home\\me\\Projects",
@@ -179,12 +179,12 @@ echo "$HOLLOW_PANE_ID $HOLLOW_TRANSPORT"
 
 ## Troubleshooting
 
-| Problem | Fix |
-| --- | --- |
-| `wsl.exe not found` | Install WSL with `wsl --install` from elevated PowerShell |
-| Bypass helper does not activate | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
-| Wrong distro launches | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()` |
-| `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane` |
+| Problem                                 | Fix                                                                                                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wsl.exe not found`                     | Install WSL with `wsl --install` from elevated PowerShell                                                                                                                                                               |
+| Bypass helper does not activate         | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
+| Wrong distro launches                   | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()`                                                                                                         |
+| `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane`                                                                                                                 |
 
 ## See also
 

@@ -65,7 +65,7 @@ hollow.ui.workspace.configure({
   known_workspaces = function() return { ... } end,
   sources = {
     { resolver = "local", domain = "pwsh", roots = { "C:/code" } },
-    { resolver = "wsl",   domain = "wsl",  roots = { "/home/me/projects" } },
+    { resolver = "wsl",   domain = "UbuntuWSL",  roots = { "/home/me/projects" } },
     { resolver = "ssh",   domain = "tower", roots = { "/home/me/projects" } },
   },
 
@@ -95,7 +95,7 @@ Each source declares how its items are discovered:
 {
   resolver = "local" | "wsl" | "ssh",
   name = "Ubuntu",                    -- optional
-  domain = "wsl",                     -- the domain new panes open in
+  domain = "UbuntuWSL",                     -- the domain new panes open in
   roots = { "/home/me/projects" },
   items = function() return { ... } end,    -- optional, merged with roots
   cwd_resolver = "wsl_unc" | function(cwd, item, source) ... end,
@@ -103,11 +103,11 @@ Each source declares how its items are discovered:
 }
 ```
 
-| Resolver | Behavior |
-| --- | --- |
-| `local` | Scans `roots` with `hollow.read_dir(...)` |
-| `wsl` | Runs `wsl.exe` and lists child directories |
-| `ssh` | Uses `hollow.term.run_domain_process(...)` to list directories on the SSH domain |
+| Resolver | Behavior                                                                         |
+| -------- | -------------------------------------------------------------------------------- |
+| `local`  | Scans `roots` with `hollow.read_dir(...)`                                        |
+| `wsl`    | Runs `wsl.exe` and lists child directories                                       |
+| `ssh`    | Uses `hollow.term.run_domain_process(...)` to list directories on the SSH domain |
 
 `cwd_resolver = "wsl_unc"` is useful when picker items come from
 Windows UNC paths like `\\wsl$\Ubuntu\home\me\Projects` but the
@@ -206,7 +206,7 @@ hollow.ui.workspace.configure({
     {
       name = "Ubuntu",
       resolver = "local",   -- not "wsl" if roots are UNC paths
-      domain = "wsl",
+      domain = "UbuntuWSL",
       cwd_resolver = "wsl_unc",
       roots = {
         "\\\\wsl$\\Ubuntu\\home\\me\\Projects",

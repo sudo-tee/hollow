@@ -44,7 +44,7 @@ hollow.term.set_title(title, tab_id?)  -- set tab title
   cwd = "/path",
   env = { FOO = "bar" },
   title = "server",
-  domain = "wsl",
+  domain = "UbuntuWSL",
   command = "ls -la",          -- alias of `cmd` for symmetry with split_pane
   on_complete = function(result) ... end,  -- result.success, result.tab_id
 }
@@ -65,7 +65,7 @@ table:
 {
   direction = "horizontal" | "vertical",
   ratio = 0.4,                  -- size of the new pane (0..1)
-  domain = "wsl",
+  domain = "UbuntuWSL",
   cwd = "/path",
   command = "npm run dev",
   command_mode = "send",        -- or "spawn"
@@ -161,7 +161,7 @@ hollow.term.set_theme(name)             -- switch active theme
 ```lua
 {
   cwd = "/path",
-  domain = "wsl",
+  domain = "UbuntuWSL",
   command = "ls",
   name = "backend",
   on_complete = function(result) ... end,  -- result.success, result.workspace_index

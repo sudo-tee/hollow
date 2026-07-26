@@ -145,14 +145,14 @@ Defaults to `true`.
 
 ### Domains and shells
 
-A *domain* is a named shell that Hollow knows how to spawn.
+A _domain_ is a named shell that Hollow knows how to spawn.
 The shipped base config defines `pwsh`, `powershell`, `cmd`, and `wsl` on
 Windows, and a `unix` domain that uses `hollow.platform.default_shell` on
 non-Windows hosts.
 
 ```lua
 hollow.config.set({
-  default_domain = "wsl",      -- default for new tabs/panes
+  default_domain = "UbuntuWSL",      -- default for new tabs/panes
   domains = {
     pwsh = { shell = "pwsh.exe" },
     wsl  = { shell = "C:\\Windows\\System32\\wsl.exe" },

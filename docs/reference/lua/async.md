@@ -31,7 +31,7 @@ hollow.async.run(function()
     hollow.term.set_pane_tags({ "editor" }, split.pane_id)
 
     local tab = hollow.async.await(function(resolve)
-      hollow.term.new_tab({ domain = "wsl", on_complete = resolve })
+      hollow.term.new_tab({ domain = "UbuntuWSL", on_complete = resolve })
     end)
 
     if tab.success then

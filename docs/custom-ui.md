@@ -234,7 +234,7 @@ hollow.ui.workspace.configure({
   prompt = "Workspaces",
   sources = {
     { resolver = "local", roots = { "C:/code" } },
-    { resolver = "wsl",   domain = "wsl", roots = { "/home/me/projects" } },
+    { resolver = "wsl",   domain = "UbuntuWSL", roots = { "/home/me/projects" } },
     { resolver = "ssh",   domain = "tower", roots = { "/home/me/projects" } },
   },
   project_roots = { "C:/code" },
@@ -255,11 +255,11 @@ hollow.ui.workspace.close()
 
 Discovery sources:
 
-| Resolver | Behavior |
-| --- | --- |
-| `local` | Scans `roots` with `hollow.read_dir` |
-| `wsl` | Lists directories through `wsl.exe` |
-| `ssh` | Lists directories through `hollow.term.run_domain_process` |
+| Resolver | Behavior                                                   |
+| -------- | ---------------------------------------------------------- |
+| `local`  | Scans `roots` with `hollow.read_dir`                       |
+| `wsl`    | Lists directories through `wsl.exe`                        |
+| `ssh`    | Lists directories through `hollow.term.run_domain_process` |
 
 `cwd_resolver = "wsl_unc"` translates Windows UNC paths like
 `\\wsl$\Ubuntu\home\me\Projects` back to Linux paths before launching.

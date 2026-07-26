@@ -14,13 +14,13 @@ Download the latest release from
 [GitHub Releases](https://github.com/sudo-tee/hollow/releases).
 A release zip contains:
 
-| File | Role |
-| --- | --- |
-| `hollow.exe` | CLI launcher and `hollow cli …` host |
-| `hollow-gui.exe` | Console-less GUI shim |
-| `hollow-native.exe` | Actual GUI process |
-| `hollow-cli` | Python HTP client (optional, OSC over tty) |
-| `wsl/hollow-wsl-bypass` | Linux-side WSL helper (optional) |
+| File                    | Role                                       |
+| ----------------------- | ------------------------------------------ |
+| `hollow.exe`            | CLI launcher and `hollow cli …` host       |
+| `hollow-gui.exe`        | Console-less GUI shim                      |
+| `hollow-native.exe`     | Actual GUI process                         |
+| `hollow-cli`            | Python HTP client (optional, OSC over tty) |
+| `wsl/hollow-wsl-bypass` | Linux-side WSL helper (optional)           |
 
 Debug symbols (`.pdb` files) are not bundled in releases.
 For crash symbolication, see
@@ -41,13 +41,13 @@ hollow.exe
 
 ## Config paths
 
-| What | Path |
-| --- | --- |
+| What                | Path                                   |
+| ------------------- | -------------------------------------- |
 | Bundled base config | `conf/init.lua` next to the executable |
-| Personal override | `%APPDATA%\hollow\init.lua` |
-| Explicit override | `--config path\to\init.lua` |
-| Log file | `hollow.log` next to the executable |
-| Data dir (plugins) | `%APPDATA%\hollow` |
+| Personal override   | `%APPDATA%\hollow\init.lua`            |
+| Explicit override   | `--config path\to\init.lua`            |
+| Log file            | `hollow.log` next to the executable    |
+| Data dir (plugins)  | `%APPDATA%\hollow`                     |
 
 The base config is loaded first, the override is merged on top.
 See [Configuration](../configuration.md) for the full model.
@@ -56,18 +56,18 @@ See [Configuration](../configuration.md) for the full model.
 
 The shipped base config defines these on Windows:
 
-| Domain | Shell | Notes |
-| --- | --- | --- |
-| `pwsh` | `pwsh.exe` | Default |
-| `powershell` | `powershell.exe` | Windows PowerShell 5.x |
-| `cmd` | `cmd.exe` | Command Prompt |
-| `wsl` | `C:\Windows\System32\wsl.exe` | See [WSL](wsl.md) |
-| `*WSL` | one per installed distro | Populated by `populate_wsl_domains()` |
+| Domain       | Shell                         | Notes                                 |
+| ------------ | ----------------------------- | ------------------------------------- |
+| `pwsh`       | `pwsh.exe`                    | Default                               |
+| `powershell` | `powershell.exe`              | Windows PowerShell 5.x                |
+| `cmd`        | `cmd.exe`                     | Command Prompt                        |
+| `wsl`        | `C:\Windows\System32\wsl.exe` | See [WSL](wsl.md)                     |
+| `*WSL`       | one per installed distro      | Populated by `populate_wsl_domains()` |
 
 Switch the default:
 
 ```lua
-hollow.config.set({ default_domain = "wsl" })
+hollow.config.set({ default_domain = "UbuntuWSL" })
 ```
 
 Customize the WSL domain:
@@ -85,16 +85,16 @@ hollow.config.set({
 `hollow.exe` accepts the flags listed in [Development](../development.md#cli-flags).
 The most useful Windows-specific flags:
 
-| Flag | Effect |
-| --- | --- |
-| `--config path` | Use `path` as the override config |
-| `--renderer-safe-mode` | Disable swapchain glyphs and the multi-pane cache |
-| `--renderer-disable-swapchain-glyphs` | Only disable the swapchain glyph path |
-| `--renderer-disable-multi-pane-cache` | Only disable the multi-pane cache |
-| `--list-fonts`, `--match-font query`, `--json` | Dump the font inventory |
-| `--startup-command text` | Send `text` to the first pane after startup |
-| `--snapshot-dump path` | Dump a frame snapshot for headless debugging |
-| `--help` | Print the usage line |
+| Flag                                           | Effect                                            |
+| ---------------------------------------------- | ------------------------------------------------- |
+| `--config path`                                | Use `path` as the override config                 |
+| `--renderer-safe-mode`                         | Disable swapchain glyphs and the multi-pane cache |
+| `--renderer-disable-swapchain-glyphs`          | Only disable the swapchain glyph path             |
+| `--renderer-disable-multi-pane-cache`          | Only disable the multi-pane cache                 |
+| `--list-fonts`, `--match-font query`, `--json` | Dump the font inventory                           |
+| `--startup-command text`                       | Send `text` to the first pane after startup       |
+| `--snapshot-dump path`                         | Dump a frame snapshot for headless debugging      |
+| `--help`                                       | Print the usage line                              |
 
 `launch.sh` exposes `--safe-render`, `--no-swapchain-glyphs`,
 `--no-multi-pane-cache` as the dev-loop equivalents. See
