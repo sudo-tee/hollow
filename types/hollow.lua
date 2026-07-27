@@ -1768,6 +1768,29 @@ function ui.selectable_list(opts) end
 ---@return HollowUiColumnNode
 function ui.dialog(opts, theme) end
 
+---@param kind string
+---@param opts HollowUiWidgetOptions
+---@return HollowUiWidget
+function ui.new_widget(kind, opts) end
+
+---@param widget HollowUiWidget
+---@return HollowUiWidget|nil
+function ui.close_overlay_widget(widget) end
+
+---@param name string
+---@param payload HollowUiNodeEventPayload
+function ui.dispatch_widget_event(name, payload) end
+
+---@param key string
+---@param mods HollowUiKeyMods
+---@return boolean
+function ui.dispatch_overlay_key(key, mods) end
+
+---@param row HollowUiRow
+---@param max_chars number|nil
+---@return HollowUiSegment[]
+function ui.trim_row_for_width(row, max_chars) end
+
 ui.bar = bar
 ui.topbar = topbar
 ui.bottombar = bottombar
@@ -1780,11 +1803,6 @@ ui.select = select
 ui.confirm = confirm
 ui.workspace = workspace
 
----@field new_widget fun(kind:string, opts:HollowUiWidgetOptions):HollowUiWidget
----@field close_overlay_widget fun(widget:HollowUiWidget):HollowUiWidget|nil
----@field dispatch_widget_event fun(name:string, payload:HollowUiNodeEventPayload)
----@field dispatch_overlay_key fun(key:string, mods:HollowUiKeyMods):boolean
----@field trim_row_for_width fun(row:HollowUiRow, max_chars:number|nil):HollowUiSegment[]
 ---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
 ---@field resolve_theme fun():HollowResolvedTheme
 ---@field resolve_theme fun(kind:string):HollowUiTheme

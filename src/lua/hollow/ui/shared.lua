@@ -189,6 +189,15 @@ function M.resolve_theme()
   return theme_api.create()
 end
 
+---@return { height: integer, background: string|nil }
+function M.resolve_topbar_theme()
+  local top_bar = M.resolve_theme().ui.top_bar or {}
+  return {
+    height = tonumber(top_bar.height) or 22,
+    background = color.normalize_hex_color(top_bar.background, nil),
+  }
+end
+
 ---@param text string
 ---@param style HollowUiNodeStyle
 ---@param out HollowUiFlatNode[]
