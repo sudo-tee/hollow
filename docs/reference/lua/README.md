@@ -40,6 +40,7 @@ namespace you need. The full type schema lives in
 | `hollow.process` | [process.md](process.md) |
 | `hollow.fs` | [fs.md](fs.md) |
 | `hollow.plugins` | [plugins.md](plugins.md) |
+| `hollow.tbl` | [tbl.md](tbl.md) |
 | `hollow.util` | [util.md](util.md) |
 | `hollow.platform` | [platform.md](platform.md) |
 
