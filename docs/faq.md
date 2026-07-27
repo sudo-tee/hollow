@@ -32,6 +32,7 @@ option.
 
 Alacritty is fast and minimal. It is intentionally not programmable
 beyond its TOML config.
+Alacritty has also no multiplexing or workspace model, so you need to rely on other multiplexers like tmux, herdr or zellij.
 Hollow treats the Lua runtime as a first-class extension surface and
 ships a widget model on top of it.
 
@@ -76,12 +77,12 @@ not need a tty.
 
 ### `hollow cli` or `hollow-cli`?
 
-| | `hollow cli …` | `hollow-cli` |
-| --- | --- | --- |
-| Talks to | Host command socket | OSC over tty |
-| Needs a tty | no | yes |
-| Needs shell integration | no | yes |
-| Best for | scripts, CI, automation | prompt hooks |
+|                         | `hollow cli …`          | `hollow-cli` |
+| ----------------------- | ----------------------- | ------------ |
+| Talks to                | Host command socket     | OSC over tty |
+| Needs a tty             | no                      | yes          |
+| Needs shell integration | no                      | yes          |
+| Best for                | scripts, CI, automation | prompt hooks |
 
 Both ship. The native subcommand is the recommended path for
 host-side automation. See
@@ -114,7 +115,7 @@ out-of-scope notes.
 
 ### Is Hollow a Linux terminal?
 
-No. Hollow is a Windows app.
+Yes and no Hollow is a Windows app by default with basic Linux support for the moment.
 WSL is one of the shells Hollow can launch; the bypass helper is a
 small Linux-side binary that skips ConPTY.
 
@@ -124,8 +125,7 @@ The bypass helper is a small Linux-side binary in
 [`src/wsl_bypass.zig`](../src/wsl_bypass.zig). It speaks a tiny
 APC-based protocol defined in
 [`src/pty/wsl_bypass_protocol.zig`](../src/pty/wsl_bypass_protocol.zig).
-Extending it is feasible but is a separate project from the terminal
-itself.
+Extending it is feasible but only by writing Zig code and rebuilding
 
 ## See also
 

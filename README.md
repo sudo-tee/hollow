@@ -52,8 +52,8 @@ Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
 (falls back to ConPTY automatically when the helper is absent). Linux builds
 require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 
-**Customize:** copy `conf/init.lua` to `%APPDATA%\hollow\init.lua` (Windows) or
-`~/.config/hollow/init.lua` (other).
+**Customize:** `%APPDATA%\hollow\init.lua` (Windows) or
+`~/.config/hollow/init.lua` (other). Use `conf/init.lua` as a reference for the default config.
 
 **Build from source:**
 
