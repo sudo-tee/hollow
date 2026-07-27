@@ -39,7 +39,7 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 - Keyboard quick select for visible links, IPs, paths, filenames, and quoted text
 - Scrollback, selection, clipboard, hyperlink handling, font discovery, ligature, nerd fonts and emoji support
 - Basic support for Kitty images and Sixel
-- Windows domains for `pwsh`, `powershell`, `cmd`, and `wsl`
+- Windows domains for `pwsh`, `powershell`, `cmd`, and `*WSL`, it will populate domains automatically for all wsl distros installed on the system. eg: (`UbuntuWSL`, `DebianWSL`, `AlpineWSL`, `FedoraWSL`, etc.)
 - Optional WSL PTY bypass helper with automatic ConPTY fallback (needed for full escape sequence support)
 - Cross-platform targets: Windows and WSL (primary); Linux/X11 (basic support); macOS (planned)
 - Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
