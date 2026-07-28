@@ -3716,6 +3716,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const fw: i32 = @intFromFloat(width);
         const fh: i32 = @intFromFloat(height);
         const border_px = app.config.split_width;
+        // Split layout reserves one pixel between panes. Keep seam inside that
+        // reservation so it cannot cover final row/column glyph pixels.
+        const split_border_px = @min(border_px, 1.0);
 
         // Reset viewport + scissor to the full framebuffer so rects are not
         // clipped to the last pane's sub-rect (sgl_defaults() would leave the
@@ -3768,26 +3771,25 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 // framebuffer boundary (i.e. there is a neighbour to the right).
                 if (@as(i32, @intFromFloat(x1)) < fw) {
                     const seam = PaneBounds{
-                        .x = @as(u32, @intFromFloat(@max(0.0, x1 - border_px / 2.0))),
+                        .x = @as(u32, @intFromFloat(x1)),
                         .y = leaf.bounds.y,
-                        .width = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                        .width = 1,
                         .height = leaf.bounds.height,
                     };
                     if (!seamCoveredByFloating(leaves, seam)) {
-                        // rect drawn at x1 - border_px/2 so it straddles the seam
-                        drawBorderRect(x1 - border_px / 2.0, y0, border_px, lh, br, bg, bb, ba);
+                        drawBorderRect(x1, y0, split_border_px, lh, br, bg, bb, ba);
                     }
                 }
                 // Bottom seam — same logic vertically.
                 if (@as(i32, @intFromFloat(y1)) < fh) {
                     const seam = PaneBounds{
                         .x = leaf.bounds.x,
-                        .y = @as(u32, @intFromFloat(@max(0.0, y1 - border_px / 2.0))),
+                        .y = @as(u32, @intFromFloat(y1)),
                         .width = leaf.bounds.width,
-                        .height = @max(@as(u32, 1), @as(u32, @intFromFloat(border_px))),
+                        .height = 1,
                     };
                     if (!seamCoveredByFloating(leaves, seam)) {
-                        drawBorderRect(x0, y1 - border_px / 2.0, lw, border_px, br, bg, bb, ba);
+                        drawBorderRect(x0, y1, lw, split_border_px, br, bg, bb, ba);
                     }
                 }
             }

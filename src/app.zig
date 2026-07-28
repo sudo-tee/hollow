@@ -64,6 +64,7 @@ const mux_ops = @import("app/session_controller.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
 const embedded_types: []const u8 = build_options.embedded_types;
+const ALT_SCREEN_NUDGE_DELAY_NS: i128 = 500 * std.time.ns_per_ms;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 pub const SplitCommandMode = enum {
@@ -2187,9 +2188,11 @@ pub const App = struct {
                     if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) {
                         pane.pending_alt_screen_nudge = true;
                         pane.alt_screen_nudge_quiet_ticks = 0;
+                        pane.alt_screen_nudge_not_before_ns = std.time.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS;
                     } else {
                         pane.pending_alt_screen_nudge = false;
                         pane.alt_screen_nudge_quiet_ticks = 0;
+                        pane.alt_screen_nudge_not_before_ns = 0;
                     }
                     self.requestLayoutResize(false);
                 }
@@ -2332,6 +2335,10 @@ pub const App = struct {
                     if (pane.active_screen != @intFromEnum(ghostty.TerminalScreen.alternate)) {
                         pane.pending_alt_screen_nudge = false;
                         pane.alt_screen_nudge_quiet_ticks = 0;
+                        pane.alt_screen_nudge_not_before_ns = 0;
+                    } else if (now_ns < pane.alt_screen_nudge_not_before_ns) {
+                        pane.alt_screen_nudge_quiet_ticks = 0;
+                        self.last_visual_activity_ns = now_ns;
                     } else if (self.pending_resize or self.pending_layout_resize or self.pending_drag_layout_resize) {
                         pane.alt_screen_nudge_quiet_ticks = 0;
                         self.last_visual_activity_ns = now_ns;
@@ -2346,9 +2353,10 @@ pub const App = struct {
                                 pane.rows,
                                 pane.cols,
                             });
-                            pane.nudgePty();
+                            pane.nudgeTerminal(runtime, self.cell_width_px, self.cell_height_px);
                             pane.pending_alt_screen_nudge = false;
                             pane.alt_screen_nudge_quiet_ticks = 0;
+                            pane.alt_screen_nudge_not_before_ns = 0;
                             self.last_visual_activity_ns = now_ns;
                         } else {
                             self.last_visual_activity_ns = now_ns;

@@ -299,7 +299,14 @@ fn handleHostFrame(stdin_file: std.fs.File, master: c_int) !bool {
             var winsize = std.mem.zeroes(c.struct_winsize);
             winsize.ws_col = std.mem.readInt(u16, payload[0..2], .little);
             winsize.ws_row = std.mem.readInt(u16, payload[2..4], .little);
-            _ = c.ioctl(master, c.TIOCSWINSZ, &winsize);
+            var current = std.mem.zeroes(c.struct_winsize);
+            const same_size = c.ioctl(master, c.TIOCGWINSZ, &current) == 0 and
+                current.ws_col == winsize.ws_col and current.ws_row == winsize.ws_row;
+            if (c.ioctl(master, c.TIOCSWINSZ, &winsize) == 0 and same_size) {
+                // Same-size repaint nudges do not make the kernel emit SIGWINCH.
+                const foreground_pgid = c.tcgetpgrp(master);
+                if (foreground_pgid > 0) _ = c.kill(-foreground_pgid, c.SIGWINCH);
+            }
         },
         .exit => return false,
         else => {

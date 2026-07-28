@@ -202,6 +202,8 @@ pub const Pane = struct {
     /// Queue a one-shot PTY repaint nudge after alternate-screen entry settles.
     pending_alt_screen_nudge: bool = false,
     alt_screen_nudge_quiet_ticks: u8 = 0,
+    /// Earliest time to nudge, allowing the TUI to finish startup first.
+    alt_screen_nudge_not_before_ns: i128 = 0,
     last_has_pending_ns: i128 = 0,
     last_sanitize_ns: i128 = 0,
     last_child_alive_ns: i128 = 0,
@@ -723,16 +725,25 @@ pub const Pane = struct {
         }
     }
 
-    /// Force a repaint by briefly bumping the PTY row count and restoring it.
-    /// Keep Ghostty's terminal grid stable while processing alternate-screen entry.
-    pub fn nudgePty(self: *Pane) void {
+    /// Force a repaint by briefly resizing both Ghostty and the PTY, matching
+    /// the authoritative window-resize path instead of nudging only the PTY.
+    pub fn nudgeTerminal(self: *Pane, runtime: *GhosttyRuntime, cell_width_px: u32, cell_height_px: u32) void {
         if (self.cols == 0 or self.rows == 0) return;
-        const bump_rows: u16 = if (self.rows > 1) self.rows - 1 else self.rows + 1;
-        std.log.info("pane.nudgePty: row-bump cols={d} rows={d}->{}->{}", .{ self.cols, self.rows, bump_rows, self.rows });
+        const original_rows = self.rows;
+        const bump_rows: u16 = original_rows +| 1;
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
+                std.log.info("pane.nudgeTerminal: cols={d} rows={d}->{}->{}", .{ self.cols, original_rows, bump_rows, original_rows });
+                self.rows = bump_rows;
+                runtime.resizeTerminal(self.terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
+                runtime.updateRenderState(self.render_state, self.terminal) catch {};
                 pty.resize(self.cols, bump_rows);
-                pty.resize(self.cols, self.rows);
+
+                self.rows = original_rows;
+                runtime.resizeTerminal(self.terminal, self.cols, original_rows, cell_width_px, cell_height_px);
+                runtime.updateRenderState(self.render_state, self.terminal) catch {};
+                pty.resize(self.cols, original_rows);
+                self.render_dirty = .full;
             }
         }
     }
