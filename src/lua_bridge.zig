@@ -156,6 +156,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
     .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
+    .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
     .{ .name = "hollow.ui.workspace.source", .source = @embedFile("lua/hollow/ui/workspace/source.lua") },
@@ -216,6 +217,8 @@ pub const AppCallbacks = struct {
     get_active_workspace_index: *const fn (app: *anyopaque) usize,
     get_workspace_id: *const fn (app: *anyopaque, index: usize) usize,
     get_workspace_name: *const fn (app: *anyopaque, index: usize, out_buf: []u8) []const u8,
+    get_workspace_tab_count: *const fn (app: *anyopaque, workspace_index: usize) usize,
+    get_workspace_tab_id_at: *const fn (app: *anyopaque, workspace_index: usize, tab_index: usize) usize,
     get_pane_pid: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_title: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
@@ -1931,6 +1934,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_workspace_name, 1);
         api.set_field(self.state, -2, "get_workspace_name");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_tab_count, 1);
+        api.set_field(self.state, -2, "get_workspace_tab_count");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_workspace_tab_id_at, 1);
+        api.set_field(self.state, -2, "get_workspace_tab_id_at");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_set_tab_title, 1);
@@ -5623,6 +5634,45 @@ fn l_get_workspace_count(state: *State) callconv(.c) c_int {
     };
     const count = cbs.get_workspace_count(cbs.app);
     api.push_number(state, @floatFromInt(count));
+    return 1;
+}
+
+fn l_get_workspace_tab_count(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_number(state, 0);
+        return 1;
+    };
+    const workspace_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_number(state, @floatFromInt(cbs.get_workspace_tab_count(cbs.app, workspace_index)));
+    return 1;
+}
+
+fn l_get_workspace_tab_id_at(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const workspace_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    const tab_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 2)))
+    else
+        0;
+    const tab_id = cbs.get_workspace_tab_id_at(cbs.app, workspace_index, tab_index);
+    if (tab_id == 0) {
+        api.push_nil(state);
+    } else {
+        api.push_number(state, @floatFromInt(tab_id));
+    }
     return 1;
 }
 

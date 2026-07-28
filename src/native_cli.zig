@@ -292,6 +292,10 @@ const Runner = struct {
             if (rest.len != 0) return self.fail("workspaces takes no arguments", "invalid_args", 2);
             return try self.printQuery(.{ .kind = .get_workspaces });
         }
+        if (std.mem.eql(u8, sub, "mux-tree")) {
+            if (rest.len != 0) return self.fail("mux-tree takes no arguments", "invalid_args", 2);
+            return try self.printQuery(.{ .kind = .get_mux_tree });
+        }
         if (std.mem.eql(u8, sub, "domain")) {
             if (rest.len != 0) return self.fail("domain takes no arguments", "invalid_args", 2);
             return try self.printQuery(.{ .kind = .get_domain });

@@ -26,27 +26,12 @@ local function category_order(cat)
   return CATEGORIES[cat] and CATEGORIES[cat].order or 99
 end
 
-local function words(...)
-  local values = { ... }
-  return hollow.tbl
-    .range(1, select("#", ...))
-    :filter_map(function(index)
-      local value = values[index]
-      return value ~= nil and value ~= "" and tostring(value) or nil
-    end)
-    :join(" ")
-end
-
-local function cycle_index(index, delta, count)
-  if count == 0 then
-    return index
-  end
-  return (index + delta - 1) % count + 1
-end
-
 local MARKER_SELECTED = "> "
 local MARKER_HOVERED = "\226\150\142 " -- ▎
 local MARKER_NONE = "  "
+-- ▶ collapsed / ▼ expanded
+local ICON_COLLAPSED = "\226\150\182"
+local ICON_EXPANDED = "\226\150\188"
 
 local function marker(is_selected, is_hovered, indent)
   return (indent or "")
@@ -123,7 +108,7 @@ function providers.actions()
         chords = chords,
         run = a.run,
         workspace_targetable = a.workspace_targetable or false,
-        searchable = words(a.name, a.desc, category_label(category), category),
+        searchable = util.words(a.name, a.desc, category_label(category), category),
       })
     end)
     :get()
@@ -141,7 +126,7 @@ function providers.workspaces()
         category_label = "Workspace",
         workspace_index = ws.index,
         workspace_id = ws.id,
-        searchable = words(name, ws.index, "workspace"),
+        searchable = util.words(name, ws.index, "workspace"),
       })
     end)
     :get()
@@ -163,7 +148,7 @@ function providers.domains()
       category = "general",
       category_label = "Domain",
       domain_name = name,
-      searchable = words(name, shell_str, "domain"),
+      searchable = util.words(name, shell_str, "domain"),
     })
   end
   return hollow
@@ -254,7 +239,7 @@ local function render_section_header(
   is_collapsed,
   row_options
 )
-  local arrow = is_collapsed and "\226\150\182" or "\226\150\188"
+  local arrow = is_collapsed and ICON_COLLAPSED or ICON_EXPANDED
   return ui.row(
     {
       ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {
@@ -413,10 +398,10 @@ function ui.command_palette.open(opts)
         util.safe_call(opts.on_cancel)
       end,
       arrow_down = function()
-        nav.index = cycle_index(nav.index, 1, #current_flat())
+        nav.index = util.cycle_index(nav.index, 1, #current_flat())
       end,
       arrow_up = function()
-        nav.index = cycle_index(nav.index, -1, #current_flat())
+        nav.index = util.cycle_index(nav.index, -1, #current_flat())
       end,
       enter = function()
         activate(nav.index)

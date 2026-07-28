@@ -260,6 +260,7 @@ hollow.keymap.default("<C-0>", "font_size_reset")
 hollow.keymap.default("<leader>r", "rename_tab")
 hollow.keymap.default("<leader>uu", "reload_config")
 hollow.keymap.default("<leader>p", "command_palette", { desc = "command palette" })
+hollow.keymap.default("<leader>n", "mux_navigator", { desc = "mux navigator" })
 
 -- Load local plugin for demo purposes
 -- hollow.plugins.setup({

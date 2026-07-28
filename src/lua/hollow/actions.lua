@@ -639,6 +639,14 @@ function M.setup(hollow, host_api)
     category = "general",
   })
 
+  register(hollow, "mux_navigator", {
+    run = function()
+      hollow.ui.mux_navigator.open()
+    end,
+    desc = "Navigate workspaces, tabs, and panes",
+    category = "pane",
+  })
+
   local palette = hollow.ui.command_palette
 
   local function pick_workspace_and_run(fn)

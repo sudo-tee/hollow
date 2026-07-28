@@ -215,6 +215,10 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     return hollow.term.workspaces()
   end)
 
+  hollow.htp.on_query("mux_tree", function()
+    return hollow.term.mux_tree()
+  end)
+
   hollow.htp.on_query("current_workspace", function()
     return hollow.term.current_workspace()
   end)

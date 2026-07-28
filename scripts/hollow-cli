@@ -111,6 +111,9 @@ class HollowCli:
         p = get_sub.add_parser("workspaces", parents=[self.common_parser])
         p.set_defaults(handler=lambda args: self.print_query("workspaces", {}))
 
+        p = get_sub.add_parser("mux-tree", parents=[self.common_parser])
+        p.set_defaults(handler=lambda args: self.print_query("mux_tree", {}))
+
         p = get_sub.add_parser("domain", parents=[self.common_parser])
         p.set_defaults(handler=lambda args: self.print_query("current_domain", {}))
 

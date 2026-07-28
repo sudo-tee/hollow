@@ -847,6 +847,28 @@ pub const App = struct {
         return .{ .array = array };
     }
 
+    pub fn muxTreeValue(self: *App) !std.json.Value {
+        var array = std.json.Array.init(self.allocator);
+        errdefer deinitJsonValue(self.allocator, .{ .array = array });
+        if (self.mux) |*mux| {
+            for (mux.workspaces.items, 0..) |workspace, workspace_index| {
+                const workspace_value = try self.snapshotWorkspace(workspace, workspace_index);
+                errdefer deinitJsonValue(self.allocator, workspace_value);
+                var workspace_object = workspace_value.object;
+                var tabs = std.json.Array.init(self.allocator);
+                var tabs_owned_by_workspace = false;
+                defer if (!tabs_owned_by_workspace) deinitJsonValue(self.allocator, .{ .array = tabs });
+                for (workspace.tabs.items, 0..) |tab, tab_index| {
+                    try tabs.append(try self.snapshotTab(tab, tab_index));
+                }
+                try workspace_object.put(try self.allocator.dupe(u8, "tabs"), .{ .array = tabs });
+                tabs_owned_by_workspace = true;
+                try array.append(.{ .object = workspace_object });
+            }
+        }
+        return .{ .array = array };
+    }
+
     pub fn init(allocator: std.mem.Allocator) App {
         return .{
             .allocator = allocator,
@@ -1049,6 +1071,8 @@ pub const App = struct {
             .get_active_workspace_index = lua_callbacks.luaGetActiveWorkspaceIndexCallback,
             .get_workspace_id = lua_callbacks.luaGetWorkspaceIdCallback,
             .get_workspace_name = lua_callbacks.luaGetWorkspaceNameCallback,
+            .get_workspace_tab_count = lua_callbacks.luaGetWorkspaceTabCountCallback,
+            .get_workspace_tab_id_at = lua_callbacks.luaGetWorkspaceTabIdAtCallback,
             .get_pane_pid = lua_callbacks.luaGetPanePidCallback,
             .get_pane_title = lua_callbacks.luaGetPaneTitleCallback,
             .get_pane_cwd = lua_callbacks.luaGetPaneCwdCallback,

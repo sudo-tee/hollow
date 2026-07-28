@@ -416,6 +416,22 @@ pub fn luaGetWorkspaceIdCallback(app_ptr: *anyopaque, index: usize) usize {
     return app.workspaceId(index);
 }
 
+pub fn luaGetWorkspaceTabCountCallback(app_ptr: *anyopaque, workspace_index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*mux| mux else return 0;
+    if (workspace_index >= mux.workspaces.items.len) return 0;
+    return mux.workspaces.items[workspace_index].tabs.items.len;
+}
+
+pub fn luaGetWorkspaceTabIdAtCallback(app_ptr: *anyopaque, workspace_index: usize, tab_index: usize) usize {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const mux = if (app.mux) |*mux| mux else return 0;
+    if (workspace_index >= mux.workspaces.items.len) return 0;
+    const workspace = mux.workspaces.items[workspace_index];
+    if (tab_index >= workspace.tabs.items.len) return 0;
+    return workspace.tabs.items[tab_index].id;
+}
+
 pub fn luaIsLeaderActiveCallback(app_ptr: *anyopaque) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.isLeaderActive();

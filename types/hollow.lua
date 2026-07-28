@@ -445,6 +445,9 @@
 ---@field domain? string
 ---@field is_active boolean
 
+---@class HollowMuxWorkspace: HollowWorkspace
+---@field tabs HollowTab[]
+
 ---@alias HollowPaneSnapshot HollowPane
 ---@alias HollowTabSnapshot HollowTab
 ---@alias HollowWorkspaceSnapshot HollowWorkspace
@@ -1247,6 +1250,9 @@ function term.tabs() end
 ---@return HollowWorkspaceSnapshot[]
 function term.workspaces() end
 
+---@return HollowMuxWorkspace[]
+function term.mux_tree() end
+
 ---@return HollowWorkspaceSnapshot|nil
 function term.current_workspace() end
 
@@ -1623,6 +1629,23 @@ function command_palette.open(opts) end
 
 function command_palette.close() end
 
+---@class HollowUiMuxNavigatorOptions
+---@field query? string
+---@field backdrop? HollowOverlayBackdropValue
+---@field width? integer
+---@field height? integer
+---@field max_height? integer
+---@field chrome? HollowUiChrome|boolean
+---@field theme? HollowUiTheme
+
+---@class HollowUiMuxNavigatorNamespace
+local mux_navigator = {}
+
+---@param opts? HollowUiMuxNavigatorOptions
+function mux_navigator.open(opts) end
+
+function mux_navigator.close() end
+
 ---@class HollowUiSelectNamespace
 local select = {}
 
@@ -1799,6 +1822,7 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
+ui.mux_navigator = mux_navigator
 ui.select = select
 ui.confirm = confirm
 ui.workspace = workspace

@@ -227,6 +227,24 @@ function M.setup(hollow, host_api)
     return workspaces
   end
 
+  function hollow.term.mux_tree()
+    local workspaces = {}
+    local workspace_count = host_api.get_workspace_count()
+    for workspace_index = 0, workspace_count - 1 do
+      local workspace = workspace_snapshot(workspace_index)
+      workspace.tabs = {}
+      local tab_count = host_api.get_workspace_tab_count(workspace_index)
+      for tab_index = 0, tab_count - 1 do
+        local tab_id = host_api.get_workspace_tab_id_at(workspace_index, tab_index)
+        if tab_id ~= nil then
+          workspace.tabs[#workspace.tabs + 1] = tab_snapshot(tab_id, tab_index)
+        end
+      end
+      workspaces[#workspaces + 1] = workspace
+    end
+    return workspaces
+  end
+
   function hollow.term.current_workspace()
     local index = host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0
     return workspace_snapshot(index)

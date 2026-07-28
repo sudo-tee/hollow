@@ -14,6 +14,7 @@ pub const Kind = enum {
     get_workspace,
     get_current_workspace,
     get_workspaces,
+    get_mux_tree,
     get_domain,
     get_htp,
     workspace_new,

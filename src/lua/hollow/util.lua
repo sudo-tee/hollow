@@ -11,6 +11,8 @@ local M = {}
 ---@field basepath fun(path:string): string|nil
 ---@field basename fun(path:string): string|nil
 ---@field safe_call fun(fn:function|nil, default:any, ...:any): any
+---@field words fun(...:any): string
+---@field cycle_index fun(index:integer, delta:integer, count:integer): integer
 ---@field state_value fun(is_selected:boolean, is_hovered:boolean, selected:any, hovered:any, fallback:any): any
 ---@field group_by fun(list:table, key_fn:fun(item:any):any): table, any[]
 ---@field has_any_key fun(t:table, keys:table): boolean
@@ -72,6 +74,31 @@ function M.safe_call(fn, default, ...)
     return value
   end
   return default
+end
+
+---@vararg any
+---@return string
+function M.words(...)
+  local hollow = _G.hollow
+  local values = { ... }
+  return hollow.tbl
+    .range(1, select("#", ...))
+    :filter_map(function(index)
+      local value = values[index]
+      return value ~= nil and value ~= "" and tostring(value) or nil
+    end)
+    :join(" ")
+end
+
+---@param index integer
+---@param delta integer
+---@param count integer
+---@return integer
+function M.cycle_index(index, delta, count)
+  if count == 0 then
+    return index
+  end
+  return (index + delta - 1) % count + 1
 end
 
 ---@param is_selected boolean
