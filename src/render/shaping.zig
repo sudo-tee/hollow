@@ -2,6 +2,7 @@ const std = @import("std");
 const ft = @import("ft_c");
 const fastmem = @import("../fastmem.zig");
 const ghostty = @import("../term/ghostty.zig");
+const fonts = @import("fonts");
 
 const ft_types = @import("ft_types.zig");
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
@@ -407,8 +408,10 @@ pub fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) Select
     }
 
     const bundled_base = 4 + self.fallback_faces.len;
-    if (fontLikelySupportsText(self.face_cjk, utf8)) {
-        return .{ .hb_font = self.hb_cjk, .raster_face_index = @intCast(bundled_base) };
+    if (ensureCjkFace(self)) |cjk| {
+        if (fontLikelySupportsText(cjk, utf8)) {
+            return .{ .hb_font = self.hb_cjk, .raster_face_index = @intCast(bundled_base) };
+        }
     }
     if (self.face_emoji) |emoji_face| {
         if (fontLikelySupportsText(emoji_face, utf8)) {
@@ -426,6 +429,14 @@ pub fn selectShapeFont(self: *FtRenderer, utf8: []const u8, face_idx: u8) Select
     }
 
     return .{ .hb_font = primary_hb, .raster_face_index = face_idx };
+}
+
+fn ensureCjkFace(self: *FtRenderer) ft.FT_Face {
+    if (self.face_cjk) |face| return face;
+    const face = font_discovery.loadFace(self.ft_lib, fonts.cjk, self.font_size_px) catch return null;
+    self.face_cjk = face;
+    self.hb_cjk = ft.hb_ft_font_create_referenced(face);
+    return face;
 }
 
 pub fn faceForRasterIndex(self: *FtRenderer, raster_face_index: u8) ?ft.FT_Face {

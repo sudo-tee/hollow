@@ -70,6 +70,7 @@ pub const AtlasSlot = struct {
 pub fn beginFrame(self: *FtRenderer) void {
     self.atlas_uploaded_this_frame = false;
     self.uploaded_glyph_verts = 0;
+    self.glyph_vbuf_index = 0;
     self.atlas_reset_this_frame = false;
     self.glyph_atlas_run_count = 0;
     var i: u8 = 0;
@@ -338,7 +339,7 @@ fn clearUvCaches(self: *FtRenderer) void {
     self.shaped_run_read_idx = 0;
 }
 
-/// Init: one gray + one color + one ui page.
+/// Init: one gray and one UI page. Color is allocated on first emoji use.
 pub fn initPages(self: *FtRenderer) !void {
     self.atlas_page_count = 0;
     errdefer deinitPages(self);
@@ -348,15 +349,11 @@ pub fn initPages(self: *FtRenderer) !void {
     self.atlas_page_count = 1;
     self.atlas_current_gray = 0;
 
-    const col = try createPage(self.allocator, .color);
-    self.atlas_pages[1] = col;
-    self.atlas_page_count = 2;
-    self.atlas_current_color = 1;
-
     const ui = try createPage(self.allocator, .ui);
-    self.atlas_pages[2] = ui;
-    self.atlas_page_count = 3;
-    self.atlas_current_ui = 2;
+    self.atlas_pages[1] = ui;
+    self.atlas_page_count = 2;
+    self.atlas_current_color = std.math.maxInt(u8);
+    self.atlas_current_ui = 1;
 
     self.atlas_dirty = true;
 }

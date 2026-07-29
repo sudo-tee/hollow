@@ -1437,6 +1437,14 @@ pub const App = struct {
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
         self.invalidateFocusedPaneCache(previous, current);
+        if (self.ghostty) |*runtime| {
+            if (self.mux) |*mux| {
+                var panes = mux.paneIterator();
+                while (panes.next()) |pane| {
+                    if (!mux.activeTabContainsPane(pane)) pane.releaseRenderHelpers(runtime);
+                }
+            }
+        }
         if (previous == current) return;
         if (current) |pane| {
             if (pane.has_bell_attention) {
@@ -2463,7 +2471,7 @@ pub const App = struct {
                     // Cap at sane max to prevent DLL crashes on extreme values.
                     const cols: u16 = @intCast(@min(1000, @max(1, raw_cols)));
                     const rows: u16 = @intCast(@min(500, @max(1, raw_rows)));
-                    if (recreate_render_helpers) {
+                    if (recreate_render_helpers or !leaf.pane.hasRenderHelpers()) {
                         leaf.pane.recreateRenderHelpers(runtime);
                     }
                     leaf.pane.width_px = leaf.bounds.width;
@@ -2516,7 +2524,7 @@ pub const App = struct {
                     const inner_height = inner.height;
                     const cols: u16 = @intCast(@min(1000, @max(1, inner_width / @max(1, self.cell_width_px))));
                     const rows: u16 = @intCast(@min(500, @max(1, inner_height / @max(1, self.cell_height_px))));
-                    if (recreate_render_helpers) {
+                    if (recreate_render_helpers or !pane.hasRenderHelpers()) {
                         pane.recreateRenderHelpers(runtime);
                     }
                     pane.width_px = pixel_width;

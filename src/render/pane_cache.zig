@@ -17,7 +17,6 @@
 ///
 /// This means clean frames (no terminal changes, no cursor movement) skip all
 /// cell iteration entirely and just submit 2 triangles per pane.
-
 const std = @import("std");
 const c = @import("sokol_c");
 
@@ -62,8 +61,10 @@ pub const PaneCache = struct {
         const blit_smp = c.sg_make_sampler(&blit_smp_desc);
 
         var ctx_desc = std.mem.zeroes(c.sgl_context_desc_t);
-        ctx_desc.max_vertices = 1 << 18;
-        ctx_desc.max_commands = 1 << 14;
+        // Terminal backgrounds and decorations share a few large batches.
+        // 128k vertices still covers a fully styled 300x100 grid.
+        ctx_desc.max_vertices = 1 << 17;
+        ctx_desc.max_commands = 1 << 10;
         ctx_desc.color_format = c.SG_PIXELFORMAT_RGBA8;
         ctx_desc.depth_format = c.SG_PIXELFORMAT_NONE;
         ctx_desc.sample_count = 1;

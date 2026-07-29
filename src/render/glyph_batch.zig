@@ -38,6 +38,24 @@ const text_util = @import("text_util.zig");
 const utf8CodepointLen = text_util.utf8CodepointLen;
 const colorsEqual = color_math.colorsEqual;
 
+pub fn createGlyphVertexBuffer(slot: usize) c.sg_buffer {
+    var desc = std.mem.zeroes(c.sg_buffer_desc);
+    desc.size = MAX_GLYPH_VERTS * @sizeOf(GlyphVertex);
+    desc.usage.vertex_buffer = true;
+    desc.usage.stream_update = true;
+    desc.label = switch (slot) {
+        0 => "glyph-verts-0",
+        1 => "glyph-verts-1",
+        2 => "glyph-verts-2",
+        3 => "glyph-verts-3",
+        4 => "glyph-verts-4",
+        5 => "glyph-verts-5",
+        6 => "glyph-verts-6",
+        else => "glyph-verts-7",
+    };
+    return c.sg_make_buffer(&desc);
+}
+
 /// Shape and batch glyphs for one cell at (px, py).
 pub fn batchGlyphs(self: *FtRenderer, px: f32, py: f32, utf8: []const u8, face_idx: u8, fg: ghostty.ColorRgb, raster_mode: RasterMode, clip_y0: f32, clip_y1: f32) void {
     const result = self.getOrShape(utf8, face_idx) orelse return;
@@ -262,6 +280,9 @@ pub fn uploadGlyphVerts(self: *FtRenderer) usize {
     var upd = std.mem.zeroes(c.sg_range);
     upd.ptr = self.glyph_verts_cpu.ptr;
     upd.size = n_verts * @sizeOf(GlyphVertex);
+    if (self.glyph_vbufs[self.glyph_vbuf_index].id == 0) {
+        self.glyph_vbufs[self.glyph_vbuf_index] = createGlyphVertexBuffer(self.glyph_vbuf_index);
+    }
     const buf = self.glyph_vbufs[self.glyph_vbuf_index];
     self.glyph_vbuf_index = (self.glyph_vbuf_index + 1) % GLYPH_VBUF_RING_LEN;
     self.uploaded_glyph_vbuf = buf;

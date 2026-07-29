@@ -2590,7 +2590,7 @@ fn rebuildFtRenderer(app: *App) void {
     const dpi_scale = c.sapp_dpi_scale();
     std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height });
 
-    g_ft_renderer = FtRenderer.init(std.heap.page_allocator, .{
+    g_ft_renderer = FtRenderer.init(app.allocator, .{
         .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
         .line_height = app.config.fonts.line_height,

@@ -159,7 +159,7 @@ pub const FtRenderer = struct {
     atlas_pages: [MAX_ATLAS_PAGES]atlas_mod.AtlasPage = undefined,
     atlas_page_count: u8 = 0,
     atlas_current_gray: u8 = 0,
-    atlas_current_color: u8 = 0,
+    atlas_current_color: u8 = std.math.maxInt(u8),
     atlas_current_ui: u8 = 0,
     atlas_smp: c.sg_sampler,
     atlas_ui_smp: c.sg_sampler,
@@ -315,9 +315,6 @@ pub const FtRenderer = struct {
         errdefer _ = ft.FT_Done_Face(face_symbols_nerd);
         const face_symbols = try loadFace(ft_lib, fonts.symbols, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_symbols);
-        const face_cjk = try loadFace(ft_lib, fonts.cjk, font_size_px);
-        errdefer _ = ft.FT_Done_Face(face_cjk);
-
         const face_emoji = discoverEmojiFont(allocator, ft_lib, font_size_px) orelse null;
         errdefer {
             if (face_emoji) |f| _ = ft.FT_Done_Face(f);
@@ -343,7 +340,7 @@ pub const FtRenderer = struct {
         const hb_nerd = ft.hb_ft_font_create_referenced(face_nerd);
         const hb_symbols_nerd = ft.hb_ft_font_create_referenced(face_symbols_nerd);
         const hb_symbols = ft.hb_ft_font_create_referenced(face_symbols);
-        const hb_cjk = ft.hb_ft_font_create_referenced(face_cjk);
+        const hb_cjk: ?*ft.hb_font_t = null;
         const hb_emoji = if (face_emoji) |f| ft.hb_ft_font_create_referenced(f) else null;
         const fallback_hb_fonts = try allocator.alloc(?*ft.hb_font_t, fallback_faces.len);
         errdefer allocator.free(fallback_hb_fonts);
@@ -532,26 +529,10 @@ pub const FtRenderer = struct {
             }
         }
 
-        // Stream vertex buffer (capacity MAX_GLYPH_VERTS vertices).
-        var vbuf_desc = std.mem.zeroes(c.sg_buffer_desc);
-        vbuf_desc.size = MAX_GLYPH_VERTS * @sizeOf(GlyphVertex);
-        vbuf_desc.usage.vertex_buffer = true;
-        vbuf_desc.usage.stream_update = true;
-        vbuf_desc.label = "glyph-verts";
-        var glyph_vbufs: [GLYPH_VBUF_RING_LEN]c.sg_buffer = undefined;
-        for (0..GLYPH_VBUF_RING_LEN) |i| {
-            vbuf_desc.label = switch (i) {
-                0 => "glyph-verts-0",
-                1 => "glyph-verts-1",
-                2 => "glyph-verts-2",
-                3 => "glyph-verts-3",
-                4 => "glyph-verts-4",
-                5 => "glyph-verts-5",
-                6 => "glyph-verts-6",
-                else => "glyph-verts-7",
-            };
-            glyph_vbufs[i] = c.sg_make_buffer(&vbuf_desc);
-        }
+        // Allocate additional stream buffers lazily when multiple panes upload
+        // glyphs in the same frame. Each buffer may only be updated once/frame.
+        var glyph_vbufs = [_]c.sg_buffer{.{ .id = 0 }} ** GLYPH_VBUF_RING_LEN;
+        glyph_vbufs[0] = glyph_batch.createGlyphVertexBuffer(0);
 
         // Static index buffer: 6 indices per quad (0,1,2, 0,2,3), pre-built
         // for the maximum number of quads we ever draw in one call.
@@ -594,7 +575,7 @@ pub const FtRenderer = struct {
             .face_nerd = face_nerd,
             .face_symbols_nerd = face_symbols_nerd,
             .face_symbols = face_symbols,
-            .face_cjk = face_cjk,
+            .face_cjk = null,
             .face_emoji = face_emoji,
             .fallback_faces = fallback_faces,
             .hb_regular = hb_regular,
@@ -778,7 +759,9 @@ pub const FtRenderer = struct {
         // Custom glyph pipeline resources.
         self.allocator.free(self.glyph_verts_cpu);
         c.sg_destroy_buffer(self.glyph_ibuf);
-        for (self.glyph_vbufs) |buf| c.sg_destroy_buffer(buf);
+        for (self.glyph_vbufs) |buf| {
+            if (buf.id != 0) c.sg_destroy_buffer(buf);
+        }
         c.sg_destroy_pipeline(self.glyph_pip_offscreen);
         c.sg_destroy_pipeline(self.glyph_pip);
         c.sg_destroy_shader(self.glyph_shd);
@@ -796,7 +779,7 @@ pub const FtRenderer = struct {
         if (self.hb_italic) |f| ft.hb_font_destroy(f);
         if (self.hb_bold) |f| ft.hb_font_destroy(f);
         if (self.hb_regular) |f| ft.hb_font_destroy(f);
-        _ = ft.FT_Done_Face(self.face_cjk);
+        if (self.face_cjk) |face| _ = ft.FT_Done_Face(face);
         _ = ft.FT_Done_Face(self.face_symbols);
         _ = ft.FT_Done_Face(self.face_symbols_nerd);
         _ = ft.FT_Done_Face(self.face_nerd);

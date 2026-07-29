@@ -26,6 +26,11 @@ const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
 const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
 const HTP_OSC_LOG_MAX = 8192;
 
+// Pane PTYs are polled sequentially on the app thread, so their transient read
+// and sanitize storage can be shared without reducing the 256 KiB read chunk.
+var shared_pty_read_buf: [PTY_READ_BUFFER_SIZE]u8 = undefined;
+var shared_pty_sanitize_buf: [PTY_SANITIZE_BUFFER_SIZE]u8 = undefined;
+
 const CombinedInput = struct {
     first: []const u8,
     second: []const u8,
@@ -149,16 +154,16 @@ pub const Pane = struct {
     ///                   clear RT and re-render all rows
     /// Cleared (set back to .false_value) by the renderer after re-rendering.
     render_dirty: ghostty.RenderStateDirty = .false_value,
-    read_buf: [PTY_READ_BUFFER_SIZE]u8 = [_]u8{0} ** PTY_READ_BUFFER_SIZE,
+    read_buf: *[PTY_READ_BUFFER_SIZE]u8 = &shared_pty_read_buf,
     logged_first_pty_read: bool = false,
     pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = [_]u8{0} ** PTY_PENDING_SEQUENCE_MAX,
     pty_pending_len: usize = 0,
-    pty_sanitize_buf: [PTY_SANITIZE_BUFFER_SIZE]u8 = [_]u8{0} ** PTY_SANITIZE_BUFFER_SIZE,
+    pty_sanitize_buf: *[PTY_SANITIZE_BUFFER_SIZE]u8 = &shared_pty_sanitize_buf,
     osc52_prefix_len: usize = 0,
     osc52_active: bool = false,
     osc52_st_pending: bool = false,
     osc52_overflow: bool = false,
-    osc52_buf: [OSC52_SEQUENCE_MAX]u8 = [_]u8{0} ** OSC52_SEQUENCE_MAX,
+    osc52_buf: []u8 = &.{},
     osc52_len: usize = 0,
     osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = [_]u8{0} ** HTP_OSC_PREFIX.len,
     osc_prefix_len: usize = 0,
@@ -174,7 +179,7 @@ pub const Pane = struct {
     htp_osc_active: bool = false,
     htp_osc_st_pending: bool = false,
     htp_osc_overflow: bool = false,
-    htp_osc_buf: [HTP_OSC_LOG_MAX]u8 = [_]u8{0} ** HTP_OSC_LOG_MAX,
+    htp_osc_buf: []u8 = &.{},
     htp_osc_len: usize = 0,
     htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
@@ -257,6 +262,8 @@ pub const Pane = struct {
         self.terminal_write_batch.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
+        if (self.osc52_buf.len > 0) self.allocator.free(self.osc52_buf);
+        if (self.htp_osc_buf.len > 0) self.allocator.free(self.htp_osc_buf);
         runtime.freeMouseEvent(self.mouse_event);
         runtime.freeMouseEncoder(self.mouse_encoder);
         runtime.freeKeyEvent(self.key_event);
@@ -477,7 +484,7 @@ pub const Pane = struct {
             var read_loops: usize = 0;
             while (read_loops < max_read_loops and total_read < max_total_read) {
                 const read_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
-                const count = pty.read(&self.read_buf) catch |err| {
+                const count = pty.read(self.read_buf) catch |err| {
                     if (err == error.EndOfStream) break;
                     return err;
                 };
@@ -815,6 +822,21 @@ pub const Pane = struct {
         self.row_cells = new_row_cells;
         // New render_state needs at least one updateRenderState before rendering.
         self.render_state_ready = false;
+    }
+
+    pub fn releaseRenderHelpers(self: *Pane, runtime: *GhosttyRuntime) void {
+        runtime.freeRowCells(self.row_cells);
+        self.row_cells = null;
+        runtime.freeRowIterator(self.row_iterator);
+        self.row_iterator = null;
+        runtime.freeRenderState(self.render_state);
+        self.render_state = null;
+        self.render_state_ready = false;
+        self.render_state_fresh = false;
+    }
+
+    pub fn hasRenderHelpers(self: *const Pane) bool {
+        return self.render_state != null and self.row_iterator != null and self.row_cells != null;
     }
 
     pub fn refreshTitle(self: *Pane, runtime: *GhosttyRuntime, fallback_title: []const u8, shell_command: []const u8) void {
@@ -1706,6 +1728,12 @@ pub const Pane = struct {
     }
 
     fn appendOsc52Byte(self: *Pane, byte: u8) void {
+        if (self.osc52_buf.len == 0) {
+            self.osc52_buf = self.allocator.alloc(u8, OSC52_SEQUENCE_MAX) catch {
+                self.osc52_overflow = true;
+                return;
+            };
+        }
         if (self.osc52_len >= self.osc52_buf.len) {
             self.osc52_overflow = true;
             return;
@@ -1724,6 +1752,12 @@ pub const Pane = struct {
     }
 
     fn appendHtpOscByte(self: *Pane, byte: u8) void {
+        if (self.htp_osc_buf.len == 0) {
+            self.htp_osc_buf = self.allocator.alloc(u8, HTP_OSC_LOG_MAX) catch {
+                self.htp_osc_overflow = true;
+                return;
+            };
+        }
         if (self.htp_osc_len >= self.htp_osc_buf.len) {
             self.htp_osc_overflow = true;
             return;
