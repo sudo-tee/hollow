@@ -126,7 +126,7 @@ int hollow_dwrite_match_font(const char *family_utf8, int want_bold, int want_it
 
             hr = IDWriteFontFamily_GetFont(family, best_font_index, &font);
             if (SUCCEEDED(hr) && font) hr = IDWriteFont_CreateFontFace(font, &font_face);
-            if (SUCCEEDED(hr) && font_face) file_count = IDWriteFontFace_GetFiles(font_face, &file_count, NULL);
+            if (SUCCEEDED(hr) && font_face) hr = IDWriteFontFace_GetFiles(font_face, &file_count, NULL);
             if (SUCCEEDED(hr) && font_face && file_count > 0) {
                 IDWriteFontFile *files[1] = {0};
                 UINT32 requested = 1;

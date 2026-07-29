@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const ghostty = @import("../term/ghostty.zig");
 const c = @import("sokol_c");
@@ -327,7 +328,7 @@ pub fn processInputQueue(self: *App) void {
                 );
             },
             .new_workspace => |payload| {
-                std.log.info("app: new_workspace dispatch_lag_ms={d}", .{std.time.milliTimestamp() - payload.queued_at_ms});
+                std.log.info("app: new_workspace dispatch_lag_ms={d}", .{io.milliTimestamp() - payload.queued_at_ms});
                 mux_ops.newWorkspace(self, payload.cwd, payload.domain_name, payload.command, payload.name, payload.callback_ref);
             },
             .close_workspace => |idx| {
@@ -634,8 +635,8 @@ fn leaderVisualActive(self: *App, now_ns: i128) bool {
 
 pub fn signalWake(self: *App) void {
     _ = self.wake_generation.fetchAdd(1, .release);
-    std.Thread.Futex.wake(&self.wake_generation, 1);
-    self.last_visual_activity_ns = std.time.nanoTimestamp();
+    io.get().futexWake(u32, &self.wake_generation.raw, 1);
+    self.last_visual_activity_ns = io.nanoTimestamp();
 }
 
 pub fn currentWakeGeneration(self: *const App) u32 {

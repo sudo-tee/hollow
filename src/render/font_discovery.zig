@@ -8,10 +8,10 @@
 /// Depends on `font_config.zig` for the shared types (`RequestedFontStyle`,
 /// `FontDiscoveryMatch`, `FontFamilyInfo`, `SeenFontFamilies`, …) and
 /// `normalizeFontToken`.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const ft = @import("ft_c");
+const io = @import("../io.zig");
 
 const font_config = @import("font_config.zig");
 
@@ -97,7 +97,10 @@ pub fn loadConfiguredFace(
         return loadFaceFromSpec(allocator, lib, value, style, size_px) catch loadFace(lib, embedded, size_px);
     }
     if (family) |value| {
-        return loadFaceByName(allocator, lib, value, style, size_px) catch loadFace(lib, embedded, size_px);
+        return loadFaceByName(allocator, lib, value, style, size_px) catch |err| {
+            std.log.warn("font '{s}' not found on system (error: {s}), falling back to embedded", .{ value, @errorName(err) });
+            return loadFace(lib, embedded, size_px);
+        };
     }
     return loadFace(lib, embedded, size_px);
 }
@@ -145,7 +148,7 @@ pub fn discoverSystemFont(allocator: std.mem.Allocator, lib: ft.FT_Library, name
         .macos => {
             try searchFontDir(allocator, lib, "/System/Library/Fonts", name, style, &best);
             try searchFontDir(allocator, lib, "/Library/Fonts", name, style, &best);
-            if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+            if (io.getEnvVarOwned(allocator, "HOME")) |home| {
                 defer allocator.free(home);
                 const user_fonts = try std.fs.path.join(allocator, &.{ home, "Library", "Fonts" });
                 defer allocator.free(user_fonts);
@@ -155,7 +158,7 @@ pub fn discoverSystemFont(allocator: std.mem.Allocator, lib: ft.FT_Library, name
         else => {
             try searchFontDir(allocator, lib, "/usr/share/fonts", name, style, &best);
             try searchFontDir(allocator, lib, "/usr/local/share/fonts", name, style, &best);
-            if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+            if (io.getEnvVarOwned(allocator, "HOME")) |home| {
                 defer allocator.free(home);
                 const local_share_fonts = try std.fs.path.join(allocator, &.{ home, ".local", "share", "fonts" });
                 defer allocator.free(local_share_fonts);
@@ -187,7 +190,7 @@ pub fn listAvailableFontsDetailed(allocator: std.mem.Allocator) ![]FontFamilyInf
             .macos => {
                 try collectFontFaceDetailsFromDir(allocator, ft_lib, "/System/Library/Fonts", &seen);
                 try collectFontFaceDetailsFromDir(allocator, ft_lib, "/Library/Fonts", &seen);
-                if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                if (io.getEnvVarOwned(allocator, "HOME")) |home| {
                     defer allocator.free(home);
                     const user_fonts = try std.fs.path.join(allocator, &.{ home, "Library", "Fonts" });
                     defer allocator.free(user_fonts);
@@ -197,7 +200,7 @@ pub fn listAvailableFontsDetailed(allocator: std.mem.Allocator) ![]FontFamilyInf
             else => {
                 try collectFontFaceDetailsFromDir(allocator, ft_lib, "/usr/share/fonts", &seen);
                 try collectFontFaceDetailsFromDir(allocator, ft_lib, "/usr/local/share/fonts", &seen);
-                if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+                if (io.getEnvVarOwned(allocator, "HOME")) |home| {
                     defer allocator.free(home);
                     const local_share_fonts = try std.fs.path.join(allocator, &.{ home, ".local", "share", "fonts" });
                     defer allocator.free(local_share_fonts);
@@ -253,7 +256,7 @@ fn discoverWindowsFontFromFilesystem(allocator: std.mem.Allocator, name: []const
     errdefer if (best) |match| allocator.free(match.path);
     try searchFontDir(allocator, ft_lib, "C:\\Windows\\Fonts", name, style, &best);
 
-    if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |local_app_data| {
+    if (io.getEnvVarOwned(allocator, "LOCALAPPDATA")) |local_app_data| {
         defer allocator.free(local_app_data);
         const user_fonts = try std.fs.path.join(allocator, &.{ local_app_data, "Microsoft", "Windows", "Fonts" });
         defer allocator.free(user_fonts);
@@ -417,14 +420,14 @@ fn searchFontDir(
     style: RequestedFontStyle,
     best: *?FontDiscoveryMatch,
 ) !void {
-    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(io.get(), root_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir, error.AccessDenied => return,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io.get());
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io.get())) |entry| {
         switch (entry.kind) {
             .directory => {
                 const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
@@ -459,14 +462,14 @@ fn collectFontFamiliesFromDir(
     root_path: []const u8,
     seen: *SeenFontFamilies,
 ) !void {
-    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(io.get(), root_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir, error.AccessDenied => return,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io.get());
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io.get())) |entry| {
         switch (entry.kind) {
             .directory => {
                 const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });
@@ -491,14 +494,14 @@ fn collectFontFaceDetailsFromDir(
     root_path: []const u8,
     seen: *SeenFontFamilyDetails,
 ) !void {
-    var dir = std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = std.Io.Dir.openDirAbsolute(io.get(), root_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir, error.AccessDenied => return,
         else => return err,
     };
-    defer dir.close();
+    defer dir.close(io.get());
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io.get())) |entry| {
         switch (entry.kind) {
             .directory => {
                 const child_path = try std.fs.path.join(allocator, &.{ root_path, entry.name });

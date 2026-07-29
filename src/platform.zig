@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("io.zig");
 const builtin = @import("builtin");
 
 /// Windows-specific Win32 API types and extern functions.
@@ -153,7 +154,7 @@ fn getLocalTimeWindows() LocalTime {
 }
 
 fn getLocalTimePosix() LocalTime {
-    var ts: posix.time_t = @intCast(std.time.timestamp());
+    var ts: posix.time_t = @intCast(std.Io.Clock.real.now(io.get()).toSeconds());
     var tm: posix.tm = std.mem.zeroes(posix.tm);
     _ = posix.localtime_r(&ts, &tm);
     return LocalTime{
@@ -213,14 +214,14 @@ pub fn runCommandAsync(argv: []const []const u8) !void {
         owned[index] = try std.heap.page_allocator.dupe(u8, arg);
         initialized += 1;
     }
-    var child = std.process.Child.init(owned, std.heap.page_allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
+    var child = try std.process.spawn(io.get(), .{
+        .argv = owned,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
     const thread = std.Thread.spawn(.{}, waitCommandThread, .{ child, owned }) catch |err| {
-        _ = child.kill() catch {};
-        _ = child.wait() catch {};
+        child.kill(io.get());
         return err;
     };
     thread.detach();
@@ -228,7 +229,7 @@ pub fn runCommandAsync(argv: []const []const u8) !void {
 
 fn commandExists(command: []const u8) bool {
     if (std.fs.path.isAbsolute(command) or std.mem.indexOfAny(u8, command, "/\\") != null) return commandPathExists(command);
-    const path = std.process.getEnvVarOwned(std.heap.page_allocator, "PATH") catch return false;
+    const path = io.getEnvVarOwned(std.heap.page_allocator, "PATH") catch return false;
     defer std.heap.page_allocator.free(path);
     var entries = std.mem.tokenizeScalar(u8, path, if (builtin.os.tag == .windows) ';' else ':');
     while (entries.next()) |entry| {
@@ -240,12 +241,12 @@ fn commandExists(command: []const u8) bool {
 }
 
 fn commandPathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch {
+    std.Io.Dir.cwd().access(io.get(), path, .{}) catch {
         if (builtin.os.tag != .windows or std.fs.path.extension(path).len > 0) return false;
         for ([_][]const u8{ ".exe", ".cmd", ".bat", ".com" }) |extension| {
             const candidate = std.mem.concat(std.heap.page_allocator, u8, &.{ path, extension }) catch continue;
             defer std.heap.page_allocator.free(candidate);
-            std.fs.cwd().access(candidate, .{}) catch continue;
+            std.Io.Dir.cwd().access(io.get(), candidate, .{}) catch continue;
             return true;
         }
         return false;
@@ -259,7 +260,7 @@ fn waitCommandThread(child_value: std.process.Child, argv: [][]u8) void {
         std.heap.page_allocator.free(argv);
     }
     var child = child_value;
-    _ = child.wait() catch |err| std.log.err("wait for command failed: {s}", .{@errorName(err)});
+    _ = child.wait(io.get()) catch |err| std.log.err("wait for command failed: {s}", .{@errorName(err)});
 }
 
 fn openExternalThread(args: OpenExternalArgs) void {
@@ -292,19 +293,21 @@ fn openExternalPosix(target: []const u8, argv: []const []const u8) !void {
     try child_args.appendSlice(std.heap.page_allocator, argv);
     try child_args.append(std.heap.page_allocator, target);
 
-    var child = std.process.Child.init(child_args.items, std.heap.page_allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
+    _ = try std.process.spawn(io.get(), .{
+        .argv = child_args.items,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
 }
 
 fn openWithCommand(opener: []const u8, target: []const u8) !void {
-    var child = std.process.Child.init(&.{ opener, target }, std.heap.page_allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
+    _ = try std.process.spawn(io.get(), .{
+        .argv = &.{ opener, target },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
 }
 
 fn getSystemMetricsWindows(allocator: std.mem.Allocator) !SystemMetrics {
@@ -357,10 +360,11 @@ fn getSystemMetricsLinux() !SystemMetrics {
     var mem_available: u32 = 0;
 
     // Try to read CPU stats from /proc/stat
-    if (std.fs.cwd().openFile("/proc/stat", .{})) |proc_stat| {
-        defer proc_stat.close();
+    if (std.Io.Dir.cwd().openFile(io.get(), "/proc/stat", .{})) |proc_stat| {
+        defer proc_stat.close(io.get());
         var buf: [1024]u8 = undefined;
-        const read_len = try proc_stat.readAll(&buf);
+        var reader = proc_stat.reader(io.get(), &.{});
+        const read_len = try reader.interface.readSliceShort(&buf);
         const stat_contents = buf[0..read_len];
 
         if (std.mem.indexOf(u8, stat_contents, "cpu ")) |start| {
@@ -396,10 +400,11 @@ fn getSystemMetricsLinux() !SystemMetrics {
     }
 
     // Try to read memory info from /proc/meminfo
-    if (std.fs.cwd().openFile("/proc/meminfo", .{})) |proc_meminfo| {
-        defer proc_meminfo.close();
+    if (std.Io.Dir.cwd().openFile(io.get(), "/proc/meminfo", .{})) |proc_meminfo| {
+        defer proc_meminfo.close(io.get());
         var mem_buf: [1024]u8 = undefined;
-        const mem_len = try proc_meminfo.readAll(&mem_buf);
+        var reader = proc_meminfo.reader(io.get(), &.{});
+        const mem_len = try reader.interface.readSliceShort(&mem_buf);
         const mem_contents = mem_buf[0..mem_len];
 
         var lines = std.mem.splitAny(u8, mem_contents, "\n");
@@ -461,7 +466,7 @@ pub fn isMacos() bool {
 pub fn defaultShell() []const u8 {
     return switch (current()) {
         .windows => "pwsh.exe",
-        .linux => if (comptime builtin.os.tag == .linux) std.posix.getenv("SHELL") orelse "/bin/sh" else "/bin/sh",
+        .linux => if (comptime builtin.os.tag == .linux) io.environ().getPosix("SHELL") orelse "/bin/sh" else "/bin/sh",
         .macos => "/bin/zsh",
     };
 }
@@ -480,7 +485,7 @@ pub fn windowsShellCandidates() []const []const u8 {
 }
 
 fn envOwnedOrNull(allocator: std.mem.Allocator, key: []const u8) ?[]u8 {
-    return std.process.getEnvVarOwned(allocator, key) catch null;
+    return io.getEnvVarOwned(allocator, key) catch null;
 }
 
 pub fn userDataDir(allocator: std.mem.Allocator) ![]u8 {
@@ -542,7 +547,7 @@ pub fn projectFallbackConfigPath() []const u8 {
 }
 
 pub fn selfExeDir(allocator: std.mem.Allocator) ![]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(io.get(), allocator);
     defer allocator.free(exe_path);
 
     const dir = std.fs.path.dirname(exe_path) orelse return error.ExecutableDirectoryUnavailable;
@@ -555,7 +560,7 @@ pub fn resolveRelativeToExe(allocator: std.mem.Allocator, candidate: []const u8)
     const exe_dir = selfExeDir(allocator) catch return null;
     defer allocator.free(exe_dir);
 
-    const trimmed = std.mem.trimLeft(u8, candidate, "./\\");
+    const trimmed = std.mem.trimStart(u8, candidate, "./\\");
     return try std.fs.path.join(allocator, &.{ exe_dir, trimmed });
 }
 
@@ -564,24 +569,24 @@ pub fn resolveRelativeToExe(allocator: std.mem.Allocator, candidate: []const u8)
 /// Caller must free the returned path.
 pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
     const base_dir = if (isWindows())
-        std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch |err| blk: {
-            if (err == error.EnvironmentVariableNotFound) {
+        io.getEnvVarOwned(allocator, "LOCALAPPDATA") catch |err| blk: {
+            if (err == error.EnvironmentVariableMissing) {
                 std.log.warn("LOCALAPPDATA not set, using fallback", .{});
                 break :blk try allocator.dupe(u8, "C:\\Users\\Default\\AppData\\Local");
             }
             return err;
         }
     else if (isMacos())
-        std.process.getEnvVarOwned(allocator, "HOME") catch |err| blk: {
-            if (err == error.EnvironmentVariableNotFound) {
+        io.getEnvVarOwned(allocator, "HOME") catch |err| blk: {
+            if (err == error.EnvironmentVariableMissing) {
                 break :blk try allocator.dupe(u8, "/tmp");
             }
             return err;
         }
     else // Linux/Unix
-        std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch |err| blk: {
-            if (err == error.EnvironmentVariableNotFound) {
-                const home = std.process.getEnvVarOwned(allocator, "HOME") catch "/tmp";
+        io.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR") catch |err| blk: {
+            if (err == error.EnvironmentVariableMissing) {
+                const home = io.getEnvVarOwned(allocator, "HOME") catch "/tmp";
                 defer if (!std.mem.eql(u8, home, "/tmp")) allocator.free(home);
                 break :blk try std.fs.path.join(allocator, &.{ home, ".local", "share" });
             }
@@ -593,7 +598,7 @@ pub fn ensureHollowRuntimeDir(allocator: std.mem.Allocator) ![]u8 {
     errdefer allocator.free(hollow_dir);
 
     // Create the directory if it doesn't exist
-    std.fs.makeDirAbsolute(hollow_dir) catch |err| {
+    std.Io.Dir.createDirAbsolute(io.get(), hollow_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 

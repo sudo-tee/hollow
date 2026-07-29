@@ -208,18 +208,18 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.
             return .{ .array = out };
         },
         .object => |obj| {
-            var out = std.json.ObjectMap.init(allocator);
+            var out: std.json.ObjectMap = .empty;
             errdefer {
                 var it = out.iterator();
                 while (it.next()) |entry| {
                     allocator.free(entry.key_ptr.*);
                     deinitJsonValue(allocator, entry.value_ptr.*);
                 }
-                out.deinit();
+                out.deinit(allocator);
             }
             var it = obj.iterator();
             while (it.next()) |entry| {
-                try out.put(try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
+                try out.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
             }
             return .{ .object = out };
         },
@@ -241,7 +241,7 @@ pub fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void
                 allocator.free(entry.key_ptr.*);
                 deinitJsonValue(allocator, entry.value_ptr.*);
             }
-            owned.deinit();
+            owned.deinit(allocator);
         },
         else => {},
     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const command_ipc = @import("../ipc.zig");
 const command_mod = @import("../command.zig");
@@ -137,14 +138,14 @@ pub fn syncCommandTimingEnv(self: *App) void {
 }
 
 pub fn drainPendingCommand(self: *App) void {
-    self.command_mutex.lock();
-    defer self.command_mutex.unlock();
+    self.command_mutex.lockUncancelable(io.get());
+    defer self.command_mutex.unlock(io.get());
 
     const pending = self.pending_command orelse return;
     if (pending.done) return;
 
     const timing_enabled = self.config.command_timing;
-    const start_ns = if (timing_enabled) std.time.nanoTimestamp() else 0;
+    const start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
     pending.response = switch (commandExecutionMode(pending.request.kind)) {
         .sync => executeCommand(self, pending.request) catch |err| command_mod.Response.fail("internal", @errorName(err)),
         .deferred => enqueueDeferredCommand(self, pending.request),
@@ -153,42 +154,42 @@ pub fn drainPendingCommand(self: *App) void {
         std.log.info("command-ipc: dispatch_ms={d:.3} kind={s}", .{ elapsedMs(start_ns), @tagName(pending.request.kind) });
     }
     pending.done = true;
-    self.command_done.signal();
+    self.command_done.signal(io.get());
 }
 
 pub fn runCommandSync(self: *App, request: command_mod.Request) command_mod.Response {
     var pending = PendingCommandRequest{ .request = request };
 
-    self.command_mutex.lock();
-    defer self.command_mutex.unlock();
+    self.command_mutex.lockUncancelable(io.get());
+    defer self.command_mutex.unlock(io.get());
 
     while (self.pending_command != null) {
-        self.command_done.wait(&self.command_mutex);
+        self.command_done.waitUncancelable(io.get(), &self.command_mutex);
     }
 
     self.pending_command = &pending;
     self.signalWake();
-    self.command_ready.signal();
+    self.command_ready.signal(io.get());
 
     while (!pending.done) {
-        self.command_done.wait(&self.command_mutex);
+        self.command_done.waitUncancelable(io.get(), &self.command_mutex);
     }
 
     self.pending_command = null;
-    self.command_done.broadcast();
+    self.command_done.broadcast(io.get());
     return pending.response orelse command_mod.Response.fail("internal", "missing command response");
 }
 
 pub fn hasPendingCommand(self: *App) bool {
-    self.command_mutex.lock();
-    defer self.command_mutex.unlock();
+    self.command_mutex.lockUncancelable(io.get());
+    defer self.command_mutex.unlock(io.get());
 
     const pending = self.pending_command orelse return false;
     return !pending.done;
 }
 
 fn elapsedMs(start_ns: i128) f64 {
-    return @as(f64, @floatFromInt(std.time.nanoTimestamp() - start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+    return @as(f64, @floatFromInt(io.nanoTimestamp() - start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
 }
 
 fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
@@ -359,7 +360,7 @@ fn enqueueWorkspaceNewCommand(self: *App, request: command_mod.Request) command_
     errdefer if (owned_command) |value| self.allocator.free(value);
     const owned_name = if (request.name) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_name) |value| self.allocator.free(value);
-    if (!self.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = LUA_NOREF, .queued_at_ms = std.time.milliTimestamp() } })) {
+    if (!self.enqueueMouse(.{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = LUA_NOREF, .queued_at_ms = io.milliTimestamp() } })) {
         if (owned_name) |value| self.allocator.free(value);
         if (owned_command) |value| self.allocator.free(value);
         if (owned_domain) |value| self.allocator.free(value);
@@ -658,9 +659,9 @@ fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_
 }
 
 fn revisionResponse(self: *App) command_mod.Response {
-    var object = std.json.ObjectMap.init(self.allocator);
+    var object: std.json.ObjectMap = .empty;
     const key = self.allocator.dupe(u8, "revision") catch return command_mod.Response.fail("internal", "oom");
-    object.put(key, .{ .integer = @intCast(self.currentAutomationRevision()) }) catch {
+    object.put(self.allocator, key, .{ .integer = @intCast(self.currentAutomationRevision()) }) catch {
         self.allocator.free(key);
         return command_mod.Response.fail("internal", "oom");
     };
@@ -921,9 +922,9 @@ fn execConfigReload(self: *App) command_mod.Response {
 fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Response {
     const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing theme name");
     const theme_payload = std.json.Value{ .object = blk: {
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object: std.json.ObjectMap = .{};
         errdefer app_mod.deinitJsonValue(self.allocator, .{ .object = object });
-        object.put(self.allocator.dupe(u8, "name") catch return command_mod.Response.fail("internal", "oom"), .{ .string = self.allocator.dupe(u8, name) catch return command_mod.Response.fail("internal", "oom") }) catch return command_mod.Response.fail("internal", "oom");
+        object.put(self.allocator, self.allocator.dupe(u8, "name") catch return command_mod.Response.fail("internal", "oom"), .{ .string = self.allocator.dupe(u8, name) catch return command_mod.Response.fail("internal", "oom") }) catch return command_mod.Response.fail("internal", "oom");
         break :blk object;
     } };
     defer app_mod.deinitJsonValue(self.allocator, theme_payload);

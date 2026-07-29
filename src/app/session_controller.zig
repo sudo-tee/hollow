@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const c = @import("sokol_c");
 const builtin = @import("builtin");
 const ghostty = @import("../term/ghostty.zig");
@@ -28,7 +29,7 @@ const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
 
 pub fn sendText(self: *App, text: []const u8) void {
     const pane = self.activePane() orelse return;
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = io.nanoTimestamp();
     self.last_input_activity_ns = now_ns;
     self.last_visual_activity_ns = now_ns;
     pane.pty_received_data = true;
@@ -151,7 +152,7 @@ pub fn scrollActiveViewportBottom(self: *App) void {
 // ============================================================
 
 pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
-    const start_ms = std.time.milliTimestamp();
+    const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
@@ -173,7 +174,7 @@ pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callba
     }
     htp.bindHtpHandlers(self);
     if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .tab_id = tab_id });
-    std.log.info("app: newTab total_ms={d}", .{std.time.milliTimestamp() - start_ms});
+    std.log.info("app: newTab total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: created new tab", .{});
 }
 
@@ -333,7 +334,7 @@ pub fn prevTab(self: *App) void {
 // ============================================================
 
 pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, name: ?[]const u8, callback_ref: c_int) void {
-    const start_ms = std.time.milliTimestamp();
+    const start_ms = io.milliTimestamp();
     std.log.info("app: newWorkspace start_ms={d}", .{start_ms});
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
@@ -367,7 +368,7 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     self.emitLuaBuiltInEvent("workspace:changed", .{ .workspace_index = mux.activeWorkspaceIndex() });
     self.requestLayoutResize(false);
     if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .workspace_index = mux.activeWorkspaceIndex() });
-    std.log.info("app: newWorkspace total_ms={d}", .{std.time.milliTimestamp() - start_ms});
+    std.log.info("app: newWorkspace total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: created new workspace", .{});
 }
 
@@ -441,7 +442,7 @@ pub fn switchWorkspace(self: *App, index: usize) void {
 // ============================================================
 
 pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: SplitCommandMode, close_on_exit: bool, floating: bool, fullscreen: bool, x: ?f32, y: ?f32, width: ?f32, height: ?f32, callback_ref: c_int) void {
-    const start_ms = std.time.milliTimestamp();
+    const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
@@ -515,7 +516,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     self.syncActivePaneChange(previous, mux.activePane());
     if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, true, .{ .pane_id = @intFromPtr(pane) });
     self.requestLayoutResize(false);
-    std.log.info("app: splitPane total_ms={d}", .{std.time.milliTimestamp() - start_ms});
+    std.log.info("app: splitPane total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
 }
 
@@ -733,7 +734,7 @@ fn sendSplitPaneCommand(self: *App, pane: *Pane, command: []const u8, close_on_e
 }
 
 fn wrapCommandForCloseOnExit(self: *App, pane: *Pane, command: []const u8) ![]u8 {
-    const trimmed = std.mem.trimRight(u8, command, "\r\n");
+    const trimmed = std.mem.trimEnd(u8, command, "\r\n");
     const is_windows_domain = pane.domain_name.len > 0 and !std.mem.eql(u8, pane.domain_name, "wsl") and !std.mem.eql(u8, pane.domain_name, "unix");
 
     if (is_windows_domain) {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const nightwatch = @import("nightwatch");
+const io = @import("io.zig");
 
 /// OS-native file change watcher for `watch_dirs` trees and individual
 /// config files.
@@ -35,7 +36,7 @@ pub const ConfigWatcher = struct {
             .watcher = undefined,
         };
         errdefer allocator.destroy(self);
-        self.watcher = try nightwatch.Default.init(allocator, &self.handler);
+        self.watcher = try nightwatch.Default.init(io.get(), allocator, &self.handler);
         return self;
     }
 

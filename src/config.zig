@@ -70,7 +70,7 @@ pub const Config = struct {
         shell: ?[]u8 = null,
         default_cwd: ?[]u8 = null,
         ssh: ?DomainSsh = null,
-        env: std.ArrayListUnmanaged(EnvPair) = .{},
+        env: std.ArrayListUnmanaged(EnvPair) = .empty,
 
         pub fn deinit(self: *Domain, allocator: std.mem.Allocator) void {
             allocator.free(self.name);
@@ -177,7 +177,7 @@ pub const Config = struct {
         bold: ?[]u8 = null,
         italic: ?[]u8 = null,
         bold_italic: ?[]u8 = null,
-        fallback_paths: std.ArrayListUnmanaged([]u8) = .{},
+        fallback_paths: std.ArrayListUnmanaged([]u8) = .empty,
 
         pub fn deinit(self: *Fonts, allocator: std.mem.Allocator) void {
             freeOwned(allocator, &self.family);
@@ -291,7 +291,7 @@ pub const Config = struct {
     backend: RendererBackend = .sokol,
     shell: ?[]u8 = null,
     default_domain: ?[]u8 = null,
-    domains: std.ArrayListUnmanaged(Domain) = .{},
+    domains: std.ArrayListUnmanaged(Domain) = .empty,
     htp_transport: ?[]u8 = null,
     fonts: Fonts = .{},
     window_title: ?[]u8 = null,
@@ -347,7 +347,7 @@ pub const Config = struct {
     /// old hard-coded value was 2.0.
     scroll_multiplier: f32 = 1.0,
     terminal_theme: TerminalTheme = .{},
-    watch_dirs: std.ArrayListUnmanaged([]u8) = .{},
+    watch_dirs: std.ArrayListUnmanaged([]u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{ .allocator = allocator };

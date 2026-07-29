@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const mux_mod = @import("../mux.zig");
 const SplitDirection = mux_mod.SplitDirection;
 const FocusDirection = mux_mod.FocusDirection;
@@ -113,7 +114,7 @@ pub fn luaNewWorkspaceCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_nam
     const owned_domain = if (domain_name) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_name = if (name) |value| app.allocator.dupe(u8, value) catch null else null;
-    var event: input.PendingInputEvent = .{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = std.time.milliTimestamp() } };
+    var event: input.PendingInputEvent = .{ .new_workspace = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .name = owned_name, .callback_ref = callback_ref, .queued_at_ms = io.milliTimestamp() } };
     const queued = app.enqueueMouse(event);
     if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
     return queued;
@@ -311,7 +312,7 @@ pub fn luaGetWindowHeightCallback(app_ptr: *anyopaque) usize {
 
 pub fn luaNowMsCallback(app_ptr: *anyopaque) i64 {
     _ = app_ptr;
-    return @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
+    return @intCast(@divFloor(io.nanoTimestamp(), std.time.ns_per_ms));
 }
 
 pub fn luaPaneIsFloatingCallback(app_ptr: *anyopaque, pane_id: usize) bool {

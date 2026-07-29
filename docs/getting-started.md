@@ -95,7 +95,7 @@ read-only — treat them as values, not live references.
 
 ## Build from source
 
-The repo builds with Zig `0.15.2` (pinned via `.tool-versions`).
+The repo builds with Zig `0.16.0` (pinned via `.tool-versions`).
 The full toolchain walkthrough lives in [Development](development.md);
 the short version:
 

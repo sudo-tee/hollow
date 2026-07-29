@@ -166,7 +166,7 @@ fn buildFreeType(
                 .file = upstream.path("builds/windows/ftdebug.c"),
                 .flags = flags.items,
             });
-            lib.addWin32ResourceFile(.{ .file = upstream.path("src/base/ftver.rc") });
+            lib.root_module.addWin32ResourceFile(.{ .file = upstream.path("src/base/ftver.rc") });
         },
         else => lib.root_module.addCSourceFile(.{
             .file = upstream.path("src/base/ftdebug.c"),

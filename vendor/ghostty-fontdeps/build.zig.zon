@@ -2,7 +2,7 @@
     .name = .ghostty_fontdeps,
     .version = "0.0.0",
     .fingerprint = 0xff7eaaa33dde10ad,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zlib_upstream = .{
             .url = "https://deps.files.ghostty.org/zlib-1220fed0c74e1019b3ee29edae2051788b080cd96e90d56836eea857b0b966742efb.tar.gz",

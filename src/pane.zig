@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("io.zig");
 const c = @import("sokol_c");
 const command_ipc = @import("ipc.zig");
 const Config = @import("config.zig").Config;
@@ -225,6 +226,8 @@ pub const Pane = struct {
     /// Set when pollPty already refreshed render_state after draining PTY data.
     /// tickPanes consumes this to avoid doing the same update twice.
     render_state_fresh: bool = false,
+    compression_activity: ?u64 = null,
+    compression_deadline_ns: i128 = 0,
     child_alive_cached: bool = true,
     last_child_alive_check_ns: i128 = 0,
     scrollbar_total: u64 = 0,
@@ -282,16 +285,12 @@ pub const Pane = struct {
     }
 
     pub fn bootstrap(self: *Pane, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, workspace_id: ?[]const u8) !void {
-        const start_ms = std.time.milliTimestamp();
+        const start_ms = io.milliTimestamp();
         _ = cell_width_px;
         _ = cell_height_px;
         _ = window_width;
         _ = window_height;
-        const terminal = try runtime.createTerminal(.{
-            .cols = cfg.cols,
-            .rows = cfg.rows,
-            .max_scrollback = cfg.scrollback,
-        });
+        const terminal = try runtime.createTerminal(cfg.cols, cfg.rows, cfg.scrollback);
         errdefer runtime.freeTerminal(terminal);
 
         runtime.setTerminalUserdata(terminal, self);
@@ -352,7 +351,7 @@ pub const Pane = struct {
         try env_block.appendSlice(self.allocator, "HOLLOW_TRANSPORT=auto");
         try env_block.append(self.allocator, 0);
 
-        if (std.process.getEnvVarOwned(self.allocator, command_ipc.EnvVar)) |command_addr| {
+        if (io.getEnvVarOwned(self.allocator, command_ipc.EnvVar)) |command_addr| {
             defer self.allocator.free(command_addr);
             try env_block.appendSlice(self.allocator, command_ipc.EnvVar ++ "=");
             try env_block.appendSlice(self.allocator, command_addr);
@@ -392,7 +391,7 @@ pub const Pane = struct {
         try env_block.append(self.allocator, 0); // double-null terminator
 
         const home_dir = if (inherited_cwd == null and cfg.defaultCwdForDomain(domain_name) == null)
-            std.process.getEnvVarOwned(self.allocator, if (comptime is_windows) "USERPROFILE" else "HOME") catch null
+            io.getEnvVarOwned(self.allocator, if (comptime is_windows) "USERPROFILE" else "HOME") catch null
         else
             null;
         defer if (home_dir) |h| self.allocator.free(h);
@@ -448,7 +447,7 @@ pub const Pane = struct {
         self.title = &.{};
         if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
         if (launch_cwd) |cwd| self.setCwd(cwd);
-        std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ std.time.milliTimestamp() - start_ms, domain_name orelse "", self.is_remote });
+        std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ io.milliTimestamp() - start_ms, domain_name orelse "", self.is_remote });
     }
 
     fn shellQuoteSingle(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
@@ -483,12 +482,12 @@ pub const Pane = struct {
             var total_read: usize = 0;
             var read_loops: usize = 0;
             while (read_loops < max_read_loops and total_read < max_total_read) {
-                const read_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                const read_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 const count = pty.read(self.read_buf) catch |err| {
                     if (err == error.EndOfStream) break;
                     return err;
                 };
-                if (debug_overlay) self.last_pty_read_ns += std.time.nanoTimestamp() - read_start_ns;
+                if (debug_overlay) self.last_pty_read_ns += io.nanoTimestamp() - read_start_ns;
                 if (count == 0) break;
                 read_loops += 1;
                 total_read += count;
@@ -497,17 +496,17 @@ pub const Pane = struct {
                         self.logged_first_pty_read = true;
                         std.log.info("first PTY bytes received count={d}", .{count});
                     }
-                    const sanitize_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                    const sanitize_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                     const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
-                    if (debug_overlay) self.last_sanitize_ns += std.time.nanoTimestamp() - sanitize_start_ns;
+                    if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
                     if (pty_bytes.len > 0) {
                         if (self.render_state_ready) {
                             const has_deferred_output = self.pending_terminal_inject.items.len > 0 or self.boot_output.items.len > 0;
                             const has_more_output = pty.hasPendingOutput();
                             if (self.terminal_write_batch.items.len == 0 and !has_deferred_output and !has_more_output) {
-                                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                                const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                                 runtime.terminalWrite(self.terminal, pty_bytes);
-                                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                                if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
                                 self.last_terminal_write_bytes += pty_bytes.len;
                                 self.last_terminal_write_chunks += 1;
                             } else {
@@ -538,15 +537,15 @@ pub const Pane = struct {
                 self.pty_wrote_this_frame = true;
             }
             if (self.render_state_ready and self.terminal_write_batch.items.len > 0) {
-                const write_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 runtime.terminalWrite(self.terminal, self.terminal_write_batch.items);
-                if (debug_overlay) self.last_terminal_write_ns += std.time.nanoTimestamp() - write_start_ns;
+                if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
                 self.last_terminal_write_bytes += self.terminal_write_batch.items.len;
                 self.last_terminal_write_chunks += 1;
             }
-            const child_alive_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+            const child_alive_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
             self.refreshChildAliveCache(false);
-            if (debug_overlay) self.last_child_alive_ns += std.time.nanoTimestamp() - child_alive_start_ns;
+            if (debug_overlay) self.last_child_alive_ns += io.nanoTimestamp() - child_alive_start_ns;
             if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
                 if (total_read == 0) {
                     self.startup_input_quiet_ticks +|= 1;
@@ -567,7 +566,7 @@ pub const Pane = struct {
             // Fresh terminal mode changes arrive via PTY output, and resize/
             // focus paths already perform their own explicit syncs.
             if (self.render_state_ready and total_read > 0) {
-                const encoder_sync_start_ns = if (debug_overlay) std.time.nanoTimestamp() else 0;
+                const encoder_sync_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
                 // Log mouse tracking state changes for diagnostics.
@@ -591,9 +590,9 @@ pub const Pane = struct {
                     self.active_screen = active_screen;
                 }
 
-                if (debug_overlay) self.last_encoder_sync_ns += std.time.nanoTimestamp() - encoder_sync_start_ns;
+                if (debug_overlay) self.last_encoder_sync_ns += io.nanoTimestamp() - encoder_sync_start_ns;
 
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = io.nanoTimestamp();
                 runtime.clearRenderStateDirty(self.render_state);
                 runtime.updateRenderState(self.render_state, self.terminal) catch |err| {
                     std.log.err("pane updateRenderState after PTY drain failed: {s}", .{@errorName(err)});
@@ -671,7 +670,8 @@ pub const Pane = struct {
         var proc_path_buf: [64]u8 = undefined;
         const proc_path = std.fmt.bufPrint(&proc_path_buf, "/proc/{d}/cwd", .{pid}) catch return changed;
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.readlink(proc_path, &cwd_buf) catch return changed;
+        const cwd_len = std.Io.Dir.readLinkAbsolute(io.get(), proc_path, &cwd_buf) catch return changed;
+        const cwd = cwd_buf[0..cwd_len];
         if (!std.mem.eql(u8, self.cwd, cwd)) {
             self.setCwd(cwd);
             changed = true;
@@ -965,7 +965,7 @@ pub const Pane = struct {
             return;
         };
         if (!self.child_alive_cached) return;
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = io.nanoTimestamp();
         if (!force and self.last_child_alive_check_ns != 0 and now_ns - self.last_child_alive_check_ns < 1_000_000_000 and !pty.hasPendingOutputOrExit()) return;
         self.last_child_alive_check_ns = now_ns;
         self.child_alive_cached = pty.isAlive();

@@ -4,12 +4,6 @@ pub const success = 0;
 pub const out_of_space = -3;
 pub const no_value = -4;
 
-pub const TerminalOptions = extern struct {
-    cols: u16,
-    rows: u16,
-    max_scrollback: usize,
-};
-
 pub const ColorRgb = extern struct {
     r: u8,
     g: u8,
@@ -140,6 +134,17 @@ pub const ScrollViewport = extern struct {
     },
 };
 
+pub const TerminalCompressionMode = enum(c_int) {
+    incremental = 0,
+    full = 1,
+};
+
+pub const TerminalCompressionResult = enum(c_int) {
+    unsupported = 0,
+    pending = 1,
+    complete = 2,
+};
+
 pub const MousePosition = extern struct {
     x: f32,
     y: f32,
@@ -180,6 +185,7 @@ pub const TerminalOpt = enum(u32) {
     apc_max_bytes = 19,
     apc_max_bytes_kitty = 20,
     selection = 21,
+    scrollback_max_bytes = 27,
 };
 
 pub const TerminalData = enum(u32) {
@@ -614,7 +620,7 @@ const ColorSchemeCallback = *const fn (?*anyopaque, ?*anyopaque, *ColorScheme) c
 const DeviceAttributesCallback = *const fn (?*anyopaque, ?*anyopaque, *DeviceAttributes) callconv(.c) bool;
 const TitleChangedCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void;
 
-extern fn ghostty_terminal_new(?*anyopaque, *?*anyopaque, TerminalOptions) callconv(.c) i32;
+extern fn ghostty_terminal_new(?*anyopaque, *?*anyopaque, u16, u16) callconv(.c) i32;
 extern fn ghostty_terminal_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_terminal_vt_write(?*anyopaque, [*]const u8, usize) callconv(.c) void;
 extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) void;
@@ -623,6 +629,8 @@ extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c)
 extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
 extern fn ghostty_terminal_mode_get(?*anyopaque, u32, *bool) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
+extern fn ghostty_terminal_compression_activity(?*anyopaque, *u64) callconv(.c) i32;
+extern fn ghostty_terminal_compress(?*anyopaque, TerminalCompressionMode, *TerminalCompressionResult) callconv(.c) i32;
 extern fn ghostty_sys_set(u32, ?*const anyopaque) callconv(.c) i32;
 extern fn ghostty_alloc(?*const Allocator, usize) callconv(.c) ?[*]u8;
 extern fn ghostty_kitty_graphics_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
@@ -698,7 +706,7 @@ pub const TerminalCallbacks = struct {
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
 
-    terminal_new: *const fn (?*anyopaque, *?*anyopaque, TerminalOptions) callconv(.c) i32,
+    terminal_new: *const fn (?*anyopaque, *?*anyopaque, u16, u16) callconv(.c) i32,
     terminal_free: *const fn (?*anyopaque) callconv(.c) void,
     terminal_vt_write: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
     terminal_resize: *const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void,
@@ -707,6 +715,8 @@ pub const Runtime = struct {
     terminal_grid_ref: *const fn (?*anyopaque, Point, *GridRef) callconv(.c) i32,
     terminal_mode_get: *const fn (?*anyopaque, u32, *bool) callconv(.c) i32,
     terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
+    terminal_compression_activity: *const fn (?*anyopaque, *u64) callconv(.c) i32,
+    terminal_compress: *const fn (?*anyopaque, TerminalCompressionMode, *TerminalCompressionResult) callconv(.c) i32,
     sys_set: *const fn (u32, ?*const anyopaque) callconv(.c) i32,
     alloc: *const fn (?*const Allocator, usize) callconv(.c) ?[*]u8,
     kitty_graphics_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
@@ -792,6 +802,8 @@ pub const Runtime = struct {
             .terminal_grid_ref = ghostty_terminal_grid_ref,
             .terminal_mode_get = ghostty_terminal_mode_get,
             .terminal_scroll_viewport = ghostty_terminal_scroll_viewport,
+            .terminal_compression_activity = ghostty_terminal_compression_activity,
+            .terminal_compress = ghostty_terminal_compress,
             .sys_set = ghostty_sys_set,
             .alloc = ghostty_alloc,
             .kitty_graphics_get = ghostty_kitty_graphics_get,
@@ -857,12 +869,13 @@ pub const Runtime = struct {
         _ = self;
     }
 
-    pub fn createTerminal(self: *Runtime, options: TerminalOptions) !?*anyopaque {
+    pub fn createTerminal(self: *Runtime, cols: u16, rows: u16, max_scrollback: usize) !?*anyopaque {
         var handle: ?*anyopaque = null;
-        const result = self.terminal_new(null, &handle, options);
+        const result = self.terminal_new(null, &handle, cols, rows);
         if (result != success or handle == null) {
             return error.TerminalCreateFailed;
         }
+        self.terminal_set(handle, @intFromEnum(TerminalOpt.scrollback_max_bytes), &max_scrollback);
         return handle;
     }
 
@@ -937,6 +950,22 @@ pub const Runtime = struct {
             const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
+    }
+
+    pub fn terminalCompressionActivity(self: *Runtime, handle: ?*anyopaque) !u64 {
+        var activity: u64 = 0;
+        if (self.terminal_compression_activity(handle, &activity) != success) {
+            return error.TerminalCompressionActivityFailed;
+        }
+        return activity;
+    }
+
+    pub fn terminalCompress(self: *Runtime, handle: ?*anyopaque) !TerminalCompressionResult {
+        var result: TerminalCompressionResult = undefined;
+        if (self.terminal_compress(handle, .incremental, &result) != success) {
+            return error.TerminalCompressionFailed;
+        }
+        return result;
     }
 
     pub fn setWritePtyCallback(self: *Runtime, handle: ?*anyopaque, callback: WritePtyCallback) void {

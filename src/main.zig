@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const native_cli = @import("native_cli.zig");
 const font_config = @import("render/font_config.zig");
+const io = @import("io.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -54,8 +55,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
 } else struct {};
 
-var g_log_file: ?std.fs.File = null;
-var g_log_mutex: std.Thread.Mutex = .{};
+var g_log_file: ?std.Io.File = null;
+var g_log_mutex: std.Io.Mutex = .init;
 threadlocal var g_log_recursion_depth: usize = 0;
 
 pub const std_options: std.Options = .{
@@ -68,19 +69,19 @@ fn writeLogLine(prefix: []const u8, text: []const u8) void {
         const needs_lock = g_log_recursion_depth == 0;
         if (needs_lock) {
             g_log_recursion_depth = 1;
-            g_log_mutex.lock();
+            g_log_mutex.lockUncancelable(io.get());
         } else {
             g_log_recursion_depth += 1;
         }
         defer {
             g_log_recursion_depth -= 1;
-            if (needs_lock) g_log_mutex.unlock();
+            if (needs_lock) g_log_mutex.unlock(io.get());
         }
         var buf: [1024]u8 = undefined;
-        var w = f.writer(&buf);
+        var w = f.writer(io.get(), &buf);
         w.interface.print("[{s}] {s}\n", .{ prefix, text }) catch {};
         w.interface.flush() catch {};
-        f.sync() catch {};
+        f.sync(io.get()) catch {};
     }
 }
 
@@ -89,31 +90,24 @@ fn writeCurrentStackToLog(start_addr: ?usize) void {
         const needs_lock = g_log_recursion_depth == 0;
         if (needs_lock) {
             g_log_recursion_depth = 1;
-            g_log_mutex.lock();
+            g_log_mutex.lockUncancelable(io.get());
         } else {
             g_log_recursion_depth += 1;
         }
         defer {
             g_log_recursion_depth -= 1;
-            if (needs_lock) g_log_mutex.unlock();
+            if (needs_lock) g_log_mutex.unlock(io.get());
         }
         var buf: [2048]u8 = undefined;
-        var w = f.writer(&buf);
-
-        const debug_info = std.debug.getSelfDebugInfo() catch |err| {
-            w.interface.print("[panic] unable to load debug info: {s}\n", .{@errorName(err)}) catch {};
-            w.interface.flush() catch {};
-            f.sync() catch {};
-            return;
-        };
+        var w = f.writer(io.get(), &buf);
 
         w.interface.writeAll("[panic] stack trace:\n") catch {};
-        std.debug.writeCurrentStackTrace(&w.interface, debug_info, .no_color, start_addr) catch |err| {
+        std.debug.writeCurrentStackTrace(.{ .first_address = start_addr }, .{ .writer = &w.interface, .mode = .no_color }) catch |err| {
             w.interface.print("[panic] unable to write stack trace: {s}\n", .{@errorName(err)}) catch {};
         };
         w.interface.writeAll("\n") catch {};
         w.interface.flush() catch {};
-        f.sync() catch {};
+        f.sync(io.get()) catch {};
     }
 }
 
@@ -129,19 +123,21 @@ fn fileLogFn(
         const needs_lock = g_log_recursion_depth == 0;
         if (needs_lock) {
             g_log_recursion_depth = 1;
-            g_log_mutex.lock();
+            g_log_mutex.lockUncancelable(io.get());
         } else {
             g_log_recursion_depth += 1;
         }
         defer {
             g_log_recursion_depth -= 1;
-            if (needs_lock) g_log_mutex.unlock();
+            if (needs_lock) g_log_mutex.unlock(io.get());
         }
         var buf: [1024]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        fbs.writer().print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
-        const written = fbs.getWritten();
-        _ = f.writeAll(written) catch {};
+        var w: std.Io.Writer = .fixed(&buf);
+        w.print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
+        var file_buf: [1024]u8 = undefined;
+        var file_writer = f.writer(io.get(), &file_buf);
+        file_writer.interface.writeAll(w.buffered()) catch {};
+        file_writer.interface.flush() catch {};
     }
 }
 
@@ -153,59 +149,53 @@ pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ra: ?usize) noret
             const needs_lock = g_log_recursion_depth == 0;
             if (needs_lock) {
                 g_log_recursion_depth = 1;
-                g_log_mutex.lock();
+                g_log_mutex.lockUncancelable(io.get());
             } else {
                 g_log_recursion_depth += 1;
             }
             defer {
                 g_log_recursion_depth -= 1;
-                if (needs_lock) g_log_mutex.unlock();
+                if (needs_lock) g_log_mutex.unlock(io.get());
             }
             var buf: [2048]u8 = undefined;
-            var w = f.writer(&buf);
-
-            const debug_info = std.debug.getSelfDebugInfo() catch |err| {
-                w.interface.print("[panic] unable to load debug info: {s}\n", .{@errorName(err)}) catch {};
-                w.interface.flush() catch {};
-                f.sync() catch {};
-                std.process.abort();
-            };
+            var w = f.writer(io.get(), &buf);
 
             w.interface.writeAll("[panic] error return trace:\n") catch {};
-            std.debug.writeStackTrace(t.*, &w.interface, debug_info, .no_color) catch |err| {
+            std.debug.writeErrorReturnTrace(t, .{ .writer = &w.interface, .mode = .no_color }) catch |err| {
                 w.interface.print("[panic] unable to write error return trace: {s}\n", .{@errorName(err)}) catch {};
             };
             w.interface.writeAll("\n") catch {};
             w.interface.flush() catch {};
-            f.sync() catch {};
+            f.sync(io.get()) catch {};
         }
     }
     writeCurrentStackToLog(ra orelse @returnAddress());
     std.process.abort();
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    io.init(init.io, init.minimal.environ);
     if (build_options.launcher_mode) {
-        return try launcherMain();
+        return try launcherMain(init.minimal.args);
     }
 
-    return try guiMain();
+    return try guiMain(init.minimal.args);
 }
 
-fn guiMain() !void {
+fn guiMain(process_args: std.process.Args) !void {
     const App = @import("app.zig").App;
     const sokol_runtime = @import("render/sokol_runtime.zig");
 
     // Open log file next to the exe (works even without a console).
-    g_log_file = std.fs.cwd().createFile("hollow.log", .{ .truncate = true }) catch null;
-    defer if (g_log_file) |f| f.close();
+    g_log_file = std.Io.Dir.cwd().createFile(io.get(), "hollow.log", .{ .truncate = true }) catch null;
+    defer if (g_log_file) |f| f.close(io.get());
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+    var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try io.argsAlloc(allocator, process_args);
+    defer io.argsFree(allocator, args);
 
     if (args.len > 1 and std.mem.eql(u8, args[1], "cli")) {
         const status = native_cli.run(allocator, args[2..]);
@@ -247,13 +237,13 @@ fn guiMain() !void {
     };
 }
 
-fn launcherMain() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+fn launcherMain(process_args: std.process.Args) !void {
+    var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try io.argsAlloc(allocator, process_args);
+    defer io.argsFree(allocator, args);
 
     if (args.len > 1 and std.mem.eql(u8, args[1], "cli")) {
         const status = native_cli.run(allocator, args[2..]);
@@ -280,7 +270,7 @@ fn launcherMain() !void {
 fn spawnGuiSibling(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (builtin.os.tag != .windows) return error.Unsupported;
 
-    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    const self_exe = try std.process.executablePathAlloc(io.get(), allocator);
     defer allocator.free(self_exe);
     const dir = std.fs.path.dirname(self_exe) orelse return error.FileNotFound;
     const gui_path = try std.fs.path.join(allocator, &.{ dir, "hollow-native.exe" });
@@ -519,7 +509,10 @@ fn normalizeCliQuery(buf: []u8, input: []const u8) []const u8 {
 
 fn writeConsoleText(text: []const u8) !void {
     if (builtin.os.tag != .windows) {
-        try std.fs.File.stdout().writeAll(text);
+        var buffer: [4096]u8 = undefined;
+        var writer = std.Io.File.stdout().writer(io.get(), &buffer);
+        try writer.interface.writeAll(text);
+        try writer.interface.flush();
         return;
     }
 
@@ -532,14 +525,17 @@ fn writeConsoleText(text: []const u8) !void {
 
 fn tryWriteWindowsStdHandle(stream_id: win32.DWORD, text: []const u8) bool {
     const file = windowsStdHandle(stream_id) orelse return false;
-    file.writeAll(text) catch return false;
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io.get(), &buffer);
+    writer.interface.writeAll(text) catch return false;
+    writer.interface.flush() catch return false;
     return true;
 }
 
-fn windowsStdHandle(stream_id: win32.DWORD) ?std.fs.File {
+fn windowsStdHandle(stream_id: win32.DWORD) ?std.Io.File {
     const handle = win32.GetStdHandle(stream_id) orelse return null;
     if (handle == win32.INVALID_HANDLE_VALUE) return null;
-    return std.fs.File{ .handle = handle };
+    return .{ .handle = handle, .flags = .{ .nonblocking = false } };
 }
 
 test {

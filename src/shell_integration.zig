@@ -1,5 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
+const io = @import("io.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("sys/stat.h");
@@ -42,22 +43,22 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     defer allocator.free(fish_vendor);
     const marker = try std.fs.path.join(allocator, &.{ root, ".ready" });
     defer allocator.free(marker);
-    if (std.fs.accessAbsolute(marker, .{})) |_| return .{ .root = root, .shell = shell } else |_| {}
+    if (std.Io.Dir.accessAbsolute(io.get(), marker, .{})) |_| return .{ .root = root, .shell = shell } else |_| {}
 
-    try std.fs.cwd().makePath(bin);
-    try std.fs.cwd().makePath(zsh_dir);
-    try std.fs.cwd().makePath(fish_vendor);
+    try std.Io.Dir.cwd().createDirPath(io.get(), bin);
+    try std.Io.Dir.cwd().createDirPath(io.get(), zsh_dir);
+    try std.Io.Dir.cwd().createDirPath(io.get(), fish_vendor);
     if (c.chmod(root_z.ptr, 0o700) != 0) return error.SetBundlePermissionsFailed;
 
-    try writeFile(allocator, root, "bash.sh", build_options.embedded_bash_integration, 0o600);
-    try writeFile(allocator, root, "zsh.zsh", build_options.embedded_zsh_integration, 0o600);
-    try writeFile(allocator, root, "fish.fish", build_options.embedded_fish_integration, 0o600);
-    try writeFile(allocator, bin, "hollow-cli", build_options.embedded_hollow_cli, 0o700);
-    try writeFile(allocator, root, "bashrc", bashRc, 0o600);
-    try writeFile(allocator, zsh_dir, ".zshenv", zshEnv, 0o600);
-    try writeFile(allocator, zsh_dir, ".zshrc", zshRc, 0o600);
-    try writeFile(allocator, fish_vendor, "hollow.fish", fishRc, 0o600);
-    try writeFile(allocator, root, ".ready", "", 0o600);
+    try writeFile(allocator, root, "bash.sh", build_options.embedded_bash_integration, .fromMode(0o600));
+    try writeFile(allocator, root, "zsh.zsh", build_options.embedded_zsh_integration, .fromMode(0o600));
+    try writeFile(allocator, root, "fish.fish", build_options.embedded_fish_integration, .fromMode(0o600));
+    try writeFile(allocator, bin, "hollow-cli", build_options.embedded_hollow_cli, .fromMode(0o700));
+    try writeFile(allocator, root, "bashrc", bashRc, .fromMode(0o600));
+    try writeFile(allocator, zsh_dir, ".zshenv", zshEnv, .fromMode(0o600));
+    try writeFile(allocator, zsh_dir, ".zshrc", zshRc, .fromMode(0o600));
+    try writeFile(allocator, fish_vendor, "hollow.fish", fishRc, .fromMode(0o600));
+    try writeFile(allocator, root, ".ready", "", .fromMode(0o600));
 
     return .{ .root = root, .shell = shell };
 }
@@ -70,7 +71,7 @@ pub fn setupEnv(allocator: std.mem.Allocator, bundle: Bundle) !void {
 
     switch (bundle.shell) {
         .zsh => {
-            const original = std.process.getEnvVarOwned(allocator, "ZDOTDIR") catch null;
+            const original = io.getEnvVarOwned(allocator, "ZDOTDIR") catch null;
             defer if (original) |value| allocator.free(value);
             try setEnv(allocator, "HOLLOW_ORIGINAL_ZDOTDIR", original orelse "");
             const zsh_dir = try std.fs.path.join(allocator, &.{ bundle.root, "zsh" });
@@ -102,7 +103,7 @@ pub fn argv(allocator: std.mem.Allocator, bundle: Bundle, command: ?[]const u8, 
         .zsh, .fish => {},
     }
     if (command) |value| {
-        const trimmed = std.mem.trimRight(u8, value, "\r\n");
+        const trimmed = std.mem.trimEnd(u8, value, "\r\n");
         const wrapped = if (close_on_exit)
             try std.fmt.allocPrint(allocator, "{s}; exit", .{trimmed})
         else
@@ -115,12 +116,15 @@ pub fn argv(allocator: std.mem.Allocator, bundle: Bundle, command: ?[]const u8, 
     return result.toOwnedSlice(allocator);
 }
 
-fn writeFile(allocator: std.mem.Allocator, dir: []const u8, name: []const u8, contents: []const u8, mode: std.fs.File.Mode) !void {
+fn writeFile(allocator: std.mem.Allocator, dir: []const u8, name: []const u8, contents: []const u8, mode: std.Io.File.Permissions) !void {
     const path = try std.fs.path.join(allocator, &.{ dir, name });
     defer allocator.free(path);
-    const file = try std.fs.createFileAbsolute(path, .{ .mode = mode });
-    defer file.close();
-    try file.writeAll(contents);
+    const file = try std.Io.Dir.createFileAbsolute(io.get(), path, .{ .permissions = mode });
+    defer file.close(io.get());
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io.get(), &buffer);
+    try writer.interface.writeAll(contents);
+    try writer.interface.flush();
 }
 
 fn setEnv(allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
@@ -132,7 +136,7 @@ fn setEnv(allocator: std.mem.Allocator, key: []const u8, value: []const u8) !voi
 }
 
 fn prependPath(allocator: std.mem.Allocator, key: []const u8, prefix: []const u8, separator: u8) !void {
-    const current = std.process.getEnvVarOwned(allocator, key) catch null;
+    const current = io.getEnvVarOwned(allocator, key) catch null;
     defer if (current) |value| allocator.free(value);
     const value = if (current) |existing|
         try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ prefix, separator, existing })

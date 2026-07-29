@@ -57,7 +57,7 @@ require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 
 **Build from source:**
 
-**Zig version:** `0.15.2` only. If you use `asdf` or `mise`, run
+**Zig version:** `0.16.0` only. If you use `asdf` or `mise`, run
 `asdf install` or `mise install` from the repo root — `.tool-versions` is
 already pinned.
 

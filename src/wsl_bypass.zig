@@ -1,6 +1,7 @@
 const std = @import("std");
 const protocol = @import("pty/wsl_bypass_protocol.zig");
 const shell_integration = @import("shell_integration.zig");
+const io = @import("io.zig");
 const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
@@ -50,8 +51,9 @@ const Options = struct {
 };
 
 const termination_grace_ms: i64 = 1500;
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    io.init(init.io, init.minimal.environ);
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -62,7 +64,7 @@ pub fn main() !void {
     _ = c.sigemptyset(&sa.sa_mask);
     _ = c.sigaction(c.SIGPIPE, &sa, null);
 
-    const options = parseArgs(allocator) catch return;
+    const options = parseArgs(allocator, init.minimal.args) catch return;
     defer {
         var owned = options;
         owned.deinit(allocator);
@@ -79,7 +81,7 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     const shell_argv = try buildShellArgv(allocator, options.shell_args.items, options.launch, bundle);
     defer freeExecArgv(allocator, shell_argv);
 
-    const stderr_copy = c.dup(std.fs.File.stderr().handle);
+    const stderr_copy = c.dup(std.Io.File.stderr().handle);
     defer {
         if (stderr_copy >= 0) _ = c.close(stderr_copy);
     }
@@ -110,13 +112,13 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     const flags = c.fcntl(master, c.F_GETFL, @as(c_int, 0));
     if (flags >= 0) _ = c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK);
 
-    try writeFrame(std.fs.File.stdout(), .hello, protocol.hello_payload[0..]);
+    try writeFrame(std.Io.File.stdout(), .hello, protocol.hello_payload[0..]);
 
-    const stdin_file = std.fs.File.stdin();
+    const stdin_file = std.Io.File.stdin();
     const stdin_flags = c.fcntl(stdin_file.handle, c.F_GETFL, @as(c_int, 0));
     if (stdin_flags >= 0) _ = c.fcntl(stdin_file.handle, c.F_SETFL, stdin_flags | c.O_NONBLOCK);
 
-    const stdout_file = std.fs.File.stdout();
+    const stdout_file = std.Io.File.stdout();
 
     var input_closed = false;
     var master_closed = false;
@@ -147,14 +149,14 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
             terminateChildGroup(pid, c.SIGHUP);
             std.log.info("wsl bypass shutdown requested; terminating child pid={d}", .{pid});
             termination_requested = true;
-            termination_deadline_ms = std.time.milliTimestamp() + termination_grace_ms;
+            termination_deadline_ms = milliTimestamp() + termination_grace_ms;
         }
 
         if ((poll_fds[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
             var buf: [65536]u8 = undefined;
             const count = c.read(master, &buf, buf.len);
             if (count > 0) {
-                try writeFrame(std.fs.File.stdout(), .output, buf[0..@intCast(count)]);
+                try writeFrame(std.Io.File.stdout(), .output, buf[0..@intCast(count)]);
             } else if (count == 0) {
                 master_closed = true;
             } else switch (std.posix.errno(-1)) {
@@ -176,7 +178,7 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
-        if (termination_requested and !child_reaped and termination_deadline_ms != null and std.time.milliTimestamp() >= termination_deadline_ms.?) {
+        if (termination_requested and !child_reaped and termination_deadline_ms != null and milliTimestamp() >= termination_deadline_ms.?) {
             terminateChildGroup(pid, c.SIGKILL);
             termination_deadline_ms = null;
         }
@@ -187,9 +189,9 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     var exit_payload: [4]u8 = undefined;
     std.mem.writeInt(u32, &exit_payload, exit_status, .little);
     if (!input_closed) {
-        try writeFrame(std.fs.File.stdout(), .exit, &exit_payload);
+        try writeFrame(std.Io.File.stdout(), .exit, &exit_payload);
     } else {
-        _ = writeFrame(std.fs.File.stdout(), .exit, &exit_payload) catch {};
+        _ = writeFrame(std.Io.File.stdout(), .exit, &exit_payload) catch {};
     }
 }
 
@@ -249,8 +251,8 @@ fn reportChildExecFailure(stderr_fd: c_int, options: Options, argv: [:null]?[*:0
     if (stderr_fd < 0) return;
     var stderr_buf: [256]u8 = undefined;
     var argv0_hex_buf: [96]u8 = undefined;
-    var stderr_file = std.fs.File{ .handle = stderr_fd };
-    var stderr = stderr_file.writer(&stderr_buf);
+    const stderr_file = std.Io.File{ .handle = stderr_fd, .flags = .{ .nonblocking = false } };
+    var stderr = stderr_file.writer(io.get(), &stderr_buf);
     const cwd = options.cwd orelse "<null>";
     const argv0 = if (argv.len > 0 and argv[0] != null) std.mem.span(argv[0].?) else "<null>";
     const argv0_hex = if (argv.len > 0 and argv[0] != null) previewHex(&argv0_hex_buf, argv[0].?) else "<null>";
@@ -274,7 +276,7 @@ fn previewHex(buf: []u8, ptr: [*:0]const u8) []const u8 {
     return buf[0..dst_index];
 }
 
-fn handleHostFrame(stdin_file: std.fs.File, master: c_int) !bool {
+fn handleHostFrame(stdin_file: std.Io.File, master: c_int) !bool {
     var header: [5]u8 = undefined;
     if (!(try readExactNonBlocking(stdin_file, &header))) return false;
 
@@ -323,12 +325,12 @@ fn handleHostFrame(stdin_file: std.fs.File, master: c_int) !bool {
     return true;
 }
 
-fn writeFrame(file: std.fs.File, frame_type: protocol.FrameType, payload: []const u8) !void {
+fn writeFrame(file: std.Io.File, frame_type: protocol.FrameType, payload: []const u8) !void {
     var header: [5]u8 = undefined;
     header[0] = @intFromEnum(frame_type);
     std.mem.writeInt(u32, header[1..5], @intCast(payload.len), .little);
     if (payload.len == 0) {
-        try file.writeAll(&header);
+        try writeAllFd(file.handle, &header);
         return;
     }
     var iov = [_]c.struct_iovec{
@@ -367,7 +369,7 @@ fn writeFrame(file: std.fs.File, frame_type: protocol.FrameType, payload: []cons
     }
 }
 
-fn readExactNonBlocking(file: std.fs.File, buffer: []u8) !bool {
+fn readExactNonBlocking(file: std.Io.File, buffer: []u8) !bool {
     var offset: usize = 0;
     while (offset < buffer.len) {
         const count = c.read(file.handle, buffer.ptr + offset, buffer.len - offset);
@@ -416,14 +418,18 @@ fn childExitStatus(status: c_int) u32 {
 fn terminateAndReapChild(pid: c_int) u32 {
     terminateChildGroup(pid, c.SIGHUP);
 
-    const deadline = std.time.milliTimestamp() + termination_grace_ms;
-    while (std.time.milliTimestamp() < deadline) {
+    const deadline = milliTimestamp() + termination_grace_ms;
+    while (milliTimestamp() < deadline) {
         if (waitForChildExit(pid, c.WNOHANG)) |status| return status;
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        std.Io.sleep(io.get(), .fromMilliseconds(20), .awake) catch {};
     }
 
     terminateChildGroup(pid, c.SIGKILL);
     return waitForChildExit(pid, 0) orelse 1;
+}
+
+fn milliTimestamp() i64 {
+    return @intCast(std.Io.Clock.awake.now(io.get()).toMilliseconds());
 }
 
 fn terminateChildGroup(pid: c_int, signal: c_int) void {
@@ -445,9 +451,9 @@ fn waitForChildExit(pid: c_int, flags: c_int) ?u32 {
     }
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !Options {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+fn parseArgs(allocator: std.mem.Allocator, process_args: std.process.Args) !Options {
+    const args = try io.argsAlloc(allocator, process_args);
+    defer io.argsFree(allocator, args);
 
     var options = Options{};
     errdefer options.deinit(allocator);
@@ -543,7 +549,7 @@ fn buildShellArgv(allocator: std.mem.Allocator, input_shell_args: []const []cons
         return try argv.toOwnedSliceSentinel(allocator, null);
     }
     if (launch.command) |command| {
-        const trimmed = std.mem.trimRight(u8, command, "\r\n");
+        const trimmed = std.mem.trimEnd(u8, command, "\r\n");
         if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
             try argv.append(allocator, (try allocator.dupeZ(u8, "-lc")).ptr);
             const wrapped = if (launch.close_on_exit)
@@ -624,7 +630,7 @@ fn defaultShellPath(allocator: std.mem.Allocator) ![]u8 {
         if (isLikelyPosixShellPath(shell) and try isExecutablePath(allocator, shell)) return allocator.dupe(u8, shell);
     }
 
-    const env_shell = std.process.getEnvVarOwned(allocator, "SHELL") catch null;
+    const env_shell = io.getEnvVarOwned(allocator, "SHELL") catch null;
     defer if (env_shell) |value| allocator.free(value);
     if (env_shell) |value| {
         if (isLikelyPosixShellPath(value) and try isExecutablePath(allocator, value)) return allocator.dupe(u8, value);

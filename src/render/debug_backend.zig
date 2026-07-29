@@ -79,7 +79,7 @@ pub const DebugBackend = struct {
                 out_index += 1;
             }
 
-            snapshot.line_lens[line_index] = std.mem.trimRight(u8, snapshot.lines[line_index][0..out_index], " ").len;
+            snapshot.line_lens[line_index] = std.mem.trimEnd(u8, snapshot.lines[line_index][0..out_index], " ").len;
             snapshot.visible_line_count = line_index + 1;
         }
         return snapshot;

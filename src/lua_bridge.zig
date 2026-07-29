@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("io.zig");
 const config = @import("config.zig");
 const fastmem = @import("fastmem.zig");
 const platform = @import("platform.zig");
@@ -287,8 +288,8 @@ fn luaFunctionFieldRef(api: Api, state: *State, table_idx: c_int, field: []const
 }
 
 const WslDistroCache = struct {
-    mutex: std.Thread.Mutex = .{},
-    distros: std.ArrayListUnmanaged([]u8) = .{},
+    mutex: io.Mutex = .{},
+    distros: std.ArrayListUnmanaged([]u8) = .empty,
     loading: bool = false,
     loaded: bool = false,
 
@@ -351,7 +352,7 @@ fn parseWslDistroList(allocator: std.mem.Allocator, stdout: []const u8) !std.Arr
         }
     }
 
-    var distros = std.ArrayListUnmanaged([]u8){};
+    var distros: std.ArrayListUnmanaged([]u8) = .empty;
     errdefer {
         for (distros.items) |distro| allocator.free(distro);
         distros.deinit(allocator);
@@ -381,7 +382,7 @@ fn loadWslDistrosThread(cache: *WslDistroCache) void {
     defer allocator.free(result.stderr);
 
     const success = switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
     if (!success) {
@@ -476,14 +477,14 @@ fn luaTableToJson(allocator: std.mem.Allocator, api: Api, state: *State, table_i
         return .{ .array = array };
     }
 
-    var object = std.json.ObjectMap.init(allocator);
+    var object = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     errdefer {
         var it = object.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
             deinitJsonValue(allocator, entry.value_ptr.*);
         }
-        object.deinit();
+        object.deinit(allocator);
     }
 
     api.push_nil(state);
@@ -503,7 +504,7 @@ fn luaTableToJson(allocator: std.mem.Allocator, api: Api, state: *State, table_i
             else => return error.UnsupportedLuaTableKey,
         };
         errdefer allocator.free(key);
-        try object.put(key, try luaValueToJson(allocator, api, state, -1));
+        try object.put(allocator, key, try luaValueToJson(allocator, api, state, -1));
     }
 
     return .{ .object = object };
@@ -664,7 +665,7 @@ fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void {
                 allocator.free(entry.key_ptr.*);
                 deinitJsonValue(allocator, entry.value_ptr.*);
             }
-            owned.deinit();
+            owned.deinit(allocator);
         },
         else => {},
     }
@@ -701,31 +702,14 @@ const ChildRunOptions = struct {
     hide_window: bool = true,
 };
 
-fn runChildProcess(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, opts: ChildRunOptions) !std.process.Child.RunResult {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.cwd = cwd;
-    child.create_no_window = opts.hide_window;
-
-    try child.spawn();
-    errdefer {
-        _ = child.kill() catch {};
-    }
-
-    var stdout: std.ArrayList(u8) = .empty;
-    defer stdout.deinit(allocator);
-    var stderr: std.ArrayList(u8) = .empty;
-    defer stderr.deinit(allocator);
-
-    try child.collectOutput(allocator, &stdout, &stderr, 50 * 1024);
-
-    return .{
-        .stdout = try stdout.toOwnedSlice(allocator),
-        .stderr = try stderr.toOwnedSlice(allocator),
-        .term = try child.wait(),
-    };
+fn runChildProcess(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8, opts: ChildRunOptions) !std.process.RunResult {
+    return std.process.run(allocator, io.get(), .{
+        .argv = argv,
+        .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .create_no_window = opts.hide_window,
+        .stdout_limit = .limited(50 * 1024),
+        .stderr_limit = .limited(50 * 1024),
+    });
 }
 
 fn luaChildRunOptions(api: Api, state: *State, idx: c_int) ChildRunOptions {
@@ -739,12 +723,12 @@ fn luaChildRunOptions(api: Api, state: *State, idx: c_int) ChildRunOptions {
     return opts;
 }
 
-fn childRunResultToLua(state: *State, api: Api, result: std.process.Child.RunResult, err_label: [*:0]const u8) c_int {
+fn childRunResultToLua(state: *State, api: Api, result: std.process.RunResult, err_label: [*:0]const u8) c_int {
     defer std.heap.page_allocator.free(result.stdout);
     defer std.heap.page_allocator.free(result.stderr);
 
     const success = switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 
@@ -764,7 +748,7 @@ pub const Runtime = struct {
     state: *State,
     context: *BridgeContext,
     lua_sources: ?RuntimeLuaSources = null,
-    mutex: std.Thread.Mutex = .{},
+    mutex: io.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, cfg: *config.Config) !Runtime {
         const api = Api{
@@ -814,8 +798,8 @@ pub const Runtime = struct {
             .cfg = cfg,
             .state = state,
             .allocator = allocator,
-            .deferred_callback_refs = .{},
-            .timed_callback_refs = .{},
+            .deferred_callback_refs = .empty,
+            .timed_callback_refs = .empty,
         };
         const lua_sources = discoverLuaSources(allocator);
         errdefer if (lua_sources) |sources| {
@@ -912,7 +896,7 @@ pub const Runtime = struct {
         const disk_path = std.fs.path.join(self.allocator, &.{ root, relative_path }) catch return false;
         defer self.allocator.free(disk_path);
 
-        std.fs.accessAbsolute(disk_path, .{}) catch return false;
+        std.Io.Dir.accessAbsolute(io.get(), disk_path, .{}) catch return false;
         try loadLuaChunkFromDisk(api, self.state, disk_path);
         if (api.pcall(self.state, 0, 0, 0) != 0) {
             logLuaError(api, self.state, "pcall");
@@ -1144,7 +1128,7 @@ pub const Runtime = struct {
         timed_callback_refs: *std.ArrayListUnmanaged(TimedCallback),
         now: i64,
     ) std.ArrayListUnmanaged(TimedCallback) {
-        var pending = std.ArrayListUnmanaged(TimedCallback){};
+        var pending: std.ArrayListUnmanaged(TimedCallback) = .empty;
         var expired_count: usize = 0;
         for (timed_callback_refs.items) |entry| {
             if (entry.expires_at_ms == 0 or now >= entry.expires_at_ms) expired_count += 1;
@@ -1178,7 +1162,7 @@ pub const Runtime = struct {
         {
             const deferred = self.context.deferred_callback_refs.items;
             if (deferred.len > 0) {
-                var pending = std.ArrayListUnmanaged(c_int){};
+                var pending: std.ArrayListUnmanaged(c_int) = .empty;
                 defer pending.deinit(self.allocator);
                 pending.appendSlice(self.allocator, deferred) catch return;
                 self.context.deferred_callback_refs.clearRetainingCapacity();
@@ -2257,7 +2241,7 @@ const BridgeContext = struct {
     app_callbacks: ?AppCallbacks = null,
     pending_workspace_name: ?[]u8 = null,
     capabilities: u32 = 0,
-    key_queue: std.ArrayListUnmanaged(struct { key: [:0]const u8, mods: [:0]const u8 }) = .{},
+    key_queue: std.ArrayListUnmanaged(struct { key: [:0]const u8, mods: [:0]const u8 }) = .empty,
     key_queue_blocked: bool = false,
     on_key_ref: c_int = -1,
     top_bar_ref: c_int = -1,
@@ -2267,8 +2251,8 @@ const BridgeContext = struct {
     quick_select_match_ref: c_int = -1,
     quick_select_action_ref: c_int = -1,
     gui_ready_fired: bool = false,
-    deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .{},
-    timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .{},
+    deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
+    timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty,
 };
 
 fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
@@ -2305,13 +2289,13 @@ fn l_preloaded_module_loader(state: *State) callconv(.c) c_int {
 }
 
 fn discoverLuaSources(allocator: std.mem.Allocator) ?RuntimeLuaSources {
-    const exe_dir = std.fs.selfExeDirPathAlloc(allocator) catch return discoverLuaSourcesWalkUp(allocator, null);
+    const exe_dir = std.process.executableDirPathAlloc(io.get(), allocator) catch return discoverLuaSourcesWalkUp(allocator, null);
     defer allocator.free(exe_dir);
 
     {
         const root_dir = std.fs.path.join(allocator, &.{ exe_dir, "src", "lua" }) catch return null;
         defer allocator.free(root_dir);
-        if (std.fs.accessAbsolute(root_dir, .{})) |_| {
+        if (std.Io.Dir.accessAbsolute(io.get(), root_dir, .{})) |_| {
             return .{ .root_dir = allocator.dupe(u8, root_dir) catch return null };
         } else |_| {}
     }
@@ -2321,7 +2305,7 @@ fn discoverLuaSources(allocator: std.mem.Allocator) ?RuntimeLuaSources {
 
 fn discoverLuaSourcesWalkUp(allocator: std.mem.Allocator, start: ?[]const u8) ?RuntimeLuaSources {
     const seed = start orelse {
-        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return null;
+        const cwd = std.Io.Dir.cwd().realPathFileAlloc(io.get(), ".", allocator) catch return null;
         defer allocator.free(cwd);
         return discoverLuaSourcesWalkUpFrom(allocator, cwd);
     };
@@ -2337,7 +2321,7 @@ fn discoverLuaSourcesWalkUpFrom(allocator: std.mem.Allocator, start: []const u8)
         const candidate = std.fs.path.join(allocator, &.{ current, "src", "lua" }) catch return null;
         defer allocator.free(candidate);
 
-        if (std.fs.accessAbsolute(candidate, .{})) |_| {
+        if (std.Io.Dir.accessAbsolute(io.get(), candidate, .{})) |_| {
             return .{ .root_dir = allocator.dupe(u8, candidate) catch return null };
         } else |_| {}
 
@@ -2382,7 +2366,7 @@ fn loadLuaModuleIntoState(ctx: *BridgeContext, state: *State, module: LuaModule)
         const disk_path = luaModuleDiskPath(ctx.allocator, sources, module.name) catch null;
         if (disk_path) |path| {
             defer ctx.allocator.free(path);
-            if (std.fs.accessAbsolute(path, .{})) |_| {
+            if (std.Io.Dir.accessAbsolute(io.get(), path, .{})) |_| {
                 try loadLuaChunkFromDisk(api, state, path);
                 return;
             } else |_| {}
@@ -2610,32 +2594,31 @@ fn l_strftime(state: *State) callconv(.c) c_int {
     const lt = platform.getLocalTime();
 
     var out: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&out);
-    const w = fbs.writer();
+    var writer: std.Io.Writer = .fixed(&out);
 
     var i: usize = 0;
     while (i < fmt.len) : (i += 1) {
         if (fmt[i] != '%' or i + 1 >= fmt.len) {
-            w.writeByte(fmt[i]) catch break;
+            writer.writeByte(fmt[i]) catch break;
             continue;
         }
         i += 1;
         switch (fmt[i]) {
-            '%' => w.writeByte('%') catch break,
-            'H' => w.print("{d:0>2}", .{lt.hour}) catch break,
-            'M' => w.print("{d:0>2}", .{lt.minute}) catch break,
-            'S' => w.print("{d:0>2}", .{lt.second}) catch break,
-            'e' => w.print("{d}", .{lt.day}) catch break,
-            'Y' => w.print("{d}", .{lt.year}) catch break,
-            'B' => w.writeAll(monthName(@intCast(lt.month))) catch break,
+            '%' => writer.writeByte('%') catch break,
+            'H' => writer.print("{d:0>2}", .{lt.hour}) catch break,
+            'M' => writer.print("{d:0>2}", .{lt.minute}) catch break,
+            'S' => writer.print("{d:0>2}", .{lt.second}) catch break,
+            'e' => writer.print("{d}", .{lt.day}) catch break,
+            'Y' => writer.print("{d}", .{lt.year}) catch break,
+            'B' => writer.writeAll(monthName(@intCast(lt.month))) catch break,
             else => {
-                w.writeByte('%') catch break;
-                w.writeByte(fmt[i]) catch break;
+                writer.writeByte('%') catch break;
+                writer.writeByte(fmt[i]) catch break;
             },
         }
     }
 
-    const written = fbs.getWritten();
+    const written = out[0..writer.end];
     api.push_lstring(state, written.ptr, written.len);
     return 1;
 }
@@ -2654,17 +2637,17 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
     };
     const path = path_ptr[0..path_len];
 
-    var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.openDirAbsolute(io.get(), path, .{ .iterate = true }) catch |err| {
         std.log.warn("lua: read_dir failed path={s} err={s}", .{ path, @errorName(err) });
         return api.raise_error(state, "read_dir failed");
     };
-    defer dir.close();
+    defer dir.close(io.get());
 
     api.create_table(state, 0, 0);
     var it = dir.iterate();
     var index: c_int = 1;
     while (true) {
-        const entry = it.next() catch |err| {
+        const entry = it.next(io.get()) catch |err| {
             std.log.warn("lua: read_dir iterate failed path={s} err={s}", .{ path, @errorName(err) });
             return api.raise_error(state, "read_dir failed");
         };
@@ -2754,9 +2737,9 @@ fn l_glob(state: *State) callconv(.c) c_int {
     const name_pattern = std.fs.path.basename(pattern);
 
     const dir_result = if (std.fs.path.isAbsolute(dir_path))
-        std.fs.openDirAbsolute(dir_path, .{ .iterate = true })
+        std.Io.Dir.openDirAbsolute(io.get(), dir_path, .{ .iterate = true })
     else
-        std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+        std.Io.Dir.cwd().openDir(io.get(), dir_path, .{ .iterate = true });
 
     var dir = dir_result catch |err| switch (err) {
         error.FileNotFound, error.NotDir => {
@@ -2768,13 +2751,13 @@ fn l_glob(state: *State) callconv(.c) c_int {
             return api.raise_error(state, "glob failed");
         },
     };
-    defer dir.close();
+    defer dir.close(io.get());
 
     api.create_table(state, 0, 0);
     var iter = dir.iterate();
     var index: c_int = 1;
     while (true) {
-        const entry = iter.next() catch |err| {
+        const entry = iter.next(io.get()) catch |err| {
             std.log.warn("lua: glob iterate failed pattern={s} err={s}", .{ pattern, @errorName(err) });
             return api.raise_error(state, "glob failed");
         };
@@ -2814,15 +2797,15 @@ fn l_is_dir(state: *State) callconv(.c) c_int {
     const path = path_ptr[0..path_len];
 
     const dir_result = if (std.fs.path.isAbsolute(path))
-        std.fs.openDirAbsolute(path, .{})
+        std.Io.Dir.openDirAbsolute(io.get(), path, .{})
     else
-        std.fs.cwd().openDir(path, .{});
+        std.Io.Dir.cwd().openDir(io.get(), path, .{});
 
     var dir = dir_result catch {
         api.push_boolean(state, 0);
         return 1;
     };
-    dir.close();
+    dir.close(io.get());
 
     api.push_boolean(state, 1);
     return 1;
@@ -2838,7 +2821,7 @@ fn makePathAbsolute(path: []const u8) !void {
     } else if (path[0] == '/' or path[0] == '\\') {
         root_len = 1;
     } else {
-        return std.fs.cwd().makePath(path);
+        return std.Io.Dir.cwd().createDirPath(io.get(), path);
     }
 
     var current = std.ArrayList(u8).empty;
@@ -2852,7 +2835,7 @@ fn makePathAbsolute(path: []const u8) !void {
             try current.append(std.heap.page_allocator, separator);
         }
         try current.appendSlice(std.heap.page_allocator, part);
-        std.fs.makeDirAbsolute(current.items) catch |err| {
+        std.Io.Dir.createDirAbsolute(io.get(), current.items, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
     }
@@ -2878,7 +2861,7 @@ fn l_mkdir_p(state: *State) callconv(.c) c_int {
             return api.raise_error(state, "mkdir_p failed");
         };
     } else {
-        std.fs.cwd().makePath(path) catch |err| {
+        std.Io.Dir.cwd().createDirPath(io.get(), path) catch |err| {
             std.log.warn("lua: mkdir_p failed path={s} err={s}", .{ path, @errorName(err) });
             return api.raise_error(state, "mkdir_p failed");
         };
@@ -2901,7 +2884,7 @@ fn l_read_file(state: *State) callconv(.c) c_int {
     };
     const path = path_ptr[0..path_len];
 
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch |err| {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io.get(), path, std.heap.page_allocator, .limited(16 * 1024 * 1024)) catch |err| {
         std.log.warn("lua: read_file failed path={s} err={s}", .{ path, @errorName(err) });
         return api.raise_error(state, "read_file failed");
     };
@@ -2935,13 +2918,13 @@ fn l_write_file(state: *State) callconv(.c) c_int {
     const contents = contents_ptr[0..contents_len];
 
     if (std.fs.path.dirname(path)) |dir_path| {
-        std.fs.cwd().makePath(dir_path) catch |err| {
+        std.Io.Dir.cwd().createDirPath(io.get(), dir_path) catch |err| {
             std.log.warn("lua: write_file makePath failed path={s} err={s}", .{ path, @errorName(err) });
             return api.raise_error(state, "write_file failed");
         };
     }
 
-    std.fs.cwd().writeFile(.{ .sub_path = path, .data = contents }) catch |err| {
+    std.Io.Dir.cwd().writeFile(io.get(), .{ .sub_path = path, .data = contents }) catch |err| {
         std.log.warn("lua: write_file failed path={s} err={s}", .{ path, @errorName(err) });
         return api.raise_error(state, "write_file failed");
     };
@@ -2964,7 +2947,7 @@ fn l_path_exists(state: *State) callconv(.c) c_int {
     };
     const path = path_ptr[0..path_len];
 
-    std.fs.cwd().access(path, .{}) catch {
+    std.Io.Dir.cwd().access(io.get(), path, .{}) catch {
         api.push_boolean(state, 0);
         return 1;
     };
@@ -3115,7 +3098,7 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
 
 fn childExitCode(term: std.process.Child.Term) isize {
     return switch (term) {
-        .Exited => |code| @intCast(code),
+        .exited => |code| @intCast(code),
         else => -1,
     };
 }
@@ -3258,7 +3241,7 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
     return childRunResultToLua(state, api, result, "run_domain_process failed");
 }
 
-fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u8, opts: ChildRunOptions) !std.process.Child.RunResult {
+fn runDomainProcess(shell: []const u8, cwd: ?[]const u8, args: []const []const u8, opts: ChildRunOptions) !std.process.RunResult {
     const parsed_shell = try parseCommandString(shell);
     defer freeOwnedArgv(parsed_shell);
 
@@ -6540,8 +6523,8 @@ test "deinitJsonValue and htp query result deinit release owned values" {
     var array = std.json.Array.init(std.testing.allocator);
     try array.append(.{ .string = try std.testing.allocator.dupe(u8, "alpha") });
     try array.append(.{ .integer = 5 });
-    var object = std.json.ObjectMap.init(std.testing.allocator);
-    try object.put(try std.testing.allocator.dupe(u8, "items"), .{ .array = array });
+    var object: std.json.ObjectMap = .empty;
+    try object.put(std.testing.allocator, try std.testing.allocator.dupe(u8, "items"), .{ .array = array });
 
     const value = std.json.Value{ .object = object };
     deinitJsonValue(std.testing.allocator, value);
@@ -6557,7 +6540,7 @@ test "deinitJsonValue and htp query result deinit release owned values" {
 }
 
 test "drainExpiredTimedCallbacks keeps remaining timers reusable" {
-    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    var timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty;
     defer timed_callback_refs.deinit(std.testing.allocator);
 
     try timed_callback_refs.append(std.testing.allocator, .{ .ref = 11, .expires_at_ms = 10 });
@@ -6577,7 +6560,7 @@ test "drainExpiredTimedCallbacks keeps remaining timers reusable" {
 }
 
 test "drainExpiredTimedCallbacks does not allocate without expired timers" {
-    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    var timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty;
     defer timed_callback_refs.deinit(std.testing.allocator);
     try timed_callback_refs.append(std.testing.allocator, .{ .ref = 11, .expires_at_ms = 30 });
 
@@ -6593,7 +6576,7 @@ test "drainExpiredTimedCallbacks does not allocate without expired timers" {
 }
 
 test "drainExpiredTimedCallbacks leaves timers untouched on allocation failure" {
-    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    var timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty;
     defer timed_callback_refs.deinit(std.testing.allocator);
     try timed_callback_refs.appendSlice(std.testing.allocator, &.{
         .{ .ref = 11, .expires_at_ms = 10 },
@@ -6610,7 +6593,7 @@ test "drainExpiredTimedCallbacks leaves timers untouched on allocation failure" 
 }
 
 test "drainExpiredTimedCallbacks preserves timer order" {
-    var timed_callback_refs = std.ArrayListUnmanaged(TimedCallback){};
+    var timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty;
     defer timed_callback_refs.deinit(std.testing.allocator);
     try timed_callback_refs.appendSlice(std.testing.allocator, &.{
         .{ .ref = 11, .expires_at_ms = 10 },

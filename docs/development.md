@@ -9,7 +9,7 @@ For the per-platform caveats see [Platforms](platforms/README.md).
 
 ## Toolchain
 
-- Zig **0.15.2** is the only supported version. The repo pins it in
+- Zig **0.16.0** is the only supported version. The repo pins it in
   `.tool-versions`. The wrapper `scripts/check-zig-version.sh` will
   hard-fail on any other version.
 - A C/C++ toolchain for the Zig C backend.
@@ -18,7 +18,7 @@ For the per-platform caveats see [Platforms](platforms/README.md).
   `launch.sh` wrapper handles the cross-compile from WSL.
 
 ```bash
-zig version   # must print 0.15.2
+zig version   # must print 0.16.0
 ```
 
 If you use `asdf` or `mise`, the local `.tool-versions` installs the

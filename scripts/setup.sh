@@ -47,13 +47,14 @@ apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
 apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-image-region.patch"
 
 # `third_party/lua-zluajit` tracks upstream `negrel/zluajit` but Hollow uses a
-# local path dependency for `../luajit-upstream` plus a tiny Windows cross-build
-# tweak in `build/luajit.zig`. Keep these as repo-level patches so the eventual
+# local path dependency for `../luajit-upstream`, Windows cross-build support,
+# and Zig 0.16 build API updates. Keep these as repo-level patches so the
 # submodule flow matches the existing `sokol` model.
 apply_patch "third_party/lua-zluajit" "$PATCHES_DIR/lua-zluajit-local.patch"
+apply_patch "third_party/luajit-upstream" "$PATCHES_DIR/luajit-relver.patch"
 
-# `third_party/nightwatch` tracks upstream `neurocyte/nightwatch` (zig-0.15
-# branch) but std.os.linux.inotify_add_watch returns usize; the libc errno()
+# `third_party/nightwatch` tracks upstream `neurocyte/nightwatch` master but
+# std.os.linux.inotify_add_watch returns usize; the libc errno()
 # check in the library misses the negative-return encoding, so the subsequent
 # @intCast(wd) panics on a watch failure. Patched locally until upstream ships
 # a fix.

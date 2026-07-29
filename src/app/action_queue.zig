@@ -1,10 +1,11 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const PendingInputEvent = @import("input.zig").PendingInputEvent;
 
 pub const ActionQueue = struct {
     const capacity = 64;
 
-    mutex: std.Thread.Mutex = .{},
+    mutex: io.Mutex = .{},
     items: [capacity]PendingInputEvent = [_]PendingInputEvent{.none} ** capacity,
     head: usize = 0,
     tail: usize = 0,

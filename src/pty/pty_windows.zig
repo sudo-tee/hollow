@@ -1,7 +1,7 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const fastmem = @import("../fastmem.zig");
 const windows = std.os.windows;
-const kernel32 = windows.kernel32;
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
 const wsl_bypass_protocol = @import("wsl_bypass_protocol.zig");
@@ -17,10 +17,16 @@ const SW_HIDE: windows.WORD = 0;
 const WSL_BYPASS_STARTUP_TIMEOUT_MS: u64 = 1200;
 const WSL_BYPASS_EXIT_TIMEOUT_MS: windows.DWORD = 1500;
 
+extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
+extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn GetExitCodeProcess(hProcess: windows.HANDLE, lpExitCode: *windows.DWORD) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn ReadFile(hFile: windows.HANDLE, lpBuffer: ?*anyopaque, nNumberOfBytesToRead: windows.DWORD, lpNumberOfBytesRead: *windows.DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WriteFile(hFile: windows.HANDLE, lpBuffer: ?*const anyopaque, nNumberOfBytesToWrite: windows.DWORD, lpNumberOfBytesWritten: *windows.DWORD, lpOverlapped: ?*anyopaque) callconv(.winapi) windows.BOOL;
+
 /// Tracks which WSL distros have had the bypass binary deployed to /tmp/.
 const WslBootState = struct {
-    mutex: std.Thread.Mutex = .{},
-    keys: std.ArrayListUnmanaged([]const u8) = .{},
+    mutex: io.Mutex = .{},
+    keys: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn isBooted(self: *@This(), key: []const u8) bool {
         self.mutex.lock();
@@ -63,7 +69,7 @@ fn wslDistroKey(parsed_shell: []const []const u8) []const u8 {
 }
 
 fn wslBypassBinaryPath(allocator: std.mem.Allocator) ![]u8 {
-    const exe_path = try std.fs.selfExePathAlloc(allocator);
+    const exe_path = try std.process.executablePathAlloc(io.get(), allocator);
     defer allocator.free(exe_path);
     const dir = std.fs.path.dirname(exe_path) orelse ".";
     return std.fs.path.join(allocator, &.{ dir, "hollow-wsl-bypass" });
@@ -127,7 +133,7 @@ fn bootstrapWslDistro(allocator: std.mem.Allocator, shell: [:0]const u8) !void {
     const quoted_path = try wslShellQuote(allocator, wsl_path);
     defer allocator.free(quoted_path);
 
-    var argv = std.ArrayListUnmanaged([]const u8){};
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(allocator);
 
     try argv.appendSlice(allocator, split.launcher);
@@ -154,34 +160,34 @@ fn bootstrapWslDistro(allocator: std.mem.Allocator, shell: [:0]const u8) !void {
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
 
-    var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
+    var pi = std.mem.zeroes(windows.PROCESS.INFORMATION);
     if (CreateProcessW(
         app_utf16.ptr,
         cmd_utf16.ptr,
         null,
         null,
-        windows.FALSE,
+        .FALSE,
         CREATE_UNICODE_ENVIRONMENT,
         null,
         null,
         &si,
         &pi,
-    ) == windows.FALSE) {
-        std.log.warn("wsl bootstrap CreateProcessW failed err={d}", .{kernel32.GetLastError()});
+    ) == .FALSE) {
+        std.log.warn("wsl bootstrap CreateProcessW failed err={d}", .{windows.GetLastError()});
         return error.WslBypassUnavailable;
     }
     defer _ = CloseHandle(pi.hProcess);
     defer _ = CloseHandle(pi.hThread);
 
-    const wait_result = kernel32.WaitForSingleObject(pi.hProcess, 10000);
+    const wait_result = WaitForSingleObject(pi.hProcess, 10000);
     if (wait_result != WAIT_OBJECT_0) {
         std.log.warn("wsl bootstrap timed out after 10s", .{});
-        _ = kernel32.TerminateProcess(pi.hProcess, 1);
+        _ = TerminateProcess(pi.hProcess, 1);
         return error.WslBypassUnavailable;
     }
 
     var exit_code: windows.DWORD = 0;
-    _ = kernel32.GetExitCodeProcess(pi.hProcess, &exit_code);
+    _ = GetExitCodeProcess(pi.hProcess, &exit_code);
     if (exit_code != 0) {
         std.log.warn("wsl bootstrap failed exit_code={d}", .{exit_code});
         return error.WslBypassUnavailable;
@@ -201,13 +207,13 @@ const STARTUPINFOEXW = extern struct {
     lpAttributeList: ?*anyopaque,
 };
 
-extern "kernel32" fn CreatePseudoConsole(size: COORD, hInput: windows.HANDLE, hOutput: windows.HANDLE, dwFlags: windows.DWORD, phPC: *?HPCON) callconv(.winapi) windows.HRESULT;
-extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.winapi) windows.HRESULT;
+extern "kernel32" fn CreatePseudoConsole(size: COORD, hInput: windows.HANDLE, hOutput: windows.HANDLE, dwFlags: windows.DWORD, phPC: *?HPCON) callconv(.winapi) i32;
+extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.winapi) i32;
 extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 extern "kernel32" fn CreatePipe(hReadPipe: *windows.HANDLE, hWritePipe: *windows.HANDLE, lpPipeAttributes: ?*windows.SECURITY_ATTRIBUTES, nSize: windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn PeekNamedPipe(hNamedPipe: windows.HANDLE, lpBuffer: ?*anyopaque, nBufferSize: windows.DWORD, lpBytesRead: ?*windows.DWORD, lpTotalBytesAvail: ?*windows.DWORD, lpBytesLeftThisMessage: ?*windows.DWORD) callconv(.winapi) windows.BOOL;
-extern "kernel32" fn CreateProcessW(lpApplicationName: ?windows.LPWSTR, lpCommandLine: ?windows.LPWSTR, lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES, lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES, bInheritHandles: windows.BOOL, dwCreationFlags: windows.DWORD, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?windows.LPWSTR, lpStartupInfo: *windows.STARTUPINFOW, lpProcessInformation: *windows.PROCESS_INFORMATION) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn CreateProcessW(lpApplicationName: ?windows.LPWSTR, lpCommandLine: ?windows.LPWSTR, lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES, lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES, bInheritHandles: windows.BOOL, dwCreationFlags: windows.DWORD, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?windows.LPWSTR, lpStartupInfo: *windows.STARTUPINFOW, lpProcessInformation: *windows.PROCESS.INFORMATION) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn SearchPathW(lpPath: ?windows.LPCWSTR, lpFileName: windows.LPCWSTR, lpExtension: ?windows.LPCWSTR, nBufferLength: windows.DWORD, lpBuffer: ?windows.LPWSTR, lpFilePart: ?*windows.LPWSTR) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn SetHandleInformation(hObject: windows.HANDLE, dwMask: windows.DWORD, dwFlags: windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn InitializeProcThreadAttributeList(lpAttributeList: ?*anyopaque, dwAttributeCount: windows.DWORD, dwFlags: windows.DWORD, lpSize: *usize) callconv(.winapi) windows.BOOL;
@@ -226,8 +232,8 @@ const Backend = enum {
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 
 const ReaderState = struct {
-    mutex: std.Thread.Mutex = .{},
-    ready: std.Thread.Condition = .{},
+    mutex: io.Mutex = .{},
+    ready: io.Condition = .{},
     buf: std.ArrayListUnmanaged(u8) = .empty,
     start: usize = 0,
     eof: bool = false,
@@ -306,8 +312,8 @@ pub const WindowsPty = struct {
         errdefer closeHandleIfValid(output_read);
         errdefer closeHandleIfValid(output_write);
 
-        if (SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0) == windows.FALSE) return error.SetHandleInformationFailed;
-        if (SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0) == windows.FALSE) return error.SetHandleInformationFailed;
+        if (SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
+        if (SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
 
         var hpc: ?HPCON = null;
         const hr = CreatePseudoConsole(.{ .X = @intCast(cols), .Y = @intCast(rows) }, input_read, output_write, 0, &hpc);
@@ -322,8 +328,8 @@ pub const WindowsPty = struct {
         _ = InitializeProcThreadAttributeList(null, 1, 0, &attr_size);
         const attr_mem = try allocator.alloc(u8, attr_size);
         defer allocator.free(attr_mem);
-        if (InitializeProcThreadAttributeList(attr_mem.ptr, 1, 0, &attr_size) == 0) {
-            std.log.err("conpty InitializeProcThreadAttributeList failed err={d}", .{kernel32.GetLastError()});
+        if (InitializeProcThreadAttributeList(attr_mem.ptr, 1, 0, &attr_size) == .FALSE) {
+            std.log.err("conpty InitializeProcThreadAttributeList failed err={d}", .{windows.GetLastError()});
             return error.AttributeListInitFailed;
         }
         defer DeleteProcThreadAttributeList(attr_mem.ptr);
@@ -331,8 +337,8 @@ pub const WindowsPty = struct {
         // lpValue must be the HPCON value itself (a pointer), not a pointer-to-HPCON.
         // MSDN: UpdateProcThreadAttribute for PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE takes
         // lpValue = HPCON, cbSize = sizeof(HPCON).
-        if (UpdateProcThreadAttribute(attr_mem.ptr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc.?, @sizeOf(HPCON), null, null) == 0) {
-            std.log.err("conpty UpdateProcThreadAttribute failed err={d}", .{kernel32.GetLastError()});
+        if (UpdateProcThreadAttribute(attr_mem.ptr, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc.?, @sizeOf(HPCON), null, null) == .FALSE) {
+            std.log.err("conpty UpdateProcThreadAttribute failed err={d}", .{windows.GetLastError()});
             return error.AttributeListUpdateFailed;
         }
         std.log.info("conpty UpdateProcThreadAttribute ok", .{});
@@ -344,7 +350,7 @@ pub const WindowsPty = struct {
         // some shells (notably wsl.exe) to ignore the pseudoconsole entirely.
         si.lpAttributeList = attr_mem.ptr;
 
-        var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
+        var pi = std.mem.zeroes(windows.PROCESS.INFORMATION);
         const spec = try buildCommandSpec(allocator, shell, cwd, launch_command);
         defer freeSentinelU16(allocator, spec.application_utf16);
         defer freeSentinelU16(allocator, spec.command_line_utf16);
@@ -361,22 +367,22 @@ pub const WindowsPty = struct {
             spec.command_line_utf16.ptr,
             null,
             null,
-            windows.TRUE, // inherit handles (reverted to test if FALSE was causing input issues)
+            .TRUE, // inherit handles (reverted to test if FALSE was causing input issues)
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
             if (env_block_utf16) |block| @as(?*anyopaque, @ptrCast(block.ptr)) else null,
             if (spec.cwd_utf16) |value| value.ptr else null,
             &si.StartupInfo,
             &pi,
-        ) == windows.FALSE) {
-            std.log.err("conpty CreateProcessW failed err={d}", .{kernel32.GetLastError()});
+        ) == .FALSE) {
+            std.log.err("conpty CreateProcessW failed err={d}", .{windows.GetLastError()});
             return error.CreateProcessFailed;
         }
         std.log.info("conpty spawned process pid={d} shell={s}", .{ pi.dwProcessId, spec.log_command });
 
         // Non-blocking check for immediate spawn failure (bad args, missing exe, etc.).
-        if (kernel32.WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
             var exit_code: windows.DWORD = 0;
-            _ = kernel32.GetExitCodeProcess(pi.hProcess, &exit_code);
+            _ = GetExitCodeProcess(pi.hProcess, &exit_code);
             std.log.warn("conpty child exited immediately after spawn code={d}", .{exit_code});
         }
 
@@ -444,7 +450,7 @@ pub const WindowsPty = struct {
         if (saw_read and pending > 0) return true;
 
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
-            if (kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
+            if (WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
                 self.alive = false;
                 std.log.info("conpty process exited (WaitForSingleObject)", .{});
                 return false;
@@ -514,9 +520,9 @@ pub const WindowsPty = struct {
                 while (offset < bytes.len) {
                     var written: windows.DWORD = 0;
                     const chunk: windows.DWORD = @intCast(bytes.len - offset);
-            const ok = kernel32.WriteFile(self.write_pipe, bytes.ptr + offset, chunk, &written, null);
-            if (ok == windows.FALSE) {
-                const err = kernel32.GetLastError();
+                    const ok = WriteFile(self.write_pipe, bytes.ptr + offset, chunk, &written, null);
+                    if (ok == .FALSE) {
+                        const err = windows.GetLastError();
                         std.log.err("conpty WriteFile failed err={d} written={d}", .{ err, written });
                         return error.WriteFailed;
                     }
@@ -576,7 +582,7 @@ pub const WindowsPty = struct {
         switch (self.backend) {
             .conpty => {
                 // Terminate the child process if still alive.
-                if (self.isAlive()) _ = kernel32.TerminateProcess(self.process, 0);
+                if (self.isAlive()) _ = TerminateProcess(self.process, 0);
                 // ClosePseudoConsole MUST come before closing read_pipe and before
                 // thread.join().  It tears down the ConPTY, which causes the in-flight
                 // ReadFile on read_pipe (in the reader thread) to return immediately with
@@ -587,9 +593,9 @@ pub const WindowsPty = struct {
             .wsl_bypass => {
                 _ = sendBypassFrame(self.write_pipe, .exit, &.{}) catch {};
                 if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
-                    _ = kernel32.WaitForSingleObject(self.process, WSL_BYPASS_EXIT_TIMEOUT_MS);
-                    if (kernel32.WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
-                        _ = kernel32.TerminateProcess(self.process, 0);
+                    _ = WaitForSingleObject(self.process, WSL_BYPASS_EXIT_TIMEOUT_MS);
+                    if (WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
+                        _ = TerminateProcess(self.process, 0);
                     }
                 }
             },
@@ -620,9 +626,9 @@ pub const WindowsPty = struct {
             std.log.info("wsl bypass stream closed without exit frame", .{});
         }
 
-        if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and kernel32.WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
+        if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
             var process_exit_code: windows.DWORD = 0;
-            _ = kernel32.GetExitCodeProcess(self.process, &process_exit_code);
+            _ = GetExitCodeProcess(self.process, &process_exit_code);
             std.log.info("wsl bypass process exited code={d}", .{process_exit_code});
         }
 
@@ -631,7 +637,7 @@ pub const WindowsPty = struct {
 };
 
 fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
-    const start_ms = std.time.milliTimestamp();
+    const start_ms = io.milliTimestamp();
 
     {
         const parsed = try parseCommandString(allocator, shell);
@@ -664,9 +670,9 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
     errdefer closeHandleIfValid(parent_stderr_read);
     errdefer closeHandleIfValid(child_stderr_write);
 
-    if (SetHandleInformation(parent_stdin_write, HANDLE_FLAG_INHERIT, 0) == windows.FALSE) return error.SetHandleInformationFailed;
-    if (SetHandleInformation(parent_stdout_read, HANDLE_FLAG_INHERIT, 0) == windows.FALSE) return error.SetHandleInformationFailed;
-    if (SetHandleInformation(parent_stderr_read, HANDLE_FLAG_INHERIT, 0) == windows.FALSE) return error.SetHandleInformationFailed;
+    if (SetHandleInformation(parent_stdin_write, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
+    if (SetHandleInformation(parent_stdout_read, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
+    if (SetHandleInformation(parent_stderr_read, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.SetHandleInformationFailed;
 
     var si = std.mem.zeroes(STARTUPINFOEXW);
     si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
@@ -676,7 +682,7 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
     si.StartupInfo.hStdOutput = child_stdout_write;
     si.StartupInfo.hStdError = child_stderr_write;
 
-    var pi = std.mem.zeroes(windows.PROCESS_INFORMATION);
+    var pi = std.mem.zeroes(windows.PROCESS.INFORMATION);
     const spec = try buildWslBypassCommandSpec(allocator, shell, cols, rows, cwd, env_block, launch_command);
     defer freeSentinelU16(allocator, spec.application_utf16);
     defer freeSentinelU16(allocator, spec.command_line_utf16);
@@ -691,14 +697,14 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
         spec.command_line_utf16.ptr,
         null,
         null,
-        windows.TRUE,
+        .TRUE,
         CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
         if (env_block_utf16) |block| @as(?*anyopaque, @ptrCast(block.ptr)) else null,
         null,
         &si.StartupInfo,
         &pi,
-    ) == windows.FALSE) {
-        std.log.warn("wsl bypass CreateProcessW failed err={d}", .{kernel32.GetLastError()});
+    ) == .FALSE) {
+        std.log.warn("wsl bypass CreateProcessW failed err={d}", .{windows.GetLastError()});
         return error.WslBypassUnavailable;
     }
 
@@ -735,7 +741,7 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
 
     pty.reader_thread = try std.Thread.spawn(.{}, wslBypassReaderLoop, .{ pty.read_pipe, pty.reader_state });
 
-    std.log.info("wsl bypass ready pid={d} shell={s} startup_ms={d}", .{ pty.process_id, spec.log_command, std.time.milliTimestamp() - start_ms });
+    std.log.info("wsl bypass ready pid={d} shell={s} startup_ms={d}", .{ pty.process_id, spec.log_command, io.milliTimestamp() - start_ms });
     return pty;
 }
 
@@ -745,10 +751,10 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
     std.log.info("conpty reader thread started", .{});
     while (true) {
         var read_count: windows.DWORD = 0;
-        const ok = kernel32.ReadFile(read_pipe, &temp, temp.len, &read_count, null);
+        const ok = ReadFile(read_pipe, &temp, temp.len, &read_count, null);
         loop_count += 1;
-        if (ok == windows.FALSE) {
-            const err = kernel32.GetLastError();
+        if (ok == .FALSE) {
+            const err = windows.GetLastError();
             std.log.warn("conpty ReadFile failed loop={d} err={d}", .{ loop_count, err });
             // Signal that the pipe is closed so isAlive() returns false.
             markReaderEof(reader_state);
@@ -851,8 +857,8 @@ fn parseBypassFrameType(byte: u8) ?wsl_bypass_protocol.FrameType {
 fn createPipe(read_pipe: *windows.HANDLE, write_pipe: *windows.HANDLE) !void {
     var sa = std.mem.zeroes(windows.SECURITY_ATTRIBUTES);
     sa.nLength = @sizeOf(windows.SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = windows.TRUE;
-    if (CreatePipe(read_pipe, write_pipe, &sa, 0) == windows.FALSE) return error.CreatePipeFailed;
+    sa.bInheritHandle = .TRUE;
+    if (CreatePipe(read_pipe, write_pipe, &sa, 0) == .FALSE) return error.CreatePipeFailed;
 }
 
 fn readExactHandle(handle: windows.HANDLE, buffer: []u8) !void {
@@ -860,8 +866,8 @@ fn readExactHandle(handle: windows.HANDLE, buffer: []u8) !void {
     while (offset < buffer.len) {
         var read_count: windows.DWORD = 0;
         const chunk: windows.DWORD = @intCast(buffer.len - offset);
-        const ok = kernel32.ReadFile(handle, buffer.ptr + offset, chunk, &read_count, null);
-        if (ok == windows.FALSE) return error.ReadFailed;
+        const ok = ReadFile(handle, buffer.ptr + offset, chunk, &read_count, null);
+        if (ok == .FALSE) return error.ReadFailed;
         if (read_count == 0) return error.EndOfStream;
         offset += read_count;
     }
@@ -919,29 +925,29 @@ fn logAvailableBypassStderr(handle: windows.HANDLE) void {
     if (handle == windows.INVALID_HANDLE_VALUE or @intFromPtr(handle) == 0) return;
 
     var available: windows.DWORD = 0;
-    if (PeekNamedPipe(handle, null, 0, null, &available, null) == windows.FALSE or available == 0) return;
+    if (PeekNamedPipe(handle, null, 0, null, &available, null) == .FALSE or available == 0) return;
 
     var buf: [1024]u8 = undefined;
     const to_read: windows.DWORD = @min(available, buf.len);
     var read_count: windows.DWORD = 0;
-    if (kernel32.ReadFile(handle, &buf, to_read, &read_count, null) == windows.FALSE or read_count == 0) return;
+    if (ReadFile(handle, &buf, to_read, &read_count, null) == .FALSE or read_count == 0) return;
 
     std.log.warn("wsl bypass stderr: {s}", .{std.mem.trim(u8, buf[0..read_count], "\r\n")});
 }
 
 fn readBypassHello(process: windows.HANDLE, read_pipe: windows.HANDLE, reader_state: *ReaderState, timeout_ms: u64) bool {
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    while (std.time.milliTimestamp() < deadline) {
+    const deadline = io.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+    while (io.milliTimestamp() < deadline) {
         var available: windows.DWORD = 0;
-        if (PeekNamedPipe(read_pipe, null, 0, null, &available, null) != windows.FALSE and available >= 5) {
+        if (PeekNamedPipe(read_pipe, null, 0, null, &available, null) != .FALSE and available >= 5) {
             break;
         }
-        if (kernel32.WaitForSingleObject(process, 0) == WAIT_OBJECT_0) return false;
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) return false;
+        io.get().sleep(.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
     }
 
     var available: windows.DWORD = 0;
-    if (PeekNamedPipe(read_pipe, null, 0, null, &available, null) == windows.FALSE or available < 5) return false;
+    if (PeekNamedPipe(read_pipe, null, 0, null, &available, null) == .FALSE or available < 5) return false;
 
     var header: [5]u8 = undefined;
     readExactHandle(read_pipe, &header) catch return false;
@@ -974,7 +980,7 @@ fn sendBypassFrame(handle: windows.HANDLE, frame_type: wsl_bypass_protocol.Frame
     header[0] = @intFromEnum(frame_type);
     std.mem.writeInt(u32, header[1..5], @intCast(payload.len), .little);
     var written: windows.DWORD = 0;
-    if (kernel32.WriteFile(handle, &header, header.len, &written, null) == windows.FALSE or written != @as(windows.DWORD, header.len)) {
+    if (WriteFile(handle, &header, header.len, &written, null) == .FALSE or written != @as(windows.DWORD, header.len)) {
         return error.WriteFailed;
     }
     if (payload.len == 0) return;
@@ -986,7 +992,7 @@ fn writeHandleAll(handle: windows.HANDLE, bytes: []const u8) !void {
     while (offset < bytes.len) {
         var written: windows.DWORD = 0;
         const chunk: windows.DWORD = @intCast(bytes.len - offset);
-        if (kernel32.WriteFile(handle, bytes.ptr + offset, chunk, &written, null) == windows.FALSE) return error.WriteFailed;
+        if (WriteFile(handle, bytes.ptr + offset, chunk, &written, null) == .FALSE) return error.WriteFailed;
         if (written == 0) return error.WriteFailed;
         offset += written;
     }
@@ -1115,8 +1121,8 @@ fn freeSentinelU16(allocator: std.mem.Allocator, bytes: [:0]u16) void {
 }
 
 fn writePowershellProfile(allocator: std.mem.Allocator) ![]u8 {
-    const temp_dir = std.process.getEnvVarOwned(allocator, "TEMP") catch
-        std.process.getEnvVarOwned(allocator, "TMP") catch
+    const temp_dir = io.getEnvVarOwned(allocator, "TEMP") catch
+        io.getEnvVarOwned(allocator, "TMP") catch
         try allocator.dupe(u8, "C:\\Windows\\Temp");
     defer allocator.free(temp_dir);
 
@@ -1127,11 +1133,11 @@ fn writePowershellProfile(allocator: std.mem.Allocator) ![]u8 {
     const profile_path = try std.fmt.allocPrint(allocator, "{s}powershell.ps1", .{profile_dir});
     errdefer allocator.free(profile_path);
 
-    std.fs.cwd().makePath(profile_dir) catch {};
-    if (std.fs.accessAbsolute(profile_path, .{})) |_| {} else |_| {
-        if (std.fs.createFileAbsolute(profile_path, .{})) |f| {
-            defer f.close();
-            f.writeAll(build_options.embedded_powershell_integration) catch {};
+    std.Io.Dir.cwd().createDirPath(io.get(), profile_dir) catch {};
+    if (std.Io.Dir.accessAbsolute(io.get(), profile_path, .{})) |_| {} else |_| {
+        if (std.Io.Dir.createFileAbsolute(io.get(), profile_path, .{})) |f| {
+            defer f.close(io.get());
+            f.writeStreamingAll(io.get(), build_options.embedded_powershell_integration) catch {};
         } else |_| {}
     }
 
@@ -1187,7 +1193,7 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     try argv.appendSlice(allocator, shell_argv);
 
     if (launch_command) |cmd| {
-        const trimmed = std.mem.trimRight(u8, cmd.command, "\r\n");
+        const trimmed = std.mem.trimEnd(u8, cmd.command, "\r\n");
         if (std.mem.eql(u8, shell_name, "cmd.exe") or std.mem.eql(u8, shell_name, "cmd")) {
             try argv.append(allocator, try allocator.dupe(u8, "/Q"));
             try argv.append(allocator, try allocator.dupe(u8, if (cmd.close_on_exit) "/C" else "/K"));
@@ -1367,7 +1373,7 @@ fn searchWindowsPath(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
 }
 
 fn resolveSystemTool(allocator: std.mem.Allocator, program: []const u8) ![]u8 {
-    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.FileNotFound;
+    const system_root = io.getEnvVarOwned(allocator, "SystemRoot") catch return error.FileNotFound;
     defer allocator.free(system_root);
 
     const base = std.fs.path.basename(program);

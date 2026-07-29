@@ -3,6 +3,7 @@
 /// Extracted from ft_renderer.zig for code organisation.  Contains the
 /// terminal-rendering pipeline (pass 1 background/rasterise, pass 2 glyph draw).
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const fastmem = @import("../fastmem.zig");
@@ -241,7 +242,7 @@ pub fn queueInViewport(
 
     var hash_skip_bits: HashSkipBits = [_]u64{0} ** HASH_SKIP_WORDS;
 
-    const t_pass1_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+    const t_pass1_start = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
     queueBackgroundAndRasterPass(self, runtime, &queue, pane_w, pane_h, &hash_skip_bits, run_buf);
     queueQuickSelectBackgrounds(self, app, pane, pane_w, pane_h);
 
@@ -249,7 +250,7 @@ pub fn queueInViewport(
         self.flushAtlas();
         self.last_atlas_flushed = true;
     }
-    const t_pass2_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+    const t_pass2_start = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
     var pass2_glyph_ns: i128 = 0;
     var pass2_decoration_ns: i128 = 0;
 
@@ -263,7 +264,7 @@ pub fn queueInViewport(
             self.frame_count, self.glyph_verts_count, self.last_rows_rendered, self.last_bg_rects,
         });
     }
-    const t_pass2_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+    const t_pass2_end = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
 
     if (cfg.debug_overlay) {
         self.last_pass1_ns = t_pass2_start - t_pass1_start;
@@ -754,7 +755,7 @@ pub fn queueGlyphRow(
     run_buf: []u8,
     stats: *Pass2Stats,
 ) void {
-    const row_glyph_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+    const row_glyph_start_ns = if (queue.cfg.debug_overlay) io.nanoTimestamp() else 0;
     var row_needs_decorations = queue.hovered_row == row.row_y;
     var col_x: usize = 0;
     var col_px = self.padding_x;
@@ -907,11 +908,11 @@ pub fn queueGlyphRow(
         }
     }
     flushQueuedRun(self, .draw, run_buf, &run, row.py);
-    if (queue.cfg.debug_overlay) stats.glyph_ns += std.time.nanoTimestamp() - row_glyph_start_ns;
+    if (queue.cfg.debug_overlay) stats.glyph_ns += io.nanoTimestamp() - row_glyph_start_ns;
 
-    const row_decoration_start_ns = if (queue.cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+    const row_decoration_start_ns = if (queue.cfg.debug_overlay) io.nanoTimestamp() else 0;
     if (row_needs_decorations) drawRowDecorations(self, runtime, queue, row);
-    if (queue.cfg.debug_overlay) stats.decoration_ns += std.time.nanoTimestamp() - row_decoration_start_ns;
+    if (queue.cfg.debug_overlay) stats.decoration_ns += io.nanoTimestamp() - row_decoration_start_ns;
 }
 
 fn quickSelectLabelRow(queue: *const QueueContext, row: usize) bool {

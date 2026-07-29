@@ -4,8 +4,8 @@
 /// These are pure functions over `ghostty.ColorRgb` / `selection.Range` with no
 /// dependency on the `FtRenderer` struct, so they can be unit-tested in
 /// isolation and reused by future render paths.
-
 const std = @import("std");
+const io = @import("../io.zig");
 
 const ghostty = @import("../term/ghostty.zig");
 const selection = @import("../selection.zig");
@@ -100,7 +100,7 @@ pub fn effectiveCursorStyle(
     if (runtime.cursorPos(render_state) == null) return null;
     if (runtime.cursorPasswordInput(render_state)) return .block;
     if (!runtime.cursorVisible(render_state)) return null;
-    if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(std.time.nanoTimestamp())) return null;
+    if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(io.nanoTimestamp())) return null;
     if (!is_focused) return app.config.unfocused_pane.cursor;
     return runtime.cursorVisualStyle(render_state);
 }

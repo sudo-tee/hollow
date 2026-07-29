@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const WindowHost = @import("window_host.zig").WindowHost;
@@ -1699,7 +1700,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
             api.get_field(state, ui_idx, expires_field);
             const expires_type: LuaType = @enumFromInt(api.value_type(state, -1));
             if (expires_type == .number) {
-                const now_ms = @divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms);
+                const now_ms = @divFloor(io.nanoTimestamp(), std.time.ns_per_ms);
                 const expires_at = api.to_number(state, -1);
                 pop(api, state, 1);
                 if (expires_at <= @as(f64, @floatFromInt(now_ms))) {
@@ -2588,7 +2589,7 @@ fn rebuildFtRenderer(app: *App) void {
     }
 
     const dpi_scale = c.sapp_dpi_scale();
-    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height });
+    std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2} family={s}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height, app.config.fonts.family orelse "(null)" });
 
     g_ft_renderer = FtRenderer.init(app.allocator, .{
         .font_size = app.config.fonts.size,
@@ -2648,11 +2649,11 @@ fn sleepForFrameCap(app: *App, wake_generation: u32, frame_start_ns: i128, frame
 }
 
 fn sleepUntilWakeOrDeadline(app: *App, wake_generation: u32, deadline_ns: i128) void {
-    var now_ns = std.time.nanoTimestamp();
+    var now_ns = io.nanoTimestamp();
     while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
         const remaining_ns = deadline_ns - now_ns;
         app.waitForWake(wake_generation, @intCast(remaining_ns));
-        now_ns = std.time.nanoTimestamp();
+        now_ns = io.nanoTimestamp();
     }
 }
 
@@ -2749,7 +2750,7 @@ pub fn run(app: *App) !void {
         // (translates OpenGL → Direct3D 12 on the Windows host) works
         // reliably.  Detect WSL2 by the kernel release string and prefer
         // d3d12 unless the user already set GALLIUM_DRIVER.
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "GALLIUM_DRIVER")) |owned| {
+        if (io.getEnvVarOwned(std.heap.page_allocator, "GALLIUM_DRIVER")) |owned| {
             std.heap.page_allocator.free(owned);
         } else |_| {
             var release_buf: [128]u8 = undefined;
@@ -2938,7 +2939,7 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     flushPendingMouseMove(app);
-    const frame_start_ns = std.time.nanoTimestamp();
+    const frame_start_ns = io.nanoTimestamp();
     const frame_wake_generation = app.currentWakeGeneration();
     const collect_perf = app.config.debug_overlay;
     if (collect_perf) {
@@ -2969,7 +2970,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // (closed tab, closed split, dead PTY). Must happen after tick() so the
     // mux has already removed dead panes from its lists.
     if (app.mux != null) evictStalePaneCaches(app);
-    const after_tick_ns = std.time.nanoTimestamp();
+    const after_tick_ns = io.nanoTimestamp();
 
     if (app.pending_quit) {
         // Keep the quit request path non-blocking. Full teardown can wait for
@@ -3094,7 +3095,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_frame_pass2_ns = 0;
         g_frame_pass2_glyph_ns = 0;
         g_frame_pass2_decoration_ns = 0;
-        const offscreen_terminal_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
+        const offscreen_terminal_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
 
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -3182,7 +3183,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
                     const cursor_visible = rt.cursorVisible(pane.render_state);
                     const cursor_blinking = rt.cursorBlinking(pane.render_state);
-                    const cursor_blink_visible = blinkVisibleNow(std.time.nanoTimestamp());
+                    const cursor_blink_visible = blinkVisibleNow(io.nanoTimestamp());
                     const cursor_wide_tail = rt.cursorWideTail(pane.render_state);
                     const cursor_style = rt.cursorVisualStyle(pane.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
@@ -3587,19 +3588,19 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 }
             }
         }
-        if (app.config.debug_overlay) offscreen_terminal_ns += std.time.nanoTimestamp() - offscreen_terminal_start_ns;
+        if (app.config.debug_overlay) offscreen_terminal_ns += io.nanoTimestamp() - offscreen_terminal_start_ns;
 
         if (app.lua) |*lua| {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = io.nanoTimestamp();
             const needs_topbar = app.barCacheNeedsRefresh(.topbar, now_ns);
             const needs_bottombar = app.barCacheNeedsRefresh(.bottombar, now_ns);
-            const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
             if (needs_topbar or needs_bottombar) {
                 g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
                 defer g_widget_pre_raster_ctx = null;
                 lua.withLockedState(void, preRasterizeLuaBarWidgets);
             }
-            if (app.config.debug_overlay) offscreen_bar_preraster_ns += std.time.nanoTimestamp() - offscreen_bar_preraster_start_ns;
+            if (app.config.debug_overlay) offscreen_bar_preraster_ns += io.nanoTimestamp() - offscreen_bar_preraster_start_ns;
         }
 
         // Flush atlas if any new glyphs were rasterized during the offscreen
@@ -3609,7 +3610,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             renderer.flushAtlasIfDirty();
         }
     }
-    const after_offscreen_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
+    const after_offscreen_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
 
     // ── Phase 2: Swapchain pass ────────────────────────────────────────────
 
@@ -3631,7 +3632,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // Blit each pane's cached RT into the swapchain pass.
     // For single pane without tab bar with direct render enabled, render directly instead.
     // use_direct_render was computed once above before both phases.
-    const swapchain_panes_start_ns = if (app.config.debug_overlay) std.time.nanoTimestamp() else 0;
+    const swapchain_panes_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
     if (g_ft_renderer) |*renderer| {
         if (app.ghostty) |*runtime| {
             const do_leaves = leaves.len > 0;
@@ -3706,7 +3707,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             }
         }
     }
-    if (app.config.debug_overlay) swapchain_panes_ns += std.time.nanoTimestamp() - swapchain_panes_start_ns;
+    if (app.config.debug_overlay) swapchain_panes_ns += io.nanoTimestamp() - swapchain_panes_start_ns;
 
     // Draw the inactive-pane dim overlay and split borders after pane content.
     // Floating panes are modal overlays, so any seam covered by a floating pane
@@ -3837,7 +3838,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         c.sgl_load_identity();
         c.sgl_ortho(0.0, width, height, 0.0, -1.0, 1.0);
 
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = io.nanoTimestamp();
         const duration_ns: i128 = @as(i128, @intCast(app.config.bell.visual_duration_ms)) * std.time.ns_per_ms;
         for (leaves) |leaf| {
             if (!leaf.pane.bell_active) continue;
@@ -3862,7 +3863,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     // Draw top bar background; Lua widgets render the contents.
-    const swapchain_ui_start_ns = std.time.nanoTimestamp();
+    const swapchain_ui_start_ns = io.nanoTimestamp();
     const tbh_u = app.tabBarHeight();
     const bbh_u = app.bottomBarHeight();
     resetBarCache(&g_top_bar_cache, width, 0.0, @floatFromInt(tbh_u));
@@ -3915,7 +3916,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     // Flush all queued geometry — exactly once per frame.
     c.sgl_draw();
-    swapchain_ui_ns += std.time.nanoTimestamp() - swapchain_ui_start_ns;
+    swapchain_ui_ns += io.nanoTimestamp() - swapchain_ui_start_ns;
 
     // Draw glyph quads through the custom gamma-correct pipeline.
     // In direct-render mode these are the glyphs accumulated by drawDirect().
@@ -3931,7 +3932,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // D3D11 debug; the real fix is to call drawDirect() before sg_begin_pass too.
     // For now we keep this as a safety net — it will be hit only in direct-render
     // mode which is disabled by default.
-    const swapchain_glyph_start_ns = std.time.nanoTimestamp();
+    const swapchain_glyph_start_ns = io.nanoTimestamp();
     if (g_ft_renderer) |*renderer| {
         if (app.config.renderer_disable_swapchain_glyphs) {
             renderer.discardGlyphQuads();
@@ -3939,12 +3940,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             renderer.drawGlyphQuads(width, height, false, .{ 0.0, 0.0, 0.0, 1.0 });
         }
     }
-    swapchain_glyph_ns += std.time.nanoTimestamp() - swapchain_glyph_start_ns;
+    swapchain_glyph_ns += io.nanoTimestamp() - swapchain_glyph_start_ns;
 
-    const swapchain_submit_start_ns = std.time.nanoTimestamp();
+    const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
     c.sg_commit();
-    const after_commit_ns = std.time.nanoTimestamp();
+    const after_commit_ns = io.nanoTimestamp();
     const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;
     const frame_cap_fps = if (use_idle_frame_cap)
         app.config.idle_max_fps
@@ -4896,7 +4897,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 const point = selection_mod.cellPointFromPaneLocal(app, hit.pane, hit.x, hit.y);
 
                 // Detect double/triple click: same position within 500 ms.
-                const now_ms: u64 = @intCast(@divFloor(std.time.nanoTimestamp(), std.time.ns_per_ms));
+                const now_ms: u64 = @intCast(@divFloor(io.nanoTimestamp(), std.time.ns_per_ms));
                 const dt_ms = now_ms -| g_last_click_time_ms;
                 const dx = event.mouse_x - g_last_click_x;
                 const dy = event.mouse_y - g_last_click_y;
@@ -5476,9 +5477,10 @@ fn appFromUserData(user_data: ?*anyopaque) ?*App {
 /// Read first line from an absolute path (e.g. /proc file) into buf.
 /// Returns slice of buf containing the line (without trailing newline).
 fn readLineFromFile(path: []const u8, buf: []u8) ![]u8 {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    const n = try file.read(buf);
+    const file = try std.Io.Dir.openFileAbsolute(io.get(), path, .{});
+    defer file.close(io.get());
+    var reader = file.reader(io.get(), &.{});
+    const n = try reader.interface.readSliceShort(buf);
     if (n == 0) return error.EndOfFile;
     var end = n;
     while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r')) {

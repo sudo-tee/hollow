@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const fastmem = @import("../fastmem.zig");
 const c = @import("sokol_c");
@@ -179,13 +180,10 @@ fn copyModeAlignTopRowForCursor(self: *App, target_row: usize) void {
 pub fn enterCopyMode(self: *App) void {
     const pane = self.activePane() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else null;
-    const top = if (runtime) |rt|
-        blk: {
-            const scrollbar = scroll.refreshPaneScrollbar(self, rt, pane);
-            break :blk @as(usize, @intCast(scroll.scrollbarTopRow(scrollbar)));
-        }
-    else
-        0;
+    const top = if (runtime) |rt| blk: {
+        const scrollbar = scroll.refreshPaneScrollbar(self, rt, pane);
+        break :blk @as(usize, @intCast(scroll.scrollbarTopRow(scrollbar)));
+    } else 0;
     self.copy_mode_pane = pane;
     self.copy_mode_active = true;
     self.copy_mode_anchor = null;
@@ -319,7 +317,7 @@ fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void 
     if (!pane.render_state_ready or pane.render_state == null) return;
     runtime.clearRenderStateDirty(pane.render_state);
     try runtime.updateRenderState(pane.render_state, pane.terminal);
-    pane.last_render_state_update_ns = std.time.nanoTimestamp();
+    pane.last_render_state_update_ns = io.nanoTimestamp();
     pane.pty_received_data = false;
     pane.render_state_fresh = false;
     _ = scroll.refreshPaneScrollbar(self, runtime, pane);

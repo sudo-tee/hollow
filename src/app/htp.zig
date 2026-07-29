@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const Pane = @import("../pane.zig").Pane;
 const ghostty = @import("../term/ghostty.zig");
 const lua_mod = @import("../lua_bridge.zig");
@@ -59,7 +60,7 @@ pub fn bindHtpHandlers(self: *App) void {
 }
 
 pub fn processHtpMessages(self: *App) void {
-    self.htp_codec.prune(std.time.nanoTimestamp());
+    self.htp_codec.prune(io.nanoTimestamp());
 
     var processed_count: usize = 0;
     var processed_bytes: usize = 0;
@@ -187,7 +188,7 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
         return;
     }
 
-    var assembly = self.htp_codec.findOrCreateAssembly(@intFromPtr(pane), request_id, total, std.time.nanoTimestamp()) catch |err| {
+    var assembly = self.htp_codec.findOrCreateAssembly(@intFromPtr(pane), request_id, total, io.nanoTimestamp()) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };

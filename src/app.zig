@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("io.zig");
 const c = @import("sokol_c");
 const builtin = @import("builtin");
 const command_mod = @import("command.zig");
@@ -192,18 +193,18 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.
             return .{ .array = out };
         },
         .object => |obj| {
-            var out = std.json.ObjectMap.init(allocator);
+            var out = try std.json.ObjectMap.init(allocator, &.{}, &.{});
             errdefer {
                 var it = out.iterator();
                 while (it.next()) |entry| {
                     allocator.free(entry.key_ptr.*);
                     deinitJsonValue(allocator, entry.value_ptr.*);
                 }
-                out.deinit();
+                out.deinit(allocator);
             }
             var it = obj.iterator();
             while (it.next()) |entry| {
-                try out.put(try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
+                try out.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
             }
             return .{ .object = out };
         },
@@ -226,7 +227,7 @@ pub fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void
                 allocator.free(entry.key_ptr.*);
                 deinitJsonValue(allocator, entry.value_ptr.*);
             }
-            owned.deinit();
+            owned.deinit(allocator);
         },
         else => {},
     }
@@ -236,7 +237,7 @@ fn putJsonField(allocator: std.mem.Allocator, object: *std.json.ObjectMap, key: 
     const owned_key = try allocator.dupe(u8, key);
     errdefer allocator.free(owned_key);
     errdefer deinitJsonValue(allocator, value);
-    try object.put(owned_key, value);
+    try object.put(allocator, owned_key, value);
 }
 
 fn appendJsonValue(allocator: std.mem.Allocator, array: *std.json.Array, value: std.json.Value) !void {
@@ -352,15 +353,15 @@ pub const App = struct {
     htp_codec: HtpCodec,
     command_ipc_server: ?command_ipc.Server = null,
     pane_tags: std.ArrayListUnmanaged(cmd_ipc.PaneTagEntry) = .empty,
-    command_mutex: std.Thread.Mutex = .{},
-    command_ready: std.Thread.Condition = .{},
-    command_done: std.Thread.Condition = .{},
+    command_mutex: std.Io.Mutex = .init,
+    command_ready: std.Io.Condition = .init,
+    command_done: std.Io.Condition = .init,
     pending_command: ?*cmd_ipc.PendingCommandRequest = null,
-    automation_mutex: std.Thread.Mutex = .{},
-    automation_changed: std.Thread.Condition = .{},
+    automation_mutex: std.Io.Mutex = .init,
+    automation_changed: std.Io.Condition = .init,
     automation_revision: u64 = 1,
     automation_shutting_down: bool = false,
-    ui_semantic_mutex: std.Thread.Mutex = .{},
+    ui_semantic_mutex: std.Io.Mutex = .init,
     ui_semantic_store: ui_semantics.Store = .{},
     leader_visual_active: bool = false,
     leader_visual_expires_at_ns: i128 = 0,
@@ -386,7 +387,7 @@ pub const App = struct {
     /// (event is dropped — better than a crash or a data race).
     pub fn enqueueMouse(self: *App, ev: input.PendingInputEvent) bool {
         if (!self.action_queue.push(ev)) return false;
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = io.nanoTimestamp();
         self.last_input_activity_ns = now_ns;
         self.last_visual_activity_ns = now_ns;
         input.signalWake(self);
@@ -410,61 +411,61 @@ pub const App = struct {
     }
 
     pub fn currentAutomationRevision(self: *App) u64 {
-        self.automation_mutex.lock();
-        defer self.automation_mutex.unlock();
+        self.automation_mutex.lockUncancelable(io.get());
+        defer self.automation_mutex.unlock(io.get());
         return self.automation_revision;
     }
 
     pub fn markAutomationChanged(self: *App) void {
-        self.automation_mutex.lock();
-        defer self.automation_mutex.unlock();
+        self.automation_mutex.lockUncancelable(io.get());
+        defer self.automation_mutex.unlock(io.get());
         if (self.automation_shutting_down) return;
         if (self.automation_revision < std.math.maxInt(i64)) self.automation_revision += 1;
-        self.automation_changed.broadcast();
+        self.automation_changed.broadcast(io.get());
     }
 
     pub fn waitForAutomationRevision(self: *App, revision: u64, timeout_ms: u64) AutomationWaitResult {
-        self.automation_mutex.lock();
-        defer self.automation_mutex.unlock();
+        self.automation_mutex.lockUncancelable(io.get());
+        defer self.automation_mutex.unlock(io.get());
 
         if (self.automation_revision > revision) return .changed;
         if (self.automation_shutting_down) return .shutting_down;
         if (timeout_ms == 0) return .timeout;
 
         const timeout_ns = timeout_ms *| std.time.ns_per_ms;
-        const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(timeout_ns));
+        const deadline = io.nanoTimestamp() + @as(i128, @intCast(timeout_ns));
         while (self.automation_revision <= revision and !self.automation_shutting_down) {
-            const now = std.time.nanoTimestamp();
+            const now = io.nanoTimestamp();
             if (now >= deadline) return .timeout;
             const remaining: u64 = @intCast(deadline - now);
-            self.automation_changed.timedWait(&self.automation_mutex, remaining) catch return .timeout;
+            io.waitTimeout(&self.automation_changed, &self.automation_mutex, remaining) catch return .timeout;
         }
         return if (self.automation_shutting_down) .shutting_down else .changed;
     }
 
     pub fn beginUiSemanticFrame(self: *App) void {
-        self.ui_semantic_mutex.lock();
-        defer self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
+        defer self.ui_semantic_mutex.unlock(io.get());
         self.ui_semantic_store.begin();
     }
 
     pub fn appendUiSemanticNode(self: *App, surface: ui_semantics.Surface, role: ui_semantics.Role, clickable: bool, id: []const u8, label: []const u8, bounds: ui_semantics.Bounds) void {
-        self.ui_semantic_mutex.lock();
-        defer self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
+        defer self.ui_semantic_mutex.unlock(io.get());
         self.ui_semantic_store.append(surface, role, clickable, id, label, bounds);
     }
 
     pub fn publishUiSemanticFrame(self: *App) void {
-        self.ui_semantic_mutex.lock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
         const changed = self.ui_semantic_store.publish();
-        self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.unlock(io.get());
         if (changed) self.markAutomationChanged();
     }
 
     pub fn invalidateUiSemanticFrame(self: *App) void {
-        self.ui_semantic_mutex.lock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
         const changed = self.ui_semantic_store.invalidate();
-        self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.unlock(io.get());
         if (changed) self.markAutomationChanged();
     }
 
@@ -479,16 +480,16 @@ pub const App = struct {
     }
 
     pub fn domainValue(self: *App, name: []const u8) !std.json.Value {
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
-        try object.put(try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
-        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domain_name, name) });
-        try object.put(try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try dupeJsonSafeString(self.allocator, name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = std.mem.eql(u8, self.activePane().?.domain_name, name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_default"), .{ .bool = if (self.config.defaultDomainName()) |default_name| std.mem.eql(u8, default_name, name) else false });
 
         if (self.config.domainByName(name)) |domain| {
-            if (domain.shell) |shell| try object.put(try self.allocator.dupe(u8, "shell"), .{ .string = try dupeJsonSafeString(self.allocator, shell) });
-            if (domain.default_cwd) |cwd| try object.put(try self.allocator.dupe(u8, "default_cwd"), .{ .string = try dupeJsonSafeString(self.allocator, cwd) });
+            if (domain.shell) |shell| try object.put(self.allocator, try self.allocator.dupe(u8, "shell"), .{ .string = try dupeJsonSafeString(self.allocator, shell) });
+            if (domain.default_cwd) |cwd| try object.put(self.allocator, try self.allocator.dupe(u8, "default_cwd"), .{ .string = try dupeJsonSafeString(self.allocator, cwd) });
         }
 
         return .{ .object = object };
@@ -501,42 +502,42 @@ pub const App = struct {
     }
 
     pub fn paneFrameValue(self: *App, pane: *Pane) !std.json.Value {
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
-        try object.put(try self.allocator.dupe(u8, "x"), .{ .integer = @intCast(pane.x_px) });
-        try object.put(try self.allocator.dupe(u8, "y"), .{ .integer = @intCast(pane.y_px) });
-        try object.put(try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
-        try object.put(try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "x"), .{ .integer = @intCast(pane.x_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "y"), .{ .integer = @intCast(pane.y_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
         return .{ .object = object };
     }
 
     pub fn paneSizeValue(self: *App, pane: *Pane) !std.json.Value {
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
-        try object.put(try self.allocator.dupe(u8, "rows"), .{ .integer = @intCast(pane.rows) });
-        try object.put(try self.allocator.dupe(u8, "cols"), .{ .integer = @intCast(pane.cols) });
-        try object.put(try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
-        try object.put(try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "rows"), .{ .integer = @intCast(pane.rows) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "cols"), .{ .integer = @intCast(pane.cols) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(pane.width_px) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(pane.height_px) });
         return .{ .object = object };
     }
 
     pub fn snapshotPane(self: *App, pane_id: usize) !?std.json.Value {
         const pane = self.findPaneById(pane_id) orelse return null;
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
 
-        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
-        try object.put(try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
-        try object.put(try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
-        try object.put(try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
-        try object.put(try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
-        try object.put(try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
-        try object.put(try self.allocator.dupe(u8, "tags"), try cmd_ipc.getPaneTags(self, pane_id));
-        try object.put(try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
-        try object.put(try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
-        try object.put(try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
-        try object.put(try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
-        try object.put(try self.allocator.dupe(u8, "size"), try self.paneSizeValue(pane));
+        try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(pane_id) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "pid"), .{ .integer = @intCast(pane.childPid()) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "cwd"), .{ .string = try dupeJsonSafeString(self.allocator, pane.cwd) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, pane.title) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "foreground_process"), .{ .string = try dupeJsonSafeString(self.allocator, pane.foreground_process orelse "") });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "tags"), try cmd_ipc.getPaneTags(self, pane_id));
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_focused"), .{ .bool = self.currentPaneIdValue() == pane_id });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_floating"), .{ .bool = pane.is_floating });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_maximized"), .{ .bool = if (self.mux) |*mux| mux.paneIsMaximized(pane) else false });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "frame"), try self.paneFrameValue(pane));
+        try object.put(self.allocator, try self.allocator.dupe(u8, "size"), try self.paneSizeValue(pane));
         return .{ .object = object };
     }
 
@@ -558,7 +559,7 @@ pub const App = struct {
     }
 
     fn screenLineValue(self: *App, row: usize, text: []const u8) !std.json.Value {
-        var line = std.json.ObjectMap.init(self.allocator);
+        var line = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = line });
         try putJsonField(self.allocator, &line, "row", .{ .integer = @intCast(row) });
         try putJsonField(self.allocator, &line, "text", .{ .string = try dupeJsonSafeString(self.allocator, text) });
@@ -590,7 +591,7 @@ pub const App = struct {
     }
 
     fn cursorPositionValue(self: *App, row: u16, col: u16) !std.json.Value {
-        var point = std.json.ObjectMap.init(self.allocator);
+        var point = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = point });
         try putJsonField(self.allocator, &point, "row", .{ .integer = row });
         try putJsonField(self.allocator, &point, "col", .{ .integer = col });
@@ -598,7 +599,7 @@ pub const App = struct {
     }
 
     fn screenCursorValue(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !std.json.Value {
-        var cursor = std.json.ObjectMap.init(self.allocator);
+        var cursor = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = cursor });
         if (runtime.cursorPos(pane.render_state)) |position| {
             try putJsonField(self.allocator, &cursor, "position", try self.cursorPositionValue(position.y, position.x));
@@ -622,7 +623,7 @@ pub const App = struct {
         const cols = runtime.renderStateCols(pane.render_state) orelse pane.cols;
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return null;
 
-        var screen = std.json.ObjectMap.init(self.allocator);
+        var screen = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = screen });
         try putJsonField(self.allocator, &screen, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
         try putJsonField(self.allocator, &screen, "pane_id", .{ .integer = @intCast(@intFromPtr(pane)) });
@@ -636,7 +637,7 @@ pub const App = struct {
     }
 
     fn uiBoundsValue(self: *App, bounds_value: ui_semantics.Bounds) !std.json.Value {
-        var bounds = std.json.ObjectMap.init(self.allocator);
+        var bounds = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = bounds });
         try putJsonField(self.allocator, &bounds, "x", .{ .float = bounds_value.x });
         try putJsonField(self.allocator, &bounds, "y", .{ .float = bounds_value.y });
@@ -653,7 +654,7 @@ pub const App = struct {
     }
 
     fn uiNodeValue(self: *App, node: *const ui_semantics.Node) !std.json.Value {
-        var value = std.json.ObjectMap.init(self.allocator);
+        var value = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = value });
         try putJsonField(self.allocator, &value, "id", .{ .string = try self.allocator.dupe(u8, node.id()) });
         try putJsonField(self.allocator, &value, "name", .{ .string = try self.allocator.dupe(u8, node.label()) });
@@ -674,10 +675,10 @@ pub const App = struct {
     }
 
     pub fn uiNodesValue(self: *App) !std.json.Value {
-        self.ui_semantic_mutex.lock();
-        defer self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
+        defer self.ui_semantic_mutex.unlock(io.get());
         const snapshot = &self.ui_semantic_store.published;
-        var result = std.json.ObjectMap.init(self.allocator);
+        var result = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = result });
         try putJsonField(self.allocator, &result, "revision", .{ .integer = @intCast(self.currentAutomationRevision()) });
         try putJsonField(self.allocator, &result, "generation", .{ .integer = @intCast(snapshot.generation) });
@@ -688,7 +689,7 @@ pub const App = struct {
     }
 
     pub fn clickUiNode(self: *App, id: []const u8, surface_filter: ?ui_semantics.Surface, generation: ?u64) UiClickResult {
-        self.ui_semantic_mutex.lock();
+        self.ui_semantic_mutex.lockUncancelable(io.get());
         const snapshot = &self.ui_semantic_store.published;
         var result: UiClickResult = .unknown;
         var matched_surface: ?ui_semantics.Surface = null;
@@ -717,7 +718,7 @@ pub const App = struct {
             }
             if (result == .unknown and matched_surface != null) result = if (matched_clickable) .clicked else .not_actionable;
         }
-        self.ui_semantic_mutex.unlock();
+        self.ui_semantic_mutex.unlock(io.get());
 
         if (result != .clicked) return result;
         const surface = matched_surface.?;
@@ -739,19 +740,19 @@ pub const App = struct {
             if (pane_value) |value| try panes.append(value);
         }
 
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
         const active_pane = tab.activePane();
         const pane_value = if (active_pane) |pane| try self.snapshotPane(@intFromPtr(pane)) else null;
-        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(tab.id) });
-        try object.put(try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, if (active_pane) |pane| pane.title else "") });
-        try object.put(try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
-        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeTab()) |active| active == tab else false });
-        try object.put(try self.allocator.dupe(u8, "panes"), .{ .array = panes });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(tab.id) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "title"), .{ .string = try dupeJsonSafeString(self.allocator, if (active_pane) |pane| pane.title else "") });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeTab()) |active| active == tab else false });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "panes"), .{ .array = panes });
         if (pane_value) |value| {
-            try object.put(try self.allocator.dupe(u8, "pane"), value);
+            try object.put(self.allocator, try self.allocator.dupe(u8, "pane"), value);
         } else {
-            try object.put(try self.allocator.dupe(u8, "pane"), .null);
+            try object.put(self.allocator, try self.allocator.dupe(u8, "pane"), .null);
         }
         return .{ .object = object };
     }
@@ -801,21 +802,21 @@ pub const App = struct {
     }
 
     pub fn snapshotWorkspace(self: *App, workspace: *Workspace, index: usize) !std.json.Value {
-        var object = std.json.ObjectMap.init(self.allocator);
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
         errdefer deinitJsonValue(self.allocator, .{ .object = object });
-        try object.put(try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(workspace.id) });
-        try object.put(try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
-        try object.put(try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "id"), .{ .integer = @intCast(workspace.id) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "index"), .{ .integer = @intCast(index + 1) });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "name"), .{ .string = try self.allocator.dupe(u8, workspace.title()) });
         if (workspace.activeTab()) |tab| {
             if (tab.activePane()) |pane| {
-                try object.put(try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
+                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .{ .string = try dupeJsonSafeString(self.allocator, pane.domain_name) });
             } else {
-                try object.put(try self.allocator.dupe(u8, "domain"), .null);
+                try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .null);
             }
         } else {
-            try object.put(try self.allocator.dupe(u8, "domain"), .null);
+            try object.put(self.allocator, try self.allocator.dupe(u8, "domain"), .null);
         }
-        try object.put(try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeWorkspace()) |active| active == workspace else false });
+        try object.put(self.allocator, try self.allocator.dupe(u8, "is_active"), .{ .bool = if (self.activeWorkspace()) |active| active == workspace else false });
         return .{ .object = object };
     }
 
@@ -862,7 +863,7 @@ pub const App = struct {
                 for (workspace.tabs.items, 0..) |tab, tab_index| {
                     try tabs.append(try self.snapshotTab(tab, tab_index));
                 }
-                try workspace_object.put(try self.allocator.dupe(u8, "tabs"), .{ .array = tabs });
+                try workspace_object.put(self.allocator, try self.allocator.dupe(u8, "tabs"), .{ .array = tabs });
                 tabs_owned_by_workspace = true;
                 try array.append(.{ .object = workspace_object });
             }
@@ -883,10 +884,10 @@ pub const App = struct {
         defer self.lifecycle.finishRuntimeShutdown();
         std.log.info("App.shutdownRuntime begin", .{});
 
-        self.automation_mutex.lock();
+        self.automation_mutex.lockUncancelable(io.get());
         self.automation_shutting_down = true;
-        self.automation_changed.broadcast();
-        self.automation_mutex.unlock();
+        self.automation_changed.broadcast(io.get());
+        self.automation_mutex.unlock(io.get());
 
         if (self.command_ipc_server) |*server| {
             server.deinit();
@@ -972,16 +973,16 @@ pub const App = struct {
             const config_user_path = try platform.defaultConfigPath(self.allocator);
             defer self.allocator.free(config_user_path);
             if (std.fs.path.dirname(config_user_path)) |config_dir| {
-                std.fs.cwd().makePath(config_dir) catch |err| {
+                std.Io.Dir.cwd().createDirPath(io.get(), config_dir) catch |err| {
                     std.log.warn("could not create config dir for LuaLS types: {s}", .{@errorName(err)});
                 };
-                if (std.fs.cwd().openDir(config_dir, .{})) |captured| {
+                if (std.Io.Dir.cwd().openDir(io.get(), config_dir, .{})) |captured| {
                     var dir = captured;
-                    defer dir.close();
-                    dir.makePath("types") catch |err| {
+                    defer dir.close(io.get());
+                    dir.createDirPath(io.get(), "types") catch |err| {
                         std.log.warn("could not create types dir for LuaLS: {s}", .{@errorName(err)});
                     };
-                    dir.writeFile(.{ .sub_path = "types/hollow.lua", .data = embedded_types }) catch |err| {
+                    dir.writeFile(io.get(), .{ .sub_path = "types/hollow.lua", .data = embedded_types }) catch |err| {
                         std.log.warn("failed to write LuaLS types: {s}", .{@errorName(err)});
                     };
                 } else |err| {
@@ -1183,59 +1184,59 @@ pub const App = struct {
         // the validation in handleMouseMove / flushPendingLayoutResize will
         // detect and discard.
         if (self.ghostty) |*runtime| {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             mux_ops.cleanupDeadPanes(self, runtime);
-            if (self.config.debug_overlay) cleanup_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) cleanup_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             selection_mod.pruneSelectionIfInvalid(self);
             copy_mode.pruneCopyModeIfInvalid(self);
             quick_select.pruneIfInvalid(self);
-            if (self.config.debug_overlay) prune_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) prune_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             if (self.lua) |*lua| lua.runDeferredCallbacks();
-            if (self.config.debug_overlay) events_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) events_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             input.processInputQueue(self);
-            if (self.config.debug_overlay) events_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) events_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             htp.processHtpMessages(self);
-            if (self.config.debug_overlay) htp_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) htp_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             self.flushPendingResize();
-            if (self.config.debug_overlay) resize_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) resize_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             self.flushPendingLayoutResize();
-            if (self.config.debug_overlay) layout_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) layout_ns = io.nanoTimestamp() - start_ns;
         }
         if (self.ghostty) |*runtime| {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             try self.tickPanes(runtime);
             quick_select.refreshAfterPanes(self);
-            if (self.config.debug_overlay) tick_panes_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) tick_panes_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             hyperlinks.updateHoveredHyperlink(self);
-            if (self.config.debug_overlay) hover_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) hover_ns = io.nanoTimestamp() - start_ns;
         }
         {
-            const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+            const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
             mux_ops.maybeRunStartupCommand(
                 self,
             );
-            if (self.config.debug_overlay) startup_ns = std.time.nanoTimestamp() - start_ns;
+            if (self.config.debug_overlay) startup_ns = io.nanoTimestamp() - start_ns;
         }
         {
             self.drainConfigWatchFlag();
@@ -1256,7 +1257,7 @@ pub const App = struct {
     }
 
     pub fn hasVisualActivity(self: *App) bool {
-        return input.hasVisualActivityAt(self, std.time.nanoTimestamp(), true);
+        return input.hasVisualActivityAt(self, io.nanoTimestamp(), true);
     }
 
     pub fn setLeaderState(self: *App, active: bool, expires_at_ms: i64) void {
@@ -1520,7 +1521,9 @@ pub const App = struct {
     }
 
     pub fn waitForWake(self: *const App, wake_generation: u32, timeout_ns: u64) void {
-        std.Thread.Futex.timedWait(&self.wake_generation, wake_generation, timeout_ns) catch {};
+        io.get().futexWaitTimeout(u32, &self.wake_generation.raw, wake_generation, .{
+            .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(timeout_ns)) },
+        }) catch {};
     }
 
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
@@ -1579,7 +1582,7 @@ pub const App = struct {
         if (!paneRenderHelpersReady(pane) or pane.rows == 0) return "";
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
 
-        var writer = std.io.fixedBufferStream(out);
+        var writer: std.Io.Writer = .fixed(out);
         var row_index: usize = 0;
         while (runtime.nextRow(pane.row_iterator) and row_index < pane.rows) : (row_index += 1) {
             if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
@@ -1590,11 +1593,11 @@ pub const App = struct {
                 text_helpers.appendCellText(runtime, pane.row_cells, row_text[0..], &row_len);
             }
             while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
-            writer.writer().writeAll(row_text[0..row_len]) catch break;
-            if (row_index + 1 < pane.rows) writer.writer().writeByte('\n') catch break;
+            writer.writeAll(row_text[0..row_len]) catch break;
+            if (row_index + 1 < pane.rows) writer.writeByte('\n') catch break;
         }
 
-        return writer.getWritten();
+        return out[0..writer.end];
     }
 
     pub fn isPaneVisible(self: *App, needle: *const Pane) bool {
@@ -2196,7 +2199,7 @@ pub const App = struct {
                     if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) {
                         pane.pending_alt_screen_nudge = true;
                         pane.alt_screen_nudge_quiet_ticks = 0;
-                        pane.alt_screen_nudge_not_before_ns = std.time.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS;
+                        pane.alt_screen_nudge_not_before_ns = io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS;
                     } else {
                         pane.pending_alt_screen_nudge = false;
                         pane.alt_screen_nudge_quiet_ticks = 0;
@@ -2215,7 +2218,7 @@ pub const App = struct {
                 total_child_alive_ns += pane.last_child_alive_ns;
                 total_encoder_sync_ns += pane.last_encoder_sync_ns;
                 if (pane.title_dirty) {
-                    const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     const old_title = self.allocator.dupe(u8, pane.title) catch null;
                     defer if (old_title) |value| self.allocator.free(value);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
@@ -2224,10 +2227,10 @@ pub const App = struct {
                         .old_title = if (old_title) |value| value else "",
                         .new_title = pane.title,
                     } });
-                    if (self.config.debug_overlay) total_title_ns += std.time.nanoTimestamp() - start_ns;
+                    if (self.config.debug_overlay) total_title_ns += io.nanoTimestamp() - start_ns;
                 }
                 if (pane.cwd_dirty) {
-                    const start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    const start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     const old_cwd = self.allocator.dupe(u8, pane.cwd) catch null;
                     defer if (old_cwd) |value| self.allocator.free(value);
                     if (pane.refreshCwd()) {
@@ -2237,11 +2240,11 @@ pub const App = struct {
                             .new_cwd = pane.cwd,
                         } });
                     }
-                    if (self.config.debug_overlay) total_cwd_ns += std.time.nanoTimestamp() - start_ns;
+                    if (self.config.debug_overlay) total_cwd_ns += io.nanoTimestamp() - start_ns;
                 }
                 if (pane.bell_dirty) {
                     pane.bell_dirty = false;
-                    const now_bell_ns = std.time.nanoTimestamp();
+                    const now_bell_ns = io.nanoTimestamp();
                     if (self.config.bell.visual) {
                         pane.bell_active = true;
                         pane.bell_started_at_ns = now_bell_ns;
@@ -2255,7 +2258,7 @@ pub const App = struct {
                     self.emitLuaBuiltInEvent("term:bell", .{ .pane_id = @intFromPtr(pane) });
                 }
                 if (pane.bell_active) {
-                    const now_bell_ns = std.time.nanoTimestamp();
+                    const now_bell_ns = io.nanoTimestamp();
                     const duration_ns: i128 = @as(i128, @intCast(self.config.bell.visual_duration_ms)) * std.time.ns_per_ms;
                     if (now_bell_ns - pane.bell_started_at_ns >= duration_ns) {
                         pane.bell_active = false;
@@ -2272,7 +2275,7 @@ pub const App = struct {
                     pane_idx += 1;
                     continue;
                 }
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
@@ -2283,7 +2286,7 @@ pub const App = struct {
                     pane.render_dirty != .false_value or
                     (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
-                    const renderstate_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     if (pane.render_state_fresh) {
                         pane.render_state_fresh = false;
                         pane.pty_received_data = false;
@@ -2295,7 +2298,7 @@ pub const App = struct {
                             std.log.err("pane updateRenderState error: {s}", .{@errorName(err)});
                         };
                     }
-                    if (self.config.debug_overlay) total_renderstate_ns += std.time.nanoTimestamp() - renderstate_start_ns;
+                    if (self.config.debug_overlay) total_renderstate_ns += io.nanoTimestamp() - renderstate_start_ns;
                     const post_dirty = runtime.getRenderStateDirty(pane.render_state) orelse .true_value;
                     if (self.config.debug_terminal_trace and pane_is_active) {
                         const cursor_pos = runtime.cursorPos(pane.render_state);
@@ -2328,9 +2331,9 @@ pub const App = struct {
                             });
                         }
                     }
-                    const scrollbar_start_ns = if (self.config.debug_overlay) std.time.nanoTimestamp() else 0;
+                    const scrollbar_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     _ = scroll.refreshPaneScrollbar(self, runtime, pane);
-                    if (self.config.debug_overlay) total_scrollbar_ns += std.time.nanoTimestamp() - scrollbar_start_ns;
+                    if (self.config.debug_overlay) total_scrollbar_ns += io.nanoTimestamp() - scrollbar_start_ns;
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
@@ -2370,6 +2373,12 @@ pub const App = struct {
                             self.last_visual_activity_ns = now_ns;
                         }
                     }
+                }
+                tickPaneCompression(runtime, pane, now_ns);
+                if (pane.compression_deadline_ns != 0 and
+                    (next_idle_render_poll_ns == 0 or pane.compression_deadline_ns < next_idle_render_poll_ns))
+                {
+                    next_idle_render_poll_ns = pane.compression_deadline_ns;
                 }
                 if (!pane.hasLiveChild()) has_dead = true;
                 pane_idx += 1;
@@ -2418,6 +2427,32 @@ pub const App = struct {
         }
         if (automation_changed) self.markAutomationChanged();
         self.next_idle_render_poll_ns = next_idle_render_poll_ns;
+    }
+
+    fn tickPaneCompression(runtime: *GhosttyRuntime, pane: *Pane, now_ns: i128) void {
+        const idle_delay_ns: i128 = 250 * std.time.ns_per_ms;
+        const continuation_delay_ns: i128 = std.time.ns_per_ms;
+
+        const activity = runtime.terminalCompressionActivity(pane.terminal) catch |err| {
+            std.log.err("pane compression activity failed: {s}", .{@errorName(err)});
+            pane.compression_deadline_ns = 0;
+            return;
+        };
+        if (pane.compression_activity == null or pane.compression_activity.? != activity) {
+            pane.compression_activity = activity;
+            pane.compression_deadline_ns = now_ns + idle_delay_ns;
+            return;
+        }
+        if (pane.compression_deadline_ns == 0 or now_ns < pane.compression_deadline_ns) return;
+
+        pane.compression_deadline_ns = switch (runtime.terminalCompress(pane.terminal) catch |err| {
+            std.log.err("pane compression failed: {s}", .{@errorName(err)});
+            pane.compression_deadline_ns = 0;
+            return;
+        }) {
+            .pending => now_ns + continuation_delay_ns,
+            .complete, .unsupported => 0,
+        };
     }
 
     fn resizeAllPanes(self: *App, runtime: *GhosttyRuntime, pixel_width: u32, pixel_height: u32, recreate_render_helpers: bool, skip_pty: bool, skip_unchanged_pty: bool) void {
@@ -2572,10 +2607,10 @@ pub const App = struct {
 
 fn pathExists(path: []const u8) bool {
     if (std.fs.path.isAbsolute(path)) {
-        std.fs.accessAbsolute(path, .{}) catch return false;
+        std.Io.Dir.accessAbsolute(io.get(), path, .{}) catch return false;
         return true;
     }
-    std.fs.cwd().access(path, .{}) catch return false;
+    std.Io.Dir.cwd().access(io.get(), path, .{}) catch return false;
     return true;
 }
 test "viewport iterator row mapping follows platform row order" {
@@ -2592,7 +2627,7 @@ test "viewport iterator row mapping follows platform row order" {
 }
 
 test "jsonObjectIndex accepts non-negative integers and whole floats" {
-    var object = std.json.ObjectMap.init(std.testing.allocator);
+    var object = try std.json.ObjectMap.init(std.testing.allocator, &.{}, &.{});
     defer object.deinit();
 
     try object.put("int", .{ .integer = 7 });
@@ -2610,7 +2645,7 @@ test "jsonObjectIndex accepts non-negative integers and whole floats" {
 }
 
 test "cloneJsonValue deep copies nested JSON values" {
-    var source = std.json.ObjectMap.init(std.testing.allocator);
+    var source = try std.json.ObjectMap.init(std.testing.allocator, &.{}, &.{});
     defer {
         const source_value = std.json.Value{ .object = source };
         deinitJsonValue(std.testing.allocator, source_value);

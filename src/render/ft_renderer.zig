@@ -12,6 +12,7 @@
 /// which multiplies vertex colour by sampled RGBA, produces the correct tinted
 /// result: vertex_rgb × coverage, alpha = coverage.
 const std = @import("std");
+const io = @import("../io.zig");
 const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
@@ -358,7 +359,7 @@ pub const FtRenderer = struct {
         const hb_buf = ft.hb_buffer_create();
 
         // ── Cell metrics (from regular face) ──────────────────────────────
-        const metrics = &face_regular.*.size.*.metrics;
+        const metrics = face_regular.*.size.*.metrics;
         // FreeType metrics are in 26.6 fixed-point.
         const ascender = @as(f32, @floatFromInt(metrics.ascender)) / 64.0;
         const descender = @as(f32, @floatFromInt(metrics.descender)) / 64.0;
@@ -916,7 +917,7 @@ pub const FtRenderer = struct {
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
-        const t_queue_start = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+        const t_queue_start = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
         self.queueInViewport(
             runtime,
             cfg,
@@ -942,7 +943,7 @@ pub const FtRenderer = struct {
             hovered_hyperlink,
             if (force_full) std.math.maxInt(usize) else prev_cursor_row,
         );
-        const t_queue_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+        const t_queue_end = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
 
         // Restore atlas pipeline and default context.
         self.atlas_pip = saved_pip;
@@ -977,7 +978,7 @@ pub const FtRenderer = struct {
         // Vertices were already uploaded above via uploadGlyphVerts().
         self.drawGlyphQuads(pane_w, pane_h, true, srgbToLinearBg(clear_r, clear_g, clear_b));
         c.sg_end_pass();
-        const t_gpu_end = if (cfg.debug_overlay) std.time.nanoTimestamp() else 0;
+        const t_gpu_end = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
 
         if (cfg.debug_overlay) {
             self.last_queue_ns = t_queue_end - t_queue_start;

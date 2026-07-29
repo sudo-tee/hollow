@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const command = @import("command.zig");
 const command_ipc = @import("ipc.zig");
 const platform = @import("platform.zig");
+const io = @import("io.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -605,16 +606,16 @@ const Runner = struct {
 
         const msg = message orelse return self.fail("missing notification message", "invalid_args", 2);
 
-        var payload = std.json.ObjectMap.init(self.allocator);
-        try payload.put("message", .{ .string = msg });
+        var payload: std.json.ObjectMap = .empty;
+        try payload.put(self.allocator, "message", .{ .string = msg });
         if (level) |lvl| {
-            try payload.put("level", .{ .string = lvl });
+            try payload.put(self.allocator, "level", .{ .string = lvl });
         }
         if (title) |t| {
-            try payload.put("title", .{ .string = t });
+            try payload.put(self.allocator, "title", .{ .string = t });
         }
         if (ttl) |t| {
-            try payload.put("ttl", .{ .integer = @intCast(t) });
+            try payload.put(self.allocator, "ttl", .{ .integer = @intCast(t) });
         }
 
         return try self.printEvent(.{
@@ -659,9 +660,9 @@ const Runner = struct {
     fn executeWait(self: *Runner, args: []const []const u8) !void {
         if (args.len != 1) return self.fail("usage: cli wait <revision>", "invalid_args", 2);
         const revision = try std.fmt.parseInt(u64, args[0], 10);
-        const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(self.options.timeout_ms *| std.time.ns_per_ms));
+        const deadline = io.nanoTimestamp() + @as(i128, @intCast(self.options.timeout_ms *| std.time.ns_per_ms));
         while (true) {
-            const now = std.time.nanoTimestamp();
+            const now = io.nanoTimestamp();
             if (now >= deadline) return self.fail("timed out waiting for revision change", "timeout", 1);
             const remaining_ms: u64 = @intCast(@max(@as(i128, 1), @divFloor(deadline - now, std.time.ns_per_ms)));
             var reply = try self.sendRequest(.{
@@ -1224,15 +1225,15 @@ fn writeJsonValue(value: std.json.Value, pretty: bool, stderr: bool) !void {
 
 fn writeConsoleText(text: []const u8, stderr: bool) !void {
     if (builtin.os.tag != .windows) {
-        try (if (stderr) std.fs.File.stderr() else std.fs.File.stdout()).writeAll(text);
+        try writeFileText(if (stderr) std.Io.File.stderr() else std.Io.File.stdout(), text);
         return;
     }
 
     // Prefer the process parameter std handles first. Under WSL interop these
     // can be valid redirected pipes even when GetStdHandle/AttachConsole do not
     // describe a usable console relationship.
-    const inherited = if (stderr) std.fs.File.stderr() else std.fs.File.stdout();
-    if (inherited.writeAll(text)) |_| {
+    const inherited = if (stderr) std.Io.File.stderr() else std.Io.File.stdout();
+    if (writeFileText(inherited, text)) |_| {
         return;
     } else |_| {}
 
@@ -1244,8 +1245,8 @@ fn writeConsoleText(text: []const u8, stderr: bool) !void {
     return error.NoConsoleOutput;
 }
 
-fn ensureConsoleStream(stderr: bool) ?std.fs.File {
-    if (builtin.os.tag != .windows) return if (stderr) std.fs.File.stderr() else std.fs.File.stdout();
+fn ensureConsoleStream(stderr: bool) ?std.Io.File {
+    if (builtin.os.tag != .windows) return if (stderr) std.Io.File.stderr() else std.Io.File.stdout();
 
     const stream_id = if (stderr) win32.STD_ERROR_HANDLE else win32.STD_OUTPUT_HANDLE;
     return windowsStdHandle(stream_id);
@@ -1253,14 +1254,21 @@ fn ensureConsoleStream(stderr: bool) ?std.fs.File {
 
 fn tryWriteWindowsStdHandle(stream_id: win32.DWORD, text: []const u8) bool {
     const file = windowsStdHandle(stream_id) orelse return false;
-    file.writeAll(text) catch return false;
+    writeFileText(file, text) catch return false;
     return true;
 }
 
-fn windowsStdHandle(stream_id: win32.DWORD) ?std.fs.File {
+fn windowsStdHandle(stream_id: win32.DWORD) ?std.Io.File {
     const handle = win32.GetStdHandle(stream_id) orelse return null;
     if (handle == win32.INVALID_HANDLE_VALUE) return null;
-    return std.fs.File{ .handle = handle };
+    return .{ .handle = handle, .flags = .{ .nonblocking = false } };
+}
+
+fn writeFileText(file: std.Io.File, text: []const u8) !void {
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io.get(), &buffer);
+    try writer.interface.writeAll(text);
+    try writer.interface.flush();
 }
 
 fn decodeKeySequence(allocator: std.mem.Allocator, text: []const u8) ![]u8 {

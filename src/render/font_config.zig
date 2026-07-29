@@ -6,7 +6,6 @@
 /// names during font enumeration.
 ///
 /// No dependency on FreeType, HarfBuzz, sokol, or the `FtRenderer` struct.
-
 const std = @import("std");
 
 // ── Renderer-facing font configuration ───────────────────────────────────────
@@ -155,6 +154,18 @@ pub const SeenFontFamilyDetails = struct {
             try self.families.items[index].addStyle(self.allocator, style_name);
             return;
         }
+
+        const owned_key = try self.allocator.dupe(u8, normalized);
+        errdefer self.allocator.free(owned_key);
+        var family = try FontFamilyInfoBuilder.init(self.allocator, family_name, style_name);
+        errdefer family.deinit(self.allocator);
+
+        const index = self.families.items.len;
+        try self.families.append(self.allocator, family);
+        self.normalized_map.put(self.allocator, owned_key, index) catch |err| {
+            _ = self.families.pop();
+            return err;
+        };
     }
 
     pub fn toOwnedSlice(self: *SeenFontFamilyDetails, allocator: std.mem.Allocator) ![]FontFamilyInfo {
@@ -283,4 +294,18 @@ test "FontFamilyInfoBuilder: deduplicates styles" {
     try builder.addStyle(allocator, "Bold"); // duplicate
     try builder.addStyle(allocator, "Italic");
     try std.testing.expectEqual(@as(usize, 3), builder.styles.items.len);
+}
+
+test "SeenFontFamilyDetails inserts families and deduplicates styles" {
+    const allocator = std.testing.allocator;
+    var seen = SeenFontFamilyDetails{ .allocator = allocator };
+    defer seen.deinit();
+
+    try seen.add("Rec Mono Duotone", "Regular");
+    try seen.add("rec-mono-duotone", "Bold");
+    try seen.add("Rec Mono Duotone", "Bold");
+
+    try std.testing.expectEqual(@as(usize, 1), seen.families.items.len);
+    try std.testing.expectEqualStrings("Rec Mono Duotone", seen.families.items[0].family);
+    try std.testing.expectEqual(@as(usize, 2), seen.families.items[0].styles.items.len);
 }

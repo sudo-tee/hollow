@@ -9,7 +9,7 @@ fn ghosttyOptimizeMode(optimize: std.builtin.OptimizeMode) std.builtin.OptimizeM
 
 fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
     return switch (os_tag) {
-        .windows => &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi", "dwrite" },
+        .windows => &.{ "gdi32", "dxgi", "d3d11", "user32", "shell32", "winmm", "dwmapi", "dwrite", "ws2_32" },
         .linux => &.{ "X11", "Xi", "Xcursor", "GL", "asound" },
         else => &.{},
     };
@@ -171,9 +171,8 @@ pub fn build(b: *std.Build) void {
             .root_module = gui_root_module,
         });
 
-        gui_exe.addObjectFile(res_file);
+        gui_exe.root_module.addObjectFile(res_file);
         gui_exe.subsystem = .Windows;
-        gui_exe.linkLibC();
         gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
         gui_exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
         gui_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
@@ -207,8 +206,7 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = launcher_root_module,
         });
-        launcher_exe.addObjectFile(res_file);
-        launcher_exe.linkLibC();
+        launcher_exe.root_module.addObjectFile(res_file);
         launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
         launcher_exe.root_module.addCSourceFile(.{
             .file = b.path("src/render/dwrite_resolver.c"),
@@ -216,6 +214,7 @@ pub fn build(b: *std.Build) void {
         });
         launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
         launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
+        launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
         const install_launcher_exe = b.addInstallArtifact(launcher_exe, .{});
         b.getInstallStep().dependOn(&install_launcher_exe.step);
 
@@ -223,9 +222,8 @@ pub fn build(b: *std.Build) void {
             .name = "hollow-gui",
             .root_module = launcher_root_module,
         });
-        gui_launcher_exe.addObjectFile(res_file);
+        gui_launcher_exe.root_module.addObjectFile(res_file);
         gui_launcher_exe.subsystem = .Windows;
-        gui_launcher_exe.linkLibC();
         gui_launcher_exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
         gui_launcher_exe.root_module.addCSourceFile(.{
             .file = b.path("src/render/dwrite_resolver.c"),
@@ -233,6 +231,7 @@ pub fn build(b: *std.Build) void {
         });
         gui_launcher_exe.root_module.linkSystemLibrary("kernel32", .{});
         gui_launcher_exe.root_module.linkSystemLibrary("dwrite", .{});
+        gui_launcher_exe.root_module.linkSystemLibrary("ws2_32", .{});
         const install_gui_launcher_exe = b.addInstallArtifact(gui_launcher_exe, .{});
         b.getInstallStep().dependOn(&install_gui_launcher_exe.step);
 
@@ -242,7 +241,6 @@ pub fn build(b: *std.Build) void {
             .name = "hollow",
             .root_module = if (target.result.os.tag == .windows) launcher_root_module else root_module,
         });
-        exe.linkLibC();
         exe.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
         exe.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
         exe.root_module.linkLibrary(zluajit_dep.artifact("lua"));
@@ -310,7 +308,6 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const tests = b.addTest(.{ .root_module = root_module });
-    tests.linkLibC();
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);

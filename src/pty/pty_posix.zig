@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = @import("../io.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
 const shell_integration = @import("../shell_integration.zig");
@@ -19,8 +20,8 @@ const c = @cImport({
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 
 const ReaderState = struct {
-    mutex: std.Thread.Mutex = .{},
-    ready: std.Thread.Condition = .{},
+    mutex: io.Mutex = .{},
+    ready: io.Condition = .{},
     buf: std.ArrayListUnmanaged(u8) = .empty,
     start: usize = 0,
     eof: bool = false,
@@ -89,8 +90,8 @@ pub const PosixPty = struct {
         return pty;
     }
 
-    fn buildEnvp(allocator: std.mem.Allocator, env_block: []const u8) ![:null]?[*:0]u8 {
-        var env_map = try std.process.getEnvMap(allocator);
+    fn buildEnvp(allocator: std.mem.Allocator, env_block: []const u8) ![:null]const ?[*:0]const u8 {
+        var env_map = try io.environ().createMap(allocator);
         defer env_map.deinit();
 
         var i: usize = 0;
@@ -107,7 +108,7 @@ pub const PosixPty = struct {
             if (i < env_block.len and env_block[i] == 0) break;
         }
 
-        return try std.process.createNullDelimitedEnvMap(allocator, &env_map);
+        return (try env_map.createPosixBlock(allocator, .{})).slice;
     }
 
     fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand, bundle: ?shell_integration.Bundle) ![]?[*:0]const u8 {
@@ -134,7 +135,7 @@ pub const PosixPty = struct {
             if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
                 try argv.append(allocator, (try allocator.dupeZ(u8, "-lc")).ptr);
                 const wrapped = if (cmd.close_on_exit)
-                    try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimRight(u8, cmd.command, "\r\n")}, 0)
+                    try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimEnd(u8, cmd.command, "\r\n")}, 0)
                 else
                     try allocator.dupeZ(u8, cmd.command);
                 try argv.append(allocator, wrapped.ptr);

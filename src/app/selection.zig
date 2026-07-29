@@ -255,7 +255,7 @@ fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []
     const runtime = if (self.ghostty) |*rt| rt else return null;
     if (self.selection_pane != pane) return null;
 
-    var writer = std.io.fixedBufferStream(out);
+    var writer: std.Io.Writer = .fixed(out);
     var row_index = range.start.row;
     while (row_index <= range.end.row) : (row_index += 1) {
         var row_text: [4096]u8 = undefined;
@@ -269,12 +269,12 @@ fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []
             text_helpers.appendGridRefText(runtime, &cell_ref, raw_cell, row_text[0..], &row_len);
         }
         while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
-        writer.writer().writeAll(row_text[0..row_len]) catch break;
+        writer.writeAll(row_text[0..row_len]) catch break;
         if (row_index == range.end.row) break;
-        writer.writer().writeByte('\n') catch break;
+        writer.writeByte('\n') catch break;
     }
 
-    return writer.getWritten();
+    return out[0..writer.end];
 }
 
 pub fn pruneSelectionIfInvalid(self: *App) void {
