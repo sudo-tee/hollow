@@ -63,7 +63,7 @@ pub const PaneCache = struct {
 
         var ctx_desc = std.mem.zeroes(c.sgl_context_desc_t);
         ctx_desc.max_vertices = 1 << 18;
-        ctx_desc.max_commands = 1 << 16;
+        ctx_desc.max_commands = 1 << 14;
         ctx_desc.color_format = c.SG_PIXELFORMAT_RGBA8;
         ctx_desc.depth_format = c.SG_PIXELFORMAT_NONE;
         ctx_desc.sample_count = 1;

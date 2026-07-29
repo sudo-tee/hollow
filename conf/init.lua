@@ -37,7 +37,7 @@ hollow.config.set({
   },
   cols = 120,
   rows = 34,
-  scrollback = 64000000,
+  scrollback = 10000000,
   padding = 5,
   alternate_screen_padding = 0, --TUI like nvim
   window_title = "hollow",

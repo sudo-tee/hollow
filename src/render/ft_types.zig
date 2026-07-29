@@ -12,9 +12,9 @@ const ghostty = @import("../term/ghostty.zig");
 // ── Atlas constants ───────────────────────────────────────────────────────────
 //
 // Multi-atlas layout (never repack; allocate another page up to cap):
-//   gray  — RGBA8 4096² (~64MB) terminal coverage (R used by shader; RGBA
+//   gray  — RGBA8 1024² (~4MB)  terminal coverage (R used by shader; RGBA
 //            kept for D3D11 region-update reliability + sgl-safe samples)
-//   color — RGBA8 2048² (~16MB) color emoji
+//   color — RGBA8 1024² (~4MB)  color emoji
 //   ui    — RGBA8 1024² (~4MB)  sgl UI labels (needs RGBA multiply)
 //
 // Over cap → collapse that kind back to one empty page (bounded memory).
@@ -22,10 +22,10 @@ const ghostty = @import("../term/ghostty.zig");
 // NOTE: pure R8 was tried but produced blank glyphs on D3D11 (region upload /
 // sampling). Revisit R8 once validated on that backend.
 
-pub const GRAY_ATLAS_W: u32 = 4096;
-pub const GRAY_ATLAS_H: u32 = 4096;
-pub const COLOR_ATLAS_W: u32 = 2048;
-pub const COLOR_ATLAS_H: u32 = 2048;
+pub const GRAY_ATLAS_W: u32 = 1024;
+pub const GRAY_ATLAS_H: u32 = 1024;
+pub const COLOR_ATLAS_W: u32 = 1024;
+pub const COLOR_ATLAS_H: u32 = 1024;
 pub const UI_ATLAS_W: u32 = 1024;
 pub const UI_ATLAS_H: u32 = 1024;
 
@@ -144,8 +144,8 @@ pub const FsParams = extern struct {
 
 // Maximum glyph quads we buffer per draw pass.
 // At 300 cols × 100 rows that's 30 000 glyphs × 4 verts = 120 000 vertices.
-// A typical 80×24 terminal is ~1 920 glyphs.  256k gives comfortable headroom.
-pub const MAX_GLYPH_VERTS: usize = 256 * 1024;
+// A typical 80×24 terminal is ~1 920 glyphs.  128k still covers 300×100.
+pub const MAX_GLYPH_VERTS: usize = 128 * 1024;
 pub const GLYPH_VBUF_RING_LEN: usize = 8;
 pub const KITTY_TEXTURE_CACHE_LEN: usize = 64;
 

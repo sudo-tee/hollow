@@ -2838,8 +2838,8 @@ fn initCb(user_data: ?*anyopaque) callconv(.c) void {
     // sokol_gl is required by sokol_fontstash for glyph rendering.
     var sgl_desc = std.mem.zeroes(c.sgl_desc_t);
     sgl_desc.logger.func = c.slog_func;
-    sgl_desc.max_vertices = 1 << 20;
-    sgl_desc.max_commands = 1 << 18;
+    sgl_desc.max_vertices = 1 << 16;
+    sgl_desc.max_commands = 1 << 14;
     // Each pane cache owns its own sokol_gl context, plus the default context
     // used for swapchain/UI rendering. The sokol_gl default context pool size is
     // 4 total contexts, which makes the 4th cached pane fail to get a usable
