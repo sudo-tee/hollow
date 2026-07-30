@@ -155,6 +155,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.attention", .source = @embedFile("lua/hollow/ui/widgets/attention.lua") },
     .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
     .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
