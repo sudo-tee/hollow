@@ -417,9 +417,8 @@ fn setTimeouts(stream: std.Io.net.Stream, timeout_ms: u64) !void {
     if (timeout_ms == 0) return;
 
     if (builtin.os.tag == .windows) {
-        const value: windows.DWORD = @intCast(@min(timeout_ms, std.math.maxInt(windows.DWORD)));
-        if (std.c.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.os.windows.ws2_32.SO.RCVTIMEO, &value, @sizeOf(@TypeOf(value))) != 0) return error.SetSocketTimeoutFailed;
-        if (std.c.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.os.windows.ws2_32.SO.SNDTIMEO, &value, @sizeOf(@TypeOf(value))) != 0) return error.SetSocketTimeoutFailed;
+        // std.Io.net uses Windows AFD handles, not Winsock sockets.
+        // Winsock socket options cannot be applied to these handles.
         return;
     }
 

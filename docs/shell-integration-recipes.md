@@ -81,18 +81,17 @@ hollow-cli emit notify '{"text":"done"}'
 ```
 
 `hollow-cli` is a Python 3 script with no third-party dependencies.
-It writes to the active tty, so it works from any PowerShell host
-that has access to the console.
+It uses the host command socket when reachable and falls back to the active tty.
 
 ## OSC over tty vs. host socket
 
-| | OSC (`hollow-cli`) | `hollow cli …` |
+| | `hollow-cli` | `hollow cli …` |
 | --- | --- | --- |
-| Needs a tty | yes | no |
+| Needs a tty | only for OSC | no |
 | Needs shell integration sourced | no | no |
-| Brief tty ownership during the call | yes | no |
+| Brief tty ownership during the call | only for OSC queries | no |
 | Works over SSH from another host | no | no |
-| Best for | prompt hooks, in-shell UI | scripts, CI, automation |
+| Best for | portable Python automation | native host automation |
 
 The two are not mutually exclusive. Use the shipped
 `shell-integration/` snippets for ambient metadata and the native

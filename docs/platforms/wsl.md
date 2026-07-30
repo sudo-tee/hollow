@@ -168,6 +168,9 @@ place.
 
 Hollow injects `HOLLOW_PANE_ID` and `HOLLOW_TRANSPORT` into every
 guest session.
+It also injects `HOLLOW_COMMAND_ADDR`.
+With WSL mirrored networking, `hollow-cli` uses this address for fast bidirectional commands without owning terminal input.
+Under NAT networking, `hollow-cli` falls back to OSC.
 For WSL domains, Hollow also configures `WSLENV` so these variables
 cross the Windows/WSL boundary with `/u` (UTF-8 propagation).
 
@@ -176,6 +179,44 @@ You can read them from inside WSL:
 ```bash
 echo "$HOLLOW_PANE_ID $HOLLOW_TRANSPORT"
 ```
+
+## Mirrored networking
+
+WSL 2 mirrored networking lets Linux processes connect to Windows loopback services through `127.0.0.1`.
+This makes Hollow's command socket directly reachable from WSL, allowing `hollow-cli` queries and mutations without terminal I/O or a Windows process launch.
+
+Create or update `%UserProfile%\.wslconfig` on Windows:
+
+```ini
+[wsl2]
+networkingMode=mirrored
+dnsTunneling=false
+firewall=true
+autoProxy=false
+```
+
+`dnsTunneling` is independent from loopback mirroring.
+Enable it if required by your network, but it can add DNS latency on some systems.
+`autoProxy` is also optional and should match the Windows proxy environment.
+
+Apply the configuration from PowerShell:
+
+```powershell
+wsl --update
+wsl --shutdown
+```
+
+Start a new WSL session and verify Hollow's inherited endpoint:
+
+```bash
+echo "$HOLLOW_COMMAND_ADDR"
+nc -vz 127.0.0.1 "${HOLLOW_COMMAND_ADDR##*:}"
+hollow-cli get mux-tree --pretty
+```
+
+Mirrored networking requires a recent WSL release on Windows 11 22H2 or newer.
+Some VPN and endpoint-security products interfere with mirrored networking.
+If that happens, return to NAT networking and let `hollow-cli` use its OSC fallback.
 
 ## Troubleshooting
 

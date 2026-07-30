@@ -5,7 +5,8 @@ import json
 import os
 import pathlib
 import select
-import shutil
+import socket
+import struct
 import sys
 import termios
 import time
@@ -64,11 +65,11 @@ class HollowCli:
 
     def build_common_parser(self):
         parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("--pretty", action="store_true")
-        parser.add_argument("--quiet", action="store_true")
-        parser.add_argument("--envelope", action="store_true")
-        parser.add_argument("--transport", choices=["auto", "file", "osc"], default="auto")
-        parser.add_argument("--timeout", type=float, default=1.5)
+        parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
+        parser.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS)
+        parser.add_argument("--envelope", action="store_true", default=argparse.SUPPRESS)
+        parser.add_argument("--transport", choices=["auto", "socket", "file", "osc"], default=argparse.SUPPRESS)
+        parser.add_argument("--timeout", type=float, default=argparse.SUPPRESS)
         return parser
 
     def add_get(self, sub):
@@ -670,6 +671,18 @@ class HollowCli:
 
     def send_message(self, kind, channel, data):
         transport = self.effective_transport()
+        command_addr = os.environ.get("HOLLOW_COMMAND_ADDR")
+        if command_addr and transport == "socket":
+            try:
+                conn = self.connect_socket(command_addr)
+            except OSError as exc:
+                if self.transport == "socket":
+                    raise CliError(f"command transport failed: {exc}", code="transport_error")
+            else:
+                with conn:
+                    return self.send_socket(kind, channel, data, conn)
+        if transport == "socket" and not command_addr:
+            raise CliError("HOLLOW_COMMAND_ADDR is not set", code="transport_error")
         request_dir = os.environ.get("HOLLOW_REQUEST_DIR")
         if request_dir and transport != "osc":
             try:
@@ -682,9 +695,90 @@ class HollowCli:
     def effective_transport(self):
         if self.transport != "auto":
             return self.transport
-        if os.environ.get("WSL_DISTRO_NAME") and shutil.which("hollow-wsl-bypass"):
-            return "osc"
+        if os.environ.get("HOLLOW_COMMAND_ADDR"):
+            return "socket"
+        if os.environ.get("HOLLOW_REQUEST_DIR"):
+            return "file"
         return "auto"
+
+    def send_socket(self, kind, channel, data, conn):
+        request = {
+            "kind": "get_htp" if kind == "query" else "emit",
+            "pane_id": self.pane_id(),
+            "channel": channel,
+            "params" if kind == "query" else "payload": data,
+        }
+        payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
+        if len(payload) > 16 * 1024 * 1024:
+            raise CliError("command request exceeds 16 MiB", code="transport_error")
+
+        try:
+            conn.settimeout(self.timeout)
+            conn.sendall(struct.pack("<I", len(payload)) + payload)
+            reply_size = struct.unpack("<I", self.recv_exact(conn, 4))[0]
+            if reply_size > 16 * 1024 * 1024:
+                raise CliError("command reply exceeds 16 MiB", code="invalid_response")
+            reply = self.recv_exact(conn, reply_size).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CliError(f"command reply is not UTF-8: {exc}", code="invalid_response")
+        except (OSError, struct.error) as exc:
+            raise CliError(f"command transport failed: {exc}", code="transport_error")
+        return self.validate_reply(reply)
+
+    def connect_socket(self, address):
+        if address.startswith("unix:"):
+            path = address[5:]
+            if not path:
+                raise CliError("invalid empty Unix command socket path", code="transport_error")
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            conn.settimeout(self.timeout)
+            try:
+                conn.connect(path)
+            except OSError:
+                conn.close()
+                raise
+            return conn
+
+        host, port = self.parse_socket_address(address)
+        return socket.create_connection((host, port), timeout=self.timeout)
+
+    def parse_socket_address(self, address):
+        try:
+            if address.startswith("["):
+                end = address.index("]")
+                host = address[1:end]
+                if address[end + 1:end + 2] != ":":
+                    raise ValueError
+                port = int(address[end + 2:])
+            else:
+                host, port_text = address.rsplit(":", 1)
+                port = int(port_text)
+            if not host or not 0 < port < 65536:
+                raise ValueError
+            return host, port
+        except ValueError:
+            raise CliError(f"invalid HOLLOW_COMMAND_ADDR: {address}", code="transport_error")
+
+    def recv_exact(self, conn, size):
+        chunks = []
+        remaining = size
+        while remaining:
+            chunk = conn.recv(remaining)
+            if not chunk:
+                raise OSError("connection closed before complete reply")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def pane_id(self):
+        value = os.environ.get("HOLLOW_PANE_ID", "0")
+        try:
+            pane_id = int(value)
+        except ValueError:
+            raise CliError(f"invalid HOLLOW_PANE_ID: {value}", code="transport_error")
+        if pane_id < 0:
+            raise CliError(f"invalid HOLLOW_PANE_ID: {value}", code="transport_error")
+        return pane_id
 
     def send_file(self, kind, channel, data, request_dir):
         request_id = self.next_request_id("hollow")
@@ -734,8 +828,16 @@ class HollowCli:
 
         try:
             fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
-        except OSError as exc:
-            raise CliError(f"unable to open /dev/tty for OSC transport: {exc}", code="transport_error")
+        except OSError as tty_exc:
+            try:
+                # Embedded terminal clients such as Neovim may expose the
+                # terminal through inherited stderr instead of /dev/tty.
+                fd = os.open("/dev/fd/2", os.O_RDWR | os.O_NOCTTY)
+            except OSError as stderr_exc:
+                raise CliError(
+                    f"unable to open /dev/tty or /dev/fd/2 for OSC transport: {tty_exc}; {stderr_exc}",
+                    code="transport_error",
+                )
 
         if kind == "event":
             try:
@@ -745,6 +847,13 @@ class HollowCli:
             finally:
                 os.close(fd)
             return {"kind": "result", "status": "ok"}
+
+        if not os.isatty(fd):
+            os.close(fd)
+            raise CliError(
+                "OSC queries require a readable terminal; use native hollow cli for queries",
+                code="transport_error",
+            )
 
         old = termios.tcgetattr(fd)
         try:
@@ -825,7 +934,7 @@ class HollowCli:
 
     def validate_reply(self, text):
         envelope = self.parse_frame(text)
-        if envelope is None:
+        if not isinstance(envelope, dict):
             raise CliError("invalid json reply", code="invalid_response")
         if envelope.get("kind") == "error":
             raise CliError(envelope.get("error") or "htp error", code=envelope.get("status") or "error")

@@ -38,12 +38,60 @@ hollow-cli <command> [...]
 | `--pretty`    | Pretty-print JSON output                            |
 | `--quiet`     | Suppress success output                             |
 | `--envelope`  | Print the full reply envelope, not just the payload |
-| `--transport` | `auto` (default), `file`, or `osc`                  |
+| `--transport` | `auto` (default), `socket`, `file`, or `osc`        |
 | `--timeout`   | Seconds to wait for a reply (default 1.5)           |
 
-The default `auto` transport uses the OSC-over-tty path. `file` uses
-the host's request directory (used by some setups). `osc` forces OSC
-even when another path is available.
+The default `auto` transport uses the command socket from
+`HOLLOW_COMMAND_ADDR` when it can connect, then `HOLLOW_REQUEST_DIR` when
+configured, and otherwise OSC over the tty. The socket attempt is the request
+connection itself, not a separate probe. Socket transport is bidirectional and
+does not access terminal input, so it works from Neovim jobs and agents.
+
+Windows Hollow exposes its loopback command socket to WSL when WSL uses mirrored
+networking. Under WSL's default NAT networking, the connection fails before any
+request is sent and `auto` falls back to OSC. Use `--transport socket` or
+`--transport osc` to force either path. OSC falls back from `/dev/tty` to
+`/dev/fd/2` for event commands; OSC queries still require a readable tty.
+
+### SSH
+
+Without extra setup, SSH sessions use OSC. This preserves normal interactive
+SSH behavior and needs no listening service on the remote host. To let Neovim
+jobs and agents make bidirectional calls, reverse-forward a private remote Unix
+socket to `HOLLOW_COMMAND_ADDR` when creating the SSH session:
+
+```bash
+remote_socket="/tmp/hollow-command-${USER}-$$.sock"
+ssh \
+  -o ExitOnForwardFailure=yes \
+  -o StreamLocalBindUnlink=yes \
+  -o StreamLocalBindMask=0177 \
+  -R "${remote_socket}:${HOLLOW_COMMAND_ADDR}" \
+  host \
+  "exec env HOLLOW_COMMAND_ADDR=unix:${remote_socket} HOLLOW_PANE_ID=${HOLLOW_PANE_ID:-0} \"\$SHELL\" -l"
+```
+
+Install `hollow-cli` on the remote host. Remote descendants use the forwarded
+socket automatically. If `HOLLOW_COMMAND_ADDR` is absent or its connection
+fails before a request is sent, `auto` retains OSC fallback. Unix socket mode
+requires an OpenSSH server that supports stream-local forwarding.
+
+The example creates one socket for one manually launched SSH session. Hollow's
+managed SSH domains should instead share one remote socket per Hollow instance
+and remote host. The SSH ControlMaster owns that forwarding, and later panes
+reuse it. Each pane still exports its own `HOLLOW_PANE_ID`; `hollow-cli` includes
+that ID in every request, so a separate command socket per pane is unnecessary.
+
+A managed socket name should include a random Hollow instance ID, for example:
+
+```text
+/tmp/hollow-$USER-<instance-id>.sock
+```
+
+The shared forwarding should be removed when the Hollow instance or SSH master
+exits. If setup fails, panes omit the forwarded `HOLLOW_COMMAND_ADDR` and keep
+using OSC. This managed-domain lifecycle is the intended integration model but
+is not yet implemented by the SSH domain launcher.
 
 ## Command surface
 
@@ -135,13 +183,13 @@ hollow-cli notify "Task complete" --level success --ttl 3000
 
 ## How it differs from `hollow cli …`
 
-|                                 | `hollow-cli`              | `hollow cli …`          |
-| ------------------------------- | ------------------------- | ----------------------- |
-| Transport                       | OSC over tty              | host command socket     |
-| Needs a tty                     | yes                       | no                      |
-| Needs shell integration sourced | yes                       | no                      |
-| Briefly owns terminal I/O       | yes                       | no                      |
-| Best for                        | prompt hooks, in-shell UI | scripts, CI, automation |
+|                                 | `hollow-cli`                | `hollow cli …`         |
+| ------------------------------- | --------------------------- | ---------------------- |
+| Transport                       | host socket or OSC over tty | host command socket    |
+| Needs a tty                     | only for OSC                | no                     |
+| Needs shell integration sourced | no                          | no                     |
+| Briefly owns terminal I/O       | only for OSC queries        | no                     |
+| Best for                        | portable Python automation  | native host automation |
 
 ## See also
 

@@ -60,10 +60,10 @@ integration installed. This is the path most scripts and CI should use.
 
 See [Native CLI](reference/cli/native.md) for the full command surface.
 
-### 2. OSC from the shell
+### 2. Portable client from the shell
 
 For shell-built-in use cases (a prompt hook that reports cwd, a
-chained command that opens a picker) use the OSC transport via
+chained command that opens a picker) use
 [`hollow-cli`](reference/cli/hollow-cli.md):
 
 ```bash
@@ -72,9 +72,15 @@ hollow-cli emit split_pane '{"floating":true}'
 hollow-cli get current-pane
 ```
 
-The OSC path uses `/dev/tty` and briefly owns terminal I/O while it
-waits for the host reply. It works over SSH and inside WSL when the
-host-side CLI is not available.
+The client uses the host command socket when reachable and otherwise falls back
+to OSC. Socket commands do not touch terminal input. OSC works over SSH and
+inside WSL when the host-side socket is unavailable. SSH sessions can optionally
+reverse-forward a private Unix socket for process-safe queries.
+
+For Hollow-managed SSH domains, the intended model is one forwarded socket per
+Hollow instance and remote host, owned by the shared SSH ControlMaster. Pane
+identity remains request metadata through `HOLLOW_PANE_ID`; it does not require
+one socket per pane. Automatic managed-domain forwarding is not implemented yet.
 
 See [Shell integration recipes](shell-integration-recipes.md).
 
@@ -115,16 +121,16 @@ install prompt hooks that emit `cwd_changed` and `command_started` /
 window title via OSC 0 on every prompt. For queries and ad hoc emits,
 call [`hollow-cli`](reference/cli/hollow-cli.md).
 
-## Choosing between OSC and the native CLI
+## Choosing between `hollow-cli` and the native CLI
 
-| | Native CLI | OSC (`hollow-cli`) |
+| | Native CLI | `hollow-cli` |
 | --- | --- | --- |
 | Needs a running Hollow window | yes | yes |
 | Needs shell integration sourced | no | no |
-| Needs a tty | no | yes |
+| Needs a tty | no | only for OSC |
 | Works over SSH from another box | no | no |
 | Works inside WSL from a Windows Hollow | yes | yes |
-| Best for | scripts, CI, automation | prompt hooks, in-shell UI |
+| Best for | native host automation | portable Python automation |
 
 The two are not mutually exclusive. Use prompt hooks for ambient
 metadata (cwd, foreground process) and the native CLI for explicit
