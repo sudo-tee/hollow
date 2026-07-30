@@ -212,6 +212,7 @@ extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: COORD) callconv(.wina
 extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
 extern "kernel32" fn CreatePipe(hReadPipe: *windows.HANDLE, hWritePipe: *windows.HANDLE, lpPipeAttributes: ?*windows.SECURITY_ATTRIBUTES, nSize: windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn CancelSynchronousIo(hThread: windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn PeekNamedPipe(hNamedPipe: windows.HANDLE, lpBuffer: ?*anyopaque, nBufferSize: windows.DWORD, lpBytesRead: ?*windows.DWORD, lpTotalBytesAvail: ?*windows.DWORD, lpBytesLeftThisMessage: ?*windows.DWORD) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn CreateProcessW(lpApplicationName: ?windows.LPWSTR, lpCommandLine: ?windows.LPWSTR, lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES, lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES, bInheritHandles: windows.BOOL, dwCreationFlags: windows.DWORD, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?windows.LPWSTR, lpStartupInfo: *windows.STARTUPINFOW, lpProcessInformation: *windows.PROCESS.INFORMATION) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn SearchPathW(lpPath: ?windows.LPCWSTR, lpFileName: windows.LPCWSTR, lpExtension: ?windows.LPCWSTR, nBufferLength: windows.DWORD, lpBuffer: ?windows.LPWSTR, lpFilePart: ?*windows.LPWSTR) callconv(.winapi) windows.DWORD;
@@ -230,6 +231,9 @@ const Backend = enum {
 };
 
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+const WRITER_HIGH_WATER_BYTES = 1024 * 1024;
+const WRITER_MAX_COMMANDS = 4096;
+const WRITER_CANCEL_TIMEOUT_NS = 500 * std.time.ns_per_ms;
 
 const ReaderState = struct {
     mutex: io.Mutex = .{},
@@ -242,6 +246,26 @@ const ReaderState = struct {
     closing: bool = false,
     out_of_memory: bool = false,
     wake: Wake = .{},
+};
+
+const WriterCommand = union(enum) {
+    input: []u8,
+    resize: struct { cols: u16, rows: u16 },
+};
+
+const WriterState = struct {
+    allocator: std.mem.Allocator,
+    backend: Backend,
+    hpc: ?HPCON,
+    write_pipe: windows.HANDLE,
+    mutex: io.Mutex = .{},
+    ready: io.Condition = .{},
+    commands: std.ArrayListUnmanaged(WriterCommand) = .empty,
+    command_start: usize = 0,
+    queued_input_bytes: usize = 0,
+    closing: bool = false,
+    failed: bool = false,
+    operation_active: bool = false,
 };
 
 pub const WindowsPty = struct {
@@ -258,6 +282,8 @@ pub const WindowsPty = struct {
     stderr_pipe: windows.HANDLE,
     reader_state: *ReaderState,
     reader_thread: ?std.Thread,
+    writer_state: *WriterState,
+    writer_thread: ?std.Thread,
     pending_input: std.ArrayListUnmanaged(u8) = .empty,
     alive: bool = true,
     closed: bool = false,
@@ -377,6 +403,12 @@ pub const WindowsPty = struct {
             std.log.err("conpty CreateProcessW failed err={d}", .{windows.GetLastError()});
             return error.CreateProcessFailed;
         }
+        var process_owned = true;
+        errdefer if (process_owned) {
+            _ = TerminateProcess(pi.hProcess, 0);
+            closeHandleIfValid(pi.hThread);
+            closeHandleIfValid(pi.hProcess);
+        };
         std.log.info("conpty spawned process pid={d} shell={s}", .{ pi.dwProcessId, spec.log_command });
 
         // Non-blocking check for immediate spawn failure (bad args, missing exe, etc.).
@@ -399,6 +431,9 @@ pub const WindowsPty = struct {
         const reader_state = try allocator.create(ReaderState);
         reader_state.* = .{ .wake = wake };
         errdefer allocator.destroy(reader_state);
+        const writer_state = try allocator.create(WriterState);
+        writer_state.* = .{ .allocator = allocator, .backend = .conpty, .hpc = hpc.?, .write_pipe = input_write };
+        errdefer allocator.destroy(writer_state);
 
         var pty = WindowsPty{
             .allocator = allocator,
@@ -414,9 +449,24 @@ pub const WindowsPty = struct {
             .stderr_pipe = windows.INVALID_HANDLE_VALUE,
             .reader_state = reader_state,
             .reader_thread = null,
+            .writer_state = writer_state,
+            .writer_thread = null,
         };
+        process_owned = false;
 
-        pty.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{ pty.read_pipe, pty.reader_state });
+        pty.writer_thread = std.Thread.spawn(.{}, writerLoop, .{pty.writer_state}) catch |err| {
+            _ = TerminateProcess(pi.hProcess, 0);
+            closeHandleIfValid(pi.hThread);
+            closeHandleIfValid(pi.hProcess);
+            return err;
+        };
+        pty.reader_thread = std.Thread.spawn(.{}, readerLoop, .{ pty.read_pipe, pty.reader_state }) catch |err| {
+            stopWriterThread(&pty);
+            _ = TerminateProcess(pi.hProcess, 0);
+            closeHandleIfValid(pi.hThread);
+            closeHandleIfValid(pi.hProcess);
+            return err;
+        };
 
         return pty;
     }
@@ -429,6 +479,13 @@ pub const WindowsPty = struct {
         if (self.closed) return false;
         // Fast path: already known dead.
         if (!self.alive) return false;
+        self.writer_state.mutex.lock();
+        const writer_failed = self.writer_state.failed;
+        self.writer_state.mutex.unlock();
+        if (writer_failed) {
+            self.alive = false;
+            return false;
+        }
 
         // Check pipe EOF first — the reader thread sets this when ReadFile fails.
         self.reader_state.mutex.lock();
@@ -510,28 +567,26 @@ pub const WindowsPty = struct {
             return;
         }
         try self.flushPendingInputIfReady();
-        try self.writeToPty(bytes);
+        try self.queueInput(bytes);
     }
 
-    fn writeToPty(self: *WindowsPty, bytes: []const u8) !void {
-        switch (self.backend) {
-            .conpty => {
-                var offset: usize = 0;
-                while (offset < bytes.len) {
-                    var written: windows.DWORD = 0;
-                    const chunk: windows.DWORD = @intCast(bytes.len - offset);
-                    const ok = WriteFile(self.write_pipe, bytes.ptr + offset, chunk, &written, null);
-                    if (ok == .FALSE) {
-                        const err = windows.GetLastError();
-                        std.log.err("conpty WriteFile failed err={d} written={d}", .{ err, written });
-                        return error.WriteFailed;
-                    }
-                    if (written == 0) return error.WriteFailed;
-                    offset += written;
-                }
-            },
-            .wsl_bypass => try sendBypassFrame(self.write_pipe, .input, bytes),
+    fn queueInput(self: *WindowsPty, bytes: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, bytes);
+        errdefer self.allocator.free(owned);
+        self.writer_state.mutex.lock();
+        defer self.writer_state.mutex.unlock();
+        if (self.writer_state.closing) return error.WriteFailed;
+        if (self.writer_state.queued_input_bytes + owned.len > WRITER_HIGH_WATER_BYTES or
+            self.writer_state.commands.items.len - self.writer_state.command_start >= WRITER_MAX_COMMANDS)
+        {
+            self.writer_state.failed = true;
+            self.writer_state.closing = true;
+            self.writer_state.ready.broadcast();
+            return error.WriteFailed;
         }
+        try self.writer_state.commands.append(self.allocator, .{ .input = owned });
+        self.writer_state.queued_input_bytes += owned.len;
+        self.writer_state.ready.signal();
     }
 
     fn shellProducedOutput(self: *WindowsPty) bool {
@@ -542,26 +597,25 @@ pub const WindowsPty = struct {
 
     fn flushPendingInputIfReady(self: *WindowsPty) !void {
         if (self.pending_input.items.len == 0 or !self.shellProducedOutput()) return;
-        const pending = try self.pending_input.toOwnedSlice(self.allocator);
-        defer self.allocator.free(pending);
+        try self.queueInput(self.pending_input.items);
         self.pending_input.clearRetainingCapacity();
-        try self.writeToPty(pending);
     }
 
     pub fn resize(self: *WindowsPty, cols: u16, rows: u16) void {
-        switch (self.backend) {
-            .conpty => if (self.hpc) |hpc| {
-                _ = ResizePseudoConsole(hpc, .{ .X = @intCast(cols), .Y = @intCast(rows) });
-            },
-            .wsl_bypass => {
-                var payload: [4]u8 = undefined;
-                std.mem.writeInt(u16, payload[0..2], cols, .little);
-                std.mem.writeInt(u16, payload[2..4], rows, .little);
-                sendBypassFrame(self.write_pipe, .resize, &payload) catch |err| {
-                    std.log.warn("wsl bypass resize failed: {s}", .{@errorName(err)});
-                };
-            },
+        self.writer_state.mutex.lock();
+        defer self.writer_state.mutex.unlock();
+        if (self.writer_state.closing) return;
+        if (self.writer_state.commands.items.len > self.writer_state.command_start) {
+            switch (self.writer_state.commands.items[self.writer_state.commands.items.len - 1]) {
+                .resize => {
+                    self.writer_state.commands.items[self.writer_state.commands.items.len - 1] = .{ .resize = .{ .cols = cols, .rows = rows } };
+                    return;
+                },
+                else => {},
+            }
         }
+        self.writer_state.commands.append(self.allocator, .{ .resize = .{ .cols = cols, .rows = rows } }) catch return;
+        self.writer_state.ready.signal();
     }
 
     pub fn childPid(self: *const WindowsPty) usize {
@@ -579,19 +633,28 @@ pub const WindowsPty = struct {
         self.reader_state.closing = true;
         self.reader_state.ready.broadcast();
         self.reader_state.mutex.unlock();
+        stopWriterThread(self);
+        if (self.backend == .wsl_bypass) {
+            closeHandleIfValid(self.write_pipe);
+            self.write_pipe = windows.INVALID_HANDLE_VALUE;
+        }
         switch (self.backend) {
             .conpty => {
                 // Terminate the child process if still alive.
-                if (self.isAlive()) _ = TerminateProcess(self.process, 0);
+                if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
+                    _ = TerminateProcess(self.process, 0);
+                }
                 // ClosePseudoConsole MUST come before closing read_pipe and before
                 // thread.join().  It tears down the ConPTY, which causes the in-flight
                 // ReadFile on read_pipe (in the reader thread) to return immediately with
                 // an error — unblocking the thread.  Closing read_pipe first leaves
                 // ReadFile in an undefined state and can hang the join forever.
-                if (self.hpc) |hpc| ClosePseudoConsole(hpc);
+                if (self.hpc) |hpc| {
+                    ClosePseudoConsole(hpc);
+                    self.hpc = null;
+                }
             },
             .wsl_bypass => {
-                _ = sendBypassFrame(self.write_pipe, .exit, &.{}) catch {};
                 if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
                     _ = WaitForSingleObject(self.process, WSL_BYPASS_EXIT_TIMEOUT_MS);
                     if (WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
@@ -604,11 +667,14 @@ pub const WindowsPty = struct {
         closeHandleIfValid(self.output_pipe_pty);
         closeHandleIfValid(self.read_pipe);
         closeHandleIfValid(self.write_pipe);
+        self.write_pipe = windows.INVALID_HANDLE_VALUE;
         closeHandleIfValid(self.stderr_pipe);
         if (self.reader_thread) |thread| thread.join();
         closeHandleIfValid(self.process);
         closeHandleIfValid(self.thread);
         self.pending_input.deinit(self.allocator);
+        self.writer_state.commands.deinit(self.allocator);
+        self.allocator.destroy(self.writer_state);
         self.reader_state.buf.deinit(std.heap.page_allocator);
         self.allocator.destroy(self.reader_state);
         self.closed = true;
@@ -707,6 +773,12 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
         std.log.warn("wsl bypass CreateProcessW failed err={d}", .{windows.GetLastError()});
         return error.WslBypassUnavailable;
     }
+    var process_owned = true;
+    errdefer if (process_owned) {
+        _ = TerminateProcess(pi.hProcess, 0);
+        closeHandleIfValid(pi.hThread);
+        closeHandleIfValid(pi.hProcess);
+    };
 
     closeHandleIfValid(child_stdin_read);
     child_stdin_read = windows.INVALID_HANDLE_VALUE;
@@ -717,6 +789,11 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
 
     const reader_state = try allocator.create(ReaderState);
     reader_state.* = .{ .wake = wake };
+    var states_owned_by_pty = false;
+    errdefer if (!states_owned_by_pty) allocator.destroy(reader_state);
+    const writer_state = try allocator.create(WriterState);
+    writer_state.* = .{ .allocator = allocator, .backend = .wsl_bypass, .hpc = null, .write_pipe = parent_stdin_write };
+    errdefer if (!states_owned_by_pty) allocator.destroy(writer_state);
 
     var pty = WindowsPty{
         .allocator = allocator,
@@ -732,17 +809,160 @@ fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u
         .stderr_pipe = parent_stderr_read,
         .reader_state = reader_state,
         .reader_thread = null,
+        .writer_state = writer_state,
+        .writer_thread = null,
     };
+    process_owned = false;
+    states_owned_by_pty = true;
 
     if (!readBypassHello(pty.process, pty.read_pipe, pty.reader_state, WSL_BYPASS_STARTUP_TIMEOUT_MS)) {
         pty.close();
         return error.WslBypassUnavailable;
     }
 
-    pty.reader_thread = try std.Thread.spawn(.{}, wslBypassReaderLoop, .{ pty.read_pipe, pty.reader_state });
+    pty.writer_thread = std.Thread.spawn(.{}, writerLoop, .{pty.writer_state}) catch |err| {
+        _ = TerminateProcess(pi.hProcess, 0);
+        closeHandleIfValid(pi.hThread);
+        closeHandleIfValid(pi.hProcess);
+        allocator.destroy(writer_state);
+        allocator.destroy(reader_state);
+        return err;
+    };
+    pty.reader_thread = std.Thread.spawn(.{}, wslBypassReaderLoop, .{ pty.read_pipe, pty.reader_state }) catch |err| {
+        stopWriterThread(&pty);
+        _ = TerminateProcess(pi.hProcess, 0);
+        closeHandleIfValid(pi.hThread);
+        closeHandleIfValid(pi.hProcess);
+        writer_state.commands.deinit(allocator);
+        allocator.destroy(writer_state);
+        allocator.destroy(reader_state);
+        return err;
+    };
 
     std.log.info("wsl bypass ready pid={d} shell={s} startup_ms={d}", .{ pty.process_id, spec.log_command, io.milliTimestamp() - start_ms });
     return pty;
+}
+
+fn writerLoop(state: *WriterState) void {
+    while (true) {
+        state.mutex.lock();
+        while (!state.closing and state.command_start == state.commands.items.len) state.ready.wait(&state.mutex);
+        if (state.closing) {
+            for (state.commands.items[state.command_start..]) |command| switch (command) {
+                .input => |bytes| state.allocator.free(bytes),
+                .resize => {},
+            };
+            state.commands.clearRetainingCapacity();
+            state.command_start = 0;
+            state.queued_input_bytes = 0;
+            state.mutex.unlock();
+            return;
+        }
+        const command = state.commands.items[state.command_start];
+        state.command_start += 1;
+        switch (command) {
+            .input => |bytes| state.queued_input_bytes -= bytes.len,
+            .resize => {},
+        }
+        if (state.command_start >= 64 and state.command_start * 2 >= state.commands.items.len) {
+            const remaining = state.commands.items.len - state.command_start;
+            std.mem.copyForwards(WriterCommand, state.commands.items[0..remaining], state.commands.items[state.command_start..]);
+            state.commands.items.len = remaining;
+            state.command_start = 0;
+        }
+        state.operation_active = true;
+        state.mutex.unlock();
+
+        switch (command) {
+            .input => |bytes| {
+                defer state.allocator.free(bytes);
+                writerSendInput(state, bytes) catch |err| {
+                    std.log.warn("pty writer input failed: {s}", .{@errorName(err)});
+                    markWriterFailed(state);
+                };
+            },
+            .resize => |size| writerResize(state, size.cols, size.rows) catch |err| {
+                std.log.warn("pty writer resize failed: {s}", .{@errorName(err)});
+                markWriterFailed(state);
+            },
+        }
+        state.mutex.lock();
+        state.operation_active = false;
+        state.ready.broadcast();
+        state.mutex.unlock();
+    }
+}
+
+fn markWriterFailed(state: *WriterState) void {
+    state.mutex.lock();
+    state.failed = true;
+    state.closing = true;
+    state.ready.broadcast();
+    state.mutex.unlock();
+}
+
+fn stopWriterThread(pty: *WindowsPty) void {
+    pty.writer_state.mutex.lock();
+    pty.writer_state.closing = true;
+    pty.writer_state.ready.broadcast();
+    if (pty.writer_thread) |thread| {
+        const cancel_deadline_ns = io.nanoTimestamp() + WRITER_CANCEL_TIMEOUT_NS;
+        var fallback_applied = false;
+        while (pty.writer_state.operation_active) {
+            pty.writer_state.mutex.unlock();
+            _ = CancelSynchronousIo(thread.getHandle());
+            pty.writer_state.mutex.lock();
+            if (!fallback_applied and io.nanoTimestamp() >= cancel_deadline_ns) {
+                pty.writer_state.mutex.unlock();
+                closeHandleIfValid(pty.write_pipe);
+                pty.write_pipe = windows.INVALID_HANDLE_VALUE;
+                if (pty.backend == .conpty) {
+                    if (pty.hpc) |hpc| ClosePseudoConsole(hpc);
+                    pty.hpc = null;
+                }
+                pty.writer_state.mutex.lock();
+                pty.writer_state.write_pipe = windows.INVALID_HANDLE_VALUE;
+                pty.writer_state.hpc = null;
+                fallback_applied = true;
+            }
+            if (pty.writer_state.operation_active) io.waitTimeout(&pty.writer_state.ready.inner, &pty.writer_state.mutex.inner, std.time.ns_per_ms) catch {};
+        }
+        pty.writer_state.mutex.unlock();
+        thread.join();
+        pty.writer_thread = null;
+    } else {
+        pty.writer_state.mutex.unlock();
+    }
+}
+
+fn writerSendInput(state: *WriterState, bytes: []const u8) !void {
+    switch (state.backend) {
+        .conpty => {
+            var offset: usize = 0;
+            while (offset < bytes.len) {
+                var written: windows.DWORD = 0;
+                const chunk: windows.DWORD = @intCast(bytes.len - offset);
+                const ok = WriteFile(state.write_pipe, bytes.ptr + offset, chunk, &written, null);
+                if (ok == .FALSE or written == 0) return error.WriteFailed;
+                offset += written;
+            }
+        },
+        .wsl_bypass => try sendBypassFrame(state.write_pipe, .input, bytes),
+    }
+}
+
+fn writerResize(state: *WriterState, cols: u16, rows: u16) !void {
+    switch (state.backend) {
+        .conpty => if (state.hpc) |hpc| {
+            if (ResizePseudoConsole(hpc, .{ .X = @intCast(cols), .Y = @intCast(rows) }) != 0) return error.ResizeFailed;
+        },
+        .wsl_bypass => {
+            var payload: [4]u8 = undefined;
+            std.mem.writeInt(u16, payload[0..2], cols, .little);
+            std.mem.writeInt(u16, payload[2..4], rows, .little);
+            try sendBypassFrame(state.write_pipe, .resize, &payload);
+        },
+    }
 }
 
 fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {

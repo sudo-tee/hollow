@@ -2164,6 +2164,16 @@ pub const App = struct {
         var automation_changed = false;
         var next_idle_render_poll_ns: i128 = 0;
         if (self.mux) |*mux| {
+            const active_pane = mux.activePane();
+            var inactive_panes_remaining: usize = 0;
+            var count_panes = mux.paneIterator();
+            while (count_panes.next()) |pane| {
+                if (pane != active_pane) inactive_panes_remaining += 1;
+            }
+            // Heavy background output otherwise rebuilds and redraws terminal
+            // state every frame. Leave alternating frames free for input and
+            // active-pane rendering.
+            var inactive_pty_budget: usize = if (self.frame_count % 2 == 0) 16 * 1024 else 0;
             var panes = mux.paneIterator();
             var pane_idx: usize = 0;
             var total_pty_read_ns: i128 = 0;
@@ -2179,16 +2189,25 @@ pub const App = struct {
             var total_child_alive_ns: i128 = 0;
             var total_encoder_sync_ns: i128 = 0;
             while (panes.next()) |pane| {
-                const pane_is_active = (self.activePane() == pane);
+                const pane_is_active = active_pane == pane;
                 const active_screen_before = pane.active_screen;
-                // Let the active pane drain a larger PTY backlog per tick so VT
-                // parsing tracks the producer more like Ghostty's dedicated read
-                // path instead of spreading one burst across many frame ticks.
-                const pty_read_loops: usize = if (pane_is_active) 64 else 2;
-                const pty_read_bytes: usize = if (pane_is_active) 1024 * 1024 else 32 * 1024;
-                pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| {
+                const pty_read_loops: usize = if (pane_is_active) 4 else 2;
+                // Inactive panes share one frame budget so work remains bounded
+                // regardless of pane count. Idle panes donate quota to later panes.
+                const pty_read_bytes: usize = if (pane_is_active)
+                    64 * 1024
+                else if (inactive_panes_remaining > 0 and inactive_pty_budget > 0)
+                    (inactive_pty_budget + inactive_panes_remaining - 1) / inactive_panes_remaining
+                else
+                    0;
+                const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
+                    break :result 0;
                 };
+                if (!pane_is_active) {
+                    inactive_pty_budget -|= pty_bytes_read;
+                    inactive_panes_remaining -= 1;
+                }
                 if (pane.active_screen != active_screen_before) {
                     automation_changed = true;
                     std.log.info("app: pane screen changed pane={x} {d}->{d}, resizing layout", .{

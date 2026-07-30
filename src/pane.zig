@@ -466,7 +466,8 @@ pub const Pane = struct {
         return quoted.toOwnedSlice(allocator);
     }
 
-    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, debug_overlay: bool) !void {
+    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, debug_overlay: bool) !usize {
+        var total_read: usize = 0;
         if (self.pty) |*pty| {
             self.last_pty_read_ns = 0;
             self.last_terminal_write_ns = 0;
@@ -479,11 +480,11 @@ pub const Pane = struct {
             if (self.render_state_ready) {
                 self.terminal_write_batch.clearRetainingCapacity();
             }
-            var total_read: usize = 0;
             var read_loops: usize = 0;
             while (read_loops < max_read_loops and total_read < max_total_read) {
+                const read_limit = @min(TERMINAL_WRITE_CHUNK_SIZE, max_total_read - total_read);
                 const read_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                const count = pty.read(self.read_buf) catch |err| {
+                const count = pty.read(self.read_buf[0..read_limit]) catch |err| {
                     if (err == error.EndOfStream) break;
                     return err;
                 };
@@ -547,9 +548,9 @@ pub const Pane = struct {
             self.refreshChildAliveCache(false);
             if (debug_overlay) self.last_child_alive_ns += io.nanoTimestamp() - child_alive_start_ns;
             if (self.pending_startup_input.len > 0 and self.logged_first_pty_read) {
-                if (total_read == 0) {
+                if (total_read == 0 and max_total_read > 0 and !pty.hasPendingOutput()) {
                     self.startup_input_quiet_ticks +|= 1;
-                } else {
+                } else if (total_read > 0) {
                     self.startup_input_quiet_ticks = 0;
                 }
                 if (self.startup_input_quiet_ticks >= 1) {
@@ -596,12 +597,13 @@ pub const Pane = struct {
                 runtime.clearRenderStateDirty(self.render_state);
                 runtime.updateRenderState(self.render_state, self.terminal) catch |err| {
                     std.log.err("pane updateRenderState after PTY drain failed: {s}", .{@errorName(err)});
-                    return;
+                    return total_read;
                 };
                 self.last_render_state_update_ns = now_ns;
                 self.render_state_fresh = true;
             }
         }
+        return total_read;
     }
 
     pub fn sendText(self: *Pane, text: []const u8) void {
