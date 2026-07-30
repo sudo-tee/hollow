@@ -13,6 +13,7 @@ local DEFAULT_WIDTH = 100
 -- ▶ collapsed / ▼ expanded
 local ICON_COLLAPSED = "\226\150\182"
 local ICON_EXPANDED = "\226\150\188"
+local ICON_BELL = "\226\151\143 "
 
 local function matches(query, text)
   return query == "" or shared.select_item_matches(query, text, true)
@@ -233,7 +234,15 @@ function ui.mux_navigator.open(opts)
             options.scrollbar_thumb_color = theme.scrollbar_thumb
 
             return ui.row({
-              ui.text((selected and "> " or "  ") .. row_text(row, collapsed), {
+              ui.text(selected and "> " or "  ", {
+                fg = fg,
+                bold = is_workspace or selected or active,
+              }),
+              ui.text(row.kind == "pane" and row.item.has_bell and ICON_BELL or "  ", {
+                fg = row.item.has_bell and theme.notify_levels.warn or fg,
+                bold = row.item.has_bell,
+              }),
+              ui.text(row_text(row, collapsed), {
                 fg = fg,
                 bold = is_workspace or selected or active,
               }),
