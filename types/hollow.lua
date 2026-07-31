@@ -1303,6 +1303,9 @@ function term.send_key(combo, pane_id) end
 function term.send_text(text, pane_id) end
 
 ---@param pane_id? integer
+function term.bell(pane_id) end
+
+---@param pane_id? integer
 ---@return string
 function term.get_pane_text(pane_id) end
 
@@ -1931,6 +1934,7 @@ function plugins.sync() end
 ---@field close_tab_by_id fun(tab_id: integer): boolean
 ---@field close_pane_by_id fun(pane_id: integer): boolean
 ---@field set_tab_title_by_id fun(tab_id: integer, title: string): boolean
+---@field bell_pane fun(pane_id: integer): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean
 ---@field get_pane_domain fun(pane_id: integer): string
 ---@field get_window_width fun(): integer

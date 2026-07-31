@@ -257,7 +257,7 @@ fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.
         .pane_tile => return enqueuePaneFloatingCommand(self, request, false),
         .pane_move => return enqueuePaneMoveCommand(self, request),
         .pane_resize => return enqueuePaneResizeCommand(self, request),
-        .pane_send_text, .send_keys => return enqueueCommandRequest(self, request),
+        .pane_send_text, .pane_bell, .send_keys => return enqueueCommandRequest(self, request),
         .pane_set_tag => return enqueueCommandRequest(self, request),
         .pane_remove_tag => return enqueueCommandRequest(self, request),
         .pane_set_tags => return enqueueCommandRequest(self, request),
@@ -637,6 +637,7 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .pane_move => execPaneMove(self, request),
         .pane_resize => execPaneResize(self, request),
         .pane_send_text, .send_keys => execPaneSendText(self, request),
+        .pane_bell => execPaneBell(self, request),
         .pane_set_tag => execPaneSetTag(self, request),
         .pane_remove_tag => execPaneRemoveTag(self, request),
         .pane_set_tags => execPaneSetTags(self, request),
@@ -864,6 +865,12 @@ fn execPaneSendText(self: *App, request: command_mod.Request) command_mod.Respon
     const text = request.text orelse return command_mod.Response.fail("invalid_args", "missing pane text");
     const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
     if (!mux_ops.sendTextToPane(self, pane_id, text)) return command_mod.Response.fail("invalid_args", "unknown pane id");
+    return okNull();
+}
+
+fn execPaneBell(self: *App, request: command_mod.Request) command_mod.Response {
+    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+    if (!mux_ops.sendBellToPane(self, pane_id)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }
 

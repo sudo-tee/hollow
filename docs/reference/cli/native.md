@@ -89,6 +89,7 @@ Query state. All `get` commands print JSON.
 | `hollow cli pane tile`                           | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane move <left\|right\|up\|down>`   | `[--id ID\|--tag TAG] [--amount N]`                                     |
 | `hollow cli pane resize <left\|right\|up\|down>` | `[--id ID\|--tag TAG] [--amount N]`                                     |
+| `hollow cli pane bell`                            | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane send-text <text>`               | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane set-tag <tag>`                  | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane remove-tag <tag>`               | `[--id ID\|--tag TAG]`                                                  |
@@ -164,6 +165,9 @@ hollow.exe cli pane split vertical --domain wsl --cmd "npm run dev"
 
 # Send Ctrl-C to the active pane
 hollow.exe cli send-keys "{C-c}"
+
+# Trigger attention in a specific pane
+hollow.exe cli pane bell --id 123
 
 # Reload the config
 hollow.exe cli config reload

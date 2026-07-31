@@ -53,6 +53,13 @@ pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
     return true;
 }
 
+pub fn sendBellToPane(self: *App, pane_id: usize) bool {
+    const pane = self.findPaneById(pane_id) orelse return false;
+    pane.bell_dirty = true;
+    self.signalWake();
+    return true;
+}
+
 pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
     const rt = if (self.ghostty) |*r| r else return false;

@@ -424,6 +424,11 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     hollow.term.send_text(payload.text, target_pane_id(ctx, payload))
   end)
 
+  hollow.htp.on_emit("bell", function(ctx)
+    local payload = event_payload(ctx)
+    hollow.term.bell(target_pane_id(ctx, payload))
+  end)
+
   hollow.htp.on_emit("set_pane_tags", function(ctx)
     local payload = event_payload(ctx)
     hollow.term.set_pane_tags(payload.tags, target_pane_id(ctx, payload))

@@ -59,6 +59,7 @@ local function make_host_api()
     quick_select = nil,
     workspace_default_cwd = nil,
     send_text = {},
+    bell = nil,
     files = {},
     dirs = {},
     deferred_calls = 0,
@@ -703,6 +704,14 @@ local function make_host_api()
       return false
     end
     recorded.send_text[#recorded.send_text + 1] = text
+    return true
+  end
+
+  function host_api.bell_pane(pane_id)
+    if panes[pane_id] == nil then
+      return false
+    end
+    recorded.bell = pane_id
     return true
   end
 
@@ -1648,6 +1657,10 @@ assert_equal(
   "ls\n",
   "HTP send_text should forward text to the pane"
 )
+
+local ok_bell = hollow.htp._handle_emit("bell", { id = 101 }, 101)
+assert_true(ok_bell, "HTP bell should succeed")
+assert_equal(recorded.bell, 101, "HTP bell should target pane ids")
 
 local ok_add_pane_tag = hollow.htp._handle_emit("add_pane_tag", { id = 101, tag = "ci" }, 101)
 assert_true(ok_add_pane_tag, "HTP add_pane_tag should succeed")

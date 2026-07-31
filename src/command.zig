@@ -38,6 +38,7 @@ pub const Kind = enum {
     pane_move,
     pane_resize,
     pane_send_text,
+    pane_bell,
     pane_set_tag,
     pane_remove_tag,
     pane_set_tags,
@@ -369,6 +370,13 @@ test "parseEnvelope loads command envelope" {
     try std.testing.expectEqual(.pane_send_text, parsed.request.kind);
     try std.testing.expectEqual(@as(usize, 7), parsed.request.pane_id);
     try std.testing.expectEqualStrings("ls\n", parsed.request.text.?);
+}
+
+test "parseEnvelope loads pane bell command" {
+    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"pane_bell\",\"id\":7}");
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(.pane_bell, parsed.request.kind);
+    try std.testing.expectEqual(@as(usize, 7), parsed.request.id.?);
 }
 
 test "parseEnvelope rejects mixed tags without invalid cleanup" {
