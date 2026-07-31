@@ -276,6 +276,10 @@ local function make_host_api()
     return panes[pane_id].has_bell or false
   end
 
+  function host_api.set_pane_bell(pane_id, value)
+    panes[pane_id].has_bell = value == true
+  end
+
   function host_api.get_pane_x(pane_id)
     return panes[pane_id].x
   end
@@ -1602,9 +1606,21 @@ local bell_event = nil
 hollow.events.once("term:bell", function(payload)
   bell_event = payload
 end)
+state.get().ui.topbar_cache_dirty = false
+state.get().ui.bottombar_cache_dirty = false
 hollow._emit_builtin_event("term:bell", { pane_id = 101 })
 assert_true(bell_event ~= nil, "term:bell should fire when emitted by the host")
 assert_equal(bell_event.pane.id, 101, "term:bell payload should expose a pane snapshot")
+assert_equal(
+  state.get().ui.topbar_cache_dirty,
+  true,
+  "term:bell should invalidate the topbar cache"
+)
+assert_equal(
+  state.get().ui.bottombar_cache_dirty,
+  true,
+  "term:bell should invalidate the bottombar cache"
+)
 
 local ok_query, pane_query = hollow.htp._handle_query("pane", nil, 101)
 assert_true(ok_query, "built-in HTP pane query should succeed")
@@ -1811,6 +1827,74 @@ assert_true(
   "workspace switcher should match alpha on the first key"
 )
 hollow.ui.overlay.clear()
+
+host_api.set_pane_bell(101, true)
+hollow.ui.mux_navigator.open({
+  filter = "pane_bell",
+  title = "Attention",
+  max_height = 12,
+})
+local mux_overlay = hollow.ui._overlay_state()
+assert_true(mux_overlay ~= nil, "mux navigator should create an overlay")
+local mux_overlay_text = ""
+local mux_theme = hollow.ui.resolve_theme("select")
+local bell_marker = string.char(226, 151, 143) .. " "
+local saw_yellow_bell = false
+local saw_green_process = false
+for _, row in ipairs(mux_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    mux_overlay_text = mux_overlay_text .. (segment.text or "")
+    if segment.text == bell_marker and segment.fg == mux_theme.notify_levels.warn then
+      saw_yellow_bell = true
+    end
+    if segment.text == ": zig build" and segment.fg == mux_theme.notify_levels.success then
+      saw_green_process = true
+    end
+  end
+  mux_overlay_text = mux_overlay_text .. "\n"
+end
+assert_true(
+  mux_overlay_text:find("zig build", 1, true) ~= nil,
+  "mux navigator should show foreground process as pane label"
+)
+assert_true(
+  mux_overlay_text:find("Tab 1: shell", 1, true) ~= nil,
+  "mux navigator should prefix tab labels with tab index"
+)
+assert_true(
+  mux_overlay_text:find("Pane 1: zig build", 1, true) ~= nil,
+  "mux navigator should prefix pane labels with pane index"
+)
+assert_true(
+  mux_overlay_text:find("/tmp/project", 1, true) == nil,
+  "mux navigator should omit pane cwd from row details"
+)
+assert_true(saw_yellow_bell, "mux navigator should keep bell markers yellow")
+assert_true(saw_green_process, "mux navigator should color foreground processes green")
+assert_true(
+  mux_overlay_text:find("Pane bells", 1, true) ~= nil,
+  "mux navigator should show active filter"
+)
+assert_true(on_key("f", 0), "mux navigator should cycle filters")
+mux_overlay = hollow.ui._overlay_state()
+local mux_filter_text = ""
+for _, row in ipairs(mux_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    mux_filter_text = mux_filter_text .. (segment.text or "")
+  end
+end
+assert_true(
+  mux_filter_text:find("All panes", 1, true) ~= nil,
+  "mux navigator filter key should select all panes"
+)
+hollow.ui.overlay.clear()
+
+hollow.ui.mux_navigator.open({ filter = "pane_bell", max_height = 12 })
+assert_true(on_key("arrow_down", 0), "mux navigator should move to tab row")
+assert_true(on_key("arrow_down", 0), "mux navigator should move to pane row")
+assert_true(on_key("enter", 0), "mux navigator should focus selected pane")
+assert_equal(recorded.focus_pane_by_id, 101, "mux navigator should focus pane by id")
+host_api.set_pane_bell(101, false)
 
 hollow.ui.select.open({
   items = {

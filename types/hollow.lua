@@ -1634,6 +1634,8 @@ function command_palette.close() end
 
 ---@class HollowUiMuxNavigatorOptions
 ---@field query? string
+---@field filter? "all"|"pane_bell"
+---@field title? string
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer

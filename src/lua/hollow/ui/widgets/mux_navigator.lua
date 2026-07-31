@@ -9,17 +9,52 @@ ui.mux_navigator = ui.mux_navigator or {}
 
 local DEFAULT_TOTAL_ROWS = 30
 local DEFAULT_WIDTH = 100
+local FILTER_ORDER = { "all", "pane_bell" }
 
 -- ▶ collapsed / ▼ expanded
 local ICON_COLLAPSED = "\226\150\182"
 local ICON_EXPANDED = "\226\150\188"
 local ICON_BELL = "\226\151\143 "
+local ICON_PANE_ACTIVE = "\226\151\143 "
+local ICON_PANE_INACTIVE = "\226\151\139 "
+
+local FILTERS = {
+  all = {
+    label = "All panes",
+    matches = function()
+      return true
+    end,
+  },
+  pane_bell = {
+    label = "Pane bells",
+    matches = function(pane)
+      return pane.has_bell == true
+    end,
+  },
+}
 
 local function matches(query, text)
   return query == "" or shared.select_item_matches(query, text, true)
 end
 
-local function flatten_tree(tree, collapsed, query)
+local function pane_value(pane)
+  if pane.foreground_process and pane.foreground_process ~= "" then
+    return pane.foreground_process
+  end
+  if pane.title and pane.title ~= "" then
+    return pane.title
+  end
+  return nil
+end
+
+local function resolve_filter(id)
+  if FILTERS[id] ~= nil then
+    return id, FILTERS[id]
+  end
+  return "all", FILTERS.all
+end
+
+local function flatten_tree(tree, collapsed, query, pane_filter)
   local rows = {}
   local searching = query ~= ""
 
@@ -34,26 +69,37 @@ local function flatten_tree(tree, collapsed, query)
       local visible_panes = {}
 
       for pane_index, pane in ipairs(tab.panes) do
-        local pane_searchable =
-          util.words(pane.title, pane.foreground_process, pane.cwd, pane.id, "pane", tab_searchable)
-        if tab_matches or matches(query, pane_searchable) then
+        local pane_searchable = util.words(
+          pane_value(pane),
+          pane.title,
+          pane.cwd,
+          pane.domain,
+          pane.has_bell and "bell" or nil,
+          "pane",
+          tab_searchable
+        )
+        if pane_filter.matches(pane) and (tab_matches or matches(query, pane_searchable)) then
           visible_panes[#visible_panes + 1] = { pane = pane, index = pane_index }
         end
       end
 
-      if tab_matches or #visible_panes > 0 then
+      if #visible_panes > 0 then
         visible_tabs[#visible_tabs + 1] = { tab = tab, panes = visible_panes }
       end
     end
 
-    if workspace_matches or #visible_tabs > 0 then
+    if #visible_tabs > 0 then
+      local pane_count = 0
+      for _, visible_tab in ipairs(visible_tabs) do
+        pane_count = pane_count + #visible_tab.panes
+      end
       local workspace_key = "workspace:" .. workspace.id
       rows[#rows + 1] = {
         kind = "workspace",
         key = workspace_key,
         item = workspace,
         depth = 0,
-        count = #workspace.tabs,
+        count = pane_count,
       }
       if searching or not collapsed[workspace_key] then
         for _, visible_tab in ipairs(visible_tabs) do
@@ -64,7 +110,7 @@ local function flatten_tree(tree, collapsed, query)
             key = tab_key,
             item = tab,
             depth = 1,
-            count = #tab.panes,
+            panes = visible_tab.panes,
           }
           if searching or not collapsed[tab_key] then
             for _, visible_pane in ipairs(visible_tab.panes) do
@@ -98,35 +144,21 @@ local function row_budget(opts)
   local total = shared.normalize_overlay_size(opts.height)
     or shared.normalize_overlay_size(opts.max_height)
     or DEFAULT_TOTAL_ROWS
-  return math.max(1, total - 5)
-end
-
-local function row_text(row, collapsed)
-  local branch = row.kind == "pane" and " "
-    or (collapsed[row.key] and ICON_COLLAPSED or ICON_EXPANDED)
-  local indent = string.rep("  ", row.depth)
-  if row.kind == "workspace" then
-    return indent .. branch .. " " .. (row.item.name or ("Workspace " .. row.item.index))
-  elseif row.kind == "tab" then
-    local title = row.item.title ~= "" and (": " .. row.item.title) or ""
-    return indent .. branch .. " " .. row.item.index .. title
-  end
-  return indent .. branch .. " Pane " .. row.index
+  return math.max(1, total - 2)
 end
 
 local function row_detail(row)
-  if row.kind == "workspace" then
-    return string.format("%d tab%s", row.count, row.count == 1 and "" or "s")
-  elseif row.kind == "tab" then
-    return string.format("%d pane%s", row.count, row.count == 1 and "" or "s")
+  if row.kind == "workspace" and row.count > 1 then
+    return string.format("· %d panes", row.count)
   end
-  return row.item.foreground_process or ""
+  return ""
 end
 
 function ui.mux_navigator.open(opts)
   opts = opts or {}
   local theme = resolve_theme(opts)
   local tree = hollow.term.mux_tree()
+  local filter_id, pane_filter = resolve_filter(opts.filter)
   local collapsed = {}
   local nav
   local modal
@@ -141,7 +173,28 @@ function ui.mux_navigator.open(opts)
   local search_mode = filter.value ~= ""
 
   local function current_rows()
-    return flatten_tree(tree, collapsed, filter.value)
+    return flatten_tree(tree, collapsed, filter.value, pane_filter)
+  end
+
+  local function set_filter(id)
+    filter_id, pane_filter = resolve_filter(id)
+    filter.set("")
+    search_mode = false
+    if nav then
+      nav.index = 1
+    end
+  end
+
+  local function cycle_filter()
+    local current_index = 1
+    for index, id in ipairs(FILTER_ORDER) do
+      if id == filter_id then
+        current_index = index
+        break
+      end
+    end
+    local next_index = current_index % #FILTER_ORDER + 1
+    set_filter(FILTER_ORDER[next_index])
   end
 
   local function activate(index)
@@ -153,10 +206,10 @@ function ui.mux_navigator.open(opts)
     if row.kind == "workspace" then
       hollow.term.switch_workspace(row.item.index)
     elseif row.kind == "tab" then
-      -- Focus the tab's first pane; tabs themselves have no single "active" pane field.
-      local first_pane = row.item.panes[1]
-      if first_pane then
-        hollow.term.focus_pane_by_id(first_pane.id)
+      local target = filter_id == "pane_bell" and row.panes[1] or row.item.pane
+      target = target and (target.pane or target) or nil
+      if target then
+        hollow.term.focus_pane_by_id(target.id)
       end
     else
       hollow.term.focus_pane_by_id(row.item.id)
@@ -206,6 +259,7 @@ function ui.mux_navigator.open(opts)
   end
 
   local function render_content(_, state)
+    tree = hollow.term.mux_tree()
     local rows = current_rows()
     nav.index = math.max(1, math.min(#rows, nav.index or 1))
     local viewport = selectable.visible_range()
@@ -219,8 +273,57 @@ function ui.mux_navigator.open(opts)
             local hovered = state and state.hovered_id == row_id
             local active = row.item.is_active or row.item.is_focused
             local is_workspace = row.kind == "workspace"
-            local fg = is_workspace and theme.title
-              or util.state_value(selected, active, theme.selected_fg, theme.title, theme.fg)
+            local row_fg =
+              util.state_value(selected, hovered, theme.selected_fg, theme.hover_fg, theme.fg)
+            local base_prefix_fg = row.kind == "pane" and theme.muted or theme.title
+            local prefix_fg =
+              util.state_value(selected, hovered, theme.selected_fg, theme.title, base_prefix_fg)
+            local branch = row.kind == "pane" and ""
+              or (collapsed[row.key] and ICON_COLLAPSED or ICON_EXPANDED) .. " "
+            local indent = string.rep("  ", row.depth)
+            local marker = row.kind == "pane"
+                and (row.item.has_bell and ICON_BELL or (row.item.is_focused and ICON_PANE_ACTIVE or ICON_PANE_INACTIVE))
+              or ""
+            local marker_fg = row.kind == "pane"
+                and (row.item.has_bell and theme.notify_levels.warn or (row.item.is_focused and theme.notify_levels.success or theme.muted))
+              or prefix_fg
+            local label = row.kind == "workspace"
+                and (row.item.name or ("Workspace " .. row.item.index))
+              or row.kind == "tab" and ("Tab " .. row.item.index)
+              or ("Pane " .. row.index)
+            local value = row.kind == "workspace" and nil
+              or row.kind == "tab" and (row.item.title ~= "" and row.item.title or nil)
+              or pane_value(row.item)
+            local value_fg = row.kind == "pane"
+                and value
+                and not selected
+                and not hovered
+                and theme.notify_levels.success
+              or row_fg
+            local row_nodes = {
+              ui.text((selected and "> " or "  ") .. indent, {
+                fg = selected and theme.selection_fg or theme.muted,
+                bold = selected,
+              }),
+              ui.text(branch, {
+                fg = prefix_fg,
+                bold = is_workspace or selected or active,
+              }),
+              ui.text(marker, {
+                fg = marker_fg,
+                bold = row.item.has_bell or active,
+              }),
+              ui.text(label, {
+                fg = prefix_fg,
+                bold = is_workspace or selected or active,
+              }),
+            }
+            if value ~= nil then
+              row_nodes[#row_nodes + 1] = ui.text(": " .. value, {
+                fg = value_fg,
+                bold = selected or active,
+              })
+            end
 
             options.fill_bg = util.state_value(
               selected,
@@ -233,43 +336,33 @@ function ui.mux_navigator.open(opts)
             options.scrollbar_track_color = theme.scrollbar_track
             options.scrollbar_thumb_color = theme.scrollbar_thumb
 
-            return ui.row({
-              ui.text(selected and "> " or "  ", {
-                fg = fg,
-                bold = is_workspace or selected or active,
-              }),
-              ui.text(row.kind == "pane" and row.item.has_bell and ICON_BELL or "  ", {
-                fg = row.item.has_bell and theme.notify_levels.warn or fg,
-                bold = row.item.has_bell,
-              }),
-              ui.text(row_text(row, collapsed), {
-                fg = fg,
-                bold = is_workspace or selected or active,
-              }),
-              ui.spacer(),
-              ui.text(row_detail(row), { fg = theme.muted }),
-            }, options)
+            local detail = row_detail(row)
+            if detail ~= "" then
+              row_nodes[#row_nodes + 1] = ui.spacer()
+              row_nodes[#row_nodes + 1] = ui.text(detail, { fg = theme.muted })
+            end
+
+            return ui.row(row_nodes, options)
           end)
           :get()
       or { ui.row({ ui.text("No matching panes", { fg = theme.empty }) }) }
 
-    local search_row = search_mode
-        and ui.row({
-          ui.text("/ ", { fg = theme.title, bold = true }),
-          ui.group(filter.render(theme)),
-        })
-      or ui.row({ ui.text("/ search panes", { fg = theme.muted }) })
+    local search_row = ui.row({
+      ui.text("/ ", { fg = theme.title, bold = true }),
+      search_mode and ui.group(filter.render(theme))
+        or ui.text("search panes", { fg = theme.muted }),
+      ui.spacer(),
+      ui.text(filter_id == "pane_bell" and ICON_BELL or "  ", {
+        fg = filter_id == "pane_bell" and theme.notify_levels.warn or theme.muted,
+      }),
+      ui.text(pane_filter.label, { fg = theme.muted }),
+    })
     return ui.column(hollow
       .tbl({
         search_row,
         ui.divider(theme.divider),
       })
-      :concat(tree_rows, {
-        ui.divider(theme.divider),
-        ui.row({
-          ui.text("enter switch  space/h/l collapse  j/k move  esc close", { fg = theme.muted }),
-        }),
-      })
+      :concat(tree_rows)
       :get())
   end
 
@@ -296,6 +389,12 @@ function ui.mux_navigator.open(opts)
       set_collapsed(false)
     end),
     space = nav_or_search(toggle_collapsed),
+    f = function(key, mods)
+      if search_mode then
+        return filter.handlers._else(key, mods)
+      end
+      cycle_filter()
+    end,
     enter = function()
       activate(nav.index)
     end,
