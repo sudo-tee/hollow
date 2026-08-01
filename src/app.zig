@@ -1099,6 +1099,7 @@ pub const App = struct {
             .close_pane_by_id = lua_callbacks.luaClosePaneByIdCallback,
             .move_tab_to_workspace = lua_callbacks.luaMoveTabToWorkspaceCallback,
             .move_pane_to_workspace = lua_callbacks.luaMovePaneToWorkspaceCallback,
+            .bell_pane = lua_callbacks.luaBellPaneCallback,
             .send_text_to_pane = lua_callbacks.luaSendTextToPaneCallback,
             .send_key_to_pane = lua_callbacks.luaSendKeyToPaneCallback,
             .get_pane_domain = lua_callbacks.luaGetPaneDomainCallback,

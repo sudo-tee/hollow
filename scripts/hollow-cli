@@ -241,6 +241,11 @@ class HollowCli:
         p.add_argument("--amount", type=float, default=5.0)
         p.set_defaults(handler=self.handle_pane_resize)
 
+        p = pane_sub.add_parser("bell", parents=[self.common_parser])
+        p.add_argument("--id", type=int)
+        p.add_argument("--tag")
+        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("bell", {}, args.id, args.tag))
+
         p = pane_sub.add_parser("send-text", parents=[self.common_parser])
         p.add_argument("text")
         p.add_argument("--id", type=int)

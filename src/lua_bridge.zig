@@ -155,6 +155,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.attention", .source = @embedFile("lua/hollow/ui/widgets/attention.lua") },
     .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
     .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
@@ -246,6 +247,7 @@ pub const AppCallbacks = struct {
     move_tab_to_workspace: *const fn (app: *anyopaque, tab_id: usize, workspace_index: usize) bool,
     move_pane_to_workspace: *const fn (app: *anyopaque, pane_id: usize, workspace_index: usize) bool,
     close_pane_by_id: *const fn (app: *anyopaque, pane_id: usize) bool,
+    bell_pane: *const fn (app: *anyopaque, pane_id: usize) bool,
     send_text_to_pane: *const fn (app: *anyopaque, pane_id: usize, text: []const u8) bool,
     send_key_to_pane: *const fn (app: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool,
     is_leader_active: *const fn (app: *anyopaque) bool,
@@ -2163,6 +2165,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_send_text_to_pane, 1);
         api.set_field(self.state, -2, "send_text_to_pane");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_bell_pane, 1);
+        api.set_field(self.state, -2, "bell_pane");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_send_key_to_pane, 1);
@@ -6088,6 +6094,21 @@ fn l_move_pane_to_workspace(state: *State) callconv(.c) c_int {
     else
         0;
     api.push_boolean(state, if (cbs.move_pane_to_workspace(cbs.app, pane_id, ws_idx)) 1 else 0);
+    return 1;
+}
+
+fn l_bell_pane(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_boolean(state, 0);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    api.push_boolean(state, if (cbs.bell_pane(cbs.app, pane_id)) 1 else 0);
     return 1;
 }
 

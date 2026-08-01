@@ -70,7 +70,7 @@ Emit handlers return nothing. The host replies with a `result` or
 
 ## Built-in emit channels
 
-`close_pane`, `focus_pane`, `resize_pane`, `send_text`, `split_pane`,
+`bell`, `close_pane`, `focus_pane`, `resize_pane`, `send_text`, `split_pane`,
 `new_tab`, `close_tab`, `focus_tab`, `next_tab`, `prev_tab`,
 `set_tab_title`, `new_workspace`, `close_workspace`, `next_workspace`,
 `prev_workspace`, `switch_workspace`, `set_workspace_name`,

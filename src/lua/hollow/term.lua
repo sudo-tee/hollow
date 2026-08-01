@@ -620,6 +620,13 @@ function M.setup(hollow, host_api)
     host_api.send_text(text)
   end
 
+  function hollow.term.bell(pane_id)
+    local target = resolve_pane_id(pane_id, "hollow.term.bell(pane_id?)")
+    if not host_api.bell_pane(target) then
+      error("unknown pane id: " .. tostring(target))
+    end
+  end
+
   function hollow.term.toggle_pane_maximized(pane_id, opts)
     if pane_id ~= nil and type(pane_id) == "table" then
       opts = pane_id

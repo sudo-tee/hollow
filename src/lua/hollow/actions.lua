@@ -647,6 +647,17 @@ function M.setup(hollow, host_api)
     category = "pane",
   })
 
+  register(hollow, "attention_navigator", {
+    run = function()
+      hollow.ui.mux_navigator.open({
+        filter = "pane_bell",
+        title = "Attention",
+      })
+    end,
+    desc = "Jump to panes with pending attention (bells)",
+    category = "pane",
+  })
+
   local palette = hollow.ui.command_palette
 
   local function pick_workspace_and_run(fn)

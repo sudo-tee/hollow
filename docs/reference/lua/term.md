@@ -136,6 +136,7 @@ Tags identify panes. They are what the
 ### Text and process
 
 ```lua
+hollow.term.bell(pane_id?)
 hollow.term.send_text("hello", pane_id?)
 hollow.term.get_pane_text(pane_id?)             -- scrollback contents
 hollow.term.set_pane_foreground_process(pane_id, "vim")

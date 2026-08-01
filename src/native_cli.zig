@@ -490,6 +490,12 @@ const Runner = struct {
                 .amount = resizeDelta(rest[0], amount.?),
             }, id, tag);
         }
+        if (std.mem.eql(u8, sub, "bell")) {
+            var id: ?usize = null;
+            var tag: ?[]const u8 = null;
+            try self.parseIdTag(rest, &id, &tag);
+            return try self.emitToMatchingPanes(.{ .kind = .pane_bell }, id, tag);
+        }
         if (std.mem.eql(u8, sub, "send-text")) {
             if (rest.len == 0) return self.fail("usage: cli pane send-text <text> [--id ID|--tag TAG]", "invalid_args", 2);
             var id: ?usize = null;

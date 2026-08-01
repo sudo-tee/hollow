@@ -382,6 +382,11 @@ pub fn luaSendTextToPaneCallback(app_ptr: *anyopaque, pane_id: usize, text: []co
     return mux_ops.sendTextToPane(app, pane_id, text);
 }
 
+pub fn luaBellPaneCallback(app_ptr: *anyopaque, pane_id: usize) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return mux_ops.sendBellToPane(app, pane_id);
+}
+
 pub fn luaSendKeyToPaneCallback(app_ptr: *anyopaque, pane_id: usize, key_name: []const u8, mods: u32) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return mux_ops.sendKeyToPane(app, pane_id, key_name, mods);

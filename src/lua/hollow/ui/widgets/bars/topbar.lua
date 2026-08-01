@@ -1,3 +1,4 @@
+local attention = require("hollow.ui.widgets.attention")
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
@@ -149,6 +150,7 @@ function M.widget()
         end)
         :get()
       local right_items = tbl({
+          attention.topbar_button(),
           cwd or false,
           key_legend ~= false and ui.bar.key_legend(key_legend),
           configured_topbar_time(opts.time),
