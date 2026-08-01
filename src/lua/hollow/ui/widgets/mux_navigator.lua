@@ -62,6 +62,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
     local workspace_searchable = util.words(workspace.name, workspace.index, "workspace")
     local workspace_matches = matches(query, workspace_searchable)
     local visible_tabs = {}
+    local workspace_panes = {}
 
     for _, tab in ipairs(workspace.tabs) do
       local tab_searchable = util.words(tab.title, tab.index, "tab", workspace_searchable)
@@ -70,6 +71,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
 
       for pane_index, pane in ipairs(tab.panes) do
         local pane_searchable = util.words(
+          pane.id,
           pane_value(pane),
           pane.title,
           pane.cwd,
@@ -85,21 +87,21 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
 
       if #visible_panes > 0 then
         visible_tabs[#visible_tabs + 1] = { tab = tab, panes = visible_panes }
+        for _, visible_pane in ipairs(visible_panes) do
+          workspace_panes[#workspace_panes + 1] = visible_pane
+        end
       end
     end
 
     if #visible_tabs > 0 then
-      local pane_count = 0
-      for _, visible_tab in ipairs(visible_tabs) do
-        pane_count = pane_count + #visible_tab.panes
-      end
       local workspace_key = "workspace:" .. workspace.id
       rows[#rows + 1] = {
         kind = "workspace",
         key = workspace_key,
         item = workspace,
         depth = 0,
-        count = pane_count,
+        count = #workspace_panes,
+        panes = workspace_panes,
       }
       if searching or not collapsed[workspace_key] then
         for _, visible_tab in ipairs(visible_tabs) do
@@ -204,7 +206,13 @@ function ui.mux_navigator.open(opts)
     end
     modal.close()
     if row.kind == "workspace" then
-      hollow.term.switch_workspace(row.item.index)
+      local target = filter_id == "pane_bell" and row.panes[1] or nil
+      target = target and (target.pane or target) or nil
+      if target then
+        hollow.term.focus_pane_by_id(target.id)
+      else
+        hollow.term.switch_workspace(row.item.index)
+      end
     elseif row.kind == "tab" then
       local target = filter_id == "pane_bell" and row.panes[1] or row.item.pane
       target = target and (target.pane or target) or nil

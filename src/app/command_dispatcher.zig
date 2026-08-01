@@ -869,7 +869,8 @@ fn execPaneSendText(self: *App, request: command_mod.Request) command_mod.Respon
 }
 
 fn execPaneBell(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+    const pane_id = request.id orelse self.currentPaneIdValue();
+    if (pane_id == 0) return command_mod.Response.fail("invalid_args", "no active pane");
     if (!mux_ops.sendBellToPane(self, pane_id)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }

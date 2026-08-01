@@ -1889,6 +1889,31 @@ assert_true(
 )
 hollow.ui.overlay.clear()
 
+host_api.set_pane_bell(101, true)
+hollow.ui.mux_navigator.open({ max_height = 12 })
+assert_true(on_key("slash", 0), "mux navigator should enter search mode")
+assert_true(on_key("1", 0), "mux navigator should search pane ids")
+assert_true(on_key("0", 0), "mux navigator should continue searching pane ids")
+assert_true(on_key("1", 0), "mux navigator should complete pane id search")
+local mux_id_overlay = hollow.ui._overlay_state()
+local mux_id_text = ""
+for _, row in ipairs(mux_id_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    mux_id_text = mux_id_text .. (segment.text or "")
+  end
+  mux_id_text = mux_id_text .. "\n"
+end
+assert_true(
+  mux_id_text:find("Pane 1: zig build", 1, true) ~= nil,
+  "mux navigator should search by pane id"
+)
+hollow.ui.overlay.clear()
+
+hollow.ui.mux_navigator.open({ filter = "pane_bell", max_height = 12 })
+assert_true(on_key("enter", 0), "mux navigator should focus a pane from a workspace row")
+assert_equal(recorded.focus_pane_by_id, 101, "workspace bell row should focus the matching pane")
+hollow.ui.overlay.clear()
+
 hollow.ui.mux_navigator.open({ filter = "pane_bell", max_height = 12 })
 assert_true(on_key("arrow_down", 0), "mux navigator should move to tab row")
 assert_true(on_key("arrow_down", 0), "mux navigator should move to pane row")
