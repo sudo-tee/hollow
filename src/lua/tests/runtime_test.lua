@@ -1865,10 +1865,28 @@ assert_true(
   mux_overlay_text:find("Pane 1: zig build", 1, true) ~= nil,
   "mux navigator should prefix pane labels with pane index"
 )
-assert_true(
-  mux_overlay_text:find("/tmp/project", 1, true) == nil,
-  "mux navigator should omit pane cwd from row details"
+local cwd_detail_fg = nil
+for _, row in ipairs(mux_overlay[1].rows or {}) do
+  for _, segment in ipairs(row.segments or {}) do
+    if segment.text == "/tmp/project" then
+      cwd_detail_fg = segment.fg
+    end
+  end
+end
+local subtle_fg = require("hollow.color").brighten_hex_color(
+  require("hollow.theme").current().palette.background,
+  0.35,
+  require("hollow.theme").current().palette.foreground
 )
+assert_true(
+  mux_overlay_text:find("/tmp/project", 1, true) ~= nil,
+  "mux navigator should show pane cwd as a right-aligned detail"
+)
+assert_true(
+  cwd_detail_fg ~= nil,
+  "mux navigator should render the pane cwd detail"
+)
+assert_equal(cwd_detail_fg, subtle_fg, "mux navigator should color pane cwd subtly")
 assert_true(saw_yellow_bell, "mux navigator should keep bell markers yellow")
 assert_true(saw_green_process, "mux navigator should color foreground processes green")
 assert_true(

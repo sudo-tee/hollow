@@ -1,6 +1,7 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
+local color = require("hollow.color")
 
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -136,6 +137,10 @@ end
 
 local function resolve_theme(opts)
   local theme = theme_api.resolve_widget("select")
+  if theme.subtle == nil then
+    local palette = shared.resolve_theme().palette
+    theme.subtle = color.brighten_hex_color(palette.background, 0.35, palette.foreground)
+  end
   if type(opts.theme) == "table" then
     util.merge_tables(theme, util.clone_value(opts.theme))
   end
@@ -348,6 +353,9 @@ function ui.mux_navigator.open(opts)
             if detail ~= "" then
               row_nodes[#row_nodes + 1] = ui.spacer()
               row_nodes[#row_nodes + 1] = ui.text(detail, { fg = theme.muted })
+            elseif row.kind == "pane" and row.item.cwd ~= "" then
+              row_nodes[#row_nodes + 1] = ui.spacer()
+              row_nodes[#row_nodes + 1] = ui.text(row.item.cwd, { fg = theme.subtle })
             end
 
             return ui.row(row_nodes, options)

@@ -126,6 +126,7 @@
 ---@field destructive_fg? HollowColor
 ---@field selected_muted? HollowColor
 ---@field detail? HollowColor
+---@field subtle? HollowColor
 ---@field notify_fg? HollowColor
 ---@field counter? HollowColor
 ---@field empty? HollowColor
