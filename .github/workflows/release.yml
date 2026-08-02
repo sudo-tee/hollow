@@ -23,6 +23,12 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Install LuaRocks and Busted
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
+
       - name: Apply sokol patch (run setup script)
         run: bash scripts/setup.sh
 
@@ -82,6 +88,12 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Install LuaRocks and Busted
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
 
       - name: Install Linux runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev pkg-config

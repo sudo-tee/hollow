@@ -114,9 +114,20 @@ zig build test
 ```
 
 The test target runs the host-side unit tests.
-There is also a small Lua runtime test under
-[`src/lua/tests/runtime_test.lua`](../src/lua/tests/runtime_test.lua);
-the Lua bridge picks it up when the Lua test harness is wired in.
+`scripts/setup.sh` checks for Busted and installs version 2.3.0 through
+LuaRocks when it is missing.
+The Lua API suite uses [Busted](https://lunarmodules.github.io/busted/) and
+can be installed with LuaRocks:
+
+```bash
+luarocks --lua-version=5.1 install busted 2.3.0
+./scripts/test-lua.sh
+```
+
+Use `zig build test-lua` for the same Lua suite through the Zig build, or
+`zig build test-all` to run both native and Lua tests.
+The Busted runner discovers every `src/lua/tests/test_*.lua` file, and accepts
+normal Busted options such as `--filter`, `--list`, and `--output=junit`.
 
 ## Editor support (LuaLS)
 

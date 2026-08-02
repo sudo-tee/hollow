@@ -8,8 +8,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
+BUSTED_VERSION="${BUSTED_VERSION:-2.3.0}"
 
 "$SCRIPT_DIR/check-zig-version.sh"
+
+# ── 0. Lua test tooling ───────────────────────────────────────────────────────
+if command -v busted >/dev/null 2>&1; then
+  echo "[setup] Busted is already installed: $(busted --version)"
+else
+  if ! command -v luarocks >/dev/null 2>&1; then
+    echo "[setup] LuaRocks is required to install Busted $BUSTED_VERSION" >&2
+    echo "[setup] install LuaRocks, then rerun setup.sh" >&2
+    exit 1
+  fi
+
+  echo "[setup] installing Busted $BUSTED_VERSION..."
+  luarocks --lua-version=5.1 install busted "$BUSTED_VERSION"
+fi
 
 # ── 1. Submodules ────────────────────────────────────────────────────────────
 echo "[setup] initialising submodules..."

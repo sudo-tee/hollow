@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            pkg-config \
+            lua5.1 \
+            luajit \
+            luarocks
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
+
+      - name: Apply patches and verify setup
+        run: bash scripts/setup.sh
+
+      - name: Run native and Lua tests
+        run: zig build test-all
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
