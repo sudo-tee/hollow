@@ -311,6 +311,15 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+
+    const lua_test_cmd = b.addSystemCommand(&.{ "bash" });
+    lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));
+    const lua_test_step = b.step("test-lua", "Run Lua tests with Busted");
+    lua_test_step.dependOn(&lua_test_cmd.step);
+
+    const all_test_step = b.step("test-all", "Run native and Lua tests");
+    all_test_step.dependOn(test_step);
+    all_test_step.dependOn(lua_test_step);
 }
 
 test "ghostty optimize mode keeps release builds and upgrades debug" {

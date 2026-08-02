@@ -298,7 +298,19 @@ end
 ---@param value any
 ---@return boolean
 function M.is_text_shorthand(value)
-  return type(value) == "table" and value._type == nil and type(value[1]) == "string"
+  if type(value) ~= "table" or value._type ~= nil then
+    return false
+  end
+
+  local count = 0
+  for _ in ipairs(value) do
+    count = count + 1
+    if count > 1 then
+      return false
+    end
+  end
+
+  return count == 1 and type(value[1]) == "string"
 end
 
 ---@param value any

@@ -1,0 +1,8 @@
+return {
+  default = {
+    ROOT = { "src/lua/tests" },
+    pattern = "^test_.*%.lua$",
+    lpath = "./src/lua/?.lua;./src/lua/?/?.lua;./src/lua/?/init.lua",
+    output = "plainTerminal",
+  },
+}
