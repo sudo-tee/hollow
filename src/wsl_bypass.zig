@@ -50,6 +50,38 @@ const Options = struct {
     }
 };
 
+const HostInputState = struct {
+    header: [5]u8 = undefined,
+    header_len: usize = 0,
+    frame_type: ?protocol.FrameType = null,
+    payload_remaining: usize = 0,
+    resize_payload: [4]u8 = undefined,
+    resize_len: usize = 0,
+    pending: [4096]u8 = undefined,
+    pending_offset: usize = 0,
+    pending_len: usize = 0,
+    discard: [256]u8 = undefined,
+
+    fn hasPendingWrite(self: *const HostInputState) bool {
+        return self.pending_offset < self.pending_len;
+    }
+
+    fn resetFrame(self: *HostInputState) void {
+        self.header_len = 0;
+        self.frame_type = null;
+        self.payload_remaining = 0;
+        self.resize_len = 0;
+        self.pending_offset = 0;
+        self.pending_len = 0;
+    }
+};
+
+const NonBlockingRead = union(enum) {
+    data: usize,
+    would_block,
+    eof,
+};
+
 const termination_grace_ms: i64 = 1500;
 pub fn main(init: std.process.Init) !void {
     io.init(init.io, init.minimal.environ);
@@ -84,6 +116,10 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
     const stderr_copy = c.dup(std.Io.File.stderr().handle);
     defer {
         if (stderr_copy >= 0) _ = c.close(stderr_copy);
+    }
+    if (stderr_copy >= 0) {
+        const fd_flags = c.fcntl(stderr_copy, c.F_GETFD, @as(c_int, 0));
+        if (fd_flags >= 0) _ = c.fcntl(stderr_copy, c.F_SETFD, fd_flags | c.FD_CLOEXEC);
     }
 
     var winsize = std.mem.zeroes(c.struct_winsize);
@@ -122,23 +158,21 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
 
     var input_closed = false;
     var master_closed = false;
+    var host_input = HostInputState{};
     var termination_requested = false;
     var termination_deadline_ms: ?i64 = null;
 
     while (true) {
         var poll_fds = [_]c.struct_pollfd{
-            .{ .fd = stdin_file.handle, .events = if (input_closed) 0 else c.POLLIN, .revents = 0 },
-            .{ .fd = master, .events = c.POLLIN, .revents = 0 },
+            .{ .fd = stdin_file.handle, .events = if (input_closed or host_input.hasPendingWrite()) 0 else c.POLLIN, .revents = 0 },
+            .{ .fd = master, .events = @intCast(c.POLLIN | if (host_input.hasPendingWrite()) c.POLLOUT else 0), .revents = 0 },
             .{ .fd = stdout_file.handle, .events = 0, .revents = 0 },
         };
 
         _ = c.poll(&poll_fds, poll_fds.len, 50);
 
-        if (!input_closed and (poll_fds[0].revents & (c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) {
-            input_closed = true;
-        }
-        if (!input_closed and (poll_fds[0].revents & c.POLLIN) != 0) {
-            const still_open = handleHostFrame(stdin_file, master) catch false;
+        if (!input_closed and (poll_fds[0].revents & (c.POLLIN | c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) {
+            const still_open = advanceHostInput(stdin_file, master, &host_input) catch false;
             if (!still_open) input_closed = true;
         }
         if (!input_closed and (poll_fds[2].revents & (c.POLLERR | c.POLLHUP | c.POLLNVAL)) != 0) {
@@ -152,11 +186,15 @@ fn run(allocator: std.mem.Allocator, options: Options) !void {
             termination_deadline_ms = milliTimestamp() + termination_grace_ms;
         }
 
+        if (!master_closed and host_input.hasPendingWrite()) {
+            try writePendingInput(master, &host_input);
+        }
+
         if ((poll_fds[1].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
             var buf: [65536]u8 = undefined;
             const count = c.read(master, &buf, buf.len);
             if (count > 0) {
-                try writeFrame(std.Io.File.stdout(), .output, buf[0..@intCast(count)]);
+                try writeFrame(stdout_file, .output, buf[0..@intCast(count)]);
             } else if (count == 0) {
                 master_closed = true;
             } else switch (std.posix.errno(-1)) {
@@ -205,7 +243,7 @@ fn childExec(allocator: std.mem.Allocator, options: Options, argv: [:null]?[*:0]
     }
 
     for (options.env.items) |entry| {
-        const value = if (std.mem.indexOf(u8, entry.key, "DIR") != null)
+        const value = if (isPathEnvironmentVariable(entry.key))
             try windowsPathToWsl(allocator, entry.value)
         else
             try allocator.dupe(u8, entry.value);
@@ -276,53 +314,134 @@ fn previewHex(buf: []u8, ptr: [*:0]const u8) []const u8 {
     return buf[0..dst_index];
 }
 
-fn handleHostFrame(stdin_file: std.Io.File, master: c_int) !bool {
-    var header: [5]u8 = undefined;
-    if (!(try readExactNonBlocking(stdin_file, &header))) return false;
+fn advanceHostInput(stdin_file: std.Io.File, master: c_int, state: *HostInputState) !bool {
+    while (true) {
+        if (state.hasPendingWrite()) return true;
 
-    const frame_type: protocol.FrameType = @enumFromInt(header[0]);
-    const payload_len = std.mem.readInt(u32, header[1..5], .little);
+        if (state.frame_type) |frame_type| {
+            switch (frame_type) {
+                .input => {
+                    if (state.payload_remaining == 0) {
+                        state.resetFrame();
+                        continue;
+                    }
+                    const chunk = @min(state.payload_remaining, state.pending.len);
+                    switch (try readNonBlocking(stdin_file, state.pending[0..chunk])) {
+                        .data => |count| {
+                            state.pending_offset = 0;
+                            state.pending_len = count;
+                            state.payload_remaining -= count;
+                            return true;
+                        },
+                        .would_block => return true,
+                        .eof => return false,
+                    }
+                },
+                .resize => {
+                    switch (try readNonBlocking(stdin_file, state.resize_payload[state.resize_len..])) {
+                        .data => |count| state.resize_len += count,
+                        .would_block => return true,
+                        .eof => return false,
+                    }
+                    if (state.resize_len < state.resize_payload.len) continue;
 
-    switch (frame_type) {
-        .input => {
-            var remaining: usize = payload_len;
-            var buf: [4096]u8 = undefined;
-            while (remaining > 0) {
-                const chunk = @min(remaining, buf.len);
-                if (!(try readExactNonBlocking(stdin_file, buf[0..chunk]))) return false;
-                try writeAllFd(master, buf[0..chunk]);
-                remaining -= chunk;
+                    applyResize(master, &state.resize_payload);
+                    state.resetFrame();
+                    continue;
+                },
+                else => {
+                    if (state.payload_remaining == 0) {
+                        state.resetFrame();
+                        continue;
+                    }
+                    const chunk = @min(state.payload_remaining, state.discard.len);
+                    switch (try readNonBlocking(stdin_file, state.discard[0..chunk])) {
+                        .data => |count| state.payload_remaining -= count,
+                        .would_block => return true,
+                        .eof => return false,
+                    }
+                    continue;
+                },
             }
-        },
-        .resize => {
-            if (payload_len != 4) return error.InvalidResizeFrame;
-            var payload: [4]u8 = undefined;
-            if (!(try readExactNonBlocking(stdin_file, &payload))) return false;
-            var winsize = std.mem.zeroes(c.struct_winsize);
-            winsize.ws_col = std.mem.readInt(u16, payload[0..2], .little);
-            winsize.ws_row = std.mem.readInt(u16, payload[2..4], .little);
-            var current = std.mem.zeroes(c.struct_winsize);
-            const same_size = c.ioctl(master, c.TIOCGWINSZ, &current) == 0 and
-                current.ws_col == winsize.ws_col and current.ws_row == winsize.ws_row;
-            if (c.ioctl(master, c.TIOCSWINSZ, &winsize) == 0 and same_size) {
-                // Same-size repaint nudges do not make the kernel emit SIGWINCH.
-                const foreground_pgid = c.tcgetpgrp(master);
-                if (foreground_pgid > 0) _ = c.kill(-foreground_pgid, c.SIGWINCH);
-            }
-        },
-        .exit => return false,
-        else => {
-            var remaining: usize = payload_len;
-            var discard: [256]u8 = undefined;
-            while (remaining > 0) {
-                const chunk = @min(remaining, discard.len);
-                if (!(try readExactNonBlocking(stdin_file, discard[0..chunk]))) return false;
-                remaining -= chunk;
-            }
-        },
+        }
+
+        switch (try readNonBlocking(stdin_file, state.header[state.header_len..])) {
+            .data => |count| state.header_len += count,
+            .would_block => return true,
+            .eof => return false,
+        }
+        if (state.header_len < state.header.len) continue;
+
+        state.frame_type = parseFrameType(state.header[0]) orelse return false;
+        state.payload_remaining = std.mem.readInt(u32, state.header[1..5], .little);
+        switch (state.frame_type.?) {
+            .input => {},
+            .resize => if (state.payload_remaining != state.resize_payload.len) return false,
+            .exit => return false,
+            else => {},
+        }
+        if (state.payload_remaining == 0) {
+            state.resetFrame();
+            continue;
+        }
     }
+}
 
-    return true;
+fn writePendingInput(master: c_int, state: *HostInputState) !void {
+    while (state.hasPendingWrite()) {
+        const count = c.write(master, state.pending[state.pending_offset..state.pending_len].ptr, state.pending_len - state.pending_offset);
+        if (count > 0) {
+            state.pending_offset += @intCast(count);
+            continue;
+        }
+        if (count == 0) return error.WriteFailed;
+        switch (std.posix.errno(-1)) {
+            .AGAIN => return,
+            .INTR => continue,
+            else => return error.WriteFailed,
+        }
+    }
+    state.pending_offset = 0;
+    state.pending_len = 0;
+    if (state.frame_type == .input and state.payload_remaining == 0) state.resetFrame();
+}
+
+fn applyResize(master: c_int, payload: *const [4]u8) void {
+    var winsize = std.mem.zeroes(c.struct_winsize);
+    winsize.ws_col = std.mem.readInt(u16, payload[0..2], .little);
+    winsize.ws_row = std.mem.readInt(u16, payload[2..4], .little);
+    var current = std.mem.zeroes(c.struct_winsize);
+    const same_size = c.ioctl(master, c.TIOCGWINSZ, &current) == 0 and
+        current.ws_col == winsize.ws_col and current.ws_row == winsize.ws_row;
+    if (c.ioctl(master, c.TIOCSWINSZ, &winsize) == 0 and same_size) {
+        // Same-size repaint nudges do not make the kernel emit SIGWINCH.
+        const foreground_pgid = c.tcgetpgrp(master);
+        if (foreground_pgid > 0) _ = c.kill(-foreground_pgid, c.SIGWINCH);
+    }
+}
+
+fn parseFrameType(byte: u8) ?protocol.FrameType {
+    return switch (byte) {
+        @intFromEnum(protocol.FrameType.hello) => .hello,
+        @intFromEnum(protocol.FrameType.input) => .input,
+        @intFromEnum(protocol.FrameType.output) => .output,
+        @intFromEnum(protocol.FrameType.resize) => .resize,
+        @intFromEnum(protocol.FrameType.exit) => .exit,
+        else => null,
+    };
+}
+
+fn readNonBlocking(file: std.Io.File, buffer: []u8) !NonBlockingRead {
+    while (true) {
+        const count = c.read(file.handle, buffer.ptr, buffer.len);
+        if (count > 0) return .{ .data = @intCast(count) };
+        if (count == 0) return .eof;
+        switch (std.posix.errno(-1)) {
+            .AGAIN => return .would_block,
+            .INTR => continue,
+            else => return error.ReadFailed,
+        }
+    }
 }
 
 fn writeFrame(file: std.Io.File, frame_type: protocol.FrameType, payload: []const u8) !void {
@@ -354,40 +473,23 @@ fn writeFrame(file: std.Io.File, frame_type: protocol.FrameType, payload: []cons
         }
         written += @intCast(n);
         if (written >= total) break;
-        // advance iov past already-written bytes
-        var remaining: usize = written;
-        for (&iov) |*v| {
-            if (remaining >= v.iov_len) {
-                remaining -= v.iov_len;
-                v.iov_len = 0;
-            } else {
-                v.iov_base = @ptrFromInt(@intFromPtr(v.iov_base) + remaining);
-                v.iov_len -= remaining;
-                break;
-            }
-        }
+        advanceIovecs(&iov, @intCast(n));
     }
 }
 
-fn readExactNonBlocking(file: std.Io.File, buffer: []u8) !bool {
-    var offset: usize = 0;
-    while (offset < buffer.len) {
-        const count = c.read(file.handle, buffer.ptr + offset, buffer.len - offset);
-        if (count > 0) {
-            offset += @intCast(count);
-            continue;
-        }
-        if (count == 0) return false;
-        switch (std.posix.errno(-1)) {
-            .AGAIN => {
-                var poll_fd = [_]c.struct_pollfd{.{ .fd = file.handle, .events = c.POLLIN, .revents = 0 }};
-                _ = c.poll(&poll_fd, poll_fd.len, -1);
-            },
-            .INTR => continue,
-            else => return error.ReadFailed,
+fn advanceIovecs(iovecs: []c.struct_iovec, count: usize) void {
+    var remaining = count;
+    for (iovecs) |*iov| {
+        if (remaining == 0) break;
+        if (remaining >= iov.iov_len) {
+            remaining -= iov.iov_len;
+            iov.iov_len = 0;
+        } else {
+            iov.iov_base = @ptrFromInt(@intFromPtr(iov.iov_base) + remaining);
+            iov.iov_len -= remaining;
+            break;
         }
     }
-    return true;
 }
 
 fn writeAllFd(fd: c_int, bytes: []const u8) !void {
@@ -592,6 +694,20 @@ fn freeExecArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]co
     }
 }
 
+fn isPathEnvironmentVariable(key: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(key, "HOME") or
+        std.ascii.eqlIgnoreCase(key, "USERPROFILE") or
+        std.ascii.eqlIgnoreCase(key, "PWD") or
+        std.ascii.eqlIgnoreCase(key, "OLDPWD") or
+        std.ascii.eqlIgnoreCase(key, "ZDOTDIR") or
+        std.ascii.eqlIgnoreCase(key, "XDG_CONFIG_HOME") or
+        std.ascii.eqlIgnoreCase(key, "XDG_DATA_HOME") or
+        std.ascii.eqlIgnoreCase(key, "XDG_CACHE_HOME") or
+        std.ascii.eqlIgnoreCase(key, "XDG_STATE_HOME") or
+        std.ascii.eqlIgnoreCase(key, "HOLLOW_SHELL_INTEGRATION_DIR") or
+        std.ascii.eqlIgnoreCase(key, "HOLLOW_ORIGINAL_ZDOTDIR");
+}
+
 fn windowsPathToWsl(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (path.len >= 18 and std.ascii.startsWithIgnoreCase(path, "\\\\wsl.localhost\\")) {
         var index: usize = 17;
@@ -651,4 +767,104 @@ fn isLikelyPosixShellPath(path: []const u8) bool {
     if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
     if (std.mem.endsWith(u8, path, ".exe")) return false;
     return true;
+}
+
+test "parseFrameType rejects unknown protocol bytes" {
+    try std.testing.expectEqual(@as(?protocol.FrameType, null), parseFrameType(0));
+    try std.testing.expectEqual(@as(?protocol.FrameType, null), parseFrameType(0xff));
+    try std.testing.expectEqual(@as(?protocol.FrameType, .input), parseFrameType(@intFromEnum(protocol.FrameType.input)));
+}
+
+test "advanceIovecs advances from the latest partial write" {
+    var first = [_]u8{ 1, 2, 3, 4, 5 };
+    var second = [_]u8{ 6, 7, 8 };
+    var iov = [_]c.struct_iovec{
+        .{ .iov_base = &first, .iov_len = first.len },
+        .{ .iov_base = &second, .iov_len = second.len },
+    };
+
+    advanceIovecs(&iov, 2);
+    advanceIovecs(&iov, 1);
+
+    try std.testing.expectEqual(@as(usize, 2), iov[0].iov_len);
+    try std.testing.expectEqual(@as(usize, second.len), iov[1].iov_len);
+}
+
+test "default bash argv includes shell integration" {
+    const argv = try buildShellArgv(std.testing.allocator, &.{"/bin/bash"}, .{}, .{ .root = "/tmp/hollow-test", .shell = .bash });
+    defer freeExecArgv(std.testing.allocator, argv);
+
+    try std.testing.expectEqualStrings("/bin/bash", std.mem.span(argv[0].?));
+    try std.testing.expectEqualStrings("--rcfile", std.mem.span(argv[1].?));
+    try std.testing.expectEqualStrings("/tmp/hollow-test/bashrc", std.mem.span(argv[2].?));
+    try std.testing.expectEqualStrings("-i", std.mem.span(argv[3].?));
+    try std.testing.expectEqual(@as(?[*:0]const u8, null), argv[4]);
+}
+
+test "environment path conversion is limited to known single paths" {
+    try std.testing.expect(isPathEnvironmentVariable("HOME"));
+    try std.testing.expect(isPathEnvironmentVariable("home"));
+    try std.testing.expect(isPathEnvironmentVariable("HOLLOW_SHELL_INTEGRATION_DIR"));
+    try std.testing.expect(!isPathEnvironmentVariable("XDG_CONFIG_DIRS"));
+    try std.testing.expect(!isPathEnvironmentVariable("CUSTOM_DIR"));
+}
+
+test "host input stops at a full master pipe instead of blocking" {
+    var host_pipe: [2]c_int = undefined;
+    var master_pipe: [2]c_int = undefined;
+    if (c.pipe(&host_pipe) != 0) return error.PipeFailed;
+    defer _ = c.close(host_pipe[0]);
+    defer _ = c.close(host_pipe[1]);
+    if (c.pipe(&master_pipe) != 0) return error.PipeFailed;
+    defer _ = c.close(master_pipe[0]);
+    defer _ = c.close(master_pipe[1]);
+    try setNonBlockingFd(host_pipe[0]);
+    try setNonBlockingFd(master_pipe[0]);
+    try setNonBlockingFd(master_pipe[1]);
+
+    const host_read = std.Io.File{ .handle = host_pipe[0], .flags = .{ .nonblocking = true } };
+    const master_write = master_pipe[1];
+    const fill = [_]u8{0} ** 4096;
+    while (true) {
+        const count = c.write(master_write, &fill, fill.len);
+        if (count > 0) continue;
+        if (std.posix.errno(-1) == .AGAIN) break;
+        return error.WriteFailed;
+    }
+
+    var frame_header = [_]u8{ @intFromEnum(protocol.FrameType.input), 0, 0, 0, 0 };
+    std.mem.writeInt(u32, frame_header[1..5], 4096, .little);
+    var payload = [_]u8{0x41} ** 4096;
+    try writeTestFd(host_pipe[1], &frame_header);
+    try writeTestFd(host_pipe[1], &payload);
+
+    var state = HostInputState{};
+    try std.testing.expect(try advanceHostInput(host_read, master_write, &state));
+    try std.testing.expect(try advanceHostInput(host_read, master_write, &state));
+    try std.testing.expect(state.hasPendingWrite());
+    try writePendingInput(master_write, &state);
+    try std.testing.expect(state.hasPendingWrite());
+
+    var drained: [4096]u8 = undefined;
+    while (c.read(master_pipe[0], &drained, drained.len) > 0) {}
+    try writePendingInput(master_write, &state);
+    try std.testing.expect(!state.hasPendingWrite());
+}
+
+fn writeTestFd(fd: c_int, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const count = c.write(fd, bytes.ptr + offset, bytes.len - offset);
+        if (count > 0) {
+            offset += @intCast(count);
+            continue;
+        }
+        if (count < 0 and std.posix.errno(-1) == .INTR) continue;
+        return error.WriteFailed;
+    }
+}
+
+fn setNonBlockingFd(fd: c_int) !void {
+    const flags = c.fcntl(fd, c.F_GETFL, @as(c_int, 0));
+    if (flags < 0 or c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.SetNonBlockingFailed;
 }

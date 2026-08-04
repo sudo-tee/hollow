@@ -2192,11 +2192,11 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 const active_screen_before = pane.active_screen;
-                const pty_read_loops: usize = if (pane_is_active) 4 else 2;
+                const pty_read_loops: usize = if (pane_is_active) 24 else 2;
                 // Inactive panes share one frame budget so work remains bounded
                 // regardless of pane count. Idle panes donate quota to later panes.
                 const pty_read_bytes: usize = if (pane_is_active)
-                    64 * 1024
+                    384 * 1024
                 else if (inactive_panes_remaining > 0 and inactive_pty_budget > 0)
                     (inactive_pty_budget + inactive_panes_remaining - 1) / inactive_panes_remaining
                 else

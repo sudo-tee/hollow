@@ -11,6 +11,114 @@ fi
 
 RATE="${3:-100}"
 
+run_blocking_child() {
+	local result_path="$2"
+	local ready_path="$3"
+	local chunks="${4:-1024}"
+	python3 - "$result_path" "$ready_path" "$chunks" <<'PY'
+import os
+import sys
+import time
+
+result_path, ready_path, chunks_arg = sys.argv[1:]
+chunks = int(chunks_arg)
+payload = (b"blocking-relay-output-" * 1024)[:16384]
+
+with open(ready_path, "w", encoding="ascii") as ready:
+    ready.write("ready\n")
+
+started = time.perf_counter()
+written = 0
+for index in range(chunks):
+    offset = 0
+    while offset < len(payload):
+        offset += os.write(sys.stdout.fileno(), payload[offset:])
+    written += len(payload)
+    if index % 32 == 0:
+        with open(result_path + ".progress", "w", encoding="ascii") as progress:
+            progress.write(f"chunks={index + 1}/{chunks} bytes={written}\n")
+
+elapsed = time.perf_counter() - started
+with open(result_path, "w", encoding="ascii") as result:
+    result.write(
+        f"bypass-blocking: completed bytes={written} elapsed={elapsed:.2f}s "
+        f"throughput={written / max(elapsed, 1e-9) / (1024 * 1024):.1f}MiB/s\n"
+    )
+PY
+}
+
+run_bypass_blocking() {
+	local chunks="${2:-1024}"
+	local timeout_s="${3:-15}"
+	local script_dir cli tag result_path ready_path target_cmd payload sender_pid deadline passed
+	script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+	if command -v hollow-cli >/dev/null 2>&1; then
+		cli="$(command -v hollow-cli)"
+	else
+		cli="$script_dir/scripts/hollow-cli"
+	fi
+	if [[ ! -x "$cli" ]]; then
+		echo "[bench] hollow-cli is required for bypass-blocking" >&2
+		return 1
+	fi
+
+	tag="bypass-blocking-$$-$(date +%s)"
+	result_path="/tmp/$tag.result"
+	ready_path="/tmp/$tag.ready"
+	rm -f "$result_path" "$result_path.progress" "$ready_path"
+	printf -v target_cmd '%q --quiet pane set-tag %q && exec %q blocking-child %q %q %q' \
+		"$cli" "$tag" "$script_dir/bench.sh" "$result_path" "$ready_path" "$chunks"
+
+	echo "[bench] creating blocked-input target pane tag=$tag"
+	"$cli" --quiet pane split vertical --ratio 0.5 --cmd "$target_cmd"
+	deadline=$((SECONDS + 5))
+	while [[ ! -f "$ready_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
+	if [[ ! -f "$ready_path" ]]; then
+		echo "[bench] target pane did not become ready" >&2
+		"$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
+		return 1
+	fi
+
+	payload="$(python3 -c 'import sys; sys.stdout.write("x" * 32768)')"
+	(
+		for _ in $(seq 1 128); do
+			"$cli" --quiet pane send-text "$payload" --tag "$tag" 2>/dev/null || break
+		done
+	) &
+	sender_pid=$!
+
+	echo "[bench] injecting 4MiB while target writes $((chunks * 16384 / 1024 / 1024))MiB"
+	deadline=$((SECONDS + timeout_s))
+	while [[ ! -f "$result_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
+
+	if [[ -f "$result_path" ]]; then
+		cat "$result_path"
+		echo "[bench] PASS: relay continued draining output under input backpressure"
+		passed=0
+	else
+		echo "[bench] TIMEOUT after ${timeout_s}s"
+		if [[ -f "$result_path.progress" ]]; then cat "$result_path.progress"; fi
+		echo "[bench] FAIL: relay stopped making output progress under input backpressure"
+		passed=1
+	fi
+
+	kill "$sender_pid" 2>/dev/null || true
+	wait "$sender_pid" 2>/dev/null || true
+	"$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
+	rm -f "$result_path" "$result_path.progress" "$ready_path"
+	return "$passed"
+}
+
+if [[ "$MODE" == "blocking-child" ]]; then
+	run_blocking_child "$@"
+	exit 0
+fi
+
+if [[ "$MODE" == "bypass-blocking" ]]; then
+	run_bypass_blocking "$@"
+	exit $?
+fi
+
 run_minimize_restore_regression() {
 	local out_path="${1:-bench_minimize_restore_snapshot.txt}"
 	local pre_minimize_delay_ms="${2:-2000}"
@@ -85,7 +193,7 @@ palette = [f"{CSI}38;5;{i}m" for i in range(16, 256)]
 def stat_line(name, elapsed, units, count):
     rate = count / elapsed if elapsed > 0 else 0.0
     singular = units[:-2] if units.endswith("es") else (units[:-1] if units.endswith("s") else units)
-    return f"\n{name}: {count} {units} in {elapsed:.2f}s ({rate:.1f}/{singular}/s)\n"
+    return f"\n{name}: {count} {units} in {elapsed:.2f}s ({rate:.1f}/{singular}/s) size={cols}x{rows}\n"
 
 def make_scroll_line(i):
     color = palette[i % len(palette)]
@@ -465,6 +573,6 @@ elif mode == "split-scroll":
     rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
     run_split_scroll(count, rate_hz=rate)
 else:
-		sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|nvim-restart|minimize-restore] ...\n")
+		sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|bypass-blocking|nvim-restart|minimize-restore] ...\n")
 		sys.exit(2)
 PY

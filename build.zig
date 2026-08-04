@@ -311,6 +311,9 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+    const wsl_bypass_tests = b.addTest(.{ .root_module = wsl_bypass_module });
+    const wsl_bypass_test_cmd = b.addRunArtifact(wsl_bypass_tests);
+    test_step.dependOn(&wsl_bypass_test_cmd.step);
 
     const lua_test_cmd = b.addSystemCommand(&.{ "bash" });
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));
