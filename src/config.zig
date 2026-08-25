@@ -329,6 +329,9 @@ pub const Config = struct {
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render
     /// loop uncapped.
     max_fps: u32 = 120,
+    /// Hide the OS mouse cursor while keyboard input is active. Mouse motion
+    /// shows it again.
+    hide_mouse_cursor_when_typing: bool = true,
     /// Optional lower frame cap applied only when the app is visually idle.
     /// Set to 0 to disable the idle-specific cap.
     idle_max_fps: u32 = 0,

@@ -4060,6 +4060,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.vsync = value;
         return;
     }
+    if (std.mem.eql(u8, key, "hide_mouse_cursor_when_typing")) {
+        cfg.hide_mouse_cursor_when_typing = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "command_timing")) {
         cfg.command_timing = value;
         return;

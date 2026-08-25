@@ -2681,6 +2681,9 @@ pub fn run(app: *App) !void {
     g_last_motion_cell = null;
     g_motion_outside_terminal = false;
     g_pending_mouse_move = null;
+    g_mouse_cursor_hidden = false;
+    g_current_mouse_cursor = null;
+    g_mouse_over_window = false;
     g_scrollbar_drag_pane = null;
     g_scrollbar_drag_metrics = null;
     g_scrollbar_drag_grab_y = 0.0;
@@ -2966,6 +2969,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         std.log.info("sokol first frame (ft renderer)", .{});
     }
     app.tick() catch {};
+    if (!app.config.hide_mouse_cursor_when_typing) setMouseCursorHidden(false);
     // Release cached render textures for panes destroyed during tick()
     // (closed tab, closed split, dead PTY). Must happen after tick() so the
     // mux has already removed dead panes from its lists.
@@ -4449,6 +4453,16 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
     }
     flushPendingMouseMove(app);
 
+    if (event.type == c.SAPP_EVENTTYPE_MOUSE_ENTER) {
+        g_mouse_over_window = true;
+        return;
+    }
+    if (event.type == c.SAPP_EVENTTYPE_MOUSE_LEAVE) {
+        g_mouse_over_window = false;
+        setMouseCursorHidden(false);
+        return;
+    }
+
     if (event.type == c.SAPP_EVENTTYPE_QUIT_REQUESTED) {
         std.log.info("sokol quit requested", .{});
     }
@@ -4476,12 +4490,16 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 @atomicStore(bool, &g_restore_pending, true, .release);
                 g_ignore_resize_frames = 2;
             },
-            c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
+            c.SAPP_EVENTTYPE_FOCUSED => {
+                setMouseCursorHidden(false);
+                _ = app.enqueueMouse(.{ .focus = true });
+            },
             c.SAPP_EVENTTYPE_UNFOCUSED => {
                 // Focus is lost: trust the OS modifier report again on
                 // refocus (any pending key-ups went to another window).
                 g_released_mods = 0;
                 cancelOverlayScrollbarDrag();
+                setMouseCursorHidden(false);
                 _ = app.enqueueMouse(.{ .focus = false });
             },
             c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
@@ -4512,12 +4530,16 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             @atomicStore(bool, &g_restore_pending, true, .release);
             g_ignore_resize_frames = 2;
         },
-        c.SAPP_EVENTTYPE_FOCUSED => _ = app.enqueueMouse(.{ .focus = true }),
+        c.SAPP_EVENTTYPE_FOCUSED => {
+            setMouseCursorHidden(false);
+            _ = app.enqueueMouse(.{ .focus = true });
+        },
         c.SAPP_EVENTTYPE_UNFOCUSED => {
             // Focus is lost: trust the OS modifier report again on
             // refocus (any pending key-ups went to another window).
             g_released_mods = 0;
             cancelOverlayScrollbarDrag();
+            setMouseCursorHidden(false);
             _ = app.enqueueMouse(.{ .focus = false });
         },
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
@@ -4532,6 +4554,7 @@ fn flushPendingMouseMove(app: *App) void {
 }
 
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
+    if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const key = mapKey(event.key_code);
     // Physical key-down: this modifier is genuinely held, clear any stale
     // "released" flag so its OS bit is trusted again.
@@ -4616,6 +4639,7 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
+    if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     if (g_swallow_char_pending > 0) {
         if (event.frame_count <= g_swallow_char_until_frame) {
             g_swallow_char_pending -= 1;
@@ -4955,6 +4979,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 }
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
+    g_mouse_over_window = true;
+    setMouseCursorHidden(false);
     if (g_linux_window_resize_active) {
         c.hollow_linux_update_window_resize();
         return;
@@ -5413,6 +5439,14 @@ const SelectionCursor = enum {
 };
 
 var g_current_mouse_cursor: ?c.sapp_mouse_cursor = null;
+var g_mouse_cursor_hidden = false;
+var g_mouse_over_window = false;
+
+fn setMouseCursorHidden(hidden: bool) void {
+    if (g_mouse_cursor_hidden == hidden) return;
+    g_mouse_cursor_hidden = hidden;
+    c.sapp_show_mouse(!hidden);
+}
 
 fn setMouseCursor(cursor: c.sapp_mouse_cursor) void {
     if (g_current_mouse_cursor == cursor) return;

@@ -128,6 +128,16 @@ hollow.config.set({
 })
 ```
 
+## Hide mouse cursor while typing
+
+The mouse cursor reappears when the mouse moves.
+
+```lua
+hollow.config.set({
+  hide_mouse_cursor_when_typing = true,
+})
+```
+
 ## Hyperlinks: open on plain click
 
 The default is `shift_click_only = true`. To open on plain click:

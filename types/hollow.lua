@@ -351,6 +351,7 @@
 ---@field debug_terminal_trace? boolean
 ---@field backend? string
 ---@field vsync? boolean
+---@field hide_mouse_cursor_when_typing? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean
 ---@field load_default_keymaps? boolean

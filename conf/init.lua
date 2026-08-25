@@ -22,6 +22,7 @@ hollow.config.set({
   debug_overlay = false,
   renderer_single_pane_direct = false,
   vsync = false,
+  hide_mouse_cursor_when_typing = true,
   backend = "sokol",
   default_domain = default_domain,
   domains = domains,

@@ -50,6 +50,7 @@ in the shipped base config.
 | `workspace`                                                                       | table                          | `auto_bootstrap`, `default_layout`                         |
 | `max_fps`, `idle_max_fps`                                                         | integer                        | Renderer framerate cap                                     |
 | `vsync`                                                                           | boolean                        | Renderer vsync                                             |
+| `hide_mouse_cursor_when_typing`                                                   | boolean                        | Hide OS mouse cursor during keyboard input                |
 | `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                       |
 | `command_timing`                                                                  | boolean                        | On-screen command timing overlay                           |
 | `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                  |
@@ -122,6 +123,15 @@ hollow.config.set({
     blink_rate = 500,
   },
 })
+```
+
+### Mouse Cursor
+
+This option defaults to `true`. Set it to `false` to keep the OS mouse cursor
+visible while typing. Mouse movement shows the cursor again.
+
+```lua
+hollow.config.set({ hide_mouse_cursor_when_typing = true })
 ```
 
 ### Bell
