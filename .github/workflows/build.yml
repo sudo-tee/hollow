@@ -1,0 +1,97 @@
+name: Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luarocks mingw-w64
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
+
+      - name: Apply project patches
+        run: bash scripts/setup.sh
+
+      - name: Build Windows target
+        run: ./launch.sh --build-only
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: hollow-windows-pr
+          path: zig-out/bin/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            pkg-config \
+            lua5.1 \
+            luajit \
+            luarocks
+          sudo luarocks --lua-version=5.1 install busted 2.3.0
+
+      - name: Apply project patches
+        run: bash scripts/setup.sh
+
+      - name: Build Linux target
+        run: zig build -Doptimize=ReleaseFast
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
+      - name: Upload Linux build
+        uses: actions/upload-artifact@v4
+        with:
+          name: hollow-linux-pr
+          path: |
+            zig-out/bin/hollow
+            zig-out/bin/hollow-cli
+            zig-out/bin/hollow-wsl-bypass
+          if-no-files-found: error
+          retention-days: 7
