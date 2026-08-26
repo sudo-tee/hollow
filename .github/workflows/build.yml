@@ -20,6 +20,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Set artifact metadata
+        id: metadata
+        shell: bash
+        env:
+          PR_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          commit_sha="${PR_COMMIT_SHA:-${GITHUB_SHA}}"
+          echo "short_sha=${commit_sha:0:7}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -44,7 +53,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: hollow-windows-pr
+          name: hollow-windows-pr-${{ steps.metadata.outputs.short_sha }}
           path: zig-out/bin/*.exe
           if-no-files-found: error
           retention-days: 7
@@ -60,6 +69,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Set artifact metadata
+        id: metadata
+        shell: bash
+        env:
+          PR_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          commit_sha="${PR_COMMIT_SHA:-${GITHUB_SHA}}"
+          echo "short_sha=${commit_sha:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
@@ -94,7 +112,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: hollow-linux-pr
+          name: hollow-linux-pr-${{ steps.metadata.outputs.short_sha }}
           path: |
             zig-out/bin/hollow
             zig-out/bin/hollow-cli
@@ -132,32 +150,37 @@ jobs:
             const commitSha = context.payload.pull_request.head.sha;
             const commitUrl = `https://github.com/${owner}/${repo}/commit/${commitSha}`;
             const formatTimestamp = (timestamp) => new Date(timestamp).toISOString();
+            const commitShortSha = commitSha.slice(0, 7);
             const artifacts = [
               {
-                name: 'hollow-windows-pr',
+                platform: 'Windows',
+                name: `hollow-windows-pr-${commitShortSha}`,
                 id: process.env.WINDOWS_ARTIFACT_ID,
               },
               {
-                name: 'hollow-linux-pr',
+                platform: 'Linux',
+                name: `hollow-linux-pr-${commitShortSha}`,
                 id: process.env.LINUX_ARTIFACT_ID,
               },
             ];
-            const artifactLinks = artifacts.map(
+            const artifactRows = artifacts.map(
               (artifact) =>
-                `- [${artifact.name}](https://github.com/${owner}/${repo}/actions/runs/${context.runId}/artifacts/${artifact.id})`,
+                `| ${artifact.platform} | [${artifact.name}](https://github.com/${owner}/${repo}/actions/runs/${context.runId}/artifacts/${artifact.id}) |`,
             );
 
             const body = [
               marker,
-              '## Hollow build artifacts',
+              '## PR builds',
               '',
-              `Commit: [\`${commitSha.slice(0, 7)}\`](${commitUrl})`,
+              '| Platform | Download |',
+              '| --- | --- |',
+              ...artifactRows,
+              '',
+              `Built from [\`${commitShortSha}\`](${commitUrl}).`,
               `Started: ${formatTimestamp(run.created_at)}`,
               `Completed: ${formatTimestamp(run.updated_at)}`,
-              '',
-              ...artifactLinks,
-              '',
               `Build run: [#${run.run_number}](${run.html_url})`,
+              '',
               '_Artifacts expire after 7 days._',
             ].join('\n');
 
