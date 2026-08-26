@@ -66,8 +66,10 @@ hollow.log("starting up", some_value)
 hollow.inspect({ a = 1, b = 2 })
 ```
 
-`hollow.log` writes to the host log (and `hollow.log` next to the
-executable). `hollow.inspect` returns a pretty-printed string.
+`hollow.log` writes to the host log. On Windows, this is
+`%APPDATA%\hollow\hollow.log`; on Linux, it is
+`$XDG_DATA_HOME/hollow/hollow.log` or `$HOME/.local/share/hollow/hollow.log`.
+`hollow.inspect` returns a pretty-printed string.
 
 ## Filesystem helpers
 

@@ -54,9 +54,9 @@ After a user unpacks a release and runs `hollow.exe` once:
   hollow-cli                  # Python client, if shipped
   conf/
     init.lua                  # shipped base, if shipped
-  hollow.log                  # log file, written next to the executable
   %APPDATA%\hollow\
     init.lua                  # user override (does not exist by default)
+    hollow.log                # log file
     plugins\                  # cloned git plugins
     layouts\                  # named workspace layouts
       default.json
@@ -124,8 +124,8 @@ To symbolicate a user-reported crash:
    from the same source tree.
 2. Capture `hollow.pdb`, `hollow-gui.pdb`, and `hollow-native.pdb`
    from `zig-out/bin/`.
-3. Ask the user for `hollow.log` from the install dir.
-4. Resolve addresses from `hollow.log` against the matching PDB.
+3. Ask the user for `%APPDATA%\hollow\hollow.log`.
+4. Resolve addresses from `%APPDATA%\hollow\hollow.log` against the matching PDB.
 
 The log file records panics, including the error return trace and the
 host stack trace, written by `src/main.zig:panic`. The matching PDB
