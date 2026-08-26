@@ -5,11 +5,13 @@ describe("UI workspace test suite", function()
   local env
   local hollow
   local on_key
+  local workspace_actions
 
   setup(function()
     env = harness.boot()
     hollow = env.hollow
     on_key = env.get_key_handler()
+    workspace_actions = require("hollow.ui.workspace.actions")
   end)
 
   describe("workspace switcher", function()
@@ -59,6 +61,36 @@ describe("UI workspace test suite", function()
         workspace_items[2].cwd,
         "/home/francis/Projects/alpha",
         "workspace switcher should still resolve UNC cwd for launch"
+      )
+    end)
+
+    it("bootstraps project layouts with source cwd and domain", function()
+      local bootstrapped_dir
+      local bootstrapped_domain
+      local original_bootstrap_project = hollow.workspace.bootstrap_project
+      hollow.workspace.bootstrap_project = function(dir, domain)
+        bootstrapped_dir = dir
+        bootstrapped_domain = domain
+      end
+
+      workspace_actions.switch_to_workspace({
+        name = "dots",
+        cwd = "/home/francis/dots",
+        domain = "unix",
+        source = "local",
+        is_open = false,
+      })
+
+      hollow.workspace.bootstrap_project = original_bootstrap_project
+      harness.assert_equal(
+        bootstrapped_dir,
+        "/home/francis/dots",
+        "opening a known workspace should bootstrap its project cwd"
+      )
+      harness.assert_equal(
+        bootstrapped_domain,
+        "unix",
+        "opening a known workspace should preserve its domain for path resolution"
       )
     end)
   end)

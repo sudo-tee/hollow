@@ -37,6 +37,11 @@ pub const Tab = struct {
         pane: *Pane,
     };
 
+    pub const PaneSplitInfo = struct {
+        direction: SplitDirection,
+        size: f32,
+    };
+
     pub const LeafIterator = struct {
         stack: [64]*SplitNode = undefined,
         len: usize = 0,
@@ -135,6 +140,11 @@ pub const Tab = struct {
         new_leaf.* = SplitNode.initPane(new_pane);
 
         target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
+        // Anchor metadata identifies this pane's split after later nested splits.
+        new_pane.restore_anchor_id = @intFromPtr(current_pane);
+        new_pane.restore_ratio = std.math.clamp(ratio, 0.05, 0.95);
+        new_pane.restore_split_horizontal = direction == .horizontal;
+        new_pane.restore_place_first = false;
         self.panes.appendAssumeCapacity(new_pane);
         current_pane.is_floating = false;
         self.active_pane = new_pane;
@@ -143,6 +153,36 @@ pub const Tab = struct {
 
     pub fn activeSplitRoot(self: *Tab) ?*SplitNode {
         return self.root_split;
+    }
+
+    pub fn splitInfoForPane(self: *Tab, pane: *Pane) ?PaneSplitInfo {
+        const root = self.root_split orelse return null;
+        if (pane.restore_anchor_id == 0) return null;
+        for (self.panes.items) |candidate| {
+            if (@intFromPtr(candidate) != pane.restore_anchor_id) continue;
+            return findSplitInfoBetween(root, candidate, pane);
+        }
+        return null;
+    }
+
+    fn findSplitInfoBetween(node: *SplitNode, anchor: *Pane, pane: *Pane) ?PaneSplitInfo {
+        if (node.kind != .split) return null;
+        const first = node.first orelse return null;
+        const second = node.second orelse return null;
+        const anchor_in_first = layout.findPaneLeafNode(first, anchor) != null;
+        const pane_in_first = layout.findPaneLeafNode(first, pane) != null;
+        const anchor_in_second = layout.findPaneLeafNode(second, anchor) != null;
+        const pane_in_second = layout.findPaneLeafNode(second, pane) != null;
+
+        if (anchor_in_first and pane_in_second) {
+            return .{ .direction = node.direction, .size = 1.0 - node.ratio };
+        }
+        if (anchor_in_second and pane_in_first) {
+            return .{ .direction = node.direction, .size = node.ratio };
+        }
+        if (anchor_in_first and pane_in_first) return findSplitInfoBetween(first, anchor, pane);
+        if (anchor_in_second and pane_in_second) return findSplitInfoBetween(second, anchor, pane);
+        return null;
     }
 
     /// Remove `pane` from this tab's split tree and panes list.

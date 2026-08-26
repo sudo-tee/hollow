@@ -45,13 +45,20 @@ test "pane focus follows nearest matching split subtree" {
 
     const bottom_left = try allocator.create(Pane);
     bottom_left.* = Pane.init(allocator);
-    try tab.splitActivePane(bottom_left, .horizontal, 0.5);
+    try tab.splitActivePane(bottom_left, .horizontal, 0.3);
 
     tab.active_pane = bottom_left;
 
     const bottom_right = try allocator.create(Pane);
     bottom_right.* = Pane.init(allocator);
-    try tab.splitActivePane(bottom_right, .vertical, 0.5);
+    try tab.splitActivePane(bottom_right, .vertical, 0.6);
+
+    const bottom_left_info = tab.splitInfoForPane(bottom_left).?;
+    try std.testing.expectEqual(types.SplitDirection.horizontal, bottom_left_info.direction);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), bottom_left_info.size, 1e-6);
+    const bottom_right_info = tab.splitInfoForPane(bottom_right).?;
+    try std.testing.expectEqual(types.SplitDirection.vertical, bottom_right_info.direction);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), bottom_right_info.size, 1e-6);
 
     mux.focusPaneInDirection(.left, 1200, 800);
     try std.testing.expect(tab.active_pane == bottom_left);
@@ -83,6 +90,10 @@ test "split pane ratio applies to new pane" {
     second.* = Pane.init(allocator);
     try tab.splitActivePane(second, .vertical, 0.3);
 
+    const split_info = tab.splitInfoForPane(second).?;
+    try std.testing.expectEqual(types.SplitDirection.vertical, split_info.direction);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), split_info.size, 1e-6);
+
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 100 };
     const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
@@ -113,7 +124,12 @@ test "horizontal split rounds to nearest whole row" {
 
     const second = try allocator.create(Pane);
     second.* = Pane.init(allocator);
-    try tab.splitActivePane(second, .horizontal, @as(f32, 16.0 / 34.0));
+    const split_size = @as(f32, 16.0 / 34.0);
+    try tab.splitActivePane(second, .horizontal, split_size);
+
+    const split_info = tab.splitInfoForPane(second).?;
+    try std.testing.expectEqual(types.SplitDirection.horizontal, split_info.direction);
+    try std.testing.expectApproxEqAbs(split_size, split_info.size, 1e-6);
 
     var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
     const bounds = PaneBounds{ .x = 0, .y = 0, .width = 1000, .height = 34 * 20 + 1 };

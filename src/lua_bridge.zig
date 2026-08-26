@@ -227,6 +227,8 @@ pub const AppCallbacks = struct {
     get_pane_text: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_split_direction: *const fn (app: *anyopaque, pane_id: usize) ?[]const u8,
+    get_pane_split_ratio: *const fn (app: *anyopaque, pane_id: usize) ?f32,
     get_pane_active_screen: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_rows: *const fn (app: *anyopaque, pane_id: usize) usize,
     get_pane_cols: *const fn (app: *anyopaque, pane_id: usize) usize,
@@ -2177,6 +2179,14 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_domain, 1);
         api.set_field(self.state, -2, "get_pane_domain");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_split_direction, 1);
+        api.set_field(self.state, -2, "get_pane_split_direction");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_split_ratio, 1);
+        api.set_field(self.state, -2, "get_pane_split_ratio");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_send_text, 1);
@@ -5801,6 +5811,44 @@ fn l_get_pane_domain(state: *State) callconv(.c) c_int {
     var out_buf: [128]u8 = undefined;
     const domain = cbs.get_pane_domain(cbs.app, pane_id, &out_buf);
     api.push_lstring(state, domain.ptr, domain.len);
+    return 1;
+}
+
+fn l_get_pane_split_direction(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    if (cbs.get_pane_split_direction(cbs.app, pane_id)) |direction| {
+        api.push_lstring(state, direction.ptr, direction.len);
+    } else {
+        api.push_nil(state);
+    }
+    return 1;
+}
+
+fn l_get_pane_split_ratio(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const cbs = ctx.app_callbacks orelse {
+        api.push_nil(state);
+        return 1;
+    };
+    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+        @as(usize, @intFromFloat(api.to_number(state, 1)))
+    else
+        0;
+    if (cbs.get_pane_split_ratio(cbs.app, pane_id)) |ratio| {
+        api.push_number(state, ratio);
+    } else {
+        api.push_nil(state);
+    }
     return 1;
 }
 

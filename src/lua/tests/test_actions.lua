@@ -32,6 +32,44 @@ describe("actions test suite", function()
     end)
   end)
 
+  describe("workspace actions", function()
+    it("registers save_workspace in the action list", function()
+      local entry
+      for _, candidate in ipairs(hollow.action.list()) do
+        if candidate.name == "save_workspace" then
+          entry = candidate
+          break
+        end
+      end
+      harness.assert_true(entry ~= nil, "save_workspace should be discoverable")
+      harness.assert_equal(
+        entry.category,
+        "workspace",
+        "save_workspace should be listed under workspace actions"
+      )
+    end)
+
+    it("exports to the active project directory", function()
+      local saved_path
+      local original_export_to = hollow.workspace.export_to
+      local original_notify = hollow.ui.notify.info
+      hollow.workspace.export_to = function(path)
+        saved_path = path
+      end
+      hollow.ui.notify.info = function() end
+
+      hollow.action.save_workspace()
+
+      hollow.workspace.export_to = original_export_to
+      hollow.ui.notify.info = original_notify
+      harness.assert_equal(
+        saved_path,
+        "\\\\wsl.localhost\\main\\tmp\\project\\.hollow\\workspace.json",
+        "save_workspace should export to the project-local workspace path"
+      )
+    end)
+  end)
+
   describe("configured quick-select", function()
     local selected_custom_text = nil
     local configured_matches

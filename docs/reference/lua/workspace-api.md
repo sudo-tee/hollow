@@ -17,6 +17,7 @@ hollow.workspace.export_to(path)                      -- write to disk
 hollow.workspace.project_local_path(dir?)             -- path to .hollow/workspace.json
 hollow.workspace.resolve_auto_bootstrap_path()        -- for the active cwd
 hollow.workspace.auto_bootstrap()                      -- run auto-bootstrap
+hollow.workspace.bootstrap_project(dir?, domain?)      -- load project-local layout
 ```
 
 ## Bootstrap spec
@@ -83,6 +84,7 @@ HollowWorkspaceBootstrapPane = {
 - Relative `cwd` values resolve against the project root for
   `.hollow/workspace.json`.
 - `size` maps to split `ratio` for additional panes in a tab.
+- Exported additional panes preserve their current split `direction` and `size` ratio.
 - One pane may set `main: true` (or `default: true`) to receive
   focus after bootstrap.
 - Tabs are linear layouts today; nested split trees are not supported
@@ -110,6 +112,12 @@ Export the current workspace:
 
 ```lua
 hollow.workspace.export_to("/tmp/workspace.json")
+```
+
+Load a project-local layout into a newly created workspace:
+
+```lua
+hollow.workspace.bootstrap_project("/path/to/project")
 ```
 
 Auto-bootstrap (called by Hollow at startup when

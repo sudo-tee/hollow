@@ -264,6 +264,25 @@ pub fn luaGetPaneDomainCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []
     return pane.domain_name;
 }
 
+pub fn luaGetPaneSplitDirectionCallback(app_ptr: *anyopaque, pane_id: usize) ?[]const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return null;
+    const mux = if (app.mux) |*mux| mux else return null;
+    const info = mux.paneSplitInfo(pane) orelse return null;
+    return switch (info.direction) {
+        .horizontal => "horizontal",
+        .vertical => "vertical",
+    };
+}
+
+pub fn luaGetPaneSplitRatioCallback(app_ptr: *anyopaque, pane_id: usize) ?f32 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return null;
+    const mux = if (app.mux) |*mux| mux else return null;
+    const info = mux.paneSplitInfo(pane) orelse return null;
+    return info.size;
+}
+
 pub fn luaGetPaneRowsCallback(app_ptr: *anyopaque, pane_id: usize) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return 0;

@@ -356,6 +356,8 @@ function M.export_current()
         domain = pane.domain,
         command = pane.foreground_process,
         tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+        direction = pane.direction,
+        size = pane.split_ratio,
         main = pane.is_focused == true or nil,
       }
     end

@@ -103,8 +103,8 @@ describe("workspace test suite", function()
           {
             panes = {
               { command = "nvim", domain = "wsl" },
-              { direction = "horizontal", domain = "wsl" },
-              { direction = "vertical", domain = "wsl" },
+              { command = "horizontal-pane", direction = "horizontal", size = 0.25, domain = "wsl" },
+              { command = "vertical-pane", direction = "vertical", size = 0.6, domain = "wsl" },
             },
           },
         },
@@ -124,6 +124,36 @@ describe("workspace test suite", function()
         recorded.split_pane_calls[split_count_before_linear + 2].direction,
         "vertical",
         "workspace bootstrap should preserve the third pane split direction"
+      )
+
+      local exported = hollow.workspace.export_current()
+      local directions = {}
+      for _, pane in ipairs(exported.tabs[1].panes) do
+        directions[pane.command] = pane.direction
+      end
+      harness.assert_equal(
+        directions["horizontal-pane"],
+        "horizontal",
+        "workspace export should preserve horizontal split direction"
+      )
+      harness.assert_equal(
+        directions["vertical-pane"],
+        "vertical",
+        "workspace export should preserve vertical split direction"
+      )
+      local sizes = {}
+      for _, pane in ipairs(exported.tabs[1].panes) do
+        sizes[pane.command] = pane.size
+      end
+      harness.assert_equal(
+        sizes["horizontal-pane"],
+        0.25,
+        "workspace export should preserve horizontal split size"
+      )
+      harness.assert_equal(
+        sizes["vertical-pane"],
+        0.6,
+        "workspace export should preserve vertical split size"
       )
     end)
   end)
@@ -197,6 +227,20 @@ describe("workspace test suite", function()
         exported.tabs[1].panes[1].cwd,
         "/tmp/project",
         "workspace export should include pane cwd"
+      )
+    end)
+
+    it("omits split metadata for root pane", function()
+      local exported = hollow.workspace.export_current()
+      harness.assert_equal(
+        exported.tabs[1].panes[1].direction,
+        nil,
+        "workspace export should omit root pane direction"
+      )
+      harness.assert_equal(
+        exported.tabs[1].panes[1].size,
+        nil,
+        "workspace export should omit root pane size"
       )
     end)
 

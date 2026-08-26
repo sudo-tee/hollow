@@ -20,6 +20,8 @@ const Tab = tab_mod.Tab;
 const Workspace = workspace_mod.Workspace;
 
 pub const Mux = struct {
+    pub const PaneSplitInfo = Tab.PaneSplitInfo;
+
     allocator: std.mem.Allocator,
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
@@ -210,6 +212,11 @@ pub const Mux = struct {
             if (item == pane) return true;
         }
         return false;
+    }
+
+    pub fn paneSplitInfo(self: *Mux, pane: *Pane) ?PaneSplitInfo {
+        const tab = self.tabContainingPane(pane) orelse return null;
+        return tab.splitInfoForPane(pane);
     }
 
     pub fn togglePaneMaximized(self: *Mux, pane: *Pane, show_background: bool) bool {
