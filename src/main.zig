@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const native_cli = @import("native_cli.zig");
 const font_config = @import("render/font_config.zig");
 const io = @import("io.zig");
+const platform = @import("platform.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -16,8 +17,11 @@ const win32 = if (builtin.os.tag == .windows) struct {
 
     pub extern "kernel32" fn AttachConsole(dwProcessId: DWORD) callconv(.winapi) BOOL;
     pub extern "kernel32" fn CreateProcessW(lpApplicationName: ?LPWSTR, lpCommandLine: ?LPWSTR, lpProcessAttributes: ?*SECURITY_ATTRIBUTES, lpThreadAttributes: ?*SECURITY_ATTRIBUTES, bInheritHandles: BOOL, dwCreationFlags: DWORD, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?LPWSTR, lpStartupInfo: *STARTUPINFOW, lpProcessInformation: *PROCESS_INFORMATION) callconv(.winapi) BOOL;
+    pub extern "kernel32" fn CreateMutexW(lpMutexAttributes: ?*SECURITY_ATTRIBUTES, bInitialOwner: BOOL, lpName: ?[*:0]const u16) callconv(.winapi) HANDLE;
     pub extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) HANDLE;
     pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+    pub extern "kernel32" fn ReleaseMutex(hMutex: HANDLE) callconv(.winapi) BOOL;
+    pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 
     const LPWSTR = [*:0]u16;
     const SECURITY_ATTRIBUTES = extern struct {
@@ -53,16 +57,78 @@ const win32 = if (builtin.os.tag == .windows) struct {
     };
 
     const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
+    const INFINITE: DWORD = 0xFFFF_FFFF;
+    const WAIT_ABANDONED: DWORD = 0x0000_0080;
+    const WAIT_OBJECT_0: DWORD = 0x0000_0000;
 } else struct {};
 
 var g_log_file: ?std.Io.File = null;
+var g_log_named_mutex: ?*anyopaque = null;
 var g_log_mutex: std.Io.Mutex = .init;
 threadlocal var g_log_recursion_depth: usize = 0;
+const LogLock = enum { none, file, named_mutex };
 
 pub const std_options: std.Options = .{
     .logFn = fileLogFn,
     .enable_segfault_handler = true,
 };
+
+fn initLogProcessLock() void {
+    if (comptime builtin.os.tag == .windows) {
+        g_log_named_mutex = win32.CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Local\\HollowLog"));
+    }
+}
+
+fn deinitLogProcessLock() void {
+    if (comptime builtin.os.tag == .windows) {
+        if (g_log_named_mutex) |mutex| _ = win32.CloseHandle(mutex);
+        g_log_named_mutex = null;
+    }
+}
+
+fn lockLogFile(file: std.Io.File) LogLock {
+    if (comptime builtin.os.tag == .windows) {
+        const mutex = g_log_named_mutex orelse return .none;
+        const result = win32.WaitForSingleObject(mutex, win32.INFINITE);
+        if (result == win32.WAIT_OBJECT_0 or result == win32.WAIT_ABANDONED) return .named_mutex;
+        return .none;
+    }
+    file.lock(io.get(), .exclusive) catch return .none;
+    return .file;
+}
+
+fn unlockLogFile(file: std.Io.File, lock: LogLock) void {
+    switch (lock) {
+        .none => {},
+        .file => file.unlock(io.get()),
+        .named_mutex => {
+            if (comptime builtin.os.tag == .windows) {
+                if (g_log_named_mutex) |mutex| {
+                    _ = win32.ReleaseMutex(mutex);
+                }
+            }
+        },
+    }
+}
+
+fn seekLogWriterToEnd(file: std.Io.File, writer: *std.Io.File.Writer) bool {
+    const stat = file.stat(io.get()) catch return false;
+    writer.seekTo(stat.size) catch return false;
+    return true;
+}
+
+fn openLogFile() ?std.Io.File {
+    const allocator = std.heap.page_allocator;
+    const log_dir = if (builtin.os.tag == .windows or builtin.os.tag == .linux)
+        platform.userDataDir(allocator) catch return null
+    else
+        platform.selfExeDir(allocator) catch return null;
+    defer allocator.free(log_dir);
+    std.Io.Dir.cwd().createDirPath(io.get(), log_dir) catch {};
+    const log_path = std.fs.path.join(allocator, &.{ log_dir, "hollow.log" }) catch return null;
+    defer allocator.free(log_path);
+    return std.Io.Dir.createFileAbsolute(io.get(), log_path, .{ .read = true, .truncate = false }) catch null;
+}
 
 fn writeLogLine(prefix: []const u8, text: []const u8) void {
     if (g_log_file) |f| {
@@ -77,8 +143,11 @@ fn writeLogLine(prefix: []const u8, text: []const u8) void {
             g_log_recursion_depth -= 1;
             if (needs_lock) g_log_mutex.unlock(io.get());
         }
+        const log_lock = if (needs_lock) lockLogFile(f) else .none;
+        defer unlockLogFile(f, log_lock);
         var buf: [1024]u8 = undefined;
         var w = f.writer(io.get(), &buf);
+        if (!seekLogWriterToEnd(f, &w)) return;
         w.interface.print("[{s}] {s}\n", .{ prefix, text }) catch {};
         w.interface.flush() catch {};
         f.sync(io.get()) catch {};
@@ -98,8 +167,11 @@ fn writeCurrentStackToLog(start_addr: ?usize) void {
             g_log_recursion_depth -= 1;
             if (needs_lock) g_log_mutex.unlock(io.get());
         }
+        const log_lock = if (needs_lock) lockLogFile(f) else .none;
+        defer unlockLogFile(f, log_lock);
         var buf: [2048]u8 = undefined;
         var w = f.writer(io.get(), &buf);
+        if (!seekLogWriterToEnd(f, &w)) return;
 
         w.interface.writeAll("[panic] stack trace:\n") catch {};
         std.debug.writeCurrentStackTrace(.{ .first_address = start_addr }, .{ .writer = &w.interface, .mode = .no_color }) catch |err| {
@@ -131,13 +203,17 @@ fn fileLogFn(
             g_log_recursion_depth -= 1;
             if (needs_lock) g_log_mutex.unlock(io.get());
         }
+        const log_lock = if (needs_lock) lockLogFile(f) else .none;
+        defer unlockLogFile(f, log_lock);
         var buf: [1024]u8 = undefined;
         var w: std.Io.Writer = .fixed(&buf);
         w.print("[{s}] " ++ format ++ "\n", .{prefix} ++ args) catch {};
         var file_buf: [1024]u8 = undefined;
         var file_writer = f.writer(io.get(), &file_buf);
+        if (!seekLogWriterToEnd(f, &file_writer)) return;
         file_writer.interface.writeAll(w.buffered()) catch {};
         file_writer.interface.flush() catch {};
+        f.sync(io.get()) catch {};
     }
 }
 
@@ -157,8 +233,11 @@ pub fn panic(msg: []const u8, trace: ?*std.builtin.StackTrace, ra: ?usize) noret
                 g_log_recursion_depth -= 1;
                 if (needs_lock) g_log_mutex.unlock(io.get());
             }
+            const log_lock = if (needs_lock) lockLogFile(f) else .none;
+            defer unlockLogFile(f, log_lock);
             var buf: [2048]u8 = undefined;
             var w = f.writer(io.get(), &buf);
+            if (!seekLogWriterToEnd(f, &w)) std.process.abort();
 
             w.interface.writeAll("[panic] error return trace:\n") catch {};
             std.debug.writeErrorReturnTrace(t, .{ .writer = &w.interface, .mode = .no_color }) catch |err| {
@@ -186,8 +265,10 @@ fn guiMain(process_args: std.process.Args) !void {
     const App = @import("app.zig").App;
     const sokol_runtime = @import("render/sokol_runtime.zig");
 
-    // Open log file next to the exe (works even without a console).
-    g_log_file = std.Io.Dir.cwd().createFile(io.get(), "hollow.log", .{ .truncate = true }) catch null;
+    // Open log file before GUI startup (works even without a console).
+    initLogProcessLock();
+    defer deinitLogProcessLock();
+    g_log_file = openLogFile();
     defer if (g_log_file) |f| f.close(io.get());
 
     var gpa: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;

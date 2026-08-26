@@ -143,10 +143,10 @@ next to your config or plugin:
 {
   "runtime.version": "LuaJIT",
   "workspace.library": [
-    "%APPDATA%/hollow/types",  // Windows
-    "~/.config/hollow/types",  // Linux/macOS
-    "/mnt/c/Users/YOUR_USER/AppData/Roaming/hollow/types" // WSL
-  ]
+    "%APPDATA%/hollow/types", // Windows
+    "~/.config/hollow/types", // Linux/macOS
+    "/mnt/c/Users/YOUR_USER/AppData/Roaming/hollow/types", // WSL
+  ],
 }
 ```
 

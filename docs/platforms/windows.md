@@ -28,8 +28,9 @@ For crash symbolication, see
 
 ## Runtime layout
 
-`hollow.exe` is a thin console launcher; it parses flags, opens
-`hollow.log`, then spawns `hollow-native.exe` (the GUI) as a sibling.
+`hollow.exe` is a thin console launcher; it parses flags, then spawns
+`hollow-native.exe` (the GUI) as a sibling. The GUI appends to
+`%APPDATA%\hollow\hollow.log`.
 The console returns immediately so the terminal you launched from is
 not blocked.
 
@@ -46,7 +47,7 @@ hollow.exe
 | Bundled base config | `conf/init.lua` next to the executable |
 | Personal override   | `%APPDATA%\hollow\init.lua`            |
 | Explicit override   | `--config path\to\init.lua`            |
-| Log file            | `hollow.log` next to the executable    |
+| Log file            | `%APPDATA%\hollow\hollow.log`         |
 | Data dir (plugins)  | `%APPDATA%\hollow`                     |
 
 The base config is loaded first, the override is merged on top.
@@ -102,12 +103,11 @@ The most useful Windows-specific flags:
 
 ## Debugging
 
-- `hollow.log` is written next to the executable; every panic and
-  every log line lands there.
+- `%APPDATA%\hollow\hollow.log` receives every panic and log line.
 - The shipped base config sets `debug_overlay = false` and
   `command_timing = false`. Flip them on in your personal config to
   get the on-screen overlay.
-- For crash reports, send `hollow.log`; symbolication requires a
+- For crash reports, send `%APPDATA%\hollow\hollow.log`; symbolication requires a
   build with matching PDBs as described in
   [Packaging → Crash reports](../packaging.md#crash-reports).
 

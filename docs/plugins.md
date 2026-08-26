@@ -131,8 +131,7 @@ give it.
 | `setup()` throws | Logged with traceback, loader continues |
 | Local path missing | Logged, plugin skipped |
 
-The loader never panics. Errors are visible in `hollow.log` next to
-the executable.
+The loader never panics. Errors are visible in the host log.
 
 ## See also
 

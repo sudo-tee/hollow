@@ -196,9 +196,12 @@ require name).
 
 ## Logs
 
-- `hollow.log` — written next to the executable; every panic, every
+- Windows: `%APPDATA%\hollow\hollow.log` receives every panic and
   `std.log.*` line.
-- `hollow.log` is truncated on each startup.
+- Linux: `$XDG_DATA_HOME/hollow/hollow.log` or
+  `$HOME/.local/share/hollow/hollow.log`.
+- macOS: `hollow.log` is written next to the executable.
+- Logs append across startups and concurrent GUI processes.
 - For crash reports, send the log; symbolication requires a
   build with matching PDBs as described in
   [Packaging → Crash reports](packaging.md#crash-reports).

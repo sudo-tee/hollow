@@ -11,6 +11,8 @@
 - The default `unix` domain uses `$SHELL`, with `/bin/sh` as fallback.
 - Config files use the same syntax as Windows; user config lives at
   `$XDG_CONFIG_HOME/hollow/init.lua` or `$HOME/.config/hollow/init.lua`.
+- Logs live at `$XDG_DATA_HOME/hollow/hollow.log` or
+  `$HOME/.local/share/hollow/hollow.log`.
 - `window_titlebar_show = false` uses X11 window-manager hints. Top-bar drag
   and edge/corner resize work on window managers and XWayland compositors that
   allow client-managed windows.
