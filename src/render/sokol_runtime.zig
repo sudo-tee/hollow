@@ -27,6 +27,7 @@ const quick_select = @import("../app/quick_select.zig");
 const selection_mod = @import("../app/selection.zig");
 const mux_ops = @import("../app/session_controller.zig");
 const input = @import("../app/input.zig");
+const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 
 fn enqueueQuickSelectInput(app: *App, value: quick_select.Input) void {
@@ -125,7 +126,9 @@ const win32 = if (builtin.os.tag == .windows) struct {
     const SM_CXSIZEFRAME: c_int = 32;
     const SM_CYSIZEFRAME: c_int = 33;
     const SM_CXPADDEDBORDER: c_int = 92;
+    const VK_RMENU: c_int = 0xA5;
 
+    extern "user32" fn GetKeyState(nVirtKey: c_int) callconv(.c) i16;
     extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.c) LONG_PTR;
     extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: LONG_PTR) callconv(.c) LONG_PTR;
     extern "user32" fn SetWindowPos(
@@ -154,6 +157,10 @@ const win32 = if (builtin.os.tag == .windows) struct {
     // winmm — multimedia timer resolution
     extern "winmm" fn timeBeginPeriod(uPeriod: c_uint) callconv(.c) c_uint;
     extern "winmm" fn timeEndPeriod(uPeriod: c_uint) callconv(.c) c_uint;
+
+    fn rightAltDown() bool {
+        return GetKeyState(VK_RMENU) < 0;
+    }
 } else struct {};
 const WinLongPtr = if (builtin.os.tag == .windows) win32.LONG_PTR else isize;
 const WinHwnd = if (builtin.os.tag == .windows) win32.HWND else *anyopaque;
@@ -275,6 +282,7 @@ var g_swallow_char_until_frame: u64 = 0;
 /// held-bit model would wrongly strip them.  Cleared on focus loss so the
 /// OS report is authoritative again on refocus.
 var g_released_mods: u32 = 0;
+var g_right_alt_down = false;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
 const MotionCell = struct {
@@ -4481,16 +4489,19 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // restore (any pending key-ups went to another window).
                 g_released_mods = 0;
+                g_right_alt_down = false;
                 cancelOverlayScrollbarDrag();
                 @atomicStore(bool, &g_window_iconified, true, .release);
                 app.invalidateUiSemanticFrame();
             },
             c.SAPP_EVENTTYPE_RESTORED => {
+                g_right_alt_down = win32.rightAltDown();
                 @atomicStore(bool, &g_window_iconified, false, .release);
                 @atomicStore(bool, &g_restore_pending, true, .release);
                 g_ignore_resize_frames = 2;
             },
             c.SAPP_EVENTTYPE_FOCUSED => {
+                g_right_alt_down = win32.rightAltDown();
                 setMouseCursorHidden(false);
                 _ = app.enqueueMouse(.{ .focus = true });
             },
@@ -4498,6 +4509,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // refocus (any pending key-ups went to another window).
                 g_released_mods = 0;
+                g_right_alt_down = false;
                 cancelOverlayScrollbarDrag();
                 setMouseCursorHidden(false);
                 _ = app.enqueueMouse(.{ .focus = false });
@@ -4521,6 +4533,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // restore (any pending key-ups went to another window).
             g_released_mods = 0;
+            g_right_alt_down = false;
             cancelOverlayScrollbarDrag();
             @atomicStore(bool, &g_window_iconified, true, .release);
             app.invalidateUiSemanticFrame();
@@ -4538,6 +4551,7 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // refocus (any pending key-ups went to another window).
             g_released_mods = 0;
+            g_right_alt_down = false;
             cancelOverlayScrollbarDrag();
             setMouseCursorHidden(false);
             _ = app.enqueueMouse(.{ .focus = false });
@@ -4556,10 +4570,12 @@ fn flushPendingMouseMove(app: *App) void {
 fn handleKeyDown(app: *App, event: c.sapp_event) void {
     if (app.config.hide_mouse_cursor_when_typing and g_mouse_over_window) setMouseCursorHidden(true);
     const key = mapKey(event.key_code);
+    if (key == .alt_right) g_right_alt_down = true;
     // Physical key-down: this modifier is genuinely held, clear any stale
     // "released" flag so its OS bit is trusted again.
     g_released_mods &= ~modifierBitForKey(key);
     const mods = ghosttyMods(event.modifiers);
+    const is_altgr = key != .alt_right and text_helpers.isAltGrMods(mods, g_right_alt_down);
 
     if (quick_select.inputActive(app)) {
         if (key == .escape) {
@@ -4571,7 +4587,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         return;
     }
 
-    if (copy_mode.copyModeActive(app) and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
+    if (copy_mode.copyModeActive(app) and !is_altgr and key == .v and (mods & ghostty.Mods.ctrl) != 0) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
         g_swallow_char_pending = 1;
         g_swallow_char_until_frame = event.frame_count;
@@ -4583,10 +4599,8 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     if (key != .unidentified) {
         const key_name = @tagName(key);
         if (app.fireOnKey(key_name, mods)) {
-            const should_swallow_paired_char = (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 and switch (key) {
-                .a, .b, .c, .d, .e, .f, .g, .h, .i, .j, .k, .l, .m, .n, .o, .p, .q, .r, .s, .t, .u, .v, .w, .x, .y, .z, .digit_0, .digit_1, .digit_2, .digit_3, .digit_4, .digit_5, .digit_6, .digit_7, .digit_8, .digit_9, .space, .minus, .equal, .bracket_left, .bracket_right, .backslash, .semicolon, .quote, .backquote, .comma, .period, .slash => true,
-                else => false,
-            };
+            const can_have_paired_char = (mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) == 0 or is_altgr;
+            const should_swallow_paired_char = can_have_paired_char and text_helpers.isLayoutTextKey(key);
             if (should_swallow_paired_char) {
                 g_swallow_char_pending = 1;
                 g_swallow_char_until_frame = event.frame_count + 1;
@@ -4601,7 +4615,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
         return;
     }
 
-    if (key != .unidentified and handleClipboardShortcut(app, key, mods)) {
+    if (key != .unidentified and !is_altgr and handleClipboardShortcut(app, key, mods)) {
         c.sapp_consume_event();
         return;
     }
@@ -4621,7 +4635,7 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     // Defer the actual DLL call (encodeKey) to the frame thread via the queue.
     // This prevents a data race with syncKeyEncoder / syncMouseEncoder which
     // run on the frame thread inside tickPanes / resizeAllPanes.
-    if (key != .unidentified) _ = app.enqueueKey(key, mods, if (event.key_repeat) .repeat else .press);
+    if (key != .unidentified) _ = app.enqueueKey(key, mods, if (event.key_repeat) .repeat else .press, is_altgr);
 }
 
 fn handleKeyUp(app: *App, event: c.sapp_event) void {
@@ -4630,12 +4644,14 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
     // release event still carries its bit (encoders expect the mod flag on
     // the key-up that releases it).
     const mods = ghosttyMods(event.modifiers);
+    const is_altgr = key != .alt_right and text_helpers.isAltGrMods(mods, g_right_alt_down);
+    if (key == .alt_right) g_right_alt_down = false;
     g_released_mods |= modifierBitForKey(key);
     if (quick_select.inputActive(app)) {
         c.sapp_consume_event();
         return;
     }
-    if (key != .unidentified) _ = app.enqueueKey(key, mods, .release);
+    if (key != .unidentified) _ = app.enqueueKey(key, mods, .release, is_altgr);
 }
 
 fn handleChar(app: *App, event: c.sapp_event) void {
@@ -4662,7 +4678,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
         c.sapp_consume_event();
         return;
     }
-    if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt | ghostty.Mods.super)) != 0) {
+    if (!text_helpers.shouldForwardChar(mods, event.char_code, g_right_alt_down)) {
         c.sapp_consume_event();
         return;
     }

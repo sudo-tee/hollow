@@ -155,6 +155,8 @@ pub const PendingInputEvent = union(enum) {
         key: ghostty.Key,
         mods: u32,
         action: ghostty.KeyAction,
+        /// True when right Alt and Ctrl produced layout text (AltGr).
+        altgr: bool,
     },
     /// A printable character from a CHAR event (calls app.sendText on frame thread).
     /// Stored as a small UTF-8 byte array; len==0 means empty/invalid.
@@ -414,7 +416,7 @@ pub fn processInputQueue(self: *App) void {
                 }
 
                 const printable_fallback = text_helpers.legacyPrintableKeyText(k.key, k.mods, &fallback_buf);
-                if (!(self.sendKey(k.key, k.mods, k.action, text) catch false)) {
+                if (!(self.sendKey(k.key, k.mods, k.action, text, k.altgr) catch false)) {
                     if (printable_fallback == null) {
                         if (text) |bytes| mux_ops.sendText(self, bytes);
                     }

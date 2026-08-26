@@ -3,6 +3,43 @@ const fastmem = @import("../fastmem.zig");
 const ghostty = @import("../term/ghostty.zig");
 const FrameSnapshot = @import("../render/debug_backend.zig").FrameSnapshot;
 
+const ALTGR_MODS: u32 = ghostty.Mods.ctrl | ghostty.Mods.alt;
+const TEXT_BLOCKING_MODS: u32 = ALTGR_MODS | ghostty.Mods.super;
+
+/// Windows reports AltGr as Ctrl+Alt. Right-Alt provenance distinguishes it
+/// from ordinary Ctrl+Alt shortcuts.
+pub fn isAltGrMods(mods: u32, right_alt_down: bool) bool {
+    return right_alt_down and (mods & ALTGR_MODS) == ALTGR_MODS and (mods & ghostty.Mods.super) == 0;
+}
+
+pub fn shouldForwardChar(mods: u32, codepoint: u32, right_alt_down: bool) bool {
+    if ((mods & TEXT_BLOCKING_MODS) == 0) return true;
+    return isAltGrMods(mods, right_alt_down) and codepoint >= 32 and codepoint != 127;
+}
+
+pub fn isLayoutTextKey(key: ghostty.Key) bool {
+    const key_value = @intFromEnum(key);
+    if ((key_value >= @intFromEnum(ghostty.Key.a) and key_value <= @intFromEnum(ghostty.Key.z)) or
+        (key_value >= @intFromEnum(ghostty.Key.digit_0) and key_value <= @intFromEnum(ghostty.Key.digit_9))) return true;
+
+    return switch (key) {
+        .space,
+        .minus,
+        .equal,
+        .bracket_left,
+        .bracket_right,
+        .backslash,
+        .semicolon,
+        .quote,
+        .backquote,
+        .comma,
+        .period,
+        .slash,
+        => true,
+        else => false,
+    };
+}
+
 pub fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(render_mode);
@@ -225,4 +262,19 @@ test "legacyPrintableKeyText maps printable keys and shifted symbols" {
     try std.testing.expectEqualStrings("\x7f", legacyPrintableKeyText(.backspace, 0, &out).?);
     try std.testing.expectEqual(@as(?[]const u8, null), legacyPrintableKeyText(.tab, ghostty.Mods.shift, &out));
     try std.testing.expectEqual(@as(?[]const u8, null), legacyPrintableKeyText(.escape, 0, &out));
+}
+
+test "AltGr preserves printable text while consuming Ctrl+Alt" {
+    const altgr: u32 = ghostty.Mods.ctrl | ghostty.Mods.alt;
+    const shifted_altgr = altgr | ghostty.Mods.shift;
+
+    try std.testing.expect(isAltGrMods(altgr, true));
+    try std.testing.expect(isAltGrMods(shifted_altgr, true));
+    try std.testing.expect(!isAltGrMods(altgr, false));
+    try std.testing.expect(shouldForwardChar(altgr, '@', true));
+    try std.testing.expect(!shouldForwardChar(altgr, '@', false));
+    try std.testing.expect(!shouldForwardChar(altgr, 0x01, true));
+    try std.testing.expect(!shouldForwardChar(ghostty.Mods.alt, '@', true));
+    try std.testing.expect(isLayoutTextKey(.digit_2));
+    try std.testing.expect(!isLayoutTextKey(.arrow_left));
 }
