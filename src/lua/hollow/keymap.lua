@@ -912,7 +912,10 @@ function M.setup(hollow, host_api, state)
 
     if state.config.values.load_default_keymaps ~= false then
       for _, entry in ipairs(pending) do
-        hollow.keymap.set(entry.chord, entry.action, entry.opts)
+        -- Explicit config and plugin bindings take precedence over defaults.
+        if hollow.keymap.get(entry.chord, entry.opts) == nil then
+          hollow.keymap.set(entry.chord, entry.action, entry.opts)
+        end
       end
     end
 

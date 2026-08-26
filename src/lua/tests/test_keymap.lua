@@ -31,6 +31,19 @@ describe("keymap test suite", function()
         "registered action bindings should invoke host actions"
       )
     end)
+
+    it("does not overwrite explicit bindings with defaults", function()
+      local hits = 0
+      hollow.keymap.default("<C-A-Up>", "resize_pane_up")
+      hollow.keymap.set("<C-A-Up>", function()
+        hits = hits + 1
+      end)
+      hollow.keymap.apply_defaults()
+
+      local key, mods = hollow.keymap.parse_chord("<C-A-Up>")
+      harness.assert_true(on_key(key, mods), "explicit binding should consume the key")
+      harness.assert_equal(hits, 1, "defaults should not replace explicit bindings")
+    end)
   end)
 
   describe("mode-aware bindings", function()
