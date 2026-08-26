@@ -396,8 +396,8 @@ pub const App = struct {
 
     /// Convenience wrapper for key-down events: enqueues a .key variant.
     /// Called from the event thread.
-    pub fn enqueueKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction) bool {
-        return self.enqueueMouse(.{ .key = .{ .key = key, .mods = mods, .action = action } });
+    pub fn enqueueKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, altgr: bool) bool {
+        return self.enqueueMouse(.{ .key = .{ .key = key, .mods = mods, .action = action, .altgr = altgr } });
     }
 
     /// Convenience wrapper for char events: enqueues a .char variant.
@@ -1619,10 +1619,16 @@ pub const App = struct {
         mux_ops.sendText(self, bytes);
     }
 
-    pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8) !bool {
+    pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
         const pane = self.activePane() orelse return false;
         if (action == .press and key == .escape and mods == ghostty.Mods.none and text == null) {
             mux_ops.sendText(self, "\x1b");
+            return true;
+        }
+        if (altgr and text_helpers.isLayoutTextKey(key)) {
+            if (action != .release) {
+                if (text) |bytes| mux_ops.sendText(self, bytes);
+            }
             return true;
         }
 
