@@ -149,16 +149,21 @@ jobs:
             const marker = '<!-- hollow-build-artifacts -->';
             const commitSha = context.payload.pull_request.head.sha;
             const commitUrl = `https://github.com/${owner}/${repo}/commit/${commitSha}`;
-            const formatTimestamp = (timestamp) => new Date(timestamp).toISOString();
+            const formatTimestamp = (timestamp) =>
+              `${new Intl.DateTimeFormat('en-GB', {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+                timeZone: 'UTC',
+              }).format(new Date(timestamp))} UTC`;
             const commitShortSha = commitSha.slice(0, 7);
             const artifacts = [
               {
-                platform: 'Windows',
+                platform: '🪟 Windows',
                 name: `hollow-windows-pr-${commitShortSha}`,
                 id: process.env.WINDOWS_ARTIFACT_ID,
               },
               {
-                platform: 'Linux',
+                platform: '🐧 Linux',
                 name: `hollow-linux-pr-${commitShortSha}`,
                 id: process.env.LINUX_ARTIFACT_ID,
               },
@@ -170,16 +175,20 @@ jobs:
 
             const body = [
               marker,
-              '## PR builds',
+              '## 📦 PR builds',
               '',
               '| Platform | Download |',
               '| --- | --- |',
               ...artifactRows,
               '',
-              `Built from [\`${commitShortSha}\`](${commitUrl}).`,
-              `Started: ${formatTimestamp(run.created_at)}`,
-              `Completed: ${formatTimestamp(run.updated_at)}`,
-              `Build run: [#${run.run_number}](${run.html_url})`,
+              '### Build details',
+              '',
+              '| Detail | Value |',
+              '| --- | --- |',
+              `| 🧬 Commit | [\`${commitShortSha}\`](${commitUrl}) |`,
+              `| 🕒 Started | **${formatTimestamp(run.created_at)}** |`,
+              `| ✅ Completed | **${formatTimestamp(run.updated_at)}** |`,
+              `| 🔗 Build run | [**#${run.run_number}**](${run.html_url}) |`,
               '',
               '_Artifacts expire after 7 days._',
             ].join('\n');
