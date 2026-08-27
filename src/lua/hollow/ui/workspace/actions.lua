@@ -54,9 +54,30 @@ local function bootstrap_project_on_complete(cwd, domain)
   end
 
   return function(result)
-    if result ~= nil and result.success == true then
-      hollow.workspace.bootstrap_project(cwd, domain)
+    if result == nil or result.success ~= true then
+      return
     end
+
+    local config = hollow.config.snapshot()
+    local domain_config = (config.domains or {})[domain]
+    local pane = type(domain_config) == "table"
+      and domain_config.wsl_distro ~= nil
+      and hollow.term.current_pane()
+    if not pane then
+      hollow.workspace.bootstrap_project(cwd, domain)
+      return
+    end
+
+    hollow.log("Waiting for WSL cwd resolution before workspace bootstrap: " .. cwd)
+    local handle
+    handle = hollow.events.on("term:cwd_changed", function(event)
+      if event.pane == nil or event.pane.id ~= pane.id then
+        return
+      end
+      hollow.events.off(handle)
+      hollow.log("Bootstrapping workspace from resolved WSL cwd: " .. event.new_cwd)
+      hollow.workspace.bootstrap_project(event.new_cwd, domain)
+    end)
   end
 end
 
