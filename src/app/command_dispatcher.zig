@@ -339,13 +339,16 @@ fn cloneCommandRequest(self: *App, request: command_mod.Request) !command_mod.Re
 }
 
 fn enqueueTabNewCommand(self: *App, request: command_mod.Request) command_mod.Response {
+    const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
+    errdefer if (owned_cwd) |value| self.allocator.free(value);
     const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_domain) |value| self.allocator.free(value);
     const owned_command = if (request.cmd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_command) |value| self.allocator.free(value);
-    if (!self.enqueueMouse(.{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = LUA_NOREF } })) {
+    if (!self.enqueueMouse(.{ .new_tab = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .callback_ref = LUA_NOREF } })) {
         if (owned_command) |value| self.allocator.free(value);
         if (owned_domain) |value| self.allocator.free(value);
+        if (owned_cwd) |value| self.allocator.free(value);
         return command_mod.Response.fail("error", "command queue full");
     }
     return okNull();
@@ -736,7 +739,7 @@ fn execWorkspaceRename(self: *App, request: command_mod.Request) command_mod.Res
 }
 
 fn execTabNew(self: *App, request: command_mod.Request) command_mod.Response {
-    mux_ops.newTab(self, request.domain, request.cmd, LUA_NOREF);
+    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF);
     return okNull();
 }
 
@@ -946,7 +949,7 @@ fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Respons
 }
 
 fn execRun(self: *App, request: command_mod.Request) command_mod.Response {
-    mux_ops.newTab(self, request.domain, request.cmd, LUA_NOREF);
+    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF);
     return okNull();
 }
 

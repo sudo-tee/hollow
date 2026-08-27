@@ -390,13 +390,6 @@ pub const Pane = struct {
 
         try env_block.append(self.allocator, 0); // double-null terminator
 
-        const home_dir = if (inherited_cwd == null and cfg.defaultCwdForDomain(domain_name) == null)
-            io.getEnvVarOwned(self.allocator, if (comptime is_windows) "USERPROFILE" else "HOME") catch null
-        else
-            null;
-        defer if (home_dir) |h| self.allocator.free(h);
-        const launch_cwd = inherited_cwd orelse cfg.defaultCwdForDomain(domain_name) orelse home_dir;
-
         var is_remote = false;
         if (domain_name) |name| {
             if (cfg.domainByName(name)) |domain| {
@@ -405,7 +398,35 @@ pub const Pane = struct {
         }
         self.is_remote = is_remote;
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, launch_command, self.host_wake);
+        const configured_cwd = cfg.defaultCwdForDomain(domain_name);
+        const home_dir = if (inherited_cwd == null and configured_cwd == null and !is_remote)
+            io.getEnvVarOwned(self.allocator, if (comptime is_windows) "USERPROFILE" else "HOME") catch null
+        else
+            null;
+        defer if (home_dir) |h| self.allocator.free(h);
+        // SSH cwd belongs to remote shell, not local process launcher.
+        const launch_cwd = if (is_remote) null else inherited_cwd orelse configured_cwd orelse home_dir;
+        const pane_cwd = if (is_remote) inherited_cwd orelse configured_cwd else launch_cwd;
+
+        var remote_launch_command_owned: ?[]u8 = null;
+        defer if (remote_launch_command_owned) |command| self.allocator.free(command);
+        const remote_cwd_via_launch = is_remote and pane_cwd != null;
+        const effective_launch_command: ?LaunchCommand = if (remote_cwd_via_launch) blk: {
+            const cwd = pane_cwd.?;
+            const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
+            defer self.allocator.free(quoted_cwd);
+            const command = if (launch_command) |value|
+                try std.fmt.allocPrint(self.allocator, "cd -- {s} && {s}", .{ quoted_cwd, value.command })
+            else
+                try std.fmt.allocPrint(self.allocator, "cd -- {s} && exec \"$SHELL\" -il", .{quoted_cwd});
+            remote_launch_command_owned = command;
+            break :blk .{
+                .command = command,
+                .close_on_exit = if (launch_command) |value| value.close_on_exit else false,
+            };
+        } else launch_command;
+
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, effective_launch_command, self.host_wake);
         errdefer pty.deinit();
 
         self.terminal = terminal;
@@ -431,22 +452,13 @@ pub const Pane = struct {
             self.pty = null;
         }
 
-        if (self.is_remote and launch_command == null) {
-            if (inherited_cwd) |cwd| {
-                const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
-                defer self.allocator.free(quoted_cwd);
-                self.pending_startup_input = try std.fmt.allocPrint(self.allocator, "cd -- {s} && clear\r", .{quoted_cwd});
-                self.startup_input_quiet_ticks = 0;
-            }
-        }
-
         // Defer terminal resize/render-state initialization until the first
         // layout pass on the frame thread. `newTab()` is triggered from the sokol
         // event callback, and calling ghostty resize/update APIs here has been a
         // recurring source of null-deref crashes during tab creation.
         self.title = &.{};
         if (domain_name) |name| self.domain_name = try self.allocator.dupe(u8, name);
-        if (launch_cwd) |cwd| self.setCwd(cwd);
+        if (pane_cwd) |cwd| self.setCwd(cwd);
         std.log.info("pane.bootstrap total_ms={d} domain={s} remote={any}", .{ io.milliTimestamp() - start_ms, domain_name orelse "", self.is_remote });
     }
 
@@ -615,13 +627,31 @@ pub const Pane = struct {
         }
     }
 
+    pub fn sendUserText(self: *Pane, text: []const u8) void {
+        if (self.pending_startup_input.len > 0) {
+            self.queuePendingRawInput(text) catch |err| {
+                std.log.err("pane: failed to queue input behind startup input: {s}", .{@errorName(err)});
+            };
+            return;
+        }
+        self.sendText(text);
+    }
+
     pub fn queueStartupInput(self: *Pane, text: []const u8) !void {
-        const append_enter = !std.mem.endsWith(u8, text, "\r") and !std.mem.endsWith(u8, text, "\n");
+        const suffix = if (!std.mem.endsWith(u8, text, "\r") and !std.mem.endsWith(u8, text, "\n")) "\r" else "";
+        try self.queuePendingInput(text, suffix);
+    }
+
+    fn queuePendingRawInput(self: *Pane, text: []const u8) !void {
+        try self.queuePendingInput(text, "");
+    }
+
+    fn queuePendingInput(self: *Pane, text: []const u8, suffix: []const u8) !void {
         const old = self.pending_startup_input;
-        const queued = try self.allocator.alloc(u8, old.len + text.len + @intFromBool(append_enter));
+        const queued = try self.allocator.alloc(u8, old.len + text.len + suffix.len);
         std.mem.copyForwards(u8, queued[0..old.len], old);
         std.mem.copyForwards(u8, queued[old.len..][0..text.len], text);
-        if (append_enter) queued[queued.len - 1] = '\r';
+        std.mem.copyForwards(u8, queued[old.len + text.len ..], suffix);
         if (old.len > 0) self.allocator.free(old);
         self.pending_startup_input = queued;
         self.startup_input_quiet_ticks = 0;
@@ -1992,6 +2022,16 @@ test "sanitizePtyOutput preserves split OSC 7 state across chunks" {
     try std.testing.expectEqualStrings("Z", out2);
     try std.testing.expectEqualStrings("/tmp", pane.cwd);
     try std.testing.expect(pane.cwd_dirty);
+}
+
+test "sendUserText queues raw input behind pending startup input" {
+    var pane = Pane.init(std.testing.allocator);
+    defer if (pane.pending_startup_input.len > 0) std.testing.allocator.free(pane.pending_startup_input);
+
+    try pane.queueStartupInput("cd -- '/tmp'");
+    pane.sendUserText("nvim\r");
+
+    try std.testing.expectEqualStrings("cd -- '/tmp'\rnvim\r", pane.pending_startup_input);
 }
 
 test "setManualTitle preserves override until cleared" {

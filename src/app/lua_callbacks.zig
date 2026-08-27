@@ -73,11 +73,12 @@ pub fn luaGetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, 
     return app.getPaneForegroundProcess(pane_id, out_buf);
 }
 
-pub fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool {
+pub fn luaNewTabCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
+    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    var event: input.PendingInputEvent = .{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } };
+    var event: input.PendingInputEvent = .{ .new_tab = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } };
     const queued = app.enqueueMouse(event);
     if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
     return queued;

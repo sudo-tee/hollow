@@ -4,12 +4,14 @@ local harness = require("tests.harness")
 describe("UI workspace test suite", function()
   local env
   local hollow
+  local recorded
   local on_key
   local workspace_actions
 
   setup(function()
     env = harness.boot()
     hollow = env.hollow
+    recorded = env.recorded
     on_key = env.get_key_handler()
     workspace_actions = require("hollow.ui.workspace.actions")
   end)
@@ -91,6 +93,26 @@ describe("UI workspace test suite", function()
         bootstrapped_domain,
         "unix",
         "opening a known workspace should preserve its domain for path resolution"
+      )
+    end)
+
+    it("passes SSH workspace cwd to the new pane", function()
+      workspace_actions.open_new_workspace_from_item({
+        name = "remote",
+        cwd = "/srv/project",
+        domain = "devbox",
+        source = "ssh",
+      })
+
+      harness.assert_equal(
+        recorded.new_workspace.cwd,
+        "/srv/project",
+        "SSH workspace opening should pass remote cwd through pane creation"
+      )
+      harness.assert_equal(
+        recorded.new_workspace.command,
+        nil,
+        "SSH workspace opening should not inject cwd as a startup command"
       )
     end)
   end)

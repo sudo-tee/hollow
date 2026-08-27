@@ -363,6 +363,9 @@ function M.setup(hollow, host_api)
     if opts ~= nil and type(opts) ~= "table" then
       error("hollow.term.new_tab(opts) expects a table or nil")
     end
+    if opts ~= nil and opts.cwd ~= nil and type(opts.cwd) ~= "string" then
+      error("hollow.term.new_tab(opts) expects opts.cwd to be a string")
+    end
     if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
       error("hollow.term.new_tab(opts) expects opts.domain to be a string")
     end

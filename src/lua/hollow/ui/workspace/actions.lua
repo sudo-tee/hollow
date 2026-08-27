@@ -47,11 +47,6 @@ local function send_cwd_to_active_workspace(cwd)
   end
 end
 
-local function ssh_workspace_command(cwd)
-  cwd = trim_string(cwd)
-  return cwd ~= "" and ("cd -- " .. shell_quote(cwd) .. "\r") or nil
-end
-
 local function bootstrap_project_on_complete(cwd, domain)
   cwd = trim_string(cwd)
   if cwd == "" then
@@ -67,16 +62,14 @@ end
 
 local function open_new_workspace_from_item(item)
   item = type(item) == "table" and item or {}
-  local source_name = item.source
   local cwd = item.cwd
 
   local name = trim_string(item.name)
 
   hollow.term.new_workspace({
     name = name ~= "" and name or nil,
-    cwd = source_name == "ssh" and nil or cwd,
+    cwd = cwd,
     domain = item.domain,
-    command = source_name == "ssh" and ssh_workspace_command(cwd) or nil,
     on_complete = item.on_complete,
   })
 

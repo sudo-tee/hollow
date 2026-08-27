@@ -129,7 +129,9 @@ describe("workspace test suite", function()
       local exported = hollow.workspace.export_current()
       local directions = {}
       for _, pane in ipairs(exported.tabs[1].panes) do
-        directions[pane.command] = pane.direction
+        if pane.command ~= nil then
+          directions[pane.command] = pane.direction
+        end
       end
       harness.assert_equal(
         directions["horizontal-pane"],
@@ -143,7 +145,9 @@ describe("workspace test suite", function()
       )
       local sizes = {}
       for _, pane in ipairs(exported.tabs[1].panes) do
-        sizes[pane.command] = pane.size
+        if pane.command ~= nil then
+          sizes[pane.command] = pane.size
+        end
       end
       harness.assert_equal(
         sizes["horizontal-pane"],
@@ -154,6 +158,27 @@ describe("workspace test suite", function()
         sizes["vertical-pane"],
         0.6,
         "workspace export should preserve vertical split size"
+      )
+    end)
+
+    it("does not submit an empty split command", function()
+      hollow.term.focus_pane_by_id(101)
+      hollow.workspace.bootstrap({
+        tabs = {
+          {
+            panes = {
+              {},
+              { cwd = "/tmp/project", command = "", direction = "horizontal" },
+            },
+          },
+        },
+      })
+      flush_deferred()
+
+      harness.assert_equal(
+        recorded.split_pane.command,
+        nil,
+        "workspace bootstrap should treat an empty split command as absent"
       )
     end)
   end)
@@ -212,6 +237,119 @@ describe("workspace test suite", function()
   end)
 
   describe("workspace export", function()
+    it("reuses matching cwd without sending a shell cd", function()
+      hollow.term.focus_pane_by_id(101)
+      local send_count = #recorded.send_text
+      hollow.workspace.bootstrap({
+        tabs = {
+          {
+            panes = {
+              { cwd = "/tmp/project", command = "nvim" },
+            },
+          },
+        },
+      })
+      flush_deferred()
+
+      harness.assert_equal(
+        recorded.send_text[send_count + 1],
+        "nvim\r",
+        "workspace bootstrap should send only restored command when cwd already matches"
+      )
+      harness.assert_equal(
+        #recorded.send_text,
+        send_count + 1,
+        "workspace bootstrap should not send a cwd-changing shell command"
+      )
+    end)
+
+    it("creates a workspace with spawn cwd instead of sending a shell cd", function()
+      hollow.term.focus_pane_by_id(101)
+      local send_count = #recorded.send_text
+      hollow.workspace.bootstrap({
+        tabs = {
+          {
+            panes = {
+              { cwd = "/tmp/other", command = "nvim" },
+            },
+          },
+        },
+      })
+      flush_deferred()
+
+      harness.assert_equal(
+        recorded.new_workspace.cwd,
+        "/tmp/other",
+        "workspace bootstrap should pass mismatched cwd to workspace creation"
+      )
+      harness.assert_equal(
+        recorded.new_workspace.command,
+        "nvim",
+        "workspace bootstrap should pass restored command to workspace creation"
+      )
+      harness.assert_equal(
+        #recorded.send_text,
+        send_count,
+        "workspace bootstrap should not send a cwd-changing shell command"
+      )
+    end)
+
+    it("passes cwd to new tabs without replaying their startup command", function()
+      hollow.term.focus_pane_by_id(101)
+      local send_count = #recorded.send_text
+      hollow.workspace.bootstrap({
+        tabs = {
+          {
+            panes = {
+              { cwd = "/tmp/project", command = "nvim" },
+            },
+          },
+          {
+            name = "server",
+            panes = {
+              { cwd = "/tmp/other", command = "npm run dev" },
+            },
+          },
+        },
+      })
+      flush_deferred()
+
+      harness.assert_equal(
+        recorded.new_tab.cwd,
+        "/tmp/other",
+        "workspace bootstrap should pass tab cwd to tab creation"
+      )
+      harness.assert_equal(
+        recorded.new_tab.command,
+        "npm run dev",
+        "workspace bootstrap should pass tab command to tab creation"
+      )
+      harness.assert_equal(
+        recorded.send_text[send_count + 1],
+        "nvim\r",
+        "workspace bootstrap should send startup command only to reused pane"
+      )
+      harness.assert_equal(
+        #recorded.send_text,
+        send_count + 1,
+        "workspace bootstrap should not replay newly created tab command"
+      )
+    end)
+
+    it("removes generated cwd prefixes when exporting", function()
+      host_api.set_pane_foreground_process(
+        101,
+        "cd -- '/tmp/project' && cd -- '/tmp/project' && nvim"
+      )
+
+      local exported = hollow.workspace.export_current()
+      harness.assert_equal(
+        exported.tabs[1].panes[1].command,
+        "nvim",
+        "workspace export should persist command without generated cwd prefixes"
+      )
+    end)
+
     it("includes the active workspace name", function()
       local exported = hollow.workspace.export_current()
       harness.assert_equal(
@@ -255,6 +393,17 @@ describe("workspace test suite", function()
         exported.tabs[1].panes[1].tags[2],
         "test-runner",
         "workspace export should preserve pane tags"
+      )
+    end)
+
+    it("omits empty commands when exporting", function()
+      host_api.set_pane_foreground_process(101, "")
+
+      local exported = hollow.workspace.export_current()
+      harness.assert_equal(
+        exported.tabs[1].panes[1].command,
+        nil,
+        "workspace export should omit command when pane has no foreground process"
       )
     end)
   end)

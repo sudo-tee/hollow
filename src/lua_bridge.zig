@@ -187,7 +187,7 @@ pub const AppCallbacks = struct {
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
-    new_tab: *const fn (app: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool,
+    new_tab: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
@@ -4808,6 +4808,7 @@ fn luaNonNegativeIntegerField(api: Api, state: *State, table_idx: c_int, field: 
 fn l_new_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
+    var cwd: ?[]const u8 = null;
     var domain_name: ?[]const u8 = null;
     var command: ?[]const u8 = null;
     var callback_ref: c_int = LUA_NOREF;
@@ -4819,6 +4820,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
         },
         .table => {
             const opts_idx = absoluteIndex(api, state, 1);
+            cwd = luaStringField(api, state, opts_idx, "cwd");
             domain_name = luaStringField(api, state, opts_idx, "domain");
             command = luaStringField(api, state, opts_idx, "command");
             callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
@@ -4826,7 +4828,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
         else => {},
     }
 
-    const queued = if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, domain_name, command, callback_ref) else false;
+    const queued = if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, cwd, domain_name, command, callback_ref) else false;
     if (!queued and callback_ref != LUA_NOREF) api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     return 0;
 }
