@@ -293,6 +293,20 @@ function M.setup(hollow, host_api)
     category = "workspace",
   })
 
+  register(hollow, "save_workspace", {
+    run = function()
+      local path = hollow.workspace.project_local_path()
+      if path == nil then
+        hollow.ui.notify.warn("Could not resolve project directory", { ttl = 1800 })
+        return
+      end
+      hollow.workspace.export_to(path)
+      hollow.ui.notify.info("Saved workspace layout to " .. path, { ttl = 1800 })
+    end,
+    desc = "Save current workspace layout to project directory",
+    category = "workspace",
+  })
+
   register(hollow, "workspace_switcher", {
     run = function()
       hollow.ui.workspace.open_switcher()

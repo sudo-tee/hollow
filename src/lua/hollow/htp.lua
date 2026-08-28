@@ -261,6 +261,7 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     local payload = event_payload(ctx)
     -- support opening a new tab and running a command (useful for floating panes)
     hollow.term.new_tab({
+      cwd = payload.cwd,
       domain = payload.domain,
       -- accept either `command` or shorthand `cmd`
       command = payload.command or payload.cmd,

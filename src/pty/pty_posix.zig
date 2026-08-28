@@ -58,14 +58,19 @@ pub const PosixPty = struct {
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
-            const bundle = shell_integration.install(std.heap.page_allocator, shell) catch c._exit(1);
+            const shell_args = parseCommandString(std.heap.page_allocator, shell) catch c._exit(1);
+            defer freeCommandParts(std.heap.page_allocator, shell_args);
+            if (shell_args.len == 0) c._exit(1);
+            const shell_path = std.heap.page_allocator.dupeZ(u8, shell_args[0]) catch c._exit(1);
+            defer std.heap.page_allocator.free(shell_path);
+            const bundle = shell_integration.install(std.heap.page_allocator, shell_args[0]) catch c._exit(1);
             if (bundle) |value| shell_integration.setupEnv(std.heap.page_allocator, value) catch c._exit(1);
-            const argv = buildArgv(std.heap.page_allocator, shell, launch_command, bundle) catch c._exit(1);
+            const argv = buildArgv(std.heap.page_allocator, shell_args, launch_command, bundle) catch c._exit(1);
             defer freeArgv(std.heap.page_allocator, argv);
             var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer env_arena.deinit();
             const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch c._exit(1) else null;
-            _ = c.execve(shell.ptr, @ptrCast(@constCast(argv.ptr)), if (envp) |items| @ptrCast(items.ptr) else null);
+            execWithPath(shell_path, argv, if (envp) |items| @constCast(@ptrCast(items.ptr)) else null);
             c._exit(1);
         }
         if (pid < 0) return error.ForkPtyFailed;
@@ -111,13 +116,16 @@ pub const PosixPty = struct {
         return (try env_map.createPosixBlock(allocator, .{})).slice;
     }
 
-    fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, launch_command: ?LaunchCommand, bundle: ?shell_integration.Bundle) ![]?[*:0]const u8 {
+    fn buildArgv(allocator: std.mem.Allocator, shell_args: []const []const u8, launch_command: ?LaunchCommand, bundle: ?shell_integration.Bundle) ![]?[*:0]const u8 {
+        if (shell_args.len == 0) return error.InvalidCharacter;
         var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
         errdefer {
             freeArgvOwnedStrings(allocator, argv.items);
             argv.deinit(allocator);
         }
-        try argv.append(allocator, shell.ptr);
+        for (shell_args) |arg| {
+            try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
+        }
 
         if (bundle) |value| {
             const integration_argv = try shell_integration.argv(allocator, value, if (launch_command) |cmd| cmd.command else null, if (launch_command) |cmd| cmd.close_on_exit else false);
@@ -131,9 +139,16 @@ pub const PosixPty = struct {
         }
 
         if (launch_command) |cmd| {
-            const shell_name = std.fs.path.basename(shell);
+            const shell_name = std.fs.path.basename(shell_args[0]);
             if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
                 try argv.append(allocator, (try allocator.dupeZ(u8, "-lc")).ptr);
+                const wrapped = if (cmd.close_on_exit)
+                    try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimEnd(u8, cmd.command, "\r\n")}, 0)
+                else
+                    try allocator.dupeZ(u8, cmd.command);
+                try argv.append(allocator, wrapped.ptr);
+            } else if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe")) {
+                try argv.append(allocator, (try allocator.dupeZ(u8, "-tt")).ptr);
                 const wrapped = if (cmd.close_on_exit)
                     try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimEnd(u8, cmd.command, "\r\n")}, 0)
                 else
@@ -152,7 +167,7 @@ pub const PosixPty = struct {
     }
 
     fn freeArgvOwnedStrings(allocator: std.mem.Allocator, argv: []const ?[*:0]const u8) void {
-        for (argv[1..]) |value| {
+        for (argv) |value| {
             if (value) |ptr| allocator.free(std.mem.span(ptr));
         }
     }
@@ -273,6 +288,101 @@ pub const PosixPty = struct {
         self.alive = false;
     }
 };
+
+fn parseCommandString(allocator: std.mem.Allocator, command: []const u8) ![]const []const u8 {
+    var parts = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (parts.items) |item| allocator.free(item);
+        parts.deinit(allocator);
+    }
+
+    var current = std.ArrayList(u8).empty;
+    defer current.deinit(allocator);
+
+    var quote: ?u8 = null;
+    var escaped = false;
+    for (command) |ch| {
+        if (escaped) {
+            try current.append(allocator, ch);
+            escaped = false;
+            continue;
+        }
+
+        if (quote == null and ch == '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (quote) |value| {
+            if (ch == value) {
+                quote = null;
+            } else {
+                try current.append(allocator, ch);
+            }
+            continue;
+        }
+
+        if (ch == '\'' or ch == '"') {
+            quote = ch;
+        } else if (std.ascii.isWhitespace(ch)) {
+            if (current.items.len > 0) {
+                try parts.append(allocator, try current.toOwnedSlice(allocator));
+                current = std.ArrayList(u8).empty;
+            }
+        } else {
+            try current.append(allocator, ch);
+        }
+    }
+
+    if (escaped) try current.append(allocator, '\\');
+    if (quote != null) return error.InvalidCharacter;
+    if (current.items.len > 0) {
+        try parts.append(allocator, try current.toOwnedSlice(allocator));
+    }
+    return try parts.toOwnedSlice(allocator);
+}
+
+fn freeCommandParts(allocator: std.mem.Allocator, parts: []const []const u8) void {
+    for (parts) |item| allocator.free(item);
+    allocator.free(parts);
+}
+
+fn execWithPath(path: [:0]const u8, argv: []?[*:0]const u8, envp: ?[*:null]?[*:0]const u8) void {
+    const argv_ptr: [*:null]?[*:0]const u8 = @ptrCast(argv.ptr);
+    if (std.mem.indexOfAny(u8, path, "/") != null) {
+        _ = c.execve(path.ptr, @ptrCast(argv_ptr), if (envp) |items| @ptrCast(items) else null);
+        return;
+    }
+
+    const path_env = c.getenv("PATH") orelse {
+        _ = c.execve(path.ptr, @ptrCast(argv_ptr), if (envp) |items| @ptrCast(items) else null);
+        return;
+    };
+    var path_iter = std.mem.splitScalar(u8, std.mem.span(path_env), ':');
+    while (path_iter.next()) |directory| {
+        const candidate = std.fmt.allocPrintSentinel(std.heap.page_allocator, "{s}/{s}", .{ if (directory.len > 0) directory else ".", path }, 0) catch return;
+        defer std.heap.page_allocator.free(candidate);
+        _ = c.execve(candidate.ptr, @ptrCast(argv_ptr), if (envp) |items| @ptrCast(items) else null);
+        if (std.posix.errno(-1) != .NOENT) return;
+    }
+}
+
+test "posix shell argv supports SSH commands" {
+    const shell_args = try parseCommandString(std.testing.allocator, "ssh -o ControlPath=/tmp/hollow-ssh-%C devbox");
+    defer freeCommandParts(std.testing.allocator, shell_args);
+
+    const argv = try PosixPty.buildArgv(std.testing.allocator, shell_args, .{
+        .command = "cd -- '/srv/project' && exec \"$SHELL\" -il",
+    }, null);
+    defer PosixPty.freeArgv(std.testing.allocator, argv);
+
+    try std.testing.expectEqualStrings("ssh", std.mem.span(argv[0].?));
+    try std.testing.expectEqualStrings("-o", std.mem.span(argv[1].?));
+    try std.testing.expectEqualStrings("ControlPath=/tmp/hollow-ssh-%C", std.mem.span(argv[2].?));
+    try std.testing.expectEqualStrings("devbox", std.mem.span(argv[3].?));
+    try std.testing.expectEqualStrings("-tt", std.mem.span(argv[4].?));
+    try std.testing.expectEqualStrings("cd -- '/srv/project' && exec \"$SHELL\" -il", std.mem.span(argv[5].?));
+}
 
 fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
     var temp: [4096]u8 = undefined;

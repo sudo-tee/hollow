@@ -1460,7 +1460,10 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
                 try argv.append(allocator, try allocator.dupe(u8, "-tt"));
             }
             const wrapped = if (cmd.close_on_exit)
-                try std.fmt.allocPrint(allocator, "{s} & exit", .{trimmed})
+                if (shell_is_ssh)
+                    try std.fmt.allocPrint(allocator, "{s}; exit", .{trimmed})
+                else
+                    try std.fmt.allocPrint(allocator, "{s} & exit", .{trimmed})
             else
                 try allocator.dupe(u8, trimmed);
             try argv.append(allocator, wrapped);

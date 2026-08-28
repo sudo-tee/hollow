@@ -30,16 +30,45 @@ local function shell_quote(value)
   return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+local function strip_cwd_prefix(command, cwd)
+  if type(command) ~= "string" or type(cwd) ~= "string" then
+    return command
+  end
+
+  local prefix = "cd -- " .. shell_quote(cwd) .. " && "
+  while command:sub(1, #prefix) == prefix do
+    command = command:sub(#prefix + 1)
+  end
+  return command
+end
+
+local function normalize_command(command)
+  if command == nil then
+    return nil
+  end
+  if type(command) ~= "string" then
+    return command
+  end
+  return trim_string(command) ~= "" and command or nil
+end
+
+local function can_reuse_current_pane(pane)
+  local current_pane = hollow.term.current_pane()
+  if current_pane == nil then
+    return false
+  end
+  if pane.cwd ~= nil and current_pane.cwd ~= pane.cwd then
+    return false
+  end
+  if pane.domain ~= nil and current_pane.domain ~= pane.domain then
+    return false
+  end
+  return true
+end
+
 local function send_startup_commands(pane)
-  local lines = {}
-  if pane.cwd ~= nil then
-    lines[#lines + 1] = "cd -- " .. shell_quote(pane.cwd)
-  end
   if pane.command ~= nil then
-    lines[#lines + 1] = pane.command
-  end
-  if #lines > 0 then
-    hollow.term.send_text(table.concat(lines, " && ") .. "\r")
+    hollow.term.send_text(pane.command .. "\r")
   end
 end
 
@@ -94,6 +123,7 @@ end
 local function clone_with_resolved_paths(base_dir, pane)
   local copy = util.clone_value(pane)
   copy.cwd = normalize_relative_path(base_dir, copy.cwd)
+  copy.command = normalize_command(strip_cwd_prefix(copy.command, copy.cwd))
   copy.tags = normalize_tags(copy.tags or copy.tag)
   copy.tag = nil
   return copy
@@ -168,7 +198,8 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
 
   local first = clone_with_resolved_paths(base_dir, panes[1])
   local main_pane_id = nil
-  if is_first_tab and reuse_existing == true then
+  local reuse_first_pane = is_first_tab and reuse_existing == true and can_reuse_current_pane(first)
+  if reuse_first_pane then
     if first.cwd ~= nil then
       hollow.term.set_workspace_default_cwd(first.cwd)
     end
@@ -182,7 +213,7 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
       create({
         cwd = first.cwd,
         domain = first.domain,
-        command = is_first_tab and nil or first.command,
+        command = first.command,
         name = is_first_tab and tab.name or nil,
         on_complete = resolve,
       })
@@ -208,7 +239,7 @@ local function bootstrap_tab(tab, base_dir, is_first_tab, reuse_existing)
     hollow.term.set_pane_tags(first.tags)
   end
 
-  if reuse_existing == true then
+  if reuse_first_pane then
     send_startup_commands(first)
   end
 
@@ -354,8 +385,10 @@ function M.export_current()
       panes[#panes + 1] = {
         cwd = pane.cwd ~= "" and pane.cwd or nil,
         domain = pane.domain,
-        command = pane.foreground_process,
+        command = normalize_command(strip_cwd_prefix(pane.foreground_process, pane.cwd)),
         tags = pane.tags ~= nil and #pane.tags > 0 and util.clone_value(pane.tags) or nil,
+        direction = pane.direction,
+        size = pane.split_ratio,
         main = pane.is_focused == true or nil,
       }
     end

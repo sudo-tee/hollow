@@ -420,6 +420,8 @@
 ---@field id integer
 ---@field pid integer
 ---@field domain? string
+---@field direction? "horizontal"|"vertical"
+---@field split_ratio? number
 ---@field active_screen '"primary"|"alternate"'
 ---@field cwd string
 ---@field title string
@@ -1941,6 +1943,8 @@ function plugins.sync() end
 ---@field bell_pane fun(pane_id: integer): boolean
 ---@field send_text_to_pane fun(pane_id: integer, text: string): boolean
 ---@field get_pane_domain fun(pane_id: integer): string
+---@field get_pane_split_direction fun(pane_id: integer): "horizontal"|"vertical"|nil
+---@field get_pane_split_ratio fun(pane_id: integer): number|nil
 ---@field get_window_width fun(): integer
 ---@field get_window_height fun(): integer
 ---@field now_ms fun(): integer

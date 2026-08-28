@@ -62,6 +62,7 @@ pub const PendingInputEvent = union(enum) {
     /// Close a specific tab index without focusing it first.
     close_tab_at: usize,
     new_tab: struct {
+        cwd: ?[]const u8,
         domain_name: ?[]const u8,
         command: ?[]const u8,
         callback_ref: c_int,
@@ -228,6 +229,7 @@ pub const PendingInputEvent = union(enum) {
 pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInputEvent) void {
     switch (event.*) {
         .new_tab => |payload| {
+            if (payload.cwd) |value| allocator.free(value);
             if (payload.domain_name) |value| allocator.free(value);
             if (payload.command) |value| allocator.free(value);
         },
@@ -293,7 +295,7 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {
-                mux_ops.newTab(self, payload.domain_name, payload.command, payload.callback_ref);
+                mux_ops.newTab(self, payload.cwd, payload.domain_name, payload.command, payload.callback_ref);
             },
             .close_tab => {
                 mux_ops.closeTab(
@@ -689,7 +691,7 @@ fn encodeMouseForPane(self: *App, pane: *Pane, action: ghostty.MouseAction, butt
         },
         &buf,
     ) orelse return false;
-    pane.sendText(bytes);
+    pane.sendUserText(bytes);
     return true;
 }
 

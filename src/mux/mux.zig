@@ -20,6 +20,8 @@ const Tab = tab_mod.Tab;
 const Workspace = workspace_mod.Workspace;
 
 pub const Mux = struct {
+    pub const PaneSplitInfo = Tab.PaneSplitInfo;
+
     allocator: std.mem.Allocator,
     workspaces: std.ArrayList(*Workspace),
     active_workspace: ?*Workspace = null,
@@ -212,6 +214,11 @@ pub const Mux = struct {
         return false;
     }
 
+    pub fn paneSplitInfo(self: *Mux, pane: *Pane) ?PaneSplitInfo {
+        const tab = self.tabContainingPane(pane) orelse return null;
+        return tab.splitInfoForPane(pane);
+    }
+
     pub fn togglePaneMaximized(self: *Mux, pane: *Pane, show_background: bool) bool {
         const tab = self.activeTab() orelse return false;
         if (!self.activeTabContainsPane(pane)) return false;
@@ -272,14 +279,16 @@ pub const Mux = struct {
 
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
-    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
-        const inherited_cwd: ?[]const u8 = if (current_pane) |pane|
+        const inherited_cwd: ?[]const u8 = if (cwd) |value|
+            if (value.len > 0) value else null
+        else if (current_pane) |pane|
             if (pane.cwd.len > 0 and std.mem.eql(u8, pane.domain_name, resolved_domain orelse "")) pane.cwd else null
-        else if (ws.default_cwd) |cwd|
-            cwd
+        else if (ws.default_cwd) |value|
+            value
         else
             null;
         const previous_active = ws.active_tab;

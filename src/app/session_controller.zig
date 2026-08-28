@@ -43,13 +43,14 @@ pub fn sendText(self: *App, text: []const u8) void {
         });
     }
     scrollActiveViewportBottom(self);
-    pane.sendText(text);
+    pane.sendUserText(text);
     self.signalWake();
 }
 
 pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
-    pane.sendText(text);
+    pane.sendUserText(text);
+    self.signalWake();
     return true;
 }
 
@@ -71,13 +72,15 @@ pub fn sendKeyToPane(self: *App, pane_id: usize, key_name: []const u8, mods: u32
     const consumed: u32 = if (effective_text != null and (mods & ghostty.Mods.shift) != 0) ghostty.Mods.shift else ghostty.Mods.none;
 
     if (rt.encodeKey(pane.key_encoder, pane.key_event, key, mods, .press, consumed, if (effective_text) |t| text_helpers.firstCodepoint(t) else 0, effective_text, &buf)) |bytes| {
-        pane.sendText(bytes);
+        pane.sendUserText(bytes);
+        self.signalWake();
         return true;
     }
 
     if (effective_text != null and (mods & ghostty.Mods.alt) != 0 and (mods & (ghostty.Mods.ctrl | ghostty.Mods.super)) == 0) {
-        pane.sendText("\x1b");
-        pane.sendText(effective_text.?);
+        pane.sendUserText("\x1b");
+        pane.sendUserText(effective_text.?);
+        self.signalWake();
         return true;
     }
 
@@ -158,17 +161,18 @@ pub fn scrollActiveViewportBottom(self: *App) void {
 // Tab operations
 // ============================================================
 
-pub fn newTab(self: *App, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
+pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
-    const launch_command: ?LaunchCommand = if (command) |value|
+    const effective_command = nonEmptyCommand(command);
+    const launch_command: ?LaunchCommand = if (effective_command) |value|
         .{ .command = value }
     else
         null;
-    mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, domain_name, launch_command) catch |err| {
+    mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command) catch |err| {
         std.log.err("app: newTab failed: {s}", .{@errorName(err)});
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;
@@ -347,6 +351,7 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
+    const effective_command = nonEmptyCommand(command);
     const inherited_domain = if (domain_name) |value|
         if (value.len > 0) value else null
     else if (previous) |pane|
@@ -366,7 +371,7 @@ pub fn newWorkspace(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, comm
     };
     htp.bindHtpHandlers(self);
     self.syncActivePaneChange(previous, mux.activePane());
-    if (command) |value| {
+    if (effective_command) |value| {
         if (mux.activePane()) |pane| pane.queueStartupInput(value) catch |err| {
             std.log.err("app: failed to queue workspace startup command: {s}", .{@errorName(err)});
         };
@@ -454,8 +459,9 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     const runtime = if (self.ghostty) |*value| value else return;
     const cbs = terminal_callbacks.terminalCallbacks();
     const previous = mux.activePane();
-    const launch_command: ?LaunchCommand = if (command != null and command_mode == .spawn)
-        .{ .command = command.?, .close_on_exit = close_on_exit }
+    const effective_command = nonEmptyCommand(command);
+    const launch_command: ?LaunchCommand = if (effective_command != null and command_mode == .spawn)
+        .{ .command = effective_command.?, .close_on_exit = close_on_exit }
     else
         null;
     const split_bounds = blk: {
@@ -515,7 +521,7 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
         _ = mux.togglePaneMaximized(pane, false);
     }
     if (command_mode == .send) {
-        if (command) |cmd| {
+        if (effective_command) |cmd| {
             sendSplitPaneCommand(self, pane, cmd, close_on_exit);
         }
     }
@@ -525,6 +531,13 @@ pub fn splitPane(self: *App, direction: SplitDirection, ratio: f32, domain_name:
     self.requestLayoutResize(false);
     std.log.info("app: splitPane total_ms={d}", .{io.milliTimestamp() - start_ms});
     std.log.info("app: pane split done direction={s}", .{@tagName(direction)});
+}
+
+fn nonEmptyCommand(command: ?[]const u8) ?[]const u8 {
+    if (command) |value| {
+        return if (value.len > 0) value else null;
+    }
+    return null;
 }
 
 pub fn snapSplitRatio(self: *App, ratio: f32, direction: SplitDirection, bounds: PaneBounds) f32 {

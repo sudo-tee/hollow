@@ -111,6 +111,8 @@ function M.setup(hollow, host_api)
       id = pane_id,
       pid = host_api.get_pane_pid(pane_id),
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
+      direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id) or nil,
+      split_ratio = host_api.get_pane_split_ratio and host_api.get_pane_split_ratio(pane_id) or nil,
       active_screen = host_api.get_pane_active_screen
           and host_api.get_pane_active_screen(pane_id)
         or "primary",
@@ -360,6 +362,9 @@ function M.setup(hollow, host_api)
   function hollow.term.new_tab(opts)
     if opts ~= nil and type(opts) ~= "table" then
       error("hollow.term.new_tab(opts) expects a table or nil")
+    end
+    if opts ~= nil and opts.cwd ~= nil and type(opts.cwd) ~= "string" then
+      error("hollow.term.new_tab(opts) expects opts.cwd to be a string")
     end
     if opts ~= nil and opts.domain ~= nil and type(opts.domain) ~= "string" then
       error("hollow.term.new_tab(opts) expects opts.domain to be a string")

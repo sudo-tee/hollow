@@ -4,12 +4,16 @@ local harness = require("tests.harness")
 describe("UI workspace test suite", function()
   local env
   local hollow
+  local recorded
   local on_key
+  local workspace_actions
 
   setup(function()
     env = harness.boot()
     hollow = env.hollow
+    recorded = env.recorded
     on_key = env.get_key_handler()
+    workspace_actions = require("hollow.ui.workspace.actions")
   end)
 
   describe("workspace switcher", function()
@@ -59,6 +63,90 @@ describe("UI workspace test suite", function()
         workspace_items[2].cwd,
         "/home/francis/Projects/alpha",
         "workspace switcher should still resolve UNC cwd for launch"
+      )
+    end)
+
+    it("bootstraps project layouts with source cwd and domain", function()
+      local bootstrapped_dir
+      local bootstrapped_domain
+      local original_bootstrap_project = hollow.workspace.bootstrap_project
+      hollow.workspace.bootstrap_project = function(dir, domain)
+        bootstrapped_dir = dir
+        bootstrapped_domain = domain
+      end
+
+      workspace_actions.switch_to_workspace({
+        name = "dots",
+        cwd = "/home/francis/dots",
+        domain = "unix",
+        source = "local",
+        is_open = false,
+      })
+
+      hollow.workspace.bootstrap_project = original_bootstrap_project
+      harness.assert_equal(
+        bootstrapped_dir,
+        "/home/francis/dots",
+        "opening a known workspace should bootstrap its project cwd"
+      )
+      harness.assert_equal(
+        bootstrapped_domain,
+        "unix",
+        "opening a known workspace should preserve its domain for path resolution"
+      )
+    end)
+
+    it("waits for canonical WSL cwd before bootstrapping project layouts", function()
+      hollow.config.set({ domains = { UbuntuWSL = { wsl_distro = "Ubuntu" } } })
+      local bootstrapped_dir
+      local original_bootstrap_project = hollow.workspace.bootstrap_project
+      hollow.workspace.bootstrap_project = function(dir)
+        bootstrapped_dir = dir
+      end
+
+      workspace_actions.switch_to_workspace({
+        name = "dots",
+        cwd = "/home/francis/Projects/dotfiles",
+        domain = "UbuntuWSL",
+        source = "local",
+        is_open = false,
+      })
+      harness.assert_equal(
+        bootstrapped_dir,
+        nil,
+        "WSL workspace bootstrap should wait for shell cwd resolution"
+      )
+
+      hollow._emit_builtin_event("term:cwd_changed", {
+        pane_id = 101,
+        old_cwd = "/home/francis/Projects/dotfiles",
+        new_cwd = "/home/francis/dots",
+      })
+      hollow.workspace.bootstrap_project = original_bootstrap_project
+      harness.assert_equal(
+        bootstrapped_dir,
+        "/home/francis/dots",
+        "WSL workspace bootstrap should use canonical shell cwd"
+      )
+    end)
+
+    it("passes SSH workspace cwd to the new pane", function()
+      workspace_actions.open_new_workspace_from_item({
+        name = "remote",
+        cwd = "/srv/project",
+        domain = "devbox",
+        source = "ssh",
+      })
+
+      harness.assert_equal(
+        recorded.new_workspace.cwd,
+        "/srv/project",
+        "SSH workspace opening should pass remote cwd through pane creation"
+      )
+      harness.assert_equal(
+        recorded.new_workspace.command,
+        nil,
+        "SSH workspace opening should not inject cwd as a startup command"
       )
     end)
   end)

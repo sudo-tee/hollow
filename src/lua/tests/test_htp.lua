@@ -194,8 +194,13 @@ describe("HTP test suite", function()
 
     it("dispatches new_tab", function()
       local ok_new_tab =
-        hollow.htp._handle_emit("new_tab", { domain = "dev", command = "npm run dev" }, 101)
+        hollow.htp._handle_emit(
+          "new_tab",
+          { cwd = "/tmp/project", domain = "dev", command = "npm run dev" },
+          101
+        )
       harness.assert_true(ok_new_tab, "HTP new_tab should succeed")
+      harness.assert_equal(recorded.new_tab.cwd, "/tmp/project", "HTP new_tab should forward cwd")
       harness.assert_equal(recorded.new_tab.domain, "dev", "HTP new_tab should forward domain")
       harness.assert_equal(
         recorded.new_tab.command,

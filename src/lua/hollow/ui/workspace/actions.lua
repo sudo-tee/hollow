@@ -47,23 +47,50 @@ local function send_cwd_to_active_workspace(cwd)
   end
 end
 
-local function ssh_workspace_command(cwd)
+local function bootstrap_project_on_complete(cwd, domain)
   cwd = trim_string(cwd)
-  return cwd ~= "" and ("cd -- " .. shell_quote(cwd) .. "\r") or nil
+  if cwd == "" then
+    return nil
+  end
+
+  return function(result)
+    if result == nil or result.success ~= true then
+      return
+    end
+
+    local config = hollow.config.snapshot()
+    local domain_config = (config.domains or {})[domain]
+    local pane = type(domain_config) == "table"
+      and domain_config.wsl_distro ~= nil
+      and hollow.term.current_pane()
+    if not pane then
+      hollow.workspace.bootstrap_project(cwd, domain)
+      return
+    end
+
+    hollow.log("Waiting for WSL cwd resolution before workspace bootstrap: " .. cwd)
+    local handle
+    handle = hollow.events.on("term:cwd_changed", function(event)
+      if event.pane == nil or event.pane.id ~= pane.id then
+        return
+      end
+      hollow.events.off(handle)
+      hollow.log("Bootstrapping workspace from resolved WSL cwd: " .. event.new_cwd)
+      hollow.workspace.bootstrap_project(event.new_cwd, domain)
+    end)
+  end
 end
 
 local function open_new_workspace_from_item(item)
   item = type(item) == "table" and item or {}
-  local source_name = item.source
   local cwd = item.cwd
 
   local name = trim_string(item.name)
 
   hollow.term.new_workspace({
     name = name ~= "" and name or nil,
-    cwd = source_name == "ssh" and nil or cwd,
+    cwd = cwd,
     domain = item.domain,
-    command = source_name == "ssh" and ssh_workspace_command(cwd) or nil,
     on_complete = item.on_complete,
   })
 
@@ -97,16 +124,13 @@ local function switch_to_workspace(workspace)
     return
   end
 
+  local cwd = workspace.cwd or current_pane_cwd()
   open_new_workspace_from_item({
     name = workspace.name,
-    cwd = workspace.cwd or current_pane_cwd(),
+    cwd = cwd,
     domain = workspace.domain,
     source = workspace.source,
-    on_complete = function(result)
-      if result ~= nil and result.success == true and workspace.cwd ~= nil then
-        hollow.workspace.bootstrap_project(workspace.cwd)
-      end
-    end,
+    on_complete = bootstrap_project_on_complete(cwd, workspace.domain),
   })
 end
 
@@ -181,6 +205,9 @@ local function open_workspace(opts)
   local source_name = trim_string(opts.source)
   if source_name == "" then
     opts = type(opts) == "table" and opts or {}
+    if type(opts.on_complete) ~= "function" then
+      opts.on_complete = bootstrap_project_on_complete(opts.cwd, opts.domain)
+    end
     open_new_workspace_from_item(opts)
     return
   end
@@ -202,6 +229,9 @@ local function open_workspace(opts)
     return
   end
 
+  if type(item.on_complete) ~= "function" then
+    item.on_complete = bootstrap_project_on_complete(item.cwd, item.domain)
+  end
   open_new_workspace_from_item(item)
 end
 

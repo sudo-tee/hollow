@@ -73,11 +73,12 @@ pub fn luaGetPaneForegroundProcessCallback(app_ptr: *anyopaque, pane_id: usize, 
     return app.getPaneForegroundProcess(pane_id, out_buf);
 }
 
-pub fn luaNewTabCallback(app_ptr: *anyopaque, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool {
+pub fn luaNewTabCallback(app_ptr: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
+    const owned_cwd = if (cwd) |value| app.allocator.dupe(u8, value) catch null else null;
     const owned_domain = if (domain_name) |name| app.allocator.dupe(u8, name) catch null else null;
     const owned_command = if (command) |value| app.allocator.dupe(u8, value) catch null else null;
-    var event: input.PendingInputEvent = .{ .new_tab = .{ .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } };
+    var event: input.PendingInputEvent = .{ .new_tab = .{ .cwd = owned_cwd, .domain_name = owned_domain, .command = owned_command, .callback_ref = callback_ref } };
     const queued = app.enqueueMouse(event);
     if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
     return queued;
@@ -262,6 +263,25 @@ pub fn luaGetPaneDomainCallback(app_ptr: *anyopaque, pane_id: usize, out_buf: []
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const pane = app.findPaneById(pane_id) orelse return "";
     return pane.domain_name;
+}
+
+pub fn luaGetPaneSplitDirectionCallback(app_ptr: *anyopaque, pane_id: usize) ?[]const u8 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return null;
+    const mux = if (app.mux) |*mux| mux else return null;
+    const info = mux.paneSplitInfo(pane) orelse return null;
+    return switch (info.direction) {
+        .horizontal => "horizontal",
+        .vertical => "vertical",
+    };
+}
+
+pub fn luaGetPaneSplitRatioCallback(app_ptr: *anyopaque, pane_id: usize) ?f32 {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const pane = app.findPaneById(pane_id) orelse return null;
+    const mux = if (app.mux) |*mux| mux else return null;
+    const info = mux.paneSplitInfo(pane) orelse return null;
+    return info.size;
 }
 
 pub fn luaGetPaneRowsCallback(app_ptr: *anyopaque, pane_id: usize) usize {

@@ -233,6 +233,14 @@ local function make_host_api()
     return panes[pane_id].domain
   end
 
+  function host_api.get_pane_split_direction(pane_id)
+    return panes[pane_id].split_direction
+  end
+
+  function host_api.get_pane_split_ratio(pane_id)
+    return panes[pane_id].split_ratio
+  end
+
   function host_api.get_pane_cwd(pane_id)
     return panes[pane_id].cwd
   end
@@ -485,6 +493,8 @@ local function make_host_api()
       rows = active_pane.rows,
       cols = active_pane.cols,
       foreground_process = _opts.command,
+      split_direction = _opts.direction or "vertical",
+      split_ratio = _opts.ratio or 0.5,
     }
 
     tabs[1].pane_ids[#tabs[1].pane_ids + 1] = pane_id
