@@ -19,6 +19,7 @@ hollow.config.set({
   max_fps = 120,
   idle_max_fps = 15,
   command_timing = false,
+  synchronized_output = true,
   debug_overlay = false,
   renderer_single_pane_direct = false,
   vsync = false,

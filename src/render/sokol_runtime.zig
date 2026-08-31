@@ -3109,11 +3109,35 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // renderer_safe_mode forces the simpler direct path for all panes as a
     // diagnostic escape hatch from the cached RT pipeline.
     const atlas_reset_this_frame = if (g_ft_renderer) |*renderer| renderer.atlas_reset_this_frame else false;
+    const visible_sync_output = blk: {
+        if (leaves.len == 0) {
+            if (app.activePane()) |pane| break :blk pane.synchronized_output_active;
+            break :blk false;
+        }
+        for (leaves) |leaf| {
+            if (leaf.pane.synchronized_output_active) break :blk true;
+        }
+        break :blk false;
+    };
+    // A synchronized split needs retained per-pane surfaces so unrelated
+    // panes can continue presenting. Fall back to the old whole-frame hold
+    // only when the visible pane count exceeds the cache table.
+    const sync_cache_supported = visible_sync_output and leaves.len > 0 and leaves.len <= MAX_PANE_CACHES;
     const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame;
-    const use_safe_render = app.config.renderer_safe_mode;
+    const use_safe_render = app.config.renderer_safe_mode and !sync_cache_supported;
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
-    const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1;
+    const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !sync_cache_supported;
+    // Direct paths have no retained terminal surface. Keep the last
+    // presented frame until synchronized output ends instead of clearing
+    // the swapchain and drawing newer terminal state.
+    if (visible_sync_output and
+        (use_safe_render or use_direct_multi_pane or use_direct_render) and
+        g_renderer_ready)
+    {
+        c.sapp_skip_present();
+        return;
+    }
     if (use_direct_multi_pane) {
         releaseAllPaneCaches();
     } else {
@@ -3172,6 +3196,17 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw_u: u32 = @max(1, @as(u32, @intFromFloat(pw)));
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
                     const cache_entry = getOrCreatePaneCacheEntry(pane, pw_u, ph_u) orelse return .cached_clean;
+
+                    // The terminal model may advance while synchronized
+                    // output is active, but the user must keep seeing the
+                    // last completed render. An invalid cache is rendered
+                    // once to establish the initial frame.
+                    if (pane.synchronized_output_active and
+                        cache_entry.validity != .invalid and
+                        !cache_entry.needs_clear)
+                    {
+                        return .cached_clean;
+                    }
 
                     // Check dirty flag.
                     // We use pane.render_dirty, which tickPanes refreshes from

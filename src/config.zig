@@ -325,6 +325,9 @@ pub const Config = struct {
     floating_inactive_color: ghostty.ColorRgb = .{ .r = 72, .g = 90, .b = 110 },
     debug_overlay: bool = false,
     debug_terminal_trace: bool = false,
+    /// Hold terminal content while DEC synchronized output is active. The
+    /// terminal parser continues tracking mode 2026 when this is disabled.
+    synchronized_output: bool = true,
     vsync: bool = true,
     /// Frame cap used when vsync is disabled. Set to 0 to leave the render
     /// loop uncapped.
