@@ -825,6 +825,7 @@ pub const Pane = struct {
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
                 std.log.info("pane.nudgeTerminal: cols={d} rows={d}->{}->{}", .{ self.cols, original_rows, bump_rows, original_rows });
+                _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
                 self.rows = bump_rows;
                 runtime.resizeTerminal(self.terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
                 runtime.updateRenderState(self.render_state, self.terminal) catch {};

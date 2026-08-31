@@ -3122,7 +3122,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     // A synchronized split needs retained per-pane surfaces so unrelated
     // panes can continue presenting. Fall back to the old whole-frame hold
     // only when the visible pane count exceeds the cache table.
-    const sync_cache_supported = visible_sync_output and leaves.len > 0 and leaves.len <= MAX_PANE_CACHES;
+    const sync_cache_supported = visible_sync_output and
+        leaves.len > 0 and
+        leaves.len <= MAX_PANE_CACHES and
+        leaves.len <= MAX_CACHED_VISIBLE_PANES and
+        !app.config.renderer_safe_mode and
+        !app.config.renderer_disable_multi_pane_cache;
     const use_direct_render = app.config.renderer_single_pane_direct and leaves.len == 0 and !atlas_reset_this_frame;
     const use_safe_render = app.config.renderer_safe_mode and !sync_cache_supported;
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
