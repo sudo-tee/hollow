@@ -2,8 +2,9 @@ From: Hollow local patches
 Subject: [PATCH] add no-vsync and frame-present controls
 
 The no_vsync field permits SyncInterval=0 instead of treating zero as an
-unset swap interval. sapp_skip_present lets an idle frame callback preserve
-the previous swapchain image instead of rotating to an unrendered buffer.
+unset swap interval. Minimized windows still sleep for one 60 Hz tick when
+vsync is disabled. sapp_skip_present lets an idle frame callback preserve the
+previous swapchain image instead of rotating to an unrendered buffer.
 
 diff --git a/sokol_app.h b/sokol_app.h
 index 111acdd..2a1e028 100644
@@ -51,7 +52,7 @@ index 111acdd..2a1e028 100644
      _sapp_call_frame();
      _sapp.frame_count++;
  }
-@@ -9561,13 +9566,15 @@ _SOKOL_PRIVATE void _sapp_win32_frame(bool from_winproc) {
+@@ -9561,16 +9566,18 @@ _SOKOL_PRIVATE void _sapp_win32_frame(bool from_winproc) {
      #else
          _sapp_frame();
      #endif
@@ -73,7 +74,11 @@ index 111acdd..2a1e028 100644
 +    }
      if (!from_winproc) {
          if (IsIconic(_sapp.win32.hwnd)) {
-             Sleep((DWORD)(16 * _sapp.swap_interval));
+-            Sleep((DWORD)(16 * _sapp.swap_interval));
++            Sleep((DWORD)(16 * (_sapp.swap_interval > 0 ? _sapp.swap_interval : 1)));
+         }
+     }
+ }
 @@ -13769,11 +13776,13 @@ _SOKOL_PRIVATE void _sapp_linux_frame(void) {
          _sapp_vk_frame();
      #else
