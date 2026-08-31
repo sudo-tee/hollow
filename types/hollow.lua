@@ -351,6 +351,7 @@
 ---@field debug_terminal_trace? boolean
 ---@field backend? string
 ---@field vsync? boolean
+---@field synchronized_output? boolean Hold terminal content during DEC synchronized output
 ---@field hide_mouse_cursor_when_typing? boolean
 ---@field max_fps? integer
 ---@field command_timing? boolean

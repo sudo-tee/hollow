@@ -119,7 +119,7 @@ pub const String = extern struct {
 };
 
 pub const TerminalModeConfig = extern struct {
-    mode: u32,
+    mode: u16,
     value: bool,
 };
 
@@ -213,6 +213,7 @@ pub const TerminalOpt = enum(u32) {
     apc_max_bytes_kitty = 20,
     selection = 21,
     scrollback_max_bytes = 27,
+    mode = 34,
 };
 
 pub const TerminalData = enum(u32) {
@@ -350,9 +351,10 @@ pub const TerminalScreen = enum(u32) {
     alternate = 1,
 };
 
-pub const Mode = enum(u32) {
+pub const Mode = enum(u16) {
     focus_event = 1004,
     bracketed_paste = 2004,
+    synchronized_output = 2026,
 };
 
 pub const RenderStateData = enum(u32) {
@@ -655,7 +657,7 @@ extern fn ghostty_terminal_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_terminal_vt_write(?*anyopaque, [*]const u8, usize) callconv(.c) void;
 extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) void;
 extern fn ghostty_terminal_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
-extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) void;
+extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
 extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
 extern fn ghostty_terminal_selection_format_buf(?*anyopaque, TerminalSelectionFormatOptions, ?[*]u8, usize, *usize) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
@@ -740,7 +742,7 @@ pub const Runtime = struct {
     terminal_vt_write: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
     terminal_resize: *const fn (?*anyopaque, u16, u16, u32, u32) callconv(.c) void,
     terminal_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
-    terminal_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void,
+    terminal_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32,
     terminal_grid_ref: *const fn (?*anyopaque, Point, *GridRef) callconv(.c) i32,
     terminal_selection_format_buf: *const fn (?*anyopaque, TerminalSelectionFormatOptions, ?[*]u8, usize, *usize) callconv(.c) i32,
     terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
@@ -902,7 +904,7 @@ pub const Runtime = struct {
         if (result != success or handle == null) {
             return error.TerminalCreateFailed;
         }
-        self.terminal_set(handle, @intFromEnum(TerminalOpt.scrollback_max_bytes), &max_scrollback);
+        _ = self.terminal_set(handle, @intFromEnum(TerminalOpt.scrollback_max_bytes), &max_scrollback);
         return handle;
     }
 
@@ -924,6 +926,14 @@ pub const Runtime = struct {
         if (handle) |terminal| {
             var config = TerminalModeConfig{ .mode = @intFromEnum(mode), .value = false };
             return self.terminal_get(terminal, @intFromEnum(TerminalData.mode), &config) == success and config.value;
+        }
+        return false;
+    }
+
+    pub fn setTerminalMode(self: *Runtime, handle: ?*anyopaque, mode: Mode, value: bool) bool {
+        if (handle) |terminal| {
+            var config = TerminalModeConfig{ .mode = @intFromEnum(mode), .value = value };
+            return self.terminal_set(terminal, @intFromEnum(TerminalOpt.mode), &config) == success;
         }
         return false;
     }
@@ -1020,80 +1030,80 @@ pub const Runtime = struct {
     }
 
     pub fn setWritePtyCallback(self: *Runtime, handle: ?*anyopaque, callback: WritePtyCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.write_pty), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.write_pty), @ptrCast(callback));
     }
 
     pub fn setTerminalUserdata(self: *Runtime, handle: ?*anyopaque, userdata: ?*anyopaque) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.userdata), userdata);
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.userdata), userdata);
     }
 
     pub fn setBellCallback(self: *Runtime, handle: ?*anyopaque, callback: BellCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.bell), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.bell), @ptrCast(callback));
     }
 
     pub fn setEnquiryCallback(self: *Runtime, handle: ?*anyopaque, callback: EnquiryCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.enquiry), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.enquiry), @ptrCast(callback));
     }
 
     pub fn setXtversionCallback(self: *Runtime, handle: ?*anyopaque, callback: XtversionCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.xtversion), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.xtversion), @ptrCast(callback));
     }
 
     pub fn setSizeCallback(self: *Runtime, handle: ?*anyopaque, callback: SizeCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.size), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.size), @ptrCast(callback));
     }
 
     pub fn setColorSchemeCallback(self: *Runtime, handle: ?*anyopaque, callback: ColorSchemeCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_scheme), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_scheme), @ptrCast(callback));
     }
 
     pub fn setDeviceAttributesCallback(self: *Runtime, handle: ?*anyopaque, callback: DeviceAttributesCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.device_attributes), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.device_attributes), @ptrCast(callback));
     }
 
     pub fn setTitleChangedCallback(self: *Runtime, handle: ?*anyopaque, callback: TitleChangedCallback) void {
-        if (handle) |terminal| self.terminal_set(terminal, @intFromEnum(TerminalOpt.title_changed), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.title_changed), @ptrCast(callback));
     }
 
     pub fn setKittyImageStorageLimit(self: *Runtime, handle: ?*anyopaque, bytes: u64) void {
         if (handle) |terminal| {
             var copy = bytes;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_storage_limit), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_storage_limit), &copy);
         }
     }
 
     pub fn setKittyImageMediumFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_file), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_file), &copy);
         }
     }
 
     pub fn setKittyImageMediumTempFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_temp_file), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_temp_file), &copy);
         }
     }
 
     pub fn setKittyImageMediumSharedMem(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_shared_mem), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_shared_mem), &copy);
         }
     }
 
     pub fn setApcMaxBytes(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
         if (handle) |terminal| {
             var copy = bytes;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes), &copy);
         }
     }
 
     pub fn setApcMaxBytesKitty(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
         if (handle) |terminal| {
             var copy = bytes;
-            self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes_kitty), &copy);
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes_kitty), &copy);
         }
     }
 
@@ -1680,4 +1690,18 @@ pub fn resolveStyleColor(sc: StyleColor, default: ColorRgb, palette: *const [256
         .palette => palette[sc.value.palette],
         .rgb => sc.value.rgb,
     };
+}
+
+test "synchronized output mode round trips through Ghostty" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+
+    const terminal = try runtime.createTerminal(80, 24, 0);
+    defer runtime.freeTerminal(terminal);
+
+    try std.testing.expect(!runtime.terminalMode(terminal, .synchronized_output));
+    runtime.terminalWrite(terminal, "\x1b[?2026h");
+    try std.testing.expect(runtime.terminalMode(terminal, .synchronized_output));
+    try std.testing.expect(runtime.setTerminalMode(terminal, .synchronized_output, false));
+    try std.testing.expect(!runtime.terminalMode(terminal, .synchronized_output));
 }

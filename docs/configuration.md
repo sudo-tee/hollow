@@ -124,12 +124,17 @@ hollow.config.set({
   max_fps = 120,
   idle_max_fps = 15,
   vsync = false,
+  synchronized_output = true,
   backend = "sokol",           -- primary renderer backend
   command_timing = false,
   debug_overlay = false,
   debug_terminal_trace = false,
 })
 ```
+
+`synchronized_output` holds the last presented terminal frame while an
+application uses DEC synchronized output mode (`CSI ? 2026 h/l`). Set it to
+`false` to disable that visual hold; Hollow still parses and tracks mode 2026.
 
 ### Default keymaps
 

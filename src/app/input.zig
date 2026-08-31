@@ -617,7 +617,15 @@ pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
         if (self.mux) |*mux| {
             var panes = mux.paneIterator();
             while (panes.next()) |pane| {
-                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) {
+                if (pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or pane.bell_active) {
+                    self.last_visual_activity_ns = now_ns;
+                    return true;
+                }
+                // Synchronized output keeps terminal damage pending until the
+                // mode is cleared or its watchdog expires. PTY wakeups still
+                // drive ticks, but idle frames should not spin on stale damage.
+                if (pane.synchronized_output_active) continue;
+                if (pane.render_dirty != .false_value or pane.pty_received_data or pane.pty_wrote_this_frame) {
                     self.last_visual_activity_ns = now_ns;
                     return true;
                 }

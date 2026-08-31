@@ -202,6 +202,11 @@ pub const Pane = struct {
     /// actively writing this frame.  Used to hold force-full CLEAR renders
     /// until the shell's post-resize redraw has fully settled.
     pty_wrote_this_frame: bool = false,
+    /// True while DEC synchronized output is active for this terminal. The
+    /// parser keeps advancing; the renderer holds the last presented frame.
+    synchronized_output_active: bool = false,
+    /// Monotonic start time for the synchronized-output watchdog.
+    synchronized_output_started_ns: i128 = 0,
     /// Last known mouse tracking mode (from terminal_get).  Logged on change.
     last_mouse_tracking: u32 = 0,
     mouse_tracking_logged_initial: bool = false,
@@ -764,6 +769,11 @@ pub const Pane = struct {
     /// Pass `skip_pty = false` for the single authoritative resize that fires on
     /// divider_commit (mouse release), which sends exactly one SIGWINCH.
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
+        // A geometry change invalidates the previously presented surface, so
+        // do not let synchronized output hold an obsolete frame across it.
+        _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
+        self.synchronized_output_active = false;
+        self.synchronized_output_started_ns = 0;
         const prev_cols = self.cols;
         const prev_rows = self.rows;
 
@@ -824,6 +834,8 @@ pub const Pane = struct {
                 runtime.resizeTerminal(self.terminal, self.cols, original_rows, cell_width_px, cell_height_px);
                 runtime.updateRenderState(self.render_state, self.terminal) catch {};
                 pty.resize(self.cols, original_rows);
+                self.synchronized_output_active = false;
+                self.synchronized_output_started_ns = 0;
                 self.render_dirty = .full;
             }
         }

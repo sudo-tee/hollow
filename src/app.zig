@@ -75,6 +75,7 @@ const PTY_RECENT_ACTIVITY_NS: i128 = 24 * std.time.ns_per_ms;
 const PTY_RECENT_OUTPUT_NS: i128 = 100 * std.time.ns_per_ms;
 const PTY_READER_HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
 const PTY_READER_PRESSURE_BYTES: usize = PTY_READER_HIGH_WATER_BYTES * 3 / 4;
+const SYNCHRONIZED_OUTPUT_TIMEOUT_NS: i128 = 1000 * std.time.ns_per_ms;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 pub const SplitCommandMode = enum {
@@ -1358,6 +1359,7 @@ pub const App = struct {
         std.log.info("renderer_safe_mode={}", .{self.config.renderer_safe_mode});
         std.log.info("renderer_disable_swapchain_glyphs={}", .{self.config.renderer_disable_swapchain_glyphs});
         std.log.info("renderer_disable_multi_pane_cache={}", .{self.config.renderer_disable_multi_pane_cache});
+        std.log.info("synchronized_output={}", .{self.config.synchronized_output});
         std.log.info("embedded_base_config={}", .{self.using_embedded_base_config});
         if (self.base_config_path) |path| std.log.info("base_config={s}", .{path});
         if (self.override_config_path) |path| std.log.info("override_config={s}", .{path});
@@ -2276,6 +2278,40 @@ pub const App = struct {
                     inactive_pty_budget -|= pty_bytes_read;
                     inactive_panes_remaining -= 1;
                 }
+                const sync_now_ns = io.nanoTimestamp();
+                const sync_mode_active = self.config.synchronized_output and
+                    runtime.terminalMode(pane.terminal, .synchronized_output);
+                if (sync_mode_active) {
+                    if (!pane.synchronized_output_active) {
+                        pane.synchronized_output_active = true;
+                        pane.synchronized_output_started_ns = sync_now_ns;
+                        if (self.config.debug_terminal_trace) {
+                            std.log.info("terminal-trace synchronized-output pane={x} state=begin", .{@intFromPtr(pane)});
+                        }
+                    }
+                    if (sync_now_ns - pane.synchronized_output_started_ns >= SYNCHRONIZED_OUTPUT_TIMEOUT_NS) {
+                        std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
+                        _ = runtime.setTerminalMode(pane.terminal, .synchronized_output, false);
+                        pane.synchronized_output_active = false;
+                        pane.synchronized_output_started_ns = 0;
+                        pane.render_dirty = .full;
+                    }
+                } else {
+                    if (pane.synchronized_output_active) {
+                        if (self.config.debug_terminal_trace) {
+                            std.log.info("terminal-trace synchronized-output pane={x} state=end", .{@intFromPtr(pane)});
+                        }
+                        pane.render_dirty = .full;
+                    }
+                    pane.synchronized_output_active = false;
+                    pane.synchronized_output_started_ns = 0;
+                }
+                if (pane.synchronized_output_active) {
+                    const sync_deadline_ns = pane.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
+                    if (next_idle_render_poll_ns == 0 or sync_deadline_ns < next_idle_render_poll_ns) {
+                        next_idle_render_poll_ns = sync_deadline_ns;
+                    }
+                }
                 if (pane.active_screen != active_screen_before) {
                     automation_changed = true;
                     std.log.info("app: pane screen changed pane={x} {d}->{d}, resizing layout", .{
@@ -2369,9 +2405,12 @@ pub const App = struct {
                 // idle windows do not burn CPU just to discover blink changes.
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
                 const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
-                const needs_update = pane.pty_received_data or
-                    pane.render_dirty != .false_value or
-                    (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
+                const needs_update = if (pane.synchronized_output_active)
+                    pane.pty_received_data
+                else
+                    pane.pty_received_data or
+                        pane.render_dirty != .false_value or
+                        (now_ns - pane.last_render_state_update_ns >= idle_poll_ns);
                 if (needs_update) {
                     const renderstate_start_ns = if (self.config.debug_overlay) io.nanoTimestamp() else 0;
                     if (pane.render_state_fresh) {
@@ -2424,7 +2463,7 @@ pub const App = struct {
                     if (self.hovered_hyperlink != null and self.hovered_hyperlink.?.pane == pane) {
                         self.hover_probe_dirty = true;
                     }
-                } else if (pane.last_render_state_update_ns != 0) {
+                } else if (!pane.synchronized_output_active and pane.last_render_state_update_ns != 0) {
                     if (next_idle_render_poll_ns == 0 or pane_idle_deadline_ns < next_idle_render_poll_ns) {
                         next_idle_render_poll_ns = pane_idle_deadline_ns;
                     }

@@ -129,6 +129,19 @@ Use `zig build test-lua` for the same Lua suite through the Zig build, or
 The Busted runner discovers every `src/lua/tests/test_*.lua` file, and accepts
 normal Busted options such as `--filter`, `--list`, and `--output=junit`.
 
+## Rendering benchmark
+
+Run the workload inside a Hollow pane:
+
+```bash
+./bench.sh sync-output 120 60 4
+```
+
+Arguments are synchronized batches, target batches per second, and updates
+per batch. Each batch rewrites the viewport between `CSI ?2026h` and
+`CSI ?2026l`. Run once with `synchronized_output = true` and once with
+`synchronized_output = false`, then compare renderer CPU and frame behavior.
+
 ## Editor support (LuaLS)
 
 The public Lua API surface is described as

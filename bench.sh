@@ -10,6 +10,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 RATE="${3:-100}"
+SYNC_UPDATES="${4:-4}"
 
 run_blocking_child() {
   local result_path="$2"
@@ -152,7 +153,7 @@ if [[ "$MODE" == "nvim-restart" ]]; then
   exec "$SCRIPT_DIR/launch.sh" --app-arg="--startup-command" --app-arg=":restart" --app-arg="--startup-command-delay-frames" --app-arg="$DELAY_FRAMES" --app-arg="--snapshot-dump" --app-arg="$OUT_PATH"
 fi
 
-python3 - "$MODE" "$COUNT" "$RATE" <<'PY'
+python3 - "$MODE" "$COUNT" "$RATE" "$SYNC_UPDATES" <<'PY'
 import os
 import re
 import select
@@ -177,6 +178,8 @@ ALT_ON = CSI + "?1049h"
 ALT_OFF = CSI + "?1049l"
 CLEAR = CSI + "2J"
 HOME = CSI + "H"
+SYNC_ON = CSI + "?2026h"
+SYNC_OFF = CSI + "?2026l"
 
 running = True
 
@@ -521,6 +524,75 @@ def run_split_scroll(presses, rate_hz=100):
         f"layout: left pane static, right pane rewritten each press, split_col={split_col}\n"
     )
 
+def run_sync_output(batches, rate_hz=100, updates_per_batch=4):
+    """Rewrite the viewport in several updates enclosed by DEC mode 2026."""
+    interval = 1.0 / rate_hz
+    content_rows = rows - 1
+    updates_per_batch = max(1, updates_per_batch)
+
+    sys.stdout.write(HIDE + ALT_ON + CLEAR + HOME)
+    for row in range(content_rows):
+        sys.stdout.write(f"{CSI}{row + 1};1H{frame_text(0, row)}")
+    sys.stdout.write(
+        f"{CSI}{rows};1H{CSI}0msync-output bench  batches={batches}"
+        f"  updates={updates_per_batch}  size={cols}x{rows}  rate={rate_hz}hz"
+    )
+    sys.stdout.flush()
+
+    batch_times = []
+    written = 0
+    done = 0
+    start = time.perf_counter()
+
+    for batch in range(batches):
+        if not running:
+            break
+
+        batch_start = time.perf_counter()
+        sys.stdout.write(SYNC_ON)
+        for update in range(updates_per_batch):
+            frame = batch * updates_per_batch + update + 1
+            parts = []
+            for row in range(content_rows):
+                parts.append(f"{CSI}{row + 1};1H{frame_text(frame, row)}")
+            parts.append(
+                f"{CSI}{rows};1H{CSI}0msync-output bench  batch={batch + 1:05d}/{batches}"
+                f"  update={update + 1}/{updates_per_batch}  size={cols}x{rows}"
+            )
+            payload = "".join(parts)
+            sys.stdout.write(payload)
+            written += len(payload)
+            sys.stdout.flush()
+            if update + 1 < updates_per_batch:
+                time.sleep(interval / updates_per_batch)
+        sys.stdout.write(SYNC_OFF)
+        sys.stdout.flush()
+
+        batch_times.append(time.perf_counter() - batch_start)
+        done += 1
+        sleep_for = interval - batch_times[-1]
+        if sleep_for > 0.0001:
+            time.sleep(sleep_for)
+
+    elapsed = time.perf_counter() - start
+    cleanup()
+
+    if batch_times:
+        avg_ms = (sum(batch_times) / len(batch_times)) * 1000
+        min_ms = min(batch_times) * 1000
+        max_ms = max(batch_times) * 1000
+        p99_ms = sorted(batch_times)[int(len(batch_times) * 0.99)] * 1000
+    else:
+        avg_ms = min_ms = max_ms = p99_ms = 0.0
+
+    sys.stdout.write(stat_line("sync-output", elapsed, "batches", max(1, done)))
+    sys.stdout.write(
+        f"bytes: {written} ({written / max(elapsed, 1e-9):.0f}/s)\n"
+        f"batch duration (ms):  avg={avg_ms:.2f}  min={min_ms:.2f}  "
+        f"max={max_ms:.2f}  p99={p99_ms:.2f}\n"
+        f"mode: CSI ?2026h/l  updates_per_batch={updates_per_batch}\n"
+    )
+
 def run_keypress(presses, rate_hz=100):
     """
     Simulate rapid j/k scrolling in nvim:
@@ -609,7 +681,11 @@ elif mode == "keypress":
 elif mode == "split-scroll":
     rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
     run_split_scroll(count, rate_hz=rate)
+elif mode == "sync-output":
+    rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
+    updates = int(sys.argv[4]) if len(sys.argv) > 4 else 4
+    run_sync_output(count, rate_hz=rate, updates_per_batch=updates)
 else:
-		sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|bypass-blocking|nvim-restart|minimize-restore] ...\n")
-		sys.exit(2)
+    sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|sync-output|bypass-blocking|nvim-restart|minimize-restore] ...\n")
+    sys.exit(2)
 PY
