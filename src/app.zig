@@ -39,7 +39,8 @@ const layoutSplitTree = mux_mod.layoutSplitTree;
 const hitTestDivider = mux_mod.hitTestDivider;
 const nodeIsInTree = mux_mod.nodeIsInTree;
 const MAX_LAYOUT_LEAVES = mux_mod.MAX_LAYOUT_LEAVES;
-const Pane = @import("pane.zig").Pane;
+const pane_mod = @import("pane.zig");
+const Pane = pane_mod.Pane;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 const debug_timing = @import("render/debug_timing.zig");
@@ -66,6 +67,13 @@ const mux_ops = @import("app/session_controller.zig");
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
 const embedded_types: []const u8 = build_options.embedded_types;
 const ALT_SCREEN_NUDGE_DELAY_NS: i128 = 500 * std.time.ns_per_ms;
+const PTY_INTERACTIVE_BUDGET_NS: i128 = 1 * std.time.ns_per_ms;
+const PTY_NORMAL_BUDGET_NS: i128 = 3 * std.time.ns_per_ms;
+const PTY_IDLE_BUDGET_NS: i128 = 6 * std.time.ns_per_ms;
+const PTY_PRESSURE_BUDGET_NS: i128 = 10 * std.time.ns_per_ms;
+const PTY_RECENT_ACTIVITY_NS: i128 = 24 * std.time.ns_per_ms;
+const PTY_READER_HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
+const PTY_READER_PRESSURE_BYTES: usize = PTY_READER_HIGH_WATER_BYTES * 3 / 4;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 pub const SplitCommandMode = enum {
@@ -121,6 +129,23 @@ fn viewportIteratorRowIndex(visual_row: usize, visible_rows: usize) ?usize {
         return (visible_rows - 1) - visual_row;
     }
     return visual_row;
+}
+
+fn selectPtyBudgetNs(now_ns: i128, last_input_ns: i128, last_resize_ns: i128, previous_frame_slow: bool, pending_output_bytes: usize) i128 {
+    const recent_input = last_input_ns != 0 and now_ns - last_input_ns < PTY_RECENT_ACTIVITY_NS;
+    const recent_resize = last_resize_ns != 0 and now_ns - last_resize_ns < PTY_RECENT_ACTIVITY_NS;
+    var budget = if (recent_input or recent_resize)
+        PTY_INTERACTIVE_BUDGET_NS
+    else if (pending_output_bytes > 0)
+        PTY_IDLE_BUDGET_NS
+    else
+        PTY_NORMAL_BUDGET_NS;
+
+    if (previous_frame_slow) budget = @divFloor(budget, 2);
+    if (!recent_input and !recent_resize and pending_output_bytes >= PTY_READER_PRESSURE_BYTES) {
+        budget = @max(budget, PTY_PRESSURE_BUDGET_NS);
+    }
+    return budget;
 }
 
 pub fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -276,7 +301,9 @@ pub const App = struct {
     override_config_path: ?[]u8 = null,
     frame_count: usize = 0,
     last_input_activity_ns: i128 = 0,
+    last_resize_activity_ns: i128 = 0,
     last_visual_activity_ns: i128 = 0,
+    previous_frame_slow: bool = false,
     logged_first_render_update: bool = false,
     cell_width_px: u32 = 8,
     cell_height_px: u32 = 16,
@@ -1400,6 +1427,7 @@ pub const App = struct {
         self.pending_width = pixel_width;
         self.pending_height = pixel_height;
         self.pending_resize = true;
+        self.last_resize_activity_ns = io.nanoTimestamp();
         self.hover_probe_dirty = true;
         self.invalidateCachedBarLayouts();
         self.signalWake();
@@ -1408,6 +1436,7 @@ pub const App = struct {
     pub fn requestLayoutResize(self: *App, recreate_render_helpers: bool) void {
         self.pending_layout_resize = true;
         self.pending_layout_recreate_render_helpers = self.pending_layout_recreate_render_helpers or recreate_render_helpers;
+        self.last_resize_activity_ns = io.nanoTimestamp();
         self.layout_generation +%= 1;
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
@@ -1418,6 +1447,7 @@ pub const App = struct {
     pub fn requestLayoutRefresh(self: *App) void {
         self.pending_layout_resize = true;
         self.pending_layout_skip_unchanged_pty = true;
+        self.last_resize_activity_ns = io.nanoTimestamp();
         self.layout_generation +%= 1;
         if (self.layout_generation == 0) self.layout_generation = 1;
         self.hover_probe_dirty = true;
@@ -2183,7 +2213,11 @@ pub const App = struct {
             // state every frame. Leave alternating frames free for input and
             // active-pane rendering.
             var inactive_pty_budget: usize = if (self.frame_count % 2 == 0) 16 * 1024 else 0;
-            var panes = mux.paneIterator();
+            const inactive_deadline_ns: i128 = if (inactive_pty_budget > 0)
+                io.nanoTimestamp() + PTY_INTERACTIVE_BUDGET_NS
+            else
+                0;
+            var panes = mux.paneIteratorActiveFirst();
             var pane_idx: usize = 0;
             var total_pty_read_ns: i128 = 0;
             var total_terminal_write_ns: i128 = 0;
@@ -2200,16 +2234,33 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 const active_screen_before = pane.active_screen;
-                const pty_read_loops: usize = if (pane_is_active) 24 else 2;
+                const pty_read_loops: usize = if (pane_is_active)
+                    (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES
+                else
+                    2;
                 // Inactive panes share one frame budget so work remains bounded
                 // regardless of pane count. Idle panes donate quota to later panes.
                 const pty_read_bytes: usize = if (pane_is_active)
-                    384 * 1024
+                    pane_mod.PTY_HARD_BYTE_LIMIT
                 else if (inactive_panes_remaining > 0 and inactive_pty_budget > 0)
                     (inactive_pty_budget + inactive_panes_remaining - 1) / inactive_panes_remaining
                 else
                     0;
-                const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, self.config.debug_overlay) catch |err| result: {
+                const pending_output_bytes: usize = if (pane_is_active) blk: {
+                    const deferred_output_bytes = pane.boot_output.items.len +| pane.pending_terminal_inject.items.len;
+                    break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
+                } else 0;
+                const pty_parse_chunk_bytes = if (pane_is_active and pending_output_bytes >= PTY_READER_PRESSURE_BYTES)
+                    pane_mod.PTY_PRESSURE_PARSE_CHUNK_BYTES
+                else
+                    pane_mod.PTY_PARSE_CHUNK_BYTES;
+                const pty_budget_ns: i128 = if (pane_is_active)
+                    selectPtyBudgetNs(io.nanoTimestamp(), self.last_input_activity_ns, self.last_resize_activity_ns, self.previous_frame_slow, pending_output_bytes)
+                else if (inactive_deadline_ns != 0 and io.nanoTimestamp() < inactive_deadline_ns)
+                    inactive_deadline_ns - io.nanoTimestamp()
+                else
+                    0;
+                const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
                 };
@@ -2652,6 +2703,19 @@ test "viewport iterator row mapping follows platform row order" {
         try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(4, 5));
     }
     try std.testing.expectEqual(@as(?usize, null), viewportIteratorRowIndex(5, 5));
+}
+
+test "PTY budget adapts to interaction, backlog, pressure, and slow frames" {
+    const now_ns: i128 = 1_000 * std.time.ns_per_ms;
+    const stale_ns = now_ns - PTY_RECENT_ACTIVITY_NS - 1;
+
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, now_ns, 0, false, 0));
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, now_ns, false, 0));
+    try std.testing.expectEqual(PTY_NORMAL_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, 0));
+    try std.testing.expectEqual(PTY_IDLE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, 1));
+    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, PTY_READER_PRESSURE_BYTES));
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS / 2, selectPtyBudgetNs(now_ns, now_ns, 0, true, 0));
+    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, true, PTY_READER_PRESSURE_BYTES));
 }
 
 test "jsonObjectIndex accepts non-negative integers and whole floats" {

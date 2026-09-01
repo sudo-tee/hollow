@@ -11,9 +11,12 @@ const Pty = @import("pty/pty.zig").Pty;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
 const platform = @import("platform.zig");
 
-const PTY_READ_BUFFER_SIZE: usize = 256 * 1024;
+pub const PTY_PARSE_CHUNK_BYTES: usize = 128 * 1024;
+pub const PTY_PRESSURE_PARSE_CHUNK_BYTES: usize = 384 * 1024;
+pub const PTY_HARD_BYTE_LIMIT: usize = 2 * 1024 * 1024;
+const PTY_DEFERRED_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+const PTY_READ_BUFFER_SIZE: usize = PTY_PRESSURE_PARSE_CHUNK_BYTES;
 const PTY_PENDING_SEQUENCE_MAX: usize = 32;
-const TERMINAL_WRITE_CHUNK_SIZE: usize = PTY_READ_BUFFER_SIZE;
 const PTY_SANITIZE_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE + PTY_PENDING_SEQUENCE_MAX;
 
 const is_windows = @import("builtin").os.tag == .windows;
@@ -28,7 +31,7 @@ const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
 const HTP_OSC_LOG_MAX = 8192;
 
 // Pane PTYs are polled sequentially on the app thread, so their transient read
-// and sanitize storage can be shared without reducing the 256 KiB read chunk.
+// and sanitize storage can be shared without reducing the parse chunk.
 var shared_pty_read_buf: [PTY_READ_BUFFER_SIZE]u8 = undefined;
 var shared_pty_sanitize_buf: [PTY_SANITIZE_BUFFER_SIZE]u8 = undefined;
 
@@ -184,7 +187,6 @@ pub const Pane = struct {
     htp_osc_len: usize = 0,
     htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
-    terminal_write_batch: std.ArrayListUnmanaged(u8) = .empty,
     pending_startup_input: []u8 = &.{},
     startup_input_quiet_ticks: u8 = 0,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
@@ -262,7 +264,6 @@ pub const Pane = struct {
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
         self.boot_output.deinit(self.allocator);
-        self.terminal_write_batch.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
         if (self.osc52_buf.len > 0) self.allocator.free(self.osc52_buf);
@@ -478,9 +479,11 @@ pub const Pane = struct {
         return quoted.toOwnedSlice(allocator);
     }
 
-    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, debug_overlay: bool) !usize {
+    pub fn pollPty(self: *Pane, runtime: *GhosttyRuntime, max_read_loops: usize, max_total_read: usize, budget_ns: i128, parse_chunk_bytes: usize, debug_overlay: bool) !usize {
         var total_read: usize = 0;
         if (self.pty) |*pty| {
+            const budget_start_ns = io.nanoTimestamp();
+            const deadline_ns = budget_start_ns + @max(@as(i128, 0), budget_ns);
             self.last_pty_read_ns = 0;
             self.last_terminal_write_ns = 0;
             self.last_has_pending_ns = 0;
@@ -489,12 +492,27 @@ pub const Pane = struct {
             self.last_encoder_sync_ns = 0;
             self.last_terminal_write_bytes = 0;
             self.last_terminal_write_chunks = 0;
-            if (self.render_state_ready) {
-                self.terminal_write_batch.clearRetainingCapacity();
+
+            if (debug_overlay) {
+                const pending_start_ns = io.nanoTimestamp();
+                _ = pty.pendingOutputBytes();
+                self.last_has_pending_ns = io.nanoTimestamp() - pending_start_ns;
             }
+
+            var wrote_terminal = false;
+            var can_read = true;
+            if (self.render_state_ready) {
+                can_read = self.writeBufferedTerminalOutput(runtime, &self.boot_output, deadline_ns, debug_overlay, &wrote_terminal);
+                if (can_read) can_read = self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal);
+            }
+
+            const read_limit_total = @min(max_total_read, PTY_HARD_BYTE_LIMIT);
+            const read_chunk_bytes = @min(parse_chunk_bytes, PTY_READ_BUFFER_SIZE);
             var read_loops: usize = 0;
-            while (read_loops < max_read_loops and total_read < max_total_read) {
-                const read_limit = @min(TERMINAL_WRITE_CHUNK_SIZE, max_total_read - total_read);
+            while (can_read and read_chunk_bytes > 0 and budget_ns > 0 and io.nanoTimestamp() < deadline_ns and read_loops < max_read_loops and total_read < read_limit_total and
+                (self.render_state_ready or self.boot_output.items.len +| self.pending_terminal_inject.items.len < PTY_DEFERRED_OUTPUT_LIMIT - PTY_PRESSURE_PARSE_CHUNK_BYTES))
+            {
+                const read_limit = @min(read_chunk_bytes, read_limit_total - total_read);
                 const read_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 const count = pty.read(self.read_buf[0..read_limit]) catch |err| {
                     if (err == error.EndOfStream) break;
@@ -504,58 +522,34 @@ pub const Pane = struct {
                 if (count == 0) break;
                 read_loops += 1;
                 total_read += count;
-                if (count > 0) {
-                    if (!self.logged_first_pty_read) {
-                        self.logged_first_pty_read = true;
-                        std.log.info("first PTY bytes received count={d}", .{count});
+                if (!self.logged_first_pty_read) {
+                    self.logged_first_pty_read = true;
+                    std.log.info("first PTY bytes received count={d}", .{count});
+                }
+                const sanitize_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
+                const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
+                if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
+                if (pty_bytes.len > 0) {
+                    if (self.render_state_ready) {
+                        self.writeTerminalChunk(runtime, pty_bytes, debug_overlay);
+                        wrote_terminal = true;
+                    } else {
+                        try self.boot_output.appendSlice(self.allocator, pty_bytes);
                     }
-                    const sanitize_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                    const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
-                    if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
-                    if (pty_bytes.len > 0) {
-                        if (self.render_state_ready) {
-                            const has_deferred_output = self.pending_terminal_inject.items.len > 0 or self.boot_output.items.len > 0;
-                            const has_more_output = pty.hasPendingOutput();
-                            if (self.terminal_write_batch.items.len == 0 and !has_deferred_output and !has_more_output) {
-                                const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                                runtime.terminalWrite(self.terminal, pty_bytes);
-                                if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
-                                self.last_terminal_write_bytes += pty_bytes.len;
-                                self.last_terminal_write_chunks += 1;
-                            } else {
-                                try self.terminal_write_batch.appendSlice(self.allocator, pty_bytes);
-                            }
-                            self.pty_received_data = true;
-                            self.pty_wrote_this_frame = true;
-                        } else {
-                            try self.boot_output.appendSlice(self.allocator, pty_bytes);
+                }
+                if (self.pending_terminal_inject.items.len > 0) {
+                    if (self.render_state_ready) {
+                        if (!self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal)) {
+                            break;
                         }
-                    }
-                    if (self.pending_terminal_inject.items.len > 0) {
-                        if (self.render_state_ready) {
-                            try self.terminal_write_batch.appendSlice(self.allocator, self.pending_terminal_inject.items);
-                            self.pty_received_data = true;
-                            self.pty_wrote_this_frame = true;
-                        } else {
-                            self.boot_output.appendSlice(self.allocator, self.pending_terminal_inject.items) catch {};
-                        }
+                    } else {
+                        self.boot_output.appendSlice(self.allocator, self.pending_terminal_inject.items) catch {};
                         self.pending_terminal_inject.clearRetainingCapacity();
                     }
                 }
+                if (io.nanoTimestamp() >= deadline_ns) break;
             }
-            if (self.render_state_ready and self.boot_output.items.len > 0) {
-                try self.terminal_write_batch.appendSlice(self.allocator, self.boot_output.items);
-                self.boot_output.clearRetainingCapacity();
-                self.pty_received_data = true;
-                self.pty_wrote_this_frame = true;
-            }
-            if (self.render_state_ready and self.terminal_write_batch.items.len > 0) {
-                const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
-                runtime.terminalWrite(self.terminal, self.terminal_write_batch.items);
-                if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
-                self.last_terminal_write_bytes += self.terminal_write_batch.items.len;
-                self.last_terminal_write_chunks += 1;
-            }
+
             const child_alive_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
             self.refreshChildAliveCache(false);
             if (debug_overlay) self.last_child_alive_ns += io.nanoTimestamp() - child_alive_start_ns;
@@ -566,19 +560,30 @@ pub const Pane = struct {
                     self.startup_input_quiet_ticks = 0;
                 }
                 if (self.startup_input_quiet_ticks >= 1) {
-                    pty.writeAll(self.pending_startup_input) catch |err| {
-                        std.log.warn("pane: failed to send deferred startup input: {}", .{err});
-                    };
-                    self.allocator.free(self.pending_startup_input);
-                    self.pending_startup_input = &.{};
-                    self.startup_input_quiet_ticks = 0;
+                    if (io.nanoTimestamp() < deadline_ns) {
+                        const write_len = @min(self.pending_startup_input.len, PTY_PARSE_CHUNK_BYTES);
+                        const written = pty.writeAllUntil(self.pending_startup_input[0..write_len], deadline_ns) catch |err| blk: {
+                            std.log.warn("pane: failed to send deferred startup input: {}", .{err});
+                            break :blk 0;
+                        };
+                        if (written == 0) {
+                            self.startup_input_quiet_ticks = 0;
+                        } else if (written == self.pending_startup_input.len) {
+                            self.allocator.free(self.pending_startup_input);
+                            self.pending_startup_input = &.{};
+                            self.startup_input_quiet_ticks = 0;
+                        } else {
+                            fastmem.move(u8, self.pending_startup_input[0 .. self.pending_startup_input.len - written], self.pending_startup_input[written..]);
+                            self.pending_startup_input = self.pending_startup_input[0 .. self.pending_startup_input.len - written];
+                        }
+                    }
                 }
             }
             // Only sync encoders when PTY activity occurred. Doing this every
             // idle tick still crosses the Ghostty FFI boundary and adds up.
             // Fresh terminal mode changes arrive via PTY output, and resize/
             // focus paths already perform their own explicit syncs.
-            if (self.render_state_ready and total_read > 0) {
+            if (self.render_state_ready and wrote_terminal) {
                 const encoder_sync_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
@@ -616,6 +621,40 @@ pub const Pane = struct {
             }
         }
         return total_read;
+    }
+
+    fn writeTerminalChunk(self: *Pane, runtime: *GhosttyRuntime, bytes: []const u8, debug_overlay: bool) void {
+        const write_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
+        runtime.terminalWrite(self.terminal, bytes);
+        if (debug_overlay) self.last_terminal_write_ns += io.nanoTimestamp() - write_start_ns;
+        self.last_terminal_write_bytes += bytes.len;
+        self.last_terminal_write_chunks += 1;
+        self.pty_received_data = true;
+        self.pty_wrote_this_frame = true;
+    }
+
+    fn writeBufferedTerminalOutput(
+        self: *Pane,
+        runtime: *GhosttyRuntime,
+        buffer: *std.ArrayListUnmanaged(u8),
+        deadline_ns: i128,
+        debug_overlay: bool,
+        wrote_terminal: *bool,
+    ) bool {
+        while (buffer.items.len > 0) {
+            if (io.nanoTimestamp() >= deadline_ns) break;
+            const chunk_len = @min(PTY_PARSE_CHUNK_BYTES, buffer.items.len);
+            self.writeTerminalChunk(runtime, buffer.items[0..chunk_len], debug_overlay);
+            wrote_terminal.* = true;
+            if (chunk_len == buffer.items.len) {
+                buffer.clearRetainingCapacity();
+            } else {
+                fastmem.move(u8, buffer.items[0 .. buffer.items.len - chunk_len], buffer.items[chunk_len..]);
+                buffer.items.len -= chunk_len;
+            }
+            if (io.nanoTimestamp() >= deadline_ns) break;
+        }
+        return buffer.items.len == 0;
     }
 
     pub fn sendText(self: *Pane, text: []const u8) void {
@@ -988,6 +1027,11 @@ pub const Pane = struct {
     pub fn hasLiveChild(self: *Pane) bool {
         self.refreshChildAliveCache(false);
         return self.child_alive_cached;
+    }
+
+    pub fn pendingPtyOutputBytes(self: *Pane) usize {
+        if (self.pty) |*pty| return pty.pendingOutputBytes();
+        return 0;
     }
 
     fn refreshChildAliveCache(self: *Pane, force: bool) void {
