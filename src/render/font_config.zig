@@ -41,6 +41,7 @@ pub const FtRendererConfig = struct {
     /// Produces gamma-correct text blending without requiring an sRGB framebuffer.
     /// Disabled by default — simple fg*coverage matches WezTerm on dark backgrounds.
     use_linear_correction: bool = false,
+    discover_system_emoji: bool = true,
     family: ?[]const u8 = null,
     regular_path: ?[]const u8 = null,
     bold_path: ?[]const u8 = null,

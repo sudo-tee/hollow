@@ -6,6 +6,7 @@
 /// repacks live pages (old UVs stay valid until a kind-collapse).
 const std = @import("std");
 const c = @import("sokol_c");
+const build_options = @import("build_options");
 
 const ft_types = @import("ft_types.zig");
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
@@ -104,7 +105,14 @@ pub fn flushAtlas(self: *FtRenderer) void {
         region.row_pitch = @intCast(row_pitch);
         region.data.ptr = page.data.ptr + offset;
         region.data.size = (rect.height() - 1) * row_pitch + rect.width() * page.bpp;
-        c.sg_update_image_region(page.img, &region);
+        if (build_options.headless) {
+            var data = std.mem.zeroes(c.sg_image_data);
+            data.mip_levels[0].ptr = page.data.ptr;
+            data.mip_levels[0].size = page.data.len;
+            c.sg_update_image(page.img, &data);
+        } else {
+            c.sg_update_image_region(page.img, &region);
+        }
         page.dirty_rect.clear();
         page.dirty = false;
         page.uploaded_this_frame = true;
@@ -167,6 +175,7 @@ pub fn createPage(allocator: std.mem.Allocator, kind: AtlasKind) !AtlasPage {
     img_desc.width = @intCast(d.w);
     img_desc.height = @intCast(d.h);
     img_desc.pixel_format = d.fmt;
+    img_desc.usage.immutable = false;
     img_desc.usage.region_update = true;
     img_desc.label = d.label.ptr;
     const img = c.sg_make_image(&img_desc);

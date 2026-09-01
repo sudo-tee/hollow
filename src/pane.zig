@@ -220,6 +220,7 @@ pub const Pane = struct {
     last_terminal_write_chunks: usize = 0,
     last_pty_read_ns: i128 = 0,
     last_terminal_write_ns: i128 = 0,
+    last_pty_output_ns: i128 = 0,
     /// Monotonic nanosecond timestamp of the last updateRenderState call on this
     /// pane.  Used to throttle the cursor-blink / idle poll: even with no PTY
     /// data we call updateRenderState at most once per ~16 ms so that cursor
@@ -549,6 +550,8 @@ pub const Pane = struct {
                 }
                 if (io.nanoTimestamp() >= deadline_ns) break;
             }
+
+            if (total_read > 0) self.last_pty_output_ns = io.nanoTimestamp();
 
             const child_alive_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
             self.refreshChildAliveCache(false);

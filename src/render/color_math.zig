@@ -5,13 +5,9 @@
 /// dependency on the `FtRenderer` struct, so they can be unit-tested in
 /// isolation and reused by future render paths.
 const std = @import("std");
-const io = @import("../io.zig");
 
 const ghostty = @import("../term/ghostty.zig");
 const selection = @import("../selection.zig");
-const App = @import("../app.zig").App;
-const copy_mode = @import("../app/copy_mode.zig");
-const Pane = @import("../pane.zig").Pane;
 
 // ── sRGB / linear conversion ─────────────────────────────────────────────────
 
@@ -85,24 +81,6 @@ pub fn blinkVisibleNow(now_ns: i128) bool {
     const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
     const blink_phase = @divFloor(now_ms, CURSOR_BLINK_INTERVAL_MS);
     return @mod(blink_phase, @as(i128, 2)) == 0;
-}
-
-pub fn effectiveCursorStyle(
-    runtime: *ghostty.Runtime,
-    render_state: ?*anyopaque,
-    pane: ?*const Pane,
-    app: *const App,
-    is_focused: bool,
-) ?ghostty.CursorVisualStyle {
-    if (pane) |value| {
-        if (copy_mode.copyModeActiveForPane(app, value)) return null;
-    }
-    if (runtime.cursorPos(render_state) == null) return null;
-    if (runtime.cursorPasswordInput(render_state)) return .block;
-    if (!runtime.cursorVisible(render_state)) return null;
-    if (runtime.cursorBlinking(render_state) and !blinkVisibleNow(io.nanoTimestamp())) return null;
-    if (!is_focused) return app.config.unfocused_pane.cursor;
-    return runtime.cursorVisualStyle(render_state);
 }
 
 // ── Selection bounds ─────────────────────────────────────────────────────────

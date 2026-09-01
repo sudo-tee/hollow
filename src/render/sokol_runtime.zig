@@ -16,6 +16,7 @@ const SplitNode = @import("../mux.zig").SplitNode;
 const SplitDirection = @import("../mux.zig").SplitDirection;
 const PaneBounds = @import("../mux.zig").PaneBounds;
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
+const terminal_render_app = @import("terminal_render_app.zig");
 const FtRendererConfig = @import("font_config.zig").FtRendererConfig;
 const Config = @import("../config.zig").Config;
 const PaneCache = @import("pane_cache.zig").PaneCache;
@@ -2599,6 +2600,12 @@ fn rebuildFtRenderer(app: *App) void {
     const dpi_scale = c.sapp_dpi_scale();
     std.log.info("sokol dpi_scale={d:.2} font_size={d:.1} line_height={d:.2} family={s}", .{ dpi_scale, app.config.fonts.size, app.config.fonts.line_height, app.config.fonts.family orelse "(null)" });
 
+    const swapchain = c.sglue_swapchain();
+    const swapchain_color_format = if (swapchain.color_format != c.SG_PIXELFORMAT_NONE)
+        swapchain.color_format
+    else
+        c.sglue_environment().defaults.color_format;
+
     g_ft_renderer = FtRenderer.init(app.allocator, .{
         .font_size = app.config.fonts.size,
         .dpi_scale = dpi_scale,
@@ -2628,7 +2635,7 @@ fn rebuildFtRenderer(app: *App) void {
         .italic_path = app.config.fonts.italic,
         .bold_italic_path = app.config.fonts.bold_italic,
         .fallback_paths = app.config.fonts.fallback_paths.items,
-    }) catch |err| blk: {
+    }, swapchain_color_format) catch |err| blk: {
         std.log.err("ft_renderer init failed: {}", .{err});
         break :blk null;
     };
@@ -3354,7 +3361,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         rend.padding_y = (cfg.fonts.padding_y + pad_top) * rend.dpi_scale;
                     }
 
-                    rend.renderToCache(
+                    terminal_render_app.renderToCache(rend,
                         &cache_entry.cache,
                         rt,
                         cfg,
@@ -3520,7 +3527,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
                             renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
                         }
-                        renderer.queueInViewport(
+                        terminal_render_app.queueInViewport(renderer,
                             runtime,
                             &app.config,
                             app,
@@ -3574,7 +3581,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
                             renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
                         }
-                        renderer.queueInViewport(
+                        terminal_render_app.queueInViewport(renderer,
                             runtime,
                             &app.config,
                             app,
@@ -3685,7 +3692,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (paneRenderHelpersReady(pane)) {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
-                        renderer.drawDirect(
+                        terminal_render_app.drawDirect(renderer,
                             runtime,
                             &app.config,
                             app,
