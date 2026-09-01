@@ -5,6 +5,7 @@
 .zig-global-cache/
 .zig-cache-global/
 zig-out/
+.bench-history/
 zig-pkg/
 release/
 .desloppify/

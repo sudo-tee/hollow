@@ -24,6 +24,7 @@ The is the main entry point for Hollow's documentation.
 - [HTP protocol](htp-protocol.md) — wire-level protocol reference
 - [Shell integration recipes](shell-integration-recipes.md) — bash, zsh, fish, PowerShell helpers
 - [Development](development.md) — build from source, project layout, running tests
+- [Renderer benchmark history](renderer-bench-history.md) — record snapshots and compare regressions
 - [Packaging](packaging.md) — release artifacts, runtime layout, WSL bypass, Python client
 - [Troubleshooting](troubleshooting.md) — common failure modes and fixes
 - [FAQ](faq.md) — short, opinionated answers to recurring questions
