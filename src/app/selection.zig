@@ -8,7 +8,6 @@ const scroll = @import("scroll.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
-const CLIPBOARD_EVENT_MAX = 8192;
 
 pub fn pointTagForHistoryRow(row: usize, scrollback_rows: usize) ghostty.PointTag {
     return if (row < scrollback_rows) .history else .screen;
@@ -243,38 +242,33 @@ pub fn copySelectionToClipboard(self: *App) !void {
         return;
     }
     const range = selectionHistoryRange(self, pane) orelse return;
-    var text_buf: [CLIPBOARD_EVENT_MAX]u8 = undefined;
-    const text = captureSelectionText(self, pane, range, text_buf[0 .. text_buf.len - 1]) orelse return;
-    if (text.len == 0) return;
-    text_buf[text.len] = 0;
-    c.sapp_set_clipboard_string(@ptrCast(text_buf[0..text.len :0].ptr));
+    const runtime = if (self.ghostty) |*rt| rt else return;
+    var native_selection = selectionSnapshotForRange(self, pane, range) orelse return;
+    var required: usize = 0;
+    const query_result = runtime.formatSelectionInto(pane.terminal, &native_selection, null, &required);
+    if (query_result != ghostty.out_of_space and query_result != ghostty.success) return;
+    if (required == 0) return;
+
+    const clipboard = try self.allocator.alloc(u8, required + 1);
+    defer self.allocator.free(clipboard);
+    var written: usize = 0;
+    if (runtime.formatSelectionInto(pane.terminal, &native_selection, clipboard[0..required], &written) != ghostty.success) return;
+    if (written == 0) return;
+    clipboard[written] = 0;
+    c.sapp_set_clipboard_string(@ptrCast(clipboard[0..written :0].ptr));
     clearSelection(self);
 }
 
-fn captureSelectionText(self: *App, pane: *Pane, range: selection.Range, out: []u8) ?[]const u8 {
-    const runtime = if (self.ghostty) |*rt| rt else return null;
-    if (self.selection_pane != pane) return null;
-
-    var writer: std.Io.Writer = .fixed(out);
-    var row_index = range.start.row;
-    while (row_index <= range.end.row) : (row_index += 1) {
-        var row_text: [4096]u8 = undefined;
-        var row_len: usize = 0;
-        var col_index: usize = 0;
-
-        while (true) : (col_index += 1) {
-            const cell_ref = gridRefForHistoryCell(self, pane, row_index, col_index) orelse break;
-            const raw_cell = runtime.gridRefCell(&cell_ref) orelse break;
-            if (!selection.cellSelected(range, row_index, col_index)) continue;
-            text_helpers.appendGridRefText(runtime, &cell_ref, raw_cell, row_text[0..], &row_len);
-        }
-        while (row_len > 0 and row_text[row_len - 1] == ' ') row_len -= 1;
-        writer.writeAll(row_text[0..row_len]) catch break;
-        if (row_index == range.end.row) break;
-        writer.writeByte('\n') catch break;
-    }
-
-    return out[0..writer.end];
+fn selectionSnapshotForRange(self: *const App, pane: *Pane, range: selection.Range) ?ghostty.Selection {
+    if (self.ghostty == null) return null;
+    const start = gridRefForHistoryCell(self, pane, range.start.row, range.start.col) orelse return null;
+    const end = gridRefForHistoryCell(self, pane, range.end.row, range.end.col) orelse return null;
+    return .{
+        .size = @sizeOf(ghostty.Selection),
+        .start = start,
+        .end = end,
+        .rectangle = range.block,
+    };
 }
 
 pub fn pruneSelectionIfInvalid(self: *App) void {

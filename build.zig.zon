@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .ghostty = .{
-            .url = "git+https://github.com/ghostty-org/ghostty.git#ae8727401d8c549671c36cdc326a94f47c94b635",
-            .hash = "ghostty-1.3.2-dev-5UdBC_SDJgWrYo1sfBHAUt7L6jXsfiYI6KfGIbLINTVs",
+            .url = "git+https://github.com/ghostty-org/ghostty.git#20abdb50a6216c450d6d4d010c41c7edf5ab15b2",
+            .hash = "ghostty-1.3.2-dev-5UdBC5IaYwVyfcHCaI4PuMgztS2dk33KSpuhjyLhQjCb",
         },
         .fontdeps = .{ .path = "vendor/ghostty-fontdeps", .lazy = true },
         .zluajit = .{ .path = "third_party/lua-zluajit" },

@@ -52,6 +52,27 @@ pub const RenderStateColors = extern struct {
     palette: [256]ColorRgb,
 };
 
+pub const Selection = extern struct {
+    size: usize,
+    start: GridRef,
+    end: GridRef,
+    rectangle: bool,
+};
+
+pub const FormatterFormat = enum(u32) {
+    plain = 0,
+    vt = 1,
+    html = 2,
+};
+
+pub const TerminalSelectionFormatOptions = extern struct {
+    size: usize,
+    emit: FormatterFormat,
+    unwrap: bool,
+    trim: bool,
+    selection: ?*const Selection,
+};
+
 pub const TerminalScrollbar = extern struct {
     total: u64,
     offset: u64,
@@ -97,6 +118,11 @@ pub const String = extern struct {
     len: usize,
 };
 
+pub const TerminalModeConfig = extern struct {
+    mode: u32,
+    value: bool,
+};
+
 pub const PointCoordinate = extern struct {
     x: u16,
     y: u32,
@@ -130,6 +156,7 @@ pub const ScrollViewport = extern struct {
     tag: u32,
     value: extern union {
         delta: isize,
+        row: usize,
         _padding: [2]u64,
     },
 };
@@ -221,6 +248,7 @@ pub const TerminalData = enum(u32) {
     kitty_image_medium_shared_mem = 29,
     kitty_graphics = 30,
     selection = 31,
+    mode = 37,
 };
 
 pub const SysOpt = enum(u32) {
@@ -346,6 +374,7 @@ pub const RenderStateData = enum(u32) {
     cursor_viewport_x = 15,
     cursor_viewport_y = 16,
     cursor_viewport_wide_tail = 17,
+    colors = 19,
 };
 
 pub const CursorVisualStyle = enum(u32) {
@@ -473,6 +502,7 @@ pub const ScrollViewportTag = enum(u32) {
     top = 0,
     bottom = 1,
     delta = 2,
+    row = 3,
 };
 
 pub const Key = enum(u32) {
@@ -627,7 +657,7 @@ extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) 
 extern fn ghostty_terminal_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) void;
 extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
-extern fn ghostty_terminal_mode_get(?*anyopaque, u32, *bool) callconv(.c) i32;
+extern fn ghostty_terminal_selection_format_buf(?*anyopaque, TerminalSelectionFormatOptions, ?[*]u8, usize, *usize) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
 extern fn ghostty_terminal_compression_activity(?*anyopaque, *u64) callconv(.c) i32;
 extern fn ghostty_terminal_compress(?*anyopaque, TerminalCompressionMode, *TerminalCompressionResult) callconv(.c) i32;
@@ -647,7 +677,6 @@ extern fn ghostty_render_state_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_update(?*anyopaque, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
-extern fn ghostty_render_state_colors_get(?*anyopaque, *RenderStateColors) callconv(.c) i32;
 extern fn ghostty_render_state_row_iterator_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_row_iterator_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_row_iterator_next(?*anyopaque) callconv(.c) bool;
@@ -713,7 +742,7 @@ pub const Runtime = struct {
     terminal_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
     terminal_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) void,
     terminal_grid_ref: *const fn (?*anyopaque, Point, *GridRef) callconv(.c) i32,
-    terminal_mode_get: *const fn (?*anyopaque, u32, *bool) callconv(.c) i32,
+    terminal_selection_format_buf: *const fn (?*anyopaque, TerminalSelectionFormatOptions, ?[*]u8, usize, *usize) callconv(.c) i32,
     terminal_scroll_viewport: *const fn (?*anyopaque, ScrollViewport) callconv(.c) void,
     terminal_compression_activity: *const fn (?*anyopaque, *u64) callconv(.c) i32,
     terminal_compress: *const fn (?*anyopaque, TerminalCompressionMode, *TerminalCompressionResult) callconv(.c) i32,
@@ -734,7 +763,6 @@ pub const Runtime = struct {
     render_state_update: *const fn (?*anyopaque, ?*anyopaque) callconv(.c) i32,
     render_state_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
     render_state_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32,
-    render_state_colors_get: *const fn (?*anyopaque, *RenderStateColors) callconv(.c) i32,
 
     row_iterator_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     row_iterator_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -800,7 +828,7 @@ pub const Runtime = struct {
             .terminal_get = ghostty_terminal_get,
             .terminal_set = ghostty_terminal_set,
             .terminal_grid_ref = ghostty_terminal_grid_ref,
-            .terminal_mode_get = ghostty_terminal_mode_get,
+            .terminal_selection_format_buf = ghostty_terminal_selection_format_buf,
             .terminal_scroll_viewport = ghostty_terminal_scroll_viewport,
             .terminal_compression_activity = ghostty_terminal_compression_activity,
             .terminal_compress = ghostty_terminal_compress,
@@ -820,7 +848,6 @@ pub const Runtime = struct {
             .render_state_update = ghostty_render_state_update,
             .render_state_get = ghostty_render_state_get,
             .render_state_set = ghostty_render_state_set,
-            .render_state_colors_get = ghostty_render_state_colors_get,
             .row_iterator_new = ghostty_render_state_row_iterator_new,
             .row_iterator_free = ghostty_render_state_row_iterator_free,
             .row_iterator_next = ghostty_render_state_row_iterator_next,
@@ -895,8 +922,8 @@ pub const Runtime = struct {
 
     pub fn terminalMode(self: *Runtime, handle: ?*anyopaque, mode: Mode) bool {
         if (handle) |terminal| {
-            var value = false;
-            return self.terminal_mode_get(terminal, @intFromEnum(mode), &value) == success and value;
+            var config = TerminalModeConfig{ .mode = @intFromEnum(mode), .value = false };
+            return self.terminal_get(terminal, @intFromEnum(TerminalData.mode), &config) == success and config.value;
         }
         return false;
     }
@@ -950,6 +977,30 @@ pub const Runtime = struct {
             const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
+    }
+
+    pub fn terminalScrollToRow(self: *Runtime, handle: ?*anyopaque, row: usize) void {
+        if (handle) |terminal| {
+            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.row), .value = .{ .row = row } };
+            self.terminal_scroll_viewport(terminal, viewport);
+        }
+    }
+
+    pub fn formatSelectionInto(self: *Runtime, handle: ?*anyopaque, selection: *const Selection, out: ?[]u8, written: *usize) i32 {
+        const options = TerminalSelectionFormatOptions{
+            .size = @sizeOf(TerminalSelectionFormatOptions),
+            .emit = .plain,
+            .unwrap = true,
+            .trim = true,
+            .selection = selection,
+        };
+        return self.terminal_selection_format_buf(
+            handle,
+            options,
+            if (out) |buf| buf.ptr else null,
+            if (out) |buf| buf.len else 0,
+            written,
+        );
     }
 
     pub fn terminalCompressionActivity(self: *Runtime, handle: ?*anyopaque) !u64 {
@@ -1101,7 +1152,7 @@ pub const Runtime = struct {
     pub fn renderStateColorsInto(self: *Runtime, render_state: ?*anyopaque, out: *RenderStateColors) bool {
         if (render_state) |state| {
             out.size = @sizeOf(RenderStateColors);
-            return self.render_state_colors_get(state, out) == success;
+            return self.render_state_get(state, @intFromEnum(RenderStateData.colors), out) == success;
         }
         return false;
     }
