@@ -17,14 +17,8 @@ const builtin = @import("builtin");
 const c = @import("sokol_c");
 const ft = @import("ft_c");
 const fastmem = @import("../fastmem.zig");
-const App = @import("../app.zig").App;
 const box_draw = @import("box_draw.zig");
-const CopyModeSnapshotLine = @import("../app/copy_mode.zig").CopyModeSnapshotLine;
-const SearchHighlight = @import("../app/copy_mode.zig").SearchHighlight;
-const Config = @import("../config.zig").Config;
 const ghostty = @import("../term/ghostty.zig");
-const Pane = @import("../pane.zig").Pane;
-const selection = @import("../selection.zig");
 const fonts = @import("fonts");
 const glyph_shader = @import("shaders/glyph_shader.zig");
 
@@ -51,8 +45,6 @@ const effectiveCursorColor = color_math.effectiveCursorColor;
 const lerpByte = color_math.lerpByte;
 const mixColor = color_math.mixColor;
 const CURSOR_BLINK_INTERVAL_MS = color_math.CURSOR_BLINK_INTERVAL_MS;
-const blinkVisibleNow = color_math.blinkVisibleNow;
-const effectiveCursorStyle = color_math.effectiveCursorStyle;
 const RowSelectionBounds = color_math.RowSelectionBounds;
 const rowSelectionBounds = color_math.rowSelectionBounds;
 const encodeUtf8 = text_util.encodeUtf8;
@@ -137,7 +129,7 @@ pub const FtRenderer = struct {
     face_symbols_nerd: ft.FT_Face,
     face_symbols: ft.FT_Face,
     face_cjk: ft.FT_Face,
-    face_emoji: ft.FT_Face,
+    face_emoji: ?ft.FT_Face,
     fallback_faces: []ft.FT_Face,
 
     // HarfBuzz fonts (one per face)
@@ -291,7 +283,7 @@ pub const FtRenderer = struct {
     /// eviction when the atlas becomes ≥90% full (see resetAtlasIfNeeded).
     frame_count: u64 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, cfg: FtRendererConfig) !FtRenderer {
+    pub fn init(allocator: std.mem.Allocator, cfg: FtRendererConfig, swapchain_color_format: c.sg_pixel_format) !FtRenderer {
         const font_size_px = cfg.font_size * cfg.dpi_scale;
 
         // ── FreeType init ──────────────────────────────────────────────────
@@ -316,7 +308,7 @@ pub const FtRenderer = struct {
         errdefer _ = ft.FT_Done_Face(face_symbols_nerd);
         const face_symbols = try loadFace(ft_lib, fonts.symbols, font_size_px);
         errdefer _ = ft.FT_Done_Face(face_symbols);
-        const face_emoji = discoverEmojiFont(allocator, ft_lib, font_size_px) orelse null;
+        const face_emoji = if (cfg.discover_system_emoji) discoverEmojiFont(allocator, ft_lib, font_size_px) else null;
         errdefer {
             if (face_emoji) |f| _ = ft.FT_Done_Face(f);
         }
@@ -481,9 +473,6 @@ pub const FtRenderer = struct {
                 std.log.info("ft_renderer: glyph shader OK (state={d})", .{shd_state});
             }
         }
-
-        const swapchain = c.sglue_swapchain();
-        const swapchain_color_format = if (swapchain.color_format != c.SG_PIXELFORMAT_NONE) swapchain.color_format else c.sglue_environment().defaults.color_format;
 
         // Glyph render pipeline — swapchain pass.
         var gpip_desc = std.mem.zeroes(c.sg_pipeline_desc);
@@ -794,50 +783,9 @@ pub const FtRenderer = struct {
         _ = ft.FT_Done_FreeType(self.ft_lib);
     }
 
-    /// Main draw call — called once per frame inside sg_begin_pass/sg_end_pass.
-    pub fn draw(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        terminal: ?*anyopaque,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        screen_w: f32,
-        screen_h: f32,
-    ) void {
-        self.queueInViewport(runtime, cfg, app, null, terminal, render_state, row_iterator, row_cells, 0, 0, screen_w, screen_h, screen_w, screen_h, true, true, null, null, false, null, null, null, std.math.maxInt(usize));
-        // Note: sgl_draw() and flushGlyphQuads() are called by the caller
-        // (sokol_runtime) after all draw calls, still inside the active sg_pass.
-    }
-
-    /// Direct draw for single-pane mode — skips the offscreen render target
-    /// and renders straight to the current swapchain pass.
-    /// Must be called inside an active sg_pass (swapchain pass).
-    pub fn drawDirect(
-        self: *FtRenderer,
-        runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: *const Pane,
-        terminal: ?*anyopaque,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        offset_x: f32,
-        offset_y: f32,
-        screen_w: f32,
-        screen_h: f32,
-        fb_w: f32,
-        fb_h: f32,
-        is_focused: bool,
-        force_full: bool,
-        selection_range: ?selection.Range,
-        redraw_range: ?selection.Range,
-        hovered_hyperlink: ?App.HoveredHyperlink,
-        prev_cursor_row: usize,
-    ) void {
+    /// Queue terminal geometry into the current Sokol-GL context.
+    /// The caller owns the render pass and calls `sgl_draw` afterwards.
+    pub fn drawDirect(self: *FtRenderer, runtime: *ghostty.Runtime, options: terminal_render.QueueOptions) void {
         // Reset per-call diagnostic counters.
         self.last_rows_rendered = 0;
         self.last_rows_skipped = 0;
@@ -845,11 +793,7 @@ pub const FtRenderer = struct {
         self.last_glyph_runs = 0;
         self.last_bg_rects = 0;
         self.last_atlas_flushed = false;
-        // Queue to default context and draw immediately (no row hash optimisation
-        // for direct mode — it's a fallback path anyway).
-        self.queueInViewport(runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, screen_w, screen_h, fb_w, fb_h, is_focused, force_full, null, null, false, selection_range, redraw_range, hovered_hyperlink, prev_cursor_row);
-        // Note: sgl_draw() and flushGlyphQuads() are called by sokol_runtime
-        // after this returns, still inside the active swapchain sg_pass.
+        self.queueTerminal(runtime, options);
     }
 
     /// Render terminal content for one pane into its `PaneCache` render target.
@@ -872,30 +816,10 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         cache: *PaneCache,
         runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: *const Pane,
-        terminal: ?*anyopaque,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        pane_w: f32,
-        pane_h: f32,
-        is_focused: bool,
+        options: terminal_render.QueueOptions,
         clear_r: f32,
         clear_g: f32,
         clear_b: f32,
-        force_full: bool,
-        row_map_keys: ?[]u64,
-        row_map_vals: ?[]u64,
-        row_map_skip: bool,
-        selection_range: ?selection.Range,
-        redraw_range: ?selection.Range,
-        hovered_hyperlink: ?App.HoveredHyperlink,
-        /// Cursor row from the previous rendered frame; used to erase ghost
-        /// cursor pixels when the cursor moves and ghostty doesn't mark the old
-        /// row dirty.  Pass std.math.maxInt(usize) on first frame or force_full.
-        prev_cursor_row: usize,
     ) void {
         // Reset per-call diagnostic counters.
         self.last_rows_rendered = 0;
@@ -910,40 +834,15 @@ pub const FtRenderer = struct {
         // own vertex / command buffers (isolated from the main context).
         c.sgl_set_context(cache.sgl_ctx);
 
-        // Temporarily swap in the context-specific atlas pipeline so that
-        // queueInViewport uses the right one.
+        // Temporarily swap in the context-specific atlas pipeline.
         const saved_pip = self.atlas_pip;
         self.atlas_pip = cache.atlas_pip;
 
         // Queue all terminal geometry into the pane context.
         // offset_x/y = 0 because the RT origin is the pane's top-left.
-        const t_queue_start = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
-        self.queueInViewport(
-            runtime,
-            cfg,
-            app,
-            pane,
-            terminal,
-            render_state,
-            row_iterator,
-            row_cells,
-            0.0,
-            0.0,
-            pane_w,
-            pane_h,
-            pane_w,
-            pane_h,
-            is_focused,
-            force_full,
-            row_map_keys,
-            row_map_vals,
-            row_map_skip,
-            selection_range,
-            redraw_range,
-            hovered_hyperlink,
-            if (force_full) std.math.maxInt(usize) else prev_cursor_row,
-        );
-        const t_queue_end = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
+        const t_queue_start = if (options.debug_timing) io.nanoTimestamp() else 0;
+        self.queueTerminal(runtime, options);
+        const t_queue_end = if (options.debug_timing) io.nanoTimestamp() else 0;
 
         // Restore atlas pipeline and default context.
         self.atlas_pip = saved_pip;
@@ -953,7 +852,7 @@ pub const FtRenderer = struct {
         const n_uploaded = self.uploadGlyphVerts();
         if (self.frame_count <= 3) {
             std.log.info("ft_renderer renderToCache: frame={d} clear=({d:.3},{d:.3},{d:.3}) force_full={} n_uploaded={d}", .{
-                self.frame_count, clear_r, clear_g, clear_b, force_full, n_uploaded,
+                self.frame_count, clear_r, clear_g, clear_b, options.force_full, n_uploaded,
             });
         }
 
@@ -962,7 +861,7 @@ pub const FtRenderer = struct {
         // - partial     → LOAD: keep existing pixel content; only dirty rows were redrawn.
         self.offscreen_pass_scratch = std.mem.zeroes(c.sg_pass);
         self.offscreen_pass_scratch.attachments.colors[0] = cache.rt_att_view;
-        if (force_full) {
+        if (options.force_full) {
             self.offscreen_pass_scratch.action.colors[0].load_action = c.SG_LOADACTION_CLEAR;
             self.offscreen_pass_scratch.action.colors[0].clear_value = .{ .r = clear_r, .g = clear_g, .b = clear_b, .a = 1.0 };
         } else {
@@ -976,11 +875,11 @@ pub const FtRenderer = struct {
         // Draw glyph quads through the custom gamma-correct pipeline.
         // Must happen after sgl_context_draw (avoids interleaving sgl and raw sg_*).
         // Vertices were already uploaded above via uploadGlyphVerts().
-        self.drawGlyphQuads(pane_w, pane_h, true, srgbToLinearBg(clear_r, clear_g, clear_b));
+        self.drawGlyphQuads(options.viewport_width, options.viewport_height, true, srgbToLinearBg(clear_r, clear_g, clear_b));
         c.sg_end_pass();
-        const t_gpu_end = if (cfg.debug_overlay) io.nanoTimestamp() else 0;
+        const t_gpu_end = if (options.debug_timing) io.nanoTimestamp() else 0;
 
-        if (cfg.debug_overlay) {
+        if (options.debug_timing) {
             self.last_queue_ns = t_queue_end - t_queue_start;
             self.last_gpu_ns = t_gpu_end - t_queue_end;
         }
@@ -1050,33 +949,12 @@ pub const FtRenderer = struct {
 
     /// Queue geometry for one pane into its viewport sub-rect.
     /// See terminal_render.zig for the implementation.
-    pub fn queueInViewport(
+    pub fn queueTerminal(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
-        cfg: *const Config,
-        app: *const App,
-        pane: ?*const Pane,
-        terminal: ?*anyopaque,
-        render_state: ?*anyopaque,
-        row_iterator: *?*anyopaque,
-        row_cells: *?*anyopaque,
-        offset_x: f32,
-        offset_y: f32,
-        pane_w: f32,
-        pane_h: f32,
-        fb_w: f32,
-        fb_h: f32,
-        is_focused: bool,
-        force_full: bool,
-        row_map_keys: ?[]u64,
-        row_map_vals: ?[]u64,
-        row_map_skip: bool,
-        selection_range: ?selection.Range,
-        redraw_range: ?selection.Range,
-        hovered_hyperlink: ?App.HoveredHyperlink,
-        prev_cursor_row: usize,
+        options: terminal_render.QueueOptions,
     ) void {
-        terminal_render.queueInViewport(self, runtime, cfg, app, pane, terminal, render_state, row_iterator, row_cells, offset_x, offset_y, pane_w, pane_h, fb_w, fb_h, is_focused, force_full, row_map_keys, row_map_vals, row_map_skip, selection_range, redraw_range, hovered_hyperlink, prev_cursor_row);
+        terminal_render.queueTerminal(self, runtime, options);
     }
 
     // ── Shaping wrappers (implementations in shaping.zig) ──────────────────────

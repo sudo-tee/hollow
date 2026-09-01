@@ -1,0 +1,57 @@
+name: Renderer Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Workload scenario
+        required: true
+        default: repaint
+        type: choice
+        options:
+          - repaint
+          - scroll
+          - styled
+      frames:
+        description: Generated frame count
+        required: true
+        default: "1000"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  renderer-bench:
+    name: Renderer Benchmark
+    runs-on: [self-hosted, linux, renderer-bench]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Apply project patches
+        run: bash scripts/setup.sh
+
+      - name: Build benchmark
+        run: zig build renderer-bench -Doptimize=ReleaseFast
+
+      - name: Run benchmark
+        run: |
+          ./zig-out/bin/hollow-renderer-bench \
+            --scenario "${{ inputs.scenario }}" \
+            --frames "${{ inputs.frames }}" \
+            --json > renderer-bench.json
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-bench-${{ github.run_id }}
+          path: renderer-bench.json
+          if-no-files-found: error

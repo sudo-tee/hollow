@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
     launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
     addShellIntegrationOptions(launcher_build_options);
     launcher_build_options.addOption(bool, "launcher_mode", true);
+    launcher_build_options.addOption(bool, "headless", false);
     launcher_root_module.addImport("fonts", fonts_module);
     launcher_root_module.addImport("icon_data", icon_module);
     launcher_root_module.addOptions("build_options", launcher_build_options);
@@ -104,6 +105,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
     addShellIntegrationOptions(build_options);
     build_options.addOption(bool, "launcher_mode", false);
+    build_options.addOption(bool, "headless", false);
     root_module.addImport("fonts", fonts_module);
     root_module.addImport("icon_data", icon_module);
     root_module.addOptions("build_options", build_options);
@@ -137,6 +139,31 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("ft_c", ft_translate.createModule());
     if (emit_pdb) root_module.strip = false;
 
+    // Isolated renderer benchmark graph. The dummy Sokol backend exposes only
+    // sokol_gfx and sokol_gl, so this target never pulls in a window backend.
+    const headless_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/render/sokol_headless_bindings.h"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    headless_translate.addIncludePath(b.path("third_party/sokol"));
+    headless_translate.addIncludePath(b.path("third_party/sokol/util"));
+
+    const bench_root_module = b.createModule(.{
+        .root_source_file = b.path("src/renderer_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    bench_root_module.addImport("fonts", fonts_module);
+    const bench_build_options = b.addOptions();
+    bench_build_options.addOption(bool, "headless", true);
+    bench_root_module.addOptions("build_options", bench_build_options);
+    bench_root_module.addImport("sokol_c", headless_translate.createModule());
+    bench_root_module.addImport("ft_c", ft_translate.createModule());
+    bench_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
         const res_obj = b.addSystemCommand(&.{
@@ -156,6 +183,7 @@ pub fn build(b: *std.Build) void {
         gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
         addShellIntegrationOptions(gui_build_options);
         gui_build_options.addOption(bool, "launcher_mode", false);
+        gui_build_options.addOption(bool, "headless", false);
         gui_root_module.addImport("fonts", fonts_module);
         gui_root_module.addImport("icon_data", icon_module);
         gui_root_module.addOptions("build_options", gui_build_options);
@@ -275,6 +303,28 @@ pub fn build(b: *std.Build) void {
     const install_hollow_cli = b.addInstallFile(b.path("scripts/hollow-cli"), "bin/hollow-cli");
     b.getInstallStep().dependOn(&install_hollow_cli.step);
 
+    const renderer_bench = b.addExecutable(.{
+        .name = "hollow-renderer-bench",
+        .root_module = bench_root_module,
+    });
+    renderer_bench.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
+    renderer_bench.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+    renderer_bench.root_module.addCSourceFile(.{
+        .file = b.path("src/render/sokol_headless.c"),
+        .flags = &.{
+            "-Ithird_party/sokol",
+            "-Ithird_party/sokol/util",
+        },
+    });
+    const install_renderer_bench = b.addInstallArtifact(renderer_bench, .{});
+    const renderer_bench_step = b.step("renderer-bench", "Build the headless renderer benchmark");
+    renderer_bench_step.dependOn(&install_renderer_bench.step);
+
+    const run_renderer_bench_cmd = b.addRunArtifact(renderer_bench);
+    if (b.args) |args| run_renderer_bench_cmd.addArgs(args);
+    const run_renderer_bench_step = b.step("run-renderer-bench", "Run the headless renderer benchmark");
+    run_renderer_bench_step.dependOn(&run_renderer_bench_cmd.step);
+
     const wsl_bypass_module = b.createModule(.{
         .root_source_file = b.path("src/wsl_bypass.zig"),
         .target = wsl_bypass_target,
@@ -319,6 +369,32 @@ pub fn build(b: *std.Build) void {
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));
     const lua_test_step = b.step("test-lua", "Run Lua tests with Busted");
     lua_test_step.dependOn(&lua_test_cmd.step);
+
+    const bench_test_root_module = b.createModule(.{
+        .root_source_file = b.path("src/renderer_bench_test.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    bench_test_root_module.addImport("fonts", fonts_module);
+    const bench_test_build_options = b.addOptions();
+    bench_test_build_options.addOption(bool, "headless", true);
+    bench_test_root_module.addOptions("build_options", bench_test_build_options);
+    bench_test_root_module.addImport("sokol_c", headless_translate.createModule());
+    bench_test_root_module.addImport("ft_c", ft_translate.createModule());
+    bench_test_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    const renderer_bench_tests = b.addTest(.{ .root_module = bench_test_root_module });
+    renderer_bench_tests.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));
+    renderer_bench_tests.root_module.linkLibrary(fontdeps_dep.artifact("harfbuzz"));
+    renderer_bench_tests.root_module.addCSourceFile(.{
+        .file = b.path("src/render/sokol_headless.c"),
+        .flags = &.{
+            "-Ithird_party/sokol",
+            "-Ithird_party/sokol/util",
+        },
+    });
+    const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);
+    test_step.dependOn(&renderer_bench_test_cmd.step);
 
     const all_test_step = b.step("test-all", "Run native and Lua tests");
     all_test_step.dependOn(test_step);

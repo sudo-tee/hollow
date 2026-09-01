@@ -72,6 +72,7 @@ const PTY_NORMAL_BUDGET_NS: i128 = 3 * std.time.ns_per_ms;
 const PTY_IDLE_BUDGET_NS: i128 = 6 * std.time.ns_per_ms;
 const PTY_PRESSURE_BUDGET_NS: i128 = 10 * std.time.ns_per_ms;
 const PTY_RECENT_ACTIVITY_NS: i128 = 24 * std.time.ns_per_ms;
+const PTY_RECENT_OUTPUT_NS: i128 = 100 * std.time.ns_per_ms;
 const PTY_READER_HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
 const PTY_READER_PRESSURE_BYTES: usize = PTY_READER_HIGH_WATER_BYTES * 3 / 4;
 threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
@@ -131,18 +132,19 @@ fn viewportIteratorRowIndex(visual_row: usize, visible_rows: usize) ?usize {
     return visual_row;
 }
 
-fn selectPtyBudgetNs(now_ns: i128, last_input_ns: i128, last_resize_ns: i128, previous_frame_slow: bool, pending_output_bytes: usize) i128 {
+fn selectPtyBudgetNs(now_ns: i128, last_input_ns: i128, last_resize_ns: i128, last_output_ns: i128, previous_frame_slow: bool, pending_output_bytes: usize) i128 {
     const recent_input = last_input_ns != 0 and now_ns - last_input_ns < PTY_RECENT_ACTIVITY_NS;
     const recent_resize = last_resize_ns != 0 and now_ns - last_resize_ns < PTY_RECENT_ACTIVITY_NS;
+    const streaming_output = last_output_ns != 0 and now_ns - last_output_ns < PTY_RECENT_OUTPUT_NS;
     var budget = if (recent_input or recent_resize)
         PTY_INTERACTIVE_BUDGET_NS
-    else if (pending_output_bytes > 0)
+    else if (pending_output_bytes > 0 or streaming_output)
         PTY_IDLE_BUDGET_NS
     else
         PTY_NORMAL_BUDGET_NS;
 
     if (previous_frame_slow) budget = @divFloor(budget, 2);
-    if (!recent_input and !recent_resize and pending_output_bytes >= PTY_READER_PRESSURE_BYTES) {
+    if (!recent_input and !recent_resize and (pending_output_bytes >= PTY_READER_PRESSURE_BYTES or streaming_output)) {
         budget = @max(budget, PTY_PRESSURE_BUDGET_NS);
     }
     return budget;
@@ -2250,12 +2252,18 @@ pub const App = struct {
                     const deferred_output_bytes = pane.boot_output.items.len +| pane.pending_terminal_inject.items.len;
                     break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
                 } else 0;
-                const pty_parse_chunk_bytes = if (pane_is_active and pending_output_bytes >= PTY_READER_PRESSURE_BYTES)
+                const pty_now_ns = io.nanoTimestamp();
+                const recent_pty_output = pane.last_pty_output_ns != 0 and pty_now_ns - pane.last_pty_output_ns < PTY_RECENT_OUTPUT_NS;
+                const recent_input = self.last_input_activity_ns != 0 and pty_now_ns - self.last_input_activity_ns < PTY_RECENT_ACTIVITY_NS;
+                const recent_resize = self.last_resize_activity_ns != 0 and pty_now_ns - self.last_resize_activity_ns < PTY_RECENT_ACTIVITY_NS;
+                const use_pressure_chunk = pane_is_active and !recent_input and !recent_resize and
+                    (pending_output_bytes >= PTY_READER_PRESSURE_BYTES or recent_pty_output);
+                const pty_parse_chunk_bytes = if (use_pressure_chunk)
                     pane_mod.PTY_PRESSURE_PARSE_CHUNK_BYTES
                 else
                     pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_budget_ns: i128 = if (pane_is_active)
-                    selectPtyBudgetNs(io.nanoTimestamp(), self.last_input_activity_ns, self.last_resize_activity_ns, self.previous_frame_slow, pending_output_bytes)
+                    selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
                 else if (inactive_deadline_ns != 0 and io.nanoTimestamp() < inactive_deadline_ns)
                     inactive_deadline_ns - io.nanoTimestamp()
                 else
@@ -2709,13 +2717,14 @@ test "PTY budget adapts to interaction, backlog, pressure, and slow frames" {
     const now_ns: i128 = 1_000 * std.time.ns_per_ms;
     const stale_ns = now_ns - PTY_RECENT_ACTIVITY_NS - 1;
 
-    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, now_ns, 0, false, 0));
-    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, now_ns, false, 0));
-    try std.testing.expectEqual(PTY_NORMAL_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, 0));
-    try std.testing.expectEqual(PTY_IDLE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, 1));
-    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, false, PTY_READER_PRESSURE_BYTES));
-    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS / 2, selectPtyBudgetNs(now_ns, now_ns, 0, true, 0));
-    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, true, PTY_READER_PRESSURE_BYTES));
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, now_ns, 0, 0, false, 0));
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, now_ns, 0, false, 0));
+    try std.testing.expectEqual(PTY_NORMAL_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, 0, false, 0));
+    try std.testing.expectEqual(PTY_IDLE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, 0, false, 1));
+    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, 0, false, PTY_READER_PRESSURE_BYTES));
+    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, now_ns, false, 0));
+    try std.testing.expectEqual(PTY_INTERACTIVE_BUDGET_NS / 2, selectPtyBudgetNs(now_ns, now_ns, 0, 0, true, 0));
+    try std.testing.expectEqual(PTY_PRESSURE_BUDGET_NS, selectPtyBudgetNs(now_ns, stale_ns, stale_ns, 0, true, PTY_READER_PRESSURE_BYTES));
 }
 
 test "jsonObjectIndex accepts non-negative integers and whole floats" {
