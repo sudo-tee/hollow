@@ -555,6 +555,12 @@ pub const WindowsPty = struct {
         return self.reader_state.buf.items.len > self.reader_state.start;
     }
 
+    pub fn pendingOutputBytes(self: *WindowsPty) usize {
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.buf.items.len - self.reader_state.start;
+    }
+
     pub fn hasPendingOutputOrExit(self: *WindowsPty) bool {
         self.reader_state.mutex.lock();
         defer self.reader_state.mutex.unlock();
@@ -568,6 +574,17 @@ pub const WindowsPty = struct {
         }
         try self.flushPendingInputIfReady();
         try self.queueInput(bytes);
+    }
+
+    pub fn writeAllUntil(self: *WindowsPty, bytes: []const u8, deadline_ns: i128) !usize {
+        if (io.nanoTimestamp() >= deadline_ns) return 0;
+        if (!self.shellProducedOutput()) {
+            try self.pending_input.appendSlice(self.allocator, bytes);
+            return bytes.len;
+        }
+        try self.flushPendingInputIfReady();
+        try self.queueInput(bytes);
+        return bytes.len;
     }
 
     fn queueInput(self: *WindowsPty, bytes: []const u8) !void {

@@ -36,11 +36,21 @@ pub const Mux = struct {
         mux: *Mux,
         workspace_index: usize = 0,
         pane_iter: ?Workspace.PaneIterator = null,
+        active_first: ?*Pane = null,
+        active_first_yielded: bool = false,
 
         pub fn next(self: *PaneIterator) ?*Pane {
+            if (!self.active_first_yielded) {
+                self.active_first_yielded = true;
+                if (self.active_first) |pane| return pane;
+            }
+
             while (true) {
                 if (self.pane_iter) |*pane_iter| {
-                    if (pane_iter.next()) |pane| return pane;
+                    if (pane_iter.next()) |pane| {
+                        if (self.active_first != null and pane == self.active_first.?) continue;
+                        return pane;
+                    }
                     self.pane_iter = null;
                 }
 
@@ -186,6 +196,10 @@ pub const Mux = struct {
 
     pub fn paneIterator(self: *Mux) PaneIterator {
         return .{ .mux = self };
+    }
+
+    pub fn paneIteratorActiveFirst(self: *Mux) PaneIterator {
+        return .{ .mux = self, .active_first = self.activePane() };
     }
 
     pub fn activeSplitRoot(self: *Mux) ?*SplitNode {

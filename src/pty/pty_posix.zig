@@ -241,6 +241,13 @@ pub const PosixPty = struct {
         return self.reader_state.buf.items.len > self.reader_state.start;
     }
 
+    pub fn pendingOutputBytes(self: *PosixPty) usize {
+        if (self.closed) return 0;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.buf.items.len - self.reader_state.start;
+    }
+
     pub fn hasPendingOutputOrExit(self: *PosixPty) bool {
         if (self.closed) return true;
         self.reader_state.mutex.lock();
@@ -260,6 +267,40 @@ pub const PosixPty = struct {
             }
             offset += @intCast(written);
         }
+    }
+
+    pub fn writeAllUntil(self: *PosixPty, bytes: []const u8, deadline_ns: i128) !usize {
+        const flags = c.fcntl(self.fd, c.F_GETFL, @as(c_int, 0));
+        if (flags < 0 or c.fcntl(self.fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.WriteFailed;
+        defer _ = c.fcntl(self.fd, c.F_SETFL, flags);
+
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            if (io.nanoTimestamp() >= deadline_ns) break;
+            const result = c.write(self.fd, bytes.ptr + offset, @min(bytes.len - offset, 4096));
+            if (result > 0) {
+                offset += @intCast(result);
+                continue;
+            }
+            if (result == 0) return error.WriteFailed;
+            switch (std.posix.errno(-1)) {
+                .AGAIN => {
+                    var poll_fd = c.struct_pollfd{
+                        .fd = self.fd,
+                        .events = c.POLLOUT,
+                        .revents = 0,
+                    };
+                    const remaining_ns = deadline_ns - io.nanoTimestamp();
+                    if (remaining_ns <= 0) break;
+                    const timeout_ms: c_int = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
+                    const ready = c.poll(&poll_fd, 1, timeout_ms);
+                    if (ready == 0) break;
+                    if (ready < 0 and std.posix.errno(-1) != .INTR) return error.WriteFailed;
+                },
+                else => return error.WriteFailed,
+            }
+        }
+        return offset;
     }
 
     pub fn resize(self: *PosixPty, cols: u16, rows: u16) void {

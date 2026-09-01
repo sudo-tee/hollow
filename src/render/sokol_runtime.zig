@@ -2656,6 +2656,13 @@ fn sleepForFrameCap(app: *App, wake_generation: u32, frame_start_ns: i128, frame
     sleepUntilWakeOrDeadline(app, wake_generation, deadline_ns);
 }
 
+fn frameDeadlineNs(app: *const App) i128 {
+    const target_fps: u32 = if (!app.config.vsync and app.config.max_fps > 0) app.config.max_fps else 60;
+    const configured_deadline_ns = @divFloor(std.time.ns_per_s, @as(i128, @intCast(target_fps)));
+    // Keep 120 FPS caps from treating ordinary 60 FPS work as overload.
+    return @max(@divFloor(std.time.ns_per_s, 60), configured_deadline_ns);
+}
+
 fn sleepUntilWakeOrDeadline(app: *App, wake_generation: u32, deadline_ns: i128) void {
     var now_ns = io.nanoTimestamp();
     while (now_ns < deadline_ns and app.currentWakeGeneration() == wake_generation) {
@@ -2951,6 +2958,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     flushPendingMouseMove(app);
     const frame_start_ns = io.nanoTimestamp();
+    var busy_start_ns = frame_start_ns;
+    var frame_busy_recorded = false;
+    defer if (!frame_busy_recorded) {
+        app.previous_frame_slow = io.nanoTimestamp() - busy_start_ns > frameDeadlineNs(app);
+    };
     const frame_wake_generation = app.currentWakeGeneration();
     const collect_perf = app.config.debug_overlay;
     if (collect_perf) {
@@ -3015,6 +3027,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
+        busy_start_ns = io.nanoTimestamp();
         // Returning without also suppressing the backend present rotates to an
         // unrendered flip-model buffer on D3D11, producing a black flash.
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
@@ -3963,6 +3976,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.config.idle_max_fps
     else
         app.config.max_fps;
+    app.previous_frame_slow = after_commit_ns - busy_start_ns > frameDeadlineNs(app);
+    frame_busy_recorded = true;
     sleepForFrameCap(app, frame_wake_generation, frame_start_ns, after_commit_ns, frame_cap_fps);
 
     if (collect_perf) {
