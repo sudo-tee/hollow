@@ -126,34 +126,13 @@ pub fn scrollPaneViewportToRow(self: *App, pane: *Pane, top_row: u64) void {
     const current_top = scrollbarTopRow(scrollbar);
     if (clamped_target == current_top) return;
 
-    if (clamped_target == 0) {
-        runtime.terminalScrollTop(pane.terminal);
-        pane.render_dirty = .full;
-        pane.last_render_state_update_ns = 0;
-        pane.pty_received_data = true;
-        self.scroll_accum = 0;
-        _ = refreshPaneScrollbar(self, runtime, pane);
-        return;
-    }
-
-    if (clamped_target == max_top) {
-        runtime.terminalScrollBottom(pane.terminal);
-        pane.render_dirty = .full;
-        pane.last_render_state_update_ns = 0;
-        pane.pty_received_data = true;
-        self.scroll_accum = 0;
-        _ = refreshPaneScrollbar(self, runtime, pane);
-        return;
-    }
-
-    const target_i64: i64 = @intCast(clamped_target);
-    const current_i64: i64 = @intCast(current_top);
-    const delta_i64 = target_i64 - current_i64;
-    const delta: isize = std.math.cast(isize, delta_i64) orelse if (delta_i64 < 0)
-        std.math.minInt(isize)
-    else
-        std.math.maxInt(isize);
-    scrollPaneViewport(self, pane, delta);
+    runtime.terminalScrollToRow(pane.terminal, @intCast(clamped_target));
+    pane.render_dirty = .full;
+    pane.render_state_fresh = false;
+    pane.last_render_state_update_ns = 0;
+    pane.pty_received_data = true;
+    self.scroll_accum = 0;
+    _ = refreshPaneScrollbar(self, runtime, pane);
 }
 
 pub fn paneScrollbarMetrics(self: *App, pane: *Pane, outer_bounds: PaneBounds) ?ScrollbarMetrics {
