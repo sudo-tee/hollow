@@ -238,6 +238,15 @@ var g_phase_accum_swapchain_panes_ns: i128 = 0;
 var g_phase_accum_swapchain_ui_ns: i128 = 0;
 var g_phase_accum_swapchain_glyph_ns: i128 = 0;
 var g_phase_accum_swapchain_submit_ns: i128 = 0;
+var g_phase_accum_pty_read_ms: f64 = 0;
+var g_phase_accum_terminal_write_ms: f64 = 0;
+var g_phase_accum_renderstate_ms: f64 = 0;
+var g_phase_accum_has_pending_ms: f64 = 0;
+var g_phase_accum_sanitize_ms: f64 = 0;
+var g_phase_accum_child_alive_ms: f64 = 0;
+var g_phase_accum_encoder_sync_ms: f64 = 0;
+var g_phase_accum_terminal_write_bytes: u64 = 0;
+var g_phase_accum_terminal_write_chunks: u64 = 0;
 var g_phase_accum_dirty_frames: usize = 0;
 var g_phase_accum_clean_frames: usize = 0;
 var g_phase_sample_frames: usize = 0;
@@ -4038,6 +4047,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         g_phase_accum_swapchain_ui_ns += swapchain_ui_ns;
         g_phase_accum_swapchain_glyph_ns += swapchain_glyph_ns;
         g_phase_accum_swapchain_submit_ns += swapchain_submit_ns;
+        g_phase_accum_pty_read_ms += debug_timing.last_frame_pty_read_ms;
+        g_phase_accum_terminal_write_ms += debug_timing.last_frame_terminal_write_ms;
+        g_phase_accum_renderstate_ms += debug_timing.last_frame_renderstate_ms;
+        g_phase_accum_has_pending_ms += debug_timing.last_frame_has_pending_ms;
+        g_phase_accum_sanitize_ms += debug_timing.last_frame_sanitize_ms;
+        g_phase_accum_child_alive_ms += debug_timing.last_frame_child_alive_ms;
+        g_phase_accum_encoder_sync_ms += debug_timing.last_frame_encoder_sync_ms;
+        g_phase_accum_terminal_write_bytes += debug_timing.last_frame_terminal_write_bytes;
+        g_phase_accum_terminal_write_chunks += debug_timing.last_frame_terminal_write_chunks;
         g_phase_sample_frames += 1;
 
         // Update per-frame last values for the debug overlay (no division needed).
@@ -4095,6 +4113,20 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (term={d:.2}ms bars={d:.2}ms queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms (panes={d:.2}ms ui={d:.2}ms glyph={d:.2}ms submit={d:.2}ms)  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
                 .{ n, fps, tick_ms, off_ms, off_term_ms, off_bar_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, swap_panes_ms, swap_ui_ms, swap_glyph_ms, swap_submit_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
             );
+            std.log.info(
+                "tick phases (avg): read={d:.2}ms write={d:.2}ms renderstate={d:.2}ms pending={d:.2}ms sanitize={d:.2}ms child={d:.2}ms encoder={d:.2}ms write_bytes={d:.0} chunks={d:.1}",
+                .{
+                    g_phase_accum_pty_read_ms / n,
+                    g_phase_accum_terminal_write_ms / n,
+                    g_phase_accum_renderstate_ms / n,
+                    g_phase_accum_has_pending_ms / n,
+                    g_phase_accum_sanitize_ms / n,
+                    g_phase_accum_child_alive_ms / n,
+                    g_phase_accum_encoder_sync_ms / n,
+                    @as(f64, @floatFromInt(g_phase_accum_terminal_write_bytes)) / n,
+                    @as(f64, @floatFromInt(g_phase_accum_terminal_write_chunks)) / n,
+                },
+            );
             g_phase_accum_tick_ns = 0;
             g_phase_accum_offscreen_ns = 0;
             g_phase_accum_swapchain_ns = 0;
@@ -4104,6 +4136,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             g_phase_accum_swapchain_ui_ns = 0;
             g_phase_accum_swapchain_glyph_ns = 0;
             g_phase_accum_swapchain_submit_ns = 0;
+            g_phase_accum_pty_read_ms = 0;
+            g_phase_accum_terminal_write_ms = 0;
+            g_phase_accum_renderstate_ms = 0;
+            g_phase_accum_has_pending_ms = 0;
+            g_phase_accum_sanitize_ms = 0;
+            g_phase_accum_child_alive_ms = 0;
+            g_phase_accum_encoder_sync_ms = 0;
+            g_phase_accum_terminal_write_bytes = 0;
+            g_phase_accum_terminal_write_chunks = 0;
             g_phase_accum_queue_ns = 0;
             g_phase_accum_gpu_ns = 0;
             g_phase_accum_pass1_ns = 0;

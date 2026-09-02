@@ -206,16 +206,17 @@ def wait_for_terminal_drain(timeout=10.0):
     try:
         fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
     except OSError:
-        return False
+        return None
     try:
         old_attrs = termios.tcgetattr(fd)
     except termios.error:
         os.close(fd)
-        return False
+        return None
     response = bytearray()
     try:
         tty.setcbreak(fd)
         termios.tcflush(fd, termios.TCIFLUSH)
+        started = time.perf_counter()
         os.write(fd, (CSI + "6n").encode())
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -224,7 +225,7 @@ def wait_for_terminal_drain(timeout=10.0):
                 break
             response.extend(os.read(fd, 64))
             if re.search(rb"\x1b\[\d+;\d+R", response):
-                return True
+                return time.perf_counter() - started
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
         os.close(fd)
@@ -265,6 +266,12 @@ def frame_text(frame, row):
     return f"{left}{label}{right}{fill[:split]}{left}{fill[split:]}{RESET}"
 
 def run_repaint(frames):
+    # DSR acknowledgement includes terminal-to-PTY input latency. Measure that
+    # fixed control-path cost before the workload so only excess queue drain is
+    # charged to terminal throughput.
+    drain_baselines = [wait_for_terminal_drain() for _ in range(3)]
+    drain_baselines = [sample for sample in drain_baselines if sample is not None]
+    drain_baseline = sorted(drain_baselines)[len(drain_baselines) // 2] if drain_baselines else 0.0
     sys.stdout.write(HIDE + ALT_ON + CLEAR)
     sys.stdout.flush()
     start = time.perf_counter()
@@ -280,13 +287,25 @@ def run_repaint(frames):
         sys.stdout.write("".join(parts))
         sys.stdout.flush()
         done = frame + 1
-    drained = wait_for_terminal_drain()
-    elapsed = time.perf_counter() - start
+    write_elapsed = time.perf_counter() - start
+    drain_start = time.perf_counter()
+    drain_round_trip = wait_for_terminal_drain()
+    drain_elapsed = time.perf_counter() - drain_start
+    drain_overhead = min(drain_elapsed, drain_baseline or 0.0)
+    effective_drain = drain_elapsed - drain_overhead
+    elapsed = write_elapsed + effective_drain
     cleanup()
-    sys.stdout.write(stat_line("repaint", elapsed, "frames", max(1, done)))
+    sys.stdout.write(stat_line("repaint end-to-end", elapsed, "frames", max(1, done)))
     cell_rate = done * cols * rows / elapsed if elapsed > 0 else 0.0
-    sys.stdout.write(f"cell throughput: {cell_rate / 1_000_000:.1f} Mcells/s\n")
-    if not drained:
+    sys.stdout.write(f"end-to-end cell throughput: {cell_rate / 1_000_000:.1f} Mcells/s\n")
+    write_rate = done / write_elapsed if write_elapsed > 0 else 0.0
+    write_cell_rate = done * cols * rows / write_elapsed if write_elapsed > 0 else 0.0
+    sys.stdout.write(f"producer write phase: {write_elapsed:.2f}s ({write_rate:.1f} frames/s, {write_cell_rate / 1_000_000:.1f} Mcells/s)\n")
+    sys.stdout.write(
+        f"drain phase: {effective_drain:.2f}s "
+        f"(raw={drain_elapsed:.2f}s, idle DSR RTT={drain_baseline or 0.0:.2f}s)\n"
+    )
+    if drain_round_trip is None:
         sys.stdout.write("warning: terminal drain acknowledgement unavailable\n")
 
 def make_keypress_line(i, cols):

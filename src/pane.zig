@@ -1073,6 +1073,23 @@ pub const Pane = struct {
         return self.sanitizePtyOutputForPlatform(bytes, platform.isWindows());
     }
 
+    fn containsWindowsFilteredSequence(bytes: []const u8) bool {
+        const enable = "\x1b[?9001h";
+        const disable = "\x1b[?9001l";
+        var search_from: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, bytes, search_from, 0x1b)) |esc_idx| {
+            if (std.mem.startsWith(u8, bytes[esc_idx..], enable) or std.mem.startsWith(u8, bytes[esc_idx..], disable)) return true;
+            if (esc_idx + 1 < bytes.len and bytes[esc_idx + 1] == ']') return true;
+            if (esc_idx + 1 < bytes.len and bytes[esc_idx + 1] == '[') {
+                var i = esc_idx + 2;
+                while (i < bytes.len and bytes[i] >= 0x30 and bytes[i] <= 0x3f) : (i += 1) {}
+                if (i < bytes.len and bytes[i] == 't') return true;
+            }
+            search_from = esc_idx + 1;
+        }
+        return false;
+    }
+
     fn sanitizePtyOutputForPlatform(self: *Pane, bytes: []u8, windows_mode: bool) []const u8 {
         const has_pending = windows_mode and self.pty_pending_len > 0;
 
@@ -1341,6 +1358,10 @@ pub const Pane = struct {
         const has_active_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
 
         self.pty_pending_len = 0;
+
+        // Most Windows output only contains ordinary SGR/CSI sequences. Keep
+        // it in place instead of copying every byte through the sanitizer.
+        if (windows_mode and !has_active_filter and !containsWindowsFilteredSequence(bytes) and trailingAnsiPrefixLen(bytes) == 0) return bytes;
 
         if (!has_active_filter) {
             const first_esc = std.mem.indexOfScalar(u8, bytes, 0x1b) orelse return bytes;
@@ -2064,6 +2085,16 @@ test "sanitizePtyOutput windows strips split csi t sequence" {
     const out2 = pane.sanitizePtyOutputForPlatform(part2[0..], true);
     try std.testing.expectEqualStrings("y", out2);
     try std.testing.expectEqual(@as(usize, 0), pane.pty_pending_len);
+}
+
+test "sanitizePtyOutput windows preserves ordinary CSI output in place" {
+    var pane = Pane.init(std.testing.allocator);
+    var input = "plain\x1b[38;5;42mcolored\x1b[0m".*;
+
+    const output = pane.sanitizePtyOutputForPlatform(&input, true);
+
+    try std.testing.expectEqualStrings(&input, output);
+    try std.testing.expectEqual(@intFromPtr(&input), @intFromPtr(output.ptr));
 }
 
 test "sanitizePtyOutput preserves split OSC 7 state across chunks" {

@@ -16,6 +16,7 @@ const CREATE_NEW_CONSOLE: windows.DWORD = 0x00000010;
 const SW_HIDE: windows.WORD = 0;
 const WSL_BYPASS_STARTUP_TIMEOUT_MS: u64 = 1200;
 const WSL_BYPASS_EXIT_TIMEOUT_MS: windows.DWORD = 1500;
+const PTY_READER_IO_BUFFER_SIZE: usize = 64 * 1024;
 
 extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
 extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) windows.BOOL;
@@ -983,7 +984,7 @@ fn writerResize(state: *WriterState, cols: u16, rows: u16) !void {
 }
 
 fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
-    var temp: [4096]u8 = undefined;
+    var temp: [PTY_READER_IO_BUFFER_SIZE]u8 = undefined;
     var loop_count: u64 = 0;
     std.log.info("conpty reader thread started", .{});
     while (true) {
@@ -1024,7 +1025,7 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
 }
 
 fn wslBypassReaderLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
-    var temp: [4096]u8 = undefined;
+    var temp: [PTY_READER_IO_BUFFER_SIZE]u8 = undefined;
     while (true) {
         var header: [5]u8 = undefined;
         readExactHandle(read_pipe, &header) catch {

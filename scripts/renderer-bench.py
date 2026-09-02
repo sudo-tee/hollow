@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -25,6 +26,22 @@ WORKLOAD_FIELDS = (
     "input_checksum",
 )
 METRICS = ("median_ns", "p95_ns")
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_RESET = "\033[0m"
+
+
+def color_delta(text: str, delta: float) -> str:
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR") is not None:
+        return text
+    color = ANSI_GREEN if delta < 0 else ANSI_RED if delta > 0 else ""
+    return f"{color}{text}{ANSI_RESET}" if color else text
+
+
+def metric_text(metric: str, value: int | float) -> str:
+    if metric.endswith("_ns"):
+        return f"{value / 1_000_000:.3f} ms"
+    return f"{value:.0f}"
 
 
 def git_value(*args: str, default: str = "unknown") -> str:
@@ -192,7 +209,7 @@ def compare_records(current: dict[str, Any], baseline: dict[str, Any], max_regre
         raise RuntimeError("current result and baseline describe different workloads")
 
     failures = 0
-    print("stage metric baseline current delta")
+    rows: list[tuple[str, str, str, str, float]] = []
     for stage, current_stats in current_result.get("stages", {}).items():
         baseline_stats = baseline_result.get("stages", {}).get(stage)
         if not isinstance(current_stats, dict) or not isinstance(baseline_stats, dict):
@@ -203,9 +220,30 @@ def compare_records(current: dict[str, Any], baseline: dict[str, Any], max_regre
             if not isinstance(baseline_value, (int, float)) or not isinstance(current_value, (int, float)) or baseline_value <= 0:
                 continue
             delta = current_value / baseline_value - 1.0
-            print(f"{stage} {metric} {baseline_value:.0f} {current_value:.0f} {delta:+.2%}")
+            rows.append((stage, metric.removesuffix("_ns"), metric_text(metric, baseline_value), metric_text(metric, current_value), delta))
             if delta > max_regression:
                 failures += 1
+
+    if rows:
+        stage_width = max(len(row[0]) for row in rows)
+        metric_width = max(len(row[1]) for row in rows)
+        value_width = max(max(len(row[2]), len(row[3])) for row in rows)
+        print(
+            f"{'stage':<{stage_width}}  {'metric':<{metric_width}}  "
+            f"{'before':>{value_width}}  {'after':>{value_width}}  {'change':>8}  result"
+        )
+        print(
+            f"{'-' * stage_width}  {'-' * metric_width}  "
+            f"{'-' * value_width}  {'-' * value_width}  {'-' * 8}  ------"
+        )
+        for stage, metric, baseline_text, current_text, delta in rows:
+            delta_field = f"{delta:+.2%}".rjust(8)
+            result = "GAIN" if delta < 0 else "LOSS" if delta > 0 else "SAME"
+            print(
+                f"{stage:<{stage_width}}  {metric:<{metric_width}}  "
+                f"{baseline_text:>{value_width}}  {current_text:>{value_width}}  "
+                f"{color_delta(delta_field, delta)}  {color_delta(result, delta)}"
+            )
 
     if failures:
         print(f"regression: {failures} metric(s) exceed {max_regression:.2%}", file=sys.stderr)
