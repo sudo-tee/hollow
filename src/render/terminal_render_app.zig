@@ -121,6 +121,7 @@ pub fn buildQueueOptions(
         .start_col = value.start_col,
         .end_col = value.end_col,
     } else null;
+    const quick_select_visible = pane != null and app.quick_select_active and app.quick_select_pane == pane.? and !app.quick_select_pending_capture;
     return .{
         .render_state = render_state,
         .row_iterator = row_iterator,
@@ -146,10 +147,10 @@ pub fn buildQueueOptions(
         .search_highlight_context = if (pane != null) @ptrCast(policy) else null,
         .cursor_col_fn = if (pane != null) appCursorCol else null,
         .cursor_col_context = if (pane != null) @ptrCast(policy) else null,
-        .overlay_fn = if (pane != null) queueQuickSelectBackgrounds else null,
-        .overlay_context = if (pane != null) @ptrCast(policy) else null,
-        .overlay_row_fn = if (pane != null) quickSelectLabelRow else null,
-        .overlay_label_fn = if (pane != null) quickSelectLabelAt else null,
+        .overlay_fn = if (quick_select_visible) queueQuickSelectBackgrounds else null,
+        .overlay_context = if (quick_select_visible) @ptrCast(policy) else null,
+        .overlay_row_fn = if (quick_select_visible) quickSelectLabelRow else null,
+        .overlay_label_fn = if (quick_select_visible) quickSelectLabelAt else null,
         .hovered_hyperlink = hovered,
         .prev_cursor_row = prev_cursor_row,
         .row_map_keys = row_map_keys,
