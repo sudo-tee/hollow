@@ -236,6 +236,7 @@ pub const FtRenderer = struct {
     bold_italic_embolden: ?f32,
 
     glyph_buf: [32]u8 = [_]u8{0} ** 32,
+    grapheme_buf: []u8 = &.{},
     logged_first_draw: bool = false,
     logged_first_content: bool = false,
 
@@ -725,6 +726,7 @@ pub const FtRenderer = struct {
 
     pub fn deinit(self: *FtRenderer) void {
         if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
+        if (self.grapheme_buf.len > 0) self.allocator.free(self.grapheme_buf);
         for (&self.kitty_textures) |*slot| {
             if (slot.*) |*tex| tex.deinit();
             slot.* = null;

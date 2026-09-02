@@ -804,6 +804,20 @@ pub fn runCorrectnessTest(allocator: std.mem.Allocator) !void {
     harness.submit(true);
 }
 
+pub fn runUnicodeGraphemeTest(allocator: std.mem.Allocator) !void {
+    const options = Options{ .rows = 2, .cols = 80, .warmup = 0, .iterations = 1 };
+    const corpus = "A\u{0300}\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}\u{0307}\u{0308}\u{0309}\u{030A}\u{030B}\u{030C}\u{030D}\u{030E}\u{030F}\u{0310}\u{0311}\u{0312}\u{0313}\u{0314}\u{0315}\u{0316}\u{0317}\u{0318}\u{0319}\u{031A}\n";
+    var harness = try Harness.init(allocator, options);
+    defer harness.deinit();
+    var session = try Session.init(&harness.runtime, options.cols, options.rows);
+    defer session.deinit();
+    session.activate();
+    try harness.prepare(&session, corpus);
+    harness.queue(&session, true);
+    if (harness.last_cells_visited == 0 or harness.last_glyph_verts == 0) return error.EmptyUnicodeRender;
+    harness.submit(true);
+}
+
 test "renderer benchmark checksum remains deterministic" {
     const allocator = std.testing.allocator;
     try std.testing.expectEqual(@as(u64, 0x652825d1a05e7565), try deterministicRepaintChecksum(allocator));

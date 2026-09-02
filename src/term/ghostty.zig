@@ -118,6 +118,12 @@ pub const String = extern struct {
     len: usize,
 };
 
+pub const Buffer = extern struct {
+    ptr: ?[*]u8 = null,
+    cap: usize = 0,
+    len: usize = 0,
+};
+
 pub const TerminalModeConfig = extern struct {
     mode: u16,
     value: bool,
@@ -416,6 +422,7 @@ pub const CellData = enum(u32) {
     bg_color = 5,
     fg_color = 6,
     selected = 7,
+    graphemes_utf8 = 9,
 };
 
 /// Data kinds for the pure ghostty_cell_get() function (operates on a u64 cell value).
@@ -1273,7 +1280,33 @@ pub const Runtime = struct {
     }
 
     pub fn cellGraphemes(self: *Runtime, row_cells: ?*anyopaque, out: *[16]u32) void {
-        if (row_cells) |cells| _ = self.row_cells_get(cells, @intFromEnum(CellData.graphemes_buf), out);
+        @memset(out, 0);
+        var utf8: [256]u8 = undefined;
+        const text = self.cellGraphemeUtf8Into(row_cells, &utf8) orelse return;
+        var view = std.unicode.Utf8View.init(text) catch return;
+        var iter = view.iterator();
+        var i: usize = 0;
+        while (i < out.len) : (i += 1) {
+            out[i] = iter.nextCodepoint() orelse break;
+        }
+    }
+
+    pub fn cellGraphemeUtf8Len(self: *Runtime, row_cells: ?*anyopaque) ?usize {
+        const cells = row_cells orelse return null;
+        var buffer = Buffer{};
+        const result = self.row_cells_get(cells, @intFromEnum(CellData.graphemes_utf8), &buffer);
+        if (result == success or result == out_of_space) return buffer.len;
+        return null;
+    }
+
+    pub fn cellGraphemeUtf8Into(self: *Runtime, row_cells: ?*anyopaque, out: []u8) ?[]const u8 {
+        const cells = row_cells orelse return null;
+        var buffer = Buffer{
+            .ptr = if (out.len > 0) out.ptr else null,
+            .cap = out.len,
+        };
+        if (self.row_cells_get(cells, @intFromEnum(CellData.graphemes_utf8), &buffer) != success) return null;
+        return out[0..buffer.len];
     }
 
     pub fn cellBackground(self: *Runtime, row_cells: ?*anyopaque) ?ColorRgb {

@@ -986,18 +986,25 @@ pub fn encodeCodepointUtf8(self: *FtRenderer, cp: u32) []const u8 {
 }
 
 pub fn encodeCurrentCellGraphemeUtf8(self: *FtRenderer, runtime: *ghostty.Runtime, row_cells: ?*anyopaque, cps: *[16]u32) ?[]const u8 {
-    const grapheme_len = @min(runtime.cellGraphemeLen(row_cells), cps.len);
-    if (grapheme_len == 0) return null;
+    const utf8_len = runtime.cellGraphemeUtf8Len(row_cells) orelse return null;
+    if (utf8_len == 0) return null;
+    if (self.grapheme_buf.len < utf8_len) {
+        self.grapheme_buf = if (self.grapheme_buf.len == 0)
+            self.allocator.alloc(u8, utf8_len) catch return null
+        else
+            self.allocator.realloc(self.grapheme_buf, utf8_len) catch return null;
+    }
+    const text = runtime.cellGraphemeUtf8Into(row_cells, self.grapheme_buf) orelse return null;
 
     cps.* = [_]u32{0} ** 16;
-    runtime.cellGraphemes(row_cells, cps);
-    var glyph_len: usize = 0;
-    for (cps[0..grapheme_len]) |cp| {
-        if (cp == 0) break;
-        glyph_len += encodeUtf8(cp, self.glyph_buf[glyph_len..]) catch break;
+    var view = std.unicode.Utf8View.init(text) catch return null;
+    var iter = view.iterator();
+    var i: usize = 0;
+    while (i < cps.len) : (i += 1) {
+        cps[i] = iter.nextCodepoint() orelse break;
     }
-    if (glyph_len == 0) return null;
-    return self.glyph_buf[0..glyph_len];
+    if (cps[0] == 0) return null;
+    return text;
 }
 
 // ── Run batching (ligature grouping) ──────────────────────────────────────────
