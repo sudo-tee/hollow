@@ -771,7 +771,6 @@ pub const Pane = struct {
     pub fn resize(self: *Pane, runtime: *GhosttyRuntime, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32, skip_pty: bool) void {
         // A geometry change invalidates the previously presented surface, so
         // do not let synchronized output hold an obsolete frame across it.
-        _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
         self.synchronized_output_active = false;
         self.synchronized_output_started_ns = 0;
         const prev_cols = self.cols;
@@ -825,7 +824,6 @@ pub const Pane = struct {
         if (self.pty) |*pty| {
             if (pty.isAlive()) {
                 std.log.info("pane.nudgeTerminal: cols={d} rows={d}->{}->{}", .{ self.cols, original_rows, bump_rows, original_rows });
-                _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
                 self.rows = bump_rows;
                 runtime.resizeTerminal(self.terminal, self.cols, bump_rows, cell_width_px, cell_height_px);
                 runtime.updateRenderState(self.render_state, self.terminal) catch {};
