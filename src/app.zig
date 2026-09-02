@@ -2289,6 +2289,9 @@ pub const App = struct {
                             std.log.info("terminal-trace synchronized-output pane={x} state=begin", .{@intFromPtr(pane)});
                         }
                     }
+                    // Active PTY output means synchronized rendering is making
+                    // progress, so extend watchdog deadline for long batches.
+                    if (pane.pty_received_data) pane.synchronized_output_started_ns = sync_now_ns;
                     if (sync_now_ns - pane.synchronized_output_started_ns >= SYNCHRONIZED_OUTPUT_TIMEOUT_NS) {
                         std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
                         _ = runtime.setTerminalMode(pane.terminal, .synchronized_output, false);
