@@ -5,17 +5,17 @@ MODE="${1:-scroll}"
 COUNT="${2:-4000}"
 
 if ! command -v python3 >/dev/null 2>&1; then
-	echo "bench.sh requires python3" >&2
-	exit 1
+  echo "bench.sh requires python3" >&2
+  exit 1
 fi
 
 RATE="${3:-100}"
 
 run_blocking_child() {
-	local result_path="$2"
-	local ready_path="$3"
-	local chunks="${4:-1024}"
-	python3 - "$result_path" "$ready_path" "$chunks" <<'PY'
+  local result_path="$2"
+  local ready_path="$3"
+  local chunks="${4:-1024}"
+  python3 - "$result_path" "$ready_path" "$chunks" <<'PY'
 import os
 import sys
 import time
@@ -48,116 +48,120 @@ PY
 }
 
 run_bypass_blocking() {
-	local chunks="${2:-1024}"
-	local timeout_s="${3:-15}"
-	local script_dir cli tag result_path ready_path target_cmd payload sender_pid deadline passed
-	script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-	if command -v hollow-cli >/dev/null 2>&1; then
-		cli="$(command -v hollow-cli)"
-	else
-		cli="$script_dir/scripts/hollow-cli"
-	fi
-	if [[ ! -x "$cli" ]]; then
-		echo "[bench] hollow-cli is required for bypass-blocking" >&2
-		return 1
-	fi
+  local chunks="${2:-1024}"
+  local timeout_s="${3:-15}"
+  local script_dir cli tag result_path ready_path target_cmd payload sender_pid deadline passed
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  if command -v hollow-cli >/dev/null 2>&1; then
+    cli="$(command -v hollow-cli)"
+  else
+    cli="$script_dir/scripts/hollow-cli"
+  fi
+  if [[ ! -x "$cli" ]]; then
+    echo "[bench] hollow-cli is required for bypass-blocking" >&2
+    return 1
+  fi
 
-	tag="bypass-blocking-$$-$(date +%s)"
-	result_path="/tmp/$tag.result"
-	ready_path="/tmp/$tag.ready"
-	rm -f "$result_path" "$result_path.progress" "$ready_path"
-	printf -v target_cmd '%q --quiet pane set-tag %q && exec %q blocking-child %q %q %q' \
-		"$cli" "$tag" "$script_dir/bench.sh" "$result_path" "$ready_path" "$chunks"
+  tag="bypass-blocking-$$-$(date +%s)"
+  result_path="/tmp/$tag.result"
+  ready_path="/tmp/$tag.ready"
+  rm -f "$result_path" "$result_path.progress" "$ready_path"
+  printf -v target_cmd '%q --quiet pane set-tag %q && exec %q blocking-child %q %q %q' \
+    "$cli" "$tag" "$script_dir/bench.sh" "$result_path" "$ready_path" "$chunks"
 
-	echo "[bench] creating blocked-input target pane tag=$tag"
-	"$cli" --quiet pane split vertical --ratio 0.5 --cmd "$target_cmd"
-	deadline=$((SECONDS + 5))
-	while [[ ! -f "$ready_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
-	if [[ ! -f "$ready_path" ]]; then
-		echo "[bench] target pane did not become ready" >&2
-		"$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
-		return 1
-	fi
+  echo "[bench] creating blocked-input target pane tag=$tag"
+  "$cli" --quiet pane split vertical --ratio 0.5 --cmd "$target_cmd"
+  deadline=$((SECONDS + 5))
+  while [[ ! -f "$ready_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
+  if [[ ! -f "$ready_path" ]]; then
+    echo "[bench] target pane did not become ready" >&2
+    "$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
+    return 1
+  fi
 
-	payload="$(python3 -c 'import sys; sys.stdout.write("x" * 32768)')"
-	(
-		for _ in $(seq 1 128); do
-			"$cli" --quiet pane send-text "$payload" --tag "$tag" 2>/dev/null || break
-		done
-	) &
-	sender_pid=$!
+  payload="$(python3 -c 'import sys; sys.stdout.write("x" * 32768)')"
+  (
+    for _ in $(seq 1 128); do
+      "$cli" --quiet pane send-text "$payload" --tag "$tag" 2>/dev/null || break
+    done
+  ) &
+  sender_pid=$!
 
-	echo "[bench] injecting 4MiB while target writes $((chunks * 16384 / 1024 / 1024))MiB"
-	deadline=$((SECONDS + timeout_s))
-	while [[ ! -f "$result_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
+  echo "[bench] injecting 4MiB while target writes $((chunks * 16384 / 1024 / 1024))MiB"
+  deadline=$((SECONDS + timeout_s))
+  while [[ ! -f "$result_path" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
 
-	if [[ -f "$result_path" ]]; then
-		cat "$result_path"
-		echo "[bench] PASS: relay continued draining output under input backpressure"
-		passed=0
-	else
-		echo "[bench] TIMEOUT after ${timeout_s}s"
-		if [[ -f "$result_path.progress" ]]; then cat "$result_path.progress"; fi
-		echo "[bench] FAIL: relay stopped making output progress under input backpressure"
-		passed=1
-	fi
+  if [[ -f "$result_path" ]]; then
+    cat "$result_path"
+    echo "[bench] PASS: relay continued draining output under input backpressure"
+    passed=0
+  else
+    echo "[bench] TIMEOUT after ${timeout_s}s"
+    if [[ -f "$result_path.progress" ]]; then cat "$result_path.progress"; fi
+    echo "[bench] FAIL: relay stopped making output progress under input backpressure"
+    passed=1
+  fi
 
-	kill "$sender_pid" 2>/dev/null || true
-	wait "$sender_pid" 2>/dev/null || true
-	"$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
-	rm -f "$result_path" "$result_path.progress" "$ready_path"
-	return "$passed"
+  kill "$sender_pid" 2>/dev/null || true
+  wait "$sender_pid" 2>/dev/null || true
+  "$cli" --quiet pane close --tag "$tag" 2>/dev/null || true
+  rm -f "$result_path" "$result_path.progress" "$ready_path"
+  return "$passed"
 }
 
 if [[ "$MODE" == "blocking-child" ]]; then
-	run_blocking_child "$@"
-	exit 0
+  run_blocking_child "$@"
+  exit 0
 fi
 
 if [[ "$MODE" == "bypass-blocking" ]]; then
-	run_bypass_blocking "$@"
-	exit $?
+  run_bypass_blocking "$@"
+  exit $?
 fi
 
 run_minimize_restore_regression() {
-	local out_path="${1:-bench_minimize_restore_snapshot.txt}"
-	local pre_minimize_delay_ms="${2:-2000}"
-	local minimized_delay_ms="${3:-1000}"
-	local post_restore_delay_ms="${4:-1200}"
-	local script_dir
-	local ps_script
+  local out_path="${1:-bench_minimize_restore_snapshot.txt}"
+  local pre_minimize_delay_ms="${2:-2000}"
+  local minimized_delay_ms="${3:-1000}"
+  local post_restore_delay_ms="${4:-1200}"
+  local script_dir
+  local ps_script
 
-	script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-	ps_script="$(wslpath -w "$script_dir/scripts/minimize-restore.ps1")"
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  ps_script="$(wslpath -w "$script_dir/scripts/minimize-restore.ps1")"
 
-	echo "[bench] manual minimize-restore workflow"
-	echo "[bench] 1) launch hollow with: ./launch.sh --app-arg=\"--snapshot-dump\" --app-arg=\"$out_path\""
-	echo "[bench] 2) create visible shell output in the window"
-	echo "[bench] 3) run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$ps_script\" -ProcessName \"hollow-native\" -PreMinimizeDelayMs $pre_minimize_delay_ms -MinimizedDelayMs $minimized_delay_ms -PostRestoreDelayMs $post_restore_delay_ms"
-	echo "[bench] 4) inspect $out_path for lost shell content after restore"
+  echo "[bench] manual minimize-restore workflow"
+  echo "[bench] 1) launch hollow with: ./launch.sh --app-arg=\"--snapshot-dump\" --app-arg=\"$out_path\""
+  echo "[bench] 2) create visible shell output in the window"
+  echo "[bench] 3) run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$ps_script\" -ProcessName \"hollow-native\" -PreMinimizeDelayMs $pre_minimize_delay_ms -MinimizedDelayMs $minimized_delay_ms -PostRestoreDelayMs $post_restore_delay_ms"
+  echo "[bench] 4) inspect $out_path for lost shell content after restore"
 }
 
 if [[ "$MODE" == "minimize-restore" ]]; then
-	run_minimize_restore_regression "${2:-bench_minimize_restore_snapshot.txt}" "${3:-2000}" "${4:-1000}" "${5:-1200}"
-	exit 0
+  run_minimize_restore_regression "${2:-bench_minimize_restore_snapshot.txt}" "${3:-2000}" "${4:-1000}" "${5:-1200}"
+  exit 0
 fi
 
 if [[ "$MODE" == "nvim-restart" ]]; then
-	OUT_PATH="${2:-bench_nvim_restart_snapshot.txt}"
-	DELAY_FRAMES="${3:-45}"
-	SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-	echo "[bench] nvim-restart snapshot dump -> $OUT_PATH"
-	echo "[bench] close the app when the capture is done"
-	rm -f "$OUT_PATH"
-	exec "$SCRIPT_DIR/launch.sh" --app-arg="--startup-command" --app-arg=":restart" --app-arg="--startup-command-delay-frames" --app-arg="$DELAY_FRAMES" --app-arg="--snapshot-dump" --app-arg="$OUT_PATH"
+  OUT_PATH="${2:-bench_nvim_restart_snapshot.txt}"
+  DELAY_FRAMES="${3:-45}"
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  echo "[bench] nvim-restart snapshot dump -> $OUT_PATH"
+  echo "[bench] close the app when the capture is done"
+  rm -f "$OUT_PATH"
+  exec "$SCRIPT_DIR/launch.sh" --app-arg="--startup-command" --app-arg=":restart" --app-arg="--startup-command-delay-frames" --app-arg="$DELAY_FRAMES" --app-arg="--snapshot-dump" --app-arg="$OUT_PATH"
 fi
 
 python3 - "$MODE" "$COUNT" "$RATE" <<'PY'
 import os
+import re
+import select
 import shutil
 import signal
 import sys
+import termios
 import time
+import tty
 
 mode = sys.argv[1]
 count = int(sys.argv[2])
@@ -192,8 +196,36 @@ palette = [f"{CSI}38;5;{i}m" for i in range(16, 256)]
 
 def stat_line(name, elapsed, units, count):
     rate = count / elapsed if elapsed > 0 else 0.0
-    singular = units[:-2] if units.endswith("es") else (units[:-1] if units.endswith("s") else units)
+    singular = units[:-1] if units.endswith("s") else units
     return f"\n{name}: {count} {units} in {elapsed:.2f}s ({rate:.1f}/{singular}/s) size={cols}x{rows}\n"
+
+def wait_for_terminal_drain(timeout=10.0):
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return False
+    try:
+        old_attrs = termios.tcgetattr(fd)
+    except termios.error:
+        os.close(fd)
+        return False
+    response = bytearray()
+    try:
+        tty.setcbreak(fd)
+        termios.tcflush(fd, termios.TCIFLUSH)
+        os.write(fd, (CSI + "6n").encode())
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+            if not ready:
+                break
+            response.extend(os.read(fd, 64))
+            if re.search(rb"\x1b\[\d+;\d+R", response):
+                return True
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
+        os.close(fd)
+    raise RuntimeError("terminal did not acknowledge repaint drain")
 
 def make_scroll_line(i):
     color = palette[i % len(palette)]
@@ -245,9 +277,14 @@ def run_repaint(frames):
         sys.stdout.write("".join(parts))
         sys.stdout.flush()
         done = frame + 1
+    drained = wait_for_terminal_drain()
     elapsed = time.perf_counter() - start
     cleanup()
     sys.stdout.write(stat_line("repaint", elapsed, "frames", max(1, done)))
+    cell_rate = done * cols * rows / elapsed if elapsed > 0 else 0.0
+    sys.stdout.write(f"cell throughput: {cell_rate / 1_000_000:.1f} Mcells/s\n")
+    if not drained:
+        sys.stdout.write("warning: terminal drain acknowledgement unavailable\n")
 
 def make_keypress_line(i, cols):
     """Build a single line of content as nvim would redraw on j/k scroll."""
