@@ -305,6 +305,8 @@ pub const Config = struct {
     scrollback: usize = 10_000_000,
     terminal_padding: TerminalPadding = .{},
     alternate_screen_padding: TerminalPadding = .{},
+    /// Send a delayed one-row resize cycle after entering alternate screen.
+    alternate_screen_resize_nudge: bool = true,
     scrollbar: Scrollbar = .{},
     hyperlinks: Hyperlinks = .{},
     unfocused_pane: UnfocusedPane = .{},

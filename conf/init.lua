@@ -42,6 +42,7 @@ hollow.config.set({
   scrollback = 10000000,
   padding = 5,
   alternate_screen_padding = 0, --TUI like nvim
+  alternate_screen_resize_nudge = false, -- If nvim does not resize when opening a new buffer, set this to true
   window_title = "hollow",
   window_width = 1440,
   window_height = 900,

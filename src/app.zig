@@ -1360,6 +1360,7 @@ pub const App = struct {
         std.log.info("renderer_disable_swapchain_glyphs={}", .{self.config.renderer_disable_swapchain_glyphs});
         std.log.info("renderer_disable_multi_pane_cache={}", .{self.config.renderer_disable_multi_pane_cache});
         std.log.info("synchronized_output={}", .{self.config.synchronized_output});
+        std.log.info("alternate_screen_resize_nudge={}", .{self.config.alternate_screen_resize_nudge});
         std.log.info("embedded_base_config={}", .{self.using_embedded_base_config});
         if (self.base_config_path) |path| std.log.info("base_config={s}", .{path});
         if (self.override_config_path) |path| std.log.info("override_config={s}", .{path});
@@ -2317,20 +2318,13 @@ pub const App = struct {
                 }
                 if (pane.active_screen != active_screen_before) {
                     automation_changed = true;
-                    std.log.info("app: pane screen changed pane={x} {d}->{d}, resizing layout", .{
-                        @intFromPtr(pane),
-                        active_screen_before,
-                        pane.active_screen,
-                    });
-                    if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) {
-                        pane.pending_alt_screen_nudge = true;
-                        pane.alt_screen_nudge_quiet_ticks = 0;
-                        pane.alt_screen_nudge_not_before_ns = io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS;
-                    } else {
-                        pane.pending_alt_screen_nudge = false;
-                        pane.alt_screen_nudge_quiet_ticks = 0;
-                        pane.alt_screen_nudge_not_before_ns = 0;
-                    }
+                    pane.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
+                        pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate);
+                    pane.alt_screen_nudge_quiet_ticks = 0;
+                    pane.alt_screen_nudge_not_before_ns = if (pane.pending_alt_screen_nudge)
+                        io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS
+                    else
+                        0;
                     self.requestLayoutResize(false);
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;

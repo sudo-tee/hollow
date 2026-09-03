@@ -358,6 +358,7 @@
 ---@field load_default_keymaps? boolean
 ---@field padding? integer
 ---@field alternate_screen_padding? integer
+---@field alternate_screen_resize_nudge? boolean Send a delayed resize cycle after entering alternate screen (default true)
 ---@field alternate_padding_x? integer
 ---@field alternate_padding_y? integer
 ---@field alternate_padding_left? integer
