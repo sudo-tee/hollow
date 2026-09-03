@@ -30,6 +30,7 @@ const mux_ops = @import("../app/session_controller.zig");
 const input = @import("../app/input.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
+const color_math = @import("color_math.zig");
 
 fn enqueueQuickSelectInput(app: *App, value: quick_select.Input) void {
     if (!app.enqueueMouse(.{ .quick_select_input = value })) quick_select.disarmInput(app);
@@ -44,14 +45,6 @@ const OVERLAY_HOVER_BG = ghostty.ColorRgb{ .r = 60, .g = 66, .b = 82 };
 
 fn paneRenderHelpersReady(pane: *const Pane) bool {
     return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
-}
-
-fn paneRenderPadding(pane: *const Pane, cfg: *const Config) struct { x: u32, y: u32 } {
-    const pad = if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
-        cfg.alternate_screen_padding
-    else
-        cfg.terminal_padding;
-    return .{ .x = pad.horizontal(), .y = pad.vertical() };
 }
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -359,14 +352,6 @@ const CacheValidity = enum {
     valid,
 };
 
-const CURSOR_BLINK_INTERVAL_MS: i128 = 600;
-
-fn blinkVisibleNow(now_ns: i128) bool {
-    const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
-    const blink_phase = @divFloor(now_ms, CURSOR_BLINK_INTERVAL_MS);
-    return @mod(blink_phase, @as(i128, 2)) == 0;
-}
-
 const SelectionRowBounds = struct { start: usize, end: usize };
 
 fn selectionBoundsForRow(range: ?selection.Range, row: usize) ?SelectionRowBounds {
@@ -440,6 +425,7 @@ const PaneCacheEntry = struct {
     last_cursor_visible: bool = false,
     last_cursor_blinking: bool = false,
     last_cursor_blink_visible: bool = true,
+    last_cursor_password_input: bool = false,
     last_cursor_wide_tail: bool = false,
     last_cursor_style: ghostty.CursorVisualStyle = .block,
     last_cursor_focused: bool = false,
@@ -477,6 +463,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     entry.last_cursor_visible = false;
                     entry.last_cursor_blinking = false;
                     entry.last_cursor_blink_visible = true;
+                    entry.last_cursor_password_input = false;
                     entry.last_cursor_wide_tail = false;
                     entry.last_cursor_style = .block;
                     entry.last_cursor_focused = false;
@@ -3199,10 +3186,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     fb_h: f32,
                     focused: bool,
                     layout_generation: u32,
-                    cell_width_px: u32,
-                    cell_height_px: u32,
-                    pane_pad_x: u32,
-                    pane_pad_y: u32,
                 ) PaneRenderPath {
                     _ = oy;
                     _ = fb_w;
@@ -3264,7 +3247,12 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const cursor_col = if (cursor_pos) |cp| @as(usize, cp.x) else std.math.maxInt(usize);
                     const cursor_visible = rt.cursorVisible(pane.render_state);
                     const cursor_blinking = rt.cursorBlinking(pane.render_state);
-                    const cursor_blink_visible = blinkVisibleNow(io.nanoTimestamp());
+                    const cursor_password_input = rt.cursorPasswordInput(pane.render_state);
+                    const cursor_blink_visible = cursor_pos == null or
+                        !cursor_visible or
+                        !cursor_blinking or
+                        cursor_password_input or
+                        color_math.blinkVisibleNow(io.nanoTimestamp());
                     const cursor_wide_tail = rt.cursorWideTail(pane.render_state);
                     const cursor_style = rt.cursorVisualStyle(pane.render_state);
                     const cursor_state_changed = !cache_entry.has_cursor_state or
@@ -3273,6 +3261,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         cache_entry.last_cursor_visible != cursor_visible or
                         cache_entry.last_cursor_blinking != cursor_blinking or
                         cache_entry.last_cursor_blink_visible != cursor_blink_visible or
+                        cache_entry.last_cursor_password_input != cursor_password_input or
                         cache_entry.last_cursor_wide_tail != cursor_wide_tail or
                         cache_entry.last_cursor_style != cursor_style or
                         cache_entry.last_cursor_focused != focused;
@@ -3288,11 +3277,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // avoids leaving stale cached rows visible after screen-buffer switches.
                     // .true_value dirty_level → normal content update; per-row dirty gives us the
                     //   minimal set of rows to re-render.
-                    const inner_w = if (pw_u > pane_pad_x) pw_u - pane_pad_x else 1;
-                    const inner_h = if (ph_u > pane_pad_y) ph_u - pane_pad_y else 1;
-                    const expected_cols: u16 = @intCast(@min(1000, @max(1, inner_w / @max(@as(u32, 1), cell_width_px))));
-                    const expected_rows: u16 = @intCast(@min(500, @max(1, inner_h / @max(@as(u32, 1), cell_height_px))));
-                    const size_mismatch = pane.cols != expected_cols or pane.rows != expected_rows;
+                    const expected_grid = app_ctx.paneGridSize(pane, .{ .x = 0, .y = 0, .width = pw_u, .height = ph_u });
+                    const size_mismatch = pane.cols != expected_grid.cols or pane.rows != expected_grid.rows;
                     const grid_changed = cache_entry.last_cols != pane.cols or cache_entry.last_rows != pane.rows;
                     const pty_active = pane.pty_wrote_this_frame;
                     if (grid_changed) {
@@ -3484,6 +3470,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     cache_entry.last_cursor_visible = cursor_visible;
                     cache_entry.last_cursor_blinking = cursor_blinking;
                     cache_entry.last_cursor_blink_visible = cursor_blink_visible;
+                    cache_entry.last_cursor_password_input = cursor_password_input;
                     cache_entry.last_cursor_wide_tail = cursor_wide_tail;
                     cache_entry.last_cursor_style = cursor_style;
                     cache_entry.last_cursor_focused = focused;
@@ -3507,8 +3494,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const pw: f32 = @floatFromInt(leaf.bounds.width);
                     const ph: f32 = @floatFromInt(leaf.bounds.height);
                     const focused = leaf.pane == app.activePane();
-                    const render_pad = paneRenderPadding(leaf.pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app, leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad.x, render_pad.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, leaf.pane) orelse selection_mod.selectionRange(app, leaf.pane), app.hovered_hyperlink, leaf.pane, ox, oy, pw, ph, width, height, focused, app.currentLayoutGeneration())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                             g_phase_accum_cached_frames += 1;
@@ -3538,8 +3524,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     g_phase_accum_direct_frames += 1;
                 } else {
                     // Use cached RT path
-                    const render_pad_single = paneRenderPadding(pane, &app.config);
-                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration(), app.cell_width_px, app.cell_height_px, render_pad_single.x, render_pad_single.y)) {
+                    switch (renderPane(renderer, runtime, &app.config, app, copy_mode.copyModeSelectionRange(app, pane) orelse selection_mod.selectionRange(app, pane), app.hovered_hyperlink, pane, 0, 0, width, height, width, height, true, app.currentLayoutGeneration())) {
                         .cached_dirty => {
                             g_phase_accum_dirty_frames += 1;
                         },
