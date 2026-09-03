@@ -1,6 +1,6 @@
 --- a/src/terminal/page.zig	2026-09-01 06:48:30.062414666 -0400
 +++ b/src/terminal/page.zig	2026-09-03 07:29:21.677513841 -0400
-@@ -1829,7 +1829,10 @@
+@@ -1829,6 +1829,9 @@
  pub const std_capacity: Capacity = .{
      .cols = 215,
      .rows = 215,
@@ -11,4 +11,3 @@
 +    .styles = 512,
      .grapheme_bytes = if (builtin.is_test) 512 else 8192,
  };
- 
