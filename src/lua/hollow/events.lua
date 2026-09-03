@@ -100,6 +100,16 @@ function M.setup(hollow, state, term_helpers)
   local function adapt_key_unhandled(payload)
     return { key = payload.key, mods = hollow.keymap.format_mods(payload.mods) }
   end
+  local function adapt_files_dropped(payload)
+    return {
+      paths = payload.paths,
+      pane = pane(payload.pane_id),
+      pane_id = payload.pane_id,
+      x = payload.x,
+      y = payload.y,
+      text = payload.text,
+    }
+  end
 
   local adapters = {
     ["term:tab_activated"] = adapt_tab_activated,
@@ -116,6 +126,7 @@ function M.setup(hollow, state, term_helpers)
     ["window:resized"] = adapt_window_resized,
     ["copy_mode:changed"] = adapt_copy_mode_changed,
     ["key:unhandled"] = adapt_key_unhandled,
+    ["window:files_dropped"] = adapt_files_dropped,
   }
 
   local function adapt_builtin_payload(name, payload)

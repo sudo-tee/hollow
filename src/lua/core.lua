@@ -151,6 +151,19 @@ function hollow.on_gui_ready(handler)
   return host_api.on_gui_ready(handler)
 end
 
+function hollow.on_file_drop(handler)
+  if handler == nil then
+    return host_api.on_file_drop(nil)
+  end
+  if type(handler) ~= "function" then
+    error("hollow.on_file_drop expects a function or nil")
+  end
+  return host_api.on_file_drop(function(payload)
+    payload.pane = hollow.term.pane_by_id(payload.pane_id)
+    return handler(payload)
+  end)
+end
+
 hollow.on_gui_ready(function()
   events_runtime.emit_event("gui:ready", {}, true)
   hollow.workspace.auto_bootstrap()

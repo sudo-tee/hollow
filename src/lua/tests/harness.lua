@@ -24,6 +24,7 @@ package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
 
 local function make_host_api()
   local key_handler = nil
+  local file_drop_handler = nil
   local gui_ready_handler = nil
   local deferred = {}
   local recorded = {
@@ -97,6 +98,10 @@ local function make_host_api()
 
   function host_api.on_key(callback)
     key_handler = callback
+  end
+
+  function host_api.on_file_drop(callback)
+    file_drop_handler = callback
   end
 
   function host_api.on_gui_ready(callback)
@@ -752,6 +757,9 @@ local function make_host_api()
       return key_handler
     end,
     function()
+      return file_drop_handler
+    end,
+    function()
       return gui_ready_handler
     end,
     function()
@@ -768,7 +776,8 @@ end
 function harness.boot()
   reset_modules()
 
-  local host_api, recorded, get_key_handler, get_gui_ready_handler, flush_deferred = make_host_api()
+  local host_api, recorded, get_key_handler, get_file_drop_handler, get_gui_ready_handler, flush_deferred =
+    make_host_api()
   _G.host_api = host_api
 
   require("core")
@@ -782,6 +791,7 @@ function harness.boot()
     hollow = hollow,
     state = state,
     get_key_handler = get_key_handler,
+    get_file_drop_handler = get_file_drop_handler,
     get_gui_ready_handler = get_gui_ready_handler,
     flush_deferred = flush_deferred,
   }

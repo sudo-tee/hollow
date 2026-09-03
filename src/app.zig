@@ -440,6 +440,21 @@ pub const App = struct {
         return self.enqueueMouse(ev);
     }
 
+    /// Takes ownership of encoded paths, releasing them if the input queue is full.
+    pub fn enqueueFileDrop(self: *App, paths: []u8, x: f32, y: f32) bool {
+        var ev: input.PendingInputEvent = .{ .file_drop = .{ .paths = paths, .x = x, .y = y } };
+        if (!self.enqueueMouse(ev)) {
+            input.deinitPendingInputEvent(self.allocator, &ev);
+            return false;
+        }
+        return true;
+    }
+
+    pub fn fireFileDrop(self: *App, paths: []const []const u8, pane_id: usize, x: f32, y: f32, text: []const u8) lua_mod.FileDropAction {
+        if (self.lua) |*lua| return lua.fireOnFileDrop(paths, pane_id, x, y, text);
+        return .default;
+    }
+
     pub fn currentAutomationRevision(self: *App) u64 {
         self.automation_mutex.lockUncancelable(io.get());
         defer self.automation_mutex.unlock(io.get());

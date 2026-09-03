@@ -579,6 +579,13 @@ pub const BuiltInPayload = union(enum) {
         key: []const u8,
         mods: u32,
     },
+    files_dropped: struct {
+        paths: []const []const u8,
+        pane_id: usize,
+        x: f32,
+        y: f32,
+        text: []const u8,
+    },
     topbar_node: struct {
         id: []const u8,
     },
@@ -620,6 +627,12 @@ pub const BuiltInPayload = union(enum) {
     workspace_closed: struct {
         name: []const u8,
     },
+};
+
+pub const FileDropAction = union(enum) {
+    default,
+    consume,
+    text: []u8,
 };
 
 pub const QuickSelectMatch = struct {
@@ -829,6 +842,7 @@ pub const Runtime = struct {
         if (self.lua_sources) |*sources| sources.deinit(self.allocator);
         if (self.context.pending_workspace_name) |name| self.allocator.free(name);
         if (self.context.on_key_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.on_key_ref);
+        if (self.context.on_file_drop_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.on_file_drop_ref);
         if (self.context.top_bar_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.top_bar_ref);
         if (self.context.workspace_title_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.workspace_title_ref);
         if (self.context.status_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.status_ref);
@@ -994,6 +1008,67 @@ pub const Runtime = struct {
         }
         pop(api, self.state, 1);
         return false;
+    }
+
+    /// Fire the Lua file-drop handler. A nil/true return uses default handling,
+    /// false consumes the drop, and a string replaces the default paste text.
+    pub fn fireOnFileDrop(self: *Runtime, paths: []const []const u8, pane_id: usize, x: f32, y: f32, text: []const u8) FileDropAction {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const ref = self.context.on_file_drop_ref;
+        if (ref == LUA_NOREF) return .default;
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+            pop(api, self.state, 1);
+            return .default;
+        }
+
+        const payload_top = api.get_top(self.state);
+        pushFileDropPayload(self.allocator, api, self.state, paths, pane_id, x, y, text) catch {
+            api.set_top(self.state, payload_top - 1);
+            return .default;
+        };
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            var err_len: usize = 0;
+            const err_ptr = api.to_lstring(self.state, -1, &err_len);
+            const err_str = if (err_ptr) |ptr| ptr[0..err_len] else "unknown";
+            std.log.err("fireOnFileDrop: pcall failed err={s}", .{err_str});
+            pop(api, self.state, 1);
+            return .default;
+        }
+
+        const result_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        switch (result_type) {
+            .nil_type => {
+                pop(api, self.state, 1);
+                return .default;
+            },
+            .boolean => {
+                const consume = api.to_boolean(self.state, -1) == 0;
+                pop(api, self.state, 1);
+                return if (consume) .consume else .default;
+            },
+            .string => {
+                var len: usize = 0;
+                const ptr = api.to_lstring(self.state, -1, &len) orelse {
+                    pop(api, self.state, 1);
+                    return .default;
+                };
+                const replacement = self.allocator.dupe(u8, ptr[0..len]) catch {
+                    pop(api, self.state, 1);
+                    return .default;
+                };
+                pop(api, self.state, 1);
+                return .{ .text = replacement };
+            },
+            else => {
+                std.log.warn("fireOnFileDrop: handler must return nil, boolean, or string", .{});
+                pop(api, self.state, 1);
+                return .default;
+            },
+        }
     }
 
     pub fn isLeaderActive(self: *Runtime) bool {
@@ -2260,6 +2335,7 @@ const BridgeContext = struct {
     key_queue: std.ArrayListUnmanaged(struct { key: [:0]const u8, mods: [:0]const u8 }) = .empty,
     key_queue_blocked: bool = false,
     on_key_ref: c_int = -1,
+    on_file_drop_ref: c_int = -1,
     top_bar_ref: c_int = -1,
     workspace_title_ref: c_int = -1,
     status_ref: c_int = -1,
@@ -2400,6 +2476,24 @@ fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value:
     api.push_string(state, zvalue);
 }
 
+fn pushFileDropPayload(allocator: std.mem.Allocator, api: Api, state: *State, paths: []const []const u8, pane_id: usize, x: f32, y: f32, text: []const u8) !void {
+    api.create_table(state, 0, 5);
+    api.create_table(state, 0, @intCast(paths.len));
+    for (paths, 0..) |path, index| {
+        try pushOwnedString(allocator, api, state, path);
+        api.rawseti(state, -2, @intCast(index + 1));
+    }
+    api.set_field(state, -2, "paths");
+    api.push_number(state, @floatFromInt(pane_id));
+    api.set_field(state, -2, "pane_id");
+    api.push_number(state, x);
+    api.set_field(state, -2, "x");
+    api.push_number(state, y);
+    api.set_field(state, -2, "y");
+    try pushOwnedString(allocator, api, state, text);
+    api.set_field(state, -2, "text");
+}
+
 fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, payload: BuiltInPayload) !void {
     switch (payload) {
         .none => api.create_table(state, 0, 0),
@@ -2467,6 +2561,9 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "key");
             api.push_number(state, @floatFromInt(value.mods));
             api.set_field(state, -2, "mods");
+        },
+        .files_dropped => |value| {
+            try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
         .topbar_node => |value| {
             api.create_table(state, 0, 1);
@@ -6472,6 +6569,35 @@ fn l_on_key(state: *State) callconv(.c) c_int {
     // The function is at stack index 1 (top). luaL_ref pops it and returns a ref.
     ctx.on_key_ref = api.ref(state, LUA_REGISTRYINDEX);
     std.log.info("lua: on_key handler registered", .{});
+    return 0;
+}
+
+/// hollow.on_file_drop(fn(event) -> nil|boolean|string)
+/// Registers the handler used for dropped files. nil/true keeps default
+/// insertion, false consumes the drop, and a string replaces inserted text.
+fn l_on_file_drop(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+
+    if (arg_type == .nil_type) {
+        if (ctx.on_file_drop_ref != LUA_NOREF) {
+            api.unref(state, LUA_REGISTRYINDEX, ctx.on_file_drop_ref);
+            ctx.on_file_drop_ref = LUA_NOREF;
+        }
+        return 0;
+    }
+
+    if (arg_type != .function) {
+        std.log.err("lua: on_file_drop expects a function or nil", .{});
+        return 0;
+    }
+
+    if (ctx.on_file_drop_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.on_file_drop_ref);
+    }
+    ctx.on_file_drop_ref = api.ref(state, LUA_REGISTRYINDEX);
+    std.log.info("lua: on_file_drop handler registered", .{});
     return 0;
 }
 

@@ -28,6 +28,7 @@ const LayoutLeaf = @import("../mux.zig").LayoutLeaf;
 const PaneBounds = @import("../mux.zig").PaneBounds;
 
 const CLIPBOARD_EVENT_MAX = 8192;
+pub const MAX_DROPPED_FILES = 8;
 
 /// An event captured on the sokol event thread, to be dispatched
 /// on the frame thread inside tick() to avoid data races into the ghostty DLL.
@@ -165,6 +166,12 @@ pub const PendingInputEvent = union(enum) {
         bytes: [5]u8,
         len: u8,
     },
+    /// Files dropped onto the window, stored as NUL-delimited UTF-8 paths.
+    file_drop: struct {
+        paths: []u8,
+        x: f32,
+        y: f32,
+    },
     selection_begin: struct {
         pane: *Pane,
         point: selection.CellPoint,
@@ -246,6 +253,7 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
             if (payload.cwd) |value| allocator.free(value);
             if (payload.command) |value| allocator.free(value);
         },
+        .file_drop => |drop| allocator.free(drop.paths),
         .copy_mode_search_set_query => |value| allocator.free(value),
         else => {},
     }
@@ -462,6 +470,52 @@ pub fn processInputQueue(self: *App) void {
                     };
                 }
             },
+            .file_drop => |drop| {
+                var path_buf: [MAX_DROPPED_FILES][]const u8 = undefined;
+                const paths = decodeDroppedFiles(drop.paths, &path_buf);
+                if (paths.len == 0) return;
+
+                const hit = self.hitTestPane(drop.x, drop.y) orelse return;
+                if (self.mux) |*mux| {
+                    const previous = mux.activePane();
+                    mux.setActivePane(hit.pane);
+                    self.syncActivePaneChange(previous, hit.pane);
+                }
+
+                const text = formatDroppedFiles(self.allocator, paths) catch |err| {
+                    std.log.err("format dropped files failed: {s}", .{@errorName(err)});
+                    return;
+                };
+                defer self.allocator.free(text);
+
+                self.emitLuaBuiltInEvent("window:files_dropped", .{ .files_dropped = .{
+                    .paths = paths,
+                    .pane_id = @intFromPtr(hit.pane),
+                    .x = drop.x,
+                    .y = drop.y,
+                    .text = text,
+                } });
+                const action = self.fireFileDrop(paths, @intFromPtr(hit.pane), drop.x, drop.y, text);
+                switch (action) {
+                    .consume => return,
+                    .text => |replacement| {
+                        defer self.allocator.free(replacement);
+                        mux_ops.sendPaste(self, replacement) catch |err| {
+                            std.log.err("file drop replacement failed: {s}", .{@errorName(err)});
+                        };
+                        return;
+                    },
+                    .default => {},
+                }
+
+                if (hit.pane.is_remote) {
+                    std.log.warn("file drop ignored for remote pane", .{});
+                    return;
+                }
+                mux_ops.sendPaste(self, text) catch |err| {
+                    std.log.err("file drop failed: {s}", .{@errorName(err)});
+                };
+            },
             .scroll_pane_delta => |scroll_ev| {
                 if (self.hasPane(scroll_ev.pane)) {
                     if (self.copy_mode_active and self.copy_mode_pane == scroll_ev.pane) {
@@ -570,6 +624,71 @@ pub fn processInputQueue(self: *App) void {
     if (processed_event) self.markAutomationChanged();
 
     cmd_ipc.drainPendingCommand(self);
+}
+
+pub fn formatDroppedFiles(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+    var formatted = std.ArrayList(u8).empty;
+    errdefer formatted.deinit(allocator);
+
+    for (paths) |path| {
+        if (path.len == 0) continue;
+        if (formatted.items.len > 0) try formatted.append(allocator, ' ');
+
+        const needs_quotes = std.mem.indexOfAny(u8, path, " \t") != null;
+        if (needs_quotes) try formatted.append(allocator, '"');
+        try formatted.appendSlice(allocator, path);
+        if (needs_quotes) try formatted.append(allocator, '"');
+    }
+
+    return formatted.toOwnedSlice(allocator);
+}
+
+pub fn encodeDroppedFiles(allocator: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+    var encoded = std.ArrayList(u8).empty;
+    errdefer encoded.deinit(allocator);
+
+    for (paths) |path| {
+        if (path.len == 0) continue;
+        try encoded.appendSlice(allocator, path);
+        try encoded.append(allocator, 0);
+    }
+
+    return encoded.toOwnedSlice(allocator);
+}
+
+pub fn decodeDroppedFiles(encoded: []const u8, paths: *[MAX_DROPPED_FILES][]const u8) []const []const u8 {
+    var count: usize = 0;
+    var iter = std.mem.splitScalar(u8, encoded, 0);
+    while (iter.next()) |path| {
+        if (path.len == 0) continue;
+        paths[count] = path;
+        count += 1;
+    }
+    return paths[0..count];
+}
+
+test "formatDroppedFiles joins paths and quotes whitespace" {
+    const allocator = std.testing.allocator;
+    const formatted = try formatDroppedFiles(allocator, &.{
+        "C:\\tmp\\one.txt",
+        "C:\\tmp\\two files.txt",
+        "",
+    });
+    defer allocator.free(formatted);
+
+    try std.testing.expectEqualStrings("C:\\tmp\\one.txt \"C:\\tmp\\two files.txt\"", formatted);
+}
+
+test "encodeDroppedFiles preserves paths" {
+    const allocator = std.testing.allocator;
+    const encoded = try encodeDroppedFiles(allocator, &.{ "C:\\tmp\\one.txt", "C:\\tmp\\two files.txt" });
+    defer allocator.free(encoded);
+
+    var path_buf: [MAX_DROPPED_FILES][]const u8 = undefined;
+    const paths = decodeDroppedFiles(encoded, &path_buf);
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    try std.testing.expectEqualStrings("C:\\tmp\\one.txt", paths[0]);
+    try std.testing.expectEqualStrings("C:\\tmp\\two files.txt", paths[1]);
 }
 
 pub fn hasVisualActivityAt(self: *App, now_ns: i128, check_panes: bool) bool {
