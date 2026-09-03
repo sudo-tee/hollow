@@ -2181,10 +2181,9 @@ pub const App = struct {
             // Validate the cached node pointer is still in the active tree
             // before dereferencing it.  Tree mutations can free the node.
             if (self.isSplitNodeValid(node)) {
-                std.log.info("flushPendingLayoutResize apply node={x} ratio={d:.4}", .{ @intFromPtr(node), self.pending_split_ratio });
                 node.ratio = self.pending_split_ratio;
             } else {
-                std.log.info("flushPendingLayoutResize: node={x} no longer valid, skipping ratio update", .{@intFromPtr(node)});
+                std.log.warn("flushPendingLayoutResize: split node no longer valid, skipping ratio update", .{});
             }
             self.pending_split_ratio_node = null;
         }
@@ -2196,13 +2195,6 @@ pub const App = struct {
                         const bounds = self.activeLayoutBounds();
                         if (mux_mod.boundsForNode(root, pending.node, bounds, self.cell_width_px, self.cell_height_px)) |node_bounds| {
                             const corrected_new_ratio = mux_ops.snapSplitRatio(self, pending.ratio, pending.node.direction, .{ .x = 0, .y = 0, .width = node_bounds.width, .height = node_bounds.height });
-                            std.log.info("split-trace post dir={s} requested={d:.4} corrected={d:.4} node_bounds={d}x{d}", .{
-                                @tagName(pending.direction),
-                                pending.ratio,
-                                corrected_new_ratio,
-                                node_bounds.width,
-                                node_bounds.height,
-                            });
                             pending.node.ratio = std.math.clamp(1.0 - corrected_new_ratio, 0.05, 0.95);
                         }
                     }
@@ -2211,7 +2203,6 @@ pub const App = struct {
             self.pending_post_split_snap = null;
         }
         if (self.ghostty) |*runtime| {
-            std.log.info("flushPendingLayoutResize resizeAllPanes window={d}x{d}", .{ self.config.window_width, self.config.window_height });
             self.resizeAllPanes(runtime, self.config.window_width, self.config.window_height, recreate_render_helpers, false, skip_unchanged_pty);
         }
     }
