@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # setup.sh — one-shot project setup
 #   1. init/update git submodules
-#   2. apply local patches to submodules
-#   3. fetch missing Windows DLLs (Windows / WSL only)
+#   2. fetch Zig package dependencies
+#   3. apply local patches to dependencies
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
 BUSTED_VERSION="${BUSTED_VERSION:-2.3.0}"
+GHOSTTY_PACKAGE="ghostty-1.3.2-dev-5UdBC5IaYwVyfcHCaI4PuMgztS2dk33KSpuhjyLhQjCb"
 
 "$SCRIPT_DIR/check-zig-version.sh"
 
@@ -30,7 +31,20 @@ fi
 echo "[setup] initialising submodules..."
 git -C "$ROOT" submodule update --init --recursive
 
-# ── 2. Patches ───────────────────────────────────────────────────────────────
+# ── 2. Zig packages ─────────────────────────────────────────────────────────
+echo "[setup] fetching Zig package dependencies..."
+(
+  cd "$ROOT"
+  zig build --fetch=needed
+)
+
+if [[ "$(<"$ROOT/build.zig.zon")" != *".hash = \"$GHOSTTY_PACKAGE\""* ]]; then
+  echo "[setup] ERROR: GHOSTTY_PACKAGE does not match build.zig.zon" >&2
+  echo "[setup]   update scripts/setup.sh and the Ghostty patch with the package pin" >&2
+  exit 1
+fi
+
+# ── 3. Patches ───────────────────────────────────────────────────────────────
 apply_patch() {
   local submodule_path="$1" # relative to project root, e.g. third_party/sokol
   local patch_file="$2"     # absolute path to .patch file
@@ -58,6 +72,32 @@ apply_patch() {
   fi
 }
 
+apply_package_patch() {
+  local package_path="$1" # relative to project root, e.g. zig-pkg/ghostty-...
+  local patch_file="$2"   # absolute path to .patch file
+  local abs_path="$ROOT/$package_path"
+
+  if [[ ! -d "$abs_path" ]]; then
+    echo "[setup] package not found after fetch: $package_path" >&2
+    return 1
+  fi
+  if [[ ! -f "$patch_file" ]]; then
+    echo "[setup] patch not found: $patch_file" >&2
+    return 1
+  fi
+
+  if git -C "$ROOT" apply --check --directory="$package_path" "$patch_file" 2>/dev/null; then
+    echo "[setup] applying patch: $(basename "$patch_file") → $package_path"
+    git -C "$ROOT" apply --directory="$package_path" "$patch_file"
+  elif git -C "$ROOT" apply --reverse --check --directory="$package_path" "$patch_file" 2>/dev/null; then
+    echo "[setup] patch already applied: $(basename "$patch_file")"
+  else
+    echo "[setup] ERROR: patch $(basename "$patch_file") does not apply cleanly to $package_path" >&2
+    echo "[setup]   package pin and patch must be updated together" >&2
+    return 1
+  fi
+}
+
 apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
 apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-image-region.patch"
 
@@ -74,3 +114,8 @@ apply_patch "third_party/luajit-upstream" "$PATCHES_DIR/luajit-relver.patch"
 # @intCast(wd) panics on a watch failure. Patched locally until upstream ships
 # a fix.
 apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-inotify-fix.patch"
+
+# Ghostty is a build.zig.zon package rather than a git submodule. The package
+# name includes the pinned content hash, so dependency updates fail here until
+# the patch and package constant are updated together.
+apply_package_patch "zig-pkg/$GHOSTTY_PACKAGE" "$PATCHES_DIR/ghostty-style-set-thrash.patch"

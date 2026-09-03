@@ -62,7 +62,7 @@ require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 already pinned.
 
 ```
-./scripts/setup.sh        # first-time submodule init
+./scripts/setup.sh        # fetch and patch dependencies
 ./launch.sh               # Windows cross-build + run
 zig build run             # non-Windows build + run
 ```
