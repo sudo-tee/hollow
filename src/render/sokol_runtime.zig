@@ -4565,6 +4565,11 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         return;
     }
 
+    if (event.type == c.SAPP_EVENTTYPE_FILES_DROPPED) {
+        handleFilesDropped(app, event);
+        return;
+    }
+
     if (event.type == c.SAPP_EVENTTYPE_QUIT_REQUESTED) {
         std.log.info("sokol quit requested", .{});
     }
@@ -4653,6 +4658,24 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
         c.SAPP_EVENTTYPE_QUIT_REQUESTED => app.pending_quit = true,
         else => {},
     }
+}
+
+fn handleFilesDropped(app: *App, event: c.sapp_event) void {
+    var paths: [input.MAX_DROPPED_FILES][]const u8 = undefined;
+    const count: usize = @intCast(c.sapp_get_num_dropped_files());
+    for (0..count) |index| {
+        paths[index] = std.mem.span(c.sapp_get_dropped_file_path(@intCast(index)));
+    }
+
+    const encoded = input.encodeDroppedFiles(app.allocator, paths[0..count]) catch |err| {
+        std.log.err("encode dropped files failed: {s}", .{@errorName(err)});
+        return;
+    };
+    if (encoded.len == 0) {
+        app.allocator.free(encoded);
+        return;
+    }
+    _ = app.enqueueFileDrop(encoded, event.mouse_x, event.mouse_y);
 }
 
 fn flushPendingMouseMove(app: *App) void {

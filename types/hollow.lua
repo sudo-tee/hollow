@@ -160,6 +160,7 @@
 ---| "term:bell"
 ---| "key:unhandled"
 ---| "window:resized"
+---| "window:files_dropped"
 ---| "window:focused"
 ---| "window:blurred"
 ---| "copy_mode:changed"
@@ -199,6 +200,7 @@
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["key:unhandled"] { key: string, mods: string }
 ---@field ["window:resized"] { size: HollowSize }
+---@field ["window:files_dropped"] HollowFileDropEvent
 ---@field ["window:focused"] {}
 ---@field ["window:blurred"] {}
 ---@field ["copy_mode:changed"] { active: boolean, query: string, match_count: integer, match_index: integer|nil, selecting: boolean, block: boolean }
@@ -435,6 +437,16 @@
 ---@field foreground_process string
 ---@field tags string[]
 ---@field size HollowSize
+
+---@class HollowFileDropEvent
+---@field paths string[] Original UTF-8 paths reported by the operating system
+---@field pane HollowPane|nil Pane under drop position
+---@field pane_id integer
+---@field x number Window x coordinate
+---@field y number Window y coordinate
+---@field text string Default shell input text
+---@alias HollowFileDropResult nil|boolean|string
+---@alias HollowFileDropHandler fun(event: HollowFileDropEvent): HollowFileDropResult
 
 ---@class HollowTab
 ---@field id integer
@@ -1990,6 +2002,7 @@ function plugins.sync() end
 
 ---@field json_decode fun(text: string): any
 ---@field on_key fun(handler: fun(key: string, mods: integer): boolean)
+---@field on_file_drop fun(handler: HollowFileDropHandler|nil)
 ---@field split_pane fun(opts_or_direction: HollowSplitPaneOpts|string, ratio?: number, domain?: string)
 ---@field toggle_pane_maximized fun(pane_id?: integer, show_background?: boolean)
 ---@field set_pane_floating fun(pane_id?: integer, floating?: boolean)
@@ -2043,6 +2056,7 @@ function plugins.sync() end
 ---@field plugins HollowPluginsNamespace
 ---@field platform HollowPlatformInfo
 ---@field on_gui_ready fun(handler: fun())
+---@field on_file_drop fun(handler: HollowFileDropHandler|nil)
 ---@field log fun(...: any)
 ---@field inspect fun(value: any): string
 ---@field read_dir fun(path: string): string[]

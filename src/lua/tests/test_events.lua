@@ -35,6 +35,76 @@ describe("events test suite", function()
       end)
       harness.assert_true(not built_in_error, "built-in events should not be emitted from Lua")
     end)
+
+    it("adapts file-drop paths and pane", function()
+      local file_drop_event
+      hollow.events.once("window:files_dropped", function(payload)
+        file_drop_event = payload
+      end)
+      hollow._emit_builtin_event("window:files_dropped", {
+        paths = { "C:\\tmp\\one.txt", "C:\\tmp\\two files.txt" },
+        pane_id = 101,
+        x = 42,
+        y = 24,
+        text = 'C:\\tmp\\one.txt "C:\\tmp\\two files.txt"',
+      })
+      harness.assert_equal(
+        file_drop_event.pane.id,
+        101,
+        "file-drop event should expose pane snapshot"
+      )
+      harness.assert_equal(
+        file_drop_event.paths[2],
+        "C:\\tmp\\two files.txt",
+        "file-drop event should expose original paths"
+      )
+      harness.assert_equal(
+        file_drop_event.text,
+        'C:\\tmp\\one.txt "C:\\tmp\\two files.txt"',
+        "file-drop event should expose default text"
+      )
+    end)
+  end)
+
+  describe("file-drop handler", function()
+    it("receives pane and can consume drop", function()
+      local received
+      hollow.on_file_drop(function(payload)
+        received = payload
+        return false
+      end)
+      local handler = env.get_file_drop_handler()
+      local result = handler({
+        pane_id = 101,
+        paths = { "C:\\tmp\\one.txt" },
+        text = "C:\\tmp\\one.txt",
+        x = 1,
+        y = 2,
+      })
+      harness.assert_true(result == false, "file-drop handler should return consume decision")
+      harness.assert_equal(received.pane.id, 101, "file-drop handler should expose pane snapshot")
+      hollow.on_file_drop(nil)
+    end)
+
+    it("can replace default insertion text", function()
+      hollow.on_file_drop(function()
+        return "/mnt/project/one.txt"
+      end)
+      local handler = env.get_file_drop_handler()
+      local result = handler({
+        pane_id = 101,
+        paths = { "C:\\tmp\\one.txt" },
+        text = "C:\\tmp\\one.txt",
+        x = 1,
+        y = 2,
+      })
+      harness.assert_equal(
+        result,
+        "/mnt/project/one.txt",
+        "file-drop handler should return replacement text"
+      )
+      hollow.on_file_drop(nil)
+    end)
   end)
 
   describe("term:title_changed", function()

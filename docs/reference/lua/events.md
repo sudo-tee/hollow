@@ -40,6 +40,7 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
 | `key:unhandled` | `{ key, mods }` |
 | `window:resized` | `{ size }` (`size` has `rows`, `cols`, `width`, `height`) |
+| `window:files_dropped` | `{ paths, pane, pane_id, x, y, text }` |
 | `window:focused` | (empty) |
 | `window:blurred` | (empty) |
 | `copy_mode:changed` | `{ active, query?, match_count?, match_index?, selecting?, block? }` |
@@ -54,6 +55,29 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane
 receives focus.
+
+## File-drop handling
+
+Use `hollow.on_file_drop` to customize what happens after a file drop.
+The handler receives the same payload as `window:files_dropped`.
+
+```lua
+hollow.on_file_drop(function(e)
+  local paths = {}
+  for i, path in ipairs(e.paths) do
+    paths[i] = path:gsub("^([A-Za-z]):\\", "/mnt/%1/"):gsub("\\", "/")
+  end
+  return table.concat(paths, " ")
+end)
+```
+
+Return `nil` or `true` to use default insertion, `false` to consume
+the drop, or a string to replace inserted text. The default handler
+quotes paths containing spaces and inserts them into pane under drop.
+Default insertion is skipped for remote panes, but handler can transfer
+files and return replacement text (or send its own text to `pane_id`).
+`window:files_dropped` is observational; use `hollow.on_file_drop`
+when handler must replace or suppress default insertion.
 
 ## Examples
 

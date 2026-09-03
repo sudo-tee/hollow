@@ -56,6 +56,7 @@ function M.new(host_api)
         ["term:bell"] = true,
         ["key:unhandled"] = true,
         ["window:resized"] = true,
+        ["window:files_dropped"] = true,
         ["window:focused"] = true,
         ["window:blurred"] = true,
         ["topbar:hover"] = true,
