@@ -1716,6 +1716,19 @@ pub const App = struct {
         };
     }
 
+    pub const PaneGridSize = struct {
+        cols: u16,
+        rows: u16,
+    };
+
+    pub fn paneGridSize(self: *const App, pane: *const Pane, bounds: PaneBounds) PaneGridSize {
+        const inner = self.paneInnerBounds(pane, bounds);
+        return .{
+            .cols = @intCast(@min(1000, @max(1, inner.width / @max(1, self.cell_width_px)))),
+            .rows = @intCast(@min(500, @max(1, inner.height / @max(1, self.cell_height_px)))),
+        };
+    }
+
     pub fn hitTestPane(self: *App, x: f32, y: f32) ?HitTestResult {
         var layout_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
         const leaves = self.computeActiveLayout(&layout_buf);
@@ -2624,11 +2637,7 @@ pub const App = struct {
                     // is very small or during layout transitions.
                     if (leaf.bounds.width == 0 or leaf.bounds.height == 0) continue;
                     const inner = self.paneInnerBounds(leaf.pane, leaf.bounds);
-                    const raw_cols: u32 = inner.width / @max(1, self.cell_width_px);
-                    const raw_rows: u32 = inner.height / @max(1, self.cell_height_px);
-                    // Cap at sane max to prevent DLL crashes on extreme values.
-                    const cols: u16 = @intCast(@min(1000, @max(1, raw_cols)));
-                    const rows: u16 = @intCast(@min(500, @max(1, raw_rows)));
+                    const grid = self.paneGridSize(leaf.pane, leaf.bounds);
                     if (recreate_render_helpers or !leaf.pane.hasRenderHelpers()) {
                         leaf.pane.recreateRenderHelpers(runtime);
                     }
@@ -2636,8 +2645,8 @@ pub const App = struct {
                     leaf.pane.height_px = leaf.bounds.height;
                     leaf.pane.x_px = leaf.bounds.x;
                     leaf.pane.y_px = leaf.bounds.y;
-                    const pane_skip_pty = skip_pty or (skip_unchanged_pty and leaf.pane.cols == cols and leaf.pane.rows == rows);
-                    leaf.pane.resize(runtime, cols, rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
+                    const pane_skip_pty = skip_pty or (skip_unchanged_pty and leaf.pane.cols == grid.cols and leaf.pane.rows == grid.rows);
+                    leaf.pane.resize(runtime, grid.cols, grid.rows, self.cell_width_px, self.cell_height_px, pane_skip_pty);
                     const actual_left = inner.x - leaf.bounds.x;
                     const actual_top = inner.y - leaf.bounds.y;
                     const actual_right = leaf.bounds.width - actual_left - inner.width;
@@ -2653,8 +2662,8 @@ pub const App = struct {
                             actual_right,
                             actual_bottom,
                             actual_left,
-                            rows,
-                            cols,
+                            grid.rows,
+                            grid.cols,
                         });
                     }
                     leaf.pane.setMouseSize(
