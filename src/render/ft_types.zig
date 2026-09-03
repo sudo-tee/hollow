@@ -202,7 +202,7 @@ pub const CachedStyleInfo = struct {
     overline: bool,
 };
 
-pub const STYLE_CACHE_SIZE = 1024;
+pub const STYLE_CACHE_SIZE = 2048;
 
 // ── Cache key types ───────────────────────────────────────────────────────────
 

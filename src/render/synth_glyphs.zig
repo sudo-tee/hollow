@@ -45,7 +45,7 @@ pub const SynthesizedResult = struct {
 // ── Codepoint predicates ──────────────────────────────────────────────────────
 
 pub fn isSynthesizedTerminalCodepoint(cp: u32) bool {
-    return isBoxDrawingCodepoint(cp) or isBlockElementCodepoint(cp) or isQuadrantCodepoint(cp) or isGeometricShapeCodepoint(cp) or synthesizedTerminalRect(1.0, 1.0, cp) != null;
+    return isBoxDrawingCodepoint(cp) or isBlockElementCodepoint(cp) or isQuadrantCodepoint(cp) or isGeometricShapeCodepoint(cp);
 }
 
 pub fn isBoxDrawingCodepoint(cp: u32) bool {
@@ -96,6 +96,13 @@ pub fn drawSynthesizedTerminalCodepoint(x: f32, y: f32, cell_w: f32, cell_h: f32
 
 pub fn synthesizedTerminalRect(cell_w: f32, cell_h: f32, cp: u32) ?SynthesizedResult {
     if (cell_w <= 0.0 or cell_h <= 0.0) return null;
+
+    // Reject ordinary codepoints before doing geometry work. This function is
+    // also used as a fallback from the per-cell glyph path.
+    switch (cp) {
+        0x2580...0x2595 => {},
+        else => return null,
+    }
 
     const eighth_w = @max(1.0, @round(cell_w / 8.0));
     const quarter_w = @max(1.0, @round(cell_w / 4.0));
