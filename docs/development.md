@@ -36,9 +36,8 @@ mise install
 ./scripts/setup.sh
 ```
 
-`setup.sh` initializes submodules, then re-applies the project patches
-in `patches/` to `third_party/sokol` and `third_party/lua-zluajit`.
-Re-run it any time the submodules change.
+`setup.sh` initializes submodules, fetches Zig packages, then re-applies the project patches in `patches/` to their pinned dependency sources.
+Re-run it any time dependency pins change or `zig-pkg/` is regenerated.
 
 ## Build and run
 

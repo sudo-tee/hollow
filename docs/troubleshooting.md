@@ -31,8 +31,8 @@ The Linux build is currently broken and not a validated target. See
 
 ### Submodule drift after a pull
 
-Run `./scripts/setup.sh` again. It re-applies the project patches in
-`patches/` to `third_party/sokol` and `third_party/lua-zluajit`.
+Run `./scripts/setup.sh` again.
+It fetches missing Zig packages and reapplies project patches in `patches/` to pinned submodule and package sources.
 
 ## Runtime
 
