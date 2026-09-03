@@ -4070,6 +4070,10 @@ fn applyBoolean(cfg: *config.Config, key: []const u8, value: bool) !void {
         cfg.synchronized_output = value;
         return;
     }
+    if (std.mem.eql(u8, key, "alternate_screen_resize_nudge")) {
+        cfg.alternate_screen_resize_nudge = value;
+        return;
+    }
     if (std.mem.eql(u8, key, "vsync")) {
         cfg.vsync = value;
         return;

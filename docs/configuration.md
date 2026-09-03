@@ -125,6 +125,7 @@ hollow.config.set({
   idle_max_fps = 15,
   vsync = false,
   synchronized_output = true,
+  alternate_screen_resize_nudge = true,
   backend = "sokol",           -- primary renderer backend
   command_timing = false,
   debug_overlay = false,
@@ -135,6 +136,10 @@ hollow.config.set({
 `synchronized_output` holds the last presented terminal frame while an
 application uses DEC synchronized output mode (`CSI ? 2026 h/l`). Set it to
 `false` to disable that visual hold; Hollow still parses and tracks mode 2026.
+
+`alternate_screen_resize_nudge` sends a delayed one-row resize cycle after
+entering alternate screen. Set it to `false` to disable that compatibility
+nudge when measuring alternate-screen throughput.
 
 ### Default keymaps
 
