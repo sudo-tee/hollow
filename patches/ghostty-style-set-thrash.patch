@@ -7,7 +7,7 @@
 -    .styles = 128,
 +    // 128 is too small for style-heavy TUI output: a single 200x60 screen
 +    // can hold 100+ live styles and exhaust the set during repaint churn.
-+    // 512 provides bounded headroom above observed style-heavy workloads.
-+    .styles = 512,
++    // 1024 provides bounded headroom above observed style-heavy workloads.
++    .styles = 1024,
      .grapheme_bytes = if (builtin.is_test) 512 else 8192,
  };
