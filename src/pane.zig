@@ -609,10 +609,7 @@ pub const Pane = struct {
 
                 {
                     var active_screen: u32 = 0;
-                    const as_result = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.active_screen), &active_screen);
-                    if (active_screen != self.active_screen) {
-                        std.log.info("pane active_screen changed {d} -> {d} (get_result={d})", .{ self.active_screen, active_screen, as_result });
-                    }
+                    _ = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.active_screen), &active_screen);
                     self.active_screen = active_screen;
                 }
 
@@ -1954,7 +1951,6 @@ pub const Pane = struct {
                 path = path[idx..];
             }
         }
-        std.log.info("pane: received OSC 7 cwd: {s}", .{path});
         self.setCwd(path);
         self.cwd_dirty = true;
     }

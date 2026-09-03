@@ -213,7 +213,6 @@ fn fileLogFn(
         if (!seekLogWriterToEnd(f, &file_writer)) return;
         file_writer.interface.writeAll(w.buffered()) catch {};
         file_writer.interface.flush() catch {};
-        f.sync(io.get()) catch {};
     }
 }
 

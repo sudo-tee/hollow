@@ -247,7 +247,7 @@ var g_phase_last_log_ns: i128 = 0;
 // Row-level dirty counters (reset every log interval).
 var g_phase_accum_rows_rendered: usize = 0;
 var g_phase_accum_rows_skipped: usize = 0;
-// Sub-offscreen split: CPU cell-iteration vs GPU flush.
+// Terminal timing nested within offscreen: queue work and draw-pass submission.
 var g_phase_accum_queue_ns: i128 = 0;
 var g_phase_accum_gpu_ns: i128 = 0;
 // Sub-queue split: pass1 (bg quads) vs pass2 (glyph draw).
@@ -3046,6 +3046,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    const offscreen_start_ns = if (collect_perf) io.nanoTimestamp() else 0;
+
     const fb = framebufferSize();
     const width = fb.width;
     const height = fb.height;
@@ -3396,7 +3398,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         rend.padding_y = (cfg.fonts.padding_y + pad_top) * rend.dpi_scale;
                     }
 
-                    terminal_render_app.renderToCache(rend,
+                    terminal_render_app.renderToCache(
+                        rend,
                         &cache_entry.cache,
                         rt,
                         cfg,
@@ -3561,7 +3564,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
                             renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
                         }
-                        terminal_render_app.queueInViewport(renderer,
+                        terminal_render_app.queueInViewport(
+                            renderer,
                             runtime,
                             &app.config,
                             app,
@@ -3615,7 +3619,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                             renderer.padding_x = (app.config.fonts.padding_x + pad_left) * renderer.dpi_scale;
                             renderer.padding_y = (app.config.fonts.padding_y + pad_top) * renderer.dpi_scale;
                         }
-                        terminal_render_app.queueInViewport(renderer,
+                        terminal_render_app.queueInViewport(
+                            renderer,
                             runtime,
                             &app.config,
                             app,
@@ -3726,7 +3731,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 if (paneRenderHelpersReady(pane)) {
                     if (use_direct_render) {
                         // Direct render: skip the offscreen RT and render straight to swapchain
-                        terminal_render_app.drawDirect(renderer,
+                        terminal_render_app.drawDirect(
+                            renderer,
                             runtime,
                             &app.config,
                             app,
@@ -4024,7 +4030,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     if (collect_perf) {
         // ── Phase timing accumulation (logged every ~2 s) ─────────────────
         g_phase_accum_tick_ns += after_tick_ns - frame_start_ns;
-        g_phase_accum_offscreen_ns += after_offscreen_ns - after_tick_ns;
+        g_phase_accum_offscreen_ns += after_offscreen_ns - offscreen_start_ns;
         g_phase_accum_swapchain_ns += after_commit_ns - after_offscreen_ns;
         g_phase_accum_offscreen_terminal_ns += offscreen_terminal_ns;
         g_phase_accum_offscreen_bar_preraster_ns += offscreen_bar_preraster_ns;
@@ -4045,7 +4051,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         // Update per-frame last values for the debug overlay (no division needed).
         g_last_frame_tick_ms = @as(f32, @floatFromInt(after_tick_ns - frame_start_ns)) / 1_000_000.0;
-        g_last_frame_offscreen_ms = @as(f32, @floatFromInt(after_offscreen_ns - after_tick_ns)) / 1_000_000.0;
+        g_last_frame_offscreen_ms = @as(f32, @floatFromInt(after_offscreen_ns - offscreen_start_ns)) / 1_000_000.0;
         g_last_frame_swap_ms = @as(f32, @floatFromInt(after_commit_ns - after_offscreen_ns)) / 1_000_000.0;
         g_last_frame_queue_ms = @as(f32, @floatFromInt(g_frame_queue_ns)) / 1_000_000.0;
         g_last_frame_gpu_ms = @as(f32, @floatFromInt(g_frame_gpu_ns)) / 1_000_000.0;
@@ -4077,7 +4083,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const swap_glyph_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_glyph_ns)) / n / 1_000_000.0;
             const swap_submit_ms = @as(f32, @floatFromInt(g_phase_accum_swapchain_submit_ns)) / n / 1_000_000.0;
             const queue_ms = @as(f32, @floatFromInt(g_phase_accum_queue_ns)) / n / 1_000_000.0;
-            const gpu_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
+            const draw_ms = @as(f32, @floatFromInt(g_phase_accum_gpu_ns)) / n / 1_000_000.0;
             const pass1_ms = @as(f32, @floatFromInt(g_phase_accum_pass1_ns)) / n / 1_000_000.0;
             const pass2_ms = @as(f32, @floatFromInt(g_phase_accum_pass2_ns)) / n / 1_000_000.0;
             const fps = n / 2.0; // 2-second window → fps = frames/2
@@ -4095,8 +4101,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             const true_dl = g_phase_accum_true_dl_frames;
             const stale_f = g_phase_accum_atlas_stale_frames;
             std.log.info(
-                "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (term={d:.2}ms bars={d:.2}ms queue={d:.2}ms [p1={d:.2}ms p2={d:.2}ms] gpu={d:.2}ms) swapchain={d:.2}ms (panes={d:.2}ms ui={d:.2}ms glyph={d:.2}ms submit={d:.2}ms)  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
-                .{ n, fps, tick_ms, off_ms, off_term_ms, off_bar_ms, queue_ms, pass1_ms, pass2_ms, gpu_ms, swap_ms, swap_panes_ms, swap_ui_ms, swap_glyph_ms, swap_submit_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
+                "frame phases (avg/{d:.0}f  fps={d:.1}): tick={d:.2}ms offscreen={d:.2}ms (term={d:.2}ms [queue={d:.2}ms p1={d:.2}ms p2={d:.2}ms draw={d:.2}ms] bars={d:.2}ms) swapchain={d:.2}ms (panes={d:.2}ms ui={d:.2}ms glyph={d:.2}ms submit={d:.2}ms)  dirty={d} clean={d}  dl full={d} true={d}  atlas_stale={d} atlas_fl={d}  rows r={d} s={d}  cells={d} gruns={d} bgrects={d}  mode direct={d} cached={d}",
+                .{ n, fps, tick_ms, off_ms, off_term_ms, queue_ms, pass1_ms, pass2_ms, draw_ms, off_bar_ms, swap_ms, swap_panes_ms, swap_ui_ms, swap_glyph_ms, swap_submit_ms, dirty, clean, full_dl, true_dl, stale_f, atlas_fl, rows_rendered, rows_skipped, cells, gruns, bgrects, direct_f, cached_f },
             );
             std.log.info(
                 "tick phases (avg): read={d:.2}ms write={d:.2}ms renderstate={d:.2}ms pending={d:.2}ms sanitize={d:.2}ms child={d:.2}ms encoder={d:.2}ms write_bytes={d:.0} chunks={d:.1}",
@@ -4225,8 +4231,8 @@ fn drawDebugOverlay(app: *App, renderer: *FtRenderer, width: f32, height: f32) v
     const text7 = std.fmt.bufPrint(&lines[7], "dirty {d} clean {d}", .{ dirty_count, clean_count }) catch "dirty ?";
     const text8 = std.fmt.bufPrint(&lines[8], "rows r={d} s={d}", .{ g_phase_accum_rows_rendered, g_phase_accum_rows_skipped }) catch "rows ?";
     const text9 = std.fmt.bufPrint(&lines[9], "cells={d} gruns={d} bgrects={d}", .{ g_phase_accum_cells_visited, g_phase_accum_glyph_runs, g_phase_accum_bg_rects }) catch "cells ?";
-    // Per-frame breakdown: tick / offscreen (= queue + gpu) / swap
-    const text10 = std.fmt.bufPrint(&lines[10], "t={d:.2} off={d:.2}(q={d:.2} g={d:.2}) sw={d:.2}", .{
+    // Queue and draw are nested terminal details within offscreen.
+    const text10 = std.fmt.bufPrint(&lines[10], "t={d:.2} off={d:.2}(q={d:.2} d={d:.2}) sw={d:.2}", .{
         g_last_frame_tick_ms,  g_last_frame_offscreen_ms,
         g_last_frame_queue_ms, g_last_frame_gpu_ms,
         g_last_frame_swap_ms,
