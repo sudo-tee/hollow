@@ -941,6 +941,6 @@ test "copy mode regex finder supports simple regexp operators" {
     try std.testing.expectEqual(@as(usize, 0), anchored_both.start);
     try std.testing.expectEqual(@as(usize, 3), anchored_both.end);
 
-    try std.testing.expectEqual(@as(?struct { start: usize, end: usize }, null), copyModeRegexFind("^foo", "xxfoo", 0));
-    try std.testing.expectEqual(@as(?struct { start: usize, end: usize }, null), copyModeRegexFind("foo$", "foobar", 0));
+    try std.testing.expect(copyModeRegexFind("^foo", "xxfoo", 0) == null);
+    try std.testing.expect(copyModeRegexFind("foo$", "foobar", 0) == null);
 }

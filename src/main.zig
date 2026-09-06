@@ -619,6 +619,13 @@ fn windowsStdHandle(stream_id: win32.DWORD) ?std.Io.File {
 }
 
 test {
+    _ = @import("ipc.zig");
+    _ = @import("process_jobs.zig");
+    _ = @import("app/pty_budget.zig");
+    _ = @import("app/command_dispatcher.zig");
+    _ = @import("app/action_queue.zig");
+    _ = @import("render/sokol_runtime.zig");
+    if (builtin.os.tag != .windows) _ = @import("pty/pty_posix.zig");
     _ = @import("config.zig");
     _ = @import("platform.zig");
     _ = @import("lua_bridge.zig");
