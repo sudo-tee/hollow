@@ -1112,34 +1112,28 @@
 ---@field pane HollowPane
 ---@field payload any
 
----@class HollowProcessWriter
----@field write fun(data: string)
-
----@class HollowProcessReader
----@field read fun(): string|nil
-
 ---@class HollowProcess
----@field pid integer
----@field stdin HollowProcessWriter
----@field stdout HollowProcessReader
----@field stderr HollowProcessReader
----@field wait fun(): integer
----@field kill fun()
-
----@class HollowExecResult
----@field exit_code integer
----@field stdout string
----@field stderr string
+---@field status fun(self: HollowProcess): "running"|"finished"
+---@field result fun(self: HollowProcess): HollowProcessRunResult|nil
+---@field cancel fun(self: HollowProcess)
+---@field kill fun(self: HollowProcess) Alias for cancel
+---@field wait fun(self: HollowProcess): HollowProcessRunResult Coroutine only
+---@field next fun(self: HollowProcess, callback: fun(result: HollowProcessRunResult)): HollowPromise
 
 ---@class HollowProcessRunResult
 ---@field code integer
 ---@field stdout string
 ---@field stderr string
+---@field error? string Spawn, timeout, cancellation, or output limit failure
+---@field canceled? boolean
 
 ---@class HollowProcessOpts
----@field cmd string|string[]
+---@field cmd string|string[] Executable or argv; no implicit shell parsing
 ---@field cwd? string
----@field env? table<string, string>
+---@field env? table<string, string> Overrides inherited environment
+---@field timeout_ms? integer Default 30000; maximum 86400000
+---@field output_limit? integer Per stream bytes; default 1 MiB, maximum 16 MiB
+---@field on_complete? fun(result: HollowProcessRunResult)
 
 ---@class HollowProcessRunOpts
 ---@field hide_window? boolean Defaults to true on the host bridge
@@ -1884,7 +1878,7 @@ local process = {}
 function process.spawn(opts) end
 
 ---@param opts HollowProcessOpts
----@return HollowExecResult
+---@return HollowPromise<HollowProcessRunResult>
 function process.exec(opts) end
 
 ---@param args string[]

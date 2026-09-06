@@ -334,10 +334,60 @@ function hollow.process.run(cmd, args)
   return host_api.run_process(cmd, args or {})
 end
 
-function hollow.process.spawn(_opts)
-  util.unsupported("hollow.process.spawn")
+function hollow.process.spawn(opts)
+  if type(opts) ~= "table" then error("process.spawn expects options") end
+  local cmd = opts.cmd
+  if type(cmd) == "string" then cmd = { cmd } end
+  if type(cmd) ~= "table" or #cmd == 0 then error("process.spawn requires cmd argv") end
+  for _, arg in ipairs(cmd) do
+    if type(arg) ~= "string" or arg:find("%z") then error("cmd items must be strings without NUL") end
+  end
+  if opts.env ~= nil then
+    if type(opts.env) ~= "table" then error("env must be a table") end
+    for key, value in pairs(opts.env) do
+      if type(key) ~= "string" or key == "" or key:find("[=%z]") or type(value) ~= "string" or value:find("%z") then
+        error("env must contain valid string keys and values")
+      end
+    end
+  end
+  if opts.cwd ~= nil and (type(opts.cwd) ~= "string" or opts.cwd:find("%z")) then error("cwd must be a string without NUL") end
+  for _, name in ipairs({ "timeout_ms", "output_limit" }) do
+    local value = opts[name]
+    if value ~= nil and (type(value) ~= "number" or value ~= value or value <= 0 or value == math.huge or value % 1 ~= 0) then
+      error(name .. " must be a positive integer")
+    end
+  end
+  if opts.on_complete ~= nil and type(opts.on_complete) ~= "function" then error("on_complete must be a function") end
+  local id, err = host_api.process_start({ cmd = cmd, cwd = opts.cwd, env = opts.env, timeout_ms = opts.timeout_ms, output_limit = opts.output_limit })
+  if not id then error("process.spawn: " .. tostring(err)) end
+  local result
+  local resolve_result
+  local promise = hollow.async.promise(function(resolve) resolve_result = resolve end)
+  local handle = {}
+  function handle:status() return result and "finished" or "running" end
+  function handle:result() return result end
+  function handle:cancel()
+    if not result then host_api.process_cancel(id) end
+  end
+  handle.kill = handle.cancel
+  function handle:wait() return promise:await() end
+  function handle:next(fn) return promise:next(fn) end
+  local function poll()
+    result = host_api.process_poll(id)
+    if not result then host_api.defer(poll, 10); return end
+    resolve_result(result)
+    if opts.on_complete then opts.on_complete(result) end
+  end
+  host_api.defer(poll, 10)
+  return handle
 end
 
-function hollow.process.exec(_opts)
-  util.unsupported("hollow.process.exec")
+function hollow.process.exec(opts)
+  return hollow.async.promise(function(resolve, reject)
+    local ok, handle = pcall(hollow.process.spawn, opts)
+    if not ok then reject(handle); return end
+    handle:next(function(result)
+      if result.error then reject(result) else resolve(result) end
+    end)
+  end)
 end

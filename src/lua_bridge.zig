@@ -1,3 +1,4 @@
+const ProcessJob = @import("process_jobs.zig").Job;
 const std = @import("std");
 const io = @import("io.zig");
 const config = @import("config.zig");
@@ -839,6 +840,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        for (self.context.process_jobs) |job| if (job) |value| value.destroy();
         if (self.lua_sources) |*sources| sources.deinit(self.allocator);
         if (self.context.pending_workspace_name) |name| self.allocator.free(name);
         if (self.context.on_key_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.on_key_ref);
@@ -1854,6 +1856,16 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "run_child_process");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_process_start, 1);
+        api.set_field(self.state, -2, "process_start");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_process_poll, 1);
+        api.set_field(self.state, -2, "process_poll");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_process_cancel, 1);
+        api.set_field(self.state, -2, "process_cancel");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_run_process, 1);
         api.set_field(self.state, -2, "run_process");
 
@@ -2343,6 +2355,7 @@ const BridgeContext = struct {
     quick_select_match_ref: c_int = -1,
     quick_select_action_ref: c_int = -1,
     gui_ready_fired: bool = false,
+    process_jobs: [16]?*ProcessJob = [_]?*ProcessJob{null} ** 16,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
     timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty,
 };
@@ -6816,4 +6829,131 @@ test "drainExpiredTimedCallbacks preserves timer order" {
 
     try std.testing.expectEqualSlices(c_int, &.{ 11, 33 }, &.{ pending.items[0].ref, pending.items[1].ref });
     try std.testing.expectEqualSlices(c_int, &.{ 22, 44 }, &.{ timed_callback_refs.items[0].ref, timed_callback_refs.items[1].ref });
+}
+
+fn startProcess(ctx: *BridgeContext, state: *State) !usize {
+    const api = ctx.api;
+    const slot = for (ctx.process_jobs, 0..) |job, i| {
+        if (job == null) break i;
+    } else return error.ProcessJobLimit;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) return error.ExpectedOptions;
+    api.get_field(state, 1, "cmd");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return error.ExpectedArgv;
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(std.heap.page_allocator);
+    var i: c_int = 1;
+    while (true) : (i += 1) {
+        api.rawgeti(state, -1, i);
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+            pop(api, state, 1);
+            break;
+        }
+        var len: usize = 0;
+        const ptr = api.to_lstring(state, -1, &len) orelse return error.InvalidArgument;
+        argv.append(std.heap.page_allocator, ptr[0..len]) catch return error.OutOfMemory;
+        pop(api, state, 1);
+    }
+    const cwd = luaStringField(api, state, 1, "cwd");
+    const timeout = @min(luaNonNegativeIntegerField(api, state, 1, "timeout_ms") orelse 30_000, 24 * 60 * 60 * 1000);
+    const limit = @min(luaNonNegativeIntegerField(api, state, 1, "output_limit") orelse 1024 * 1024, 16 * 1024 * 1024);
+    var environment = io.environ().createMap(std.heap.page_allocator) catch return error.EnvironmentUnavailable;
+    defer environment.deinit();
+    api.get_field(state, 1, "env");
+    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        const env_idx = absoluteIndex(api, state, -1);
+        api.push_nil(state);
+        while (api.next(state, env_idx) != 0) {
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -2))) != .string or
+                @as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return error.InvalidEnvironment;
+            var key_len: usize = 0;
+            var value_len: usize = 0;
+            const key = api.to_lstring(state, -2, &key_len) orelse return error.InvalidEnvironment;
+            const value = api.to_lstring(state, -1, &value_len) orelse return error.InvalidEnvironment;
+            environment.put(key[0..key_len], value[0..value_len]) catch return error.InvalidEnvironment;
+            pop(api, state, 1);
+        }
+    }
+    const job = try ProcessJob.create(ctx.allocator, argv.items, cwd, timeout, limit, &environment);
+    ctx.process_jobs[slot] = job;
+    return slot + 1;
+}
+
+fn l_process_start(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const id = startProcess(ctx, state) catch |err| {
+        ctx.api.push_nil(state);
+        const name = @errorName(err);
+        ctx.api.push_lstring(state, name.ptr, name.len);
+        return 2;
+    };
+    ctx.api.push_integer(state, @intCast(id));
+    return 1;
+}
+
+fn processSlot(ctx: *BridgeContext, state: *State) ?usize {
+    const number = ctx.api.to_number(state, 1);
+    if (!std.math.isFinite(number) or number != @floor(number) or number < 1 or number > ctx.process_jobs.len) return null;
+    const id: usize = @intFromFloat(number);
+    return @intCast(id - 1);
+}
+
+fn l_process_cancel(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    if (processSlot(ctx, state)) |slot| if (ctx.process_jobs[slot]) |job| {
+        job.cancel();
+    };
+    return 0;
+}
+
+fn l_process_poll(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    const slot = processSlot(ctx, state) orelse return 0;
+    const job = ctx.process_jobs[slot] orelse return 0;
+    if (!job.ready()) return 0;
+    defer {
+        job.destroy();
+        ctx.process_jobs[slot] = null;
+    }
+    api.create_table(state, 0, 5);
+    api.push_integer(state, if (job.failure != null) -1 else if (job.result) |result| childExitCode(result.term) else -1);
+    api.set_field(state, -2, "code");
+    const stdout = if (job.result) |result| result.stdout else "";
+    api.push_lstring(state, stdout.ptr, stdout.len);
+    api.set_field(state, -2, "stdout");
+    const stderr = if (job.result) |result| result.stderr else "";
+    api.push_lstring(state, stderr.ptr, stderr.len);
+    api.set_field(state, -2, "stderr");
+    if (job.failure) |err| {
+        const name = @errorName(err);
+        api.push_lstring(state, name.ptr, name.len);
+        api.set_field(state, -2, "error");
+    }
+    api.push_boolean(state, if (job.canceled) 1 else 0);
+    api.set_field(state, -2, "canceled");
+    return 1;
+}
+
+test "native process bridge owns argv and returns structured results" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\job_id = assert(host_api.process_start({
+        \\  cmd = {"/bin/sh", "-c", "printf '%s' \"$HOLLOW_JOB_TEST\"; printf problem >&2; exit 7"},
+        \\  cwd = "/tmp", env = {HOLLOW_JOB_TEST = "owned-value"}, timeout_ms = 2000,
+        \\}))
+        \\collectgarbage("collect")
+    );
+    runtime.context.process_jobs[0].?.future.?.await(io.get());
+    try runtime.runString(
+        \\local result = host_api.process_poll(job_id)
+        \\assert(result.code == 7)
+        \\assert(result.stdout == "owned-value")
+        \\assert(result.stderr == "problem")
+        \\assert(result.error == nil)
+    );
+    try std.testing.expect(runtime.context.process_jobs[0] == null);
 }
