@@ -19,6 +19,17 @@ const c = @cImport({
 
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 
+const WRITER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+
+const WriterState = struct {
+    mutex: io.Mutex = .{},
+    ready: io.Condition = .{},
+    buf: std.ArrayListUnmanaged(u8) = .empty,
+    start: usize = 0,
+    closing: bool = false,
+    failed: bool = false,
+};
+
 const ReaderState = struct {
     mutex: io.Mutex = .{},
     ready: io.Condition = .{},
@@ -37,6 +48,8 @@ pub const PosixPty = struct {
     pid: c.pid_t,
     reader_state: *ReaderState,
     reader_thread: ?std.Thread = null,
+    writer_state: *WriterState,
+    writer_thread: ?std.Thread = null,
     alive: bool = true,
     closed: bool = false,
 
@@ -70,7 +83,7 @@ pub const PosixPty = struct {
             var env_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer env_arena.deinit();
             const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch c._exit(1) else null;
-            execWithPath(shell_path, argv, if (envp) |items| @constCast(@ptrCast(items.ptr)) else null);
+            execWithPath(shell_path, argv, if (envp) |items| @ptrCast(@constCast(items.ptr)) else null);
             c._exit(1);
         }
         if (pid < 0) return error.ForkPtyFailed;
@@ -84,12 +97,29 @@ pub const PosixPty = struct {
         reader_state.* = .{ .wake = wake };
         errdefer allocator.destroy(reader_state);
 
+        // Both workers share a nonblocking master. Never toggle descriptor flags
+        // around individual writes: that races the reader thread.
+        const flags = c.fcntl(master, c.F_GETFL, @as(c_int, 0));
+        if (flags < 0 or c.fcntl(master, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.WriteFailed;
+        const writer_state = try allocator.create(WriterState);
+        writer_state.* = .{};
+        errdefer allocator.destroy(writer_state);
+
         var pty = PosixPty{
             .allocator = allocator,
             .fd = master,
             .pid = pid,
             .reader_state = reader_state,
+            .writer_state = writer_state,
         };
+        pty.writer_thread = try std.Thread.spawn(.{}, writerLoop, .{ pty.fd, writer_state });
+        errdefer {
+            writer_state.mutex.lock();
+            writer_state.closing = true;
+            writer_state.ready.broadcast();
+            writer_state.mutex.unlock();
+            pty.writer_thread.?.join();
+        }
         pty.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{ pty.fd, pty.reader_state });
 
         return pty;
@@ -255,52 +285,31 @@ pub const PosixPty = struct {
         return self.reader_state.eof or self.reader_state.out_of_memory or self.reader_state.buf.items.len > self.reader_state.start;
     }
 
+    /// Enqueue input without waiting for the child to read it. Admission is
+    /// all-or-nothing so callers never retry a partially accepted paste.
     pub fn writeAll(self: *PosixPty, bytes: []const u8) !void {
-        var offset: usize = 0;
-        while (offset < bytes.len) {
-            const written = c.write(self.fd, bytes.ptr + offset, bytes.len - offset);
-            if (written < 0) {
-                switch (std.posix.errno(-1)) {
-                    .AGAIN => continue,
-                    else => return error.WriteFailed,
-                }
-            }
-            offset += @intCast(written);
+        const state = self.writer_state;
+        state.mutex.lock();
+        defer state.mutex.unlock();
+        if (state.closing or state.failed) return error.WriteFailed;
+        const pending = state.buf.items.len - state.start;
+        if (bytes.len > WRITER_HIGH_WATER_BYTES - pending) return error.InputQueueFull;
+        if (state.start > 0 and state.buf.capacity - state.buf.items.len < bytes.len) {
+            std.mem.copyForwards(u8, state.buf.items[0..pending], state.buf.items[state.start..]);
+            state.buf.items.len = pending;
+            state.start = 0;
         }
+        try state.buf.appendSlice(std.heap.page_allocator, bytes);
+        state.ready.signal();
     }
 
     pub fn writeAllUntil(self: *PosixPty, bytes: []const u8, deadline_ns: i128) !usize {
-        const flags = c.fcntl(self.fd, c.F_GETFL, @as(c_int, 0));
-        if (flags < 0 or c.fcntl(self.fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.WriteFailed;
-        defer _ = c.fcntl(self.fd, c.F_SETFL, flags);
-
-        var offset: usize = 0;
-        while (offset < bytes.len) {
-            if (io.nanoTimestamp() >= deadline_ns) break;
-            const result = c.write(self.fd, bytes.ptr + offset, @min(bytes.len - offset, 4096));
-            if (result > 0) {
-                offset += @intCast(result);
-                continue;
-            }
-            if (result == 0) return error.WriteFailed;
-            switch (std.posix.errno(-1)) {
-                .AGAIN => {
-                    var poll_fd = c.struct_pollfd{
-                        .fd = self.fd,
-                        .events = c.POLLOUT,
-                        .revents = 0,
-                    };
-                    const remaining_ns = deadline_ns - io.nanoTimestamp();
-                    if (remaining_ns <= 0) break;
-                    const timeout_ms: c_int = @intCast(@divFloor(remaining_ns, std.time.ns_per_ms));
-                    const ready = c.poll(&poll_fd, 1, timeout_ms);
-                    if (ready == 0) break;
-                    if (ready < 0 and std.posix.errno(-1) != .INTR) return error.WriteFailed;
-                },
-                else => return error.WriteFailed,
-            }
-        }
-        return offset;
+        if (io.nanoTimestamp() >= deadline_ns) return 0;
+        self.writeAll(bytes) catch |err| {
+            if (err == error.InputQueueFull) return 0;
+            return err;
+        };
+        return bytes.len;
     }
 
     pub fn resize(self: *PosixPty, cols: u16, rows: u16) void {
@@ -321,8 +330,15 @@ pub const PosixPty = struct {
         self.reader_state.ready.broadcast();
         self.reader_state.mutex.unlock();
         if (self.isAlive()) _ = c.kill(self.pid, c.SIGTERM);
-        _ = c.close(self.fd);
+        self.writer_state.mutex.lock();
+        self.writer_state.closing = true;
+        self.writer_state.ready.broadcast();
+        self.writer_state.mutex.unlock();
+        if (self.writer_thread) |thread| thread.join();
         if (self.reader_thread) |thread| thread.join();
+        _ = c.close(self.fd);
+        self.writer_state.buf.deinit(std.heap.page_allocator);
+        self.allocator.destroy(self.writer_state);
         self.reader_state.buf.deinit(std.heap.page_allocator);
         self.allocator.destroy(self.reader_state);
         self.closed = true;
@@ -496,4 +512,78 @@ fn readerLoop(fd: c_int, reader_state: *ReaderState) void {
             },
         }
     }
+}
+
+fn writerLoop(fd: c_int, state: *WriterState) void {
+    var chunk: [16 * 1024]u8 = undefined;
+    while (true) {
+        state.mutex.lock();
+        while (!state.closing and state.start == state.buf.items.len) state.ready.wait(&state.mutex);
+        if (state.closing) {
+            state.mutex.unlock();
+            return;
+        }
+        const count = @min(chunk.len, state.buf.items.len - state.start);
+        @memcpy(chunk[0..count], state.buf.items[state.start..][0..count]);
+        state.mutex.unlock();
+
+        var poll_fd = c.struct_pollfd{ .fd = fd, .events = c.POLLOUT, .revents = 0 };
+        const ready = c.poll(&poll_fd, 1, 25);
+        if (ready == 0) continue;
+        if (ready < 0 and std.posix.errno(-1) == .INTR) continue;
+        const written = if (ready > 0) c.write(fd, &chunk, count) else -1;
+        if (written < 0) switch (std.posix.errno(-1)) {
+            .AGAIN, .INTR => continue,
+            else => {},
+        };
+        state.mutex.lock();
+        if (written <= 0) {
+            state.failed = true;
+            state.mutex.unlock();
+            return;
+        }
+        state.start += @intCast(written);
+        if (state.start == state.buf.items.len) {
+            state.buf.clearRetainingCapacity();
+            state.start = 0;
+        }
+        state.mutex.unlock();
+    }
+}
+
+test "queued input is bounded and admission preserves existing bytes" {
+    var state = WriterState{};
+    defer state.buf.deinit(std.heap.page_allocator);
+    var pty = PosixPty{ .allocator = std.testing.allocator, .fd = -1, .pid = 0, .reader_state = undefined, .writer_state = &state };
+    try pty.writeAll("first");
+    const oversized = try std.testing.allocator.alloc(u8, WRITER_HIGH_WATER_BYTES);
+    defer std.testing.allocator.free(oversized);
+    try std.testing.expectError(error.InputQueueFull, pty.writeAll(oversized));
+    try pty.writeAll("second");
+    try std.testing.expectEqualStrings("firstsecond", state.buf.items);
+    try std.testing.expectEqual(@as(usize, 0), try pty.writeAllUntil("late", io.nanoTimestamp() - 1));
+    state.closing = true;
+    try std.testing.expectError(error.WriteFailed, pty.writeAll("closed"));
+}
+
+test "writer shutdown completes when child pipe is full" {
+    var fds: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), c.pipe(&fds));
+    defer _ = c.close(fds[0]);
+    defer _ = c.close(fds[1]);
+    const flags = c.fcntl(fds[1], c.F_GETFL, @as(c_int, 0));
+    try std.testing.expect(c.fcntl(fds[1], c.F_SETFL, flags | c.O_NONBLOCK) >= 0);
+    const filler = [_]u8{0} ** 4096;
+    while (c.write(fds[1], &filler, filler.len) > 0) {}
+    var state = WriterState{};
+    defer state.buf.deinit(std.heap.page_allocator);
+    var pty = PosixPty{ .allocator = std.testing.allocator, .fd = fds[1], .pid = 0, .reader_state = undefined, .writer_state = &state };
+    try pty.writeAll("queued behind blocked pipe");
+    const worker = try std.Thread.spawn(.{}, writerLoop, .{ fds[1], &state });
+    state.mutex.lock();
+    state.closing = true;
+    state.ready.broadcast();
+    state.mutex.unlock();
+    worker.join();
+    try std.testing.expectEqualStrings("queued behind blocked pipe", state.buf.items);
 }
