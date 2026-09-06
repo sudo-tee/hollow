@@ -14,13 +14,18 @@ const windows = if (builtin.os.tag == .windows) std.os.windows else void;
 extern "kernel32" fn MoveFileExW(lpExistingFileName: [*:0]const u16, lpNewFileName: [*:0]const u16, dwFlags: windows.DWORD) callconv(.winapi) windows.BOOL;
 
 pub const Server = struct {
+    const Connection = struct {
+        stream: ?std.Io.net.Stream = null,
+        thread: ?std.Thread = null,
+    };
+
     allocator: std.mem.Allocator,
     app: *anyopaque,
     handler: *const fn (app: *anyopaque, request: command.Request) command.Response,
     thread: ?std.Thread = null,
     stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     active_mutex: io.Mutex = .{},
-    active_stream: ?std.Io.net.Stream = null,
+    connections: [8]Connection = [_]Connection{.{}} ** 8,
     wake_stream: ?std.Io.net.Stream = null,
     listen_address: ?std.Io.net.IpAddress = null,
     listen_address_text: ?[]u8 = null,
@@ -43,6 +48,7 @@ pub const Server = struct {
 
     pub fn start(self: *Server) !void {
         if (self.started) return;
+        self.stop_flag.store(false, .release);
 
         const configured_addr = io.getEnvVarOwned(self.allocator, EnvVar) catch null;
         defer if (configured_addr) |value| self.allocator.free(value);
@@ -51,6 +57,8 @@ pub const Server = struct {
             try std.Io.net.IpAddress.parseLiteral(value)
         else
             std.Io.net.IpAddress{ .ip4 = .loopback(0) };
+
+        if (!isLoopback(bind_address)) return error.NonLoopbackCommandAddress;
 
         var listener = try bind_address.listen(io.get(), .{ .reuse_address = true });
         errdefer listener.deinit(io.get());
@@ -74,7 +82,9 @@ pub const Server = struct {
 
         self.stop_flag.store(true, .release);
         self.active_mutex.lock();
-        if (self.active_stream) |stream| stream.shutdown(io.get(), .both) catch {};
+        for (&self.connections) |*connection| {
+            if (connection.stream) |stream| stream.shutdown(io.get(), .both) catch {};
+        }
         self.active_mutex.unlock();
         self.wakeAcceptLoop();
         if (self.wake_stream) |stream| {
@@ -82,6 +92,10 @@ pub const Server = struct {
             self.wake_stream = null;
         }
         if (self.thread) |thread| thread.join();
+        for (&self.connections) |*connection| {
+            if (connection.thread) |thread| thread.join();
+            connection.thread = null;
+        }
         self.unpublishAddress();
         self.thread = null;
         self.listen_address = null;
@@ -150,21 +164,50 @@ pub const Server = struct {
                 stream.close(io.get());
                 break;
             }
-            self.active_stream = stream;
-            self.active_mutex.unlock();
-            std.log.info("command-ipc: accepted connection from {f}", .{stream.socket.address});
-            handleConnection(self, stream) catch |err| {
-                std.log.warn("command-ipc: request failed: {s}", .{@errorName(err)});
-            };
-            self.active_mutex.lock();
-            stream.close(io.get());
-            self.active_stream = null;
-            self.active_mutex.unlock();
+            var available: ?usize = null;
+            for (&self.connections, 0..) |*connection, index| {
+                if (connection.stream == null) {
+                    available = index;
+                    break;
+                }
+            }
+            if (available) |index| {
+                const connection = &self.connections[index];
+                // A cleared stream means the worker has released the mutex and
+                // will not touch its slot again. Reap before reusing the slot.
+                const previous = connection.thread;
+                connection.stream = stream;
+                self.active_mutex.unlock();
+                if (previous) |thread| thread.join();
+                connection.thread = std.Thread.spawn(.{}, connectionLoop, .{ self, index, stream }) catch {
+                    self.active_mutex.lock();
+                    stream.close(io.get());
+                    connection.stream = null;
+                    connection.thread = null;
+                    self.active_mutex.unlock();
+                    continue;
+                };
+            } else {
+                self.active_mutex.unlock();
+                stream.close(io.get());
+            }
         }
     }
 
+    fn connectionLoop(self: *Server, index: usize, stream: std.Io.net.Stream) void {
+        handleConnection(self, stream) catch |err| {
+            std.log.warn("command-ipc: request failed: {s}", .{@errorName(err)});
+        };
+        self.active_mutex.lock();
+        stream.close(io.get());
+        self.connections[index].stream = null;
+        self.active_mutex.unlock();
+    }
+
     fn handleConnection(self: *Server, stream: std.Io.net.Stream) !void {
-        try setTimeouts(stream, server_timeout_ms);
+        var deadline = SocketDeadline{ .stream = stream, .timeout_ms = server_timeout_ms };
+        try deadline.start();
+        defer deadline.finish();
 
         const frame = try readFrame(self.allocator, stream);
         defer self.allocator.free(frame);
@@ -230,11 +273,17 @@ pub fn send(allocator: std.mem.Allocator, request: command.Request, timeout_ms: 
 
     const connect_start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
     const remote_addr = try std.Io.net.IpAddress.parseLiteral(addr_text);
-    const stream = try remote_addr.connect(io.get(), .{ .mode = .stream, .protocol = .tcp });
+    const stream = try remote_addr.connect(io.get(), .{
+        .mode = .stream,
+        .protocol = .tcp,
+        .timeout = if (timeout_ms == 0) .none else .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64)))) } },
+    });
     defer stream.close(io.get());
     if (timing_enabled) clientTraceFmt("connect_ms={d:.3}", .{elapsedMs(connect_start_ns)});
 
-    try setTimeouts(stream, timeout_ms);
+    var deadline = SocketDeadline{ .stream = stream, .timeout_ms = timeout_ms };
+    try deadline.start();
+    defer deadline.finish();
 
     const encode_start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
     const payload = try encodeRequest(allocator, request);
@@ -413,22 +462,37 @@ fn readSocket(stream: std.Io.net.Stream, buffer: []u8) !usize {
     return reader.interface.readSliceShort(buffer) catch return reader.err orelse error.ConnectionClosed;
 }
 
-fn setTimeouts(stream: std.Io.net.Stream, timeout_ms: u64) !void {
-    if (timeout_ms == 0) return;
+/// A total operation deadline, including slow trickle reads. AFD handles on
+/// Windows do not support Winsock timeouts, but stream shutdown wakes readers.
+const SocketDeadline = struct {
+    stream: std.Io.net.Stream,
+    timeout_ms: u64,
+    mutex: std.Io.Mutex = .init,
+    done_condition: std.Io.Condition = .init,
+    done: bool = false,
+    thread: ?std.Thread = null,
 
-    if (builtin.os.tag == .windows) {
-        // std.Io.net uses Windows AFD handles, not Winsock sockets.
-        // Winsock socket options cannot be applied to these handles.
-        return;
+    fn start(self: *SocketDeadline) !void {
+        if (self.timeout_ms != 0) self.thread = try std.Thread.spawn(.{}, watch, .{self});
     }
 
-    var value = std.posix.timeval{
-        .sec = @intCast(timeout_ms / std.time.ms_per_s),
-        .usec = @intCast((timeout_ms % std.time.ms_per_s) * std.time.us_per_ms),
-    };
-    if (std.c.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.c.SO.RCVTIMEO, &value, @sizeOf(@TypeOf(value))) != 0) return error.SetSocketTimeoutFailed;
-    if (std.c.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.c.SO.SNDTIMEO, &value, @sizeOf(@TypeOf(value))) != 0) return error.SetSocketTimeoutFailed;
-}
+    fn finish(self: *SocketDeadline) void {
+        self.mutex.lockUncancelable(io.get());
+        self.done = true;
+        self.done_condition.signal(io.get());
+        self.mutex.unlock(io.get());
+        if (self.thread) |thread| thread.join();
+    }
+
+    fn watch(self: *SocketDeadline) void {
+        self.mutex.lockUncancelable(io.get());
+        defer self.mutex.unlock(io.get());
+        if (self.done) return;
+        io.waitTimeout(&self.done_condition, &self.mutex, self.timeout_ms *| std.time.ns_per_ms) catch {
+            if (!self.done) self.stream.shutdown(io.get(), .both) catch {};
+        };
+    }
+};
 
 fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = object.get(key) orelse return null;
@@ -451,4 +515,64 @@ test "encoded request round trips absent automation fields" {
     try std.testing.expectEqual(command.Kind.get_revision, parsed.request.kind);
     try std.testing.expect(parsed.request.revision == null);
     try std.testing.expect(parsed.request.generation == null);
+}
+
+fn isLoopback(address: std.Io.net.IpAddress) bool {
+    return switch (address) {
+        .ip4 => |value| value.bytes[0] == 127,
+        .ip6 => |value| value.isLoopBack(),
+    };
+}
+
+test "command transport accepts only loopback bindings" {
+    try std.testing.expect(isLoopback(try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0")));
+    try std.testing.expect(isLoopback(try std.Io.net.IpAddress.parseLiteral("[::1]:0")));
+    try std.testing.expect(!isLoopback(try std.Io.net.IpAddress.parseLiteral("0.0.0.0:0")));
+    try std.testing.expect(!isLoopback(try std.Io.net.IpAddress.parseLiteral("192.168.1.2:0")));
+}
+
+fn testHandler(_: *anyopaque, _: command.Request) command.Response {
+    return .{};
+}
+
+test "idle IPC client does not block another request" {
+    var context: u8 = 0;
+    var server = Server.init(std.testing.allocator, &context, testHandler);
+    // Do not publish a test address over a running user's discovery file.
+    const listener = try (std.Io.net.IpAddress{ .ip4 = .loopback(0) }).listen(io.get(), .{});
+    server.listen_address = listener.socket.address;
+    server.thread = try std.Thread.spawn(.{}, Server.acceptLoop, .{ &server, listener });
+    server.started = true;
+    defer server.deinit();
+    const idle = try server.listen_address.?.connect(io.get(), .{ .mode = .stream });
+    defer idle.close(io.get());
+    const active = try server.listen_address.?.connect(io.get(), .{ .mode = .stream });
+    defer active.close(io.get());
+    var deadline = SocketDeadline{ .stream = active, .timeout_ms = 1000 };
+    try deadline.start();
+    defer deadline.finish();
+    try writeFrame(active, "{\"kind\":\"get_revision\"}");
+    const reply = try readFrame(std.testing.allocator, active);
+    defer std.testing.allocator.free(reply);
+    var result = try decodeResponse(std.testing.allocator, reply);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.success);
+}
+
+test "socket deadline interrupts an incomplete frame" {
+    var listener = try (std.Io.net.IpAddress{ .ip4 = .loopback(0) }).listen(io.get(), .{});
+    defer listener.deinit(io.get());
+    const client = try listener.socket.address.connect(io.get(), .{ .mode = .stream });
+    defer client.close(io.get());
+    const accepted = try listener.accept(io.get());
+    defer accepted.close(io.get());
+    var deadline = SocketDeadline{ .stream = accepted, .timeout_ms = 20 };
+    try deadline.start();
+    defer deadline.finish();
+    // A partial header must not keep the worker alive indefinitely.
+    try writeAllSocket(client, &.{1});
+    if (readFrame(std.testing.allocator, accepted)) |frame| {
+        std.testing.allocator.free(frame);
+        return error.ExpectedDeadline;
+    } else |_| {}
 }

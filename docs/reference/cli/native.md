@@ -9,6 +9,13 @@ The CLI uses `HOLLOW_COMMAND_ADDR` when available. Otherwise it discovers the
 running host through `%LOCALAPPDATA%\hollow\command-ipc-address`, so a Windows
 CLI invoked from an unrelated shell or from WSL works without inherited state.
 
+The command server binds only to loopback addresses. It handles up to eight
+connections concurrently, while application mutations remain serialized on the
+frame thread. Incomplete frames are disconnected after a total five-second
+operation deadline, including on Windows. Native client timeouts also cover
+connection establishment. Loopback binding does not authenticate local users;
+protect access to the local session accordingly.
+
 ## Running it
 
 ```bash
