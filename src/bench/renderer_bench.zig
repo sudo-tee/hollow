@@ -473,11 +473,10 @@ fn buildCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
             while (frame < options.frames) : (frame += 1) {
                 var row: usize = 0;
                 while (row < options.rows) : (row += 1) {
-                    try corpus.appendSlice(allocator,
-                        "\x1b[31m16 \x1b[38;5;196m256 \x1b[38;2;120;80;220mtruecolor\x1b[0m " ++
-                            "\x1b[1mbold\x1b[22m \x1b[3mitalic\x1b[23m \x1b[4munderline\x1b[24m " ++
-                            "\x1b[9mstrike\x1b[29m \x1b[7minverse\x1b[27m \u{250c}\u{2500}\u{2510} " ++
-                            "cafe\u{301}\u{754c} ligature ffi\n");
+                    try corpus.appendSlice(allocator, "\x1b[31m16 \x1b[38;5;196m256 \x1b[38;2;120;80;220mtruecolor\x1b[0m " ++
+                        "\x1b[1mbold\x1b[22m \x1b[3mitalic\x1b[23m \x1b[4munderline\x1b[24m " ++
+                        "\x1b[9mstrike\x1b[29m \x1b[7minverse\x1b[27m \u{250c}\u{2500}\u{2510} " ++
+                        "cafe\u{301}\u{754c} ligature ffi\n");
                 }
             }
         },
@@ -685,16 +684,7 @@ fn parseOptions(allocator: std.mem.Allocator, args: [][]u8) !Options {
         if (i + 1 >= args.len) return error.MissingOptionValue;
         const value = args[i + 1];
         i += 1;
-        if (std.mem.eql(u8, arg, "--scenario")) options.scenario = try parseScenario(value)
-        else if (std.mem.eql(u8, arg, "--input")) options.input_path = try allocator.dupe(u8, value)
-        else if (std.mem.eql(u8, arg, "--frames")) options.frames = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--rows")) options.rows = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--cols")) options.cols = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--chunk-bytes")) options.chunk_bytes = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--warmup")) options.warmup = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--iterations")) options.iterations = try parseUnsigned(value)
-        else if (std.mem.eql(u8, arg, "--mode")) options.mode = try parseMode(value)
-        else return error.UnknownOption;
+        if (std.mem.eql(u8, arg, "--scenario")) options.scenario = try parseScenario(value) else if (std.mem.eql(u8, arg, "--input")) options.input_path = try allocator.dupe(u8, value) else if (std.mem.eql(u8, arg, "--frames")) options.frames = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--rows")) options.rows = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--cols")) options.cols = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--chunk-bytes")) options.chunk_bytes = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--warmup")) options.warmup = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--iterations")) options.iterations = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--mode")) options.mode = try parseMode(value) else return error.UnknownOption;
     }
     if (options.rows == 0 or options.cols == 0 or options.rows > std.math.maxInt(u16) or options.cols > std.math.maxInt(u16)) return error.InvalidGrid;
     if (options.chunk_bytes == 0 or options.iterations == 0) return error.InvalidCount;
@@ -726,9 +716,8 @@ pub fn main(init: std.process.Init) !void {
     if (options.json) {
         const chunks = (corpus.len + options.chunk_bytes - 1) / options.chunk_bytes;
         try output.interface.print("{{\"scenario\":\"{s}\",\"mode\":\"{s}\",\"rows\":{d},\"cols\":{d},\"frames\":{d},\"bytes\":{d},\"chunk_bytes\":{d},\"chunks\":{d},\"iterations\":{d},\"input_checksum\":\"{x}\",\"render_state_rows\":{d},\"render_state_cols\":{d},\"dirty_level\":\"{s}\",\"cursor_row\":{d},\"cursor_col\":{d},\"cells_visited\":{d},\"glyph_runs\":{d},\"bg_rects\":{d},\"atlas_flushed\":{},\"glyph_verts_count\":{d},\"stages\":{{", .{
-            @tagName(options.scenario), @tagName(options.mode), options.rows, options.cols, options.frames, corpus.len, options.chunk_bytes, chunks, options.iterations, checksum,
-            harness.render_state_rows, harness.render_state_cols, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col,
-            harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects, harness.last_atlas_flushed, harness.last_glyph_verts,
+            @tagName(options.scenario), @tagName(options.mode),    options.rows,                  options.cols,             options.frames,           corpus.len,                 options.chunk_bytes,     chunks,                options.iterations,         checksum,
+            harness.render_state_rows,  harness.render_state_cols, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects, harness.last_atlas_flushed, harness.last_glyph_verts,
         });
         var first = true;
         if (results.parse.values.items.len > 0) {
@@ -765,13 +754,12 @@ pub fn main(init: std.process.Init) !void {
     } else {
         const chunks = (corpus.len + options.chunk_bytes - 1) / options.chunk_bytes;
         try output.interface.print("scenario: {s}\nmode: {s}\ngrid: {d}x{d}\nframes: {d}\nbytes: {d}\nchunk_bytes: {d}\nchunks: {d}\niterations: {d}\ninput_checksum: {x}\nrender_state: {d}x{d}\ndirty_level: {s}\ncursor: {d},{d}\nrenderer_counters: rows_rendered={d} rows_skipped={d} cells_visited={d} glyph_runs={d} bg_rects={d} atlas_flushed={} glyph_verts_count={d}\n", .{
-            @tagName(options.scenario), @tagName(options.mode), options.cols, options.rows, options.frames, corpus.len, options.chunk_bytes, chunks, options.iterations, checksum,
-            harness.render_state_cols, harness.render_state_rows, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col,
-             harness.last_rows_rendered, harness.last_rows_skipped, harness.last_cells_visited, harness.last_glyph_runs,
-             harness.last_bg_rects, harness.last_atlas_flushed, harness.last_glyph_verts,
-         });
-         if (results.cold_render.values.items.len > 0) try output.interface.print("cold_render_cpu_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_render.values.items[0])) / 1_000_000.0});
-         if (results.cold_pipeline.values.items.len > 0) try output.interface.print("cold_pipeline_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_pipeline.values.items[0])) / 1_000_000.0});
+            @tagName(options.scenario), @tagName(options.mode),    options.cols,                  options.rows,             options.frames,           corpus.len,                 options.chunk_bytes,       chunks,                     options.iterations,      checksum,
+            harness.render_state_cols,  harness.render_state_rows, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_rows_rendered, harness.last_rows_skipped, harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects,
+            harness.last_atlas_flushed, harness.last_glyph_verts,
+        });
+        if (results.cold_render.values.items.len > 0) try output.interface.print("cold_render_cpu_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_render.values.items[0])) / 1_000_000.0});
+        if (results.cold_pipeline.values.items.len > 0) try output.interface.print("cold_pipeline_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_pipeline.values.items[0])) / 1_000_000.0});
         if (results.parse.values.items.len > 0) try printStats(&output, "parse", results.parse.values.items, corpus.len);
         if (results.render_state.values.items.len > 0) try printStats(&output, "render_state", results.render_state.values.items, 0);
         if (results.render.values.items.len > 0) try printStats(&output, "render_cpu", results.render.values.items, 0);
@@ -821,4 +809,25 @@ pub fn runUnicodeGraphemeTest(allocator: std.mem.Allocator) !void {
 test "renderer benchmark checksum remains deterministic" {
     const allocator = std.testing.allocator;
     try std.testing.expectEqual(@as(u64, 0x652825d1a05e7565), try deterministicRepaintChecksum(allocator));
+}
+
+pub fn runCachePressureTest(allocator: std.mem.Allocator) !void {
+    var harness = try Harness.init(allocator, .{});
+    defer harness.deinit();
+    const renderer = &harness.renderer;
+    renderer.text_cache_limit_bytes = 4096;
+    var buffer: [64]u8 = undefined;
+    for (0..2000) |i| {
+        const text = try std.fmt.bufPrint(&buffer, "unique-{d}", .{i});
+        renderer.beginFrame();
+        const shaped = renderer.getOrShape(text, 0) orelse return error.ShapeFailed;
+        const prepared = renderer.prepareShapedGlyphs(shaped, .terminal) orelse return error.PrepareFailed;
+        renderer.putPreparedCache(text, 0, .terminal, prepared.glyphs);
+        try std.testing.expect(renderer.shape_cache_bytes <= renderer.text_cache_limit_bytes);
+        try std.testing.expect(renderer.prepared_cache_bytes <= renderer.text_cache_limit_bytes);
+        // Exercise the borrowed-pointer fast path after repeated evictions.
+        try std.testing.expect(renderer.getPreparedCache(text, 0, .terminal) != null);
+    }
+    try std.testing.expect(renderer.shape_cache_evictions > 0);
+    try std.testing.expect(renderer.prepared_cache_evictions > 0);
 }

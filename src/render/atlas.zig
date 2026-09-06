@@ -341,6 +341,8 @@ fn clearUvCaches(self: *FtRenderer) void {
         self.allocator.free(val.glyphs);
     }
     self.prepared_cache.clearRetainingCapacity();
+    self.prepared_cache_bytes = 0;
+    self.prepared_cache_fifo.clear();
     self.recent_prepared = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN;
     self.ascii_glyphs = [_][256]?Glyph{[_]?Glyph{null} ** 256} ** 4;
     self.prepared_glyphs.clearRetainingCapacity();

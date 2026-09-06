@@ -70,12 +70,27 @@ pub fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raste
         self.putRecentPrepared(key, fingerprint, entry.glyphs);
         return;
     }
+    const cost = glyphs.len * @sizeOf(PreparedGlyph) + 6 * @sizeOf(PreparedKey);
+    if (cost > self.text_cache_limit_bytes) return;
+    while (self.prepared_cache_bytes + cost > self.text_cache_limit_bytes) {
+        const victim_key = self.prepared_cache_fifo.pop() orelse break;
+        const victim = self.prepared_cache.fetchRemove(victim_key) orelse continue;
+        const victim_glyphs = victim.value.glyphs;
+        self.prepared_cache_bytes -= victim_glyphs.len * @sizeOf(PreparedGlyph) + 6 * @sizeOf(PreparedKey);
+        // Recent entries borrow storage from this map.
+        self.recent_prepared = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN;
+        self.allocator.free(victim_glyphs);
+        self.prepared_cache_evictions += 1;
+    }
+    self.prepared_cache_fifo.reserve(self.allocator) catch return;
     const owned = self.allocator.alloc(PreparedGlyph, glyphs.len) catch return;
     fastmem.copy(PreparedGlyph, owned, glyphs);
     self.prepared_cache.put(key, .{ .glyphs = owned }) catch {
         self.allocator.free(owned);
         return;
     };
+    self.prepared_cache_fifo.push(key);
+    self.prepared_cache_bytes += cost;
     self.putRecentPrepared(key, fingerprint, owned);
 }
 
@@ -211,6 +226,17 @@ pub fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResul
     const positions = ft.hb_buffer_get_glyph_positions(buf, &pos_len);
     if (infos == null or positions == null) return null;
 
+    const cost = @as(usize, info_len) * @sizeOf(GlyphInstance) + 6 * @sizeOf(ShapeKey);
+    // Keep at least one run even when a diagnostic budget is very small.
+    while (self.shape_cache_bytes + cost > self.text_cache_limit_bytes) {
+        const victim_key = self.shape_cache_fifo.pop() orelse break;
+        const victim = self.shape_cache.fetchRemove(victim_key) orelse continue;
+        const victim_glyphs = victim.value.glyphs;
+        self.shape_cache_bytes -= victim_glyphs.len * @sizeOf(GlyphInstance) + 6 * @sizeOf(ShapeKey);
+        self.allocator.free(victim_glyphs);
+        self.shape_cache_evictions += 1;
+    }
+    self.shape_cache_fifo.reserve(self.allocator) catch return null;
     const glyphs = self.allocator.alloc(GlyphInstance, info_len) catch return null;
     var i: usize = 0;
     while (i < info_len) : (i += 1) {
@@ -227,6 +253,8 @@ pub fn getOrShape(self: *FtRenderer, utf8: []const u8, face_idx: u8) ?ShapeResul
         self.allocator.free(glyphs);
         return null;
     };
+    self.shape_cache_fifo.push(key);
+    self.shape_cache_bytes += cost;
     return res;
 }
 

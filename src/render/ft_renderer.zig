@@ -209,6 +209,14 @@ pub const FtRenderer = struct {
     glyph_cache: std.HashMap(GlyphKey, Glyph, GlyphCacheContext, std.hash_map.default_max_load_percentage),
 
     // Shaping cache
+    // Owned glyph storage plus a conservative allowance for hash tables and FIFO keys.
+    shape_cache_fifo: @import("cache_fifo.zig").Fifo(ShapeKey) = .{},
+    prepared_cache_fifo: @import("cache_fifo.zig").Fifo(PreparedKey) = .{},
+    shape_cache_bytes: usize = 0,
+    prepared_cache_bytes: usize = 0,
+    text_cache_limit_bytes: usize = 8 * 1024 * 1024,
+    shape_cache_evictions: usize = 0,
+    prepared_cache_evictions: usize = 0,
     shape_cache: std.HashMap(ShapeKey, ShapeResult, ShapeCacheContext, std.hash_map.default_max_load_percentage),
 
     // Prepared run cache
@@ -738,11 +746,13 @@ pub const FtRenderer = struct {
             self.allocator.free(val.glyphs);
         }
         self.prepared_cache.deinit();
+        self.prepared_cache_fifo.deinit(self.allocator);
         var it = self.shape_cache.valueIterator();
         while (it.next()) |val| {
             self.allocator.free(val.glyphs);
         }
         self.shape_cache.deinit();
+        self.shape_cache_fifo.deinit(self.allocator);
         self.glyph_cache.deinit();
         atlas_mod.deinitPages(self);
         c.sg_destroy_sampler(self.atlas_smp);

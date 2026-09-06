@@ -9,3 +9,7 @@ test "renderer benchmark corpus integration" {
 test "renderer handles oversized grapheme clusters" {
     try benchmark.runUnicodeGraphemeTest(std.testing.allocator);
 }
+
+test "text caches remain bounded under unique output" {
+    try benchmark.runCachePressureTest(std.testing.allocator);
+}
