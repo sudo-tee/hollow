@@ -4789,7 +4789,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
         c.sapp_consume_event();
         return;
     }
-    const mods = ghosttyMods(event.modifiers);
+    const mods = altGrAdjustedMods(ghosttyMods(event.modifiers));
     if (copy_mode.copyModeActive(app) and (mods & ghostty.Mods.ctrl) != 0 and utf8.len == 1 and utf8[0] == 0x16) {
         _ = app.enqueueMouse(.{ .copy_mode_begin_selection = true });
         c.sapp_consume_event();
@@ -5476,6 +5476,21 @@ fn modifierBitForKey(key: ghostty.Key) u32 {
     };
 }
 
+/// Strips the synthetic Ctrl+Alt bits that Windows reports while AltGr is
+/// held (and the Alt bit some X11 layouts put on ISO_Level3_Shift), so
+/// AltGr-produced characters are delivered as plain text.  Only applies
+/// when the physical right-hand Alt key is down; real Ctrl/Alt chords with
+/// the left-hand keys are untouched.
+pub fn altGrAdjustedModsFor(mods: u32, alt_right_down: bool) u32 {
+    if (!alt_right_down) return mods;
+    if ((mods & (ghostty.Mods.ctrl | ghostty.Mods.alt)) == 0) return mods;
+    return mods & ~@as(u32, ghostty.Mods.ctrl | ghostty.Mods.alt);
+}
+
+fn altGrAdjustedMods(mods: u32) u32 {
+    return altGrAdjustedModsFor(mods, g_right_alt_down);
+}
+
 fn ghosttyMods(modifiers: u32) u32 {
     var mods: u32 = ghostty.Mods.none;
     if ((modifiers & c.SAPP_MODIFIER_SHIFT) != 0) mods |= ghostty.Mods.shift;
@@ -5674,4 +5689,18 @@ fn drawBorderRect(x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8, a: u8) vo
     c.sgl_v2f(x, y + h);
     c.sgl_end();
     c.sgl_load_default_pipeline();
+}
+
+test "altGrAdjustedModsFor strips synthetic ctrl+alt only while right alt is down" {
+    const ctrl_alt = ghostty.Mods.ctrl | ghostty.Mods.alt;
+    const ctrl_shift = ghostty.Mods.ctrl | ghostty.Mods.shift;
+    const shift_ctrl_alt = ghostty.Mods.shift | ctrl_alt;
+
+    try std.testing.expectEqual(@as(u32, 0), altGrAdjustedModsFor(ctrl_alt, true));
+    try std.testing.expectEqual(@as(u32, ghostty.Mods.shift), altGrAdjustedModsFor(shift_ctrl_alt, true));
+    try std.testing.expectEqual(@as(u32, ghostty.Mods.shift | ghostty.Mods.ctrl), altGrAdjustedModsFor(ctrl_shift, false));
+
+    try std.testing.expectEqual(@as(u32, ghostty.Mods.shift), altGrAdjustedModsFor(ghostty.Mods.shift, true));
+    try std.testing.expectEqual(@as(u32, 0), altGrAdjustedModsFor(0, true));
+    try std.testing.expectEqual(@as(u32, 0), altGrAdjustedModsFor(0, false));
 }
