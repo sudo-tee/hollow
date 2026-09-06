@@ -154,7 +154,7 @@ pub fn drainPendingCommand(self: *App) void {
         std.log.info("command-ipc: dispatch_ms={d:.3} kind={s}", .{ elapsedMs(start_ns), @tagName(pending.request.kind) });
     }
     pending.done = true;
-    self.command_done.signal(io.get());
+    self.command_done.broadcast(io.get());
 }
 
 pub fn runCommandSync(self: *App, request: command_mod.Request) command_mod.Response {
@@ -163,9 +163,11 @@ pub fn runCommandSync(self: *App, request: command_mod.Request) command_mod.Resp
     self.command_mutex.lockUncancelable(io.get());
     defer self.command_mutex.unlock(io.get());
 
-    while (self.pending_command != null) {
+    while (self.pending_command != null and !self.command_shutting_down) {
         self.command_done.waitUncancelable(io.get(), &self.command_mutex);
     }
+
+    if (self.command_shutting_down) return command_mod.Response.fail("shutting_down", "Hollow is shutting down");
 
     self.pending_command = &pending;
     self.signalWake();
@@ -977,4 +979,44 @@ fn execEmit(self: *App, request: command_mod.Request) command_mod.Response {
     defer result.deinit(self.allocator);
     if (!result.success) return command_mod.Response.fail("error", result.error_message orelse "htp emit failed");
     return okNull();
+}
+
+/// Wake every connection waiting for the frame thread before joining workers.
+pub fn shutdownPendingCommands(self: *App) void {
+    self.command_mutex.lockUncancelable(io.get());
+    defer self.command_mutex.unlock(io.get());
+    self.command_shutting_down = true;
+    if (self.pending_command) |pending| {
+        if (!pending.done) {
+            pending.response = command_mod.Response.fail("shutting_down", "Hollow is shutting down");
+            pending.done = true;
+        }
+    }
+    self.command_done.broadcast(io.get());
+}
+
+test "shutdown releases commands waiting for the frame thread" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+    const Waiter = struct {
+        fn run(target: *App) void {
+            var response = runCommandSync(target, .{ .kind = .get_revision });
+            defer response.deinit(target.allocator);
+            std.debug.assert(!response.success);
+            std.debug.assert(std.mem.eql(u8, response.status, "shutting_down"));
+        }
+    };
+    const worker = try std.Thread.spawn(.{}, Waiter.run, .{app});
+    defer worker.join();
+    defer shutdownPendingCommands(app);
+    {
+        app.command_mutex.lockUncancelable(io.get());
+        defer app.command_mutex.unlock(io.get());
+        while (app.pending_command == null) {
+            try io.waitTimeout(&app.command_ready, &app.command_mutex, std.time.ns_per_s);
+        }
+    }
+    // The defer order cancels the pending request before joining the worker.
 }

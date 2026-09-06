@@ -57,6 +57,7 @@ const quick_select = @import("app/quick_select.zig");
 const htp = @import("app/htp.zig");
 const HtpCodec = @import("htp/codec.zig").Codec;
 const input = @import("app/input.zig");
+const PtyBudget = @import("app/pty_budget.zig").Budget;
 const ActionQueue = @import("app/action_queue.zig").ActionQueue;
 const Lifecycle = @import("app/lifecycle.zig").Lifecycle;
 const hyperlinks = @import("app/hyperlinks.zig");
@@ -387,6 +388,7 @@ pub const App = struct {
     command_ready: std.Io.Condition = .init,
     command_done: std.Io.Condition = .init,
     pending_command: ?*cmd_ipc.PendingCommandRequest = null,
+    command_shutting_down: bool = false,
     automation_mutex: std.Io.Mutex = .init,
     automation_changed: std.Io.Condition = .init,
     automation_revision: u64 = 1,
@@ -934,6 +936,7 @@ pub const App = struct {
         self.automation_changed.broadcast(io.get());
         self.automation_mutex.unlock(io.get());
 
+        cmd_ipc.shutdownPendingCommands(self);
         if (self.command_ipc_server) |*server| {
             server.deinit();
             self.command_ipc_server = null;
@@ -2228,19 +2231,25 @@ pub const App = struct {
         var next_idle_render_poll_ns: i128 = 0;
         if (self.mux) |*mux| {
             const active_pane = mux.activePane();
-            var inactive_panes_remaining: usize = 0;
+            var visible_buf: [MAX_LAYOUT_LEAVES]LayoutLeaf = undefined;
+            const visible = self.computeActiveLayout(&visible_buf);
+            const now = io.nanoTimestamp();
+            const interacting = (self.last_input_activity_ns != 0 and now - self.last_input_activity_ns < PTY_RECENT_ACTIVITY_NS) or
+                (self.last_resize_activity_ns != 0 and now - self.last_resize_activity_ns < PTY_RECENT_ACTIVITY_NS) or self.previous_frame_slow;
+            var visible_budget = PtyBudget{ .bytes = 256 * 1024, .nanoseconds = if (interacting) 500_000 else 2_000_000, .panes = 0 };
+            var hidden_budget = PtyBudget{
+                .bytes = if (interacting) (if (self.frame_count % 2 == 0) @as(usize, 16 * 1024) else 0) else 256 * 1024,
+                .nanoseconds = if (interacting) 500_000 else 1_000_000,
+                .panes = 0,
+            };
             var count_panes = mux.paneIterator();
             while (count_panes.next()) |pane| {
-                if (pane != active_pane) inactive_panes_remaining += 1;
+                if (pane == active_pane) continue;
+                const is_visible = for (visible) |leaf| {
+                    if (leaf.pane == pane) break true;
+                } else false;
+                if (is_visible) visible_budget.panes += 1 else hidden_budget.panes += 1;
             }
-            // Heavy background output otherwise rebuilds and redraws terminal
-            // state every frame. Leave alternating frames free for input and
-            // active-pane rendering.
-            var inactive_pty_budget: usize = if (self.frame_count % 2 == 0) 16 * 1024 else 0;
-            const inactive_deadline_ns: i128 = if (inactive_pty_budget > 0)
-                io.nanoTimestamp() + PTY_INTERACTIVE_BUDGET_NS
-            else
-                0;
             var panes = mux.paneIteratorActiveFirst();
             var pane_idx: usize = 0;
             var total_pty_read_ns: i128 = 0;
@@ -2258,18 +2267,12 @@ pub const App = struct {
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
                 const active_screen_before = pane.active_screen;
-                const pty_read_loops: usize = if (pane_is_active)
-                    (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES
-                else
-                    2;
-                // Inactive panes share one frame budget so work remains bounded
-                // regardless of pane count. Idle panes donate quota to later panes.
-                const pty_read_bytes: usize = if (pane_is_active)
-                    pane_mod.PTY_HARD_BYTE_LIMIT
-                else if (inactive_panes_remaining > 0 and inactive_pty_budget > 0)
-                    (inactive_pty_budget + inactive_panes_remaining - 1) / inactive_panes_remaining
-                else
-                    0;
+                const pane_is_visible = for (visible) |leaf| {
+                    if (leaf.pane == pane) break true;
+                } else false;
+                const background_budget = if (pane_is_visible) &visible_budget else &hidden_budget;
+                const pty_read_loops: usize = (pane_mod.PTY_HARD_BYTE_LIMIT + pane_mod.PTY_PARSE_CHUNK_BYTES - 1) / pane_mod.PTY_PARSE_CHUNK_BYTES;
+                const pty_read_bytes: usize = if (pane_is_active) pane_mod.PTY_HARD_BYTE_LIMIT else background_budget.byteQuota();
                 const pending_output_bytes: usize = if (pane_is_active) blk: {
                     const deferred_output_bytes = pane.boot_output.items.len +| pane.pending_terminal_inject.items.len;
                     break :blk pane.pendingPtyOutputBytes() +| deferred_output_bytes;
@@ -2286,17 +2289,17 @@ pub const App = struct {
                     pane_mod.PTY_PARSE_CHUNK_BYTES;
                 const pty_budget_ns: i128 = if (pane_is_active)
                     selectPtyBudgetNs(pty_now_ns, self.last_input_activity_ns, self.last_resize_activity_ns, pane.last_pty_output_ns, self.previous_frame_slow, pending_output_bytes)
-                else if (inactive_deadline_ns != 0 and io.nanoTimestamp() < inactive_deadline_ns)
-                    inactive_deadline_ns - io.nanoTimestamp()
+                else if (pty_read_bytes > 0)
+                    background_budget.timeQuota()
                 else
                     0;
+                const poll_start_ns = io.nanoTimestamp();
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;
                 };
                 if (!pane_is_active) {
-                    inactive_pty_budget -|= pty_bytes_read;
-                    inactive_panes_remaining -= 1;
+                    background_budget.consume(pty_bytes_read, io.nanoTimestamp() - poll_start_ns);
                 }
                 const sync_now_ns = io.nanoTimestamp();
                 const sync_mode_active = self.config.synchronized_output and
@@ -2780,13 +2783,13 @@ test "PTY budget adapts to interaction, backlog, pressure, and slow frames" {
 
 test "jsonObjectIndex accepts non-negative integers and whole floats" {
     var object = try std.json.ObjectMap.init(std.testing.allocator, &.{}, &.{});
-    defer object.deinit();
+    defer object.deinit(std.testing.allocator);
 
-    try object.put("int", .{ .integer = 7 });
-    try object.put("float", .{ .float = 3.0 });
-    try object.put("negative", .{ .integer = -1 });
-    try object.put("fraction", .{ .float = 2.5 });
-    try object.put("text", .{ .string = "4" });
+    try object.put(std.testing.allocator, "int", .{ .integer = 7 });
+    try object.put(std.testing.allocator, "float", .{ .float = 3.0 });
+    try object.put(std.testing.allocator, "negative", .{ .integer = -1 });
+    try object.put(std.testing.allocator, "fraction", .{ .float = 2.5 });
+    try object.put(std.testing.allocator, "text", .{ .string = "4" });
 
     try std.testing.expectEqual(@as(?usize, 7), jsonObjectIndex(object, "int"));
     try std.testing.expectEqual(@as(?usize, 3), jsonObjectIndex(object, "float"));
@@ -2806,7 +2809,7 @@ test "cloneJsonValue deep copies nested JSON values" {
     var nested = std.json.Array.init(std.testing.allocator);
     try nested.append(.{ .string = try std.testing.allocator.dupe(u8, "alpha") });
     try nested.append(.{ .integer = 9 });
-    try source.put(try std.testing.allocator.dupe(u8, "list"), .{ .array = nested });
+    try source.put(std.testing.allocator, try std.testing.allocator.dupe(u8, "list"), .{ .array = nested });
 
     const clone = try cloneJsonValue(std.testing.allocator, .{ .object = source });
     defer deinitJsonValue(std.testing.allocator, clone);
