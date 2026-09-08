@@ -741,7 +741,7 @@ fn execWorkspaceRename(self: *App, request: command_mod.Request) command_mod.Res
 }
 
 fn execTabNew(self: *App, request: command_mod.Request) command_mod.Response {
-    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF);
+    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF, false);
     return okNull();
 }
 
@@ -951,7 +951,7 @@ fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Respons
 }
 
 fn execRun(self: *App, request: command_mod.Request) command_mod.Response {
-    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF);
+    mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF, false);
     return okNull();
 }
 

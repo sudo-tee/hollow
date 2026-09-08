@@ -1489,6 +1489,94 @@ fn tabViewShowsFullSegments(view: *const BarTabView, display: []const u8) bool {
     return view.segments_len > 0 and countCodepoints(display) == tabViewCodepoints(view) and tabViewTextLen(view) == view.segment.text.len;
 }
 
+fn tabViewSuffixIndex(view: *const BarTabView) ?usize {
+    var index = view.segments_len;
+    while (index > 0) {
+        index -= 1;
+        if (view.segments[index].id != null) return index;
+    }
+    return null;
+}
+
+fn tabViewPrefixText(view: *const BarTabView, suffix_index: usize, out: []u8) []const u8 {
+    var used: usize = 0;
+    for (view.segments[0..suffix_index]) |segment| {
+        if (used >= out.len) break;
+        const copy_len = @min(segment.text.len, out.len - used);
+        fastmem.copy(u8, out[used .. used + copy_len], segment.text[0..copy_len]);
+        used += copy_len;
+        if (copy_len < segment.text.len) break;
+    }
+    return out[0..used];
+}
+
+fn drawFittedTabSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, view: *const BarTabView, default_fg: ghostty.ColorRgb) void {
+    const max_chars: usize = if (max_width > 0)
+        @max(1, @as(usize, @intFromFloat(max_width / renderer.cell_w)))
+    else
+        0;
+    const suffix_index = tabViewSuffixIndex(view) orelse return;
+    var suffix_chars: usize = 0;
+    for (view.segments[suffix_index..view.segments_len]) |segment| suffix_chars += countCodepoints(segment.text);
+    if (max_chars == 0 or suffix_chars > max_chars) {
+        drawSegmentArray(renderer, x, y, max_width, view.segments[0..view.segments_len], default_fg);
+        return;
+    }
+
+    var prefix_buf: [1024]u8 = undefined;
+    var display_buf: [1024]u8 = undefined;
+    const prefix = tabViewPrefixText(view, suffix_index, prefix_buf[0..]);
+    const display_prefix = fitTabLabel(prefix, max_chars - suffix_chars, display_buf[0..]);
+    var cursor_x = x;
+    if (display_prefix.len > 0 and suffix_index > 0) {
+        const prefix_style = view.segments[0];
+        const fg = prefix_style.fg orelse default_fg;
+        renderer.drawLabelFace(cursor_x, y, display_prefix, fg.r, fg.g, fg.b, if (prefix_style.bold) 1 else 0);
+        c.sgl_load_default_pipeline();
+        cursor_x += @as(f32, @floatFromInt(countCodepoints(display_prefix))) * renderer.cell_w;
+    }
+
+    for (view.segments[suffix_index..view.segments_len]) |segment| {
+        if (segment.text.len == 0) continue;
+        const segment_width = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
+        if (cursor_x + segment_width > x + max_width) break;
+        const fg = segment.fg orelse default_fg;
+        renderer.drawLabelFace(cursor_x, y, segment.text, fg.r, fg.g, fg.b, if (segment.bold) 1 else 0);
+        c.sgl_load_default_pipeline();
+        cursor_x += segment_width;
+    }
+}
+
+fn cacheFittedTabSegments(cache: *BarCache, renderer: *FtRenderer, x: f32, max_width: f32, view: *const BarTabView, tab_index: usize) void {
+    const max_chars: usize = if (max_width > 0)
+        @max(1, @as(usize, @intFromFloat(max_width / renderer.cell_w)))
+    else
+        0;
+    const suffix_index = tabViewSuffixIndex(view) orelse return;
+    var suffix_chars: usize = 0;
+    for (view.segments[suffix_index..view.segments_len]) |segment| suffix_chars += countCodepoints(segment.text);
+    if (max_chars == 0 or suffix_chars > max_chars) return;
+
+    var prefix_buf: [1024]u8 = undefined;
+    var display_buf: [1024]u8 = undefined;
+    const prefix = tabViewPrefixText(view, suffix_index, prefix_buf[0..]);
+    const display_prefix = fitTabLabel(prefix, max_chars - suffix_chars, display_buf[0..]);
+    const prefix_width = @as(f32, @floatFromInt(countCodepoints(display_prefix))) * renderer.cell_w;
+    if (prefix_width > 0) {
+        const prefix_id = if (suffix_index > 0) view.segments[suffix_index - 1].id else null;
+        cacheBarHitRegion(cache, x, prefix_width, null, 0.0, tab_index, prefix_id);
+    }
+
+    var cursor_x = x + prefix_width;
+    for (view.segments[suffix_index..view.segments_len]) |segment| {
+        if (segment.text.len == 0) continue;
+        const segment_width = @as(f32, @floatFromInt(countCodepoints(segment.text))) * renderer.cell_w;
+        if (cursor_x + segment_width > x + max_width) break;
+        cacheBarHitRegion(cache, cursor_x, segment_width, null, 0.0, tab_index, segment.id);
+        cursor_x += segment_width;
+    }
+}
+
 fn segmentViewFullWidth(renderer: *FtRenderer, view: *const BarSegmentView) f32 {
     return view.style.margin.horizontal() + view.style.padding.horizontal() + @as(f32, @floatFromInt(segmentViewCodepoints(view))) * renderer.cell_w;
 }
@@ -1653,7 +1741,10 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     const display_title = if (max_label_chars == 0) "" else fitTabLabel(tab.segment.text, max_label_chars, display_buf[0..]);
                     const text_y = bg_y + tab.style.padding.top;
                     const fg = bg_style.fg orelse default_fg;
-                    if (tabViewShowsFullSegments(tab, display_title)) {
+                    if (tab.segments_len > 0 and tabViewCodepoints(tab) > max_label_chars and tabViewSuffixIndex(tab) != null) {
+                        cacheFittedTabSegments(cache, renderer, label_x, label_space, tab, ti);
+                        drawFittedTabSegments(renderer, label_x, text_y, label_space, tab, fg);
+                    } else if (tabViewShowsFullSegments(tab, display_title)) {
                         cacheBarSegmentArray(cache, renderer, label_x, label_space, tab.segments[0..tab.segments_len], ti);
                         drawSegmentArray(renderer, label_x, text_y, label_space, tab.segments[0..tab.segments_len], fg);
                     } else if (display_title.len > 0) {
@@ -2376,7 +2467,7 @@ fn bottomBarHitTest(_: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarH
     return hitTestBar(&g_bottom_bar_cache, .bottom, mouse_x, mouse_y, window_width);
 }
 
-fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32, modifiers: u32) BarHit {
     const bottom_hit = bottomBarHitTest(app, mouse_x, mouse_y, window_width);
     const top_hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
     const hit = if (bottom_hit.surface != null) bottom_hit else top_hit;
@@ -2386,7 +2477,8 @@ fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarH
     } });
     if (hit.surface == .top) {
         if (hit.node_id) |id| {
-            app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id } });
+            const mods = ghosttyMods(modifiers);
+            app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id, .mods = mods, .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
         } else {
             app.emitLuaBuiltInEvent("topbar:leave", .none);
         }
@@ -2396,21 +2488,23 @@ fn updateBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarH
 
     app.emitLuaBuiltInEvent("topbar:leave", .none);
     if (hit.node_id) |id| {
-        app.emitLuaBuiltInEvent("bottombar:hover", .{ .bottombar_node = .{ .id = id } });
+        const mods = ghosttyMods(modifiers);
+        app.emitLuaBuiltInEvent("bottombar:hover", .{ .bottombar_node = .{ .id = id, .mods = mods, .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
     } else {
         app.emitLuaBuiltInEvent("bottombar:leave", .none);
     }
     return hit;
 }
 
-fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32) BarHit {
+fn updateTopBarHover(app: *App, mouse_x: f32, mouse_y: f32, window_width: f32, modifiers: u32) BarHit {
     const hit = topBarHitTest(app, mouse_x, mouse_y, window_width);
     _ = app.enqueueMouse(.{ .hover = .{
         .tab_index = hit.tab_index,
         .close_tab_index = hit.close_tab_index,
     } });
     if (hit.node_id) |id| {
-        app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id } });
+        const mods = ghosttyMods(modifiers);
+        app.emitLuaBuiltInEvent("topbar:hover", .{ .topbar_node = .{ .id = id, .mods = mods, .shifted = (modifiers & c.SAPP_MODIFIER_SHIFT) != 0 } });
     } else {
         app.emitLuaBuiltInEvent("topbar:leave", .none);
     }
@@ -4913,22 +5007,24 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
         }
     }
 
-    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
         if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
+            const click_mods = ghosttyMods(event.modifiers);
+            const click_shifted = (event.modifiers & c.SAPP_MODIFIER_SHIFT) != 0;
             if (bar_hit.node_id != null and bar_hit.tab_index == null) {
                 if (bar_hit.surface == .top) {
-                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.? } });
+                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 } else if (bar_hit.surface == .bottom) {
-                    app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.? } });
+                    app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 }
                 return;
             }
             if (bar_hit.tab_index) |ti| {
                 if (bar_hit.surface == .top and bar_hit.node_id != null and bar_hit.close_tab_index == null) {
-                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.? } });
+                    app.emitLuaBuiltInEvent("topbar:click", .{ .topbar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 } else if (bar_hit.surface == .bottom and bar_hit.node_id != null) {
-                    app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.? } });
+                    app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 } else if (bar_hit.close_tab_index != null and bar_hit.close_tab_index.? == ti) {
                     _ = app.enqueueMouse(.{ .close_tab_at = ti });
                 } else {
@@ -5212,7 +5308,7 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
         }
     }
 
-    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf());
+    const bar_hit = updateBarHover(app, event.mouse_x, event.mouse_y, c.sapp_widthf(), event.modifiers);
     if (bar_hit.inBar()) {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;

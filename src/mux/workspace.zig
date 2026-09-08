@@ -86,11 +86,16 @@ pub const Workspace = struct {
         self.active_tab = tab;
     }
 
-    pub fn newTab(self: *Workspace, id: usize) !*Tab {
+    pub fn newTab(self: *Workspace, id: usize, insert_at_end: bool) !*Tab {
         const tab = try self.allocator.create(Tab);
         errdefer self.allocator.destroy(tab);
         tab.* = Tab.init(self.allocator, id);
-        const insert_at = if (self.active_tab) |_| self.activeTabIndex() + 1 else self.tabs.items.len;
+        const insert_at = if (insert_at_end)
+            self.tabs.items.len
+        else if (self.active_tab) |_|
+            self.activeTabIndex() + 1
+        else
+            self.tabs.items.len;
         try self.tabs.insert(self.allocator, insert_at, tab);
         self.active_tab = tab;
         return tab;

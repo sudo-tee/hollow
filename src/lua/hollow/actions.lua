@@ -233,8 +233,8 @@ function M.setup(hollow, host_api)
   -- ── Tab Actions ──────────────────────────────────
 
   register(hollow, "new_tab", {
-    run = function()
-      host_api.new_tab({})
+    run = function(opts)
+      host_api.new_tab(opts or {})
     end,
     desc = "Create new tab",
     category = "tab",
@@ -738,9 +738,9 @@ function M.setup(hollow, host_api)
   })
 
   register(hollow, "new_tab_in_domain", {
-    run = function()
+    run = function(opts)
       pick_domain_and_run(function(item)
-        host_api.new_tab({ domain = item.domain_name })
+        host_api.new_tab({ domain = item.domain_name, insert_at_end = opts and opts.insert_at_end })
       end)
     end,
     desc = "Create new tab with a domain",

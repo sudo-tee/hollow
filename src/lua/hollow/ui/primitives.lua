@@ -201,6 +201,7 @@ function bar.custom(opts)
   return {
     _type = "bar_custom",
     id = opts.id,
+    style = opts.style,
     render = opts.render,
     cache_ttl_ms = opts.cache_ttl_ms,
     on_click = opts.on_click,

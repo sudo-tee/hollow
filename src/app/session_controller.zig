@@ -161,7 +161,7 @@ pub fn scrollActiveViewportBottom(self: *App) void {
 // Tab operations
 // ============================================================
 
-pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) void {
+pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int, insert_at_end: bool) void {
     const start_ms = io.milliTimestamp();
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
@@ -172,7 +172,7 @@ pub fn newTab(self: *App, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?
         .{ .command = value }
     else
         null;
-    mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command) catch |err| {
+    mux.newTab(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height, cwd, domain_name, launch_command, insert_at_end) catch |err| {
         std.log.err("app: newTab failed: {s}", .{@errorName(err)});
         if (self.lua) |*lua| lua.invokeOperationCallback(callback_ref, false, .none);
         return;

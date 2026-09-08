@@ -12,6 +12,32 @@ const Tab = tab_mod.Tab;
 const Workspace = workspace_mod.Workspace;
 const Mux = mux_mod.Mux;
 
+test "workspace new tab can append after active tab" {
+    const allocator = std.testing.allocator;
+    var workspace = Workspace.init(allocator, 1);
+    defer workspace.tabs.deinit(allocator);
+
+    const first = try allocator.create(Tab);
+    defer allocator.destroy(first);
+    first.* = Tab.init(allocator, 2);
+
+    const second = try allocator.create(Tab);
+    defer allocator.destroy(second);
+    second.* = Tab.init(allocator, 3);
+
+    try workspace.appendTab(first);
+    try workspace.appendTab(second);
+    workspace.active_tab = first;
+
+    const appended = try workspace.newTab(4, true);
+    defer allocator.destroy(appended);
+
+    try std.testing.expect(workspace.tabs.items[0] == first);
+    try std.testing.expect(workspace.tabs.items[1] == second);
+    try std.testing.expect(workspace.tabs.items[2] == appended);
+    try std.testing.expect(workspace.active_tab == appended);
+}
+
 test "pane focus follows nearest matching split subtree" {
     const allocator = std.testing.allocator;
 

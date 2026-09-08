@@ -67,6 +67,7 @@ pub const PendingInputEvent = union(enum) {
         domain_name: ?[]const u8,
         command: ?[]const u8,
         callback_ref: c_int,
+        insert_at_end: bool = false,
     },
     close_tab,
     close_pane,
@@ -303,7 +304,7 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {
-                mux_ops.newTab(self, payload.cwd, payload.domain_name, payload.command, payload.callback_ref);
+                mux_ops.newTab(self, payload.cwd, payload.domain_name, payload.command, payload.callback_ref, payload.insert_at_end);
             },
             .close_tab => {
                 mux_ops.closeTab(

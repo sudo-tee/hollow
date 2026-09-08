@@ -208,12 +208,12 @@
 ---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
 ---@field ["quick_select:no_matches"] {}
 ---@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command", pattern_index: integer|nil }
----@field ["topbar:hover"] { id: string }
+---@field ["topbar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["topbar:leave"] {}
----@field ["topbar:click"] { id: string }
----@field ["bottombar:hover"] { id: string }
+---@field ["topbar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
+---@field ["bottombar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["bottombar:leave"] {}
----@field ["bottombar:click"] { id: string }
+---@field ["bottombar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["overlay:hover"] { id: string, index: integer|nil }
 ---@field ["overlay:leave"] {}
 ---@field ["overlay:click"] { id: string, index: integer|nil }
@@ -237,9 +237,9 @@
 ---@field radius? number Rounded corner radius for bg/border rect
 ---@field border? HollowColor Border color for bg rect outline
 ---@field border_size? number Border thickness in pixels
----@field on_click? fun(e: { id: string })
----@field on_mouse_enter? fun(e: { id: string })
----@field on_mouse_leave? fun(e: { id: string })
+---@field on_click? fun(e: { id: string, mods?: HollowKeyMods })
+---@field on_mouse_enter? fun(e: { id: string, mods?: HollowKeyMods })
+---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
 
 ---@alias HollowStyleValue HollowStyle|HollowColor
 ---@alias HollowUiNodeStyle HollowStyle
@@ -480,6 +480,7 @@
 ---@field title? string
 ---@field domain? string
 ---@field command? string
+---@field insert_at_end? boolean
 ---@field on_complete? fun(result: { success: boolean, tab_id?: integer })
 
 ---@class HollowSplitPaneOpts
@@ -664,6 +665,8 @@
 
 ---@class HollowUiBarNodePayload
 ---@field id string
+---@field mods HollowKeyMods
+---@field shifted boolean
 
 ---@class HollowUiBarTabsOptions: HollowUiBarNodeOptionsBase
 ---@field fit? "fill"|"content"
@@ -697,12 +700,14 @@
 ---@class HollowUiBarCustomNode
 ---@field _type "bar_custom"
 ---@field id? string
+---@field style? HollowUiNodeStyle
 ---@field render fun(ctx: HollowWidgetCtx): HollowUiFormattedValue
----@field on_click? fun(e: { id: string })
----@field on_mouse_enter? fun(e: { id: string })
----@field on_mouse_leave? fun(e: { id: string })
+---@field on_click? fun(e: { id: string, mods: HollowKeyMods, shifted: boolean })
+---@field on_mouse_enter? fun(e: { id: string, mods: HollowKeyMods, shifted: boolean })
+---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
 ---@class HollowUiBarCustomOptions
 ---@field id? string
+---@field style? HollowUiNodeStyle
 ---@field render fun(ctx:HollowWidgetCtx):HollowUiFormattedValue|HollowUiSegment|HollowUiNodeStyle|nil
 ---@field on_click? fun(payload:HollowUiNodeEventPayload)
 ---@field on_mouse_enter? fun(payload:HollowUiNodeEventPayload)
@@ -823,6 +828,7 @@
 ---@field workspace? false|HollowUiBarWorkspaceOptions
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
+---@field new_tab? false|{ id?: string, text?: string, style?: HollowUiNodeStyle }
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions
 ---@field time? false|string|HollowUiTopbarTimeOptions
@@ -1141,7 +1147,7 @@
 ---@class HollowActionNamespace
 ---@field register fun(name: string, spec: HollowActionSpec)
 ---@field list fun(): HollowPaletteEntry[]
----@field [string] fun()
+---@field [string] fun(opts?: table)
 
 ---@class HollowConfigNamespace
 local config = {}

@@ -107,6 +107,38 @@ local function configured_topbar_bar_opts(value)
   return type(value) == "table" and value or {}
 end
 
+local function configured_topbar_new_tab(value)
+  if value == false then
+    return nil
+  end
+
+  local options = type(value) == "table" and value or {}
+  local theme = shared.resolve_theme().ui
+  local id = options.id or "new-tab-button"
+  local style = M.merge_tables({
+    fg = theme.widgets.all.title,
+    padding = { left = 5, right = 5, top = 1, bottom = 2 },
+    margin = { left = 1 },
+    hover = { fg = theme.accent },
+  }, options.style)
+  style.id = id
+
+  return ui.bar.custom({
+    id = id,
+    style = style,
+    render = function()
+      return options.text or "+"
+    end,
+    on_click = function(event)
+      if event and event.shifted then
+        hollow.action.new_tab_in_domain({ insert_at_end = true })
+      else
+        hollow.action.new_tab({ insert_at_end = true })
+      end
+    end,
+  })
+end
+
 local function configured_topbar_time(value)
   if value == false then
     return false
@@ -137,13 +169,16 @@ function M.widget()
     render = function(ctx)
       local workspace = configured_topbar_bar_opts(opts.workspace)
       local tabs = configured_topbar_bar_opts(opts.tabs)
+      local new_tab = configured_topbar_new_tab(opts.new_tab)
       local separator = configured_topbar_separator(opts.separator)
       local cwd = configured_topbar_cwd(ctx, opts.cwd)
       local key_legend = configured_topbar_bar_opts(opts.key_legend)
       local items = tbl({
           workspace ~= false and ui.bar.workspace(workspace),
           separator ~= nil and workspace ~= false and tabs ~= false and separator,
+          tabs ~= false and tabs.fit ~= "content" and new_tab or false,
           tabs ~= false and ui.bar.tabs(tabs),
+          (tabs == false or tabs.fit == "content") and new_tab or false,
         })
         :filter(function(item)
           return item ~= false

@@ -288,10 +288,44 @@ local function clamp_tab_segment_width(segment, width)
     return segment
   end
 
-  local text = truncate_text_end(segment.text or "", width)
-  if text == segment.text then
+  if util.utf8_len(segment.text or "") <= width then
     return segment
   end
+
+  local segments = segment.segments
+  if type(segments) == "table" and #segments > 1 then
+    local suffix_index
+    for index = #segments, 1, -1 do
+      if type(segments[index].id) == "string" and segments[index].id ~= "" then
+        suffix_index = index
+        break
+      end
+    end
+
+    if suffix_index ~= nil then
+      local suffix_width = 0
+      for index = suffix_index, #segments do
+        suffix_width = suffix_width + util.utf8_len(segments[index].text or "")
+      end
+
+      if suffix_width <= width then
+        local prefix = {}
+        for index = 1, suffix_index - 1 do
+          prefix[#prefix + 1] = segments[index]
+        end
+
+        local clamped = util.clone_value(segment)
+        clamped.segments = truncate_segments_end(prefix, width - suffix_width) or {}
+        for index = suffix_index, #segments do
+          clamped.segments[#clamped.segments + 1] = util.clone_value(segments[index])
+        end
+        clamped.text = shared.segments_plain_text(clamped.segments)
+        return clamped
+      end
+    end
+  end
+
+  local text = truncate_text_end(segment.text or "", width)
 
   local clamped = util.clone_value(segment)
   clamped.text = text

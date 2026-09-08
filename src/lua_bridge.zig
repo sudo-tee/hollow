@@ -188,7 +188,7 @@ pub const AppCallbacks = struct {
     set_floating_pane_bounds: *const fn (app: *anyopaque, pane_id: usize, x: f32, y: f32, width: f32, height: f32) void,
     set_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, process: []const u8) void,
     move_pane: *const fn (app: *anyopaque, pane_id: usize, direction: []const u8, amount: f32) void,
-    new_tab: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int) bool,
+    new_tab: *const fn (app: *anyopaque, cwd: ?[]const u8, domain_name: ?[]const u8, command: ?[]const u8, callback_ref: c_int, insert_at_end: bool) bool,
     close_tab: *const fn (app: *anyopaque) void,
     close_pane: *const fn (app: *anyopaque) void,
     next_tab: *const fn (app: *anyopaque) void,
@@ -589,9 +589,13 @@ pub const BuiltInPayload = union(enum) {
     },
     topbar_node: struct {
         id: []const u8,
+        mods: u32 = 0,
+        shifted: bool = false,
     },
     bottombar_node: struct {
         id: []const u8,
+        mods: u32 = 0,
+        shifted: bool = false,
     },
     overlay_node: struct {
         id: []const u8,
@@ -2579,14 +2583,22 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             try pushFileDropPayload(allocator, api, state, value.paths, value.pane_id, value.x, value.y, value.text);
         },
         .topbar_node => |value| {
-            api.create_table(state, 0, 1);
+            api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
+            api.push_number(state, @floatFromInt(value.mods));
+            api.set_field(state, -2, "mods");
+            api.push_boolean(state, if (value.shifted) 1 else 0);
+            api.set_field(state, -2, "shifted");
         },
         .bottombar_node => |value| {
-            api.create_table(state, 0, 1);
+            api.create_table(state, 0, 3);
             try pushOwnedString(allocator, api, state, value.id);
             api.set_field(state, -2, "id");
+            api.push_number(state, @floatFromInt(value.mods));
+            api.set_field(state, -2, "mods");
+            api.push_boolean(state, if (value.shifted) 1 else 0);
+            api.set_field(state, -2, "shifted");
         },
         .overlay_node => |value| {
             api.create_table(state, 0, 2);
@@ -4930,6 +4942,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
     var domain_name: ?[]const u8 = null;
     var command: ?[]const u8 = null;
     var callback_ref: c_int = LUA_NOREF;
+    var insert_at_end = false;
 
     switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
         .string => {
@@ -4942,11 +4955,14 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
             domain_name = luaStringField(api, state, opts_idx, "domain");
             command = luaStringField(api, state, opts_idx, "command");
             callback_ref = luaFunctionFieldRef(api, state, opts_idx, "on_complete");
+            api.get_field(state, opts_idx, "insert_at_end");
+            insert_at_end = api.to_boolean(state, -1) != 0;
+            pop(api, state, 1);
         },
         else => {},
     }
 
-    const queued = if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, cwd, domain_name, command, callback_ref) else false;
+    const queued = if (ctx.app_callbacks) |cbs| cbs.new_tab(cbs.app, cwd, domain_name, command, callback_ref, insert_at_end) else false;
     if (!queued and callback_ref != LUA_NOREF) api.unref(state, LUA_REGISTRYINDEX, callback_ref);
     return 0;
 }

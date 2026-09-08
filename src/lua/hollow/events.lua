@@ -111,6 +111,14 @@ function M.setup(hollow, state, term_helpers)
     }
   end
 
+  local function adapt_bar_node(payload)
+    return {
+      id = payload.id,
+      mods = hollow.keymap.format_mods(payload.mods),
+      shifted = payload.shifted == true,
+    }
+  end
+
   local adapters = {
     ["term:tab_activated"] = adapt_tab_activated,
     ["workspace:new"] = adapt_workspace_new,
@@ -127,6 +135,10 @@ function M.setup(hollow, state, term_helpers)
     ["copy_mode:changed"] = adapt_copy_mode_changed,
     ["key:unhandled"] = adapt_key_unhandled,
     ["window:files_dropped"] = adapt_files_dropped,
+    ["topbar:hover"] = adapt_bar_node,
+    ["topbar:click"] = adapt_bar_node,
+    ["bottombar:hover"] = adapt_bar_node,
+    ["bottombar:click"] = adapt_bar_node,
   }
 
   local function adapt_builtin_payload(name, payload)

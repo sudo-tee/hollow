@@ -293,7 +293,7 @@ pub const Mux = struct {
 
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
-    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand) !void {
+    pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse cfg.defaultDomainName();
@@ -306,7 +306,7 @@ pub const Mux = struct {
         else
             null;
         const previous_active = ws.active_tab;
-        const tab = try ws.newTab(self.allocId());
+        const tab = try ws.newTab(self.allocId(), insert_at_end);
         errdefer {
             var remove_idx: ?usize = null;
             for (ws.tabs.items, 0..) |t, i| {

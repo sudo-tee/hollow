@@ -56,6 +56,41 @@ describe("UI bars test suite", function()
         "configured topbar should serialize tabs content"
       )
     end)
+
+    it("creates a tab from the topbar button and opens domain picker when shifted", function()
+      hollow.config.set({
+        domains = {
+          main = { shell = "sh" },
+          dev = { shell = "sh" },
+        },
+      })
+      hollow.ui.topbar.configure({
+        workspace = false,
+        separator = false,
+        tabs = false,
+        cwd = false,
+        key_legend = false,
+        time = false,
+      })
+
+      local topbar = hollow.ui._topbar_state()
+      harness.assert_equal(
+        topbar.items[1].id,
+        "new-tab-button",
+        "configured topbar should include new-tab button"
+      )
+
+      hollow._emit_builtin_event("topbar:click", { id = "new-tab-button", shifted = false })
+      harness.assert_equal(recorded.new_tab_calls, 1, "plain new-tab click should create a tab")
+      harness.assert_true(recorded.new_tab.insert_at_end, "topbar new-tab click should append tab")
+
+      hollow._emit_builtin_event("topbar:click", { id = "new-tab-button", shifted = true })
+      harness.assert_true(
+        hollow.ui.overlay.depth() > 0,
+        "shifted new-tab click should open domain picker"
+      )
+      hollow.ui.overlay.clear()
+    end)
   end)
 
   describe("tabs max_width", function()
@@ -113,6 +148,39 @@ describe("UI bars test suite", function()
           and topbar_with_max_width.items[1].tabs[1].segments[1].text == "prefix "
           and topbar_with_max_width.items[1].tabs[1].segments[2].text == "this is a ...",
         "tabs max_width should truncate serialized formatted segments"
+      )
+    end)
+
+    it("preserves a clickable close suffix while truncating a title", function()
+      hollow.ui.topbar.configure({
+        new_tab = false,
+        workspace = false,
+        separator = false,
+        cwd = false,
+        key_legend = false,
+        time = false,
+        tabs = {
+          fit = "content",
+          max_width = 20,
+          format = function(tab)
+            return {
+              hollow.ui.span(tab.title),
+              hollow.ui.span(" ×", { on_click = function() end }),
+            }
+          end,
+        },
+      })
+      _G.host_api.set_tab_title_by_id(201, "this is a very looooong title")
+      local tab = hollow.ui._topbar_state().items[1].tabs[1]
+      harness.assert_equal(
+        tab.text,
+        "this is a very ... ×",
+        "tab truncation should retain close control text"
+      )
+      harness.assert_equal(
+        tab.segments[#tab.segments].text,
+        " ×",
+        "tab truncation should retain close control segment"
       )
     end)
   end)
