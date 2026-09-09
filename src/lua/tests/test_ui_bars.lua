@@ -79,6 +79,45 @@ describe("UI bars test suite", function()
         "new-tab-button",
         "configured topbar should include new-tab button"
       )
+      harness.assert_equal(
+        topbar.items[1].text,
+        "+",
+        "new-tab button should show plus when not shifted"
+      )
+      harness.assert_equal(
+        topbar.items[1].style.padding.left,
+        5,
+        "plus should use symmetric left padding"
+      )
+      harness.assert_equal(
+        topbar.items[1].style.padding.right,
+        5,
+        "plus should use symmetric right padding"
+      )
+
+      hollow._emit_builtin_event("topbar:hover", { id = "new-tab-button", shifted = true })
+      harness.assert_equal(
+        hollow.ui._topbar_state().items[1].text,
+        "",
+        "hovered new-tab button should show down arrow when shifted"
+      )
+      harness.assert_equal(
+        hollow.ui._topbar_state().items[1].style.padding.left,
+        2,
+        "shifted icon should use compensated left padding"
+      )
+      harness.assert_equal(
+        hollow.ui._topbar_state().items[1].style.padding.right,
+        7,
+        "shifted icon should use compensated right padding"
+      )
+
+      hollow._emit_builtin_event("topbar:hover", { id = "new-tab-button", shifted = false })
+      harness.assert_equal(
+        hollow.ui._topbar_state().items[1].text,
+        "+",
+        "new-tab button should return to plus when Shift is released"
+      )
 
       hollow._emit_builtin_event("topbar:click", { id = "new-tab-button", shifted = false })
       harness.assert_equal(recorded.new_tab_calls, 1, "plain new-tab click should create a tab")

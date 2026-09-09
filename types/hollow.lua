@@ -828,7 +828,7 @@
 ---@field workspace? false|HollowUiBarWorkspaceOptions
 ---@field tabs? false|HollowUiBarTabsOptions
 ---@field separator? false|string|HollowUiTopbarSeparatorOptions
----@field new_tab? false|{ id?: string, text?: string, style?: HollowUiNodeStyle }
+---@field new_tab? false|{ id?: string, text?: string, shifted_text?: string, style?: HollowUiNodeStyle }
 ---@field cwd? false|HollowUiTopbarCwdOptions
 ---@field key_legend? false|HollowUiBarKeyLegendOptions
 ---@field time? false|string|HollowUiTopbarTimeOptions
@@ -1083,8 +1083,10 @@
 ---@field mounted_topbar HollowUiWidget|nil
 ---@field configured_topbar HollowUiTopbarConfigureOptions|nil
 ---@field topbar_hovered_id string|nil
+---@field topbar_hovered_shifted boolean
 ---@field mounted_bottombar HollowUiWidget|nil
 ---@field bottombar_hovered_id string|nil
+---@field bottombar_hovered_shifted boolean
 ---@field mounted_sidebar HollowUiWidget|nil
 ---@field sidebar_visible boolean
 ---@field overlay_stack HollowUiWidget[]

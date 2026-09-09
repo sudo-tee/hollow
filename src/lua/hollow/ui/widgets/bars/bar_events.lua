@@ -52,6 +52,18 @@ function M.hovered_key(surface)
   return nil
 end
 
+---@param surface string
+---@return string|nil
+function M.hovered_shifted_key(surface)
+  if surface == "topbar" then
+    return "topbar_hovered_shifted"
+  end
+  if surface == "bottombar" then
+    return "bottombar_hovered_shifted"
+  end
+  return nil
+end
+
 ---@param surface string|nil
 ---@param style any
 ---@return boolean
@@ -165,11 +177,15 @@ function M.install(ui, active_widget, invalidate)
       return
     end
     local key = M.hovered_key(surface)
+    local shifted_key = M.hovered_shifted_key(surface)
     if kind == surface .. ":leave" then
       local id = state.ui[key]
       if id then
         call(surface, id, "on_mouse_leave", { id = id })
-        state.ui[key] = nil
+      end
+      state.ui[key] = nil
+      state.ui[shifted_key] = false
+      if id then
         invalidate(surface)
       end
       return
@@ -178,14 +194,21 @@ function M.install(ui, active_widget, invalidate)
     if not id then
       return
     end
-    if kind == surface .. ":hover" and state.ui[key] ~= id then
-      local old = state.ui[key]
-      if old then
-        call(surface, old, "on_mouse_leave", { id = old })
+    if kind == surface .. ":hover" then
+      local shifted = payload.shifted == true
+      if state.ui[key] ~= id then
+        local old = state.ui[key]
+        if old then
+          call(surface, old, "on_mouse_leave", { id = old })
+        end
+        state.ui[key] = id
+        state.ui[shifted_key] = shifted
+        call(surface, id, "on_mouse_enter", payload)
+        invalidate(surface)
+      elseif state.ui[shifted_key] ~= shifted then
+        state.ui[shifted_key] = shifted
+        invalidate(surface)
       end
-      state.ui[key] = id
-      call(surface, id, "on_mouse_enter", payload)
-      invalidate(surface)
     elseif kind == surface .. ":click" then
       call(surface, id, "on_click", payload)
     end

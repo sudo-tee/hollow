@@ -1,5 +1,4 @@
 local attention = require("hollow.ui.widgets.attention")
-local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
@@ -7,8 +6,8 @@ local ui = hollow.ui
 local tbl = hollow.tbl
 local util = hollow.util
 local M = {}
-local BAR_CACHE_NO_EXPIRY = false
-local DEFAULT_TOPBAR_HEIGHT = 22
+local DEFAULT_NEW_TAB_TEXT = "+"
+local DEFAULT_SHIFTED_NEW_TAB_TEXT = ""
 local DEFAULT_TOPBAR_LAYOUT = {
   padding = { left = 1, right = 1, top = 1, bottom = 1 },
 }
@@ -116,10 +115,15 @@ local function configured_topbar_new_tab(value)
   local theme = shared.resolve_theme().ui
   local id = options.id or "new-tab-button"
   local style = M.merge_tables({
-    fg = theme.widgets.all.title,
+    bg = theme.tab_bar.inactive_tab.bg,
+    fg = theme.tab_bar.inactive_tab.fg,
+    radius = 4,
     padding = { left = 5, right = 5, top = 1, bottom = 2 },
     margin = { left = 1 },
-    hover = { fg = theme.accent },
+    hover = {
+      bg = theme.tab_bar.hover_tab.bg,
+      fg = theme.tab_bar.hover_tab.fg,
+    },
   }, options.style)
   style.id = id
 
@@ -127,7 +131,13 @@ local function configured_topbar_new_tab(value)
     id = id,
     style = style,
     render = function()
-      return options.text or "+"
+      local shifted = state.ui.topbar_hovered_id == id and state.ui.topbar_hovered_shifted
+      if shifted then
+        return ui.span(options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT, {
+          padding = { left = 2, right = 7 },
+        })
+      end
+      return options.text or DEFAULT_NEW_TAB_TEXT
     end,
     on_click = function(event)
       if event and event.shifted then

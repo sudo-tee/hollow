@@ -202,6 +202,8 @@ var g_drag_node: ?*SplitNode = null;
 var g_drag_direction: SplitDirection = .vertical;
 var g_drag_bounds: PaneBounds = .{ .x = 0, .y = 0, .width = 1, .height = 1 };
 var g_mouse_button_down: ?ghostty.MouseButton = null;
+var g_mouse_x: f32 = 0;
+var g_mouse_y: f32 = 0;
 var g_top_bar_cache: BarCache = .{};
 var g_bottom_bar_cache: BarCache = .{};
 var g_overlay_hit_cache: struct {
@@ -285,6 +287,8 @@ var g_swallow_char_until_frame: u64 = 0;
 /// held-bit model would wrongly strip them.  Cleared on focus loss so the
 /// OS report is authoritative again on refocus.
 var g_released_mods: u32 = 0;
+var g_shift_left_down = false;
+var g_shift_right_down = false;
 var g_right_alt_down = false;
 var g_selection_pointer_active = false;
 var g_selection_pointer_pane: ?*Pane = null;
@@ -4682,6 +4686,8 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // restore (any pending key-ups went to another window).
                 g_released_mods = 0;
+                g_shift_left_down = false;
+                g_shift_right_down = false;
                 g_right_alt_down = false;
                 cancelOverlayScrollbarDrag();
                 @atomicStore(bool, &g_window_iconified, true, .release);
@@ -4702,6 +4708,8 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
                 // Focus is lost: trust the OS modifier report again on
                 // refocus (any pending key-ups went to another window).
                 g_released_mods = 0;
+                g_shift_left_down = false;
+                g_shift_right_down = false;
                 g_right_alt_down = false;
                 cancelOverlayScrollbarDrag();
                 setMouseCursorHidden(false);
@@ -4726,6 +4734,8 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // restore (any pending key-ups went to another window).
             g_released_mods = 0;
+            g_shift_left_down = false;
+            g_shift_right_down = false;
             g_right_alt_down = false;
             cancelOverlayScrollbarDrag();
             @atomicStore(bool, &g_window_iconified, true, .release);
@@ -4744,6 +4754,8 @@ fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void
             // Focus is lost: trust the OS modifier report again on
             // refocus (any pending key-ups went to another window).
             g_released_mods = 0;
+            g_shift_left_down = false;
+            g_shift_right_down = false;
             g_right_alt_down = false;
             cancelOverlayScrollbarDrag();
             setMouseCursorHidden(false);
@@ -4787,6 +4799,11 @@ fn handleKeyDown(app: *App, event: c.sapp_event) void {
     g_released_mods &= ~modifierBitForKey(key);
     const mods = ghosttyMods(event.modifiers);
     const is_altgr = key != .alt_right and text_helpers.isAltGrMods(mods, g_right_alt_down);
+
+    setPhysicalShiftState(key, true);
+    if ((key == .shift_left or key == .shift_right) and g_mouse_over_window) {
+        _ = updateBarHover(app, g_mouse_x, g_mouse_y, c.sapp_widthf(), event.modifiers);
+    }
 
     if (quick_select.inputActive(app)) {
         if (key == .escape) {
@@ -4857,7 +4874,17 @@ fn handleKeyUp(app: *App, event: c.sapp_event) void {
     const mods = ghosttyMods(event.modifiers);
     const is_altgr = key != .alt_right and text_helpers.isAltGrMods(mods, g_right_alt_down);
     if (key == .alt_right) g_right_alt_down = false;
+    setPhysicalShiftState(key, false);
     g_released_mods |= modifierBitForKey(key);
+    if ((key == .shift_left or key == .shift_right) and g_mouse_over_window) {
+        var modifiers = event.modifiers;
+        if (physicalShiftHeld()) {
+            modifiers |= c.SAPP_MODIFIER_SHIFT;
+        } else {
+            modifiers &= ~@as(u32, c.SAPP_MODIFIER_SHIFT);
+        }
+        _ = updateBarHover(app, g_mouse_x, g_mouse_y, c.sapp_widthf(), modifiers);
+    }
     if (quick_select.inputActive(app)) {
         c.sapp_consume_event();
         return;
@@ -5209,6 +5236,8 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
 
 fn handleMouseMove(app: *App, event: c.sapp_event) void {
     g_mouse_over_window = true;
+    g_mouse_x = event.mouse_x;
+    g_mouse_y = event.mouse_y;
     setMouseCursorHidden(false);
     if (g_linux_window_resize_active) {
         c.hollow_linux_update_window_resize();
@@ -5560,6 +5589,18 @@ fn mapKey(key_code: c.sapp_keycode) ghostty.Key {
         c.SAPP_KEYCODE_F12 => .f12,
         else => .unidentified,
     };
+}
+
+fn setPhysicalShiftState(key: ghostty.Key, down: bool) void {
+    switch (key) {
+        .shift_left => g_shift_left_down = down,
+        .shift_right => g_shift_right_down = down,
+        else => {},
+    }
+}
+
+fn physicalShiftHeld() bool {
+    return g_shift_left_down or g_shift_right_down;
 }
 
 fn modifierBitForKey(key: ghostty.Key) u32 {
