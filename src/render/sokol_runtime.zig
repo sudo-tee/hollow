@@ -424,6 +424,9 @@ const PaneCacheEntry = struct {
     /// and ghostty does not mark the old cursor row as dirty (content unchanged).
     /// Initialised to maxInt(usize) so it matches no row on the first frame.
     prev_cursor_row: usize = std.math.maxInt(usize),
+    /// True when the previous cached render consumed PTY output. The first
+    /// quiet frame after a burst gets one full refresh before cache reuse.
+    pty_burst_active: bool = false,
     last_cursor_row: usize = std.math.maxInt(usize),
     last_cursor_col: usize = std.math.maxInt(usize),
     last_cursor_visible: bool = false,
@@ -462,6 +465,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
                     @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
                     @memset(&entry.row_map_vals, 0);
                     entry.prev_cursor_row = std.math.maxInt(usize);
+                    entry.pty_burst_active = false;
                     entry.last_cursor_row = std.math.maxInt(usize);
                     entry.last_cursor_col = std.math.maxInt(usize);
                     entry.last_cursor_visible = false;
@@ -498,6 +502,7 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
         .last_rows = 0,
         .validity = .invalid,
         .last_atlas_reset_epoch = 0,
+        .pty_burst_active = false,
     };
     new_entry.cache.clear();
     g_pane_caches[free_slot] = new_entry;
@@ -3029,6 +3034,7 @@ fn invalidateAllPaneCaches() void {
             @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
             @memset(&entry.row_map_vals, 0);
             entry.prev_cursor_row = std.math.maxInt(usize);
+            entry.pty_burst_active = false;
         }
     }
 }
@@ -3050,6 +3056,7 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
             @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
             @memset(&entry.row_map_vals, 0);
             entry.prev_cursor_row = std.math.maxInt(usize);
+            entry.pty_burst_active = false;
             return;
         }
     }
@@ -3384,7 +3391,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     if (grid_changed) {
                         cache_entry.stable_after_resize = false;
                     }
-                    const settled_clean = dirty_level == .false_value and selection_redraw_range == null and !pty_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
+                    const settled_clean = dirty_level == .false_value and selection_redraw_range == null and !pty_active and !cache_entry.pty_burst_active and !atlas_stale and !cache_entry.needs_clear and !geometry_stale and !size_mismatch and !grid_changed and !cursor_state_changed;
                     if (dirty_level == .false_value and cache_entry.validity == .valid and settled_clean and cache_entry.stable_after_resize) {
                         if (cfg.debug_terminal_trace and focused) {
                             std.log.info("terminal-trace cache pane={x} mode=cached_clean dirty={s} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d}", .{
@@ -3407,7 +3414,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         return .cached_clean;
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
-                    const force_full = dirty_level == .full or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
+                    const pty_burst_ended = cache_entry.pty_burst_active and !pty_active;
+                    const force_full = dirty_level == .full or pty_burst_ended or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
                     if (cfg.debug_terminal_trace and focused) {
                         std.log.info("terminal-trace cache pane={x} mode=cached_dirty dirty={s} force_full={} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d} pty_active={} size_mismatch={} grid_changed={}", .{
                             @intFromPtr(pane),
@@ -3559,10 +3567,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     // scroll frames redraw the dirty rows without forcing a CLEAR.
                     pane.pty_wrote_this_frame = false; // consumed by renderer
                     cache_entry.needs_clear = false;
-                    const now_stable = !pty_active and dirty_level == .false_value and !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
+                    const now_stable = !atlas_stale and !geometry_stale and !size_mismatch and !grid_changed;
                     cache_entry.stable_after_resize = now_stable;
                     cache_entry.validity = if (cache_entry.stable_after_resize) .valid else .priming;
-                    if (cache_entry.force_full_frames > 0 and !pty_active) cache_entry.force_full_frames -= 1;
+                    if (cache_entry.force_full_frames > 0) cache_entry.force_full_frames -= 1;
+                    cache_entry.pty_burst_active = pty_active;
                     cache_entry.last_bg_color = bg_color;
                     cache_entry.has_bg_color = true;
                     cache_entry.prev_cursor_row = cursor_row;
@@ -5018,6 +5027,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                     entry.force_full_frames = 3;
                     entry.stable_after_resize = false;
                     entry.needs_clear = true;
+                    entry.pty_burst_active = false;
                     @memset(&entry.row_map_keys, ROW_MAP_EMPTY);
                     @memset(&entry.row_map_vals, 0);
                 }

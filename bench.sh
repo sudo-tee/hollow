@@ -11,6 +11,8 @@ fi
 
 RATE="${3:-100}"
 SYNC_UPDATES="${4:-4}"
+CHUNK_BYTES="${5:-128}"
+WRITE_DELAY_MS="${6:-0}"
 
 run_blocking_child() {
   local result_path="$2"
@@ -153,7 +155,7 @@ if [[ "$MODE" == "nvim-restart" ]]; then
   exec "$SCRIPT_DIR/launch.sh" --app-arg="--startup-command" --app-arg=":restart" --app-arg="--startup-command-delay-frames" --app-arg="$DELAY_FRAMES" --app-arg="--snapshot-dump" --app-arg="$OUT_PATH"
 fi
 
-python3 - "$MODE" "$COUNT" "$RATE" "$SYNC_UPDATES" <<'PY'
+python3 - "$MODE" "$COUNT" "$RATE" "$SYNC_UPDATES" "$CHUNK_BYTES" "$WRITE_DELAY_MS" <<'PY'
 import os
 import re
 import select
@@ -166,6 +168,10 @@ import tty
 
 mode = sys.argv[1]
 count = int(sys.argv[2])
+rate_arg = int(sys.argv[3]) if len(sys.argv) > 3 else 100
+sync_updates_arg = int(sys.argv[4]) if len(sys.argv) > 4 else 4
+chunk_bytes = max(1, int(sys.argv[5])) if len(sys.argv) > 5 else 128
+write_delay_ms = max(0.0, float(sys.argv[6])) if len(sys.argv) > 6 else 0.0
 cols, rows = shutil.get_terminal_size((80, 24))
 rows = max(4, rows)
 cols = max(20, cols)
@@ -187,7 +193,7 @@ def cleanup(*_):
     global running
     running = False
     try:
-        sys.stdout.write(RESET + SHOW + ALT_OFF)
+        sys.stdout.write(RESET + SHOW + SYNC_OFF + ALT_OFF)
         sys.stdout.flush()
     except Exception:
         pass
@@ -612,6 +618,87 @@ def run_sync_output(batches, rate_hz=100, updates_per_batch=4):
         f"mode: CSI ?2026h/l  updates_per_batch={updates_per_batch}\n"
     )
 
+def chunked_frame_text(frame, row):
+    red = (frame * 17 + row * 11) % 200 + 30
+    green = (frame * 7 + row * 19) % 200 + 30
+    blue = (frame * 23 + row * 5) % 200 + 30
+    label = f" frame={frame:05d} row={row:03d} "
+    body = (label + (" <>[]{}()##==++--" * 32))[:cols].ljust(cols)
+    return (
+        f"{CSI}{row + 1};1H{CSI}2K"
+        f"{CSI}48;2;{red};{green};{blue}m{CSI}38;2;240;240;240m"
+        f"{body}{RESET}"
+    )
+
+def run_chunked(frames, rate_hz=100, updates_per_frame=4, write_chunk_bytes=128, synchronized=True, write_delay_ms=0.0):
+    """Split alternate-screen redraws into small PTY writes."""
+    interval = 1.0 / rate_hz
+    updates_per_frame = max(1, updates_per_frame)
+    write_chunk_bytes = max(1, write_chunk_bytes)
+    write_delay_s = write_delay_ms / 1000.0
+
+    sys.stdout.write(HIDE + ALT_ON + CLEAR + HOME)
+    sys.stdout.flush()
+    frame_times = []
+    written = 0
+    done = 0
+    start = time.perf_counter()
+
+    for frame in range(frames):
+        if not running:
+            break
+        batch_start = time.perf_counter()
+        if synchronized:
+            sys.stdout.write(SYNC_ON)
+            sys.stdout.flush()
+        for update in range(updates_per_frame):
+            logical_frame = frame * updates_per_frame + update
+            for row in range(rows - 1):
+                data = chunked_frame_text(logical_frame, row).encode()
+                for offset in range(0, len(data), write_chunk_bytes):
+                    chunk = data[offset:offset + write_chunk_bytes]
+                    os.write(sys.stdout.fileno(), chunk)
+                    written += len(chunk)
+                if write_delay_s > 0:
+                    time.sleep(write_delay_s)
+            status = f"{CSI}{rows};1H{CSI}0mchunked bench frame={logical_frame:05d} size={cols}x{rows}"
+            status_bytes = status.encode()
+            for offset in range(0, len(status_bytes), write_chunk_bytes):
+                chunk = status_bytes[offset:offset + write_chunk_bytes]
+                os.write(sys.stdout.fileno(), chunk)
+                written += len(chunk)
+            if update + 1 < updates_per_frame:
+                time.sleep(interval / updates_per_frame)
+        if synchronized:
+            sys.stdout.write(SYNC_OFF)
+            sys.stdout.flush()
+
+        frame_times.append(time.perf_counter() - batch_start)
+        done += 1
+        sleep_for = interval - frame_times[-1]
+        if sleep_for > 0.0001:
+            time.sleep(sleep_for)
+
+    elapsed = time.perf_counter() - start
+    cleanup()
+    if frame_times:
+        avg_ms = sum(frame_times) / len(frame_times) * 1000
+        min_ms = min(frame_times) * 1000
+        max_ms = max(frame_times) * 1000
+        p99_ms = sorted(frame_times)[int(len(frame_times) * 0.99)] * 1000
+    else:
+        avg_ms = min_ms = max_ms = p99_ms = 0.0
+
+    sys.stdout.write(stat_line("chunked", elapsed, "frames", max(1, done)))
+    sys.stdout.write(
+        f"bytes: {written} ({written / max(elapsed, 1e-9):.0f}/s)\n"
+        f"frame duration (ms):  avg={avg_ms:.2f}  min={min_ms:.2f} "
+        f"max={max_ms:.2f}  p99={p99_ms:.2f}\n"
+        f"mode: {'CSI ?2026h/l' if synchronized else 'raw'}  "
+        f"updates_per_frame={updates_per_frame} write_chunk_bytes={write_chunk_bytes} "
+        f"write_delay_ms={write_delay_ms:.1f}\n"
+    )
+
 def run_keypress(presses, rate_hz=100):
     """
     Simulate rapid j/k scrolling in nvim:
@@ -695,16 +782,16 @@ if mode == "scroll":
 elif mode == "repaint":
     run_repaint(count)
 elif mode == "keypress":
-    rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
-    run_keypress(count, rate_hz=rate)
+    run_keypress(count, rate_hz=rate_arg)
 elif mode == "split-scroll":
-    rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
-    run_split_scroll(count, rate_hz=rate)
+    run_split_scroll(count, rate_hz=rate_arg)
 elif mode == "sync-output":
-    rate = int(sys.argv[3]) if len(sys.argv) > 3 else 100
-    updates = int(sys.argv[4]) if len(sys.argv) > 4 else 4
-    run_sync_output(count, rate_hz=rate, updates_per_batch=updates)
+    run_sync_output(count, rate_hz=rate_arg, updates_per_batch=sync_updates_arg)
+elif mode == "chunked":
+    run_chunked(count, rate_hz=rate_arg, updates_per_frame=sync_updates_arg, write_chunk_bytes=chunk_bytes, write_delay_ms=write_delay_ms)
+elif mode == "chunked-raw":
+    run_chunked(count, rate_hz=rate_arg, updates_per_frame=sync_updates_arg, write_chunk_bytes=chunk_bytes, synchronized=False, write_delay_ms=write_delay_ms)
 else:
-    sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|sync-output|bypass-blocking|nvim-restart|minimize-restore] ...\n")
+    sys.stderr.write("usage: ./bench.sh [scroll|repaint|keypress|split-scroll|sync-output|chunked|chunked-raw|bypass-blocking|nvim-restart|minimize-restore] ...\n")
     sys.exit(2)
 PY

@@ -14,6 +14,7 @@ const default_iterations: usize = 10;
 
 const Scenario = enum {
     repaint,
+    chunked,
     scroll,
     styled,
     replay,
@@ -457,6 +458,32 @@ fn buildCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
                 try appendFormat(&corpus, allocator, "\x1b[0mrepaint benchmark frame={d} size={d}x{d}", .{ frame, options.cols, options.rows });
             }
         },
+        .chunked => {
+            // Model OpenCode/Copilot-style alternate-screen updates: each frame
+            // repaints rows independently inside DEC synchronized output, with
+            // truecolor backgrounds and small erase/write sequences. The bench
+            // feeds this corpus in chunks so render-state snapshots can land
+            // between writes.
+            try corpus.appendSlice(allocator, "\x1b[?1049h\x1b[2J\x1b[H");
+            var frame: usize = 0;
+            while (frame < options.frames) : (frame += 1) {
+                try corpus.appendSlice(allocator, "\x1b[?2026h");
+                var row: usize = 0;
+                while (row < options.rows) : (row += 1) {
+                    const red: u8 = @intCast((frame * 17 + row * 11) % 200 + 30);
+                    const green: u8 = @intCast((frame * 7 + row * 19) % 200 + 30);
+                    const blue: u8 = @intCast((frame * 23 + row * 5) % 200 + 30);
+                    try appendFormat(&corpus, allocator, "\x1b[{d};1H\x1b[2K\x1b[48;2;{d};{d};{d}m\x1b[38;2;240;240;240m", .{
+                        row + 1, red, green, blue,
+                    });
+                    var label_buffer: [128]u8 = undefined;
+                    const label = try std.fmt.bufPrint(&label_buffer, " frame={d} row={d} ", .{ frame, row });
+                    try corpus.appendSlice(allocator, label);
+                    if (label.len < options.cols) try appendRepeated(&corpus, allocator, " ", options.cols - label.len);
+                }
+                try corpus.appendSlice(allocator, "\x1b[0m\x1b[?2026l");
+            }
+        },
         .scroll => {
             const lines = try std.math.mul(usize, options.frames, options.rows);
             var line: usize = 0;
@@ -528,12 +555,15 @@ fn pipelineSample(harness: *Harness, corpus: []const u8) !struct { total: i128, 
         parse_ns += io.nanoTimestamp() - start;
 
         start = io.nanoTimestamp();
+        harness.runtime.clearRenderStateDirty(session.render_state);
         try harness.runtime.updateRenderState(session.render_state, session.terminal);
         render_state_ns += io.nanoTimestamp() - start;
         harness.captureState(&session);
 
         start = io.nanoTimestamp();
-        const force_full = offset == 0;
+        // Match cached-pane policy: full dirty means screen-wide replacement;
+        // ordinary chunked output uses retained partial rows.
+        const force_full = offset == 0 or harness.dirty_level == .full;
         harness.queue(&session, force_full);
         if (force_full) harness.clearDirtyRows(&session);
         render_ns += io.nanoTimestamp() - start;
@@ -654,6 +684,7 @@ fn printJsonStats(writer: anytype, name: []const u8, samples: []i128) !void {
 
 fn parseScenario(value: []const u8) !Scenario {
     if (std.mem.eql(u8, value, "repaint")) return .repaint;
+    if (std.mem.eql(u8, value, "chunked")) return .chunked;
     if (std.mem.eql(u8, value, "scroll")) return .scroll;
     if (std.mem.eql(u8, value, "styled")) return .styled;
     if (std.mem.eql(u8, value, "replay")) return .replay;
