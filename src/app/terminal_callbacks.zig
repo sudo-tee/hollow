@@ -63,8 +63,19 @@ fn sizeCallback(_: ?*anyopaque, userdata: ?*anyopaque, out: ?*ghostty.SizeReport
     return true;
 }
 
-fn colorSchemeCallback(_: ?*anyopaque, _: ?*anyopaque, _: ?*ghostty.ColorScheme) callconv(.c) bool {
-    return false;
+fn colorSchemeCallback(_: ?*anyopaque, userdata: ?*anyopaque, out: ?*ghostty.ColorScheme) callconv(.c) bool {
+    const out_ptr = out orelse return false;
+    const pane = paneFromUserdata(userdata) orelse return false;
+    const app: *App = @ptrCast(@alignCast(pane.host_context orelse return false));
+    out_ptr.* = colorSchemeForBackground(app.config.terminal_theme.background);
+    return true;
+}
+
+fn colorSchemeForBackground(background: ghostty.ColorRgb) ghostty.ColorScheme {
+    const brightness: u32 = @as(u32, background.r) * 299 +
+        @as(u32, background.g) * 587 +
+        @as(u32, background.b) * 114;
+    return if (brightness > 128_000) .light else .dark;
 }
 
 fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.DeviceAttributes) callconv(.c) bool {
@@ -85,4 +96,15 @@ fn titleChangedCallback(_: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void
         if (pane.title_is_manual) return;
         pane.title_dirty = true;
     }
+}
+
+test "color scheme follows configured terminal background" {
+    try std.testing.expectEqual(
+        ghostty.ColorScheme.dark,
+        colorSchemeForBackground(.{ .r = 25, .g = 26, .b = 28 }),
+    );
+    try std.testing.expectEqual(
+        ghostty.ColorScheme.light,
+        colorSchemeForBackground(.{ .r = 240, .g = 240, .b = 240 }),
+    );
 }

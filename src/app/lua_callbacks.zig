@@ -393,6 +393,12 @@ pub fn luaRefreshLiveConfigCallback(app_ptr: *anyopaque) void {
     std.log.info("config: command_timing={}", .{app.config.command_timing});
     cmd_ipc.syncCommandTimingEnv(app);
     app.pending_renderer_refresh = app.config.backend == .sokol or app.config.backend == .webgpu;
+    if (app.ghostty) |*runtime| {
+        if (app.mux) |*mux| {
+            var panes = mux.paneIterator();
+            while (panes.next()) |pane| pane.applyTerminalTheme(runtime, &app.config.terminal_theme);
+        }
+    }
     mux_ops.invalidateAllPanes(app);
     app.requestLayoutResize(true);
 }

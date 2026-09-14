@@ -3644,12 +3644,14 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         if (std.mem.eql(u8, key, "theme") and value_type == .table) {
             const theme_idx = absoluteIndex(api, state, -1);
             applyThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config theme field failed: {s}", .{@errorName(err)});
+            refresh_live_config = true;
             continue;
         }
 
         if (std.mem.eql(u8, key, "terminal_theme") and value_type == .table) {
             const theme_idx = absoluteIndex(api, state, -1);
             applyThemeTable(ctx.cfg, api, state, theme_idx) catch |err| std.log.err("config terminal_theme field failed: {s}", .{@errorName(err)});
+            refresh_live_config = true;
             continue;
         }
 

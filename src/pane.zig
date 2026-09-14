@@ -268,6 +268,17 @@ pub const Pane = struct {
         return .{ .allocator = allocator };
     }
 
+    pub fn applyTerminalTheme(self: *Pane, runtime: *GhosttyRuntime, theme: *const Config.TerminalTheme) void {
+        runtime.setTerminalDefaultColors(
+            self.terminal,
+            theme.foreground,
+            theme.background,
+            theme.cursor,
+            &theme.palette,
+        );
+        self.render_dirty = .full;
+    }
+
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
         self.boot_output.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
@@ -299,6 +310,14 @@ pub const Pane = struct {
         _ = window_height;
         const terminal = try runtime.createTerminal(cfg.cols, cfg.rows, cfg.scrollback);
         errdefer runtime.freeTerminal(terminal);
+
+        runtime.setTerminalDefaultColors(
+            terminal,
+            cfg.terminal_theme.foreground,
+            cfg.terminal_theme.background,
+            cfg.terminal_theme.cursor,
+            &cfg.terminal_theme.palette,
+        );
 
         runtime.setTerminalUserdata(terminal, self);
 

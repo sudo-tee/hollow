@@ -915,6 +915,35 @@ pub const Runtime = struct {
         return handle;
     }
 
+    /// Set the embedder's terminal color defaults. Ghostty uses these values
+    /// both for cells that use the default SGR colors and for OSC 10/11/12
+    /// queries from programs running in the terminal.
+    pub fn setTerminalDefaultColors(
+        self: *Runtime,
+        handle: ?*anyopaque,
+        foreground: ColorRgb,
+        background: ColorRgb,
+        cursor: ?ColorRgb,
+        palette: *const [256]ColorRgb,
+    ) void {
+        const terminal = handle orelse return;
+
+        var foreground_value = foreground;
+        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_foreground), &foreground_value);
+
+        var background_value = background;
+        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_background), &background_value);
+
+        if (cursor) |cursor_value| {
+            var cursor_color = cursor_value;
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_cursor), &cursor_color);
+        } else {
+            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_cursor), null);
+        }
+
+        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_palette), palette);
+    }
+
     pub fn freeTerminal(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| self.terminal_free(terminal);
     }
@@ -1737,4 +1766,27 @@ test "synchronized output mode round trips through Ghostty" {
     try std.testing.expect(runtime.terminalMode(terminal, .synchronized_output));
     try std.testing.expect(runtime.setTerminalMode(terminal, .synchronized_output, false));
     try std.testing.expect(!runtime.terminalMode(terminal, .synchronized_output));
+}
+
+test "terminal default colors are exposed through render state" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+
+    const terminal = try runtime.createTerminal(80, 24, 0);
+    defer runtime.freeTerminal(terminal);
+
+    var palette = [_]ColorRgb{.{ .r = 0, .g = 0, .b = 0 }} ** 256;
+    palette[0] = .{ .r = 1, .g = 2, .b = 3 };
+    const foreground = ColorRgb{ .r = 220, .g = 221, .b = 222 };
+    const background = ColorRgb{ .r = 25, .g = 26, .b = 28 };
+    runtime.setTerminalDefaultColors(terminal, foreground, background, null, &palette);
+
+    const render_state = try runtime.createRenderState();
+    defer runtime.freeRenderState(render_state);
+    try runtime.updateRenderState(render_state, terminal);
+
+    const colors = runtime.renderStateColors(render_state).?;
+    try std.testing.expectEqual(foreground, colors.foreground);
+    try std.testing.expectEqual(background, colors.background);
+    try std.testing.expectEqual(palette[0], colors.palette[0]);
 }

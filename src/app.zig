@@ -1876,6 +1876,7 @@ pub const App = struct {
             if (self.mux) |*mux| {
                 var panes = mux.paneIterator();
                 while (panes.next()) |pane| {
+                    pane.applyTerminalTheme(runtime, &self.config.terminal_theme);
                     pane.refreshTitle(runtime, self.config.windowTitle(), self.config.shellForDomain(if (pane.domain_name.len > 0) pane.domain_name else null) catch self.config.shellOrDefault());
                     _ = pane.refreshCwd();
                 }
