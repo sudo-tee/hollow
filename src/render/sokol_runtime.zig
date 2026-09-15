@@ -509,6 +509,17 @@ fn getOrCreatePaneCacheEntry(pane: *const Pane, w: u32, h: u32) ?*PaneCacheEntry
     return &g_pane_caches[free_slot].?;
 }
 
+fn paneCacheReadyForPresent(pane: *const Pane, w: u32, h: u32) bool {
+    for (&g_pane_caches) |*slot| {
+        const entry = if (slot.*) |*entry| entry else continue;
+        if (entry.pane != pane) continue;
+        return !entry.cache.needsResize(w, h) and
+            entry.validity != .invalid and
+            !entry.needs_clear;
+    }
+    return false;
+}
+
 /// Release the cache entry for a pane that has been destroyed.
 fn releasePaneCache(pane: *const Pane) void {
     for (&g_pane_caches) |*slot| {
@@ -3236,11 +3247,24 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const single_visible_pane = if (leaves.len == 0) app.activePane() else null;
     const auto_disable_multi_pane_cache = leaves.len > MAX_CACHED_VISIBLE_PANES;
     const use_direct_multi_pane = (app.config.renderer_disable_multi_pane_cache or auto_disable_multi_pane_cache) and leaves.len > 1 and !sync_cache_supported;
+    const sync_cache_unready = if (!visible_sync_output or use_safe_render or use_direct_multi_pane or use_direct_render)
+        false
+    else if (leaves.len > 0)
+        for (leaves) |leaf| {
+            if (leaf.pane.synchronized_output_active and
+                !paneCacheReadyForPresent(leaf.pane, leaf.bounds.width, leaf.bounds.height)) break true;
+        } else false
+    else if (single_visible_pane) |pane|
+        pane.synchronized_output_active and
+            !paneCacheReadyForPresent(pane, @intFromFloat(width), @intFromFloat(height))
+    else
+        false;
     // Direct paths have no retained terminal surface. Keep the last
-    // presented frame until synchronized output ends instead of clearing
-    // the swapchain and drawing newer terminal state.
+    // presented frame until synchronized output ends instead of clearing the
+    // swapchain and drawing newer terminal state. Cached paths must do the same
+    // when a screen transition invalidated their retained surface mid-batch.
     if (visible_sync_output and
-        (use_safe_render or use_direct_multi_pane or use_direct_render) and
+        (use_safe_render or use_direct_multi_pane or use_direct_render or sync_cache_unready) and
         g_renderer_ready)
     {
         c.sapp_skip_present();
@@ -3414,8 +3438,13 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         return .cached_clean;
                     }
                     const unsettled = size_mismatch or grid_changed or !cache_entry.stable_after_resize;
-                    const pty_burst_ended = cache_entry.pty_burst_active and !pty_active;
-                    const force_full = dirty_level == .full or pty_burst_ended or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
+                    // PTY output may contain only part of a TUI repaint when the
+                    // read budget expires. Do not mix those rows with an older
+                    // retained surface: larger windows make that mismatch both
+                    // more likely and visible for longer. The quiet frame after
+                    // the burst remains a final full reconciliation.
+                    const pty_burst_refresh = pty_active or cache_entry.pty_burst_active;
+                    const force_full = dirty_level == .full or pty_burst_refresh or atlas_stale or cache_entry.needs_clear or geometry_stale or unsettled or background_changed;
                     if (cfg.debug_terminal_trace and focused) {
                         std.log.info("terminal-trace cache pane={x} mode=cached_dirty dirty={s} force_full={} cursor_changed={} cursor_visible={} cursor_blinking={} cursor_blink_visible={} cursor_style={s} cursor_row={d} cursor_col={d} pty_active={} size_mismatch={} grid_changed={}", .{
                             @intFromPtr(pane),
