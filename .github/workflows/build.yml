@@ -155,6 +155,13 @@ jobs:
                 timeStyle: 'short',
                 timeZone: 'UTC',
               }).format(new Date(timestamp))} UTC`;
+            const formatDate = (timestamp) =>
+              new Intl.DateTimeFormat('en-GB', {
+                dateStyle: 'medium',
+                timeZone: 'UTC',
+              }).format(new Date(timestamp));
+            const buildDate = formatDate(run.created_at);
+            const buildDateMarkup = `<relative-time datetime="${run.created_at}">${buildDate}</relative-time>`;
             const commitShortSha = commitSha.slice(0, 7);
             const artifacts = [
               {
@@ -175,7 +182,7 @@ jobs:
 
             const body = [
               marker,
-              '## 📦 PR builds',
+              `## 📦 PR builds · ${buildDateMarkup}`,
               '',
               '| Platform | Download |',
               '| --- | --- |',
