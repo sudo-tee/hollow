@@ -17,7 +17,7 @@ Hollow resolves two files in this order:
 1. **Base config** — `conf/init.lua` next to the executable, if present;
    otherwise the project copy at `./conf/init.lua`; otherwise the embedded
    fallback compiled into the binary.
-2. **Override config** — `--config path` if passed; otherwise the default
+2. **Override config** — `--config path` if passed or '$HOLLOW_CONFIG_PATH' env variable; otherwise the default
    personal location:
    - Windows: `%APPDATA%\hollow\init.lua`
    - Non-Windows: `$XDG_CONFIG_HOME/hollow/init.lua` or

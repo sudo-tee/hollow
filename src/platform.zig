@@ -546,6 +546,10 @@ pub fn projectFallbackConfigPath() []const u8 {
     return "conf/init.lua";
 }
 
+pub fn envConfigOverride(allocator: std.mem.Allocator) ?[]u8 {
+    return envOwnedOrNull(allocator, "HOLLOW_CONFIG_PATH");
+}
+
 pub fn selfExeDir(allocator: std.mem.Allocator) ![]u8 {
     const exe_path = try std.process.executablePathAlloc(io.get(), allocator);
     defer allocator.free(exe_path);

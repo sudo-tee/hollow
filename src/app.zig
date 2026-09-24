@@ -2166,6 +2166,11 @@ pub const App = struct {
             return result;
         }
 
+        if (platform.envConfigOverride(self.allocator)) |path| {
+            result.override = path;
+            return result;
+        }
+
         const user_path = try platform.defaultConfigPath(self.allocator);
         errdefer self.allocator.free(user_path);
         if (pathExists(user_path) and (result.base == null or !std.mem.eql(u8, user_path, result.base.?))) {
