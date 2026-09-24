@@ -472,6 +472,13 @@ function M.setup(hollow, host_api)
     end
   end
 
+  function hollow.term.focus_tab_by_index(index)
+    if type(index) ~= "number" then
+      error("hollow.term.focus_tab_by_index(index) expects a tab index")
+    end
+    host_api.switch_tab(index)
+  end
+
   function hollow.term.close_tab(id)
     if type(id) ~= "number" then
       error("hollow.term.close_tab(id) expects a tab id")
