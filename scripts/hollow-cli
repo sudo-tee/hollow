@@ -185,6 +185,12 @@ class HollowCli:
         p.add_argument("--index", type=int)
         p.set_defaults(handler=self.handle_tab_rename)
 
+        p = tab_sub.add_parser("screenshot", parents=[self.common_parser])
+        p.add_argument("path")
+        p.add_argument("--id", type=int)
+        p.add_argument("--index", type=int)
+        p.set_defaults(handler=self.handle_tab_screenshot)
+
     def add_pane(self, sub):
         pane = sub.add_parser("pane", parents=[self.common_parser])
         pane_sub = pane.add_subparsers(dest="pane_command")
@@ -196,6 +202,11 @@ class HollowCli:
         p.add_argument("--domain")
         p.add_argument("--ratio", type=float)
         p.set_defaults(handler=self.handle_pane_split)
+
+        p = pane_sub.add_parser("screenshot", parents=[self.common_parser])
+        p.add_argument("path")
+        p.add_argument("--id", type=int)
+        p.set_defaults(handler=self.handle_pane_screenshot)
 
         p = pane_sub.add_parser("popup", parents=[self.common_parser])
         p.add_argument("cmd")
@@ -359,6 +370,15 @@ class HollowCli:
     def handle_tab_rename(self, args):
         tab_id = args.id or self.resolve_index("tabs", args.index)
         return self.print_event("set_tab_title", self.clean({"id": tab_id, "title": args.name}))
+
+    def handle_tab_screenshot(self, args):
+        tab_id = args.id or self.resolve_index("tabs", args.index)
+        self.emit_output(self.send_command({"kind": "tab_screenshot", "id": tab_id, "path": args.path}), payload_only=True)
+        return 0
+
+    def handle_pane_screenshot(self, args):
+        self.emit_output(self.send_command({"kind": "pane_screenshot", "id": args.id, "path": args.path}), payload_only=True)
+        return 0
 
     def handle_pane_split(self, args):
         payload = self.clean({
@@ -713,6 +733,19 @@ class HollowCli:
             "channel": channel,
             "params" if kind == "query" else "payload": data,
         }
+        return self.send_socket_request(request, conn)
+
+    def send_command(self, request):
+        address = os.environ.get("HOLLOW_COMMAND_ADDR")
+        if not address or self.transport in ("file", "osc"):
+            raise CliError("screenshot requires HOLLOW_COMMAND_ADDR socket transport", code="transport_error")
+        try:
+            with self.connect_socket(address) as conn:
+                return self.send_socket_request(self.clean(request), conn)
+        except OSError as exc:
+            raise CliError(f"command transport failed: {exc}", code="transport_error")
+
+    def send_socket_request(self, request, conn):
         payload = json.dumps(request, separators=(",", ":")).encode("utf-8")
         if len(payload) > 16 * 1024 * 1024:
             raise CliError("command request exceeds 16 MiB", code="transport_error")

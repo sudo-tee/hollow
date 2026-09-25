@@ -27,6 +27,7 @@ const copy_mode = @import("../app/copy_mode.zig");
 const quick_select = @import("../app/quick_select.zig");
 const selection_mod = @import("../app/selection.zig");
 const mux_ops = @import("../app/session_controller.zig");
+const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
@@ -3128,7 +3129,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var visually_active = true;
     if (g_drag_node == null) {
         const atlas_upload_pending = if (g_ft_renderer) |*renderer| renderer.atlas_dirty else false;
-        visually_active = app.hasVisualActivity() or atlas_upload_pending;
+        visually_active = app.hasVisualActivity() or atlas_upload_pending or cmd_ipc.hasPendingScreenshot(app);
     }
     const use_idle_frame_cap = shouldUseIdleFrameCap(app, visually_active, after_tick_ns);
 
@@ -3157,6 +3158,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
+        cmd_ipc.finishScreenshot(app, null, 0, 0);
         app.invalidateUiSemanticFrame();
         c.sapp_skip_present();
         return;
@@ -4173,6 +4175,15 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();
+    if (cmd_ipc.hasPendingScreenshot(app)) {
+        const frame_width: usize = @intFromFloat(width);
+        const frame_height: usize = @intFromFloat(height);
+        const pixels = app.allocator.alloc(u8, frame_width * frame_height * 4) catch null;
+        if (pixels) |rgba| {
+            defer app.allocator.free(rgba);
+            cmd_ipc.finishScreenshot(app, if (c.hollow_capture_frame(rgba.ptr, @intCast(frame_width), @intCast(frame_height))) rgba else null, frame_width, frame_height);
+        } else cmd_ipc.finishScreenshot(app, null, 0, 0);
+    }
     c.sg_commit();
     const after_commit_ns = io.nanoTimestamp();
     const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;

@@ -388,6 +388,7 @@ pub const App = struct {
     command_ready: std.Io.Condition = .init,
     command_done: std.Io.Condition = .init,
     pending_command: ?*cmd_ipc.PendingCommandRequest = null,
+    pending_screenshot: ?*cmd_ipc.PendingCommandRequest = null,
     command_shutting_down: bool = false,
     automation_mutex: std.Io.Mutex = .init,
     automation_changed: std.Io.Condition = .init,

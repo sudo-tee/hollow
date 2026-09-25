@@ -394,6 +394,13 @@ const Runner = struct {
             const tab_id = id orelse try self.resolveIndex(.get_tabs, index);
             return try self.printEvent(.{ .kind = .tab_rename, .id = tab_id, .name = try self.allocator.dupe(u8, rest[0]) });
         }
+        if (std.mem.eql(u8, sub, "screenshot")) {
+            if (rest.len == 0) return self.fail("usage: cli tab screenshot <path.png> [--id ID|--index N]", "invalid_args", 2);
+            var id: ?usize = null;
+            var index: ?usize = null;
+            try self.parseIdIndex(rest[1..], &id, &index);
+            return try self.printScreenshot(.{ .kind = .tab_screenshot, .id = id orelse try self.resolveIndex(.get_tabs, index), .path = try self.allocator.dupe(u8, rest[0]) });
+        }
 
         return self.failFmt("unknown tab command: {s}", .{sub}, "invalid_args", 2);
     }
@@ -402,6 +409,13 @@ const Runner = struct {
         if (args.len == 0) return self.fail("missing pane command", "invalid_args", 2);
         const sub = args[0];
         const rest = args[1..];
+
+        if (std.mem.eql(u8, sub, "screenshot")) {
+            if (rest.len == 0) return self.fail("usage: cli pane screenshot <path.png> [--id ID]", "invalid_args", 2);
+            var id: ?usize = null;
+            try self.parseOnlyId(rest[1..], &id);
+            return try self.printScreenshot(.{ .kind = .pane_screenshot, .id = id, .path = try self.allocator.dupe(u8, rest[0]) });
+        }
 
         if (std.mem.eql(u8, sub, "split")) {
             if (rest.len == 0) return self.fail("usage: cli pane split vertical|horizontal [options]", "invalid_args", 2);
@@ -687,6 +701,13 @@ const Runner = struct {
     fn printQuery(self: *Runner, request: command.Request) !void {
         var reply = try self.sendRequest(request);
         defer reply.deinit(self.allocator);
+        try self.emitOutput(&reply, true);
+    }
+
+    fn printScreenshot(self: *Runner, request: command.Request) !void {
+        var reply = try self.sendRequest(request);
+        defer reply.deinit(self.allocator);
+        if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "screenshot failed" }, "screenshot_error", 1);
         try self.emitOutput(&reply, true);
     }
 

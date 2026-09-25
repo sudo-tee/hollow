@@ -4,6 +4,8 @@ pub const Kind = enum {
     get_pane,
     get_pane_text,
     get_screen,
+    pane_screenshot,
+    tab_screenshot,
     get_ui_nodes,
     get_revision,
     get_current_pane,
@@ -86,6 +88,7 @@ pub const Request = struct {
     width: ?f64 = null,
     height: ?f64 = null,
     text: ?[]const u8 = null,
+    path: ?[]const u8 = null,
     tag: ?[]const u8 = null,
     tags: ?[]const []const u8 = null,
     channel: ?[]const u8 = null,
@@ -104,6 +107,7 @@ pub const Request = struct {
         if (self.domain) |value| allocator.free(value);
         if (self.direction) |value| allocator.free(value);
         if (self.text) |value| allocator.free(value);
+        if (self.path) |value| allocator.free(value);
         if (self.tag) |value| allocator.free(value);
         if (self.channel) |value| allocator.free(value);
         if (self.surface) |value| allocator.free(value);
@@ -267,6 +271,7 @@ fn requestFromObject(allocator: std.mem.Allocator, root: std.json.ObjectMap, kin
     request.width = jsonObjectFloat(root, "width");
     request.height = jsonObjectFloat(root, "height");
     request.text = try jsonObjectStringOwned(allocator, root, "text");
+    request.path = try jsonObjectStringOwned(allocator, root, "path");
     request.tag = try jsonObjectStringOwned(allocator, root, "tag");
     request.channel = try jsonObjectStringOwned(allocator, root, "channel");
     request.surface = try jsonObjectStringOwned(allocator, root, "surface");

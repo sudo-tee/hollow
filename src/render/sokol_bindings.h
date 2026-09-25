@@ -7,6 +7,8 @@
 #include "fontstash.h"
 #include "util/sokol_fontstash.h"
 
+bool hollow_capture_frame(uint8_t* rgba, int width, int height);
+
 void hollow_linux_set_window_decorated(bool decorated);
 void hollow_linux_begin_window_drag(void);
 bool hollow_linux_begin_window_resize(int direction);

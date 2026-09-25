@@ -10,6 +10,7 @@ const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const htp = @import("htp.zig");
 const ui_semantics = @import("../ui/semantics.zig");
+const screenshot = @import("../render/screenshot.zig");
 const SplitCommandMode = app_mod.SplitCommandMode;
 const mux_ops = @import("session_controller.zig");
 
@@ -144,6 +145,11 @@ pub fn drainPendingCommand(self: *App) void {
     const pending = self.pending_command orelse return;
     if (pending.done) return;
 
+    if (pending.request.kind == .pane_screenshot or pending.request.kind == .tab_screenshot) {
+        self.pending_screenshot = pending;
+        return;
+    }
+
     const timing_enabled = self.config.command_timing;
     const start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
     pending.response = switch (commandExecutionMode(pending.request.kind)) {
@@ -190,6 +196,65 @@ pub fn hasPendingCommand(self: *App) bool {
     return !pending.done;
 }
 
+pub fn hasPendingScreenshot(self: *App) bool {
+    return self.pending_screenshot != null;
+}
+
+pub fn finishScreenshot(self: *App, pixels: ?[]const u8, frame_width: usize, frame_height: usize) void {
+    const pending = self.pending_screenshot orelse return;
+    self.pending_screenshot = null;
+    pending.response = if (pixels) |rgba|
+        exportScreenshot(self, pending.request, rgba, frame_width, frame_height) catch |err| command_mod.Response.fail("screenshot_error", @errorName(err))
+    else
+        command_mod.Response.fail("screenshot_unavailable", "framebuffer capture unavailable");
+    self.command_mutex.lockUncancelable(io.get());
+    defer self.command_mutex.unlock(io.get());
+    pending.done = true;
+    self.command_done.broadcast(io.get());
+}
+
+fn exportScreenshot(self: *App, request: command_mod.Request, pixels: []const u8, frame_width: usize, frame_height: usize) !command_mod.Response {
+    const path = request.path orelse return command_mod.Response.fail("invalid_args", "missing screenshot path");
+    if (path.len == 0) return command_mod.Response.fail("invalid_args", "empty screenshot path");
+    const tab = self.activeTab() orelse return command_mod.Response.fail("not_visible", "no active tab");
+    var x: usize = 0;
+    var y: usize = 0;
+    var width = frame_width;
+    var height = frame_height;
+    if (request.kind == .tab_screenshot) {
+        if (request.id) |id| {
+            if (tab.id != id) return command_mod.Response.fail("not_visible", "tab is not visible");
+        }
+    } else {
+        const pane = if (request.id) |id|
+            self.findPaneById(id)
+        else if (request.pane_id != 0)
+            self.findPaneById(request.pane_id)
+        else
+            self.activePane() orelse return command_mod.Response.fail("not_visible", "no active pane");
+        const target = pane orelse return command_mod.Response.fail("not_found", "pane not found");
+        if (std.mem.indexOfScalar(*@import("../pane.zig").Pane, tab.panes.items, target) == null or
+            (tab.maximized_pane != null and tab.maximized_pane.? != target))
+            return command_mod.Response.fail("not_visible", "pane is not visible");
+        x = target.x_px;
+        y = target.y_px;
+        width = target.width_px;
+        height = target.height_px;
+    }
+    const png = screenshot.encode(self.allocator, pixels, frame_width, x, y, width, height) catch |err| switch (err) {
+        error.InvalidScreenshotBounds => return command_mod.Response.fail("not_visible", "pane is outside framebuffer"),
+        else => return err,
+    };
+    defer self.allocator.free(png);
+    try std.Io.Dir.cwd().writeFile(io.get(), .{ .sub_path = path, .data = png });
+    var object: std.json.ObjectMap = .empty;
+    errdefer command_mod.deinitJsonValue(self.allocator, .{ .object = object });
+    try object.put(self.allocator, try self.allocator.dupe(u8, "path"), .{ .string = try self.allocator.dupe(u8, path) });
+    try object.put(self.allocator, try self.allocator.dupe(u8, "width"), .{ .integer = @intCast(width) });
+    try object.put(self.allocator, try self.allocator.dupe(u8, "height"), .{ .integer = @intCast(height) });
+    return .ok(.{ .object = object });
+}
+
 fn elapsedMs(start_ns: i128) f64 {
     return @as(f64, @floatFromInt(io.nanoTimestamp() - start_ns)) / @as(f64, @floatFromInt(std.time.ns_per_ms));
 }
@@ -199,6 +264,8 @@ fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
         .get_pane,
         .get_pane_text,
         .get_screen,
+        .pane_screenshot,
+        .tab_screenshot,
         .get_ui_nodes,
         .get_revision,
         .get_current_pane,
@@ -609,6 +676,7 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .get_pane => .ok(try self.snapshotPaneValue(request.id orelse request.pane_id)),
         .get_pane_text => .ok(try self.paneTextValue(request.id orelse request.pane_id)),
         .get_screen => .ok(try self.paneScreenValue(request.id orelse request.pane_id)),
+        .pane_screenshot, .tab_screenshot => command_mod.Response.fail("internal", "screenshot dispatched outside render frame"),
         .get_ui_nodes => .ok(try self.uiNodesValue()),
         .get_revision => revisionResponse(self),
         .get_current_pane => .ok(try self.currentPaneValue()),
@@ -986,6 +1054,7 @@ pub fn shutdownPendingCommands(self: *App) void {
     self.command_mutex.lockUncancelable(io.get());
     defer self.command_mutex.unlock(io.get());
     self.command_shutting_down = true;
+    self.pending_screenshot = null;
     if (self.pending_command) |pending| {
         if (!pending.done) {
             pending.response = command_mod.Response.fail("shutting_down", "Hollow is shutting down");

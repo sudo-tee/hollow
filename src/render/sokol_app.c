@@ -18,6 +18,63 @@
 #include "fontstash.h"
 #include "util/sokol_fontstash.h"
 
+/* Read the completed swapchain pass before present. Pixels are top-down RGBA. */
+bool hollow_capture_frame(uint8_t* rgba, int width, int height) {
+    if (!rgba || width <= 0 || height <= 0) return false;
+#if defined(_WIN32)
+    ID3D11Device* device = (ID3D11Device*) sg_d3d11_device();
+    ID3D11DeviceContext* context = (ID3D11DeviceContext*) sg_d3d11_device_context();
+    sg_swapchain swapchain = sglue_swapchain();
+    ID3D11RenderTargetView* view = (ID3D11RenderTargetView*) swapchain.d3d11.render_view;
+    if (!device || !context || !view) return false;
+    ID3D11Resource* resource = NULL;
+    ID3D11Texture2D* staging = NULL;
+    view->lpVtbl->GetResource(view, &resource);
+    if (!resource) return false;
+    D3D11_TEXTURE2D_DESC desc;
+    ((ID3D11Texture2D*) resource)->lpVtbl->GetDesc((ID3D11Texture2D*) resource, &desc);
+    if (desc.Width != (UINT)width || desc.Height != (UINT)height || desc.SampleDesc.Count != 1) goto fail;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    if (FAILED(device->lpVtbl->CreateTexture2D(device, &desc, NULL, &staging))) goto fail;
+    context->lpVtbl->CopyResource(context, (ID3D11Resource*)staging, resource);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (FAILED(context->lpVtbl->Map(context, (ID3D11Resource*)staging, 0, D3D11_MAP_READ, 0, &mapped))) goto fail;
+    for (int y = 0; y < height; y++) {
+        const uint8_t* src = (const uint8_t*)mapped.pData + (size_t)y * mapped.RowPitch;
+        uint8_t* dst = rgba + (size_t)y * width * 4;
+        for (int x = 0; x < width; x++) {
+            dst[x * 4] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4];
+            dst[x * 4 + 3] = src[x * 4 + 3];
+        }
+    }
+    context->lpVtbl->Unmap(context, (ID3D11Resource*)staging, 0);
+    staging->lpVtbl->Release(staging);
+    resource->lpVtbl->Release(resource);
+    return true;
+fail:
+    if (staging) staging->lpVtbl->Release(staging);
+    resource->lpVtbl->Release(resource);
+    return false;
+#else
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    if (glGetError() != GL_NO_ERROR) return false;
+    for (int y = 0; y < height / 2; y++) {
+        uint8_t* top = rgba + (size_t)y * width * 4;
+        uint8_t* bottom = rgba + (size_t)(height - 1 - y) * width * 4;
+        for (int i = 0; i < width * 4; i++) {
+            uint8_t tmp = top[i]; top[i] = bottom[i]; bottom[i] = tmp;
+        }
+    }
+    return true;
+#endif
+}
+
 #if !defined(_WIN32)
 #include <stdint.h>
 
