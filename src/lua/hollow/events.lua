@@ -90,6 +90,17 @@ function M.setup(hollow, state, term_helpers)
   local function adapt_foreground_changed(payload)
     return { pane = pane(payload.pane_id), old_process = payload.old_process, new_process = payload.new_process }
   end
+  local function adapt_term_notification(payload)
+    return {
+      pane = pane(payload.pane_id),
+      title = payload.title,
+      message = payload.message,
+      level = payload.level,
+      id = payload.id,
+      ttl_ms = payload.ttl_ms,
+      close = payload.close == true,
+    }
+  end
   local function adapt_window_resized(payload)
     return { size = payload }
   end
@@ -131,6 +142,7 @@ function M.setup(hollow, state, term_helpers)
     ["term:cwd_changed"] = adapt_cwd_changed,
     ["term:foreground_process_changed"] = adapt_foreground_changed,
     ["term:bell"] = adapt_pane_focused,
+    ["term:notification"] = adapt_term_notification,
     ["window:resized"] = adapt_window_resized,
     ["copy_mode:changed"] = adapt_copy_mode_changed,
     ["key:unhandled"] = adapt_key_unhandled,

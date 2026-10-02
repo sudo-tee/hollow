@@ -203,4 +203,31 @@ describe("events test suite", function()
       )
     end)
   end)
+
+  describe("term:notification", function()
+    it("adapts pane and notification metadata for in-app toasts", function()
+      local event
+      hollow.events.once("term:notification", function(payload)
+        event = payload
+      end)
+      hollow._emit_builtin_event("term:notification", {
+        pane_id = 101,
+        title = "Build",
+        message = "Tests passed",
+        level = "success",
+        id = "build",
+        ttl_ms = 1200,
+      })
+      harness.assert_equal(event.pane.id, 101, "notification event should expose pane snapshot")
+      harness.assert_equal(event.title, "Build", "notification event should preserve title")
+      harness.assert_equal(event.message, "Tests passed", "notification event should preserve body")
+      harness.assert_equal(
+        event.level,
+        "success",
+        "notification event should preserve urgency level"
+      )
+      harness.assert_equal(event.id, "build", "notification event should preserve protocol ID")
+      harness.assert_equal(event.ttl_ms, 1200, "notification event should preserve lifetime")
+    end)
+  end)
 end)

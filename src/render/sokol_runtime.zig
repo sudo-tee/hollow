@@ -4085,9 +4085,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                 @floatFromInt(leaf.bounds.y),
                 @floatFromInt(leaf.bounds.width),
                 @floatFromInt(leaf.bounds.height),
-                app.config.bell.visual_color.r,
-                app.config.bell.visual_color.g,
-                app.config.bell.visual_color.b,
+                (leaf.pane.bell_flash_color orelse app.config.bell.visual_color).r,
+                (leaf.pane.bell_flash_color orelse app.config.bell.visual_color).g,
+                (leaf.pane.bell_flash_color orelse app.config.bell.visual_color).b,
                 alpha_u,
             );
         }

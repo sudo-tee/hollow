@@ -96,7 +96,7 @@ Query state. All `get` commands print JSON.
 | `hollow cli pane tile`                           | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane move <left\|right\|up\|down>`   | `[--id ID\|--tag TAG] [--amount N]`                                     |
 | `hollow cli pane resize <left\|right\|up\|down>` | `[--id ID\|--tag TAG] [--amount N]`                                     |
-| `hollow cli pane bell`                            | `[--id ID\|--tag TAG]`                                                  |
+| `hollow cli pane bell`                            | `[--id ID\|--tag TAG] [--level info\|warn\|error\|success] [--color #RRGGBB]` |
 | `hollow cli pane send-text <text>`               | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane set-tag <tag>`                  | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane remove-tag <tag>`               | `[--id ID\|--tag TAG]`                                                  |
@@ -147,6 +147,9 @@ requests so other clients can use command transport during longer waits.
 `send-keys` decodes a kit/kb-style key sequence; for example
 `{Up}{Enter}` sends the Up arrow followed by Enter.
 
+`pane bell --level` uses built-in Hollow notification level color for visual flash.
+An explicit `--color #RRGGBB` overrides it.
+
 ## Targeting panes: `--id` vs `--tag`
 
 Many `pane` commands accept both `--id` and `--tag`. When both are
@@ -175,6 +178,12 @@ hollow.exe cli send-keys "{C-c}"
 
 # Trigger attention in a specific pane
 hollow.exe cli pane bell --id 123
+
+# Trigger a red visual bell
+hollow.exe cli pane bell --level error --id 123
+
+# Use a custom visual bell color
+hollow.exe cli pane bell --color "#ff00aa" --tag build
 
 # Reload the config
 hollow.exe cli config reload

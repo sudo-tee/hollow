@@ -54,6 +54,7 @@ function M.new(host_api)
         ["term:cwd_changed"] = true,
         ["term:foreground_process_changed"] = true,
         ["term:bell"] = true,
+        ["term:notification"] = true,
         ["key:unhandled"] = true,
         ["window:resized"] = true,
         ["window:files_dropped"] = true,

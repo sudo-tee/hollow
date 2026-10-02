@@ -41,6 +41,10 @@ Two CLI surfaces ship today. See the [CLI index](cli/README.md).
 - [Built-in keymap actions](actions.md) — every string action name you
   can pass to `hollow.keymap.set(chord, "name", ...)`
 
+## Terminal protocols
+
+- [Terminal notifications](osc99.md) — OSC 99, OSC 9, OSC 777 and Hollow behavior
+
 ## Source of truth
 
 The LuaLS typings under [`types/hollow.lua`](../../types/hollow.lua)

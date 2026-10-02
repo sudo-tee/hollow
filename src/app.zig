@@ -2357,7 +2357,8 @@ pub const App = struct {
                     self.requestLayoutResize(false);
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
-                if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty) automation_changed = true;
+                const had_notifications = pane.osc99_notifications.hasNotifications();
+                if (had_pty_output_this_tick or pane.title_dirty or pane.cwd_dirty or pane.bell_dirty or had_notifications) automation_changed = true;
                 total_pty_read_ns += pane.last_pty_read_ns;
                 total_terminal_write_ns += pane.last_terminal_write_ns;
                 total_terminal_write_bytes += pane.last_terminal_write_bytes;
@@ -2391,12 +2392,48 @@ pub const App = struct {
                     }
                     if (self.config.debug_overlay) total_cwd_ns += io.nanoTimestamp() - start_ns;
                 }
+                while (pane.osc99_notifications.popNotification()) |notification_value| {
+                    var notification = notification_value;
+                    defer notification.deinit(self.allocator);
+                    const now_notification_ns = io.nanoTimestamp();
+                    if (notification.close) {
+                        self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
+                            .pane_id = @intFromPtr(pane),
+                            .title = "",
+                            .message = "",
+                            .level = @tagName(notification.level),
+                            .id = notification.id,
+                            .ttl_ms = null,
+                            .close = true,
+                        } });
+                        continue;
+                    }
+                    if (self.config.bell.visual) {
+                        pane.bell_active = true;
+                        pane.bell_started_at_ns = now_notification_ns;
+                        pane.bell_flash_color = notification.level.color();
+                    }
+                    if (self.activePane() != pane) pane.has_bell_attention = true;
+                    self.last_visual_activity_ns = now_notification_ns;
+                    self.topbar_cache_dirty = true;
+                    self.emitLuaBuiltInEvent("term:notification", .{ .term_notification = .{
+                        .pane_id = @intFromPtr(pane),
+                        .title = notification.title,
+                        .message = notification.message,
+                        .level = @tagName(notification.level),
+                        .id = notification.id,
+                        .ttl_ms = notification.ttl_ms,
+                        .close = false,
+                    } });
+                }
                 if (pane.bell_dirty) {
                     pane.bell_dirty = false;
                     const now_bell_ns = io.nanoTimestamp();
                     if (self.config.bell.visual) {
                         pane.bell_active = true;
                         pane.bell_started_at_ns = now_bell_ns;
+                    } else {
+                        pane.bell_flash_color = null;
                     }
                     const is_focused = (self.activePane() == pane);
                     if (!is_focused) pane.has_bell_attention = true;
@@ -2411,6 +2448,7 @@ pub const App = struct {
                     const duration_ns: i128 = @as(i128, @intCast(self.config.bell.visual_duration_ms)) * std.time.ns_per_ms;
                     if (now_bell_ns - pane.bell_started_at_ns >= duration_ns) {
                         pane.bell_active = false;
+                        pane.bell_flash_color = null;
                     } else {
                         // hasVisualActivity() already wakes the render loop for
                         // every frame while bell_active is set, and the flash

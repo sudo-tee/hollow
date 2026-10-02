@@ -33,6 +33,7 @@ fn bellCallback(_: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
         // Mirror the title_changed pattern: just flag a dirty bit; the frame
         // thread drains it inside tickPanes(). Avoids touching Lua state or
         // any rendering data from ghostty's parser thread.
+        pane.bell_flash_color = null;
         pane.bell_dirty = true;
     }
 }

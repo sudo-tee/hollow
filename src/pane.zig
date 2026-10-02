@@ -6,6 +6,7 @@ const Config = @import("config.zig").Config;
 const fastmem = @import("fastmem.zig");
 const GhosttyRuntime = @import("term/ghostty.zig").Runtime;
 const ghostty = @import("term/ghostty.zig");
+const osc99 = @import("term/osc99.zig");
 const TerminalCallbacks = ghostty.TerminalCallbacks;
 const Pty = @import("pty/pty.zig").Pty;
 const LaunchCommand = @import("pty/launch_command.zig").LaunchCommand;
@@ -23,6 +24,9 @@ const is_windows = @import("builtin").os.tag == .windows;
 
 const OSC52_PREFIX = "\x1b]52;";
 const OSC7_PREFIX = "\x1b]7;";
+const OSC9_PREFIX = "\x1b]9;";
+const OSC99_PREFIX = "\x1b]99;";
+const OSC777_PREFIX = "\x1b]777;";
 const OSC1337_PREFIX = "\x1b]1337;";
 const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC52_SEQUENCE_MAX = 65536;
@@ -102,13 +106,25 @@ const OscPrefixMatch = enum {
     partial,
     osc52,
     osc7,
+    osc9,
     osc1337,
+    osc99,
+    osc777,
     htp,
+};
+
+const NotificationOscKind = enum {
+    osc99,
+    osc9,
+    osc777,
 };
 
 fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
     if (std.mem.eql(u8, prefix, OSC52_PREFIX)) return .osc52;
     if (std.mem.eql(u8, prefix, OSC7_PREFIX)) return .osc7;
+    if (std.mem.eql(u8, prefix, OSC99_PREFIX)) return .osc99;
+    if (std.mem.eql(u8, prefix, OSC9_PREFIX)) return .osc9;
+    if (std.mem.eql(u8, prefix, OSC777_PREFIX)) return .osc777;
     if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) return .htp;
     if (prefix.len >= OSC1337_PREFIX.len and
         std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
@@ -118,6 +134,9 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
     }
     if (std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC7_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC99_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC9_PREFIX, prefix) or
+        std.mem.startsWith(u8, OSC777_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
         std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
     {
@@ -172,6 +191,13 @@ pub const Pane = struct {
     osc52_overflow: bool = false,
     osc52_buf: []u8 = &.{},
     osc52_len: usize = 0,
+    /// Shared bounded capture for OSC 9, OSC 99, and OSC 777 notifications.
+    osc99_active: bool = false,
+    osc99_st_pending: bool = false,
+    osc99_overflow: bool = false,
+    osc99_buf: std.ArrayListUnmanaged(u8) = .empty,
+    notification_osc_kind: NotificationOscKind = .osc99,
+    osc99_notifications: osc99.State = .{},
     osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = [_]u8{0} ** HTP_OSC_PREFIX.len,
     osc_prefix_len: usize = 0,
     osc7_active: bool = false,
@@ -249,6 +275,7 @@ pub const Pane = struct {
     bell_dirty: bool = false,
     bell_active: bool = false,
     bell_started_at_ns: i128 = 0,
+    bell_flash_color: ?ghostty.ColorRgb = null,
     has_bell_attention: bool = false,
     x_px: u32 = 0,
     y_px: u32 = 0,
@@ -285,6 +312,8 @@ pub const Pane = struct {
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
         self.boot_output.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
+        self.osc99_buf.deinit(self.allocator);
+        self.osc99_notifications.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
         if (self.osc52_buf.len > 0) self.allocator.free(self.osc52_buf);
         if (self.htp_osc_buf.len > 0) self.allocator.free(self.htp_osc_buf);
@@ -1157,6 +1186,35 @@ pub const Pane = struct {
                 continue;
             }
 
+            if (self.osc99_active) {
+                if (self.osc99_st_pending) {
+                    if (byte == '\\') {
+                        self.finishNotificationOscSequence();
+                    } else {
+                        self.appendOsc99Byte(0x1b);
+                        self.appendOsc99Byte(byte);
+                    }
+                    self.osc99_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishNotificationOscSequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc99_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc99Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
             if (self.osc7_active) {
                 if (self.osc7_st_pending) {
                     if (byte == '\\') {
@@ -1270,6 +1328,21 @@ pub const Pane = struct {
                         self.osc7_active = true;
                         self.osc7_st_pending = false;
                         self.osc7_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc99 => {
+                        self.beginNotificationOscSequence(.osc99);
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc9 => {
+                        self.beginNotificationOscSequence(.osc9);
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc777 => {
+                        self.beginNotificationOscSequence(.osc777);
                         self.osc_prefix_len = 0;
                         continue;
                     },
@@ -1374,7 +1447,7 @@ pub const Pane = struct {
         const disable = "\x1b[?9001l";
         var read_idx: usize = 0;
         var write_idx: usize = 0;
-        const has_active_filter = self.osc52_active or self.osc7_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
+        const has_active_filter = self.osc52_active or self.osc7_active or self.osc99_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
 
         self.pty_pending_len = 0;
 
@@ -1393,7 +1466,7 @@ pub const Pane = struct {
         }
 
         while (read_idx < bytes.len) {
-            if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+            if (!self.osc52_active and !self.osc7_active and !self.osc99_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
                 const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
                     const span = bytes[read_idx..];
                     fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
@@ -1435,6 +1508,35 @@ pub const Pane = struct {
                 }
 
                 self.appendOsc52Byte(byte);
+                read_idx += 1;
+                continue;
+            }
+
+            if (self.osc99_active) {
+                if (self.osc99_st_pending) {
+                    if (byte == '\\') {
+                        self.finishNotificationOscSequence();
+                    } else {
+                        self.appendOsc99Byte(0x1b);
+                        self.appendOsc99Byte(byte);
+                    }
+                    self.osc99_st_pending = false;
+                    read_idx += 1;
+                    continue;
+                }
+
+                if (byte == 0x07) {
+                    self.finishNotificationOscSequence();
+                    read_idx += 1;
+                    continue;
+                }
+                if (byte == 0x1b) {
+                    self.osc99_st_pending = true;
+                    read_idx += 1;
+                    continue;
+                }
+
+                self.appendOsc99Byte(byte);
                 read_idx += 1;
                 continue;
             }
@@ -1552,6 +1654,21 @@ pub const Pane = struct {
                         self.osc7_active = true;
                         self.osc7_st_pending = false;
                         self.osc7_len = 0;
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc99 => {
+                        self.beginNotificationOscSequence(.osc99);
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc9 => {
+                        self.beginNotificationOscSequence(.osc9);
+                        self.osc_prefix_len = 0;
+                        continue;
+                    },
+                    .osc777 => {
+                        self.beginNotificationOscSequence(.osc777);
                         self.osc_prefix_len = 0;
                         continue;
                     },
@@ -1906,6 +2023,24 @@ pub const Pane = struct {
         };
     }
 
+    fn beginNotificationOscSequence(self: *Pane, kind: NotificationOscKind) void {
+        self.osc99_active = true;
+        self.osc99_st_pending = false;
+        self.osc99_overflow = false;
+        self.notification_osc_kind = kind;
+        self.osc99_buf.clearRetainingCapacity();
+    }
+
+    fn appendOsc99Byte(self: *Pane, byte: u8) void {
+        if (self.osc99_buf.items.len >= osc99.max_sequence_bytes) {
+            self.osc99_overflow = true;
+            return;
+        }
+        self.osc99_buf.append(self.allocator, byte) catch {
+            self.osc99_overflow = true;
+        };
+    }
+
     fn finishOsc52Sequence(self: *Pane) void {
         if (!self.osc52_overflow and self.osc52_len > 0) {
             self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
@@ -1946,6 +2081,38 @@ pub const Pane = struct {
         self.osc1337_st_pending = false;
         self.osc1337_overflow = false;
         self.osc1337_buf.clearRetainingCapacity();
+    }
+
+    fn finishNotificationOscSequence(self: *Pane) void {
+        if (!self.osc99_overflow and self.osc99_buf.items.len > 0) {
+            switch (self.notification_osc_kind) {
+                .osc99 => self.osc99_notifications.feed(self.allocator, self.osc99_buf.items) catch |err| {
+                    std.log.warn("osc99: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
+                },
+                .osc9 => if (!isConEmuOsc9(self.osc99_buf.items)) {
+                    self.queueSimpleOscNotification("", self.osc99_buf.items);
+                },
+                .osc777 => self.finishOsc777Notification(),
+            }
+        }
+        self.osc99_active = false;
+        self.osc99_st_pending = false;
+        self.osc99_overflow = false;
+        self.osc99_buf.clearRetainingCapacity();
+    }
+
+    fn queueSimpleOscNotification(self: *Pane, title: []const u8, body: []const u8) void {
+        self.osc99_notifications.enqueueSimple(self.allocator, title, body, .info) catch |err| {
+            std.log.warn("osc: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
+        };
+    }
+
+    fn finishOsc777Notification(self: *Pane) void {
+        const prefix = "notify;";
+        const payload = self.osc99_buf.items;
+        if (!std.mem.startsWith(u8, payload, prefix)) return;
+        const body_start = std.mem.indexOfScalarPos(u8, payload, prefix.len, ';') orelse return;
+        self.queueSimpleOscNotification(payload[prefix.len..body_start], payload[body_start + 1 ..]);
     }
 
     fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
@@ -2041,6 +2208,16 @@ fn decodeOsc52Base64(data: []const u8, out: []u8) ![]u8 {
     return out[0..decoded_len];
 }
 
+fn isConEmuOsc9(payload: []const u8) bool {
+    const separator = std.mem.indexOfScalar(u8, payload, ';') orelse return false;
+    const command = payload[0..separator];
+    if (command.len == 0) return false;
+    for (command) |byte| {
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    return true;
+}
+
 fn trailingAnsiPrefixLen(bytes: []const u8) usize {
     const window = @min(bytes.len, 32);
     var start = bytes.len - window;
@@ -2129,6 +2306,70 @@ test "sanitizePtyOutput preserves split OSC 7 state across chunks" {
     try std.testing.expectEqualStrings("Z", out2);
     try std.testing.expectEqualStrings("/tmp", pane.cwd);
     try std.testing.expect(pane.cwd_dirty);
+}
+
+test "sanitizePtyOutput captures split OSC 99 notification packets" {
+    var pane = Pane.init(std.testing.allocator);
+    defer pane.osc99_buf.deinit(std.testing.allocator);
+    defer pane.osc99_notifications.deinit(std.testing.allocator);
+
+    var part1 = "\x1b]99;i=build:d=0:p=title;Build finished\x1b\\".*;
+    const out1 = pane.sanitizePtyOutputForPlatform(&part1, false);
+    try std.testing.expectEqual(@as(usize, 0), out1.len);
+    try std.testing.expect(!pane.osc99_active);
+    try std.testing.expectEqual(@as(usize, 1), pane.osc99_notifications.assemblies.items.len);
+    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
+
+    var part2 = "\x1b]99;i=build:p=body:u=2:w=5000;All tests passed\x1b".*;
+    const out2 = pane.sanitizePtyOutputForPlatform(&part2, false);
+    try std.testing.expectEqual(@as(usize, 0), out2.len);
+    try std.testing.expect(pane.osc99_active);
+    try std.testing.expect(pane.osc99_st_pending);
+    try std.testing.expectEqualStrings("i=build:p=body:u=2:w=5000;All tests passed", pane.osc99_buf.items);
+
+    var part3 = "\\Z".*;
+    const out3 = pane.sanitizePtyOutputForPlatform(&part3, false);
+    try std.testing.expectEqualStrings("Z", out3);
+    try std.testing.expect(!pane.osc99_active);
+    try std.testing.expect(pane.osc99_notifications.hasNotifications());
+
+    var result = pane.osc99_notifications.popNotification().?;
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("build", result.id.?);
+    try std.testing.expectEqualStrings("Build finished", result.title);
+    try std.testing.expectEqualStrings("All tests passed", result.message);
+    try std.testing.expectEqual(@as(?u64, 5000), result.ttl_ms);
+}
+
+test "sanitizePtyOutput routes OSC 9 and OSC 777 notifications" {
+    var pane = Pane.init(std.testing.allocator);
+    defer pane.osc99_buf.deinit(std.testing.allocator);
+    defer pane.osc99_notifications.deinit(std.testing.allocator);
+
+    var input = "\x1b]9;Build complete\x07 \x1b]777;notify;Build;Tests passed\x1b\\X".*;
+    const output = pane.sanitizePtyOutputForPlatform(&input, false);
+    try std.testing.expectEqualStrings(" X", output);
+    try std.testing.expectEqual(@as(usize, 2), pane.osc99_notifications.queued.items.len);
+
+    var osc9_notification = pane.osc99_notifications.popNotification().?;
+    defer osc9_notification.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Build complete", osc9_notification.message);
+
+    var osc777_notification = pane.osc99_notifications.popNotification().?;
+    defer osc777_notification.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Build", osc777_notification.title);
+    try std.testing.expectEqualStrings("Tests passed", osc777_notification.message);
+}
+
+test "sanitizePtyOutput does not turn ConEmu OSC 9 commands into notifications" {
+    var pane = Pane.init(std.testing.allocator);
+    defer pane.osc99_buf.deinit(std.testing.allocator);
+    defer pane.osc99_notifications.deinit(std.testing.allocator);
+
+    var input = "\x1b]9;1;420\x07X".*;
+    const output = pane.sanitizePtyOutputForPlatform(&input, false);
+    try std.testing.expectEqualStrings("X", output);
+    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
 }
 
 test "sendUserText queues raw input behind pending startup input" {

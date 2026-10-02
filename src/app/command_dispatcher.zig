@@ -13,6 +13,7 @@ const ui_semantics = @import("../ui/semantics.zig");
 const screenshot = @import("../render/screenshot.zig");
 const SplitCommandMode = app_mod.SplitCommandMode;
 const mux_ops = @import("session_controller.zig");
+const notification = @import("../notification.zig");
 
 const LUA_NOREF: c_int = -1;
 
@@ -394,6 +395,8 @@ fn cloneCommandRequest(self: *App, request: command_mod.Request) !command_mod.Re
         .width = request.width,
         .height = request.height,
         .text = try cloneOwnedOptionalString(self, request.text),
+        .level = try cloneOwnedOptionalString(self, request.level),
+        .color = try cloneOwnedOptionalString(self, request.color),
         .tag = try cloneOwnedOptionalString(self, request.tag),
         .tags = try cloneOwnedOptionalStringSlice(self, request.tags),
         .channel = try cloneOwnedOptionalString(self, request.channel),
@@ -944,7 +947,9 @@ fn execPaneSendText(self: *App, request: command_mod.Request) command_mod.Respon
 fn execPaneBell(self: *App, request: command_mod.Request) command_mod.Response {
     const pane_id = request.id orelse self.currentPaneIdValue();
     if (pane_id == 0) return command_mod.Response.fail("invalid_args", "no active pane");
-    if (!mux_ops.sendBellToPane(self, pane_id)) return command_mod.Response.fail("invalid_args", "unknown pane id");
+    const level = if (request.level) |value| notification.Level.parse(value) orelse return command_mod.Response.fail("invalid_args", "invalid bell level") else null;
+    const color = if (request.color) |value| notification.parseHexColor(value) orelse return command_mod.Response.fail("invalid_args", "invalid bell color") else null;
+    if (!mux_ops.sendBellToPane(self, pane_id, level, color)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }
 

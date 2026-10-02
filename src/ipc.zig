@@ -360,6 +360,8 @@ fn encodeRequest(allocator: std.mem.Allocator, request: command.Request) ![]u8 {
         .width = request.width,
         .height = request.height,
         .text = request.text,
+        .level = request.level,
+        .color = request.color,
         .tag = request.tag,
         .tags = request.tags,
         .channel = request.channel,
@@ -515,6 +517,22 @@ test "encoded request round trips absent automation fields" {
     try std.testing.expectEqual(command.Kind.get_revision, parsed.request.kind);
     try std.testing.expect(parsed.request.revision == null);
     try std.testing.expect(parsed.request.generation == null);
+}
+
+test "encoded pane bell request preserves color and level" {
+    const payload = try encodeRequest(std.testing.allocator, .{
+        .kind = .pane_bell,
+        .id = 42,
+        .level = "error",
+        .color = "#ff00aa",
+    });
+    defer std.testing.allocator.free(payload);
+    var parsed = try command.parseEnvelope(std.testing.allocator, payload);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(command.Kind.pane_bell, parsed.request.kind);
+    try std.testing.expectEqual(@as(usize, 42), parsed.request.id.?);
+    try std.testing.expectEqualStrings("error", parsed.request.level.?);
+    try std.testing.expectEqualStrings("#ff00aa", parsed.request.color.?);
 }
 
 fn isLoopback(address: std.Io.net.IpAddress) bool {

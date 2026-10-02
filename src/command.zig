@@ -88,6 +88,8 @@ pub const Request = struct {
     width: ?f64 = null,
     height: ?f64 = null,
     text: ?[]const u8 = null,
+    level: ?[]const u8 = null,
+    color: ?[]const u8 = null,
     path: ?[]const u8 = null,
     tag: ?[]const u8 = null,
     tags: ?[]const []const u8 = null,
@@ -107,6 +109,8 @@ pub const Request = struct {
         if (self.domain) |value| allocator.free(value);
         if (self.direction) |value| allocator.free(value);
         if (self.text) |value| allocator.free(value);
+        if (self.level) |value| allocator.free(value);
+        if (self.color) |value| allocator.free(value);
         if (self.path) |value| allocator.free(value);
         if (self.tag) |value| allocator.free(value);
         if (self.channel) |value| allocator.free(value);
@@ -271,6 +275,8 @@ fn requestFromObject(allocator: std.mem.Allocator, root: std.json.ObjectMap, kin
     request.width = jsonObjectFloat(root, "width");
     request.height = jsonObjectFloat(root, "height");
     request.text = try jsonObjectStringOwned(allocator, root, "text");
+    request.level = try jsonObjectStringOwned(allocator, root, "level");
+    request.color = try jsonObjectStringOwned(allocator, root, "color");
     request.path = try jsonObjectStringOwned(allocator, root, "path");
     request.tag = try jsonObjectStringOwned(allocator, root, "tag");
     request.channel = try jsonObjectStringOwned(allocator, root, "channel");
@@ -378,10 +384,12 @@ test "parseEnvelope loads command envelope" {
 }
 
 test "parseEnvelope loads pane bell command" {
-    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"pane_bell\",\"id\":7}");
+    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"pane_bell\",\"id\":7,\"level\":\"error\",\"color\":\"#ff0000\"}");
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expectEqual(.pane_bell, parsed.request.kind);
     try std.testing.expectEqual(@as(usize, 7), parsed.request.id.?);
+    try std.testing.expectEqualStrings("error", parsed.request.level.?);
+    try std.testing.expectEqualStrings("#ff0000", parsed.request.color.?);
 }
 
 test "parseEnvelope rejects mixed tags without invalid cleanup" {

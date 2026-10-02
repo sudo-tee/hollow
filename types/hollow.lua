@@ -158,6 +158,7 @@
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
 ---| "term:bell"
+---| "term:notification"
 ---| "key:unhandled"
 ---| "window:resized"
 ---| "window:files_dropped"
@@ -198,6 +199,7 @@
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
 ---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }
 ---@field ["term:bell"] { pane: HollowPane }
+---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
 ---@field ["key:unhandled"] { key: string, mods: string }
 ---@field ["window:resized"] { size: HollowSize }
 ---@field ["window:files_dropped"] HollowFileDropEvent
@@ -861,6 +863,7 @@
 ---@field title? string
 ---@field ttl? number
 ---@field action? HollowUiNotifyAction
+---@field id? string
 ---@field align? HollowOverlayAlign
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field chrome? HollowUiChrome|boolean
@@ -1614,7 +1617,8 @@ local notify = {}
 ---@param opts? HollowUiNotifyOptions
 function notify.show(message, opts) end
 
-function notify.clear() end
+---@param notification_id? string
+function notify.clear(notification_id) end
 
 ---@param message string
 ---@param opts? HollowUiNotifyOptions

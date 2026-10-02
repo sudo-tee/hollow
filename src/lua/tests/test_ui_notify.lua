@@ -29,6 +29,24 @@ describe("UI notify test suite", function()
         "notify.clear should remove notify widgets"
       )
     end)
+
+    it("replaces and clears notifications by ID", function()
+      hollow.ui.notify.show("other", { id = "osc99:other" })
+      hollow.ui.notify.show("old", { id = "osc99:1" })
+      hollow.ui.notify.show("new", { id = "osc99:1" })
+      harness.assert_equal(
+        hollow.ui.overlay.depth(),
+        2,
+        "same notification ID should replace existing toast"
+      )
+      hollow.ui.notify.clear("osc99:1")
+      harness.assert_equal(
+        hollow.ui.overlay.depth(),
+        1,
+        "clear(id) should dismiss only matching toast"
+      )
+      hollow.ui.notify.clear()
+    end)
   end)
 
   describe("direct overlays", function()

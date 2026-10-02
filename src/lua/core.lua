@@ -146,6 +146,21 @@ if type(hollow.ui._register_bar_invalidation_hooks) == "function" then
   hollow.ui._register_bar_invalidation_hooks()
 end
 htp.setup(hollow, host_api, state, util, term_helpers)
+hollow.events.on("term:notification", function(event)
+  if event.close then
+    if event.id ~= nil then
+      hollow.ui.notify.clear(tostring(event.pane.id) .. ":" .. event.id)
+    end
+    return
+  end
+
+  hollow.ui.notify.show(event.message, {
+    level = event.level,
+    title = event.title ~= "" and event.title or nil,
+    ttl = event.ttl_ms,
+    id = event.id ~= nil and (tostring(event.pane.id) .. ":" .. event.id) or nil,
+  })
+end)
 
 function hollow.on_gui_ready(handler)
   return host_api.on_gui_ready(handler)

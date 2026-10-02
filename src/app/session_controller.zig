@@ -1,4 +1,5 @@
 const std = @import("std");
+const notification = @import("../notification.zig");
 const io = @import("../io.zig");
 const c = @import("sokol_c");
 const builtin = @import("builtin");
@@ -54,8 +55,9 @@ pub fn sendTextToPane(self: *App, pane_id: usize, text: []const u8) bool {
     return true;
 }
 
-pub fn sendBellToPane(self: *App, pane_id: usize) bool {
+pub fn sendBellToPane(self: *App, pane_id: usize, level: ?notification.Level, color: ?ghostty.ColorRgb) bool {
     const pane = self.findPaneById(pane_id) orelse return false;
+    pane.bell_flash_color = color orelse if (level) |value| value.color() else null;
     pane.bell_dirty = true;
     self.signalWake();
     return true;

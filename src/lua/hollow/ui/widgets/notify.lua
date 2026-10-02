@@ -41,6 +41,20 @@ end
 function ui.notify.show(message, opts)
   opts = opts or {}
 
+  if opts.id ~= nil then
+    for index = #overlay_stack, 1, -1 do
+      local existing = overlay_stack[index]
+      if
+        existing
+        and existing._kind == "overlay"
+        and existing._notify == true
+        and existing._notify_id == opts.id
+      then
+        ui.close_overlay_widget(existing)
+      end
+    end
+  end
+
   local theme = merged_theme(theme_api.resolve_widget("notify"), opts)
   local action = opts.action
   local level = opts.level or "info"
@@ -70,6 +84,7 @@ function ui.notify.show(message, opts)
   })
 
   widget._notify = true
+  widget._notify_id = opts.id
   ui.overlay.push(widget)
 
   local ttl = opts.ttl or 3000
@@ -80,10 +95,15 @@ function ui.notify.show(message, opts)
   return widget
 end
 
-function ui.notify.clear()
+function ui.notify.clear(notification_id)
   for index = #overlay_stack, 1, -1 do
     local widget = overlay_stack[index]
-    if widget and widget._kind == "overlay" and widget._notify == true then
+    if
+      widget
+      and widget._kind == "overlay"
+      and widget._notify == true
+      and (notification_id == nil or widget._notify_id == notification_id)
+    then
       ui.close_overlay_widget(widget)
     end
   end

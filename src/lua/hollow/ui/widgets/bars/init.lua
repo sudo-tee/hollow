@@ -93,6 +93,7 @@ function ui._register_bar_invalidation_hooks()
     "term:cwd_changed",
     "term:foreground_process_changed",
     "term:bell",
+    "term:notification",
     "workspace:changed",
     "window:resized",
   }) do

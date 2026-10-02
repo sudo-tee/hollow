@@ -38,6 +38,7 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
 | `term:foreground_process_changed` | `{ pane, old_process, new_process }` |
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
+| `term:notification` | `{ pane, title, message, level, id?, ttl_ms?, close }` |
 | `key:unhandled` | `{ key, mods }` |
 | `window:resized` | `{ size }` (`size` has `rows`, `cols`, `width`, `height`) |
 | `window:files_dropped` | `{ paths, pane, pane_id, x, y, text }` |
@@ -55,6 +56,10 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane
 receives focus.
+
+OSC 99, OSC 9, and OSC 777 packets emit `term:notification` and default to an in-app toast.
+The payload's `level` is `info`, `warn`, `error`, or `success`.
+An event with `close = true` dismisses the matching toast and carries no message.
 
 ## File-drop handling
 

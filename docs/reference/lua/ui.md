@@ -270,7 +270,7 @@ hollow.ui.notify.show(message, opts?)
 hollow.ui.notify.info(message, opts?)
 hollow.ui.notify.warn(message, opts?)
 hollow.ui.notify.error(message, opts?)
-hollow.ui.notify.clear()
+hollow.ui.notify.clear(notification_id?)
 ```
 
 Options:
@@ -280,6 +280,7 @@ Options:
   level = "info" | "warn" | "error" | "success",
   title = "Saved",
   ttl = 1500,                            -- ms; auto-dismiss
+  id = "build",                         -- replace or clear matching toast
   action = { label = "Undo", fn = function() end },
   align = "top_right",
   backdrop = true | "#000000" | { color = "#000000", alpha = 72 },
@@ -287,6 +288,9 @@ Options:
   theme = { ... },
 }
 ```
+
+Calling `hollow.ui.notify.clear()` clears all toasts.
+Pass an ID to clear only toast with matching `id`.
 
 ### `hollow.ui.input`
 

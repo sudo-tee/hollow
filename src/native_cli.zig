@@ -4,6 +4,7 @@ const command = @import("command.zig");
 const command_ipc = @import("ipc.zig");
 const platform = @import("platform.zig");
 const io = @import("io.zig");
+const notification = @import("notification.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -507,8 +508,10 @@ const Runner = struct {
         if (std.mem.eql(u8, sub, "bell")) {
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
-            try self.parseIdTag(rest, &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_bell }, id, tag);
+            var level: ?[]const u8 = null;
+            var color: ?[]const u8 = null;
+            try self.parsePaneBellFlags(rest, &id, &tag, &level, &color);
+            return try self.emitToMatchingPanes(.{ .kind = .pane_bell, .level = level, .color = color }, id, tag);
         }
         if (std.mem.eql(u8, sub, "send-text")) {
             if (rest.len == 0) return self.fail("usage: cli pane send-text <text> [--id ID|--tag TAG]", "invalid_args", 2);
@@ -870,6 +873,45 @@ const Runner = struct {
                 continue;
             }
             return self.failFmt("unexpected argument: {s}", .{arg}, "invalid_args", 2);
+        }
+    }
+
+    fn parsePaneBellFlags(
+        self: *Runner,
+        args: []const []const u8,
+        id: *?usize,
+        tag: *?[]const u8,
+        level: *?[]const u8,
+        color: *?[]const u8,
+    ) !void {
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--id")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing id value", "invalid_args", 2);
+                if (id.* != null) return self.fail("duplicate --id", "invalid_args", 2);
+                id.* = try parseUnsignedArg(args[i], "id");
+            } else if (std.mem.eql(u8, arg, "--tag")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing tag value", "invalid_args", 2);
+                if (tag.* != null) return self.fail("duplicate --tag", "invalid_args", 2);
+                tag.* = args[i];
+            } else if (std.mem.eql(u8, arg, "--level")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing level value", "invalid_args", 2);
+                if (level.* != null) return self.fail("duplicate --level", "invalid_args", 2);
+                if (notification.Level.parse(args[i]) == null) return self.fail("level must be info, warn, error, or success", "invalid_args", 2);
+                level.* = args[i];
+            } else if (std.mem.eql(u8, arg, "--color")) {
+                i += 1;
+                if (i >= args.len) return self.fail("missing color value", "invalid_args", 2);
+                if (color.* != null) return self.fail("duplicate --color", "invalid_args", 2);
+                if (notification.parseHexColor(args[i]) == null) return self.fail("color must use #RRGGBB format", "invalid_args", 2);
+                color.* = args[i];
+            } else {
+                return self.failFmt("unexpected argument: {s}", .{arg}, "invalid_args", 2);
+            }
         }
     }
 
@@ -1466,6 +1508,22 @@ test "jsonWithPaneId appends pane id" {
     const payload = try jsonWithPaneId(std.testing.allocator, "{\"text\":\"hi\"}", 42);
     defer std.testing.allocator.free(payload);
     try std.testing.expectEqualStrings("{\"text\":\"hi\",\"id\":42}", payload);
+}
+
+test "pane bell accepts level and custom color flags" {
+    var runner = Runner.init(std.testing.allocator, &.{});
+    defer runner.deinit();
+
+    var id: ?usize = null;
+    var tag: ?[]const u8 = null;
+    var level: ?[]const u8 = null;
+    var color: ?[]const u8 = null;
+    try runner.parsePaneBellFlags(&.{ "--level", "error", "--color", "#ff00aa", "--tag", "build" }, &id, &tag, &level, &color);
+
+    try std.testing.expect(id == null);
+    try std.testing.expectEqualStrings("build", tag.?);
+    try std.testing.expectEqualStrings("error", level.?);
+    try std.testing.expectEqualStrings("#ff00aa", color.?);
 }
 
 test "decodeKeySequence handles modifiers and escapes" {

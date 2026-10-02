@@ -570,6 +570,15 @@ pub const BuiltInPayload = union(enum) {
         old_process: []const u8,
         new_process: []const u8,
     },
+    term_notification: struct {
+        pane_id: usize,
+        title: []const u8,
+        message: []const u8,
+        level: []const u8,
+        id: ?[]const u8,
+        ttl_ms: ?u64,
+        close: bool,
+    },
     window_size: struct {
         rows: usize,
         cols: usize,
@@ -2560,6 +2569,27 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.set_field(state, -2, "old_process");
             try pushOwnedString(allocator, api, state, value.new_process);
             api.set_field(state, -2, "new_process");
+        },
+        .term_notification => |value| {
+            api.create_table(state, 0, 7);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            try pushOwnedString(allocator, api, state, value.title);
+            api.set_field(state, -2, "title");
+            try pushOwnedString(allocator, api, state, value.message);
+            api.set_field(state, -2, "message");
+            try pushOwnedString(allocator, api, state, value.level);
+            api.set_field(state, -2, "level");
+            if (value.id) |id| {
+                try pushOwnedString(allocator, api, state, id);
+                api.set_field(state, -2, "id");
+            }
+            if (value.ttl_ms) |ttl_ms| {
+                api.push_number(state, @floatFromInt(ttl_ms));
+                api.set_field(state, -2, "ttl_ms");
+            }
+            api.push_boolean(state, if (value.close) 1 else 0);
+            api.set_field(state, -2, "close");
         },
         .window_size => |value| {
             api.create_table(state, 0, 4);
