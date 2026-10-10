@@ -43,6 +43,9 @@ jobs:
       - name: Apply project patches
         run: bash scripts/setup.sh
 
+      - name: Test launcher
+        run: bash scripts/test-launch.sh
+
       - name: Build Windows target
         run: ./launch.sh --build-only
         env:

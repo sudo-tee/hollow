@@ -6,6 +6,7 @@ BIN_DIR="$SCRIPT_DIR/zig-out/bin"
 TARGET="x86_64-windows-gnu"
 BUILD=1
 RUN=1
+INSTALL=0
 OPTIMIZE="ReleaseFast"
 PDB=0
 SAFE_RENDER=0
@@ -26,6 +27,7 @@ for arg in "$@"; do
   case "$arg" in
   --no-build) BUILD=0 ;;
   --build-only) RUN=0 ;;
+  --install) INSTALL=1 ;;
   --debug) OPTIMIZE="Debug" ;;
   --pdb) PDB=1 ;;
   --safe-render) SAFE_RENDER=1 ;;
@@ -37,9 +39,9 @@ for arg in "$@"; do
   --target=*) TARGET="${arg#--target=}" ;;
   --app-arg=*) FORWARD_ARGS+=("${arg#--app-arg=}") ;;
   --help | -h)
-    echo "Usage: $0 [--no-build] [--build-only] [--debug] [--pdb] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
+    echo "Usage: $0 [--no-build] [--build-only] [--install] [--debug] [--pdb] [--target=TARGET] [--safe-render] [--no-swapchain-glyphs] [--no-multi-pane-cache] [--list-fonts] [--match-font QUERY] [--json] [--app-arg=ARG]"
     echo "Lua dev loop: after one build, Lua files under src/lua/ are loaded from disk when present, so you can use --no-build for Lua-only changes."
-    echo "Windows targets are copied to %USERPROFILE%\\Applications\\Hollow and launched from there (also with --no-build)."
+    echo "Windows targets run from zig-out/bin by default. --install copies them to C:\\Applications\\Hollow and runs from there unless --build-only is set."
     exit 0
     ;;
   esac
@@ -48,6 +50,17 @@ done
 if [[ $EXPECT_MATCH_FONT -eq 1 ]]; then
   echo "[launch] --match-font requires a query" >&2
   exit 1
+fi
+
+if [[ $INSTALL -eq 1 ]]; then
+  if [[ "$TARGET" != *"windows"* ]]; then
+    echo "[launch] --install is only supported for Windows targets" >&2
+    exit 1
+  fi
+  if ! command -v wslpath >/dev/null 2>&1; then
+    echo "[launch] --install requires WSL (wslpath not found)" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$TARGET" == *"windows"* ]]; then
@@ -106,9 +119,14 @@ copy_if_exists() {
   fi
 }
 
-if [[ "$TARGET" == *"windows"* ]]; then
-  WINDOWS_PROFILE="$(powershell.exe -NoProfile -NonInteractive -Command '$env:USERPROFILE' | tr -d '\r')"
-  WINDOWS_APP_DIR="$(wslpath -u "$WINDOWS_PROFILE")/Applications/Hollow"
+if [[ $INSTALL -eq 1 ]]; then
+  WINDOWS_APP_DIR="$(wslpath -u 'C:\Applications\Hollow')"
+  for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME"; do
+    if [[ ! -f "$BIN_DIR/$name" ]]; then
+      echo "[launch] missing $BIN_DIR/$name; build before installing" >&2
+      exit 1
+    fi
+  done
   mkdir -p "$WINDOWS_APP_DIR"
   echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
   for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" \

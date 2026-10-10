@@ -46,6 +46,7 @@ Re-run it any time dependency pins change or `zig-pkg/` is regenerated.
 ```bash
 ./launch.sh                # build and run
 ./launch.sh --build-only   # build only
+./launch.sh --install --build-only # build and copy to C:\Applications\Hollow
 ./launch.sh --debug        # Debug build instead of ReleaseFast
 ./launch.sh --safe-render  # disable swapchain glyphs + multi-pane cache
 ./launch.sh --no-swapchain-glyphs
@@ -55,8 +56,13 @@ Re-run it any time dependency pins change or `zig-pkg/` is regenerated.
 ./launch.sh --json
 ```
 
-`launch.sh` cross-builds `x86_64-windows-gnu`, copies the executables
-into the repo root, and execs `hollow.exe` with the rest of the args.
+`launch.sh` cross-builds `x86_64-windows-gnu` and execs
+`zig-out/bin/hollow.exe` with the rest of the args. No Windows tools or
+installation are needed for `--build-only`, so it also works on Linux CI.
+Use `--install` from WSL to copy executables, available debug symbols,
+helpers, Lua files, and config to `C:\Applications\Hollow`. With this flag,
+the installed executable runs unless `--build-only` is also set.
+Combine `--install --no-build --build-only` to install an existing build.
 Pass `--app-arg=...` to forward args the wrapper does not understand.
 
 Lua dev loop: after one build, Lua files under `src/lua/` are loaded
@@ -98,6 +104,7 @@ from WSL.
 | ---------------------------------------------- | ------------------------------------------------------------------------ |
 | `--no-build`                                   | Skip the `zig build` step                                                |
 | `--build-only`                                 | Build, then exit without running                                         |
+| `--install`                                    | Copy Windows artifacts to `C:\Applications\Hollow` from WSL; run from there unless `--build-only` |
 | `--debug`                                      | `-Doptimize=Debug`                                                       |
 | `--target=TARGET`                              | Override the build target (default `x86_64-windows-gnu`)                 |
 | `--safe-render`                                | Implies `--renderer-safe-mode` and `--renderer-disable-swapchain-glyphs` |

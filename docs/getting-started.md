@@ -104,8 +104,9 @@ the short version:
 ./launch.sh          # build and run on Windows from WSL
 ```
 
-`launch.sh` cross-builds `x86_64-windows-gnu` and copies the executables to
-the repo root before running `hollow.exe`.
+`launch.sh` cross-builds `x86_64-windows-gnu` and runs `zig-out/bin/hollow.exe`.
+Use `./launch.sh --install --build-only` from WSL to build and copy artifacts
+to `C:\Applications\Hollow` without launching.
 
 ## Next steps
 
