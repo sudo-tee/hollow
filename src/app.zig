@@ -1634,10 +1634,40 @@ pub const App = struct {
         return pane.render_state_ready and pane.render_state != null and pane.row_iterator != null and pane.row_cells != null;
     }
 
+    const PaneRead = struct {
+        runtime: *GhosttyRuntime,
+        pane: *Pane,
+        transient: bool,
+
+        fn end(self: PaneRead) void {
+            if (self.transient) self.pane.releaseRenderHelpers(self.runtime);
+        }
+    };
+
+    fn beginPaneRead(runtime: *GhosttyRuntime, pane: *Pane) ?PaneRead {
+        if (paneRenderHelpersReady(pane)) return .{ .runtime = runtime, .pane = pane, .transient = false };
+        if (pane.terminal == null) return null;
+
+        var transient = false;
+        if (!pane.hasRenderHelpers()) {
+            pane.recreateRenderHelpers(runtime);
+            if (!pane.hasRenderHelpers()) return null;
+            transient = true;
+        }
+        const read: PaneRead = .{ .runtime = runtime, .pane = pane, .transient = transient };
+        runtime.updateRenderState(pane.render_state, pane.terminal) catch {
+            read.end();
+            return null;
+        };
+        return read;
+    }
+
     pub fn getPaneText(self: *App, pane_id: usize, out: []u8) []const u8 {
         const runtime = if (self.ghostty) |*rt| rt else return "";
         const pane = self.findPaneById(pane_id) orelse return "";
-        if (!paneRenderHelpersReady(pane) or pane.rows == 0) return "";
+        if (pane.rows == 0) return "";
+        const read = beginPaneRead(runtime, pane) orelse return "";
+        defer read.end();
         if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return "";
 
         var writer: std.Io.Writer = .fixed(out);
