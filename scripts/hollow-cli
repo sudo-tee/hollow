@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import select
 import socket
 import struct
@@ -256,7 +257,9 @@ class HollowCli:
         p = pane_sub.add_parser("bell", parents=[self.common_parser])
         p.add_argument("--id", type=int)
         p.add_argument("--tag")
-        p.set_defaults(handler=lambda args: self.emit_to_matching_panes("bell", {}, args.id, args.tag))
+        p.add_argument("--level", choices=["info", "warn", "error", "success"])
+        p.add_argument("--color", type=self.hex_color)
+        p.set_defaults(handler=self.handle_pane_bell)
 
         p = pane_sub.add_parser("send-text", parents=[self.common_parser])
         p.add_argument("text")
@@ -380,6 +383,21 @@ class HollowCli:
     def handle_pane_screenshot(self, args):
         self.emit_output(self.send_command({"kind": "pane_screenshot", "id": args.id, "path": args.path}), payload_only=True)
         return 0
+
+    def handle_pane_bell(self, args):
+        if args.level is None and args.color is None:
+            return self.emit_to_matching_panes("bell", {}, args.id, args.tag)
+        pane_ids = self.resolve_target_pane_ids(args.id, args.tag) or [self.pane_id()]
+        for pane_id in pane_ids:
+            request = {"kind": "pane_bell", "id": pane_id or None, "level": args.level, "color": args.color}
+            self.emit_output(self.send_command(request), payload_only=False)
+        return 0
+
+    @staticmethod
+    def hex_color(value):
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise argparse.ArgumentTypeError(f"invalid color {value!r}, expected #RRGGBB")
+        return value
 
     def handle_pane_split(self, args):
         payload = self.clean({
@@ -739,7 +757,7 @@ class HollowCli:
     def send_command(self, request):
         address = os.environ.get("HOLLOW_COMMAND_ADDR")
         if not address or self.transport in ("file", "osc"):
-            raise CliError("screenshot requires HOLLOW_COMMAND_ADDR socket transport", code="transport_error")
+            raise CliError(f"{request.get('kind')} requires HOLLOW_COMMAND_ADDR socket transport", code="transport_error")
         try:
             with self.connect_socket(address) as conn:
                 return self.send_socket_request(self.clean(request), conn)
