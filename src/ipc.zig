@@ -276,7 +276,9 @@ pub fn send(allocator: std.mem.Allocator, request: command.Request, timeout_ms: 
     const stream = try remote_addr.connect(io.get(), .{
         .mode = .stream,
         .protocol = .tcp,
-        .timeout = if (timeout_ms == 0) .none else .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64)))) } },
+        // Zig 0.16 Threaded panics for non-none connect timeouts on both
+        // POSIX and Windows. SocketDeadline below bounds the frame exchange.
+        // Connection establishment uses the OS timeout until Zig supports this.
     });
     defer stream.close(io.get());
     if (timing_enabled) clientTraceFmt("connect_ms={d:.3}", .{elapsedMs(connect_start_ns)});
