@@ -152,6 +152,39 @@ hollow-cli pane remove-tag <tag> [--id ID|--tag TAG]
 hollow-cli pane set-tags [tag ...] [--id ID|--tag TAG]
 ```
 
+### `program-status`
+
+```sh
+hollow-cli program-status set working --app demo --progress 25
+hollow-cli program-status set blocked --id build --kind permission --message "Allow deploy?"
+hollow-cli program-status get --pretty
+hollow-cli program-status clear --id build
+hollow-cli program-status clear
+```
+
+Same arguments and behavior as [native `program-status`](native.md#program-status).
+Use `--pane ID` for the target pane; `--id TASK` identifies a status record,
+not a pane. Default target is the calling pane (active pane if no caller ID).
+Socket, file and OSC query transports all use the same host handler.
+Mutations are silent on success; `get` prints JSON. Use `--envelope` for a reply.
+The running host must be rebuilt/restarted with program-status support.
+
+To test visible feedback, run inside Hollow and open mux navigator during sleep:
+
+```sh
+{
+  hollow-cli program-status set working --app demo --progress 25
+  hollow-cli program-status get --pretty
+  sleep 20
+  hollow-cli program-status set blocked --app demo --kind permission
+  sleep 20
+  hollow-cli program-status clear
+}
+```
+
+`get` confirms whether reports reached the host even if no badge is visible.
+Braces prevent an intermediate primary prompt from clearing running status.
+
 ### Other
 
 ```bash

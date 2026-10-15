@@ -267,6 +267,18 @@ fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id
 }
 
 pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
+    const program_status = @import("program_status_commands.zig");
+    if (program_status.handles(channel)) {
+        var response = try program_status.execute(self, pane_id, channel, params);
+        defer response.deinit(self.allocator);
+        const value = response.payload;
+        response.payload = null;
+        return .{
+            .success = response.success,
+            .value = value,
+            .error_message = if (response.error_message) |message| try self.allocator.dupe(u8, message) else null,
+        };
+    }
     const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
     return try lua.dispatchHtpQuery(pane_id, channel, params);
 }

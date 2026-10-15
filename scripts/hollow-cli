@@ -62,7 +62,39 @@ class HollowCli:
         self.add_send_keys(sub)
         self.add_emit(sub)
         self.add_notify(sub)
+        self.add_program_status(sub)
         return parser
+
+    def add_program_status(self, sub):
+        status = sub.add_parser("program-status", parents=[self.common_parser])
+        commands = status.add_subparsers(dest="status_command", required=True)
+        for action in ("set", "get", "clear"):
+            p = commands.add_parser(action, parents=[self.common_parser])
+            p.add_argument("--pane", type=int, help="target pane (default: calling pane)")
+            if action != "get":
+                p.add_argument("--id", default="", help="hierarchical task id; empty means root")
+            if action == "set":
+                p.add_argument("state", choices=["idle", "working", "done", "blocked", "error"])
+                p.add_argument("--kind", choices=["none", "permission", "question", "auth"])
+                p.add_argument("--progress", type=int)
+                p.add_argument("--app")
+                p.add_argument("--title")
+                p.add_argument("--message")
+            p.set_defaults(handler=self.handle_program_status)
+
+    def handle_program_status(self, args):
+        if args.pane is not None and args.pane <= 0:
+            raise CliError("--pane must be positive", code="invalid_args", status=2)
+        params = self.clean({key: getattr(args, key, None) for key in
+                             ("pane", "id", "state", "kind", "progress", "app", "title", "message")})
+        if args.status_command == "set":
+            if args.progress is not None and (not 0 <= args.progress <= 100 or args.state not in ("working", "blocked")):
+                raise CliError("progress requires working/blocked and must be 0–100", code="invalid_args", status=2)
+            if args.kind not in (None, "none") and args.state != "blocked":
+                raise CliError("kind requires blocked state", code="invalid_args", status=2)
+        result = self.query("program_status_" + args.status_command, params)
+        self.emit_output(result, payload_only=args.status_command == "get")
+        return 0
 
     def build_common_parser(self):
         parser = argparse.ArgumentParser(add_help=False)

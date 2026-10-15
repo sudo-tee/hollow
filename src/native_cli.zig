@@ -224,6 +224,20 @@ const Runner = struct {
         if (std.mem.eql(u8, command_name, "send-keys")) return try self.executeSendKeys(args);
         if (std.mem.eql(u8, command_name, "emit")) return try self.executeEmit(args);
         if (std.mem.eql(u8, command_name, "notify")) return try self.executeNotify(args);
+        if (std.mem.eql(u8, command_name, "program-status")) {
+            var request = parseProgramStatusRequest(self.allocator, args) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return self.fail("usage: cli program-status set <state>|get|clear [--pane ID] [--id TASK] [--kind KIND] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]", "invalid_args", 2),
+            };
+            defer request.deinit(self.allocator);
+            const source_pane = io.getEnvVarOwned(self.allocator, "HOLLOW_PANE_ID") catch null;
+            defer if (source_pane) |value| self.allocator.free(value);
+            if (source_pane) |value| request.pane_id = std.fmt.parseInt(usize, value, 10) catch return self.fail("invalid HOLLOW_PANE_ID", "invalid_args", 2);
+            var reply = try self.sendRequest(request);
+            defer reply.deinit(self.allocator);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "program status command failed" }, "program_status_error", 1);
+            return try self.emitOutput(&reply, std.mem.eql(u8, args[0], "get"));
+        }
         if (std.mem.eql(u8, command_name, "ui")) return try self.executeUi(args);
         if (std.mem.eql(u8, command_name, "wait")) return try self.executeWait(args);
         return self.failFmt("unknown command: {s}", .{command_name}, "invalid_args", 2);
@@ -1121,9 +1135,80 @@ const Runner = struct {
     }
 };
 
+fn parseProgramStatusRequest(allocator: std.mem.Allocator, args: []const []const u8) !command.Request {
+    if (args.len == 0 or !isOneOf(args[0], &.{ "set", "get", "clear" })) return error.InvalidProgramStatusArgs;
+    const setting = std.mem.eql(u8, args[0], "set");
+    const getting = std.mem.eql(u8, args[0], "get");
+    var builder = try JsonObjectBuilder.init(allocator);
+    defer builder.deinit();
+    var i: usize = 1;
+    var state: []const u8 = "";
+    var kind: []const u8 = "none";
+    var progress: ?u8 = null;
+    if (setting) {
+        if (args.len < 2 or !isOneOf(args[1], &.{ "idle", "working", "done", "blocked", "error" })) return error.InvalidProgramStatusArgs;
+        state = args[1];
+        try builder.fieldString("state", state);
+        i = 2;
+    }
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(allocator);
+    while (i < args.len) : (i += 2) {
+        if (i + 1 >= args.len) return error.InvalidProgramStatusArgs;
+        const flag = args[i];
+        const value = args[i + 1];
+        const entry = try seen.getOrPut(allocator, flag);
+        if (entry.found_existing) return error.InvalidProgramStatusArgs;
+        if (std.mem.eql(u8, flag, "--pane")) {
+            const pane_id = std.fmt.parseInt(usize, value, 10) catch return error.InvalidProgramStatusArgs;
+            if (pane_id == 0) return error.InvalidProgramStatusArgs;
+            try builder.fieldInt("pane", pane_id);
+        } else if (!getting and std.mem.eql(u8, flag, "--id")) {
+            try builder.fieldString("id", value);
+        } else if (setting and std.mem.eql(u8, flag, "--kind")) {
+            if (!isOneOf(value, &.{ "none", "permission", "question", "auth" })) return error.InvalidProgramStatusArgs;
+            kind = value;
+            try builder.fieldString("kind", value);
+        } else if (setting and std.mem.eql(u8, flag, "--progress")) {
+            progress = std.fmt.parseInt(u8, value, 10) catch return error.InvalidProgramStatusArgs;
+            if (progress.? > 100) return error.InvalidProgramStatusArgs;
+            try builder.fieldInt("progress", progress.?);
+        } else if (setting and isOneOf(flag, &.{ "--app", "--title", "--message" })) {
+            try builder.fieldString(flag[2..], value);
+        } else return error.InvalidProgramStatusArgs;
+    }
+    if (!std.mem.eql(u8, kind, "none") and !std.mem.eql(u8, state, "blocked")) return error.InvalidProgramStatusArgs;
+    if (progress != null and !isOneOf(state, &.{ "working", "blocked" })) return error.InvalidProgramStatusArgs;
+    const json = try builder.finish();
+    defer allocator.free(json);
+    const params = try parseJsonObjectArg(allocator, json, "params");
+    errdefer command.deinitJsonValue(allocator, params);
+    const channel = try std.fmt.allocPrint(allocator, "program_status_{s}", .{args[0]});
+    return .{ .kind = .get_htp, .channel = channel, .params = params };
+}
+
+test "program status CLI builds owned shared commands and validates arguments" {
+    const a = std.testing.allocator;
+    var request = try parseProgramStatusRequest(a, &.{ "set", "blocked", "--id", "build/tests", "--pane", "42", "--kind", "permission", "--progress", "0", "--message", "Allow deploy?" });
+    defer request.deinit(a);
+    try std.testing.expectEqualStrings("program_status_set", request.channel.?);
+    try std.testing.expectEqualStrings("build/tests", request.params.?.object.get("id").?.string);
+    try std.testing.expectEqual(@as(i64, 42), request.params.?.object.get("pane").?.integer);
+    for ([_][]const []const u8{
+        &.{},                                    &.{ "set", "bogus" },                     &.{ "set", "working", "--progress", "101" },
+        &.{ "set", "done", "--progress", "10" }, &.{ "set", "working", "--kind", "auth" }, &.{ "get", "--pane", "0" },
+        &.{ "clear", "--message", "x" },         &.{ "get", "--id", "task" },
+    }) |args| try std.testing.expectError(error.InvalidProgramStatusArgs, parseProgramStatusRequest(a, args));
+    var clear = try parseProgramStatusRequest(a, &.{ "clear", "--id", "build" });
+    defer clear.deinit(a);
+    try std.testing.expectEqualStrings("program_status_clear", clear.channel.?);
+}
+
 fn helpText() []const u8 {
     return "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
-        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, ui, wait\n";
+        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+        "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
+        "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";
 }
 
 fn emptyObject(allocator: std.mem.Allocator) ![]u8 {

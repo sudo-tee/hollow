@@ -12,8 +12,9 @@ CLI invoked from an unrelated shell or from WSL works without inherited state.
 The command server binds only to loopback addresses. It handles up to eight
 connections concurrently, while application mutations remain serialized on the
 frame thread. Incomplete frames are disconnected after a total five-second
-operation deadline, including on Windows. Native client timeouts also cover
-connection establishment. Loopback binding does not authenticate local users;
+operation deadline, including on Windows. Native client timeouts cover the frame
+exchange; connection establishment uses the OS timeout because Zig 0.16's timed
+connect API is unimplemented. Loopback binding does not authenticate local users;
 protect access to the local session accordingly.
 
 ## Running it
@@ -101,6 +102,48 @@ Query state. All `get` commands print JSON.
 | `hollow cli pane set-tag <tag>`                  | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane remove-tag <tag>`               | `[--id ID\|--tag TAG]`                                                  |
 | `hollow cli pane set-tags [tag ...]`             | `[--id ID\|--tag TAG]`                                                  |
+
+### `program-status`
+
+```sh
+hollow cli program-status set working --app demo --progress 25
+hollow cli program-status set blocked --id build --kind permission --message "Allow deploy?"
+hollow cli program-status get --pretty
+hollow cli program-status clear --id build
+hollow cli program-status clear
+```
+
+`set <idle|working|done|blocked|error>` accepts `--id TASK`, `--app TEXT`,
+`--title TEXT`, `--message TEXT`, `--progress 0..100`, and
+`--kind none|permission|question|auth`. Progress requires working/blocked;
+non-none kind requires blocked. Reports replace the whole record, not patches.
+`get` returns the current record array as JSON, with inherited `app` values
+and nullable `progress`. `clear --id TASK` clears that task and descendants;
+omitting `--id` clears all records.
+
+All three accept `--pane ID` to target a pane. Otherwise `HOLLOW_PANE_ID`
+selects the calling pane, falling back to the active pane outside Hollow.
+Unknown panes and invalid reports fail without changing state. Task IDs are
+at most 256 ASCII letters/digits or `/_.-`; app/title/message limits are
+256/512/2048 UTF-8 bytes. Display text receives the same sanitization as OSC 7501.
+
+These commands update the same state used by OSC 7501, Lua and the tab bar,
+mux navigator and workspace switcher. Returning to the primary shell prompt
+clears working/idle records. Blocked attention survives prompt return until
+replaced/cleared or the child exits. Done/error records survive prompt return
+until replaced/cleared. Refocusing acknowledges only unread blocked/error attention
+(`attention` in `get` output), not status records. Reports raise attention only
+while the pane is inactive. To see a working badge while testing:
+
+```sh
+{ hollow cli program-status set working --app demo --progress 25; sleep 20; }
+```
+
+The native client uses the command socket. The equivalent Python
+[`hollow-cli program-status`](hollow-cli.md#program-status) also supports file
+and OSC query transports. Shared HTP query channels are `program_status_set`,
+`program_status_get`, `program_status_clear`; fields are passed in `params`,
+with `pane` for the target pane and `id` for the task ID.
 
 ### `focus`, `scroll`, `config`
 

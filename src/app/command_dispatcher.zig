@@ -1031,6 +1031,8 @@ fn execRun(self: *App, request: command_mod.Request) command_mod.Response {
 fn execGetHtp(self: *App, request: command_mod.Request) command_mod.Response {
     const channel = request.channel orelse return command_mod.Response.fail("invalid_args", "missing htp channel");
     const pane_id = request.id orelse request.pane_id;
+    const program_status = @import("program_status_commands.zig");
+    if (program_status.handles(channel)) return program_status.execute(self, pane_id, channel, request.params) catch |err| command_mod.Response.fail("internal", @errorName(err));
     const result = htp.dispatchHtpQuerySync(self, pane_id, channel, request.params) catch |err| {
         return command_mod.Response.fail("internal", @errorName(err));
     };
