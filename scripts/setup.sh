@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
 BUSTED_VERSION="${BUSTED_VERSION:-2.3.0}"
-GHOSTTY_PACKAGE="ghostty-1.3.2-dev-5UdBC5IaYwVyfcHCaI4PuMgztS2dk33KSpuhjyLhQjCb"
+GHOSTTY_PACKAGE="ghostty-1.3.2-dev-5UdBCw6JewVSNmU8sj9cx3YZWyIVXgAHBHU8T-xS1Hg0"
 
 "$SCRIPT_DIR/check-zig-version.sh"
 
