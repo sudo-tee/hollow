@@ -118,6 +118,9 @@ function M.setup(hollow, host_api)
         or "primary",
       cwd = host_api.get_pane_cwd(pane_id),
       title = host_api.get_pane_title(pane_id),
+      program_status = host_api.get_pane_program_status and host_api.get_pane_program_status(
+        pane_id
+      ) or {},
       foreground_process = host_api.get_pane_foreground_process
           and host_api.get_pane_foreground_process(pane_id)
         or nil,

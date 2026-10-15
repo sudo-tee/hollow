@@ -130,6 +130,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.json", .source = @embedFile("lua/hollow/json.lua") },
     .{ .name = "hollow.workspace", .source = @embedFile("lua/hollow/workspace.lua") },
     .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
+    .{ .name = "hollow.program_status", .source = @embedFile("lua/hollow/program_status.lua") },
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
@@ -227,6 +228,7 @@ pub const AppCallbacks = struct {
     get_pane_cwd: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_text: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_foreground_process: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
+    get_pane_program_status: *const fn (app: *anyopaque, pane_id: usize) ?*const @import("term/program_status.zig").State,
     get_pane_domain: *const fn (app: *anyopaque, pane_id: usize, out_buf: []u8) []const u8,
     get_pane_split_direction: *const fn (app: *anyopaque, pane_id: usize) ?[]const u8,
     get_pane_split_ratio: *const fn (app: *anyopaque, pane_id: usize) ?f32,
@@ -2187,6 +2189,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_foreground_process, 1);
         api.set_field(self.state, -2, "get_pane_foreground_process");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_get_pane_program_status, 1);
+        api.set_field(self.state, -2, "get_pane_program_status");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_pane_rows, 1);
@@ -5956,6 +5962,43 @@ fn l_get_pane_foreground_process(state: *State) callconv(.c) c_int {
     var out_buf: [512]u8 = undefined;
     const proc = cbs.get_pane_foreground_process(cbs.app, pane_id, &out_buf);
     api.push_lstring(state, proc.ptr, proc.len);
+    return 1;
+}
+
+fn l_get_pane_program_status(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    api.create_table(state, 0, 0);
+    const cbs = ctx.app_callbacks orelse return 1;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .number) return 1;
+    const pane_number = api.to_number(state, 1);
+    if (!std.math.isFinite(pane_number) or pane_number < 0 or pane_number >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) return 1;
+    const pane_id: usize = @intFromFloat(pane_number);
+    const status = cbs.get_pane_program_status(cbs.app, pane_id) orelse return 1;
+    for (status.records.items, 0..) |record, i| {
+        api.create_table(state, 0, 8);
+        inline for (.{ "id", "title", "message" }) |field| {
+            const value = @field(record, field);
+            api.push_lstring(state, value.ptr, value.len);
+            api.set_field(state, -2, field);
+        }
+        const app = status.effectiveApp(record);
+        api.push_lstring(state, app.ptr, app.len);
+        api.set_field(state, -2, "app");
+        const name = record.stateName();
+        api.push_lstring(state, name.ptr, name.len);
+        api.set_field(state, -2, "state");
+        const kind = @tagName(record.kind);
+        api.push_lstring(state, kind.ptr, kind.len);
+        api.set_field(state, -2, "kind");
+        api.push_boolean(state, if (record.attention) 1 else 0);
+        api.set_field(state, -2, "attention");
+        if (record.progress >= 0) {
+            api.push_number(state, @floatFromInt(record.progress));
+            api.set_field(state, -2, "progress");
+        }
+        api.rawseti(state, -2, @intCast(i + 1));
+    }
     return 1;
 }
 

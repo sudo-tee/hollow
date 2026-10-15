@@ -116,7 +116,55 @@ pub const DeviceAttributes = extern struct {
 pub const String = extern struct {
     ptr: ?[*]const u8,
     len: usize,
+
+    pub fn slice(self: String) []const u8 {
+        return if (self.ptr) |ptr| ptr[0..self.len] else "";
+    }
 };
+
+pub const ProgramStatus = extern struct {
+    size: usize = @sizeOf(ProgramStatus),
+    state: c_int,
+    kind: c_int,
+    progress: i8,
+    id: String,
+    app: String,
+    title: String,
+    message: String,
+};
+
+pub const SemanticPrompt = extern struct {
+    size: usize,
+    kind: c_int,
+    prompt_kind: c_int,
+    has_exit_code: bool,
+    exit_code: i32,
+    command: String,
+    error_text: String,
+};
+
+pub const ClipboardContent = extern struct { mime: String, data: String };
+pub const ClipboardWriteReply = extern struct {
+    size: usize = @sizeOf(ClipboardWriteReply),
+    result: c_int,
+    remember: bool = false,
+};
+pub const ClipboardWrite = extern struct {
+    size: usize,
+    location: c_int,
+    contents: ?[*]const ClipboardContent,
+    contents_len: usize,
+    name: String,
+    granted: bool,
+    can_remember: bool,
+    ctx: ?*const anyopaque,
+    reply: *const fn (*const ClipboardWrite, *const ClipboardWriteReply) callconv(.c) void,
+};
+
+pub const RenderHoldCallback = *const fn (?*anyopaque, ?*anyopaque, bool) callconv(.c) void;
+pub const ProgramStatusCallback = *const fn (?*anyopaque, ?*anyopaque, *const ProgramStatus) callconv(.c) void;
+pub const SemanticPromptCallback = *const fn (?*anyopaque, ?*anyopaque, *const SemanticPrompt) callconv(.c) void;
+pub const ClipboardWriteCallback = *const fn (?*anyopaque, ?*anyopaque, *const ClipboardWrite) callconv(.c) void;
 
 pub const Buffer = extern struct {
     ptr: ?[*]u8 = null,
@@ -163,6 +211,7 @@ pub const ScrollViewport = extern struct {
     value: extern union {
         delta: isize,
         row: usize,
+        delta_prompt: isize,
         _padding: [2]u64,
     },
 };
@@ -218,8 +267,15 @@ pub const TerminalOpt = enum(u32) {
     apc_max_bytes = 19,
     apc_max_bytes_kitty = 20,
     selection = 21,
+    pwd_changed = 25,
+    clipboard_write = 26,
     scrollback_max_bytes = 27,
     mode = 34,
+    clipboard_write_max_bytes = 39,
+    render_hold = 41,
+    semantic_prompt = 42,
+    reset = 43,
+    program_status = 46,
 };
 
 pub const TerminalData = enum(u32) {
@@ -512,6 +568,7 @@ pub const ScrollViewportTag = enum(u32) {
     bottom = 1,
     delta = 2,
     row = 3,
+    delta_prompt = 4,
 };
 
 pub const Key = enum(u32) {
@@ -739,6 +796,12 @@ pub const TerminalCallbacks = struct {
     color_scheme: ColorSchemeCallback,
     device_attributes: DeviceAttributesCallback,
     title_changed: TitleChangedCallback,
+    pwd_changed: ?TitleChangedCallback = null,
+    clipboard_write: ?ClipboardWriteCallback = null,
+    render_hold: ?RenderHoldCallback = null,
+    semantic_prompt: ?SemanticPromptCallback = null,
+    reset: ?TitleChangedCallback = null,
+    program_status: ?ProgramStatusCallback = null,
 };
 
 pub const Runtime = struct {
@@ -1011,6 +1074,13 @@ pub const Runtime = struct {
         }
     }
 
+    pub fn terminalScrollPrompt(self: *Runtime, handle: ?*anyopaque, delta: isize) void {
+        if (handle) |terminal| self.terminal_scroll_viewport(terminal, .{
+            .tag = @intFromEnum(ScrollViewportTag.delta_prompt),
+            .value = .{ .delta_prompt = delta },
+        });
+    }
+
     pub fn terminalScrollTop(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| {
             const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
@@ -1162,6 +1232,13 @@ pub const Runtime = struct {
         self.setColorSchemeCallback(handle, cbs.color_scheme);
         self.setDeviceAttributesCallback(handle, cbs.device_attributes);
         self.setTitleChangedCallback(handle, cbs.title_changed);
+        inline for (.{ "pwd_changed", "clipboard_write", "render_hold", "semantic_prompt", "reset", "program_status" }) |name| {
+            const cb = @field(cbs, name);
+            _ = self.terminal_set(handle, @intFromEnum(@field(TerminalOpt, name)), if (cb) |value| @ptrCast(value) else null);
+        }
+        // Match Hollow's former bounded OSC 52 capture. Reads remain disabled.
+        var max_bytes: usize = 48 * 1024;
+        _ = self.terminal_set(handle, @intFromEnum(TerminalOpt.clipboard_write_max_bytes), &max_bytes);
     }
 
     pub fn createRenderState(self: *Runtime) !?*anyopaque {
@@ -1778,6 +1855,31 @@ test "synchronized output mode round trips through Ghostty" {
     try std.testing.expect(runtime.terminalMode(terminal, .synchronized_output));
     try std.testing.expect(runtime.setTerminalMode(terminal, .synchronized_output, false));
     try std.testing.expect(!runtime.terminalMode(terminal, .synchronized_output));
+}
+
+test "native prompt navigation moves relative to viewport top" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(40, 3, 1000);
+    defer runtime.freeTerminal(terminal);
+    for (0..8) |_| runtime.terminalWrite(terminal, "\x1b]133;A\x07$ \x1b]133;B\x07command\x1b]133;C\x07\r\noutput\r\n\x1b]133;D;0\x07");
+    runtime.terminalScrollTop(terminal);
+    runtime.terminalScrollPrompt(terminal, 1);
+    try std.testing.expectEqual(@as(u64, 2), runtime.terminalScrollbar(terminal).?.offset);
+    runtime.terminalScrollPrompt(terminal, -1);
+    try std.testing.expectEqual(@as(u64, 0), runtime.terminalScrollbar(terminal).?.offset);
+}
+
+test "callback bindings match upstream C layouts" {
+    const headers = @cImport({
+        @cInclude("ghostty/vt.h");
+    });
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalProgramStatus), @sizeOf(ProgramStatus));
+    try std.testing.expectEqual(@offsetOf(headers.GhosttyTerminalProgramStatus, "message"), @offsetOf(ProgramStatus, "message"));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalSemanticPrompt), @sizeOf(SemanticPrompt));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWrite), @sizeOf(ClipboardWrite));
+    try std.testing.expectEqual(@offsetOf(headers.GhosttyClipboardWrite, "reply"), @offsetOf(ClipboardWrite, "reply"));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWriteReply), @sizeOf(ClipboardWriteReply));
 }
 
 test "terminal default colors are exposed through render state" {

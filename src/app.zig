@@ -1012,6 +1012,15 @@ pub const App = struct {
         }
     }
 
+    fn initTerminalRuntime(self: *App) !*GhosttyRuntime {
+        // Pane callbacks retain this address; initialize in its final owner.
+        self.ghostty = try GhosttyRuntime.init(self.allocator, null);
+        const runtime = &self.ghostty.?;
+        _ = runtime.setSysUserdata(null);
+        _ = runtime.setSysDecodePng(hollow_decode_png);
+        return runtime;
+    }
+
     pub fn bootstrap(self: *App, config_override: ?[]const u8) !void {
         const config_paths = try self.resolveConfigPaths(config_override);
         self.using_embedded_base_config = config_paths.use_embedded_base;
@@ -1044,21 +1053,21 @@ pub const App = struct {
         std.log.info("config: command_timing={}", .{self.config.command_timing});
         cmd_ipc.syncCommandTimingEnv(self);
 
-        var runtime = try GhosttyRuntime.init(self.allocator, null);
-        errdefer runtime.deinit();
-        _ = runtime.setSysUserdata(null);
-        _ = runtime.setSysDecodePng(hollow_decode_png);
+        const runtime = try self.initTerminalRuntime();
+        errdefer {
+            runtime.deinit();
+            self.ghostty = null;
+        }
 
         var mux = Mux.init(self.allocator);
         mux.host_context = self;
         mux.host_wake = .{ .context = self, .callback = signalExternalWake };
-        errdefer mux.deinit(&runtime);
+        errdefer mux.deinit(runtime);
 
         cmd_ipc.startCommandTransport(self);
         const cbs = terminal_callbacks.terminalCallbacks();
-        try mux.bootstrapSingle(&runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
+        try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
-        self.ghostty = runtime;
         self.mux = mux;
         htp.bindHtpHandlers(self);
         self.renderer = Backend.init(self.allocator, self.config);
@@ -1129,6 +1138,7 @@ pub const App = struct {
             .get_pane_cwd = lua_callbacks.luaGetPaneCwdCallback,
             .get_pane_text = lua_callbacks.luaGetPaneTextCallback,
             .get_pane_foreground_process = lua_callbacks.luaGetPaneForegroundProcessCallback,
+            .get_pane_program_status = lua_callbacks.luaGetPaneProgramStatusCallback,
             .get_pane_rows = lua_callbacks.luaGetPaneRowsCallback,
             .get_pane_cols = lua_callbacks.luaGetPaneColsCallback,
             .get_pane_x = lua_callbacks.luaGetPaneXCallback,
@@ -1495,6 +1505,10 @@ pub const App = struct {
     }
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
+        if (previous != current) {
+            if (previous) |pane| pane.program_status.setFocused(false);
+        }
+        if (current) |pane| pane.program_status.setFocused(true);
         self.invalidateFocusedPaneCache(previous, current);
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
@@ -2304,6 +2318,7 @@ pub const App = struct {
             var total_encoder_sync_ns: i128 = 0;
             while (panes.next()) |pane| {
                 const pane_is_active = active_pane == pane;
+                pane.program_status.setFocused(pane_is_active);
                 const active_screen_before = pane.active_screen;
                 const pane_is_visible = for (visible) |leaf| {
                     if (leaf.pane == pane) break true;
@@ -2331,6 +2346,8 @@ pub const App = struct {
                     background_budget.timeQuota()
                 else
                     0;
+                pane.synchronized_output_enabled = self.config.synchronized_output;
+                if (!self.config.synchronized_output) pane.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
@@ -2340,35 +2357,8 @@ pub const App = struct {
                     background_budget.consume(pty_bytes_read, io.nanoTimestamp() - poll_start_ns);
                 }
                 const sync_now_ns = io.nanoTimestamp();
-                const sync_mode_active = self.config.synchronized_output and
-                    runtime.terminalMode(pane.terminal, .synchronized_output);
-                if (sync_mode_active) {
-                    if (!pane.synchronized_output_active) {
-                        pane.synchronized_output_active = true;
-                        pane.synchronized_output_started_ns = sync_now_ns;
-                        if (self.config.debug_terminal_trace) {
-                            std.log.info("terminal-trace synchronized-output pane={x} state=begin", .{@intFromPtr(pane)});
-                        }
-                    }
-                    // Active PTY output means synchronized rendering is making
-                    // progress, so extend watchdog deadline for long batches.
-                    if (pane.pty_received_data) pane.synchronized_output_started_ns = sync_now_ns;
-                    if (sync_now_ns - pane.synchronized_output_started_ns >= SYNCHRONIZED_OUTPUT_TIMEOUT_NS) {
-                        std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
-                        _ = runtime.setTerminalMode(pane.terminal, .synchronized_output, false);
-                        pane.synchronized_output_active = false;
-                        pane.synchronized_output_started_ns = 0;
-                        pane.render_dirty = .full;
-                    }
-                } else {
-                    if (pane.synchronized_output_active) {
-                        if (self.config.debug_terminal_trace) {
-                            std.log.info("terminal-trace synchronized-output pane={x} state=end", .{@intFromPtr(pane)});
-                        }
-                        pane.render_dirty = .full;
-                    }
-                    pane.synchronized_output_active = false;
-                    pane.synchronized_output_started_ns = 0;
+                if (pane.expireRenderHold(runtime, sync_now_ns, SYNCHRONIZED_OUTPUT_TIMEOUT_NS)) {
+                    std.log.warn("pane synchronized output timeout pane={x}; forcing render", .{@intFromPtr(pane)});
                 }
                 if (pane.synchronized_output_active) {
                     const sync_deadline_ns = pane.synchronized_output_started_ns + SYNCHRONIZED_OUTPUT_TIMEOUT_NS;
@@ -2386,6 +2376,13 @@ pub const App = struct {
                     else
                         0;
                     self.requestLayoutResize(false);
+                }
+                if (!pane.hasLiveChild()) pane.program_status.childExited(self.allocator);
+                if (pane.program_status.dirty) {
+                    pane.program_status.dirty = false;
+                    automation_changed = true;
+                    self.topbar_cache_dirty = true;
+                    self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = @intFromPtr(pane) });
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
                 const had_notifications = pane.osc99_notifications.hasNotifications();
@@ -2501,7 +2498,7 @@ pub const App = struct {
                 const idle_poll_ns: i128 = if (is_active) 33_000_000 else 100_000_000;
                 const pane_idle_deadline_ns = pane.last_render_state_update_ns + idle_poll_ns;
                 const needs_update = if (pane.synchronized_output_active)
-                    pane.pty_received_data
+                    pane.render_state_fresh
                 else
                     pane.pty_received_data or
                         pane.render_dirty != .false_value or
@@ -2763,6 +2760,7 @@ pub const App = struct {
                         actual_right,
                     );
                     leaf.pane.render_state_ready = true;
+                    leaf.pane.terminal_output_ready = true;
                 }
             } else {
                 // Fallback: no split tree yet, resize all panes in this tab to
@@ -2801,6 +2799,7 @@ pub const App = struct {
                         actual_right,
                     );
                     pane.render_state_ready = true;
+                    pane.terminal_output_ready = true;
                 }
             }
             if (self.debug_split_trace_frames > 0) self.debug_split_trace_frames -|= 1;
@@ -2830,6 +2829,30 @@ fn pathExists(path: []const u8) bool {
     std.Io.Dir.cwd().access(io.get(), path, .{}) catch return false;
     return true;
 }
+test "initial pane callbacks retain the App-owned runtime after initialization returns" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+
+    var pane = pane_mod.Pane.init(std.testing.allocator);
+    const runtime = try app.initTerminalRuntime();
+    try std.testing.expectEqual(@intFromPtr(&app.ghostty.?), @intFromPtr(runtime));
+    pane.terminal_runtime = runtime;
+    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    defer pane.deinit(&app.ghostty.?);
+    pane.render_state = try runtime.createRenderState();
+    runtime.setTerminalUserdata(pane.terminal, &pane);
+    runtime.registerCallbacks(pane.terminal, terminal_callbacks.terminalCallbacks());
+
+    // Initial shell output invokes both callbacks after startup's stack unwinds.
+    app.ghostty.?.terminalWrite(pane.terminal, "\x1b]7;file:///startup\x07A\x1b[?2026hB");
+    try std.testing.expect(pane.refreshCwd());
+    try std.testing.expectEqualStrings("/startup", pane.cwd);
+    try std.testing.expect(pane.synchronized_output_active);
+    try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.render_state).?.x);
+}
+
 test "viewport iterator row mapping follows platform row order" {
     if (builtin.os.tag == .linux) {
         try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(0, 5));

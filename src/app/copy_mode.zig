@@ -790,17 +790,16 @@ pub fn pruneCopyModeIfInvalid(self: *App) void {
 pub fn handlePromptJump(self: *App, direction: PromptJumpDir) void {
     const pane = self.activePane() orelse return;
     const runtime = if (self.ghostty) |*rt| rt else return;
-    const scrollbar = scroll.refreshPaneScrollbar(self, runtime, pane);
-    const total: usize = @intCast(scrollbar.total);
-    if (total == 0) return;
-    const visible = @max(@as(usize, 1), @as(usize, pane.rows));
-    const current_top: usize = @intCast(scroll.scrollbarTopRow(scrollbar));
-    const start_row = switch (direction) {
-        .next => current_top +| visible,
-        .prev => current_top -| 1,
-    };
-    const target_row = findPromptJumpTarget(.{ .live = .{ .runtime = runtime, .terminal = pane.terminal } }, direction, start_row, total) orelse return;
-    scroll.scrollPaneViewportToRow(self, pane, target_row);
+    // Native navigation is relative to viewport top and handles continuation
+    // prompts and the active-area boundary. Copy-mode cursor movement is separate.
+    runtime.terminalScrollPrompt(pane.terminal, if (direction == .prev) -1 else 1);
+    pane.render_dirty = .full;
+    pane.viewport_scroll_pending = true;
+    pane.render_state_fresh = false;
+    pane.last_render_state_update_ns = 0;
+    pane.pty_received_data = true;
+    self.scroll_accum = 0;
+    _ = scroll.refreshPaneScrollbar(self, runtime, pane);
 }
 
 fn isPromptRow(runtime: *ghostty.Runtime, terminal: ?*anyopaque, row: u64) bool {

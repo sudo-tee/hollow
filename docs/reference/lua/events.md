@@ -37,6 +37,7 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | `term:pane_layout_changed` | `{ pane }` |
 | `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
 | `term:foreground_process_changed` | `{ pane, old_process, new_process }` |
+| `term:program_status_changed` | `{ pane }` (`pane.program_status` contains the current OSC 7501 records) |
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
 | `term:notification` | `{ pane, title, message, level, id?, ttl_ms?, close }` |
 | `key:unhandled` | `{ key, mods }` |

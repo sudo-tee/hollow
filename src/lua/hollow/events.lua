@@ -141,6 +141,7 @@ function M.setup(hollow, state, term_helpers)
     ["term:title_changed"] = adapt_title_changed,
     ["term:cwd_changed"] = adapt_cwd_changed,
     ["term:foreground_process_changed"] = adapt_foreground_changed,
+    ["term:program_status_changed"] = adapt_pane_focused,
     ["term:bell"] = adapt_pane_focused,
     ["term:notification"] = adapt_term_notification,
     ["window:resized"] = adapt_window_resized,

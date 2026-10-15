@@ -1,6 +1,5 @@
 const std = @import("std");
 const io = @import("io.zig");
-const c = @import("sokol_c");
 const command_ipc = @import("ipc.zig");
 const Config = @import("config.zig").Config;
 const fastmem = @import("fastmem.zig");
@@ -22,15 +21,11 @@ const PTY_SANITIZE_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE + PTY_PENDING_SEQUE
 
 const is_windows = @import("builtin").os.tag == .windows;
 
-const OSC52_PREFIX = "\x1b]52;";
-const OSC7_PREFIX = "\x1b]7;";
 const OSC9_PREFIX = "\x1b]9;";
 const OSC99_PREFIX = "\x1b]99;";
 const OSC777_PREFIX = "\x1b]777;";
 const OSC1337_PREFIX = "\x1b]1337;";
 const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
-const OSC52_SEQUENCE_MAX = 65536;
-const OSC52_DECODED_MAX = OSC52_SEQUENCE_MAX / 4 * 3 + 4;
 const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
 const HTP_OSC_LOG_MAX = 8192;
 
@@ -104,8 +99,6 @@ const CombinedInput = struct {
 const OscPrefixMatch = enum {
     none,
     partial,
-    osc52,
-    osc7,
     osc9,
     osc1337,
     osc99,
@@ -120,8 +113,6 @@ const NotificationOscKind = enum {
 };
 
 fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
-    if (std.mem.eql(u8, prefix, OSC52_PREFIX)) return .osc52;
-    if (std.mem.eql(u8, prefix, OSC7_PREFIX)) return .osc7;
     if (std.mem.eql(u8, prefix, OSC99_PREFIX)) return .osc99;
     if (std.mem.eql(u8, prefix, OSC9_PREFIX)) return .osc9;
     if (std.mem.eql(u8, prefix, OSC777_PREFIX)) return .osc777;
@@ -132,9 +123,7 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
     {
         return .osc1337;
     }
-    if (std.mem.startsWith(u8, OSC52_PREFIX, prefix) or
-        std.mem.startsWith(u8, OSC7_PREFIX, prefix) or
-        std.mem.startsWith(u8, OSC99_PREFIX, prefix) or
+    if (std.mem.startsWith(u8, OSC99_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC9_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC777_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
@@ -153,6 +142,7 @@ pub const Pane = struct {
     host_wake: @import("pty/wake.zig").Wake = .{},
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
+    terminal_runtime: ?*GhosttyRuntime = null,
     render_state: ?*anyopaque = null,
     row_iterator: ?*anyopaque = null,
     foreground_process: ?[]u8 = null,
@@ -163,12 +153,17 @@ pub const Pane = struct {
     mouse_event: ?*anyopaque = null,
     title: []u8 = &.{},
     cwd: []u8 = &.{},
+    pending_cwd: ?[]u8 = null,
+    program_status: @import("term/program_status.zig").State = .{},
     /// Actual terminal dimensions in characters (updated on every resize).
     cols: u16 = 0,
     rows: u16 = 0,
     /// Set to true after the first updateRenderState call so the renderer
     /// can skip rendering panes whose ghostty state is not yet initialized.
     render_state_ready: bool = false,
+    /// First layout completed. Unlike rendering helpers, parser readiness
+    /// survives tab/workspace switches so background OSC callbacks stay live.
+    terminal_output_ready: bool = false,
     /// Dirty level set by tickPanes after updateRenderState computes the latest
     /// render-state dirty result for the pane.
     ///   .false_value  → nothing changed, skip re-render entirely
@@ -185,12 +180,6 @@ pub const Pane = struct {
     pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = [_]u8{0} ** PTY_PENDING_SEQUENCE_MAX,
     pty_pending_len: usize = 0,
     pty_sanitize_buf: *[PTY_SANITIZE_BUFFER_SIZE]u8 = &shared_pty_sanitize_buf,
-    osc52_prefix_len: usize = 0,
-    osc52_active: bool = false,
-    osc52_st_pending: bool = false,
-    osc52_overflow: bool = false,
-    osc52_buf: []u8 = &.{},
-    osc52_len: usize = 0,
     /// Shared bounded capture for OSC 9, OSC 99, and OSC 777 notifications.
     osc99_active: bool = false,
     osc99_st_pending: bool = false,
@@ -200,10 +189,6 @@ pub const Pane = struct {
     osc99_notifications: osc99.State = .{},
     osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = [_]u8{0} ** HTP_OSC_PREFIX.len,
     osc_prefix_len: usize = 0,
-    osc7_active: bool = false,
-    osc7_st_pending: bool = false,
-    osc7_buf: [1024]u8 = [_]u8{0} ** 1024,
-    osc7_len: usize = 0,
     osc1337_active: bool = false,
     osc1337_st_pending: bool = false,
     osc1337_overflow: bool = false,
@@ -234,6 +219,7 @@ pub const Pane = struct {
     /// True while DEC synchronized output is active for this terminal. The
     /// parser keeps advancing; the renderer holds the last presented frame.
     synchronized_output_active: bool = false,
+    synchronized_output_enabled: bool = true,
     /// Monotonic start time for the synchronized-output watchdog.
     synchronized_output_started_ns: i128 = 0,
     /// Last known mouse tracking mode (from terminal_get).  Logged on change.
@@ -310,12 +296,13 @@ pub const Pane = struct {
     }
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
+        self.program_status.deinit(self.allocator);
+        if (self.pending_cwd) |value| self.allocator.free(value);
         self.boot_output.deinit(self.allocator);
         self.osc1337_buf.deinit(self.allocator);
         self.osc99_buf.deinit(self.allocator);
         self.osc99_notifications.deinit(self.allocator);
         self.pending_terminal_inject.deinit(self.allocator);
-        if (self.osc52_buf.len > 0) self.allocator.free(self.osc52_buf);
         if (self.htp_osc_buf.len > 0) self.allocator.free(self.htp_osc_buf);
         runtime.freeMouseEvent(self.mouse_event);
         runtime.freeMouseEncoder(self.mouse_encoder);
@@ -352,6 +339,8 @@ pub const Pane = struct {
         );
 
         runtime.setTerminalUserdata(terminal, self);
+        self.terminal_runtime = runtime;
+        self.synchronized_output_enabled = cfg.synchronized_output;
 
         runtime.setKittyImageStorageLimit(terminal, 64 * 1024 * 1024);
         runtime.setKittyImageMediumFile(terminal, true);
@@ -558,7 +547,7 @@ pub const Pane = struct {
 
             var wrote_terminal = false;
             var can_read = true;
-            if (self.render_state_ready) {
+            if (self.terminal_output_ready) {
                 can_read = self.writeBufferedTerminalOutput(runtime, &self.boot_output, deadline_ns, debug_overlay, &wrote_terminal);
                 if (can_read) can_read = self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal);
             }
@@ -567,7 +556,7 @@ pub const Pane = struct {
             const read_chunk_bytes = @min(parse_chunk_bytes, PTY_READ_BUFFER_SIZE);
             var read_loops: usize = 0;
             while (can_read and read_chunk_bytes > 0 and budget_ns > 0 and io.nanoTimestamp() < deadline_ns and read_loops < max_read_loops and total_read < read_limit_total and
-                (self.render_state_ready or self.boot_output.items.len +| self.pending_terminal_inject.items.len < PTY_DEFERRED_OUTPUT_LIMIT - PTY_PRESSURE_PARSE_CHUNK_BYTES))
+                (self.terminal_output_ready or self.boot_output.items.len +| self.pending_terminal_inject.items.len < PTY_DEFERRED_OUTPUT_LIMIT - PTY_PRESSURE_PARSE_CHUNK_BYTES))
             {
                 const read_limit = @min(read_chunk_bytes, read_limit_total - total_read);
                 const read_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
@@ -587,7 +576,7 @@ pub const Pane = struct {
                 const pty_bytes = self.sanitizePtyOutput(self.read_buf[0..count]);
                 if (debug_overlay) self.last_sanitize_ns += io.nanoTimestamp() - sanitize_start_ns;
                 if (pty_bytes.len > 0) {
-                    if (self.render_state_ready) {
+                    if (self.terminal_output_ready) {
                         self.writeTerminalChunk(runtime, pty_bytes, debug_overlay);
                         wrote_terminal = true;
                     } else {
@@ -595,7 +584,7 @@ pub const Pane = struct {
                     }
                 }
                 if (self.pending_terminal_inject.items.len > 0) {
-                    if (self.render_state_ready) {
+                    if (self.terminal_output_ready) {
                         if (!self.writeBufferedTerminalOutput(runtime, &self.pending_terminal_inject, deadline_ns, debug_overlay, &wrote_terminal)) {
                             break;
                         }
@@ -642,7 +631,7 @@ pub const Pane = struct {
             // idle tick still crosses the Ghostty FFI boundary and adds up.
             // Fresh terminal mode changes arrive via PTY output, and resize/
             // focus paths already perform their own explicit syncs.
-            if (self.render_state_ready and wrote_terminal) {
+            if (self.terminal_output_ready and wrote_terminal) {
                 const encoder_sync_start_ns = if (debug_overlay) io.nanoTimestamp() else 0;
                 runtime.syncKeyEncoder(self.key_encoder, self.terminal);
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
@@ -666,6 +655,7 @@ pub const Pane = struct {
 
                 if (debug_overlay) self.last_encoder_sync_ns += io.nanoTimestamp() - encoder_sync_start_ns;
 
+                if (!self.render_state_ready or self.synchronized_output_active) return total_read;
                 const now_ns = io.nanoTimestamp();
                 runtime.clearRenderStateDirty(self.render_state);
                 runtime.updateRenderState(self.render_state, self.terminal) catch |err| {
@@ -720,6 +710,17 @@ pub const Pane = struct {
                 std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
             };
         }
+    }
+
+    pub fn expireRenderHold(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128, timeout_ns: i128) bool {
+        if (!self.synchronized_output_active or now_ns - self.synchronized_output_started_ns < timeout_ns) return false;
+        // Setting a mode through the API intentionally does not call render_hold.
+        _ = runtime.setTerminalMode(self.terminal, .synchronized_output, false);
+        self.synchronized_output_active = false;
+        self.synchronized_output_started_ns = 0;
+        self.render_state_fresh = false;
+        self.render_dirty = .full;
+        return true;
     }
 
     pub fn sendUserText(self: *Pane, text: []const u8) void {
@@ -782,6 +783,14 @@ pub const Pane = struct {
     }
 
     pub fn refreshCwd(self: *Pane) bool {
+        if (self.pending_cwd) |cwd| {
+            self.pending_cwd = null;
+            defer self.allocator.free(cwd);
+            const changed = !std.mem.eql(u8, self.cwd, cwd);
+            self.setCwd(cwd);
+            self.cwd_dirty = false;
+            return changed;
+        }
         var changed = false;
         if (self.cwd_dirty) {
             changed = true;
@@ -1157,35 +1166,6 @@ pub const Pane = struct {
         while (read_idx < input.len()) {
             const byte = input.byteAt(read_idx);
 
-            if (self.osc52_active) {
-                if (self.osc52_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc52Sequence();
-                    } else {
-                        self.appendOsc52Byte(0x1b);
-                        self.appendOsc52Byte(byte);
-                    }
-                    self.osc52_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc52Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc52_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc52Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
             if (self.osc99_active) {
                 if (self.osc99_st_pending) {
                     if (byte == '\\') {
@@ -1211,35 +1191,6 @@ pub const Pane = struct {
                 }
 
                 self.appendOsc99Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.osc7_active) {
-                if (self.osc7_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc7Sequence();
-                    } else {
-                        self.appendOsc7Byte(0x1b);
-                        self.appendOsc7Byte(byte);
-                    }
-                    self.osc7_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc7Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc7_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc7Byte(byte);
                 read_idx += 1;
                 continue;
             }
@@ -1316,21 +1267,6 @@ pub const Pane = struct {
 
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
                 switch (classifyOscPrefix(prefix)) {
-                    .osc52 => {
-                        self.osc52_active = true;
-                        self.osc52_st_pending = false;
-                        self.osc52_overflow = false;
-                        self.osc52_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc7 => {
-                        self.osc7_active = true;
-                        self.osc7_st_pending = false;
-                        self.osc7_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
                     .osc99 => {
                         self.beginNotificationOscSequence(.osc99);
                         self.osc_prefix_len = 0;
@@ -1447,7 +1383,7 @@ pub const Pane = struct {
         const disable = "\x1b[?9001l";
         var read_idx: usize = 0;
         var write_idx: usize = 0;
-        const has_active_filter = self.osc52_active or self.osc7_active or self.osc99_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
+        const has_active_filter = self.osc99_active or self.osc1337_active or self.htp_osc_active or self.osc_prefix_len > 0;
 
         self.pty_pending_len = 0;
 
@@ -1466,7 +1402,7 @@ pub const Pane = struct {
         }
 
         while (read_idx < bytes.len) {
-            if (!self.osc52_active and !self.osc7_active and !self.osc99_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
+            if (!self.osc99_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
                 const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
                     const span = bytes[read_idx..];
                     fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
@@ -1482,35 +1418,6 @@ pub const Pane = struct {
             }
 
             const byte = bytes[read_idx];
-
-            if (self.osc52_active) {
-                if (self.osc52_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc52Sequence();
-                    } else {
-                        self.appendOsc52Byte(0x1b);
-                        self.appendOsc52Byte(byte);
-                    }
-                    self.osc52_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc52Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc52_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc52Byte(byte);
-                read_idx += 1;
-                continue;
-            }
 
             if (self.osc99_active) {
                 if (self.osc99_st_pending) {
@@ -1537,35 +1444,6 @@ pub const Pane = struct {
                 }
 
                 self.appendOsc99Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.osc7_active) {
-                if (self.osc7_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc7Sequence();
-                    } else {
-                        self.appendOsc7Byte(0x1b);
-                        self.appendOsc7Byte(byte);
-                    }
-                    self.osc7_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc7Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc7_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc7Byte(byte);
                 read_idx += 1;
                 continue;
             }
@@ -1642,21 +1520,6 @@ pub const Pane = struct {
 
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
                 switch (classifyOscPrefix(prefix)) {
-                    .osc52 => {
-                        self.osc52_active = true;
-                        self.osc52_st_pending = false;
-                        self.osc52_overflow = false;
-                        self.osc52_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc7 => {
-                        self.osc7_active = true;
-                        self.osc7_st_pending = false;
-                        self.osc7_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
                     .osc99 => {
                         self.beginNotificationOscSequence(.osc99);
                         self.osc_prefix_len = 0;
@@ -1761,243 +1624,6 @@ pub const Pane = struct {
         return self.pty_sanitize_buf[0..write_idx];
     }
 
-    fn filterOsc52(self: *Pane, bytes: []const u8) usize {
-        var read_idx: usize = 0;
-        var write_idx: usize = 0;
-
-        while (read_idx < bytes.len) {
-            if (!self.osc52_active and !self.osc7_active and !self.osc1337_active and !self.htp_osc_active and self.osc_prefix_len == 0) {
-                const esc_idx = std.mem.indexOfScalarPos(u8, bytes, read_idx, 0x1b) orelse {
-                    const span = bytes[read_idx..];
-                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
-                    write_idx += span.len;
-                    break;
-                };
-                if (esc_idx > read_idx) {
-                    const span = bytes[read_idx..esc_idx];
-                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + span.len], span);
-                    write_idx += span.len;
-                    read_idx = esc_idx;
-                }
-            }
-
-            const byte = bytes[read_idx];
-
-            if (self.osc52_active) {
-                if (self.osc52_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc52Sequence();
-                    } else {
-                        self.appendOsc52Byte(0x1b);
-                        self.appendOsc52Byte(byte);
-                    }
-                    self.osc52_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc52Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc52_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc52Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.osc7_active) {
-                if (self.osc7_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc7Sequence();
-                    } else {
-                        self.appendOsc7Byte(0x1b);
-                        self.appendOsc7Byte(byte);
-                    }
-                    self.osc7_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc7Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc7_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc7Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.htp_osc_active) {
-                if (self.htp_osc_st_pending) {
-                    if (byte == '\\') {
-                        self.finishHtpOscSequence();
-                    } else {
-                        self.appendHtpOscByte(0x1b);
-                        self.appendHtpOscByte(byte);
-                    }
-                    self.htp_osc_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishHtpOscSequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.htp_osc_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendHtpOscByte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.osc1337_active) {
-                if (self.osc1337_st_pending) {
-                    if (byte == '\\') {
-                        self.finishOsc1337Sequence();
-                    } else {
-                        self.appendOsc1337Byte(0x1b);
-                        self.appendOsc1337Byte(byte);
-                    }
-                    self.osc1337_st_pending = false;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (byte == 0x07) {
-                    self.finishOsc1337Sequence();
-                    read_idx += 1;
-                    continue;
-                }
-                if (byte == 0x1b) {
-                    self.osc1337_st_pending = true;
-                    read_idx += 1;
-                    continue;
-                }
-
-                self.appendOsc1337Byte(byte);
-                read_idx += 1;
-                continue;
-            }
-
-            if (self.osc_prefix_len > 0 or byte == 0x1b) {
-                if (self.osc_prefix_len == 0 and byte == 0x1b) {
-                    self.osc_prefix_buf[0] = byte;
-                    self.osc_prefix_len = 1;
-                    read_idx += 1;
-                    continue;
-                }
-
-                if (self.osc_prefix_len < self.osc_prefix_buf.len) {
-                    self.osc_prefix_buf[self.osc_prefix_len] = byte;
-                    self.osc_prefix_len += 1;
-                    read_idx += 1;
-                } else {
-                    fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + self.osc_prefix_len], self.osc_prefix_buf[0..self.osc_prefix_len]);
-                    write_idx += self.osc_prefix_len;
-                    self.osc_prefix_len = 0;
-                    continue;
-                }
-
-                const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
-                switch (classifyOscPrefix(prefix)) {
-                    .osc52 => {
-                        self.osc52_active = true;
-                        self.osc52_st_pending = false;
-                        self.osc52_overflow = false;
-                        self.osc52_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc7 => {
-                        self.osc7_active = true;
-                        self.osc7_st_pending = false;
-                        self.osc7_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .htp => {
-                        self.htp_osc_active = true;
-                        self.htp_osc_st_pending = false;
-                        self.htp_osc_overflow = false;
-                        self.htp_osc_len = 0;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc1337 => {
-                        self.osc1337_active = true;
-                        self.osc1337_st_pending = false;
-                        self.osc1337_overflow = false;
-                        self.osc1337_buf.clearRetainingCapacity();
-                        if (prefix.len > OSC1337_PREFIX.len) {
-                            self.osc1337_buf.appendSlice(self.allocator, prefix[OSC1337_PREFIX.len..]) catch {
-                                self.osc1337_overflow = true;
-                            };
-                        }
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .partial => continue,
-                    .none => {
-                        fastmem.copy(u8, self.pty_sanitize_buf[write_idx .. write_idx + prefix.len], prefix);
-                        write_idx += prefix.len;
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                }
-            }
-
-            self.pty_sanitize_buf[write_idx] = byte;
-            write_idx += 1;
-            read_idx += 1;
-        }
-
-        return write_idx;
-    }
-
-    fn appendOsc52Byte(self: *Pane, byte: u8) void {
-        if (self.osc52_buf.len == 0) {
-            self.osc52_buf = self.allocator.alloc(u8, OSC52_SEQUENCE_MAX) catch {
-                self.osc52_overflow = true;
-                return;
-            };
-        }
-        if (self.osc52_len >= self.osc52_buf.len) {
-            self.osc52_overflow = true;
-            return;
-        }
-        self.osc52_buf[self.osc52_len] = byte;
-        self.osc52_len += 1;
-    }
-
-    fn appendOsc7Byte(self: *Pane, byte: u8) void {
-        if (self.osc7_len >= self.osc7_buf.len) {
-            // Overflow: just stop collecting, sequence will be terminated by BEL/ST
-            return;
-        }
-        self.osc7_buf[self.osc7_len] = byte;
-        self.osc7_len += 1;
-    }
-
     fn appendHtpOscByte(self: *Pane, byte: u8) void {
         if (self.htp_osc_buf.len == 0) {
             self.htp_osc_buf = self.allocator.alloc(u8, HTP_OSC_LOG_MAX) catch {
@@ -2039,25 +1665,6 @@ pub const Pane = struct {
         self.osc99_buf.append(self.allocator, byte) catch {
             self.osc99_overflow = true;
         };
-    }
-
-    fn finishOsc52Sequence(self: *Pane) void {
-        if (!self.osc52_overflow and self.osc52_len > 0) {
-            self.applyOsc52Clipboard(self.osc52_buf[0..self.osc52_len]);
-        }
-        self.osc52_active = false;
-        self.osc52_st_pending = false;
-        self.osc52_overflow = false;
-        self.osc52_len = 0;
-    }
-
-    fn finishOsc7Sequence(self: *Pane) void {
-        if (self.osc7_len > 0) {
-            self.applyOsc7Cwd(self.osc7_buf[0..self.osc7_len]);
-        }
-        self.osc7_active = false;
-        self.osc7_st_pending = false;
-        self.osc7_len = 0;
     }
 
     fn finishHtpOscSequence(self: *Pane) void {
@@ -2115,35 +1722,6 @@ pub const Pane = struct {
         self.queueSimpleOscNotification(payload[prefix.len..body_start], payload[body_start + 1 ..]);
     }
 
-    fn applyOsc52Clipboard(self: *Pane, payload: []const u8) void {
-        _ = self;
-        const sep = std.mem.indexOfScalar(u8, payload, ';') orelse return;
-        const data = payload[sep + 1 ..];
-        if (std.mem.eql(u8, data, "?")) return;
-
-        var decoded_buf: [OSC52_DECODED_MAX + 1]u8 = undefined;
-        const decoded = decodeOsc52Base64(data, decoded_buf[0..OSC52_DECODED_MAX]) catch return;
-
-        const nul_pos = std.mem.indexOfScalar(u8, decoded, 0) orelse decoded.len;
-        decoded_buf[nul_pos] = 0;
-        c.sapp_set_clipboard_string(@ptrCast(decoded_buf[0..nul_pos :0].ptr));
-    }
-
-    fn applyOsc7Cwd(self: *Pane, payload: []const u8) void {
-        var path = payload;
-        if (std.mem.startsWith(u8, path, "cwd;")) {
-            path = path[4..];
-        }
-        if (std.mem.startsWith(u8, path, "file://")) {
-            path = path[7..];
-            if (std.mem.indexOfScalar(u8, path, '/')) |idx| {
-                path = path[idx..];
-            }
-        }
-        self.setCwd(path);
-        self.cwd_dirty = true;
-    }
-
     fn applyOsc1337Sequence(self: *Pane, payload: []const u8) void {
         if (!std.mem.startsWith(u8, payload, "File=")) return;
 
@@ -2194,20 +1772,6 @@ fn parseOsc1337CellSize(value: []const u8) ?u32 {
     return std.fmt.parseInt(u32, trimmed, 10) catch null;
 }
 
-fn decodeOsc52Base64(data: []const u8, out: []u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, data, '=')) |_| {
-        const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(data);
-        if (decoded_len > out.len) return error.NoSpaceLeft;
-        try std.base64.standard.Decoder.decode(out[0..decoded_len], data);
-        return out[0..decoded_len];
-    }
-
-    const decoded_len = try std.base64.standard_no_pad.Decoder.calcSizeForSlice(data);
-    if (decoded_len > out.len) return error.NoSpaceLeft;
-    try std.base64.standard_no_pad.Decoder.decode(out[0..decoded_len], data);
-    return out[0..decoded_len];
-}
-
 fn isConEmuOsc9(payload: []const u8) bool {
     const separator = std.mem.indexOfScalar(u8, payload, ';') orelse return false;
     const command = payload[0..separator];
@@ -2252,6 +1816,55 @@ fn trailingAnsiPrefixLen(bytes: []const u8) usize {
     return 0;
 }
 
+test "background PTY parses blocked and error after rendering helpers are released" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var runtime = try GhosttyRuntime.init(a, null);
+    defer runtime.deinit();
+    var pane = Pane.init(a);
+    pane.terminal_runtime = &runtime;
+    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    defer pane.deinit(&runtime);
+    runtime.setTerminalUserdata(pane.terminal, &pane);
+    runtime.registerCallbacks(pane.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
+    pane.pty = try @import("pty/pty.zig").spawn(a, "/bin/sh", 80, 24, null, null, .{
+        .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
+    }, .{});
+
+    const Wait = struct {
+        fn poll(p: *Pane, rt: *GhosttyRuntime, expected: ?@import("term/program_status.zig").StateKind) !void {
+            const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+            while (io.nanoTimestamp() < deadline) {
+                _ = try p.pollPty(rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+                if (expected) |state| {
+                    if (p.program_status.records.items.len == 1 and p.program_status.records.items[0].state == state) return;
+                } else if (p.boot_output.items.len > 0) return;
+                try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+            }
+            return error.TestUnexpectedResult;
+        }
+    };
+    // Preserve startup deferral until the initial layout completes.
+    try Wait.poll(&pane, &runtime, null);
+    try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
+    pane.recreateRenderHelpers(&runtime);
+    pane.render_state_ready = true;
+    pane.terminal_output_ready = true;
+    try Wait.poll(&pane, &runtime, .working);
+
+    // This is the resource transition used when switching tabs/workspaces.
+    pane.releaseRenderHelpers(&runtime);
+    try std.testing.expect(!pane.render_state_ready);
+    pane.sendText("\n");
+    try Wait.poll(&pane, &runtime, .blocked);
+    try std.testing.expectEqual(@import("term/program_status.zig").BlockKind.permission, pane.program_status.records.items[0].kind);
+    pane.sendText("\n");
+    try Wait.poll(&pane, &runtime, .failure);
+    try std.testing.expectEqual(@intFromEnum(ghostty.TerminalScreen.alternate), pane.active_screen);
+    try std.testing.expect(!pane.hasRenderHelpers());
+    try std.testing.expectEqual(@as(usize, 0), pane.boot_output.items.len);
+}
+
 test "sanitizePtyOutput windows strips split 9001 mode sequence" {
     var pane = Pane.init(std.testing.allocator);
     defer if (pane.cwd.len > 0) std.testing.allocator.free(pane.cwd);
@@ -2292,20 +1905,18 @@ test "sanitizePtyOutput windows preserves ordinary CSI output in place" {
     try std.testing.expectEqual(@intFromPtr(&input), @intFromPtr(output.ptr));
 }
 
-test "sanitizePtyOutput preserves split OSC 7 state across chunks" {
+test "sanitizePtyOutput forwards split OSC 7 to Ghostty" {
     var pane = Pane.init(std.testing.allocator);
     defer if (pane.cwd.len > 0) std.testing.allocator.free(pane.cwd);
 
     var part1 = [_]u8{ 0x1b, ']', '7', ';', 'f', 'i', 'l', 'e', ':', '/', '/' };
     const out1 = pane.sanitizePtyOutputForPlatform(part1[0..], false);
-    try std.testing.expectEqual(@as(usize, 0), out1.len);
-    try std.testing.expect(pane.osc7_active);
+    try std.testing.expectEqualStrings(&part1, out1);
 
     var part2 = [_]u8{ '/', 't', 'm', 'p', 0x07, 'Z' };
     const out2 = pane.sanitizePtyOutputForPlatform(part2[0..], false);
-    try std.testing.expectEqualStrings("Z", out2);
-    try std.testing.expectEqualStrings("/tmp", pane.cwd);
-    try std.testing.expect(pane.cwd_dirty);
+    try std.testing.expectEqualStrings(&part2, out2);
+    try std.testing.expect(!pane.cwd_dirty);
 }
 
 test "sanitizePtyOutput captures split OSC 99 notification packets" {
