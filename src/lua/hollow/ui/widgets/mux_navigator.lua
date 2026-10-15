@@ -1,4 +1,5 @@
 local color = require("hollow.color")
+local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
@@ -12,13 +13,6 @@ ui.mux_navigator = ui.mux_navigator or {}
 local DEFAULT_TOTAL_ROWS = 30
 local DEFAULT_WIDTH = 100
 local FILTER_ORDER = { "all", "pane_bell" }
-
--- ▶ collapsed / ▼ expanded
-local ICON_COLLAPSED = "\226\150\182"
-local ICON_EXPANDED = "\226\150\188"
-local ICON_BELL = "\226\151\143 "
-local ICON_PANE_ACTIVE = "\226\151\143 "
-local ICON_PANE_INACTIVE = "\226\151\139 "
 
 local FILTERS = {
   all = {
@@ -296,12 +290,12 @@ function ui.mux_navigator.open(opts)
             local prefix_fg =
               util.state_value(selected, hovered, theme.selected_fg, theme.title, base_prefix_fg)
             local branch = row.kind == "pane" and ""
-              or (collapsed[row.key] and ICON_COLLAPSED or ICON_EXPANDED) .. " "
+              or (collapsed[row.key] and icons.collapsed or icons.expanded) .. " "
             local indent = string.rep("  ", row.depth)
             local pane_attention = row.kind == "pane"
               and program_status.pane_has_attention(row.item)
             local marker = row.kind == "pane"
-                and (pane_attention and ICON_BELL or (row.item.is_focused and ICON_PANE_ACTIVE or ICON_PANE_INACTIVE))
+                and (pane_attention and icons.bell or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
               or ""
             local marker_fg = row.kind == "pane"
                 and (pane_attention and theme.notify_levels.warn or (row.item.is_focused and theme.notify_levels.success or theme.muted))
@@ -380,7 +374,7 @@ function ui.mux_navigator.open(opts)
       search_mode and ui.group(filter.render(theme))
         or ui.text("search panes", { fg = theme.muted }),
       ui.spacer(),
-      ui.text(filter_id == "pane_bell" and ICON_BELL or "  ", {
+      ui.text(filter_id == "pane_bell" and (icons.bell .. " ") or "  ", {
         fg = filter_id == "pane_bell" and theme.notify_levels.warn or theme.muted,
       }),
       ui.text(pane_filter.label, { fg = theme.muted }),

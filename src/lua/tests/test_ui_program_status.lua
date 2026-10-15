@@ -145,7 +145,7 @@ describe("program status in navigation overlays", function()
     "acknowledges picker bells without losing badges, preserves real bells, and re-arms",
     function()
       hollow.ui.mux_navigator.open({ max_height = 20 })
-      assert.is_truthy(overlay_text(hollow):find("● Pane 1 [permission]", 1, true))
+      assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 [permission]", 1, true))
       blocked[1].attention = false
       failed[1].attention = false
       hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
@@ -262,11 +262,11 @@ describe("program status in navigation overlays", function()
     assert.equals("blocked", snapshots[2].tabs[1].panes[1].program_status[1].state)
     hollow.ui.mux_navigator.open({ max_height = 20 })
     assert.is_truthy(overlay_text(hollow):find("background [permission]", 1, true))
-    assert.is_truthy(overlay_text(hollow):find("● Pane 1 [permission]", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 [permission]", 1, true))
     blocked[1] = { state = "working", progress = 80 }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
     assert.is_truthy(overlay_text(hollow):find("background [working 80%]", 1, true))
-    assert.is_nil(overlay_text(hollow):find("● Pane 1 [working", 1, true))
+    assert.is_nil(overlay_text(hollow):find("󰂚 Pane 1 [working", 1, true))
     hollow.ui.overlay.clear()
     hollow.ui.workspace.open_switcher()
     assert.is_truthy(overlay_text(hollow):find("[working 80%]", 1, true))

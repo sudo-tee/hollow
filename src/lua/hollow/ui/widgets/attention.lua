@@ -1,5 +1,6 @@
 local hollow = _G.hollow
 local ui = hollow.ui
+local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local theme_api = require("hollow.theme")
 
@@ -24,7 +25,7 @@ function M.topbar_button()
     id = "attention-button",
     render = function()
       if has_attention_anywhere() then
-        return ui.span("󰂚 ", {
+        return ui.span(icons.bell .. " ", {
           fg = theme_api.resolve_widget("select").notify_levels.warn,
           bold = true,
         })

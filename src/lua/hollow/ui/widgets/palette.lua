@@ -1,3 +1,4 @@
+local icons = require("hollow.ui.icons")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -29,9 +30,6 @@ end
 local MARKER_SELECTED = "> "
 local MARKER_HOVERED = "\226\150\142 " -- ▎
 local MARKER_NONE = "  "
--- ▶ collapsed / ▼ expanded
-local ICON_COLLAPSED = "\226\150\182"
-local ICON_EXPANDED = "\226\150\188"
 
 local function marker(is_selected, is_hovered, indent)
   return (indent or "")
@@ -239,7 +237,7 @@ local function render_section_header(
   is_collapsed,
   row_options
 )
-  local arrow = is_collapsed and ICON_COLLAPSED or ICON_EXPANDED
+  local arrow = is_collapsed and icons.collapsed or icons.expanded
   return ui.row(
     {
       ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {

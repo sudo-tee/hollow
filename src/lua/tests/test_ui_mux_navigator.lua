@@ -20,7 +20,8 @@ describe("UI mux navigator test suite", function()
     local mux_overlay
     local mux_overlay_text = ""
     local mux_theme
-    local bell_marker = string.char(226, 151, 143) .. " "
+    local bell_marker = "󰂚 "
+    local bell_marker_count = 0
     local saw_yellow_bell = false
     local saw_green_process = false
     local cwd_detail_fg = nil
@@ -42,6 +43,7 @@ describe("UI mux navigator test suite", function()
           mux_overlay_text = mux_overlay_text .. (segment.text or "")
           if segment.text == bell_marker and segment.fg == mux_theme.notify_levels.warn then
             saw_yellow_bell = true
+            bell_marker_count = bell_marker_count + 1
           end
           if segment.text == ": zig build" and segment.fg == mux_theme.notify_levels.success then
             saw_green_process = true
@@ -86,6 +88,11 @@ describe("UI mux navigator test suite", function()
 
     it("keeps bell markers yellow and processes green", function()
       harness.assert_true(saw_yellow_bell, "mux navigator should keep bell markers yellow")
+      harness.assert_equal(
+        bell_marker_count,
+        2,
+        "mux navigator should use the bell icon for both the attention filter and pane marker"
+      )
       harness.assert_true(
         saw_green_process,
         "mux navigator should color foreground processes green"

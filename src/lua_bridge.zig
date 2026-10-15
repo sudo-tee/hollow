@@ -139,6 +139,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.keymap", .source = @embedFile("lua/hollow/keymap.lua") },
     .{ .name = "hollow.plugins", .source = @embedFile("lua/hollow/plugins/init.lua") },
     .{ .name = "hollow.ui.shared", .source = @embedFile("lua/hollow/ui/shared.lua") },
+    .{ .name = "hollow.ui.icons", .source = @embedFile("lua/hollow/ui/icons.lua") },
     .{ .name = "hollow.ui.primitives", .source = @embedFile("lua/hollow/ui/primitives.lua") },
     .{ .name = "hollow.ui.widgets.core", .source = @embedFile("lua/hollow/ui/widgets/core.lua") },
     .{ .name = "hollow.ui.widgets.bars", .source = @embedFile("lua/hollow/ui/widgets/bars/init.lua") },

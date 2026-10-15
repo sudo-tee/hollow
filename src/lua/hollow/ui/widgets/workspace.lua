@@ -1,6 +1,7 @@
 local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
 local format = require("hollow.ui.widgets.format")
+local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
@@ -17,8 +18,6 @@ ui.workspace = ui.workspace or {}
 local DEFAULT_PROMPT = "Workspaces"
 local DEFAULT_SELECT_WIDTH = 96
 local DEFAULT_SELECT_MAX_HEIGHT = 24
-local ACTIVE_WORKSPACE_MARKER = "•"
-local BELL_WORKSPACE_MARKER = "󰂚"
 local DEFAULT_STATUS_COLUMN_WIDTH = 2
 local DEFAULT_NAME_COLUMN_WIDTH = 24
 local DEFAULT_COLUMN_GAP = 2
@@ -103,8 +102,8 @@ local function default_format_item(workspace)
 
   return format.columns({
     {
-      text = attention and BELL_WORKSPACE_MARKER
-        or (workspace.is_active and ACTIVE_WORKSPACE_MARKER or " "),
+      text = attention and icons.bell
+        or (workspace.is_active and icons.workspace_active or " "),
       width = status_width,
       style = {
         fg = attention and palette.bell or (workspace.is_active and palette.open or palette.subtle),
