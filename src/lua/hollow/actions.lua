@@ -668,7 +668,7 @@ function M.setup(hollow, host_api)
         title = "Attention",
       })
     end,
-    desc = "Jump to panes with pending attention (bells)",
+    desc = "Jump to panes with pending attention (bells or status)",
     category = "pane",
   })
 

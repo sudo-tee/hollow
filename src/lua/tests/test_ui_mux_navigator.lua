@@ -91,7 +91,7 @@ describe("UI mux navigator test suite", function()
         "mux navigator should color foreground processes green"
       )
       harness.assert_true(
-        mux_overlay_text:find("Pane bells", 1, true) ~= nil,
+        mux_overlay_text:find("Pane attention", 1, true) ~= nil,
         "mux navigator should show active filter"
       )
     end)

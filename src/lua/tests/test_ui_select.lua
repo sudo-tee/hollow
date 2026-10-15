@@ -15,6 +15,34 @@ describe("UI select test suite", function()
   end)
 
   describe("select ranking", function()
+    it("refreshes live items without resetting filter or selection", function()
+      local items = { "alpha one", "alpha two" }
+      local selected
+      hollow.ui.select.open({
+        items = function()
+          return items
+        end,
+        query = "alpha",
+        fuzzy = false,
+        actions = { {
+          fn = function(item)
+            selected = item
+          end,
+        } },
+      })
+      on_key("arrow_down", 0)
+      items = { "alpha one", "alpha updated" }
+      local overlay = hollow.ui._overlay_state()
+      local text = ""
+      for _, segment in ipairs(overlay[1].rows[6].segments) do
+        text = text .. (segment.text or "")
+      end
+      assert.is_truthy(text:find("> alpha updated", 1, true))
+      on_key("enter", 0)
+      assert.equals("alpha updated", selected)
+      hollow.ui.overlay.clear()
+    end)
+
     it("prioritizes full-label prefixes in fuzzy scores", function()
       harness.assert_true(
         shared.fuzzy_match_score("product-details", "pro")

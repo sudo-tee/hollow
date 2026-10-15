@@ -157,6 +157,7 @@
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
+---| "term:program_status_changed"
 ---| "term:bell"
 ---| "term:notification"
 ---| "key:unhandled"
@@ -198,6 +199,7 @@
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
 ---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }
+---@field ["term:program_status_changed"] { pane: HollowPane }
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
 ---@field ["key:unhandled"] { key: string, mods: string }
@@ -422,6 +424,16 @@
 ---@field backend? HollowSshBackend
 ---@field reuse? HollowSshReuse
 
+---@class HollowProgramStatus
+---@field id string Hierarchical record id; empty string denotes root.
+---@field state "idle"|"working"|"done"|"blocked"|"error"
+---@field kind "none"|"permission"|"question"|"auth"
+---@field progress? integer Percentage, when reported (0–100).
+---@field app string Effective application name, inherited from nearest ancestor.
+---@field title string Untrusted plain-text label, never markup.
+---@field message string Untrusted plain-text description, never markup.
+---@field attention boolean Unread blocked/error report received while pane inactive; focus acknowledges without deleting status.
+
 ---@class HollowPane
 ---@field id integer
 ---@field pid integer
@@ -437,6 +449,7 @@
 ---@field has_bell boolean
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field foreground_process string
+---@field program_status HollowProgramStatus[] OSC 7501 records, oldest updated first.
 ---@field tags string[]
 ---@field size HollowSize
 
@@ -992,7 +1005,7 @@
 ---@field score number
 
 ---@class HollowUiSelectOptions
----@field items any[]
+---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field search_text? fun(item: any): string|nil
 ---@field detail? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
@@ -1693,6 +1706,8 @@ function select.close() end
 ---@field is_active boolean
 ---@field is_open boolean
 ---@field has_bell boolean Any pane in this workspace has bell attention
+---@field program_status_badge? string Aggregated OSC 7501 badge for open workspaces, including trailing space.
+---@field program_status_attention? boolean True when any pane in an open workspace has unread blocked/error attention; independent of OSC bell state.
 ---@field open_index? integer
 ---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer

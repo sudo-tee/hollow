@@ -1,6 +1,7 @@
 local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
 local format = require("hollow.ui.widgets.format")
+local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
 local theme_api = require("hollow.theme")
@@ -63,6 +64,7 @@ local function derived_palette()
 end
 
 local function default_format_item(workspace)
+  local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local palette = derived_palette()
   local name_color = util.state_value(
@@ -77,7 +79,10 @@ local function default_format_item(workspace)
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
-  local cwd_width = math.max(12, total_width - status_width - name_width - (gap_width * 2) - 10)
+  local badge = workspace.program_status_badge or ""
+  local badge_width = #badge
+  local cwd_width =
+    math.max(12, total_width - status_width - name_width - badge_width - (gap_width * 2) - 10)
 
   local cwd_text = source.trim_string(workspace.cwd)
   if cwd_text == "" then
@@ -98,13 +103,12 @@ local function default_format_item(workspace)
 
   return format.columns({
     {
-      text = workspace.has_bell and BELL_WORKSPACE_MARKER
+      text = attention and BELL_WORKSPACE_MARKER
         or (workspace.is_active and ACTIVE_WORKSPACE_MARKER or " "),
       width = status_width,
       style = {
-        fg = workspace.has_bell and palette.bell
-          or (workspace.is_active and palette.open or palette.subtle),
-        bold = workspace.has_bell or workspace.is_active,
+        fg = attention and palette.bell or (workspace.is_active and palette.open or palette.subtle),
+        bold = attention or workspace.is_active,
       },
     },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
@@ -114,6 +118,7 @@ local function default_format_item(workspace)
       style = { fg = name_color, bold = workspace.is_active },
     },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
+    { text = badge, width = badge_width, style = { fg = palette.bell, bold = true } },
     { text = cwd_text, width = cwd_width, style = { fg = palette.subtle, bold = false } },
   })
 end
@@ -234,7 +239,20 @@ function ui.workspace.open_switcher(opts)
   local switcher = switcher_state()
   ui.select.open({
     prompt = switcher.prompt or DEFAULT_PROMPT,
-    items = items,
+    items = function()
+      -- Read live status without rescanning local/remote discovery sources.
+      local badges = {}
+      local attention = {}
+      for _, workspace in ipairs(hollow.term.mux_tree()) do
+        badges[workspace.id] = program_status.workspace_badge(workspace)
+        attention[workspace.id] = program_status.workspace_needs_attention(workspace)
+      end
+      for _, item in ipairs(items) do
+        item.program_status_badge = badges[item.workspace_id]
+        item.program_status_attention = attention[item.workspace_id]
+      end
+      return items
+    end,
     fuzzy = false,
     width = switcher.width or DEFAULT_SELECT_WIDTH,
     height = switcher.height,

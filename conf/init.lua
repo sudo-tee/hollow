@@ -134,9 +134,9 @@ hollow.ui.topbar.configure({
       end
 
       local function tab_bell()
-        return pane and pane.has_bell
+        return pane and require("hollow.program_status").pane_has_attention(pane)
           or hollow.tbl(tab.panes or {}):some(function(p)
-            return p.has_bell
+            return require("hollow.program_status").pane_has_attention(p)
           end)
       end
 
@@ -158,6 +158,11 @@ hollow.ui.topbar.configure({
           hover = { fg = ui.tab_bar.hover_tab.fg },
         }),
       }
+
+      local status = require("hollow.program_status").badge(tab.panes or { pane })
+      if status then
+        table.insert(spans, 2, hollow.ui.span(status, { bold = true }))
+      end
 
       if tab_bell() then
         table.insert(spans, 2, hollow.ui.span("● ", { fg = "#ffcc66", bold = true }))

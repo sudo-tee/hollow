@@ -1,5 +1,6 @@
 local hollow = _G.hollow
 local ui = hollow.ui
+local program_status = require("hollow.program_status")
 local theme_api = require("hollow.theme")
 
 local M = {}
@@ -9,7 +10,7 @@ local function has_attention_anywhere()
   for _, ws in ipairs(workspaces) do
     for _, tab in ipairs(ws.tabs or {}) do
       for _, pane in ipairs(tab.panes or {}) do
-        if pane.has_bell and not pane.is_focused then
+        if program_status.pane_has_attention(pane) and not pane.is_focused then
           return true
         end
       end

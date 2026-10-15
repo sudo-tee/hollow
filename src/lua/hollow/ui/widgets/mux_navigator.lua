@@ -1,7 +1,8 @@
+local color = require("hollow.color")
+local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
-local color = require("hollow.color")
 
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -27,9 +28,9 @@ local FILTERS = {
     end,
   },
   pane_bell = {
-    label = "Pane bells",
+    label = "Pane attention",
     matches = function(pane)
-      return pane.has_bell == true
+      return program_status.pane_has_attention(pane)
     end,
   },
 }
@@ -77,7 +78,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
           pane.title,
           pane.cwd,
           pane.domain,
-          pane.has_bell and "bell" or nil,
+          program_status.pane_has_attention(pane) and "bell" or nil,
           "pane",
           tab_searchable
         )
@@ -103,6 +104,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
         depth = 0,
         count = #workspace_panes,
         panes = workspace_panes,
+        status_badge = program_status.workspace_badge(workspace),
       }
       if searching or not collapsed[workspace_key] then
         for _, visible_tab in ipairs(visible_tabs) do
@@ -114,6 +116,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
             item = tab,
             depth = 1,
             panes = visible_tab.panes,
+            status_badge = program_status.badge(tab.panes),
           }
           if searching or not collapsed[tab_key] then
             for _, visible_pane in ipairs(visible_tab.panes) do
@@ -124,6 +127,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
                 item = pane,
                 index = visible_pane.index,
                 depth = 2,
+                status_badge = program_status.badge({ pane }),
               }
             end
           end
@@ -294,11 +298,13 @@ function ui.mux_navigator.open(opts)
             local branch = row.kind == "pane" and ""
               or (collapsed[row.key] and ICON_COLLAPSED or ICON_EXPANDED) .. " "
             local indent = string.rep("  ", row.depth)
+            local pane_attention = row.kind == "pane"
+              and program_status.pane_has_attention(row.item)
             local marker = row.kind == "pane"
-                and (row.item.has_bell and ICON_BELL or (row.item.is_focused and ICON_PANE_ACTIVE or ICON_PANE_INACTIVE))
+                and (pane_attention and ICON_BELL or (row.item.is_focused and ICON_PANE_ACTIVE or ICON_PANE_INACTIVE))
               or ""
             local marker_fg = row.kind == "pane"
-                and (row.item.has_bell and theme.notify_levels.warn or (row.item.is_focused and theme.notify_levels.success or theme.muted))
+                and (pane_attention and theme.notify_levels.warn or (row.item.is_focused and theme.notify_levels.success or theme.muted))
               or prefix_fg
             local label = row.kind == "workspace"
                 and (row.item.name or ("Workspace " .. row.item.index))
@@ -324,13 +330,19 @@ function ui.mux_navigator.open(opts)
               }),
               ui.text(marker, {
                 fg = marker_fg,
-                bold = row.item.has_bell or active,
+                bold = pane_attention or active,
               }),
               ui.text(label, {
                 fg = prefix_fg,
                 bold = is_workspace or selected or active,
               }),
             }
+            if row.status_badge then
+              row_nodes[#row_nodes + 1] = ui.text(" " .. row.status_badge, {
+                fg = theme.notify_levels.warn,
+                bold = true,
+              })
+            end
             if value ~= nil then
               row_nodes[#row_nodes + 1] = ui.text(": " .. value, {
                 fg = value_fg,

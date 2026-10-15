@@ -392,6 +392,11 @@ Labels and details can be plain strings, span nodes, or shorthand
 which string the filter matches against; if omitted, the rendered
 `label` is used.
 
+`items` may also be a function returning a list. Live providers and their labels
+are refreshed on each render, preserving the filter and selected row index.
+Keep providers nonblocking and return a stable order; do not scan files or run
+processes from them.
+
 The first action is the primary action bound to `Enter` (or whatever
 key you put in `actions[1].key`).
 

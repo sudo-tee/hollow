@@ -40,6 +40,8 @@ HollowUiWorkspaceItem = {
   is_active = boolean,
   is_open = boolean,
   has_bell = boolean,
+  program_status_badge = string | nil,
+  program_status_attention = boolean | nil,
   open_index = integer | nil,
   last_opened_at = integer | nil,
 }
@@ -126,10 +128,24 @@ Recent activity timestamps are updated from terminal events
 
 ## Opening and switching
 
-Workspaces with bell attention in any pane, across all tabs, appear first and show a yellow bell icon in the default formatter.
-Within each bell group, existing workspace ordering is preserved.
+Workspaces with OSC bell or unread program-status attention in any pane, across
+all tabs, appear first and share one yellow bell icon in the default formatter.
+Within each attention group, existing workspace ordering is preserved.
 Bell state is refreshed each time the picker opens or `items()` is called.
 Custom `format_item` callbacks can use `workspace.has_bell` to render their own indicator.
+
+Open workspaces also show a bold OSC 7501 task badge beside the name. Status aggregates
+all panes across all tabs, using the same priority as tab-bar badges:
+error → blocked → working → done → idle. Badges update while the switcher is open,
+without resetting search/selection or rescanning discovery sources. Closed known
+workspaces have no task status. Custom formatters can use
+`workspace.program_status_badge` (including its trailing space). Inactive workspaces
+retain live badges. Unread blocked/error attention also shows the bell icon in
+the switcher and existing global top-bar attention button. Navigator pane rows
+and tabs reuse their existing attention marker; no separate status bell is added.
+This does not ring or change OSC bell state. Focusing the source pane clears its attention
+indicator, not its status badge; new inactive reports re-arm attention.
+Custom formatters can use `workspace.program_status_attention` for this indicator.
 
 `open_switcher()` shows the picker. Default actions:
 

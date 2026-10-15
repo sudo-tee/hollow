@@ -1,3 +1,4 @@
+local program_status = require("hollow.program_status")
 local state = require("hollow.state").get()
 local util = require("hollow.util")
 
@@ -524,6 +525,8 @@ local function open_workspace_items()
       source = "open",
       is_active = workspace.is_active == true,
       is_open = true,
+      program_status_badge = program_status.workspace_badge(workspace),
+      program_status_attention = program_status.workspace_needs_attention(workspace),
       has_bell = hollow.tbl(workspace.tabs):some(function(tab)
         return hollow.tbl(tab.panes):some(function(pane)
           return pane.has_bell
@@ -539,8 +542,10 @@ local function open_workspace_items()
   end
 
   table.sort(items, function(a, b)
-    if a.has_bell ~= b.has_bell then
-      return a.has_bell
+    local a_attention = a.has_bell or a.program_status_attention == true
+    local b_attention = b.has_bell or b.program_status_attention == true
+    if a_attention ~= b_attention then
+      return a_attention
     end
 
     if a.is_active ~= b.is_active then

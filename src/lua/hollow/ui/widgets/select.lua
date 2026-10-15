@@ -47,8 +47,9 @@ end
 ---@param opts HollowUiSelectOptions
 ---@return HollowUiSelectEntry[]
 local function prepare_entries(opts)
+  local items = type(opts.items) == "function" and opts.items() or opts.items
   return hollow
-    .tbl(opts.items or {})
+    .tbl(items or {})
     :map(function(item, source_index)
       local label_nodes, label_text = inline_content((opts.label or tostring)(item))
       local detail_nodes, detail_text
@@ -315,6 +316,9 @@ function ui.select.open(opts)
   modal = ui.modal({
     theme = theme,
     render = function(render_theme, state)
+      if type(opts.items) == "function" then
+        prepared = prepare_entries(opts)
+      end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
       local viewport = selectable.visible_range()
