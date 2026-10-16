@@ -931,6 +931,16 @@ function M.setup(hollow, host_api)
     tab_snapshot = tab_snapshot,
     command_started = command_started,
     command_finished = command_finished,
+    clear_running_command = function(pane_id)
+      local command_state = command_states[pane_id]
+      if command_state ~= nil then
+        command_state.running = nil
+      end
+    end,
+    forget_pane = function(pane_id)
+      command_states[pane_id] = nil
+      pane_tags[pane_id] = nil
+    end,
   }
 end
 

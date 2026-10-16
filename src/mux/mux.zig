@@ -28,6 +28,8 @@ pub const Mux = struct {
     next_id: usize = 1,
     host_context: ?*anyopaque = null,
     host_wake: @import("../pty/wake.zig").Wake = .{},
+    pane_created: ?*const fn (*anyopaque, *Pane) void = null,
+    pane_closing: ?*const fn (*anyopaque, *Pane) void = null,
     /// Set by removeWorkspace to the name of the workspace that was just removed.
     /// Caller must free and set to null after consuming.
     last_removed_workspace_name: ?[]u8 = null,
@@ -79,6 +81,20 @@ pub const Mux = struct {
         self.* = Mux.init(self.allocator);
     }
 
+    fn notifyCreated(self: *Mux, pane: *Pane) void {
+        const context = self.host_context orelse return;
+        if (self.pane_created) |callback| callback(context, pane);
+    }
+
+    fn notifyClosing(self: *Mux, pane: *Pane) void {
+        const context = self.host_context orelse return;
+        if (self.pane_closing) |callback| callback(context, pane);
+    }
+
+    fn notifyTabClosing(self: *Mux, tab: *Tab) void {
+        for (tab.panes.items) |pane| self.notifyClosing(pane);
+    }
+
     pub fn bootstrapSingle(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32) !void {
         if (self.workspaces.items.len != 0) return error.MuxAlreadyBootstrapped;
 
@@ -89,6 +105,7 @@ pub const Mux = struct {
         }
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
+        self.notifyCreated(self.activePane().?);
     }
 
     pub fn newWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !void {
@@ -100,6 +117,7 @@ pub const Mux = struct {
         try workspace.setDefaultCwd(inherited_cwd);
         try self.workspaces.append(self.allocator, workspace);
         self.active_workspace = workspace;
+        self.notifyCreated(self.activePane().?);
     }
 
     fn createBootstrappedWorkspace(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, inherited_cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, name: ?[]const u8) !*Workspace {
@@ -328,11 +346,13 @@ pub const Mux = struct {
             self.allocator.destroy(pane);
         }
         try tab.appendPane(pane);
+        self.notifyCreated(pane);
     }
 
     /// Close the active tab. Returns true if no tabs remain (app should quit).
     pub fn closeTab(self: *Mux, runtime: *GhosttyRuntime) bool {
         const ws = self.activeWorkspace() orelse return true;
+        if (ws.activeTab()) |tab| self.notifyTabClosing(tab);
         ws.closeTab(runtime);
         if (ws.tabs.items.len > 0) return false;
         return self.removeWorkspace(runtime, ws);
@@ -348,6 +368,7 @@ pub const Mux = struct {
         const ws = self.activeWorkspace() orelse return true;
         if (index >= ws.tabs.items.len) return false;
         ws.active_tab = ws.tabs.items[index];
+        self.notifyTabClosing(ws.tabs.items[index]);
         ws.closeTab(runtime);
         if (ws.tabs.items.len > 0) return false;
         return self.removeWorkspace(runtime, ws);
@@ -360,6 +381,7 @@ pub const Mux = struct {
         const tab = ws.activeTab() orelse return true;
         const pane = tab.activePane() orelse return true;
 
+        self.notifyClosing(pane);
         const tab_empty = tab.closePane(runtime, pane);
         if (tab_empty) {
             ws.closeTab(runtime);
@@ -377,6 +399,7 @@ pub const Mux = struct {
                     self.active_workspace = ws;
                     ws.active_tab = tab;
 
+                    self.notifyClosing(pane);
                     const tab_empty = tab.closePane(runtime, pane);
                     if (tab_empty) {
                         ws.closeTab(runtime);
@@ -499,9 +522,11 @@ pub const Mux = struct {
             new_pane.restore_split_horizontal = direction == .horizontal;
             new_pane.restore_place_first = false;
             tab.active_pane = new_pane;
+            self.notifyCreated(new_pane);
             return new_pane;
         }
         try tab.splitActivePane(new_pane, direction, ratio);
+        self.notifyCreated(new_pane);
         return new_pane;
     }
 
@@ -684,6 +709,7 @@ pub const Mux = struct {
 
             const was_active = ws.active_tab == tab;
             for (dead_buf[0..dead_count]) |pane| {
+                self.notifyClosing(pane);
                 const tab_empty = tab.closePane(runtime, pane);
                 if (tab_empty) {
                     ws.active_tab = tab;
@@ -716,6 +742,7 @@ pub const Mux = struct {
         if (self.last_removed_workspace_name) |n| self.allocator.free(n);
         self.last_removed_workspace_name = if (workspace.name) |n| self.allocator.dupe(u8, n) catch null else null;
 
+        for (workspace.tabs.items) |tab| self.notifyTabClosing(tab);
         _ = self.workspaces.orderedRemove(remove_idx);
         workspace.deinit(runtime);
         self.allocator.destroy(workspace);

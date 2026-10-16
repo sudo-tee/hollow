@@ -555,6 +555,10 @@ pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
     pane_id: usize,
+    pane_exited: struct {
+        pane_id: usize,
+        status: ?u32,
+    },
     workspace_index: usize,
     pane_layout_changed: struct {
         pane_id: usize,
@@ -2600,6 +2604,17 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.create_table(state, 0, 1);
             api.push_number(state, @floatFromInt(pane_id));
             api.set_field(state, -2, "pane_id");
+        },
+        .pane_exited => |value| {
+            api.create_table(state, 0, 2);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            if (value.status) |status| {
+                api.push_number(state, @floatFromInt(status));
+            } else {
+                api.push_nil(state);
+            }
+            api.set_field(state, -2, "status");
         },
         .pane_layout_changed => |value| {
             api.create_table(state, 0, 1);
@@ -7134,6 +7149,30 @@ test "HTP bridge forwards receipt timestamp and cwd" {
     );
     const result = try runtime.dispatchHtpEvent(101, "command_started", null, 1000, "/origin");
     try std.testing.expect(result.success);
+}
+
+test "pane lifecycle bridge preserves zero and unknown exit status" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\received = {}
+        \\hollow = {_emit_builtin_event = function(name, payload)
+        \\  received[#received + 1] = {name = name, payload = payload}
+        \\end}
+    );
+    runtime.emitBuiltInEvent("term:pane_created", .{ .pane_id = 101 });
+    runtime.emitBuiltInEvent("term:pane_exited", .{ .pane_exited = .{ .pane_id = 101, .status = 0 } });
+    runtime.emitBuiltInEvent("term:pane_exited", .{ .pane_exited = .{ .pane_id = 102, .status = null } });
+    runtime.emitBuiltInEvent("term:pane_closed", .{ .pane_id = 101 });
+    try runtime.runString(
+        \\assert(#received == 4)
+        \\assert(received[1].name == "term:pane_created" and received[1].payload.pane_id == 101)
+        \\assert(received[2].payload.status == 0)
+        \\assert(received[3].payload.status == nil and received[3].payload.pane_id == 102)
+        \\assert(received[4].name == "term:pane_closed" and received[4].payload.pane_id == 101)
+    );
 }
 
 test "native process bridge owns argv and returns structured results" {

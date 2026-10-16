@@ -154,6 +154,9 @@
 ---| "term:tab_activated"
 ---| "term:tab_closed"
 ---| "term:pane_focused"
+---| "term:pane_created"
+---| "term:pane_exited"
+---| "term:pane_closed"
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
@@ -198,6 +201,9 @@
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
 ---@field ["term:pane_focused"] { pane: HollowPane }
+---@field ["term:pane_created"] { pane: HollowPane }
+---@field ["term:pane_exited"] { pane: HollowPane, status: integer|nil }
+---@field ["term:pane_closed"] { pane: HollowPane }
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
 ---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }

@@ -34,6 +34,9 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | `term:tab_activated` | `{ tab }` |
 | `term:tab_closed` | `{ tab_id }` |
 | `term:pane_focused` | `{ pane }` |
+| `term:pane_created` | `{ pane }` |
+| `term:pane_exited` | `{ pane, status }` |
+| `term:pane_closed` | `{ pane }` |
 | `term:pane_layout_changed` | `{ pane }` |
 | `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
 | `term:foreground_process_changed` | `{ pane, old_process, new_process }` |
@@ -59,6 +62,22 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane
 receives focus.
+
+`term:pane_created` fires after a pane is successfully added, including the
+initial pane, new tabs/workspaces, and tiled/floating splits. Moving a pane or
+reloading config does not create it again.
+
+`term:pane_exited` fires once when Hollow observes the pane's child exit, before
+automatic removal. `status` is the process exit code; POSIX signal termination
+uses `128 + signal`. WSL bypass uses the guest exit status. If the OS status is
+unavailable (for example, a failed transport), `status` is `nil`. This event does
+not require shell integration, and its pane snapshot is no longer busy.
+
+`term:pane_closed` fires immediately before removal, with a final pane snapshot
+that remains usable after removal. Closing a tab or workspace emits it for each
+pane. Explicitly closing a live pane emits only `term:pane_closed`; an already
+exited child emits `term:pane_exited` first. Moving panes and application shutdown
+do not emit close events. These events are observational, not cancellable.
 
 Command lifecycle events rely on Hollow shell integration; Bash, Zsh, and Fish
 report them. `command` is shell-provided command text, `status` is the shell's

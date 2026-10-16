@@ -64,6 +64,7 @@ const hyperlinks = @import("app/hyperlinks.zig");
 const scroll = @import("app/scroll.zig");
 const cmd_ipc = @import("app/command_dispatcher.zig");
 const mux_ops = @import("app/session_controller.zig");
+const pane_lifecycle = @import("app/pane_lifecycle.zig");
 
 const embedded_base_config: []const u8 = build_options.embedded_base_config;
 const embedded_types: []const u8 = build_options.embedded_types;
@@ -1070,6 +1071,8 @@ pub const App = struct {
         try mux.bootstrapSingle(runtime, cbs, self.config, self.cell_width_px, self.cell_height_px, self.config.window_width, self.config.window_height);
 
         self.mux = mux;
+        self.mux.?.pane_created = pane_lifecycle.created;
+        self.mux.?.pane_closing = pane_lifecycle.closing;
         htp.bindHtpHandlers(self);
         self.renderer = Backend.init(self.allocator, self.config);
 
@@ -1077,6 +1080,8 @@ pub const App = struct {
         if (self.lua) |*lua| {
             self.registerLuaCallbacks(lua);
         }
+
+        if (self.activePane()) |pane| pane_lifecycle.created(self, pane);
 
         try self.tick();
         self.startConfigWatcher();

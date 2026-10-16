@@ -81,6 +81,15 @@ function M.setup(hollow, state, term_helpers)
   local function adapt_pane_focused(payload)
     return { pane = pane(payload.pane_id) }
   end
+  local function adapt_pane_exited(payload)
+    term_helpers.clear_running_command(payload.pane_id)
+    return { pane = pane(payload.pane_id), status = payload.status }
+  end
+  local function adapt_pane_closed(payload)
+    local snapshot = pane(payload.pane_id)
+    term_helpers.forget_pane(payload.pane_id)
+    return { pane = snapshot }
+  end
   local function adapt_title_changed(payload)
     return { pane = pane(payload.pane_id), old_title = payload.old_title, new_title = payload.new_title }
   end
@@ -152,6 +161,9 @@ function M.setup(hollow, state, term_helpers)
     ["workspace:closed"] = adapt_workspace_closed,
     ["term:tab_closed"] = adapt_tab_closed,
     ["term:pane_focused"] = adapt_pane_focused,
+    ["term:pane_created"] = adapt_pane_focused,
+    ["term:pane_exited"] = adapt_pane_exited,
+    ["term:pane_closed"] = adapt_pane_closed,
     ["term:pane_layout_changed"] = adapt_pane_focused,
     ["term:title_changed"] = adapt_title_changed,
     ["term:cwd_changed"] = adapt_cwd_changed,

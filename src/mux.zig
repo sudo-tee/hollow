@@ -8,6 +8,9 @@ const mux_mod = @import("mux/mux.zig");
 
 // Pull test definitions into the build's test discovery graph.
 pub const tests = @import("mux/tests.zig");
+comptime {
+    if (@import("builtin").is_test) _ = tests;
+}
 
 pub const FocusDirection = types.FocusDirection;
 pub const SplitDirection = types.SplitDirection;

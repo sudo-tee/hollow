@@ -51,6 +51,7 @@ pub const PosixPty = struct {
     writer_state: *WriterState,
     writer_thread: ?std.Thread = null,
     alive: bool = true,
+    exit_status: ?u32 = null,
     closed: bool = false,
 
     pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !PosixPty {
@@ -209,28 +210,33 @@ pub const PosixPty = struct {
     pub fn isAlive(self: *PosixPty) bool {
         if (self.closed or !self.alive) return false;
         self.reader_state.mutex.lock();
-        const eof = self.reader_state.eof;
         const saw_read = self.reader_state.saw_read;
         const pending = self.reader_state.buf.items.len - self.reader_state.start;
         self.reader_state.mutex.unlock();
-        if (eof) {
-            self.alive = false;
-            return false;
-        }
+        // Drain output before reporting exit, and reap even after reader EOF so
+        // the child's status is not lost. EOF can precede waitpid readiness.
         if (saw_read and pending > 0) return true;
         var status: c_int = 0;
         const result = c.waitpid(self.pid, &status, c.WNOHANG);
         if (result == self.pid) {
             self.alive = false;
             if (c.WIFEXITED(status)) {
+                self.exit_status = @intCast(c.WEXITSTATUS(status));
                 std.log.info("pty_posix child exited pid={} status={}", .{ self.pid, c.WEXITSTATUS(status) });
             } else if (c.WIFSIGNALED(status)) {
+                self.exit_status = 128 + @as(u32, @intCast(c.WTERMSIG(status)));
                 std.log.warn("pty_posix child signaled pid={} signal={}", .{ self.pid, c.WTERMSIG(status) });
             } else {
                 std.log.warn("pty_posix child ended pid={} raw_status={}", .{ self.pid, status });
             }
+        } else if (result < 0 and std.posix.errno(result) == .CHILD) {
+            self.alive = false;
         }
         return self.alive;
+    }
+
+    pub fn exitStatus(self: *const PosixPty) ?u32 {
+        return self.exit_status;
     }
 
     pub fn read(self: *PosixPty, buffer: []u8) !usize {
@@ -422,6 +428,52 @@ fn execWithPath(path: [:0]const u8, argv: []?[*:0]const u8, envp: ?[*:null]?[*:0
         _ = c.execve(candidate.ptr, @ptrCast(argv_ptr), if (envp) |items| @ptrCast(items) else null);
         if (std.posix.errno(-1) != .NOENT) return;
     }
+}
+
+fn testChildExitStatus(signaled: bool) !void {
+    const pid = c.fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        if (signaled) _ = c.kill(c.getpid(), c.SIGKILL);
+        c._exit(23);
+    }
+    var reader: ReaderState = .{ .eof = true, .saw_read = true };
+    var pty: PosixPty = .{
+        .allocator = std.testing.allocator,
+        .fd = -1,
+        .pid = pid,
+        .reader_state = &reader,
+        .writer_state = undefined,
+    };
+    defer {
+        if (pty.alive) {
+            _ = c.kill(pid, c.SIGKILL);
+            _ = c.waitpid(pid, null, 0);
+        }
+    }
+    // Pending output must be drained even if EOF has already been observed.
+    try reader.buf.appendSlice(std.testing.allocator, "tail");
+    defer reader.buf.deinit(std.testing.allocator);
+    try std.testing.expect(pty.isAlive());
+    try std.testing.expectEqual(@as(?u32, null), pty.exitStatus());
+    reader.buf.clearRetainingCapacity();
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (pty.isAlive()) {
+        if (io.nanoTimestamp() >= deadline) return error.ChildExitTimeout;
+        _ = c.usleep(1000);
+    }
+    const expected: u32 = if (signaled) 128 + c.SIGKILL else 23;
+    try std.testing.expectEqual(@as(?u32, expected), pty.exitStatus());
+    try std.testing.expect(!pty.isAlive());
+    try std.testing.expectEqual(@as(?u32, expected), pty.exitStatus());
+}
+
+test "posix pane exit retains status after EOF and repeated liveness checks" {
+    try testChildExitStatus(false);
+}
+
+test "posix pane exit normalizes signal termination" {
+    try testChildExitStatus(true);
 }
 
 test "posix shell argv supports SSH commands" {
