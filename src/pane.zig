@@ -786,10 +786,11 @@ pub const Pane = struct {
         if (self.pending_cwd) |cwd| {
             self.pending_cwd = null;
             defer self.allocator.free(cwd);
-            const changed = !std.mem.eql(u8, self.cwd, cwd);
             self.setCwd(cwd);
             self.cwd_dirty = false;
-            return changed;
+            // A shell report confirms the canonical cwd even when it matches
+            // the launch path. WSL workspace bootstrap waits for this event.
+            return true;
         }
         var changed = false;
         if (self.cwd_dirty) {

@@ -279,6 +279,26 @@ test "cwd callbacks handle split, cancelled and legacy OSC 7 without changing ol
     try std.testing.expectEqualStrings("/legacy", pane.cwd);
 }
 
+test "cwd callbacks confirm an unchanged launch cwd for workspace bootstrap" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(std.testing.allocator);
+    pane.terminal_runtime = &runtime;
+    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    defer pane.deinit(&runtime);
+    runtime.setTerminalUserdata(pane.terminal, &pane);
+    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    pane.setCwd("/project");
+
+    runtime.terminalWrite(pane.terminal, "\x1b]7;file://host/project\x1b\\");
+    try std.testing.expect(pane.cwd_dirty);
+    try std.testing.expect(pane.refreshCwd());
+    try std.testing.expectEqualStrings("/project", pane.cwd);
+    try std.testing.expect(!pane.cwd_dirty);
+    try std.testing.expect(pane.pending_cwd == null);
+    try std.testing.expect(!pane.refreshCwd());
+}
+
 test "clipboard writes decode once across chunks, ignore cancellation and never serve reads" {
     const Sink = struct {
         var bytes: [128]u8 = undefined;
