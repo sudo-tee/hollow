@@ -3,6 +3,22 @@ local harness = require("tests.harness")
 local status = require("hollow.program_status")
 
 describe("program status", function()
+  it("colors only unread attention and prioritizes errors across tabs", function()
+    local blocked = { program_status = { { state = "blocked", attention = true } } }
+    local failed = { program_status = { { state = "error", attention = true } } }
+    local bell = { has_bell = true }
+    assert.is_nil(status.attention_level({ { program_status = { { state = "working" } } } }))
+    assert.equals("warn", status.attention_level({ blocked, bell }))
+    local workspace = { tabs = { { panes = { blocked, bell } }, { panes = { failed } } } }
+    assert.equals("error", status.workspace_attention_level(workspace))
+    failed.program_status[1].attention = false
+    assert.equals("warn", status.workspace_attention_level(workspace))
+    blocked.program_status[1].attention = false
+    assert.equals("warn", status.workspace_attention_level(workspace))
+    bell.has_bell = false
+    assert.is_nil(status.workspace_attention_level(workspace))
+  end)
+
   it("shows no badge without reports", function()
     assert.is_nil(status.badge({ { program_status = {} } }))
   end)

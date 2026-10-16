@@ -57,6 +57,37 @@ function M.pane_has_attention(pane)
   return pane.has_bell == true or M.needs_attention({ pane })
 end
 
+-- Only unread reports color bells; acknowledged status must not mask new attention.
+function M.attention_level(panes)
+  local level
+  for _, pane in ipairs(panes or {}) do
+    if pane.has_bell == true then
+      level = level or "warn"
+    end
+    for _, record in ipairs(pane.program_status or {}) do
+      if record.attention == true then
+        if record.state == "error" then
+          return "error"
+        end
+        level = "warn"
+      end
+    end
+  end
+  return level
+end
+
+function M.workspace_attention_level(workspace)
+  local level
+  for _, tab in ipairs(workspace.tabs or {}) do
+    local tab_level = M.attention_level(tab.panes)
+    if tab_level == "error" then
+      return "error"
+    end
+    level = level or tab_level
+  end
+  return level
+end
+
 function M.workspace_needs_attention(workspace)
   for _, tab in ipairs(workspace.tabs or {}) do
     if M.needs_attention(tab.panes) then

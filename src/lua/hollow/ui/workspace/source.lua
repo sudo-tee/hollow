@@ -527,6 +527,7 @@ local function open_workspace_items()
       is_open = true,
       program_status_badge = program_status.workspace_badge(workspace),
       program_status_attention = program_status.workspace_needs_attention(workspace),
+      program_status_attention_level = program_status.workspace_attention_level(workspace),
       has_bell = hollow.tbl(workspace.tabs):some(function(tab)
         return hollow.tbl(tab.panes):some(function(pane)
           return pane.has_bell

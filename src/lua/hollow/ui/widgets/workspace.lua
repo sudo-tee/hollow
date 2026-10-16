@@ -59,6 +59,7 @@ local function derived_palette()
     open = palette.bright_green,
     user = palette.bright_blue,
     bell = theme_api.resolve_widget("select").notify_levels.warn,
+    bell_error = theme_api.resolve_widget("select").notify_levels.error,
   }
 end
 
@@ -66,6 +67,8 @@ local function default_format_item(workspace)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local palette = derived_palette()
+  local bell_color = workspace.program_status_attention_level == "error" and palette.bell_error
+    or palette.bell
   local name_color = util.state_value(
     workspace.is_active,
     workspace.is_open,
@@ -102,11 +105,10 @@ local function default_format_item(workspace)
 
   return format.columns({
     {
-      text = attention and icons.bell
-        or (workspace.is_active and icons.workspace_active or " "),
+      text = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
       width = status_width,
       style = {
-        fg = attention and palette.bell or (workspace.is_active and palette.open or palette.subtle),
+        fg = attention and bell_color or (workspace.is_active and palette.open or palette.subtle),
         bold = attention or workspace.is_active,
       },
     },
@@ -242,13 +244,16 @@ function ui.workspace.open_switcher(opts)
       -- Read live status without rescanning local/remote discovery sources.
       local badges = {}
       local attention = {}
+      local attention_levels = {}
       for _, workspace in ipairs(hollow.term.mux_tree()) do
         badges[workspace.id] = program_status.workspace_badge(workspace)
         attention[workspace.id] = program_status.workspace_needs_attention(workspace)
+        attention_levels[workspace.id] = program_status.workspace_attention_level(workspace)
       end
       for _, item in ipairs(items) do
         item.program_status_badge = badges[item.workspace_id]
         item.program_status_attention = attention[item.workspace_id]
+        item.program_status_attention_level = attention_levels[item.workspace_id]
       end
       return items
     end,

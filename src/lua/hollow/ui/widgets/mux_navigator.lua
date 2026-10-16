@@ -298,7 +298,9 @@ function ui.mux_navigator.open(opts)
                 and (pane_attention and icons.bell or (row.item.is_focused and icons.pane_active or icons.pane_inactive)) .. " "
               or ""
             local marker_fg = row.kind == "pane"
-                and (pane_attention and theme.notify_levels.warn or (row.item.is_focused and theme.notify_levels.success or theme.muted))
+                and (pane_attention and theme.notify_levels[program_status.attention_level({
+                  row.item,
+                })] or (row.item.is_focused and theme.notify_levels.success or theme.muted))
               or prefix_fg
             local label = row.kind == "workspace"
                 and (row.item.name or ("Workspace " .. row.item.index))

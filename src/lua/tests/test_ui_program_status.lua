@@ -13,6 +13,18 @@ local function overlay_text(hollow)
   return table.concat(lines, "\n")
 end
 
+local function bell_colors(hollow)
+  local colors = {}
+  for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+    for _, segment in ipairs(row.segments or {}) do
+      if (segment.text or ""):find("󰂚", 1, true) then
+        colors[#colors + 1] = segment.fg
+      end
+    end
+  end
+  return colors
+end
+
 describe("program status in navigation overlays", function()
   local env, hollow, tree, working, blocked, failed
 
@@ -49,6 +61,37 @@ describe("program status in navigation overlays", function()
 
   after_each(function()
     hollow.ui.overlay.clear()
+  end)
+
+  it("colors pane bells by unread status", function()
+    local levels = require("hollow.theme").resolve_widget("select").notify_levels
+    hollow.ui.mux_navigator.open({ max_height = 20 })
+    assert.same({ levels.warn, levels.error }, bell_colors(hollow))
+    failed[1].attention = false
+    tree[1].tabs[2].panes[2].has_bell = true
+    assert.same({ levels.warn, levels.warn }, bell_colors(hollow))
+  end)
+
+  it("refreshes aggregate workspace bell color without reopening", function()
+    local levels = require("hollow.theme").resolve_widget("select").notify_levels
+    hollow.ui.workspace.open_switcher()
+    assert.same({ levels.error }, bell_colors(hollow))
+    failed[1].attention = false
+    assert.same({ levels.warn }, bell_colors(hollow))
+    blocked[1].attention = false
+    assert.same({}, bell_colors(hollow))
+  end)
+
+  it("uses highest unfocused attention severity for the topbar bell", function()
+    local levels = require("hollow.theme").resolve_widget("select").notify_levels
+    local button = require("hollow.ui.widgets.attention").topbar_button()
+    assert.equals(levels.error, button.render().style.fg)
+    tree[1].tabs[2].panes[2].is_focused = true
+    assert.equals(levels.warn, button.render().style.fg)
+    blocked[1].attention = false
+    assert.is_nil(button.render())
+    tree[1].tabs[2].panes[1].has_bell = true
+    assert.equals(levels.warn, button.render().style.fg)
   end)
 
   it("shows pane badges and aggregate tab/workspace badges, including collapsed rows", function()
