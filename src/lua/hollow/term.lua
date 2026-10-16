@@ -2,6 +2,12 @@ local M = {}
 
 function M.setup(hollow, host_api)
   local pane_tags = {}
+  local command_states = {}
+
+  local function now_ms()
+    local value = host_api.now_ms and host_api.now_ms() or 0
+    return type(value) == "number" and value or 0
+  end
 
   local function normalize_tag(tag, fn_name)
     if type(tag) ~= "string" then
@@ -104,12 +110,30 @@ function M.setup(hollow, host_api)
   end
 
   local function pane_snapshot(pane_id)
-    if pane_id == nil or not host_api.pane_exists(pane_id) then
+    if pane_id == nil then
       return nil
     end
+    if not host_api.pane_exists(pane_id) then
+      command_states[pane_id] = nil
+      return nil
+    end
+
+    local pid = host_api.get_pane_pid(pane_id)
+    local command_state = command_states[pane_id]
+    if command_state ~= nil and command_state.pid ~= pid then
+      command_state = nil
+      command_states[pane_id] = nil
+    end
+    local running = command_state and command_state.running or nil
+    local running_snapshot = running and {
+      command = running.command,
+      ms = math.max(0, now_ms() - running.started_at_ms),
+    } or nil
+    local last = command_state and command_state.last or nil
+
     return {
       id = pane_id,
-      pid = host_api.get_pane_pid(pane_id),
+      pid = pid,
       domain = host_api.get_pane_domain and host_api.get_pane_domain(pane_id) or nil,
       direction = host_api.get_pane_split_direction and host_api.get_pane_split_direction(pane_id) or nil,
       split_ratio = host_api.get_pane_split_ratio and host_api.get_pane_split_ratio(pane_id) or nil,
@@ -124,6 +148,13 @@ function M.setup(hollow, host_api)
       foreground_process = host_api.get_pane_foreground_process
           and host_api.get_pane_foreground_process(pane_id)
         or nil,
+      busy = running ~= nil,
+      running = running_snapshot,
+      last = last and {
+        command = last.command,
+        status = last.status,
+        took_ms = last.took_ms,
+      } or nil,
       tags = snapshot_tags(pane_id),
       is_focused = host_api.pane_is_focused(pane_id),
       is_floating = host_api.pane_is_floating and host_api.pane_is_floating(pane_id) or false,
@@ -552,6 +583,96 @@ function M.setup(hollow, host_api)
     end
   end
 
+  -- Array entries retain numeric pane IDs across the native JSON bridge.
+  function hollow.term._export_command_states()
+    local entries = {}
+    for pane_id, command_state in pairs(command_states) do
+      if host_api.pane_exists(pane_id) and host_api.get_pane_pid(pane_id) == command_state.pid then
+        entries[#entries + 1] = {
+          pane_id = pane_id,
+          pid = command_state.pid,
+          running = command_state.running,
+          last = command_state.last,
+        }
+      end
+    end
+    return entries
+  end
+
+  function hollow.term._restore_command_states(entries)
+    command_states = {}
+    for _, entry in ipairs(entries) do
+      if
+        host_api.pane_exists(entry.pane_id) and host_api.get_pane_pid(entry.pane_id) == entry.pid
+      then
+        command_states[entry.pane_id] = {
+          pid = entry.pid,
+          running = entry.running,
+          last = entry.last,
+        }
+      end
+    end
+  end
+
+  local function command_started(pane_id, command, received_at_ms, received_cwd)
+    if type(pane_id) ~= "number" or not host_api.pane_exists(pane_id) then
+      return
+    end
+
+    command = type(command) == "string" and command or ""
+    local pid = host_api.get_pane_pid(pane_id)
+    local command_state = command_states[pane_id]
+    if command_state ~= nil and command_state.pid ~= pid then
+      command_state = nil
+    end
+    command_state = command_state or { pid = pid }
+    command_state.running = {
+      command = command,
+      cwd = type(received_cwd) == "string" and received_cwd or host_api.get_pane_cwd(pane_id),
+      started_at_ms = type(received_at_ms) == "number" and received_at_ms or now_ms(),
+    }
+    command_states[pane_id] = command_state
+
+    hollow.term.set_pane_foreground_process(pane_id, command)
+    hollow._emit_builtin_event("term:command_started", {
+      pane_id = pane_id,
+      command = command,
+      cwd = command_state.running.cwd,
+    })
+  end
+
+  local function command_finished(pane_id, status, received_at_ms)
+    if type(pane_id) ~= "number" or not host_api.pane_exists(pane_id) then
+      return
+    end
+
+    local pid = host_api.get_pane_pid(pane_id)
+    local command_state = command_states[pane_id]
+    if command_state ~= nil and command_state.pid ~= pid then
+      command_state = nil
+    end
+    command_state = command_state or { pid = pid }
+    local running = command_state.running
+    local finished_at_ms = type(received_at_ms) == "number" and received_at_ms or now_ms()
+    local took_ms = running and math.max(0, finished_at_ms - running.started_at_ms) or nil
+    status = type(status) == "number" and status or nil
+    command_state.running = nil
+    command_state.last = {
+      command = running and running.command or nil,
+      status = status,
+      took_ms = took_ms,
+    }
+    command_states[pane_id] = command_state
+
+    hollow.term.set_pane_foreground_process(pane_id, nil)
+    hollow._emit_builtin_event("term:command_finished", {
+      pane_id = pane_id,
+      command = command_state.last.command,
+      status = status,
+      took_ms = took_ms,
+    })
+  end
+
   local MODS_CTRL = 0x02
   local MODS_ALT = 0x04
   local MODS_SHIFT = 0x01
@@ -808,6 +929,8 @@ function M.setup(hollow, host_api)
     pane_snapshot = pane_snapshot,
     workspace_snapshot = workspace_snapshot,
     tab_snapshot = tab_snapshot,
+    command_started = command_started,
+    command_finished = command_finished,
   }
 end
 

@@ -978,6 +978,7 @@ pub const App = struct {
 
         for (self.htp_pending_messages.items[self.htp_pending_message_head..]) |message| {
             self.allocator.free(message.payload);
+            self.allocator.free(message.received_cwd);
         }
         self.htp_pending_messages.deinit(self.allocator);
         self.htp_codec.deinit();
@@ -1892,6 +1893,12 @@ pub const App = struct {
     pub fn reloadConfig(self: *App) bool {
         if (!self.using_embedded_base_config and self.base_config_path == null and self.override_config_path == null) return false;
 
+        const command_states = if (self.lua) |*lua| lua.exportCommandStates() catch |err| {
+            std.log.err("config reload: could not preserve command state: {s}", .{@errorName(err)});
+            return false;
+        } else null;
+        defer if (command_states) |value| deinitJsonValue(self.allocator, value);
+
         quick_select.cancel(self);
 
         const old_window_width = self.config.window_width;
@@ -1936,7 +1943,13 @@ pub const App = struct {
         const window_title = text_helpers.titleCString(self.activeTitle());
         sapp_set_window_title(&window_title);
 
-        if (self.lua) |*lua| self.registerLuaCallbacks(lua);
+        if (self.lua) |*lua| {
+            self.registerLuaCallbacks(lua);
+            if (command_states) |value| lua.restoreCommandStates(value) catch |err| {
+                std.log.err("config reload: could not restore command state: {s}", .{@errorName(err)});
+                return false;
+            };
+        }
         self.emitLuaBuiltInEvent("config:reloaded", .none);
         return true;
     }
@@ -2829,6 +2842,28 @@ fn pathExists(path: []const u8) bool {
     std.Io.Dir.cwd().access(io.get(), path, .{}) catch return false;
     return true;
 }
+test "HTP queue owns cwd at receipt including earlier OSC 7 in the same batch" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+
+    var pane = Pane.init(std.testing.allocator);
+    pane.setCwd("/launch");
+    defer std.testing.allocator.free(pane.cwd);
+    pane.pending_cwd = try std.testing.allocator.dupe(u8, "/origin");
+    defer if (pane.pending_cwd) |cwd| std.testing.allocator.free(cwd);
+
+    htp.queueHtpMessage(app, &pane, "start");
+    try std.testing.expect(pane.refreshCwd());
+    pane.setCwd("/destination");
+    htp.queueHtpMessage(app, &pane, "finish");
+
+    try std.testing.expectEqual(@as(usize, 2), app.htp_pending_messages.items.len);
+    try std.testing.expectEqualStrings("/origin", app.htp_pending_messages.items[0].received_cwd);
+    try std.testing.expectEqualStrings("/destination", app.htp_pending_messages.items[1].received_cwd);
+}
+
 test "initial pane callbacks retain the App-owned runtime after initialization returns" {
     const app = try std.testing.allocator.create(App);
     defer std.testing.allocator.destroy(app);

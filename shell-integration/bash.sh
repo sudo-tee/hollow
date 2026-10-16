@@ -82,7 +82,8 @@ _hollow_preexec() {
   _hollow_tty_printf $'\e]133;C\a'
 
   local escaped_cmd=$(hollow_htp_json_escape "$BASH_COMMAND")
-  hollow_htp_emit "command_started" "{\"command\":\"$escaped_cmd\"}"
+  local escaped_cwd=$(hollow_htp_json_escape "$PWD")
+  hollow_htp_emit "command_started" "{\"command\":\"$escaped_cmd\",\"cwd\":\"$escaped_cwd\"}"
 }
 
 _hollow_precmd() {

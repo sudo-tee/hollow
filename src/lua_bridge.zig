@@ -1287,7 +1287,47 @@ pub const Runtime = struct {
         return callback(self);
     }
 
-    pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value) !HtpDispatchResult {
+    fn pushCommandStateHandler(self: *Runtime, name: [:0]const u8) !void {
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingHollow;
+        api.get_field(self.state, -1, "term");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingTerm;
+        api.get_field(self.state, -1, name);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return error.MissingCommandStateHandler;
+    }
+
+    pub fn exportCommandStates(self: *Runtime) !std.json.Value {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        try self.pushCommandStateHandler("_export_command_states");
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "export_command_states");
+            return error.CommandStateExportFailed;
+        }
+        return try luaValueToJson(self.allocator, api, self.state, -1);
+    }
+
+    pub fn restoreCommandStates(self: *Runtime, value: std.json.Value) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        try self.pushCommandStateHandler("_restore_command_states");
+        try pushJsonValue(self.allocator, api, self.state, value);
+        if (api.pcall(self.state, 1, 0, 0) != 0) {
+            logLuaError(api, self.state, "restore_command_states");
+            return error.CommandStateRestoreFailed;
+        }
+    }
+
+    pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value, received_at_ms: ?i64, received_cwd: ?[]const u8) !HtpDispatchResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1315,8 +1355,19 @@ pub const Runtime = struct {
             api.push_nil(self.state);
         }
         api.push_number(self.state, @floatFromInt(pane_id));
+        if (received_at_ms) |value| {
+            api.push_number(self.state, @floatFromInt(value));
+        } else {
+            api.push_nil(self.state);
+        }
 
-        if (api.pcall(self.state, 3, 2, 0) != 0) {
+        if (received_cwd) |cwd| {
+            try pushOwnedString(self.allocator, api, self.state, cwd);
+        } else {
+            api.push_nil(self.state);
+        }
+
+        if (api.pcall(self.state, 5, 2, 0) != 0) {
             const message = luaErrorToOwnedString(self.allocator, api, self.state);
             pop(api, self.state, 2);
             return .{ .success = false, .error_message = message };
@@ -7036,6 +7087,53 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "command state crosses runtime recreation without losing numeric pane IDs" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var saved: std.json.Value = undefined;
+    {
+        var runtime = try Runtime.init(std.testing.allocator, &cfg);
+        defer runtime.deinit();
+        try runtime.runString(
+            \\hollow = { term = { _export_command_states = function()
+            \\  return {{pane_id = 101, pid = 4242,
+            \\    running = {command = "sleep 60", cwd = "/origin", started_at_ms = 1000},
+            \\    last = {command = "false", status = 1, took_ms = 25}}}
+            \\end } }
+        );
+        saved = try runtime.exportCommandStates();
+    }
+    defer deinitJsonValue(std.testing.allocator, saved);
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\hollow = {term = {_restore_command_states = function(entries)
+        \\  local entry = entries[1]
+        \\  assert(entry.pane_id == 101 and entry.pid == 4242)
+        \\  assert(entry.running.command == "sleep 60")
+        \\  assert(entry.running.cwd == "/origin" and entry.running.started_at_ms == 1000)
+        \\  assert(entry.last.command == "false" and entry.last.status == 1 and entry.last.took_ms == 25)
+        \\end}}
+    );
+    try runtime.restoreCommandStates(saved);
+}
+
+test "HTP bridge forwards receipt timestamp and cwd" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\hollow = {htp = {_handle_emit = function(channel, payload, pane_id, received_at_ms, received_cwd)
+        \\  assert(channel == "command_started" and payload == nil and pane_id == 101)
+        \\  assert(received_at_ms == 1000 and received_cwd == "/origin")
+        \\  return true
+        \\end}}
+    );
+    const result = try runtime.dispatchHtpEvent(101, "command_started", null, 1000, "/origin");
+    try std.testing.expect(result.success);
 }
 
 test "native process bridge owns argv and returns structured results" {

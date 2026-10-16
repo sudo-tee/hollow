@@ -20,6 +20,8 @@ pub const HTP_MAX_ASSEMBLY_BYTES = codec_mod.max_assembly_bytes;
 
 pub const HtpQueuedMessage = struct {
     pane_id: usize,
+    received_at_ms: i64,
+    received_cwd: []u8,
     payload: []u8,
 };
 
@@ -32,21 +34,31 @@ pub fn htpMessageCallback(pane: *Pane, payload: []const u8) void {
 
 pub fn queueHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
     const pending_count = self.htp_pending_messages.items.len - self.htp_pending_message_head;
+    const cwd = pane.pending_cwd orelse pane.cwd;
+    const available_bytes = HTP_MAX_QUEUED_BYTES - self.htp_pending_message_bytes;
     if (pending_count >= HTP_MAX_QUEUED_MESSAGES or
-        payload.len > HTP_MAX_QUEUED_BYTES - self.htp_pending_message_bytes)
+        payload.len > available_bytes or cwd.len > available_bytes - payload.len)
     {
         std.log.warn("htp: dropping message because queue is full", .{});
         return;
     }
     const owned = self.allocator.dupe(u8, payload) catch return;
-    self.htp_pending_messages.append(self.allocator, .{
-        .pane_id = @intFromPtr(pane),
-        .payload = owned,
-    }) catch {
+    // Prefer the latest parsed OSC 7 report even before the frame applies it.
+    const received_cwd = self.allocator.dupe(u8, cwd) catch {
         self.allocator.free(owned);
         return;
     };
-    self.htp_pending_message_bytes += payload.len;
+    self.htp_pending_messages.append(self.allocator, .{
+        .pane_id = @intFromPtr(pane),
+        .received_at_ms = io.milliTimestamp(),
+        .received_cwd = received_cwd,
+        .payload = owned,
+    }) catch {
+        self.allocator.free(owned);
+        self.allocator.free(received_cwd);
+        return;
+    };
+    self.htp_pending_message_bytes += payload.len + received_cwd.len;
     self.signalWake();
 }
 
@@ -70,15 +82,16 @@ pub fn processHtpMessages(self: *App) void {
         const message = self.htp_pending_messages.items[self.htp_pending_message_head];
         if (processed_count > 0 and processed_bytes + message.payload.len > HTP_MAX_BYTES_PER_FRAME) break;
         self.htp_pending_message_head += 1;
-        self.htp_pending_message_bytes -= message.payload.len;
+        self.htp_pending_message_bytes -= message.payload.len + message.received_cwd.len;
         processed_count += 1;
         processed_bytes += message.payload.len;
         defer self.allocator.free(message.payload);
+        defer self.allocator.free(message.received_cwd);
         const pane = self.findPaneById(message.pane_id) orelse {
             self.htp_codec.removeSource(message.pane_id);
             continue;
         };
-        handleHtpMessage(self, pane, message.payload);
+        handleHtpMessage(self, pane, message.payload, message.received_at_ms, message.received_cwd);
     }
 
     compactHtpMessageQueue(self);
@@ -97,7 +110,7 @@ fn compactHtpMessageQueue(self: *App) void {
     }
 }
 
-fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
+fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8, received_at_ms: i64, received_cwd: []const u8) void {
     var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, payload, .{ .ignore_unknown_fields = true }) catch |err| {
         sendHtpProtocolError(self, pane, null, "invalid_json", @errorName(err));
         return;
@@ -119,7 +132,7 @@ fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
     const message_id = app_mod.jsonObjectString(root, "id");
 
     if (std.mem.eql(u8, kind, "chunk")) {
-        handleHtpChunk(self, pane, message_id, root);
+        handleHtpChunk(self, pane, message_id, root, received_at_ms, received_cwd);
         return;
     }
 
@@ -133,7 +146,7 @@ fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
             return;
         };
         defer if (payload_value) |value| app_mod.deinitJsonValue(self.allocator, value);
-        dispatchHtpEvent(self, pane, message_id, channel, payload_value);
+        dispatchHtpEvent(self, pane, message_id, channel, payload_value, received_at_ms, received_cwd);
         return;
     }
 
@@ -155,7 +168,7 @@ fn handleHtpMessage(self: *App, pane: *Pane, payload: []const u8) void {
     sendHtpProtocolError(self, pane, message_id, "invalid_message", "unknown kind");
 }
 
-fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.json.ObjectMap) void {
+fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.json.ObjectMap, received_at_ms: i64, received_cwd: []const u8) void {
     const request_id = app_mod.jsonObjectString(root, "request_id") orelse {
         sendHtpProtocolError(self, pane, message_id, "invalid_message", "chunk missing request_id");
         return;
@@ -217,16 +230,16 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
     };
     defer self.allocator.free(joined);
     self.htp_codec.removeAssembly(@intFromPtr(pane), request_id);
-    handleHtpMessage(self, pane, joined);
+    handleHtpMessage(self, pane, joined, received_at_ms, received_cwd);
 }
 
-fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value) void {
+fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value, received_at_ms: i64, received_cwd: []const u8) void {
     const lua = if (self.lua) |*value| value else {
         sendHtpProtocolError(self, pane, message_id, "unavailable", "lua runtime unavailable");
         return;
     };
 
-    const ok = lua.dispatchHtpEvent(@intFromPtr(pane), channel, payload) catch |err| {
+    const ok = lua.dispatchHtpEvent(@intFromPtr(pane), channel, payload, received_at_ms, received_cwd) catch |err| {
         sendHtpProtocolError(self, pane, message_id, "internal", @errorName(err));
         return;
     };
@@ -285,7 +298,7 @@ pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, par
 
 pub fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!lua_mod.HtpDispatchResult {
     const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
-    return try lua.dispatchHtpEvent(pane_id, channel, payload);
+    return try lua.dispatchHtpEvent(pane_id, channel, payload, null, null);
 }
 
 fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {

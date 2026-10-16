@@ -37,6 +37,8 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 | `term:pane_layout_changed` | `{ pane }` |
 | `term:cwd_changed` | `{ pane, old_cwd, new_cwd }` |
 | `term:foreground_process_changed` | `{ pane, old_process, new_process }` |
+| `term:command_started` | `{ pane, command, cwd }` |
+| `term:command_finished` | `{ pane, command?, status?, took_ms? }` |
 | `term:program_status_changed` | `{ pane }` (`pane.program_status` contains the current OSC 7501 records) |
 | `term:bell` | `{ pane }` (`pane.has_bell` is `true` until focus) |
 | `term:notification` | `{ pane, title, message, level, id?, ttl_ms?, close }` |
@@ -57,6 +59,14 @@ hollow.events.emit(name, payload?)         -- dispatch a custom event
 The `term:bell` event fires once per BEL (`\a`) received by a pane.
 The pane snapshot's `has_bell` field stays `true` until the pane
 receives focus.
+
+Command lifecycle events rely on Hollow shell integration; Bash, Zsh, and Fish
+report them. `command` is shell-provided command text, `status` is the shell's
+exit code, and `took_ms` is measured from HTP message receipt. Shells without
+these hooks do not update command state.
+Command state survives config reloads. The start event's `cwd` comes from the
+shell's start payload, falling back to the cwd captured at HTP receipt for older
+shell hooks, rather than the pane's cwd at queued dispatch time.
 
 OSC 99, OSC 9, and OSC 777 packets emit `term:notification` and default to an in-app toast.
 The payload's `level` is `info`, `warn`, `error`, or `success`.

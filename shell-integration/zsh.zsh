@@ -108,7 +108,7 @@ _hollow_preexec() {
   _hollow_cmd_started=1
   __hollow_restore_prompt
   __hollow_tty_print $'\e]133;C\a'
-  hollow_htp_emit "command_started" "{\"command\":\"$(hollow_htp_json_escape "$1")\"}"
+  hollow_htp_emit "command_started" "{\"command\":\"$(hollow_htp_json_escape "$1")\",\"cwd\":\"$(hollow_htp_json_escape "$PWD")\"}"
 }
 
 _hollow_precmd() {

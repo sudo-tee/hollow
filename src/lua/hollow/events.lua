@@ -90,6 +90,21 @@ function M.setup(hollow, state, term_helpers)
   local function adapt_foreground_changed(payload)
     return { pane = pane(payload.pane_id), old_process = payload.old_process, new_process = payload.new_process }
   end
+  local function adapt_command_started(payload)
+    return {
+      pane = pane(payload.pane_id),
+      command = payload.command,
+      cwd = payload.cwd,
+    }
+  end
+  local function adapt_command_finished(payload)
+    return {
+      pane = pane(payload.pane_id),
+      command = payload.command,
+      status = payload.status,
+      took_ms = payload.took_ms,
+    }
+  end
   local function adapt_term_notification(payload)
     return {
       pane = pane(payload.pane_id),
@@ -141,6 +156,8 @@ function M.setup(hollow, state, term_helpers)
     ["term:title_changed"] = adapt_title_changed,
     ["term:cwd_changed"] = adapt_cwd_changed,
     ["term:foreground_process_changed"] = adapt_foreground_changed,
+    ["term:command_started"] = adapt_command_started,
+    ["term:command_finished"] = adapt_command_finished,
     ["term:program_status_changed"] = adapt_pane_focused,
     ["term:bell"] = adapt_pane_focused,
     ["term:notification"] = adapt_term_notification,

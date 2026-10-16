@@ -43,6 +43,7 @@ local function make_host_api()
     set_tab_title_by_id = nil,
     set_tab_title = nil,
     set_pane_foreground_process = nil,
+    now_ms = 1234,
     reload_config = 0,
     scroll = nil,
     copy_mode = nil,
@@ -93,7 +94,7 @@ local function make_host_api()
   }
 
   function host_api.now_ms()
-    return 1234
+    return recorded.now_ms
   end
 
   function host_api.on_key(callback)

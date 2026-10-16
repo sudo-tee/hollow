@@ -133,16 +133,34 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
     return true, cloned
   end
 
-  function hollow.htp._handle_emit(channel, payload, pane_id)
-    local handler = emit_handlers[channel]
-    if handler == nil then
-      return false, "unknown htp event: " .. tostring(channel)
-    end
-
+  function hollow.htp._handle_emit(channel, payload, pane_id, received_at_ms, received_cwd)
     local ctx = {
       pane = pane_ctx(pane_id),
       payload = util.clone_value(payload),
     }
+
+    local is_command_lifecycle = channel == "command_started" or channel == "command_ended"
+    if is_command_lifecycle then
+      local payload_value = event_payload(ctx)
+      local target = target_pane_id(ctx, payload_value)
+      if channel == "command_started" then
+        -- Receipt cwd belongs to the source pane, not an explicitly targeted pane.
+        local cwd = type(payload_value.cwd) == "string" and payload_value.cwd
+          or (target == pane_id and received_cwd or nil)
+        term_helpers.command_started(target, payload_value.command, received_at_ms, cwd)
+      else
+        term_helpers.command_finished(target, payload_value.exit_code, received_at_ms)
+      end
+      ctx.pane = pane_ctx(target)
+    end
+
+    local handler = emit_handlers[channel]
+    if handler == nil then
+      if is_command_lifecycle then
+        return true
+      end
+      return false, "unknown htp event: " .. tostring(channel)
+    end
 
     local ok, err = pcall(handler, ctx)
     if not ok then
@@ -481,16 +499,6 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       error("scroll requires a target")
     end
     hollow.term.scroll(where)
-  end)
-
-  hollow.htp.on_emit("command_started", function(ctx)
-    local payload = event_payload(ctx)
-    hollow.term.set_pane_foreground_process(target_pane_id(ctx, payload), payload.command)
-  end)
-
-  hollow.htp.on_emit("command_ended", function(ctx)
-    local payload = event_payload(ctx)
-    hollow.term.set_pane_foreground_process(target_pane_id(ctx, payload), nil)
   end)
 end
 

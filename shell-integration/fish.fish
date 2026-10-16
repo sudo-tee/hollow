@@ -113,7 +113,8 @@ function __hollow_preexec --on-event fish_preexec
     set -g __hollow_prompt_open 0
     __hollow_tty_print "\e]133;C\a"
     set -l escaped_cmd (hollow_htp_json_escape $argv[1])
-    hollow_htp_emit "command_started" "{\"command\":\"$escaped_cmd\"}"
+    set -l escaped_cwd (hollow_htp_json_escape $PWD)
+    hollow_htp_emit "command_started" "{\"command\":\"$escaped_cmd\",\"cwd\":\"$escaped_cwd\"}"
 end
 
 function __hollow_postexec --on-event fish_postexec

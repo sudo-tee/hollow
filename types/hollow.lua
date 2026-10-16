@@ -157,6 +157,8 @@
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
+---| "term:command_started"
+---| "term:command_finished"
 ---| "term:program_status_changed"
 ---| "term:bell"
 ---| "term:notification"
@@ -199,6 +201,8 @@
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
 ---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }
+---@field ["term:command_started"] { pane: HollowPane, command: string, cwd: string }
+---@field ["term:command_finished"] { pane: HollowPane, command?: string, status?: integer, took_ms?: integer }
 ---@field ["term:program_status_changed"] { pane: HollowPane }
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
@@ -447,6 +451,9 @@
 ---@field is_floating boolean
 ---@field is_maximized boolean
 ---@field has_bell boolean
+---@field busy boolean True while shell integration reports a running command.
+---@field running? { command: string, ms: integer } Current shell command and elapsed time.
+---@field last? { command?: string, status?: integer, took_ms?: integer } Most recently finished shell command.
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field foreground_process string
 ---@field program_status HollowProgramStatus[] OSC 7501 records, oldest updated first.

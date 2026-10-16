@@ -107,6 +107,8 @@ single `result` or `error` when checked.
 | `reload_config` | `{}` |
 | `set_theme` | `{ name }` |
 | `scroll` | `{ where }` |
+| `command_started` | `{ command, cwd? }` |
+| `command_ended` | `{ exit_code }` |
 
 ### Custom channels
 

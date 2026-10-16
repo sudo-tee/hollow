@@ -53,6 +53,8 @@ function M.new(host_api)
         ["term:pane_layout_changed"] = true,
         ["term:cwd_changed"] = true,
         ["term:foreground_process_changed"] = true,
+        ["term:command_started"] = true,
+        ["term:command_finished"] = true,
         ["term:program_status_changed"] = true,
         ["term:bell"] = true,
         ["term:notification"] = true,

@@ -129,6 +129,65 @@ describe("HTP test suite", function()
     end)
   end)
 
+  describe("command lifecycle emits", function()
+    it("publishes command events and updates pane snapshots", function()
+      local started_event
+      local finished_event
+      local custom_handler_called = false
+      hollow.events.once("term:command_started", function(event)
+        started_event = event
+      end)
+      hollow.events.once("term:command_finished", function(event)
+        finished_event = event
+      end)
+      hollow.htp.on_emit("command_started", function(ctx)
+        custom_handler_called = true
+        harness.assert_true(ctx.pane.busy, "custom HTP handler should see updated command state")
+      end)
+
+      recorded.now_ms = 5000
+      local ok_start = hollow.htp._handle_emit(
+        "command_started",
+        { command = "cargo test" },
+        101,
+        5000
+      )
+      harness.assert_true(ok_start, "command_started should succeed with custom HTP handler")
+      harness.assert_true(custom_handler_called, "custom command handler should still run")
+      harness.assert_equal(
+        recorded.set_pane_foreground_process.process,
+        "cargo test",
+        "command start should preserve foreground process tracking"
+      )
+      harness.assert_equal(started_event.command, "cargo test", "start event should include command")
+      harness.assert_equal(started_event.cwd, "/tmp/project", "start event should include cwd")
+      harness.assert_equal(started_event.pane.id, 101, "start event should include pane snapshot")
+      harness.assert_true(started_event.pane.busy, "start event pane should be busy")
+      harness.assert_equal(
+        started_event.pane.running.command,
+        "cargo test",
+        "pane snapshot should expose running command"
+      )
+
+      recorded.now_ms = 5250
+      local running_pane = hollow.term.pane_by_id(101)
+      harness.assert_equal(running_pane.running.ms, 250, "running duration should use monotonic time")
+
+      recorded.now_ms = 6500
+      local ok_finish = hollow.htp._handle_emit("command_ended", { exit_code = 7 }, 101, 6375)
+      harness.assert_true(ok_finish, "command_ended should be handled without a custom handler")
+      harness.assert_equal(finished_event.command, "cargo test", "finish event should pair command")
+      harness.assert_equal(finished_event.status, 7, "finish event should expose shell exit code")
+      harness.assert_equal(finished_event.took_ms, 1375, "duration should use HTP receipt times")
+      harness.assert_true(not finished_event.pane.busy, "finished pane should no longer be busy")
+      harness.assert_equal(finished_event.pane.running, nil, "finished pane should clear running command")
+      harness.assert_equal(finished_event.pane.last.command, "cargo test", "snapshot should retain last command")
+      harness.assert_equal(finished_event.pane.last.status, 7, "snapshot should retain exit status")
+      harness.assert_equal(finished_event.pane.last.took_ms, 1375, "snapshot should retain duration")
+      harness.assert_equal(recorded.set_pane_foreground_process.process, nil, "finish should clear foreground process")
+    end)
+  end)
+
   describe("HTP pane tag emits", function()
     it("dispatches add_pane_tag", function()
       local ok_add_pane_tag = hollow.htp._handle_emit("add_pane_tag", { id = 101, tag = "ci" }, 101)
