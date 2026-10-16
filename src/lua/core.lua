@@ -10,6 +10,7 @@ local hollow = {
   events = {},
   async = {},
   ui = {},
+  route = {},
   htp = {},
   fs = {},
   process = {},
@@ -33,6 +34,7 @@ local htp = require("hollow.htp")
 local json = require("hollow.json")
 local keymap = require("hollow.keymap")
 local plugins = require("hollow.plugins")
+local route = require("hollow.route")
 local state = require("hollow.state").new(host_api)
 local tbl = require("hollow.tbl")
 local term = require("hollow.term")
@@ -57,6 +59,7 @@ for name, value in pairs(ui_exports) do
 end
 actions.setup(hollow, host_api)
 keymap.setup(hollow, host_api, state)
+hollow.route = route.setup(hollow, host_api)
 state.config.values.load_default_keymaps = true
 local events_runtime = events.setup(hollow, state, term_helpers)
 copy_mode.setup()

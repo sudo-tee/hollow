@@ -29,6 +29,7 @@ namespace you need. The full type schema lives in
 | `hollow.term` | [term.md](term.md) |
 | `hollow.events` | [events.md](events.md) |
 | `hollow.keymap` | [keymap.md](keymap.md) |
+| `hollow.route` | [route.md](route.md) |
 | `hollow.ui` | [ui.md](ui.md) |
 | `hollow.ui.workspace` | [workspace.md](workspace.md) |
 | `hollow.theme` | [theme.md](theme.md) |

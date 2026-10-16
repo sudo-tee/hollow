@@ -5190,7 +5190,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                     g_skip_mouse_release = .left;
                     g_skip_mouse_move_frames = 8;
                     g_mouse_button_down = null;
-                    _ = app.enqueueMouse(.{ .open_hyperlink = .{ .pane = hovered_link.pane, .point = hovered_link.point } });
+                    _ = app.enqueueMouse(.{ .open_hyperlink = .{ .pane = hovered_link.pane, .point = hovered_link.point, .mods = mods } });
                     return;
                 }
             }

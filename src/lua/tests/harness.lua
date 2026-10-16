@@ -48,6 +48,7 @@ local function make_host_api()
     scroll = nil,
     copy_mode = nil,
     quick_select = nil,
+    link_route_handler = nil,
     workspace_default_cwd = nil,
     send_text = {},
     bell = nil,
@@ -705,6 +706,10 @@ local function make_host_api()
   function host_api.quick_select_handlers(match_handler, action_handler)
     recorded.quick_select_match_handler = match_handler
     recorded.quick_select_action_handler = action_handler
+  end
+
+  function host_api.link_route_handler(handler)
+    recorded.link_route_handler = handler
   end
 
   function host_api.switch_tab_by_id(tab_id)

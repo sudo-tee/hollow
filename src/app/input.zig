@@ -233,6 +233,7 @@ pub const PendingInputEvent = union(enum) {
     open_hyperlink: struct {
         pane: *Pane,
         point: selection.CellPoint,
+        mods: u32,
     },
 };
 
@@ -627,7 +628,7 @@ pub fn processInputQueue(self: *App) void {
                 quick_select.handleInput(self, value);
             },
             .open_hyperlink => |open_ev| {
-                if (self.hasPane(open_ev.pane)) hyperlinks.openHyperlinkAt(self, open_ev.pane, open_ev.point);
+                if (self.hasPane(open_ev.pane)) hyperlinks.openHyperlinkAt(self, open_ev.pane, open_ev.point, open_ev.mods);
             },
         }
     }

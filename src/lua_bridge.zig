@@ -133,6 +133,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.program_status", .source = @embedFile("lua/hollow/program_status.lua") },
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
+    .{ .name = "hollow.route", .source = @embedFile("lua/hollow/route.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
     .{ .name = "hollow.copy_mode", .source = @embedFile("lua/hollow/copy_mode.lua") },
     .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
@@ -673,6 +674,23 @@ pub const QuickSelectActionResult = enum {
     failed,
 };
 
+pub const LinkRouteRequest = struct {
+    url: []const u8,
+    text: []const u8,
+    pane_id: usize,
+    mods: u32,
+    source: []const u8,
+    kind: []const u8,
+    pattern_index: ?usize = null,
+};
+
+pub const LinkRouteResult = union(enum) {
+    fallback,
+    handled,
+    rewrite: []u8,
+    failed,
+};
+
 pub const SidebarLayoutSide = enum {
     left,
     right,
@@ -872,6 +890,7 @@ pub const Runtime = struct {
         if (self.context.gui_ready_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.gui_ready_ref);
         if (self.context.quick_select_match_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_match_ref);
         if (self.context.quick_select_action_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_action_ref);
+        if (self.context.link_route_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.link_route_ref);
         for (self.context.deferred_callback_refs.items) |callback_ref| {
             if (callback_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         }
@@ -1546,6 +1565,74 @@ pub const Runtime = struct {
         return .fallback;
     }
 
+    pub fn runLinkRoute(self: *Runtime, request: LinkRouteRequest) LinkRouteResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const ref = self.context.link_route_ref;
+        if (ref == LUA_NOREF) return .fallback;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        api.create_table(self.state, 0, 7);
+        api.push_lstring(self.state, request.url.ptr, request.url.len);
+        api.set_field(self.state, -2, "url");
+        api.push_lstring(self.state, request.text.ptr, request.text.len);
+        api.set_field(self.state, -2, "text");
+        api.push_number(self.state, @floatFromInt(request.pane_id));
+        api.set_field(self.state, -2, "pane_id");
+        api.push_number(self.state, @floatFromInt(request.mods));
+        api.set_field(self.state, -2, "mods");
+        api.push_lstring(self.state, request.source.ptr, request.source.len);
+        api.set_field(self.state, -2, "source");
+        api.push_lstring(self.state, request.kind.ptr, request.kind.len);
+        api.set_field(self.state, -2, "kind");
+        if (request.pattern_index) |pattern_index| {
+            api.push_number(self.state, @floatFromInt(pattern_index));
+        } else {
+            api.push_nil(self.state);
+        }
+        api.set_field(self.state, -2, "pattern_index");
+
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "link_route");
+            return .failed;
+        }
+
+        const result_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (result_type == .nil_type) return .fallback;
+        if (result_type != .table) {
+            std.log.err("lua: link route must return nil, a handled result, or a URL rewrite", .{});
+            return .failed;
+        }
+
+        const result_idx = absoluteIndex(api, self.state, -1);
+        api.get_field(self.state, result_idx, "handled");
+        const handled = @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .boolean and api.to_boolean(self.state, -1) != 0;
+        pop(api, self.state, 1);
+        if (handled) return .handled;
+
+        api.get_field(self.state, result_idx, "url");
+        const url_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (url_type == .nil_type) {
+            std.log.err("lua: link route result must include handled=true or a url string", .{});
+            return .failed;
+        }
+        if (url_type != .string) {
+            std.log.err("lua: link route result url must be a string", .{});
+            return .failed;
+        }
+        var url_len: usize = 0;
+        const url_ptr = api.to_lstring(self.state, -1, &url_len) orelse return .failed;
+        if (url_len == 0 or std.mem.indexOfScalar(u8, url_ptr[0..url_len], 0) != null) {
+            std.log.err("lua: link route result url must be non-empty and contain no NUL", .{});
+            return .failed;
+        }
+        const url = self.allocator.dupe(u8, url_ptr[0..url_len]) catch return .failed;
+        return .{ .rewrite = url };
+    }
+
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, is_hovered: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -2218,6 +2305,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "quick_select_handlers");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_link_route_handler, 1);
+        api.set_field(self.state, -2, "link_route_handler");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_current_tab_id, 1);
         api.set_field(self.state, -2, "current_tab_id");
 
@@ -2457,6 +2548,7 @@ const BridgeContext = struct {
     gui_ready_ref: c_int = -1,
     quick_select_match_ref: c_int = -1,
     quick_select_action_ref: c_int = -1,
+    link_route_ref: c_int = -1,
     gui_ready_fired: bool = false,
     process_jobs: [16]?*ProcessJob = [_]?*ProcessJob{null} ** 16,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
@@ -6741,6 +6833,22 @@ fn l_quick_select_handlers(state: *State) callconv(.c) c_int {
     ctx.quick_select_match_ref = api.ref(state, LUA_REGISTRYINDEX);
     api.push_value(state, 2);
     ctx.quick_select_action_ref = api.ref(state, LUA_REGISTRYINDEX);
+    return 0;
+}
+
+fn l_link_route_handler(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (ctx.link_route_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.link_route_ref);
+        ctx.link_route_ref = LUA_NOREF;
+    }
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+        std.log.err("lua: link_route_handler expects a function", .{});
+        return 0;
+    }
+    api.push_value(state, 1);
+    ctx.link_route_ref = api.ref(state, LUA_REGISTRYINDEX);
     return 0;
 }
 

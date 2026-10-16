@@ -5,6 +5,7 @@ const ghostty = @import("../term/ghostty.zig");
 const text_helpers = @import("text_helpers.zig");
 const selection_mod = @import("selection.zig");
 const platform = @import("../platform.zig");
+const lua_bridge = @import("../lua_bridge.zig");
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const Pane = @import("../pane.zig").Pane;
@@ -21,6 +22,7 @@ pub const HoveredHyperlink = struct {
 const HyperlinkToken = struct {
     start_col: usize,
     end_col: usize,
+    text: []const u8,
     open_text: []const u8,
 };
 
@@ -143,6 +145,7 @@ fn wrappedTokenAt(rows: anytype, point: CellPoint, cfg: Hyperlinks, out: []u8) ?
     return .{
         .start_col = @max(span_start, point.col -| (cursor - lo)),
         .end_col = @min(span_end, point.col + (hi - cursor)),
+        .text = token,
         .open_text = open_text,
     };
 }
@@ -181,7 +184,7 @@ fn osc8TokenAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?HyperlinkT
     while (start_col > 0 and sameUriAt(self, pane, .{ .row = point.row, .col = start_col - 1 }, uri)) start_col -= 1;
     var end_col = point.col + 1;
     while (end_col < pane.cols and sameUriAt(self, pane, .{ .row = point.row, .col = end_col }, uri)) end_col += 1;
-    return .{ .start_col = start_col, .end_col = end_col, .open_text = uri };
+    return .{ .start_col = start_col, .end_col = end_col, .text = uri, .open_text = uri };
 }
 
 fn sameUriAt(self: *App, pane: *Pane, point: CellPoint, uri: []const u8) bool {
@@ -198,11 +201,33 @@ fn hyperlinkTokenAt(self: *App, pane: *Pane, point: CellPoint, out: []u8) ?Hyper
     return wrappedTokenAt(&rows, point, self.config.hyperlinks, out);
 }
 
-pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint) void {
+pub fn routeLink(self: *App, request: lua_bridge.LinkRouteRequest) lua_bridge.LinkRouteResult {
+    if (self.lua) |*lua| return lua.runLinkRoute(request);
+    return .fallback;
+}
+
+pub fn openHyperlinkAt(self: *App, pane: *Pane, point: CellPoint, mods: u32) void {
     if (!self.config.hyperlinks.enabled) return;
     var row_buf: [8192]u8 = undefined;
     const token = hyperlinkTokenAt(self, pane, point, &row_buf) orelse return;
-    platform.openExternalWithOpenerAsync(token.open_text, self.config.hyperlinks.opener) catch |err| {
+
+    var route_url: ?[]u8 = null;
+    switch (routeLink(self, .{
+        .url = token.open_text,
+        .text = token.text,
+        .pane_id = @intFromPtr(pane),
+        .mods = mods,
+        .source = "click",
+        .kind = "url",
+    })) {
+        .fallback => {},
+        .handled => return,
+        .rewrite => |url| route_url = url,
+        .failed => return,
+    }
+    defer if (route_url) |url| self.allocator.free(url);
+
+    platform.openExternalWithOpenerAsync(route_url orelse token.open_text, self.config.hyperlinks.opener) catch |err| {
         std.log.err("open hyperlink failed: {s}", .{@errorName(err)});
     };
 }

@@ -221,7 +221,7 @@
 ---@field ["copy_mode:search_requested"] {}
 ---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
 ---@field ["quick_select:no_matches"] {}
----@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command", pattern_index: integer|nil }
+---@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command"|"route", pattern_index: integer|nil }
 ---@field ["topbar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["topbar:leave"] {}
 ---@field ["topbar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
@@ -343,6 +343,23 @@
 ---@field trim_trailing? string
 
 ---@alias HollowQuickSelectKind "url"|"ip"|"quote"|"filename"|"custom"
+
+---@alias HollowLinkRouteSource "click"|"quick_select"
+
+---@class HollowLinkRouteRequest
+---@field url string Effective open target; can be URL or quick-select path
+---@field text string Original matched text; OSC 8 links use their embedded URI
+---@field pane HollowPane|nil Origin pane snapshot
+---@field pane_id integer Origin pane ID
+---@field mods HollowKeyMods Modifier chord, e.g. "<S>"; empty when unmodified
+---@field source HollowLinkRouteSource
+---@field kind HollowQuickSelectKind
+---@field pattern_index integer|nil Custom quick-select pattern index
+
+---@alias HollowLinkRouteResult { handled: true }|{ url: string }
+
+---@class HollowRouteNamespace
+---@field link fun(handler:fun(request:HollowLinkRouteRequest):HollowLinkRouteResult|false|nil):fun():boolean Register link handler; return unsubscribe function
 
 ---@class HollowQuickSelectActionContext
 ---@field kind HollowQuickSelectKind
@@ -2075,6 +2092,7 @@ function plugins.sync() end
 ---@field copy_mode_search_prev fun()
 ---@field quick_select_start fun(action: "open"|"copy")
 ---@field quick_select_handlers fun(match_handler:fun(row_text:string):table[], action_handler:fun(kind:string, pattern_index:integer, text:string, fallback:string):string)
+---@field link_route_handler fun(handler:fun(request:table):any)
 ---@field platform HollowPlatformInfo
 
 ---@class HollowUiModuleExports
@@ -2092,6 +2110,7 @@ function plugins.sync() end
 ---@field async HollowAsyncNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
+---@field route HollowRouteNamespace
 ---@field ui HollowUi
 ---@field htp HollowHtpNamespace
 ---@field fs HollowFsNamespace
@@ -2120,6 +2139,7 @@ hollow.term = term
 hollow.workspace = workspace_api
 hollow.events = events
 hollow.keymap = keymap
+hollow.route = {}
 hollow.color = color
 hollow.ui = ui
 hollow.htp = htp
