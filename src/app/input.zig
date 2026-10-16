@@ -62,6 +62,8 @@ pub const PendingInputEvent = union(enum) {
     switch_tab: usize,
     /// Close a specific tab index without focusing it first.
     close_tab_at: usize,
+    /// A tab-close button click; unlike raw operations, consults Lua action overrides.
+    user_close_tab_at: usize,
     new_tab: struct {
         cwd: ?[]const u8,
         domain_name: ?[]const u8,
@@ -301,6 +303,14 @@ pub fn processInputQueue(self: *App) void {
                 mux_ops.switchTab(self, idx);
             },
             .close_tab_at => |idx| {
+                mux_ops.closeTabAt(self, idx);
+            },
+            .user_close_tab_at => |idx| {
+                const mux = if (self.mux) |*value| value else continue;
+                const tab_id = if (mux.tabAt(idx)) |tab| tab.id else continue;
+                if (self.lua) |*lua| {
+                    if (lua.invokeTabAction("close_tab", tab_id)) continue;
+                }
                 mux_ops.closeTabAt(self, idx);
             },
             .new_tab => |payload| {

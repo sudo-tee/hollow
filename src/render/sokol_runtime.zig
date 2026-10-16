@@ -5124,7 +5124,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 } else if (bar_hit.surface == .bottom and bar_hit.node_id != null) {
                     app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 } else if (bar_hit.close_tab_index != null and bar_hit.close_tab_index.? == ti) {
-                    _ = app.enqueueMouse(.{ .close_tab_at = ti });
+                    _ = app.enqueueMouse(.{ .user_close_tab_at = ti });
                 } else {
                     _ = app.enqueueMouse(.{ .switch_tab = ti });
                 }

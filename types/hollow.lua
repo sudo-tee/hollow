@@ -1041,6 +1041,13 @@
 ---@field category? HollowActionCategory
 ---@field workspace_targetable? boolean
 
+---@class HollowActionContext
+---@field name string Action being invoked
+---@field args table Original positional arguments, with n recording their count (including nils)
+---@field pane? HollowPane Current pane snapshot
+---@field tab? HollowTab Current tab snapshot
+---@field workspace? HollowWorkspace Current workspace snapshot
+
 ---@class HollowPaletteEntry
 ---@field name string
 ---@field desc string
@@ -1178,6 +1185,7 @@
 ---@class HollowActionNamespace
 ---@field register fun(name: string, spec: HollowActionSpec)
 ---@field list fun(): HollowPaletteEntry[]
+---@field override fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function
 ---@field [string] fun(opts?: table)
 
 ---@class HollowConfigNamespace

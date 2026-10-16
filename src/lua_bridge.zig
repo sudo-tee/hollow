@@ -995,6 +995,29 @@ pub const Runtime = struct {
         }
     }
 
+    /// Invoke a user-facing tab action with an explicit target. Raw API operations
+    /// do not use this path. Returns false only when no Lua action exists.
+    pub fn invokeTabAction(self: *Runtime, name: [:0]const u8, tab_id: usize) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        api.get_field(self.state, -1, "action");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        api.get_field(self.state, -1, name);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return false;
+        api.create_table(self.state, 0, 1);
+        api.push_number(self.state, @floatFromInt(tab_id));
+        api.set_field(self.state, -2, "tab_id");
+        if (api.pcall(self.state, 1, 0, 0) != 0) {
+            logLuaError(api, self.state, "tab action");
+        }
+        return true;
+    }
+
     /// Fire the Lua on_key handler (if registered).
     /// Returns true if the key was consumed by Lua (handler returned true).
     pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32) bool {
@@ -7102,6 +7125,29 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "tab action bridge preserves target and Lua stack" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\received = {}
+        \\hollow = {action = {close_tab = function(opts)
+        \\  received[#received + 1] = opts.tab_id
+        \\end}}
+    );
+    const api = runtime.context.api;
+    const top = api.get_top(runtime.state);
+    try std.testing.expect(runtime.invokeTabAction("close_tab", 201));
+    try std.testing.expect(runtime.invokeTabAction("close_tab", 202));
+    try std.testing.expect(!runtime.invokeTabAction("missing", 201));
+    try std.testing.expectEqual(top, api.get_top(runtime.state));
+    try runtime.runString("assert(#received == 2 and received[1] == 201 and received[2] == 202)");
+    try runtime.runString("hollow = nil");
+    try std.testing.expect(!runtime.invokeTabAction("close_tab", 201));
+    try std.testing.expectEqual(top, api.get_top(runtime.state));
 }
 
 test "command state crosses runtime recreation without losing numeric pane IDs" {

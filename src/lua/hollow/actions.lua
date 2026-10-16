@@ -1,69 +1,135 @@
 local M = {}
 
-local registry = {}
-
-local function copy_mode_state()
-  local state = require("hollow.state").get()
-  state.copy_mode = state.copy_mode
-    or {
-      active = false,
-      query = "",
-      hud = nil,
-      selecting = false,
-      pending_g = false,
-      match_count = 0,
-      match_index = nil,
-      block = false,
-    }
-  return state.copy_mode
-end
-
-local function copy_mode_move(direction)
-  return function()
-    local cs = copy_mode_state()
-    _G.host_api.copy_mode_move(direction, cs.selecting == true)
-  end
-end
-
----@param hollow Hollow
----@param name string
----@param spec HollowActionSpec
-local function register(hollow, name, spec)
-  registry[name] = spec
-  hollow.action[name] = spec.run
-end
-
-local function list()
-  local entries = {}
-  for name, spec in pairs(registry) do
-    entries[#entries + 1] = {
-      name = name,
-      desc = spec.desc or "",
-      category = spec.category or "general",
-      run = spec.run,
-      workspace_targetable = spec.workspace_targetable or false,
-    }
-  end
-  table.sort(entries, function(a, b)
-    if a.category ~= b.category then
-      local cat_order = {
-        tab = 1,
-        pane = 2,
-        workspace = 3,
-        window = 4,
-        scroll = 5,
-        copy_mode = 6,
-        general = 7,
-        user = 8,
-      }
-      return (cat_order[a.category] or 99) < (cat_order[b.category] or 99)
-    end
-    return a.name < b.name
-  end)
-  return entries
-end
-
 function M.setup(hollow, host_api)
+  local registry = {}
+  local overrides = {}
+  local in_override = false
+
+  local function dispatch(name, ...)
+    local handlers = overrides[name]
+    if not in_override and handlers and #handlers > 0 then
+      local ctx = {
+        name = name,
+        args = { n = select("#", ...), ... },
+        pane = hollow.term.current_pane(),
+        tab = hollow.term.current_tab(),
+        workspace = hollow.term.current_workspace(),
+      }
+      -- Snapshot the chain: additions take effect on the next invocation.
+      local chain = {}
+      for i, handler in ipairs(handlers) do
+        chain[i] = handler
+      end
+      for _, handler in ipairs(chain) do
+        if handler.active then
+          in_override = true
+          local ok, handled = pcall(handler.fn, ctx)
+          in_override = false
+          if not ok then
+            pcall(
+              hollow.ui.notify.error,
+              "Action override " .. name .. " failed: " .. tostring(handled)
+            )
+          elseif handled then
+            return
+          end
+        end
+      end
+    end
+    return registry[name].run(...)
+  end
+
+  local function override(name, fn)
+    if type(name) ~= "string" or not registry[name] then
+      error("hollow.action.override: unknown action " .. tostring(name))
+    end
+    if type(fn) ~= "function" then
+      error("hollow.action.override: handler must be a function")
+    end
+    local handler = { fn = fn, active = true }
+    overrides[name] = overrides[name] or {}
+    local handlers = overrides[name]
+    handlers[#handlers + 1] = handler
+    return function()
+      if not handler.active then
+        return
+      end
+      handler.active = false
+      for i, item in ipairs(handlers) do
+        if item == handler then
+          table.remove(handlers, i)
+          break
+        end
+      end
+    end
+  end
+
+  local function copy_mode_state()
+    local state = require("hollow.state").get()
+    state.copy_mode = state.copy_mode
+      or {
+        active = false,
+        query = "",
+        hud = nil,
+        selecting = false,
+        pending_g = false,
+        match_count = 0,
+        match_index = nil,
+        block = false,
+      }
+    return state.copy_mode
+  end
+
+  local function copy_mode_move(direction)
+    return function()
+      local cs = copy_mode_state()
+      _G.host_api.copy_mode_move(direction, cs.selecting == true)
+    end
+  end
+
+  ---@param hollow Hollow
+  ---@param name string
+  ---@param spec HollowActionSpec
+  local function register(hollow, name, spec)
+    if name == "register" or name == "list" or name == "override" then
+      error("reserved action name: " .. name)
+    end
+    registry[name] = spec
+    hollow.action[name] = function(...)
+      return dispatch(name, ...)
+    end
+  end
+
+  local function list()
+    local entries = {}
+    for name, spec in pairs(registry) do
+      entries[#entries + 1] = {
+        name = name,
+        desc = spec.desc or "",
+        category = spec.category or "general",
+        run = hollow.action[name],
+        workspace_targetable = spec.workspace_targetable or false,
+      }
+    end
+    table.sort(entries, function(a, b)
+      if a.category ~= b.category then
+        local cat_order = {
+          tab = 1,
+          pane = 2,
+          workspace = 3,
+          window = 4,
+          scroll = 5,
+          copy_mode = 6,
+          general = 7,
+          user = 8,
+        }
+        return (cat_order[a.category] or 99) < (cat_order[b.category] or 99)
+      end
+      return a.name < b.name
+    end)
+    return entries
+  end
+
   local copy_mode = require("hollow.copy_mode")
 
   ---@type HollowActionNamespace
@@ -72,6 +138,7 @@ function M.setup(hollow, host_api)
     register(hollow, name, spec)
   end
   hollow.action.list = list
+  hollow.action.override = override
 
   -- ── Pane Actions ─────────────────────────────────
 
@@ -242,8 +309,12 @@ function M.setup(hollow, host_api)
   })
 
   register(hollow, "close_tab", {
-    run = function()
-      host_api.close_tab()
+    run = function(opts)
+      if opts and opts.tab_id then
+        hollow.term.close_tab(opts.tab_id)
+      else
+        host_api.close_tab()
+      end
     end,
     desc = "Close current tab",
     category = "tab",
