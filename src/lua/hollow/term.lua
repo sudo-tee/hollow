@@ -3,10 +3,31 @@ local M = {}
 function M.setup(hollow, host_api)
   local pane_tags = {}
   local command_states = {}
+  local pending_runs = {}
 
   local function now_ms()
     local value = host_api.now_ms and host_api.now_ms() or 0
     return type(value) == "number" and value or 0
+  end
+
+  local function finish_run(pane_id, result, err)
+    local run = pending_runs[pane_id]
+    if run == nil then
+      return
+    end
+    if err == nil then
+      if not host_api.pane_exists(pane_id) or host_api.get_pane_pid(pane_id) ~= run.pid then
+        err = "pane disappeared or was replaced"
+      elseif now_ms() >= run.deadline then
+        err = "command timed out; command was not cancelled"
+      end
+    end
+    pending_runs[pane_id] = nil
+    if err ~= nil then
+      run.reject(err)
+    else
+      run.resolve(result)
+    end
   end
 
   local function normalize_tag(tag, fn_name)
@@ -149,6 +170,7 @@ function M.setup(hollow, host_api)
           and host_api.get_pane_foreground_process(pane_id)
         or nil,
       busy = running ~= nil,
+      at_prompt = command_state ~= nil and command_state.at_prompt == true,
       running = running_snapshot,
       last = last and {
         command = last.command,
@@ -593,6 +615,7 @@ function M.setup(hollow, host_api)
           pid = command_state.pid,
           running = command_state.running,
           last = command_state.last,
+          at_prompt = command_state.at_prompt,
         }
       end
     end
@@ -609,6 +632,7 @@ function M.setup(hollow, host_api)
           pid = entry.pid,
           running = entry.running,
           last = entry.last,
+          at_prompt = entry.at_prompt,
         }
       end
     end
@@ -626,12 +650,22 @@ function M.setup(hollow, host_api)
       command_state = nil
     end
     command_state = command_state or { pid = pid }
+    command_state.at_prompt = false
     command_state.running = {
       command = command,
       cwd = type(received_cwd) == "string" and received_cwd or host_api.get_pane_cwd(pane_id),
       started_at_ms = type(received_at_ms) == "number" and received_at_ms or now_ms(),
     }
     command_states[pane_id] = command_state
+
+    local run = pending_runs[pane_id]
+    if run ~= nil then
+      if run.started then
+        finish_run(pane_id, nil, "command tracking interrupted by another command")
+      else
+        run.started = true
+      end
+    end
 
     hollow.term.set_pane_foreground_process(pane_id, command)
     hollow._emit_builtin_event("term:command_started", {
@@ -664,6 +698,16 @@ function M.setup(hollow, host_api)
     }
     command_states[pane_id] = command_state
 
+    local run = pending_runs[pane_id]
+    if run ~= nil and run.started then
+      run.result = {
+        pane_id = pane_id,
+        command = run.command,
+        status = status,
+        took_ms = took_ms,
+      }
+    end
+
     hollow.term.set_pane_foreground_process(pane_id, nil)
     hollow._emit_builtin_event("term:command_finished", {
       pane_id = pane_id,
@@ -671,6 +715,99 @@ function M.setup(hollow, host_api)
       status = status,
       took_ms = took_ms,
     })
+  end
+
+  -- Completion is delivered at the following prompt so :next() can run again.
+  local function prompt_ready(pane_id)
+    if type(pane_id) ~= "number" or not host_api.pane_exists(pane_id) then
+      return
+    end
+    local pid = host_api.get_pane_pid(pane_id)
+    local command_state = command_states[pane_id]
+    if command_state == nil or command_state.pid ~= pid then
+      command_state = { pid = pid }
+      command_states[pane_id] = command_state
+    end
+    command_state.at_prompt = command_state.running == nil
+    local run = pending_runs[pane_id]
+    if run ~= nil and run.result ~= nil and command_state.at_prompt then
+      finish_run(pane_id, run.result)
+    end
+  end
+
+  function hollow.term.run(command, opts)
+    if type(command) ~= "string" or not command:match("%S") or command:find("%c") then
+      error(
+        "hollow.term.run(command, opts?) expects a non-empty single-line command without control characters"
+      )
+    end
+    if opts ~= nil and type(opts) ~= "table" then
+      error("hollow.term.run(command, opts?) expects opts to be a table")
+    end
+    opts = opts or {}
+    if
+      opts.pane_id ~= nil
+      and (
+        type(opts.pane_id) ~= "number"
+        or opts.pane_id <= 0
+        or opts.pane_id >= math.huge
+        or opts.pane_id % 1 ~= 0
+      )
+    then
+      error("pane_id must be a positive finite integer")
+    end
+    local timeout_ms = opts.timeout_ms == nil and 30000 or opts.timeout_ms
+    if
+      type(timeout_ms) ~= "number"
+      or timeout_ms <= 0
+      or timeout_ms >= math.huge
+      or timeout_ms % 1 ~= 0
+    then
+      error("timeout_ms must be a positive finite integer")
+    end
+
+    return hollow.async.promise(function(resolve, reject)
+      local ok, pane_id = pcall(resolve_pane_id, opts.pane_id, "hollow.term.run(command, opts?)")
+      if not ok then
+        reject(pane_id)
+        return
+      end
+      local pane = pane_snapshot(pane_id)
+      if pending_runs[pane_id] ~= nil then
+        reject("a run is already pending for this pane")
+        return
+      end
+      if not pane.at_prompt or pane.busy or pane.active_screen ~= "primary" then
+        reject("pane is not at a known shell prompt; shell integration is required")
+        return
+      end
+
+      local run = { command = command, pid = pane.pid, resolve = resolve, reject = reject }
+      local deadline = now_ms() + timeout_ms
+      run.deadline = deadline
+      pending_runs[pane_id] = run
+      command_states[pane_id].at_prompt = false
+      local function poll()
+        if pending_runs[pane_id] ~= run then
+          return
+        end
+        if not host_api.pane_exists(pane_id) or host_api.get_pane_pid(pane_id) ~= run.pid then
+          finish_run(pane_id, nil, "pane disappeared or was replaced")
+        elseif now_ms() >= deadline then
+          finish_run(pane_id, nil, "command timed out; command was not cancelled")
+        else
+          host_api.defer(poll, math.min(25, deadline - now_ms()))
+        end
+      end
+      -- Register all tracking before input; native input may trigger callbacks.
+      local sent, result = pcall(function()
+        host_api.defer(poll, math.min(25, timeout_ms))
+        return host_api.send_text_to_pane(pane_id, command .. "\r")
+      end)
+      if not sent or not result then
+        finish_run(pane_id, nil, sent and "failed to send command to pane" or tostring(result))
+      end
+    end)
   end
 
   local MODS_CTRL = 0x02
@@ -931,14 +1068,18 @@ function M.setup(hollow, host_api)
     tab_snapshot = tab_snapshot,
     command_started = command_started,
     command_finished = command_finished,
+    prompt_ready = prompt_ready,
     clear_running_command = function(pane_id)
       local command_state = command_states[pane_id]
       if command_state ~= nil then
         command_state.running = nil
+        command_state.at_prompt = false
       end
+      finish_run(pane_id, nil, "pane exited before command completion")
     end,
     forget_pane = function(pane_id)
       command_states[pane_id] = nil
+      finish_run(pane_id, nil, "pane closed before command completion")
       pane_tags[pane_id] = nil
     end,
   }

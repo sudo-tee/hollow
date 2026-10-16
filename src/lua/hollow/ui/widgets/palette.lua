@@ -81,9 +81,29 @@ end
 local providers = {}
 
 function providers.actions()
+  local snapshots
   return hollow
     .tbl(hollow.action.list())
-    :map(function(a)
+    :filter_map(function(a)
+      if a.available then
+        snapshots = snapshots
+          or {
+            pane = hollow.term.current_pane(),
+            tab = hollow.term.current_tab(),
+            workspace = hollow.term.current_workspace(),
+          }
+        local ok, available = pcall(a.available, {
+          name = a.name,
+          args = { n = 0 },
+          pane = snapshots.pane,
+          tab = snapshots.tab,
+          workspace = snapshots.workspace,
+        })
+        if not ok or available ~= true then
+          return nil
+        end
+      end
+
       local chords = hollow
         .tbl(hollow.keymap.find_by_action(a.name, "normal"))
         :concat(hollow.keymap.find_by_action(a.name, "copy_mode"))

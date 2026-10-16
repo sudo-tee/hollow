@@ -1,4 +1,5 @@
 local M = {}
+local util = require("hollow.util")
 
 ---@param hollow Hollow
 ---@param state HollowState
@@ -6,6 +7,8 @@ local M = {}
 function M.setup(hollow, state, term_helpers)
   local event_handles = state.events.handles
   local event_listeners = state.events.listeners
+  local filter_listeners = {}
+  local filtering = {}
 
   local function remove_event_handle(handle)
     local listener = event_handles[handle]
@@ -14,7 +17,8 @@ function M.setup(hollow, state, term_helpers)
     end
 
     event_handles[handle] = nil
-    local listeners = event_listeners[listener.name]
+    local registry = listener.filter and filter_listeners or event_listeners
+    local listeners = registry[listener.name]
     if listeners ~= nil then
       for i, item in ipairs(listeners) do
         if item == handle then
@@ -23,7 +27,7 @@ function M.setup(hollow, state, term_helpers)
         end
       end
       if #listeners == 0 then
-        event_listeners[listener.name] = nil
+        registry[listener.name] = nil
       end
     end
     return true
@@ -91,13 +95,21 @@ function M.setup(hollow, state, term_helpers)
     return { pane = snapshot }
   end
   local function adapt_title_changed(payload)
-    return { pane = pane(payload.pane_id), old_title = payload.old_title, new_title = payload.new_title }
+    return {
+      pane = pane(payload.pane_id),
+      old_title = payload.old_title,
+      new_title = payload.new_title,
+    }
   end
   local function adapt_cwd_changed(payload)
     return { pane = pane(payload.pane_id), old_cwd = payload.old_cwd, new_cwd = payload.new_cwd }
   end
   local function adapt_foreground_changed(payload)
-    return { pane = pane(payload.pane_id), old_process = payload.old_process, new_process = payload.new_process }
+    return {
+      pane = pane(payload.pane_id),
+      old_process = payload.old_process,
+      new_process = payload.new_process,
+    }
   end
   local function adapt_command_started(payload)
     return {
@@ -130,7 +142,14 @@ function M.setup(hollow, state, term_helpers)
   end
   local function adapt_copy_mode_changed(payload)
     local cm = payload.copy_mode or payload
-    return { active = cm.active == true, query = cm.query or "", match_count = cm.match_count or 0, match_index = cm.match_index, selecting = cm.selecting == true, block = cm.block == true }
+    return {
+      active = cm.active == true,
+      query = cm.query or "",
+      match_count = cm.match_count or 0,
+      match_index = cm.match_index,
+      selecting = cm.selecting == true,
+      block = cm.block == true,
+    }
   end
   local function adapt_key_unhandled(payload)
     return { key = payload.key, mods = hollow.keymap.format_mods(payload.mods) }
@@ -219,6 +238,137 @@ function M.setup(hollow, state, term_helpers)
 
   function hollow.events.emit(name, payload)
     emit_event(name, payload, false)
+  end
+
+  function hollow.events.filter(name, handler)
+    if type(name) ~= "string" or name == "" then
+      error("filter name must be a non-empty string")
+    end
+    if type(handler) ~= "function" then
+      error("filter handler must be a function")
+    end
+    local handle = state.events.next_handle
+    state.events.next_handle = handle + 1
+    event_handles[handle] = { name = name, handler = handler, filter = true }
+    filter_listeners[name] = filter_listeners[name] or {}
+    table.insert(filter_listeners[name], handle)
+    return handle
+  end
+
+  local function apply_filters(name, payload, validate, budget_ms)
+    if type(name) ~= "string" or name == "" then
+      error("filter name must be a non-empty string")
+    end
+    if type(payload) ~= "table" then
+      error("filter payload must be a table")
+    end
+    -- A nested operation runs raw rather than recursively invoking its filters.
+    if filtering[name] then
+      return payload
+    end
+    local handles = {}
+    for i, handle in ipairs(filter_listeners[name] or {}) do
+      handles[i] = handle
+    end
+    filtering[name] = true
+    local ok, result = pcall(function()
+      local current = payload
+      for _, handle in ipairs(handles) do
+        local listener = event_handles[handle]
+        if listener then
+          local started = util.host_now_ms(state.host_api)
+          local accepted, value = pcall(function()
+            local candidate = listener.handler(util.clone_value(current))
+            if candidate == nil then
+              return current
+            end
+            if type(candidate) ~= "table" then
+              error("filter must return a table or nil")
+            end
+            if validate then
+              validate(candidate, current)
+            end
+            return util.clone_value(candidate)
+          end)
+          if budget_ms and util.host_now_ms(state.host_api) - started > budget_ms then
+            accepted, value = false, "filter exceeded " .. budget_ms .. " ms budget"
+          end
+          if accepted then
+            current = value
+          else
+            print("hollow.events.filter(" .. name .. "): " .. tostring(value))
+          end
+        end
+      end
+      return current
+    end)
+    filtering[name] = nil
+    if not ok then
+      error(result, 0)
+    end
+    return result
+  end
+
+  function hollow.events.apply_filters(name, payload)
+    return apply_filters(name, payload)
+  end
+
+  -- Native producer owns the schema. Environment is an override map, not the
+  -- inherited process environment. Transport/terminal identity stays intact.
+  local function protected_env(key)
+    local upper = key:upper()
+    return upper:match("^HOLLOW_")
+      or upper == "TERM"
+      or upper == "COLORTERM"
+      or upper == "TERM_PROGRAM"
+  end
+
+  function hollow._filter_spawn(spec)
+    return apply_filters("term:spawn", spec, function(candidate, previous)
+      for key in pairs(candidate) do
+        if key ~= "shell" and key ~= "domain" and key ~= "cwd" and key ~= "env" then
+          error("unknown spawn field: " .. tostring(key))
+        end
+      end
+      if candidate.shell ~= previous.shell or candidate.domain ~= previous.domain then
+        error("spawn shell and domain are read-only")
+      end
+      if
+        candidate.cwd ~= nil
+        and (
+          type(candidate.cwd) ~= "string"
+          or candidate.cwd == ""
+          or candidate.cwd:find("\0", 1, true)
+        )
+      then
+        error("spawn cwd must be a non-empty string or nil")
+      end
+      if type(candidate.env) ~= "table" then
+        error("spawn env must be a table")
+      end
+      for key, value in pairs(candidate.env) do
+        if
+          type(key) ~= "string"
+          or key == ""
+          or key:find("=", 1, true)
+          or key:find("\0", 1, true)
+          or type(value) ~= "string"
+          or value:find("\0", 1, true)
+        then
+          error("spawn env must contain valid string keys and values")
+        end
+      end
+      for key, value in pairs(previous.env) do
+        if protected_env(key) and candidate.env[key] ~= value then
+          error("protected spawn environment variable: " .. key)
+        end
+      end
+      for key, value in pairs(candidate.env) do
+        if protected_env(key) and previous.env[key] ~= value then
+          error("protected spawn environment variable: " .. key)
+        end
+      end
+    end, 50)
   end
 
   return {

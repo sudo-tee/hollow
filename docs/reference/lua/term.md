@@ -190,6 +190,52 @@ hollow.term.get_pane_text(pane_id?)             -- scrollback contents
 hollow.term.set_pane_foreground_process(pane_id, "vim")
 ```
 
+### Run a command and await completion
+
+```lua
+hollow.term.run("cargo test", {
+  pane_id = pane.id,       -- default: focused pane, captured now
+  timeout_ms = 30000,       -- default: 30 seconds
+}):next(function(result)
+  -- result.pane_id, result.command, result.status, result.took_ms
+  if result.status ~= 0 then
+    hollow.ui.notify.show("Tests failed")
+  end
+end):catch(function(err)
+  hollow.ui.notify.show(tostring(err))
+end)
+```
+
+Returns a `hollow.async` promise, also usable with `:await()` inside
+`hollow.async.run`. Sends the command plus Enter to an existing shell; it
+does not spawn a process. Commands must be non-empty, single-line strings
+without control characters. `result.command` is the submitted text, before
+shell expansion. Nonzero exit status fulfills the promise normally.
+
+Completion requires both command lifecycle hooks and the following prompt
+readiness hook. This lets a `:next()` callback submit another `run` safely.
+Output is not captured; `get_pane_text` reads pane scrollback, not a command's
+isolated output. Promise callbacks returning another promise do not flatten it;
+use sequential `:await()` calls for multi-command scripts.
+
+Requires updated Hollow Bash, Zsh, or Fish integration (start a new shell after
+upgrading). `pane.at_prompt` is false until a readiness hook arrives; merely
+having `busy == false` is insufficient. PowerShell and older integrations do
+not support this API. Calls reject immediately for unknown panes, unknown shell
+readiness, alternate-screen programs, or a pending run in the same pane.
+
+Use a dedicated automation pane with an empty input line: readiness hooks do
+not inspect the shell's editable input buffer. Do not mix manual input, other
+controllers, or raw `send_text`/`send_key` calls with runs. Commands must actually
+execute and return to a prompt; comments, incomplete shell syntax, interactive
+programs, and commands that replace/exit the shell cannot complete normally.
+
+Timeout, pane exit/closure, pane replacement, and input failures reject the
+promise. A timeout **only stops waiting**; it does not interrupt the command.
+The timeout includes waiting for the next prompt. Pending promises belong to
+the current Lua runtime and are discarded on config reload; shell command
+state and readiness survive reloads.
+
 ## Workspace operations
 
 ```lua
@@ -243,6 +289,7 @@ HollowPane = {
   is_maximized = boolean,
   has_bell = boolean,
   busy = boolean,
+  at_prompt = boolean,
   running = { command, ms } | nil,
   last = { command?, status?, took_ms? } | nil,
   frame = { x, y, width, height },

@@ -1037,6 +1037,78 @@ pub const Runtime = struct {
         return true;
     }
 
+    /// Transform a local launch spec. Commit only after reading all fields.
+    /// Caller supplies an arena whose lifetime includes PTY creation.
+    pub fn filterSpawn(self: *Runtime, allocator: std.mem.Allocator, spec: *@import("pty/spawn_spec.zig").SpawnSpec) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return;
+        api.get_field(self.state, -1, "_filter_spawn");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return;
+        api.create_table(self.state, 0, 4);
+        try pushOwnedString(allocator, api, self.state, spec.shell);
+        api.set_field(self.state, -2, "shell");
+        if (spec.domain) |domain| {
+            try pushOwnedString(allocator, api, self.state, domain);
+            api.set_field(self.state, -2, "domain");
+        }
+        if (spec.cwd) |cwd| {
+            try pushOwnedString(allocator, api, self.state, cwd);
+            api.set_field(self.state, -2, "cwd");
+        }
+        api.create_table(self.state, 0, 16);
+        var entries = std.mem.splitScalar(u8, spec.env_block, 0);
+        while (entries.next()) |entry| {
+            const equal = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+            const key = try allocator.dupeZ(u8, entry[0..equal]);
+            try pushOwnedString(allocator, api, self.state, entry[equal + 1 ..]);
+            api.set_field(self.state, -2, key);
+        }
+        api.set_field(self.state, -2, "env");
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "spawn filter");
+            return;
+        }
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        api.get_field(self.state, -1, "cwd");
+        var cwd: ?[]const u8 = null;
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .nil_type) {
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+            var len: usize = 0;
+            const ptr = api.to_lstring(self.state, -1, &len) orelse return error.InvalidSpawnSpec;
+            if (len == 0 or std.mem.indexOfScalar(u8, ptr[0..len], 0) != null) return error.InvalidSpawnSpec;
+            cwd = try allocator.dupe(u8, ptr[0..len]);
+        }
+        pop(api, self.state, 1);
+        api.get_field(self.state, -1, "env");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        var block: std.ArrayList(u8) = .empty;
+        api.push_nil(self.state);
+        while (api.next(self.state, -2) != 0) {
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -2))) != .string or
+                @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+            var key_len: usize = 0;
+            const key = api.to_lstring(self.state, -2, &key_len) orelse return error.InvalidSpawnSpec;
+            var value_len: usize = 0;
+            const value = api.to_lstring(self.state, -1, &value_len) orelse return error.InvalidSpawnSpec;
+            if (key_len == 0 or std.mem.indexOfAny(u8, key[0..key_len], "=\x00") != null or
+                std.mem.indexOfScalar(u8, value[0..value_len], 0) != null) return error.InvalidSpawnSpec;
+            try block.appendSlice(allocator, key[0..key_len]);
+            try block.append(allocator, '=');
+            try block.appendSlice(allocator, value[0..value_len]);
+            try block.append(allocator, 0);
+            pop(api, self.state, 1);
+        }
+        if (block.items.len == 0) try block.append(allocator, 0);
+        try block.append(allocator, 0);
+        spec.cwd = cwd;
+        spec.env_block = block.items;
+    }
+
     /// Fire the Lua on_key handler (if registered).
     /// Returns true if the key was consumed by Lua (handler returned true).
     pub fn fireOnKey(self: *Runtime, key: []const u8, mods: u32) bool {
@@ -6389,7 +6461,8 @@ fn l_now_ms(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse {
-        api.push_number(state, 0);
+        // Config-time/startup filters run before app callbacks are registered.
+        api.push_number(state, @floatFromInt(@divFloor(io.nanoTimestamp(), std.time.ns_per_ms)));
         return 1;
     };
     api.push_number(state, @floatFromInt(cbs.now_ms(cbs.app)));
@@ -7233,6 +7306,46 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "spawn filter bridge commits valid results atomically and preserves stack" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("assert(host_api.now_ms() > 0)");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var spec: @import("pty/spawn_spec.zig").SpawnSpec = .{
+        .shell = "/bin/sh",
+        .domain = "local",
+        .cwd = "/original",
+        .env_block = "TERM=xterm-256color\x00EDITOR=vi\x00\x00",
+    };
+    try runtime.runString(
+        \\hollow = {_filter_spawn = function(spec)
+        \\  assert(spec.shell == '/bin/sh' and spec.domain == 'local')
+        \\  assert(spec.cwd == '/original' and spec.env.EDITOR == 'vi')
+        \\  spec.cwd = '/project'
+        \\  spec.env.EDITOR = 'nvim'
+        \\  spec.env.EMPTY = ''
+        \\  return spec
+        \\end}
+    );
+    const top = runtime.context.api.get_top(runtime.state);
+    try runtime.filterSpawn(arena.allocator(), &spec);
+    try std.testing.expectEqualStrings("/project", spec.cwd.?);
+    try std.testing.expect(std.mem.indexOf(u8, spec.env_block, "EDITOR=nvim\x00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spec.env_block, "EMPTY=\x00") != null);
+    try std.testing.expect(std.mem.endsWith(u8, spec.env_block, "\x00\x00"));
+    const previous = spec;
+    try runtime.runString("hollow._filter_spawn = function(s) s.cwd = '/bad'; s.env.BAD = 1; return s end");
+    try std.testing.expectError(error.InvalidSpawnSpec, runtime.filterSpawn(arena.allocator(), &spec));
+    try std.testing.expectEqualStrings(previous.cwd.?, spec.cwd.?);
+    try std.testing.expectEqualStrings(previous.env_block, spec.env_block);
+    try runtime.runString("hollow._filter_spawn = nil");
+    try runtime.filterSpawn(arena.allocator(), &spec);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
 }
 
 test "tab action bridge preserves target and Lua stack" {

@@ -5,16 +5,20 @@ function M.setup(hollow, host_api)
   local overrides = {}
   local in_override = false
 
+  local function make_context(name, ...)
+    return {
+      name = name,
+      args = { n = select("#", ...), ... },
+      pane = hollow.term.current_pane(),
+      tab = hollow.term.current_tab(),
+      workspace = hollow.term.current_workspace(),
+    }
+  end
+
   local function dispatch(name, ...)
     local handlers = overrides[name]
     if not in_override and handlers and #handlers > 0 then
-      local ctx = {
-        name = name,
-        args = { n = select("#", ...), ... },
-        pane = hollow.term.current_pane(),
-        tab = hollow.term.current_tab(),
-        workspace = hollow.term.current_workspace(),
-      }
+      local ctx = make_context(name, ...)
       -- Snapshot the chain: additions take effect on the next invocation.
       local chain = {}
       for i, handler in ipairs(handlers) do
@@ -91,12 +95,39 @@ function M.setup(hollow, host_api)
   ---@param name string
   ---@param spec HollowActionSpec
   local function register(hollow, name, spec)
+    if type(spec) ~= "table" then
+      error("hollow.action.register: spec must be a table")
+    end
+    if type(name) ~= "string" or name == "" then
+      error("hollow.action.register: name must be a non-empty string")
+    end
     if name == "register" or name == "list" or name == "override" then
       error("reserved action name: " .. name)
     end
+    if spec.available ~= nil and type(spec.available) ~= "function" then
+      error("hollow.action.register: available must be a function")
+    end
+    if spec.keys ~= nil and type(spec.keys) ~= "table" then
+      error("hollow.action.register: keys must be an array of chords")
+    end
+    for _, chord in ipairs(spec.keys or {}) do
+      if type(chord) ~= "string" then
+        error("hollow.action.register: keys must contain only chord strings")
+      end
+    end
+    if spec.keys and #spec.keys > 0 and type(hollow.keymap.default) ~= "function" then
+      error("hollow.action.register: keymap must be initialized before registering keys")
+    end
+
     registry[name] = spec
     hollow.action[name] = function(...)
       return dispatch(name, ...)
+    end
+
+    if spec.keys then
+      for _, chord in ipairs(spec.keys) do
+        hollow.keymap.default(chord, name, { desc = spec.desc })
+      end
     end
   end
 
@@ -108,6 +139,7 @@ function M.setup(hollow, host_api)
         desc = spec.desc or "",
         category = spec.category or "general",
         run = hollow.action[name],
+        available = spec.available,
         workspace_targetable = spec.workspace_targetable or false,
       }
     end

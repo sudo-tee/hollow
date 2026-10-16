@@ -475,6 +475,7 @@
 ---@field is_maximized boolean
 ---@field has_bell boolean
 ---@field busy boolean True while shell integration reports a running command.
+---@field at_prompt boolean True after a shell readiness hook, until the next command or run submission.
 ---@field running? { command: string, ms: integer } Current shell command and elapsed time.
 ---@field last? { command?: string, status?: integer, took_ms?: integer } Most recently finished shell command.
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
@@ -1057,9 +1058,11 @@
 ---@field desc? string
 ---@field category? HollowActionCategory
 ---@field workspace_targetable? boolean
+---@field available? fun(ctx: HollowActionContext): boolean Fast, synchronous check; only true shows action in palette
+---@field keys? string[] Default chords registered with this action
 
 ---@class HollowActionContext
----@field name string Action being invoked
+---@field name string Action being invoked or checked
 ---@field args table Original positional arguments, with n recording their count (including nils)
 ---@field pane? HollowPane Current pane snapshot
 ---@field tab? HollowTab Current tab snapshot
@@ -1071,6 +1074,7 @@
 ---@field category HollowActionCategory
 ---@field chords string[]
 ---@field run fun()
+---@field available? fun(ctx: HollowActionContext): boolean Registry predicate used by the command palette
 ---@field workspace_targetable? boolean
 
 ---@class HollowUiCommandPaletteOptions
@@ -1088,6 +1092,7 @@
 ---@field name string
 ---@field handler fun(payload:any)
 ---@field once boolean
+---@field filter? boolean
 
 ---@alias HollowEventHandleMap table<integer, HollowEventListener>
 ---@alias HollowEventListenerMap table<string, integer[]>
@@ -1201,7 +1206,7 @@
 
 ---@class HollowActionNamespace
 ---@field register fun(name: string, spec: HollowActionSpec)
----@field list fun(): HollowPaletteEntry[]
+---@field list fun(): HollowPaletteEntry[] All registered actions
 ---@field override fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function
 ---@field [string] fun(opts?: table)
 
@@ -1376,6 +1381,23 @@ function term.send_key(combo, pane_id) end
 ---@param pane_id? integer
 function term.send_text(text, pane_id) end
 
+---@class HollowTermRunOpts
+---@field pane_id? integer Defaults to the focused pane, captured at submission.
+---@field timeout_ms? integer Positive timeout in milliseconds; default 30000. Does not cancel the command.
+
+---@class HollowTermRunResult
+---@field pane_id integer
+---@field command string Submitted command, before shell expansion.
+---@field status? integer Shell exit status; nonzero exits still fulfill the promise.
+---@field took_ms? integer Command duration measured by shell integration.
+
+---Submit a single-line command and await completion and the following shell prompt.
+---Requires updated Bash, Zsh, or Fish shell integration and an exclusively driven pane.
+---@param command string Non-empty single-line shell command without control characters; Enter is appended.
+---@param opts? HollowTermRunOpts
+---@return HollowPromise<HollowTermRunResult>
+function term.run(command, opts) end
+
 ---@param pane_id? integer
 function term.bell(pane_id) end
 
@@ -1477,6 +1499,27 @@ function events.once(name, handler) end
 ---@param name string
 ---@param payload? any
 function events.emit(name, payload) end
+
+---@class HollowSpawnSpec
+---@field shell string Read-only configured shell command string (not argv).
+---@field domain? string Read-only domain name.
+---@field cwd? string Local launch directory; nil inherits the host directory.
+---@field env table<string, string> Environment overrides, not the full inherited environment.
+
+---Register an ordered synchronous transformation. Remove with events.off(handle).
+---Does not intercept notifications; the producer must call apply_filters.
+---@overload fun(name: "term:spawn", handler: fun(spec: HollowSpawnSpec): HollowSpawnSpec|nil): HollowEventHandle
+---@param name string
+---@param handler fun(payload: table): table|nil
+---@return HollowEventHandle
+function events.filter(name, handler) end
+
+---Apply custom filters. nil/error/invalid returns preserve the previous payload.
+---@generic T: table
+---@param name string
+---@param payload T
+---@return T
+function events.apply_filters(name, payload) end
 
 ---@alias HollowKeyAction string|fun()
 

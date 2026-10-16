@@ -56,6 +56,7 @@ function __hollow_prompt_end
     if test "$__hollow_prompt_open" = 1
         set -g __hollow_prompt_open 0
         __hollow_tty_print "\e]133;B\a"
+        hollow_htp_emit "prompt_ready" '{}'
     end
 end
 
@@ -118,8 +119,9 @@ function __hollow_preexec --on-event fish_preexec
 end
 
 function __hollow_postexec --on-event fish_postexec
-    __hollow_tty_print (string join '' "\e]133;D;" $status "\a")
-    hollow_htp_emit "command_ended" "{\"exit_code\":$status}"
+    set -l exit_code $status
+    __hollow_tty_print (string join '' "\e]133;D;" $exit_code "\a")
+    hollow_htp_emit "command_ended" "{\"exit_code\":$exit_code}"
     __hollow_osc7
 end
 

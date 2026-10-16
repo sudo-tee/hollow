@@ -139,7 +139,9 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
       payload = util.clone_value(payload),
     }
 
-    local is_command_lifecycle = channel == "command_started" or channel == "command_ended"
+    local is_command_lifecycle = channel == "command_started"
+      or channel == "command_ended"
+      or channel == "prompt_ready"
     if is_command_lifecycle then
       local payload_value = event_payload(ctx)
       local target = target_pane_id(ctx, payload_value)
@@ -148,8 +150,10 @@ function M.setup(hollow, _host_api, _state, util, term_helpers)
         local cwd = type(payload_value.cwd) == "string" and payload_value.cwd
           or (target == pane_id and received_cwd or nil)
         term_helpers.command_started(target, payload_value.command, received_at_ms, cwd)
-      else
+      elseif channel == "command_ended" then
         term_helpers.command_finished(target, payload_value.exit_code, received_at_ms)
+      else
+        term_helpers.prompt_ready(target)
       end
       ctx.pane = pane_ctx(target)
     end

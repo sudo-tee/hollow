@@ -1,6 +1,11 @@
 const App = @import("../app.zig").App;
 const Pane = @import("../pane.zig").Pane;
 
+pub fn filterSpawn(context: *anyopaque, allocator: @import("std").mem.Allocator, spec: *@import("../pty/spawn_spec.zig").SpawnSpec) !void {
+    const app: *App = @ptrCast(@alignCast(context));
+    if (app.lua) |*lua| try lua.filterSpawn(allocator, spec);
+}
+
 pub fn created(context: *anyopaque, pane: *Pane) void {
     const app: *App = @ptrCast(@alignCast(context));
     app.emitLuaBuiltInEvent("term:pane_created", .{ .pane_id = @intFromPtr(pane) });

@@ -117,6 +117,58 @@ test "pane lifecycle callbacks cover creation closure and moves without duplicat
     try std.testing.expect(recorder.all_panes_resolved);
 }
 
+test "spawn filters reach initial panes tabs workspaces and splits before PTY launch" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = @import("../io.zig");
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var lua = try @import("../lua_bridge.zig").Runtime.init(allocator, &cfg);
+    defer lua.deinit();
+    try lua.runString(
+        \\hollow = {events = {}}
+        \\local state = {events = {handles = {}, listeners = {}, next_handle = 1, builtin_names = {}},
+        \\  host_api = {now_ms = function() return 1 end}}
+        \\require('hollow.events').setup(hollow, state, {})
+        \\spawn_count = 0
+        \\hollow.events.filter('term:spawn', function(spec)
+        \\  spawn_count = spawn_count + 1
+        \\  spec.cwd = '/'
+        \\  spec.env.FILTER_VALUE = 'filtered'
+        \\  return spec
+        \\end)
+    );
+    const Bridge = struct {
+        fn filter(context: *anyopaque, arena: std.mem.Allocator, spec: *@import("../pty/spawn_spec.zig").SpawnSpec) !void {
+            const bridge: *@import("../lua_bridge.zig").Runtime = @ptrCast(@alignCast(context));
+            try bridge.filterSpawn(arena, spec);
+        }
+    };
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    mux.spawn_filter = .{ .context = &lua, .callback = Bridge.filter };
+    const callbacks = LifecycleTestCallbacks.callbacks;
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, .{
+        .command = "printf 'filter:%s:%s' \"$PWD\" \"$FILTER_VALUE\"",
+    }, false);
+    const pane = mux.activePane().?;
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (std.mem.indexOf(u8, pane.boot_output.items, "filter:/:filtered") == null) {
+        if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
+        _ = try pane.pollPty(&runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .horizontal, 0.5, null, null, true, null);
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try lua.runString("assert(spawn_count == 5)");
+}
+
 test "pane lifecycle closing callback covers automatic dead pane cleanup" {
     const allocator = std.testing.allocator;
     var runtime = try @import("../term/ghostty.zig").Runtime.init(allocator, null);

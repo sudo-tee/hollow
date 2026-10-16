@@ -140,13 +140,13 @@ Use `hollow.action.register()` to add a named action that appears in
 the command palette and can be bound to a key chord:
 
 ```lua
-hollow.action.register("command_palette", {
-  run = function() hollow.ui.command_palette.open() end,
-  desc = "Open command palette",
-  category = "general",
+hollow.action.register("project_status", {
+  run = function() hollow.ui.notify.info("Project ready") end,
+  desc = "Show project status",
+  category = "user",
+  available = function(ctx) return ctx.pane ~= nil end,
+  keys = { "<leader>p" },
 })
-
-hollow.keymap.set("<leader>p", "command_palette", { desc = "command palette" })
 ```
 
 The spec accepts these fields:
@@ -157,6 +157,17 @@ The spec accepts these fields:
 | `desc` | `string?` | `""` | Human-readable description shown in the command palette |
 | `category` | `string?` | `"general"` | One of `"tab"`, `"pane"`, `"workspace"`, `"window"`, `"scroll"`, `"copy_mode"`, `"general"`, `"user"` |
 | `workspace_targetable` | `boolean?` | `false` | If `true`, the command palette prompts for a target workspace before running |
+| `available` | `fun(ctx: HollowActionContext): boolean` | always available | Fast, synchronous context check; unavailable actions are hidden from the palette |
+| `keys` | `string[]?` | `{}` | Default chords for this action; explicit user bindings take precedence |
+
+`available(ctx)` runs while building the palette entries, not on each render. It
+receives `name`, `args` (empty for this check), and current `pane`, `tab`, and
+`workspace` snapshots. Keep it cheap and nonblocking. Errors or any result other
+than `true` hide the action. The predicate only affects palette visibility; it
+does not prevent direct calls to `hollow.action[name](...)`.
+
+`keys` are registered through `hollow.keymap.default()`. User bindings at the
+same chord take precedence, and `load_default_keymaps = false` disables them.
 
 ### Bind a Lua function directly
 

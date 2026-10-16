@@ -30,7 +30,8 @@ hollow_htp_send_raw() {
 
 hollow_htp_emit() {
   local name="$1"
-  local payload_json="${2:-{}}"
+  local payload_json="${2-}"
+  [[ -n "$payload_json" ]] || payload_json='{}'
   local id="bash-$$-$(date +%s%N)"
   local escaped_name=$(hollow_htp_json_escape "$name")
   hollow_htp_send_raw "{\"kind\":\"event\",\"id\":\"$id\",\"name\":\"$escaped_name\",\"payload\":$payload_json}"
@@ -96,6 +97,7 @@ _hollow_precmd() {
 
   _hollow_mark_prompt
   _hollow_report_cwd
+  hollow_htp_emit "prompt_ready" '{}'
 }
 
 trap '_hollow_preexec' DEBUG

@@ -1064,6 +1064,7 @@ pub const App = struct {
         var mux = Mux.init(self.allocator);
         mux.host_context = self;
         mux.host_wake = .{ .context = self, .callback = signalExternalWake };
+        mux.spawn_filter = .{ .context = self, .callback = pane_lifecycle.filterSpawn };
         errdefer mux.deinit(runtime);
 
         cmd_ipc.startCommandTransport(self);

@@ -140,6 +140,7 @@ pub const Pane = struct {
     allocator: std.mem.Allocator,
     host_context: ?*anyopaque = null,
     host_wake: @import("pty/wake.zig").Wake = .{},
+    spawn_filter: @import("pty/spawn_spec.zig").Filter = .{},
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
     terminal_runtime: ?*GhosttyRuntime = null,
@@ -453,7 +454,23 @@ pub const Pane = struct {
             null;
         defer if (home_dir) |h| self.allocator.free(h);
         // SSH cwd belongs to remote shell, not local process launcher.
-        const launch_cwd = if (is_remote) null else inherited_cwd orelse configured_cwd orelse home_dir;
+        var launch_cwd = if (is_remote) null else inherited_cwd orelse configured_cwd orelse home_dir;
+        var spawn_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer spawn_arena.deinit();
+        var spawn_spec: @import("pty/spawn_spec.zig").SpawnSpec = .{
+            .shell = shell,
+            .domain = domain_name,
+            .cwd = launch_cwd,
+            .env_block = env_block.items,
+        };
+        // Remote cwd and guest environment require domain-aware plumbing.
+        // This first producer only transforms native local launch contexts.
+        if (!is_remote and !(is_windows and @import("pty/spawn_spec.zig").isWsl(shell))) {
+            self.spawn_filter.apply(spawn_arena.allocator(), &spawn_spec) catch |err| {
+                std.log.warn("spawn filter failed: {s}", .{@errorName(err)});
+            };
+            launch_cwd = spawn_spec.cwd;
+        }
         const pane_cwd = if (is_remote) inherited_cwd orelse configured_cwd else launch_cwd;
 
         var remote_launch_command_owned: ?[]u8 = null;
@@ -474,7 +491,7 @@ pub const Pane = struct {
             };
         } else launch_command;
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, env_block.items, effective_launch_command, self.host_wake);
+        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.host_wake);
         errdefer pty.deinit();
 
         self.terminal = terminal;
