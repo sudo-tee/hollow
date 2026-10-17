@@ -30,11 +30,16 @@ an agent PTY.
   executable-relative bundles asynchronously, with explicit overrides and strict
   manifest path allowlisting. Native integration tests cover flat and prefix/bin
   installation layouts; full GUI release archives are not locally qualified.
+* PR 4, in progress: experimental `hollow.host.wsl` with explicit distro/user,
+  Windows artifact path conversion and persistent binary-clean transport. Podman
+  and WSL now share bootstrap lifecycle and checksum/atomic-install policy.
+  Initial real `wsl.exe` integration runs through Linux/Windows interop; native
+  Windows client qualification is still outstanding. No agent PTY support exists.
 
 These are foundational agent/test components, **not yet a production GUI host
 runtime**. The Podman connector currently lives in the conformance harness, not
 Hollow's Zig dispatcher. `hollow.host.connect({id, argv})` is an explicit,
-experimental host API; WSL/SSH connectors and host-aware project
+experimental host API; native Windows WSL qualification, SSH connectors and host-aware project
 load/bootstrap/write migration are not implemented yet. Existing
 `hollow.process` and all PTYs retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
@@ -83,7 +88,7 @@ a preinstalled agent; automatic deployment is not promised there.
    promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
    owner thread; runtime reload cancels and joins the previous manager before
    its Lua state is destroyed, invalidating old generations.
-3. PR 4–6: production WSL, SSH and Docker connectors; shared conformance,
+3. PR 4–6: finish WSL qualification; add SSH and Docker connectors; shared conformance,
    verified deployment, watchdogs, generation handling and release hardening.
 4. PR 7: extract PTY engine without a backend change, only after reproducible
    legacy WSL measurements exist.

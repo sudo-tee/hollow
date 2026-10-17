@@ -18,7 +18,7 @@ import time
 import unittest
 import uuid
 
-from agent_connectors import ConnectorError, LocalSubprocess, Podman
+from agent_connectors import ConnectorError, LocalSubprocess, Podman, WSL
 
 HEADER = struct.Struct("<IBBQQ")
 HELLO, HELLO_ACK, REQUEST, RESPONSE, ERROR, DATA, CANCEL, PING, PONG, WINDOW_UPDATE = range(1, 11)
@@ -509,16 +509,30 @@ class PodmanDeploymentConformance(unittest.TestCase):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--connector", choices=("local-subprocess", "podman"), required=True)
-    parser.add_argument("--agent", required=True)
+    parser.add_argument("--connector", choices=("local-subprocess", "podman", "wsl"), required=True)
+    parser.add_argument("--agent", help="local agent binary (required except for WSL)")
     parser.add_argument("--image", default="docker.io/library/alpine:3.21")
     parser.add_argument("--container")
     parser.add_argument("--keep-container", action="store_true")
-    parser.add_argument("--agent-path", help="preinstalled absolute agent path inside an existing Podman container")
+    parser.add_argument("--agent-path", help="preinstalled absolute Linux agent path inside Podman or WSL")
+    parser.add_argument("--distro", help="existing WSL distribution (required for WSL)")
+    parser.add_argument("--wsl-user", help="optional Linux user for WSL")
+    parser.add_argument("--wsl", default="wsl.exe", help="native WSL launcher executable (default: wsl.exe)")
     args = parser.parse_args(argv)
+    if args.connector != "wsl" and not args.agent:
+        parser.error("--agent is required for non-WSL connectors")
+    if args.connector == "wsl" and not args.distro:
+        parser.error("--distro is required for WSL")
+    if args.connector == "wsl" and not args.agent_path:
+        parser.error("--agent-path is required for WSL preinstalled agent")
     if args.connector == "podman" and args.image.rsplit(":", 1)[-1] == "latest":
         parser.error("--image must use pinned, non-latest tag")
-    connector = LocalSubprocess(args.agent) if args.connector == "local-subprocess" else Podman(args.agent, args.image, args.container, args.keep_container, agent_path=args.agent_path)
+    if args.connector == "local-subprocess":
+        connector = LocalSubprocess(args.agent)
+    elif args.connector == "podman":
+        connector = Podman(args.agent, args.image, args.container, args.keep_container, agent_path=args.agent_path)
+    else:
+        connector = WSL(args.agent_path, args.distro, args.wsl_user, args.wsl)
     if args.connector == "podman":
         try:
             if not shutil.which("podman"):

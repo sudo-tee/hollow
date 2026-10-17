@@ -8,7 +8,7 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
 | Protocol / filesystem native tests | 5 / 3 pass |
-| Python harness / deployment / fault-safety / manifest unit tests | 20 pass |
+| Python harness / deployment / fault-safety / manifest / WSL connector unit tests | 25 pass |
 | Persistent native transport integration / imported protocol tests | 5 / 5 pass |
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
@@ -16,7 +16,7 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 370 pass under Lua 5.1; host suite 10, artifact discovery suite 17, Podman bootstrap suite 25 and host workspace suite 15 pass |
+| Complete Lua suite | 384 pass under Lua 5.1; host suite 10, artifact discovery suite 17, Podman bootstrap suite 25, WSL bootstrap suite 14 and host workspace suite 15 pass |
 | Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
 | Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
 | Production Lua Podman bootstrap | Pass through native bindings: deployment, reuse, corrupt-cache repair, preinstalled path and checksum rejection |
@@ -31,7 +31,9 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | SHA256SUMS verification for both artifacts | Pass |
 | Isolated build without GUI sources, submodules or vendor tree | Pass |
 | ARM64 execution | Not verified; cross-build only |
-| Windows WSL connector / GUI latency, SSH, Docker | Not verified |
+| WSL launcher conformance through Windows interop from Linux | 16 pass against existing Ubuntu-26.04, preinstalled agent |
+| Production Lua WSL bootstrap through Windows interop from Linux | Pass; Windows UNC artifact, default/explicit user, binary RPCs, cancellation, reuse and preinstalled path |
+| Native Windows WSL client / GUI latency, SSH, Docker | Not verified |
 
 Reproduction:
 
@@ -170,7 +172,8 @@ and byte names. Legacy resolver discovery and workspace opening stay unchanged;
 host-backed discovery alone does not select a remote PTY/session domain.
 
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
-deployments and all portability runners) is still incomplete. WSL/SSH connectors,
+deployments and all portability runners) is still incomplete. Native Windows WSL
+qualification, SSH connectors,
 broader read-only query migration and native
 Windows qualification remain incomplete; all PTY extraction/multiplexing
 milestones remain unimplemented.
@@ -197,7 +200,7 @@ Real rootless Alpine tests execute the production connector itself (Python only
 owns the disposable fixture), including repair of an already-running agent's
 replaced pathname and rejection of a wrong expected digest. Both the image's
 default user and configured UID/GID 1000:1000 pass; `id -u` verifies effective UID.
-These do not qualify Windows Podman/WSL/SSH runtime behavior or other distributions.
+These do not qualify native Windows Podman/WSL/SSH runtime behavior or other distributions.
 
 ```sh
 python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- \
@@ -207,6 +210,65 @@ python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-use
   --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig test-host-lua \
   -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
 ```
+
+## Experimental WSL fs/exec connector continuation
+
+`hollow.host.wsl({id, distro, user?})` uses the same host API, agent and shared
+bootstrap engine as Podman. The adapter selects an explicit existing distro and
+optional user, converts Windows artifact paths using `wslpath -a -u`, copies with
+`cp --`, and opens one `wsl.exe --distribution ... --cd / --exec <agent> stdio`
+transport. Missing user preserves the distro's default; no implied root or
+distribution import/install/termination is added. Deployment's SHA verification,
+atomic rename, deadlines, cancellation and best-effort owned-temp cleanup remain
+common policy. Podman's configured-UID integration still passes after extraction.
+
+Fourteen Lua cases cover exact argument boundaries, user defaults/overrides,
+configuration ownership, architecture aliases, preinstalled/reused artifacts,
+path conversion and malformed output, copy/checksum failures, cleanup ordering,
+native errors, cancellation/deadlines, late host closure, and bundle discovery.
+Five Python tests cover a preinstalled-only WSL conformance connector; Python
+does not implement a second deployment path. Lua mocks do not qualify native
+Windows argument encoding or path conversion behavior.
+
+Actual `wsl.exe` was available through Windows interop. The same 16 fs/exec/wire
+conformance tests pass against existing `Ubuntu-26.04`, using an already-built
+agent and only harness-owned random temporary workload directories. This covers
+byte paths, symlinks, pagination, binary output, concurrent RPCs, malformed
+framing, cancellation, timeout/group cleanup, EOF/reconnect and fresh nonces.
+No distro restart/registration replacement, agent SIGKILL fault probe, OOM or
+native Windows GUI qualification was performed.
+
+Production Lua bootstrap also passes through real `wsl.exe`, with both omitted
+user and explicit `francis` selection verified by `id -un`. It deploys/verifies
+the versioned agent, executes concurrent info/read/list/exec, preserves non-UTF-8
+argv/results through the binary protocol, cancels exec, reconnects with a fresh
+generation, and connects to a preinstalled path. These runs use a **Linux native
+client → Windows interop → WSL** topology, not a Windows-native client. The
+interop fixture supplies an explicit Windows UNC artifact path. An initial run
+using the Linux bundle pathname failed at `wslpath -u`; it is not a Windows path,
+and that failed run is not counted as passing discovery/installation evidence.
+Automatic discovery from a native Windows installation remains unqualified.
+
+Tests may populate the selected user's checksum-keyed agent cache; they never
+remove/replace distributions or fault-corrupt an existing distro's agent cache.
+WSL's CLI selects registration names, not Podman-style immutable container IDs;
+replacement during bootstrap is explicitly not pinned/qualified. All existing
+PTY code, including WSL bypass, remains unchanged. The agent still has no PTY
+operation implementation.
+
+```sh
+python3 scripts/agent_conformance.py --connector wsl --distro Ubuntu-26.04 \
+  --agent-path /absolute/linux/path/to/hollow-agent
+python3 scripts/agent_host_tests.py --connector wsl-bootstrap --distro Ubuntu-26.04 \
+  --wsl-artifact '\\wsl.localhost\Ubuntu-26.04\absolute\linux\path\to\hollow-agent' \
+  --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+# Repeat with --wsl-user <existing-user> to qualify explicit selection.
+```
+
+CI runs WSL connector mocks/validation tests and Windows cross-compilation, not
+the real WSL launcher. WSL performance and the full portability/failure matrix
+remain separate release gates; these fs/exec results do not authorize PTY rollout.
 
 ## Packaged artifact discovery continuation
 

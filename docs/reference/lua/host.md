@@ -97,7 +97,7 @@ and SHA verification are skipped. The ordinary protocol handshake still applies.
 
 Optional `podman` selects the native executable (default `"podman"`).
 `timeout_ms` bounds the complete bootstrap (default 60000, maximum 300000).
-At most four bootstrap promises are active. `:cancel()` rejects pending bootstrap
+At most four bootstrap promises are active across connectors. `:cancel()` rejects pending bootstrap
 and cancels its current operation; temporary-upload cleanup is best effort after
 that operation finishes. Cancellation does not remove installed agents or stop
 containers. A later connection always inspects and verifies again.
@@ -106,6 +106,52 @@ Container restart/recreation requires explicit reconnect. An in-progress bootstr
 pinned to an old container ID fails instead of silently following a reused name.
 After connection, operations use the persistent agent protocol, not per-operation
 `podman exec`. Windows Podman runtime behavior remains unqualified.
+
+## WSL configuration
+
+`wsl(opts)` is an experimental **fs/exec-only** host. Existing terminal panes
+continue using the existing PTY backends, including WSL bypass. This API neither
+implements agent PTYs nor changes a pane's backend.
+
+```lua
+hollow.host.wsl({
+  id = "ubuntu-work",
+  distro = "Ubuntu-26.04", -- explicit existing registered distribution
+  -- user = "alice",      -- optional; omitted preserves distro's default user
+}):next(function(host)
+  host.fs.list("/home/alice/projects")
+  host:exec({ argv = { "git", "status", "--short" }, cwd = "/home/alice/projects/demo" })
+end, function(err) print(err.code, err.message) end)
+```
+
+The connector selects the distro/user through exact `wsl.exe` arguments and
+starts Linux commands with `--cd / --exec`, without a login shell or PTY. Normal
+WSL launch may start the selected distro; the connector does not install, import,
+unregister, terminate or shut down distributions, or silently select root.
+It does not change the configured default distro/user.
+
+Artifact selection, executable-relative bundle discovery, SHA verification,
+versioned atomic installation, cancellation, deadlines and cleanup use the same
+bootstrap engine as Podman. The `artifacts`, `agent_dir`, `agent_path`, and
+`timeout_ms` overrides have the same precedence. Optional `wsl` overrides the
+native launcher executable (default `"wsl.exe"`). WSL additionally needs `wslpath`
+and `cp` inside the selected distro for automatic deployment. Artifact paths must
+be Windows-accessible: `wslpath -a -u` converts the client path inside the selected
+distro, then `cp --` copies it without guessing drive mounts or shell quoting.
+Restricted or inaccessible artifact mounts can use a preinstalled `agent_path`.
+
+After bootstrap, one long-lived `wsl.exe --exec <agent> stdio` connection carries
+all common fs/exec RPCs. Linux paths/argv/results remain raw bytes inside the
+protocol; launcher distro/user/client paths use native Windows string semantics.
+RPCs are never replayed after disconnection. Reconnect is explicit and gets a new
+generation. Unlike Podman's immutable container ID, the CLI selects a distro by
+registration name; replacing a registration during bootstrap is not pinned or
+qualified by this slice. Do not replace registrations during active use.
+
+Real launcher tests currently run **Linux → Windows interop → WSL**. They supply
+a Windows UNC artifact override because native Linux bundle paths are not Windows
+paths. This does not qualify automatic discovery in a native Windows client,
+Windows GUI teardown, WSL PTY latency, or the complete fault/security matrix.
 
 `info`, `exec`, and `fs.stat/list/read` return Hollow promises. Each operation
 promise supports `:cancel()`, which requests cancellation once; its promise
@@ -156,7 +202,7 @@ Polling runs through deferred callbacks, so completion depends on the
 application tick. This API does not automatically replay requests or reconnect
 after disconnection.
 
-This connector slice is experimental. It does not bootstrap SSH or WSL,
+This connector slice is experimental. It does not bootstrap SSH,
 and does not migrate session/PTY ownership. Workspace discovery may opt into a
 ready host via `source.host`; legacy resolvers remain unchanged without it.
 Availability depends on the native host bridge in the running build;
