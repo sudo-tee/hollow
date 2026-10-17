@@ -44,13 +44,6 @@ override the container user, or replay commands after a disconnect.
 hollow.host.podman({
   id = "build",
   container = "my-build-container",
-  artifacts = {
-    x86_64 = {
-      path = "/absolute/release/linux-x86_64/hollow-agent",
-      sha256 = "<64 hex digits from the trusted release SHA256SUMS>",
-    },
-    -- aarch64 = { path = "...", sha256 = "..." },
-  },
 }):next(function(host)
   host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
     :next(function(result) print(result.stdout) end)
@@ -58,11 +51,34 @@ hollow.host.podman({
 end, function(err) print(err.code, err.message) end)
 ```
 
-Supply trusted artifacts explicitly; automatic packaged-release discovery is not
-implemented. Paths are absolute **client-native** paths (including Windows paths),
-but artifacts must be Linux agents. The connector selects `x86_64`/`aarch64` using
-the container's architecture, not the GUI's. SHA-256 protects transferred bytes;
-it does not authenticate an untrusted manifest, container, or Podman executable.
+By default, artifacts come from the installed release's `agents/` beside the
+executable. For a `prefix/bin/` executable, a missing adjacent manifest also permits
+`prefix/agents/`. Flat releases never search outside their executable directory.
+There is no CWD, PATH, home-directory or network artifact search. Discovery uses
+asynchronous native-local info/read/stat operations within the bootstrap deadline.
+
+The bundle must contain `SHA256SUMS`, `linux-x86_64/hollow-agent`, and
+`linux-aarch64/hollow-agent`. The manifest is bounded to 4 KiB and must contain
+exactly those two paths, once each, with 64-hex SHA-256 values; traversal, unknown
+paths, duplicates and truncated reads fail closed. A corrupt/unreadable adjacent
+manifest never triggers fallback to another location. Both binaries must be
+nonempty regular files, not symlinks. Transfer verification still checks the
+selected binary's bytes before execution.
+
+Overrides, highest priority first:
+
+* `agent_path = "/opt/bin/hollow-agent"`: caller-trusted preinstalled executable.
+* `artifacts = { x86_64 = { path = "/absolute/hollow-agent", sha256 = "<64 hex digits>" } }`:
+  explicit trusted artifacts; no bundle discovery.
+* `agent_dir = "/absolute/agents"`: exactly one trusted bundle directory;
+  no executable-relative fallback.
+
+Paths on the client are absolute **client-native** paths (including Windows
+paths), but artifacts must be Linux agents. The connector selects
+`x86_64`/`aarch64` using the container's architecture, not the GUI's. SHA-256
+protects transferred bytes; it does not authenticate an untrusted release,
+manifest, container, or Podman executable. Keep the installation/bundle directory
+trusted. Missing assets return `agent_install_unavailable` with override guidance.
 
 The connector resolves the selected name to an immutable container ID, preserves
 its configured user, and verifies cached/uploaded bytes before installing into
@@ -104,7 +120,7 @@ Results:
 
 | Operation | Fields |
 |---|---|
-| `info()` | `os`, `arch`, `build`, `protocol_major`, `protocol_minor`, byte-valued `cwd` and `home` |
+| `info()` | `os`, `arch`, `build`, `protocol_major`, `protocol_minor`, byte-valued `cwd` and `home`; native-local only: optional `executable_dir` |
 | `exec(opts)` | `exit_code`, binary `stdout`, binary `stderr` |
 | `fs.stat(path)` | `kind`, `mode`, `size`, `mtime` (lstat semantics) |
 | `fs.list(path, opts)` | `entries = {{name, kind}, ...}`, `next_offset`, `eof` |

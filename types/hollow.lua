@@ -2023,7 +2023,8 @@ local fs = {}
 ---@field id string Stable host identifier
 ---@field container string Existing running container name or ID
 ---@field podman? string Native Podman executable; defaults to "podman"
----@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact} Required unless agent_path is supplied
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact} Explicit artifacts override bundle discovery
+---@field agent_dir? string Client-native absolute directory containing SHA256SUMS and linux-*/hollow-agent
 ---@field agent_path? string Absolute preinstalled Linux agent executable; skips deployment
 ---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
 
@@ -2040,6 +2041,7 @@ local fs = {}
 ---@field stderr string Raw bytes
 
 ---@class HollowHostInfo
+---@field executable_dir? string Native-local process executable directory; not supplied by remote agents
 ---@field os string
 ---@field arch string
 ---@field build string

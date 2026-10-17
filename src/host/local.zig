@@ -145,7 +145,7 @@ fn info(a: std.mem.Allocator, io: std.Io, environ: std.process.Environ) !operati
         if (environ.getWindows(&.{ 'H', 'O', 'M', 'E', 0 })) |wide| break :blk try std.unicode.wtf16LeToWtf8Alloc(a, wide);
         break :blk "";
     } else environ.getPosix("HOME") orelse "";
-    return .{ .os = @tagName(builtin.os.tag), .arch = @tagName(builtin.cpu.arch), .cwd = cwd, .home = try a.dupe(u8, home), .protocol_major = 1, .protocol_minor = 0, .build = "local" };
+    return .{ .os = @tagName(builtin.os.tag), .arch = @tagName(builtin.cpu.arch), .cwd = cwd, .home = try a.dupe(u8, home), .protocol_major = 1, .protocol_minor = 0, .build = "local", .executable_dir = std.process.executableDirPathAlloc(io, a) catch null };
 }
 fn stat(io: std.Io, path: []const u8) !operations.Stat {
     const s = try std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false });

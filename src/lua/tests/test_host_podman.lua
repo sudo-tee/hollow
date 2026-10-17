@@ -93,6 +93,28 @@ describe("hollow.host.podman", function()
     return require("hollow.host.podman").connect(f.hosts, opts)
   end
 
+  local function install_bundle(native, directory, contents)
+    local files = { [directory .. "/SHA256SUMS"] = { bytes = contents, eof = true } }
+    local function fulfilled(value)
+      return require("hollow.async").promise(function(resolve) resolve(value) end)
+    end
+    native.info = function()
+      return fulfilled({ executable_dir = "/opt/hollow" })
+    end
+    native.fs = {
+      read = function(path, opts)
+        assert.are.equal(4096, opts.limit)
+        local value = files[path]
+        if not value then return rejected({ code = "not_found", message = "missing" }) end
+        return fulfilled(value)
+      end,
+      stat = function()
+        return fulfilled({ kind = "file", size = 1 })
+      end,
+    }
+    return files
+  end
+
   before_each(function()
     env = harness.boot()
     queue, now = {}, 0
@@ -360,5 +382,96 @@ describe("hollow.host.podman", function()
     assert.are.equal(0, cancels)
     assert.are.equal(0, #f.commands)
     assert.are.equal("cancelled", p:error().code)
+  end)
+
+  it("discovers default artifacts before issuing any Podman command", function()
+    local f = fixture()
+    install_bundle(f.native, "/opt/hollow/agents", string.rep("a", 64) .. "  linux-x86_64/hollow-agent\n" .. string.rep("b", 64) .. "  linux-aarch64/hollow-agent\n")
+    local info = f.native.info
+    local pending, resolve_info = deferred()
+    f.native.info = function() return pending end
+    local p = start(f, { id = "agent", container = "worker" })
+    assert.are.equal("pending", p:status())
+    assert.are.equal(0, #f.commands)
+    f.native.info = info
+    resolve_info({ executable_dir = "/opt/hollow" })
+    assert.are.equal("fulfilled", p:status())
+    assert.are.equal("podman", f.commands[1][1])
+    local cp
+    for _, argv in ipairs(f.commands) do if argv[2] == "cp" then cp = argv end end
+    assert.is_truthy(cp)
+    assert.are.equal("/opt/hollow/agents/linux-x86_64/hollow-agent", cp[3])
+  end)
+
+  it("uses agent_dir for discovery and skips discovery when artifacts are supplied", function()
+    local f = fixture()
+    local directory = "/custom/agents"
+    install_bundle(f.native, directory, string.rep("c", 64) .. "  linux-x86_64/hollow-agent\n" .. string.rep("d", 64) .. "  linux-aarch64/hollow-agent\n")
+    local p = start(f, { id = "agent", container = "worker", agent_dir = directory })
+    assert.are.equal("fulfilled", p:status())
+    local cp
+    for _, argv in ipairs(f.commands) do if argv[2] == "cp" then cp = argv end end
+    assert.are.equal(directory .. "/linux-x86_64/hollow-agent", cp[3])
+
+    local g = fixture()
+    local discovery_calls = 0
+    g.native.info = function() discovery_calls = discovery_calls + 1; error("unexpected discovery") end
+    local explicit = { x86_64 = { path = "/explicit/agent", sha256 = string.rep("e", 64) } }
+    assert.are.equal("fulfilled", start(g, { id = "agent", container = "worker", artifacts = explicit }):status())
+    assert.are.equal(0, discovery_calls)
+  end)
+
+  it("agent_path bypasses discovery and invalid agent_dir fails before effects", function()
+    local f = fixture()
+    local discovery_calls = 0
+    f.native.info = function() discovery_calls = discovery_calls + 1; error("unexpected discovery") end
+    assert.are.equal("fulfilled", start(f, { id = "agent", container = "worker", agent_path = "/opt/agent" }):status())
+    assert.are.equal(0, discovery_calls)
+
+    local effects = 0
+    local hosts = { local_host = function() effects = effects + 1; return fulfilled({}) end, connect = function() effects = effects + 1 end }
+    assert.has_error(function()
+      require("hollow.host.podman").connect(hosts, { id = "agent", container = "worker", agent_dir = "relative" })
+    end)
+    assert.are.equal(0, effects)
+  end)
+
+  it("does not run Podman when bundle discovery fails", function()
+    local f = fixture()
+    install_bundle(f.native, "/elsewhere", "invalid\n")
+    local p = start(f, { id = "agent", container = "worker" })
+    assert.are.equal("rejected", p:status())
+    assert.are.equal("agent_install_unavailable", p:error().code)
+    assert.are.equal(0, #f.commands)
+  end)
+
+  it("times out and cancels while discovery is pending", function()
+    local f = fixture()
+    local resolve, read_cancels
+    read_cancels = 0
+    local pending = require("hollow.async").promise(function(r) resolve = r end)
+    function pending:cancel() read_cancels = read_cancels + 1 end
+    f.native.info = function() return fulfilled({ executable_dir = "/opt/hollow" }) end
+    f.native.fs = { read = function() return pending end, stat = function() error("must not stat") end }
+    local timed = start(f, { id = "agent", container = "worker", timeout_ms = 5 })
+    now = 6
+    table.remove(queue, 1).fn()
+    assert.are.equal("timeout", timed:error().code)
+    assert.are.equal(1, read_cancels)
+    assert.are.equal(0, #f.commands)
+
+    local g = fixture()
+    local resolve_cancel
+    local pending_cancel = require("hollow.async").promise(function(r) resolve_cancel = r end)
+    local cancels = 0
+    function pending_cancel:cancel() cancels = cancels + 1 end
+    g.native.info = function() return fulfilled({ executable_dir = "/opt/hollow" }) end
+    g.native.fs = { read = function() return pending_cancel end, stat = function() error("must not stat") end }
+    local cancelled = start(g, { id = "agent", container = "worker" })
+    assert.is_true(cancelled:cancel())
+    assert.are.equal("cancelled", cancelled:error().code)
+    assert.are.equal(1, cancels)
+    resolve_cancel({ bytes = "late", eof = true })
+    assert.are.equal(0, #g.commands)
   end)
 end)

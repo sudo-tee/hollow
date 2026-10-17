@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run native/Lua host tests with an owned, verified connector fixture."""
 import argparse
-import hashlib
 import json
 import os
 import secrets
@@ -50,9 +49,7 @@ def main():
                     fixture._ensure_container()
                 agent = Path(args.agent).resolve(strict=True)
                 env.update(HOLLOW_TEST_PODMAN_CONTAINER=fixture.container,
-                           HOLLOW_TEST_PODMAN_ARTIFACT=str(agent),
-                           HOLLOW_TEST_PODMAN_UID=(args.container_user or "0").split(":", 1)[0],
-                           HOLLOW_TEST_PODMAN_SHA256=hashlib.sha256(agent.read_bytes()).hexdigest())
+                           HOLLOW_TEST_PODMAN_UID=(args.container_user or "0").split(":", 1)[0])
                 # Bootstrap must happen in production Lua, not this fixture.
                 argv = [str(agent), "stdio"]
             else:

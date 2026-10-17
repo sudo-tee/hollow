@@ -110,9 +110,35 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         lua_module.linkSystemLibrary("dl", .{});
     }
     const lua_tests = b.addTest(.{ .root_module = lua_module });
-    const run_lua_tests = b.addRunArtifact(lua_tests);
+    // Execute the installed test runner, not its compiler-cache copy, to test
+    // the real executable-relative prefix/bin + prefix/agents discovery layout.
+    const install_lua_tests = b.addInstallArtifact(lua_tests, .{
+        .dest_dir = .{ .override = .bin },
+        .dest_sub_path = "host-lua-test",
+    });
+    const run_lua_tests = b.addSystemCommand(&.{b.getInstallPath(.bin, "host-lua-test")});
     run_lua_tests.has_side_effects = true;
+    run_lua_tests.step.dependOn(&install_lua_tests.step);
+    run_lua_tests.step.dependOn(all_step);
     run_lua_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_lua_tests.step.dependOn(&install_test_agent.step);
     b.step("test-host-lua", "Run headless Lua promises through native HostManager and a real agent").dependOn(&run_lua_tests.step);
+
+    const flat_runner = b.addInstallArtifact(lua_tests, .{
+        .dest_dir = .{ .override = .{ .custom = "bundle-test" } },
+        .dest_sub_path = "host-lua-test",
+    });
+    const flat_agents = b.addInstallDirectory(.{
+        .source_dir = .{ .cwd_relative = b.getInstallPath(.prefix, "agents") },
+        .install_dir = .prefix,
+        .install_subdir = "bundle-test/agents",
+    });
+    flat_agents.step.dependOn(all_step);
+    const run_flat = b.addSystemCommand(&.{b.getInstallPath(.prefix, "bundle-test/host-lua-test")});
+    run_flat.has_side_effects = true;
+    run_flat.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+    run_flat.step.dependOn(&install_test_agent.step);
+    run_flat.step.dependOn(&flat_runner.step);
+    run_flat.step.dependOn(&flat_agents.step);
+    b.step("test-host-lua-flat", "Run native Lua tests from a flat executable plus agents release layout").dependOn(&run_flat.step);
 }
