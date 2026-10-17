@@ -1,0 +1,45 @@
+name: Agent conformance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build static agent artifacts without GUI dependencies
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
+      - name: Verify bundled checksums
+        working-directory: zig-out/agents
+        run: sha256sum -c SHA256SUMS
+      - name: Test harness
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Local subprocess conformance
+        run: python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
+      - name: Persistent native host transport
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+      - name: Windows host transport compile check
+        run: zig test src/host_transport.zig -target x86_64-windows-gnu -lc -fno-emit-bin
+      - name: Local crash and EOF containment
+        run: python3 scripts/agent_fault_probe.py --agent zig-out/bin/hollow-agent --output agent-faults-local.json
+      - name: Install Podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+      - name: Rootless Podman conformance
+        run: python3 scripts/agent_conformance.py --connector podman --image docker.io/library/alpine:3.21 --agent zig-out/bin/hollow-agent
+      - name: Rootless Podman crash and EOF containment
+        run: python3 scripts/agent_fault_probe.py --connector podman --agent zig-out/bin/hollow-agent --image docker.io/library/alpine:3.21 --output agent-faults-podman.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hollow-agent-fault-diagnostics
+          path: agent-faults-*.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hollow-agent-linux-musl
+          path: zig-out/agents/

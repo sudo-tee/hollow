@@ -26,6 +26,10 @@ fn addShellIntegrationOptions(options: *std.Build.Step.Options) void {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    addAgentSteps(b, target, optimize);
+    // Skip GUI graph configuration. build-agent.zig also avoids resolving the
+    // main package's GUI dependency manifest on a minimal checkout.
+    if (b.option(bool, "agent-only", "Configure only the standalone Linux agent") orelse false) return;
     const emit_pdb = b.option(bool, "pdb", "Emit PDB debug symbols (enables profiling ReleaseFast builds)") orelse false;
     const wsl_bypass_target = b.resolveTargetQuery(.{
         .cpu_arch = target.result.cpu.arch,
@@ -365,7 +369,7 @@ pub fn build(b: *std.Build) void {
     const wsl_bypass_test_cmd = b.addRunArtifact(wsl_bypass_tests);
     test_step.dependOn(&wsl_bypass_test_cmd.step);
 
-    const lua_test_cmd = b.addSystemCommand(&.{ "bash" });
+    const lua_test_cmd = b.addSystemCommand(&.{"bash"});
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));
     const lua_test_step = b.step("test-lua", "Run Lua tests with Busted");
     lua_test_step.dependOn(&lua_test_cmd.step);
@@ -399,6 +403,10 @@ pub fn build(b: *std.Build) void {
     const all_test_step = b.step("test-all", "Run native and Lua tests");
     all_test_step.dependOn(test_step);
     all_test_step.dependOn(lua_test_step);
+}
+
+fn addAgentSteps(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    @import("src/agent/build_steps.zig").add(b, target, optimize);
 }
 
 test "ghostty optimize mode keeps release builds and upgrades debug" {

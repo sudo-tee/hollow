@@ -1,0 +1,6 @@
+.{
+    .name = .hollow_agent,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "build-agent.zig", "build-agent.zig.zon", "src/agent", "scripts/agent_manifest.py" },
+}
