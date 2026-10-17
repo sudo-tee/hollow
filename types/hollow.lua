@@ -2038,6 +2038,21 @@ local fs = {}
 ---@field agent_path? string Absolute preinstalled Linux executable; skips deployment
 ---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
 
+---@class HollowSshHostOpts
+---@field id string Stable host identifier
+---@field destination string SSH alias, hostname or IP; supply user/port separately
+---@field user? string Omitted preserves SSH configuration
+---@field port? integer 1–65535
+---@field ssh? string Native OpenSSH executable; default "ssh"
+---@field scp? string Native scp executable with forced SFTP support; default "scp"
+---@field identity_file? string Absolute native private-key path
+---@field known_hosts? string Absolute native known_hosts path; strict verification always enabled
+---@field config_file? string Absolute native SSH configuration path
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
+---@field agent_dir? string Absolute client-native bundle directory
+---@field agent_path? string Absolute preinstalled Linux executable; skips deployment
+---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
+
 ---@class HollowHostExecOpts
 ---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
 ---@field cwd? string
@@ -2107,6 +2122,11 @@ function host.podman(opts) end
 ---@param opts HollowWslHostOpts
 ---@return HollowPromise<HollowAgentHost>
 function host.wsl(opts) end
+
+---Experimental noninteractive SSH fs/exec host; no PTY or ControlMaster dependency.
+---@param opts HollowSshHostOpts
+---@return HollowPromise<HollowAgentHost>
+function host.ssh(opts) end
 
 ---@return string
 function fs.data_dir() end

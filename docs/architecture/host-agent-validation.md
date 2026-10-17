@@ -2,13 +2,14 @@
 
 This records local execution, not hosted CI results or completion of the v4
 plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
-`docker.io/library/alpine:3.21`. No Windows GUI or SSH qualification ran.
+`docker.io/library/alpine:3.21`. No Windows GUI qualification ran. SSH validation
+uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 | Check | Result |
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
 | Protocol / filesystem native tests | 5 / 3 pass |
-| Python harness / deployment / fault-safety / manifest / WSL connector unit tests | 25 pass |
+| Python harness / deployment / fault-safety / manifest / WSL / SSH unit tests | 32 pass |
 | Persistent native transport integration / imported protocol tests | 5 / 5 pass |
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
@@ -16,7 +17,7 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 384 pass under Lua 5.1; host suite 10, artifact discovery suite 17, Podman bootstrap suite 25, WSL bootstrap suite 14 and host workspace suite 15 pass |
+| Complete Lua suite | 403 pass under Lua 5.1; SSH bootstrap adds 19 cases to previous 384 |
 | Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
 | Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
 | Production Lua Podman bootstrap | Pass through native bindings: deployment, reuse, corrupt-cache repair, preinstalled path and checksum rejection |
@@ -33,7 +34,9 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | ARM64 execution | Not verified; cross-build only |
 | WSL launcher conformance through Windows interop from Linux | 16 pass against existing Ubuntu-26.04, preinstalled agent |
 | Production Lua WSL bootstrap through Windows interop from Linux | Pass; Windows UNC artifact, default/explicit user, binary RPCs, cancellation, reuse and preinstalled path |
-| Native Windows WSL client / GUI latency, SSH, Docker | Not verified |
+| Production Lua SSH bootstrap | Pass; strict verified non-root deployment, reuse, preinstalled path, checksum rejection and authentication/host-key failures |
+| SSH common fs/exec conformance | 16 pass against owned Alpine/OpenSSH fixture |
+| Native Windows WSL/SSH client / GUI latency, Docker | Not verified |
 
 Reproduction:
 
@@ -173,7 +176,7 @@ host-backed discovery alone does not select a remote PTY/session domain.
 
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
 deployments and all portability runners) is still incomplete. Native Windows WSL
-qualification, SSH connectors,
+qualification, SSH network-fault coverage,
 broader read-only query migration and native
 Windows qualification remain incomplete; all PTY extraction/multiplexing
 milestones remain unimplemented.
@@ -269,6 +272,51 @@ python3 scripts/agent_host_tests.py --connector wsl-bootstrap --distro Ubuntu-26
 CI runs WSL connector mocks/validation tests and Windows cross-compilation, not
 the real WSL launcher. WSL performance and the full portability/failure matrix
 remain separate release gates; these fs/exec results do not authorize PTY rollout.
+
+## Experimental SSH fs/exec connector continuation
+
+`hollow.host.ssh` shares the Linux agent and bootstrap lifecycle with Podman/WSL.
+Remote commands use explicit POSIX quoting for SSH's shell boundary; upload uses
+forced SFTP (`scp -s -B`) with matching identity, configuration, port and host-key
+policy. The extra local tool uses the same native execution slot, bootstrap
+deadline, cancellation and owned-temp cleanup ordering. ControlMaster is disabled;
+one persistent non-TTY SSH process carries connected RPCs. Forwarding, remote/local
+command overrides and escape handling are disabled for connector-owned processes.
+
+Executed evidence:
+
+* 19 Lua SSH cases pass, including quoting, policy, validation, architecture,
+  bundle selection, retained configuration, checksum/copy errors, deadline,
+  cancellation ordering and late-host cleanup. Complete Lua suite: 403 pass.
+* 32 Python unit tests pass, including four preinstalled SSH connector cases and
+  three owned SSH fixture tests. Python does not duplicate production deployment.
+* Native Lua integration passes with default executable-relative bundle discovery
+  against a uniquely owned rootless Podman Alpine/OpenSSH fixture, non-root user
+  `agent`. Both client key/config paths and remote HOME include spaces/quotes.
+  Deployment, reuse, preinstalled agent, binary argv/results, concurrent reads,
+  cancellation, reconnect generation and checksum rejection pass.
+* Host-key mismatch, unknown host (empty user database), and unauthorized private
+  key reject without prompts. The fixture verifies the empty database remains
+  unchanged. Trusted host keys come directly from its owned container, not TOFU or
+  a network key scan. Client keys/config are temporary; cleanup removes only the
+  fixture's owned container and files.
+* All 16 shared wire/fs/exec conformance tests pass through SSH to the deployed
+  agent. Native host transport/operations/manager/local tests, prefix/bin and flat
+  headless integrations, configured-UID Podman regression, and Windows adapter
+  cross-compilation also pass after this change.
+
+Reproduction (fixture installs OpenSSH packages in its disposable container, so
+package repository access is required; production bootstrap installs no packages):
+
+```sh
+python3 scripts/agent_ssh_tests.py --conformance --agent zig-out/bin/hollow-agent -- \
+  zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+```
+
+Native Windows OpenSSH execution, ProxyJump routes, network loss during upload,
+agent SIGKILL through SSH, OOM and full hostile-cache/failure matrices remain
+unqualified. No session/PTY implementation changed; WSL PTYs still use bypass.
 
 ## Packaged artifact discovery continuation
 

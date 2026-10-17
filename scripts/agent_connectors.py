@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
+import posixpath
+import re
 import secrets
 import shlex
 import subprocess
@@ -190,4 +193,65 @@ class WSL:
 
     def close(self):
         # WSL distro lifecycle belongs to the user, not this test harness.
+        pass
+
+
+class SSH:
+    """Connect to a preinstalled Linux agent over a non-PTY SSH session."""
+    _DESTINATION = re.compile(r"[A-Za-z0-9_.:%\-\[\]]+\Z", re.ASCII)
+    _USER = re.compile(r"[A-Za-z0-9_.-]+\Z", re.ASCII)
+
+    def __init__(self, agent_path: str, destination: str, port: int | None = None,
+                 user: str | None = None, identity_file: str | None = None,
+                 known_hosts: str | None = None, config_file: str | None = None,
+                 executable: str = "ssh"):
+        if not isinstance(agent_path, str) or not agent_path.startswith("/") or "\x00" in agent_path:
+            raise ConnectorError("SSH agent path must be an absolute Linux path without NUL")
+        if (not isinstance(destination, str) or not destination or destination.startswith("-")
+                or not self._DESTINATION.fullmatch(destination)):
+            raise ConnectorError("SSH destination must be a conservative alias, DNS name, or IPv6 address")
+        if user is not None and (not isinstance(user, str) or user.startswith("-") or not self._USER.fullmatch(user)):
+            raise ConnectorError("SSH user must contain only ASCII letters, digits, '_', '.', or '-' and not start with '-'")
+        if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535):
+            raise ConnectorError("SSH port must be an integer from 1 to 65535")
+        for label, value in (("identity file", identity_file), ("known-hosts file", known_hosts),
+                             ("SSH config file", config_file)):
+            if value is not None and (not isinstance(value, str) or "\x00" in value
+                    or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                    or not (posixpath.isabs(value) or ntpath.isabs(value))):
+                raise ConnectorError(f"SSH {label} must be an absolute POSIX or Windows path without controls")
+        self.agent_path, self.destination, self.port = agent_path, destination, port
+        self.user, self.identity_file, self.known_hosts = user, identity_file, known_hosts
+        self.config_file, self.executable = config_file, executable
+
+    @staticmethod
+    def _config_path(path):
+        # OpenSSH config options use its double-quoted parsing and % token expansion.
+        return '"' + path.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def connect(self):
+        args = [self.executable, "-T", "-oBatchMode=yes", "-oStrictHostKeyChecking=yes",
+                "-oControlMaster=no", "-oControlPath=none", "-oControlPersist=no",
+                "-oRemoteCommand=none", "-oRequestTTY=no", "-oPermitLocalCommand=no",
+                "-oClearAllForwardings=yes", "-oForwardAgent=no", "-oForwardX11=no", "-oEscapeChar=none"]
+        if self.config_file is not None:
+            args.extend(["-F", self.config_file])
+        if self.identity_file is not None:
+            args.extend(["-i", self.identity_file, "-oIdentitiesOnly=yes"])
+        if self.known_hosts is not None:
+            args.append("-oUserKnownHostsFile=" + self._config_path(self.known_hosts))
+        if self.port is not None:
+            args.extend(["-p", str(self.port)])
+        if self.user is not None:
+            args.extend(["-l", self.user])
+        args.extend([self.destination, "exec " + shlex.quote(self.agent_path) + " " + shlex.quote("stdio")])
+        try:
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+        except OSError as exc:
+            raise ConnectorError(f"cannot launch SSH agent via {self.executable}: {exc}") from exc
+        return ProcessConnection(proc)
+
+    def close(self):
+        # Remote host/session lifecycle belongs to the user, not this connector.
         pass
