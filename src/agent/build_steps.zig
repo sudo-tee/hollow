@@ -49,6 +49,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .link_libc = true,
     }) });
     const run_host_tests = b.addRunArtifact(host_tests);
+    run_host_tests.has_side_effects = true;
     // Tests use the freshly built native agent, never a stale installed binary.
     const native_module = b.createModule(.{
         .root_source_file = b.path("src/agent/main.zig"),
@@ -61,4 +62,45 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_host_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_host_tests.step.dependOn(&install_test_agent.step);
     b.step("test-host-transport", "Run persistent transport integration tests against a native Linux agent").dependOn(&run_host_tests.step);
+    const operation_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/host_operations.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.step("test-host-operations", "Run byte-safe typed host operation tests").dependOn(&b.addRunArtifact(operation_tests).step);
+    const manager_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/host_manager_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    const run_manager_tests = b.addRunArtifact(manager_tests);
+    run_manager_tests.has_side_effects = true;
+    run_manager_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+    run_manager_tests.step.dependOn(&install_test_agent.step);
+    b.step("test-host-manager", "Run bounded HostManager lifecycle integration tests").dependOn(&run_manager_tests.step);
+
+    // Optional headless test: requires Lua 5.1-compatible headers/library, not
+    // GUI dependencies or submodules. CI supplies LuaJIT; plain Lua 5.1 works too.
+    const lua_module = b.createModule(.{
+        .root_source_file = b.path("src/host_lua_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lua_module.addIncludePath(.{ .cwd_relative = b.option([]const u8, "host-lua-include", "Lua 5.1-compatible API include directory") orelse "/usr/include/luajit-2.1" });
+    if (b.option([]const u8, "host-lua-object", "Explicit Lua 5.1-compatible library file")) |path| {
+        lua_module.addObjectFile(.{ .cwd_relative = path });
+    } else lua_module.linkSystemLibrary("luajit-5.1", .{});
+    if (b.graph.host.result.os.tag == .linux) {
+        lua_module.linkSystemLibrary("m", .{});
+        lua_module.linkSystemLibrary("dl", .{});
+    }
+    const lua_tests = b.addTest(.{ .root_module = lua_module });
+    const run_lua_tests = b.addRunArtifact(lua_tests);
+    run_lua_tests.has_side_effects = true;
+    run_lua_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+    run_lua_tests.step.dependOn(&install_test_agent.step);
+    b.step("test-host-lua", "Run headless Lua promises through native HostManager and a real agent").dependOn(&run_lua_tests.step);
 }

@@ -45,6 +45,7 @@ local workspace = require("hollow.workspace")
 hollow.tbl = tbl
 hollow.util = util
 hollow.async = async
+hollow.host = require("hollow.host")
 hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace

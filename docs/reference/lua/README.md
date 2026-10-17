@@ -39,6 +39,7 @@ namespace you need. The full type schema lives in
 | `hollow.workspace` | [workspace-api.md](workspace-api.md) |
 | `hollow.async` | [async.md](async.md) |
 | `hollow.process` | [process.md](process.md) |
+| `hollow.host` (experimental) | [host.md](host.md) |
 | `hollow.fs` | [fs.md](fs.md) |
 | `hollow.plugins` | [plugins.md](plugins.md) |
 | `hollow.tbl` | [tbl.md](tbl.md) |

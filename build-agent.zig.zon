@@ -2,5 +2,5 @@
     .name = .hollow_agent,
     .version = "0.0.0",
     .minimum_zig_version = "0.16.0",
-    .paths = .{ "build-agent.zig", "build-agent.zig.zon", "src/agent", "scripts/agent_manifest.py" },
+    .paths = .{ "build-agent.zig", "build-agent.zig.zon", "src/agent", "src/host", "src/host.zig", "src/host_transport.zig", "src/host_operations.zig", "src/host_manager_test.zig", "src/host_lua_test.zig", "src/io.zig", "src/lua/hollow/async.lua", "src/lua/hollow/host.lua", "scripts/agent_manifest.py" },
 }
