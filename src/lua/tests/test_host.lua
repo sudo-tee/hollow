@@ -136,6 +136,31 @@ describe("hollow.host connector", function()
     assert.are.equal("fulfilled", result:status())
     assert.has_error(function() host:exec({ argv = { "tool" }, timeout_ms = 86400001 }) end)
     assert.has_error(function() host.fs.list("/", { limit = 257 }) end)
+    assert.has_error(function() host.fs.list("/", { limit = 0 }) end)
     assert.has_error(function() host.fs.read("/", { limit = 16385 }) end)
+  end)
+
+  it("connects native-local once and reconnects explicitly after close", function()
+    local connections, closes = 0, 0
+    env.host_api.host_connect = function(opts)
+      assert.are.same({ id = "local", backend = "local" }, opts)
+      connections = connections + 1
+      return { generation = tostring(connections) }
+    end
+    env.host_api.host_status = function() return "ready" end
+    env.host_api.host_close = function() closes = closes + 1; return true end
+    local hosts = require("hollow.host")
+    local first = hosts.local_host()
+    assert.are.equal(first, hosts.local_host())
+    step()
+    assert.are.equal("1", first:value().generation)
+    assert.are.equal(first, hosts.local_host())
+    assert.is_true(first:value():close())
+    local second = hosts.local_host()
+    step()
+    assert.are.equal("2", second:value().generation)
+    assert.are.equal(2, connections)
+    assert.are.equal(1, closes)
+    assert.has_error(function() hosts.connect({ id = "x", backend = "local", argv = { "not-run" } }) end)
   end)
 end)

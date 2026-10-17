@@ -67,6 +67,7 @@ hollow.ui.workspace.configure({
 
   known_workspaces = function() return { ... } end,
   sources = {
+    { host = connected_host, roots = { "/home/me/projects" } },
     { resolver = "local", domain = "pwsh", roots = { "C:/code" } },
     { resolver = "wsl",   domain = "UbuntuWSL",  roots = { "/home/me/projects" } },
     { resolver = "ssh",   domain = "tower", roots = { "/home/me/projects" } },
@@ -97,6 +98,7 @@ Each source declares how its items are discovered:
 ```lua
 {
   resolver = "local" | "wsl" | "ssh",
+  host = ready_host,                   -- optional hollow.host; overrides resolver
   name = "Ubuntu",                    -- optional
   domain = "UbuntuWSL",                     -- the domain new panes open in
   roots = { "/home/me/projects" },
@@ -111,6 +113,18 @@ Each source declares how its items are discovered:
 | `local`  | Scans `roots` with `hollow.read_dir(...)`                                        |
 | `wsl`    | Runs `wsl.exe` and lists child directories                                       |
 | `ssh`    | Uses `hollow.term.run_domain_process(...)` to list directories on the SSH domain |
+| `host`   | When `host` is supplied, scans through `host.fs.list/stat` asynchronously |
+
+`host` must be a ready `hollow.host` object. Host-backed roots and returned
+names are passed through as exact byte strings; they are not trimmed, converted
+from WSL UNC paths, or probed with local filesystem/process APIs. Listing is
+paginated (256 entries per page, at most 4096 entries per root) and directory
+checks are limited to four concurrent `stat` requests. `known_workspaces()`
+and `items()` stay synchronous: while a scan is pending, they return cached
+results and later refresh after completion. `host` takes precedence over
+`resolver`, while resolver settings remain available for sources without a
+host. `cwd_resolver` remains an explicit policy and may still transform a host
+item's cwd when configured.
 
 `cwd_resolver = "wsl_unc"` is useful when picker items come from
 Windows UNC paths like `\\wsl$\Ubuntu\home\me\Projects` but the

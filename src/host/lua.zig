@@ -23,6 +23,15 @@ fn connectInner(ctx: anytype, state: anytype) !host.Handle {
     defer api.set_top(state, top);
     if (api.value_type(state, 1) != table_type) return error.InvalidArgument;
     const id = try requiredStringField(api, state, 1, "id");
+    const backend = try stringField(api, state, 1, "backend");
+    if (backend) |name| {
+        if (std.mem.eql(u8, name, "local")) {
+            api.get_field(state, 1, "argv");
+            if (api.value_type(state, -1) != 0) return error.InvalidArgument;
+            return manager(ctx).connectLocal(id);
+        }
+        if (!std.mem.eql(u8, name, "agent")) return error.InvalidArgument;
+    }
     api.get_field(state, 1, "argv");
     const argv = try readArgv(ctx.allocator, api, state, api.get_top(state));
     defer ctx.allocator.free(argv);

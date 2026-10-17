@@ -1,18 +1,50 @@
 //! Runtime-owned, owner-thread dispatch. No Lua, workspace or connector policy.
 const std = @import("std");
 const transport = @import("transport.zig");
+const native = @import("local.zig");
 pub const operations = @import("operations.zig");
 
 pub const max_hosts = 8;
 pub const max_pending = 64;
 pub const Handle = struct { slot: u8, generation: u64 };
 pub const Ticket = struct { host: Handle, id: u64 };
-const Entry = struct { id: []u8, connection: *transport.Connection };
+const Backend = union(enum) {
+    agent: *transport.Connection,
+    native: struct { generation: u64, closed: bool = false },
+
+    fn generation(self: Backend) u64 {
+        return switch (self) {
+            .agent => |connection| connection.generation,
+            .native => |value| value.generation,
+        };
+    }
+    fn status(self: Backend) transport.State {
+        return switch (self) {
+            .agent => |connection| connection.status(),
+            .native => |value| if (value.closed) .disconnected else .ready,
+        };
+    }
+    fn close(self: *Backend) void {
+        switch (self.*) {
+            .agent => |connection| connection.close(),
+            .native => |*value| value.closed = true,
+        }
+    }
+    fn deinit(self: *Backend) void {
+        switch (self.*) {
+            .agent => |connection| connection.destroy(),
+            .native => {},
+        }
+    }
+};
+const Entry = struct { id: []u8, backend: Backend };
 const Pending = struct {
     ticket: Ticket,
     wire_id: u64,
     kind: operations.Kind,
     completion: ?transport.Completion = null,
+    local_job: ?*native.Job = null,
+    local_disconnected: bool = false,
 };
 
 pub const Manager = struct {
@@ -21,9 +53,14 @@ pub const Manager = struct {
     hosts: [max_hosts]?Entry = .{null} ** max_hosts,
     pending: [max_pending]?Pending = .{null} ** max_pending,
     next_id: u64 = 1,
+    environ: std.process.Environ,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Manager {
-        return .{ .allocator = allocator, .io = io };
+        return initWithEnviron(allocator, io, @import("../io.zig").environ());
+    }
+
+    pub fn initWithEnviron(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Environ) Manager {
+        return .{ .allocator = allocator, .io = io, .environ = environ };
     }
 
     /// Launches exactly one connector subprocess asynchronously. Reconnection
@@ -35,15 +72,15 @@ pub const Manager = struct {
         for (&self.hosts, 0..) |*entry, index| {
             if (entry.*) |*host| {
                 if (!std.mem.eql(u8, host.id, id)) continue;
-                if (host.connection.status() != .disconnected) return error.AlreadyConnected;
+                if (host.backend.status() != .disconnected) return error.AlreadyConnected;
                 // Disconnect may race the initial drain. All terminal slots
                 // are now stable; capture them before replacing their owner.
                 self.drain();
                 // drain() transferred every old result into a generation-tagged
                 // pending slot before destroying its transport allocation owner.
                 const connection = try transport.Connection.create(self.allocator, self.io, argv);
-                host.connection.destroy();
-                host.connection = connection;
+                host.backend.deinit();
+                host.backend = .{ .agent = connection };
                 return .{ .slot = @intCast(index), .generation = connection.generation };
             } else if (available == null) available = index;
         }
@@ -51,16 +88,44 @@ pub const Manager = struct {
         const owned_id = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned_id);
         const connection = try transport.Connection.create(self.allocator, self.io, argv);
-        self.hosts[index] = .{ .id = owned_id, .connection = connection };
+        self.hosts[index] = .{ .id = owned_id, .backend = .{ .agent = connection } };
         return .{ .slot = @intCast(index), .generation = connection.generation };
     }
 
+    /// Native filesystem/process work runs on cancellable workers. It never
+    /// launches a connector or routes Windows operations through Linux.
+    pub fn connectLocal(self: *Manager, id: []const u8) !Handle {
+        if (id.len == 0 or id.len > 256 or std.mem.indexOfScalar(u8, id, 0) != null) return error.InvalidArgument;
+        self.drain();
+        var available: ?usize = null;
+        for (&self.hosts, 0..) |*entry, index| {
+            if (entry.*) |*host| {
+                if (!std.mem.eql(u8, host.id, id)) continue;
+                if (host.backend.status() != .disconnected) return error.AlreadyConnected;
+                self.drain();
+                const generation = try transport.newGeneration();
+                host.backend.deinit();
+                host.backend = .{ .native = .{ .generation = generation } };
+                return .{ .slot = @intCast(index), .generation = generation };
+            } else if (available == null) available = index;
+        }
+        const index = available orelse return error.ResourceExhausted;
+        const owned_id = try self.allocator.dupe(u8, id);
+        errdefer self.allocator.free(owned_id);
+        const generation = try transport.newGeneration();
+        self.hosts[index] = .{ .id = owned_id, .backend = .{ .native = .{ .generation = generation } } };
+        return .{ .slot = @intCast(index), .generation = generation };
+    }
+
     pub fn status(self: *Manager, handle: Handle) !transport.State {
-        return (try self.get(handle)).connection.status();
+        return (try self.get(handle)).backend.status();
     }
 
     pub fn failure(self: *Manager, handle: Handle) !?anyerror {
-        return (try self.get(handle)).connection.connectionFailure();
+        return switch ((try self.get(handle)).backend) {
+            .agent => |connection| connection.connectionFailure(),
+            .native => |value| if (value.closed) @as(?anyerror, error.Disconnected) else null,
+        };
     }
 
     pub fn hostId(self: *Manager, handle: Handle) ![]const u8 {
@@ -69,14 +134,28 @@ pub const Manager = struct {
 
     pub fn request(self: *Manager, handle: Handle, operation: operations.Operation, timeout_ms: u64) !Ticket {
         const host = try self.get(handle);
+        if (host.backend.status() == .disconnected) return error.Disconnected;
         const entry = for (&self.pending) |*entry| {
             if (entry.* == null) break entry;
         } else return error.ResourceExhausted;
         if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
-        const streams = if (operation == .exec) try host.connection.allocateStreams() else null;
+        if (host.backend == .native) {
+            var count: usize = 0;
+            for (self.pending) |pending| if (pending) |value| {
+                if (value.ticket.host.slot == handle.slot) count += 1;
+            };
+            if (count >= 16) return error.ResourceExhausted;
+            const job = try native.Job.create(self.allocator, self.io, self.environ, operation, timeout_ms);
+            const ticket: Ticket = .{ .host = handle, .id = self.next_id };
+            self.next_id += 1;
+            entry.* = .{ .ticket = ticket, .wire_id = 0, .kind = std.meta.activeTag(operation), .local_job = job };
+            return ticket;
+        }
+        const connection = host.backend.agent;
+        const streams = if (operation == .exec) try connection.allocateStreams() else null;
         const bytes = try operations.encode(self.allocator, operation, streams);
         defer self.allocator.free(bytes);
-        const wire_id = try host.connection.request(bytes, timeout_ms);
+        const wire_id = try connection.request(bytes, timeout_ms);
         const ticket: Ticket = .{ .host = handle, .id = self.next_id };
         self.next_id += 1;
         entry.* = .{ .ticket = ticket, .wire_id = wire_id, .kind = std.meta.activeTag(operation) };
@@ -86,9 +165,13 @@ pub const Manager = struct {
     pub fn cancel(self: *Manager, ticket: Ticket) !void {
         self.drain();
         const pending = self.find(ticket) orelse return error.StaleRequest;
+        if (pending.local_job) |job| {
+            job.cancel();
+            return;
+        }
         if (pending.completion != null) return;
         const host = try self.get(ticket.host);
-        try host.connection.cancel(pending.wire_id);
+        try host.backend.agent.cancel(pending.wire_id);
     }
 
     /// Transfers one owned typed result. Allocation failure preserves its wire
@@ -96,28 +179,43 @@ pub const Manager = struct {
     pub fn poll(self: *Manager, ticket: Ticket) !?operations.Result {
         self.drain();
         const pending = self.find(ticket) orelse return error.StaleRequest;
+        if (pending.local_job) |job| {
+            var result = job.takeResult() orelse return null;
+            // Close invalidates the host immediately, but work is still joined
+            // off-thread. Preserve explicit disconnect semantics for old work.
+            if (pending.local_disconnected) {
+                result.deinit();
+                result = .{ .arena = std.heap.ArenaAllocator.init(self.allocator), .value = .{ .failure = .{ .code = "transport_disconnected", .message = "Host closed" } } };
+            }
+            job.destroy();
+            self.clearPending(ticket);
+            return result;
+        }
         const completion = pending.completion orelse return null;
         const result = operations.decode(self.allocator, pending.kind, completion) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => blk: {
-                if (self.get(ticket.host)) |host| host.connection.close() else |_| {}
+                if (self.get(ticket.host)) |host| host.backend.close() else |_| {}
                 break :blk operations.Result{ .arena = std.heap.ArenaAllocator.init(self.allocator), .value = .{ .failure = .{ .code = "protocol_mismatch", .message = "Malformed agent response" } } };
             },
         };
         freeWire(self.allocator, completion);
         // Ticket ids never repeat; stale Lua pollers cannot consume a reused
         // slot even after closing/reconnecting a host or recreating a runtime.
-        for (&self.pending) |*entry| if (entry.*) |value| {
-            if (sameTicket(value.ticket, ticket)) {
-                entry.* = null;
-                break;
-            }
-        };
+        self.clearPending(ticket);
         return result;
     }
 
     pub fn close(self: *Manager, handle: Handle) !void {
-        (try self.get(handle)).connection.close();
+        (try self.get(handle)).backend.close();
+        for (&self.pending) |*entry| if (entry.*) |*pending| {
+            if (pending.ticket.host.slot == handle.slot and pending.ticket.host.generation == handle.generation) {
+                if (pending.local_job) |job| {
+                    if (!job.ready()) pending.local_disconnected = true;
+                    job.cancel();
+                }
+            }
+        };
     }
 
     /// Release a retained wire result if a consumer rejects decoding (for
@@ -138,24 +236,31 @@ pub const Manager = struct {
     pub fn forget(self: *Manager, handle: Handle) !void {
         self.drain();
         const host = try self.get(handle);
-        if (host.connection.status() != .disconnected) return error.HostBusy;
+        if (host.backend.status() != .disconnected) return error.HostBusy;
         for (self.pending) |entry| if (entry) |pending| {
             if (pending.ticket.host.slot == handle.slot) return error.HostBusy;
         };
-        host.connection.destroy();
+        host.backend.deinit();
         self.allocator.free(host.id);
         self.hosts[handle.slot] = null;
     }
 
     pub fn deinit(self: *Manager) void {
-        for (self.hosts) |entry| if (entry) |host| host.connection.close();
+        for (&self.hosts) |*entry| if (entry.*) |*host| host.backend.close();
+        for (&self.pending) |*entry| if (entry.*) |pending| {
+            if (pending.local_job) |job| job.cancel();
+        };
         for (&self.pending) |*entry| {
-            if (entry.*) |pending| if (pending.completion) |completion| freeWire(self.allocator, completion);
+            if (entry.*) |pending| {
+                if (pending.completion) |completion| freeWire(self.allocator, completion);
+                if (pending.local_job) |job| job.destroy();
+            }
             entry.* = null;
         }
         for (&self.hosts) |*entry| {
             if (entry.*) |host| {
-                host.connection.destroy();
+                var backend = host.backend;
+                backend.deinit();
                 self.allocator.free(host.id);
             }
             entry.* = null;
@@ -165,7 +270,7 @@ pub const Manager = struct {
     fn get(self: *Manager, handle: Handle) !*Entry {
         if (handle.slot >= max_hosts) return error.StaleHost;
         const entry = if (self.hosts[handle.slot]) |*entry| entry else return error.StaleHost;
-        if (entry.connection.generation != handle.generation) return error.StaleHost;
+        if (entry.backend.generation() != handle.generation) return error.StaleHost;
         return entry;
     }
 
@@ -176,11 +281,22 @@ pub const Manager = struct {
         return null;
     }
 
+    fn clearPending(self: *Manager, ticket: Ticket) void {
+        for (&self.pending) |*entry| if (entry.*) |pending| {
+            if (sameTicket(pending.ticket, ticket)) {
+                entry.* = null;
+                return;
+            }
+        };
+    }
+
     fn drain(self: *Manager) void {
         for (&self.hosts, 0..) |*entry, index| if (entry.*) |*host| {
+            if (host.backend != .agent) continue;
+            const connection = host.backend.agent;
             var count: usize = 0;
             while (count < transport.max_requests) : (count += 1) {
-                const completion = host.connection.poll() orelse break;
+                const completion = connection.poll() orelse break;
                 var found = false;
                 for (&self.pending) |*pending_entry| if (pending_entry.*) |*pending| {
                     if (pending.ticket.host.slot == index and pending.ticket.host.generation == completion.generation and pending.wire_id == completion.id and pending.completion == null) {
@@ -191,7 +307,7 @@ pub const Manager = struct {
                 };
                 if (!found) {
                     freeWire(self.allocator, completion);
-                    host.connection.close();
+                    connection.close();
                 }
             }
         };
