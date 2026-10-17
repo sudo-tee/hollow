@@ -238,9 +238,15 @@ function ui.workspace.open_switcher(opts)
 
   local items = source.items(force_refresh)
   local switcher = switcher_state()
+  local host_revision = switcher.host_scan_revision or 0
   ui.select.open({
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
+      local current_revision = switcher_state().host_scan_revision or 0
+      if current_revision ~= host_revision then
+        items = source.items()
+        host_revision = current_revision
+      end
       -- Read live status without rescanning local/remote discovery sources.
       local badges = {}
       local attention = {}

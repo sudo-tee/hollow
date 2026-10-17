@@ -11,6 +11,14 @@ const control_reserve = 65536;
 const queue_capacity = max_requests * 2 + 8;
 var next_generation: std.atomic.Value(u64) = .init(1);
 
+/// Shared by native-local and agent backends so handles never alias across
+/// backend switches or Lua runtime reloads in this process.
+pub fn newGeneration() !u64 {
+    const generation = next_generation.fetchAdd(1, .monotonic);
+    if (generation == 0 or generation == std.math.maxInt(u64)) return error.IdExhausted;
+    return generation;
+}
+
 pub const State = enum { connecting, ready, disconnected };
 pub const Streams = struct { stdout: u64, stderr: u64 };
 const Slot = struct {
@@ -86,8 +94,7 @@ pub const Connection = struct {
     /// remote reads or pipe writes happen on the caller's thread.
     pub fn create(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !*Connection {
         if (argv.len == 0 or argv[0].len == 0 or argv.len > 4096) return error.InvalidArgument;
-        const generation = next_generation.fetchAdd(1, .monotonic);
-        if (generation == 0 or generation == std.math.maxInt(u64)) return error.IdExhausted;
+        const generation = try newGeneration();
         const self = try allocator.create(Connection);
         errdefer allocator.destroy(self);
         var arena = std.heap.ArenaAllocator.init(allocator);

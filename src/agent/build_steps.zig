@@ -80,6 +80,18 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_manager_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_manager_tests.step.dependOn(&install_test_agent.step);
     b.step("test-host-manager", "Run bounded HostManager lifecycle integration tests").dependOn(&run_manager_tests.step);
+    const local_step = b.step("test-host-local", "Run native-local filesystem/process and dispatch tests");
+    inline for (.{ "src/host_local_test.zig", "src/host_local_manager_test.zig" }) |root| {
+        const local_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(root),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .link_libc = true,
+        }) });
+        const run_local_tests = b.addRunArtifact(local_tests);
+        run_local_tests.has_side_effects = true;
+        local_step.dependOn(&run_local_tests.step);
+    }
 
     // Optional headless test: requires Lua 5.1-compatible headers/library, not
     // GUI dependencies or submodules. CI supplies LuaJIT; plain Lua 5.1 works too.

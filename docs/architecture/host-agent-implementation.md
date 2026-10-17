@@ -19,12 +19,15 @@ an agent PTY.
   bounded runtime-owned HostManager, typed byte-safe request/results, and
   `hollow.host` Lua promises for explicit subprocess connectors. Native/Lua
   end-to-end tests run the same contract locally and through rootless Podman.
+* PR 3 continuation: native-local fs/exec workers exposed as
+  `hollow.host.local_host()`, plus opt-in asynchronous workspace directory
+  discovery through `source.host`. Legacy resolver aliases remain operational.
 
 These are foundational agent/test components, **not yet a production GUI host
 runtime**. The Podman connector currently lives in the conformance harness, not
 Hollow's Zig dispatcher. `hollow.host.connect({id, argv})` is an explicit,
-experimental subprocess API; automatic connector bootstrap, a native-local host
-adapter, and host-aware workspace migration are not implemented yet. Existing
+experimental subprocess API; automatic connector bootstrap and host-aware
+project load/bootstrap/write migration are not implemented yet. Existing
 `hollow.process` and all PTYs retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
 
@@ -38,6 +41,7 @@ does not configure, fetch or link GUI, Ghostty, Sokol or LuaJIT dependencies:
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager
+zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-local
 # Optional: requires LuaJIT's Lua 5.1 API headers and library.
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
 python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
@@ -66,8 +70,8 @@ a preinstalled agent; automatic deployment is not promised there.
 1. Finish adversarial/fault coverage and review the standalone agent before
    depending on it from the GUI. Do not equate a green conformance subset with
    the full v4 security and failure-injection matrix.
-2. PR 3: finish native-local host operations, production Podman configuration,
-   and host-aware read-only workspace migration on the HostManager and Lua
+2. PR 3: finish production Podman configuration, native-local lifecycle
+   qualification, and remaining host-aware read-only project queries on HostManager and Lua
    promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
    owner thread; runtime reload cancels and joins the previous manager before
    its Lua state is destroyed, invalidating old generations.

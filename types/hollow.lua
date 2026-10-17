@@ -1783,7 +1783,8 @@ function select.close() end
 ---@field name string
 ---@field cwd? string
 ---@field domain? string
----@field source "open"|"user"
+---@field source "open"|"user"|"local"|"wsl"|"ssh"|"host"
+---@field host_id? string Host-backed discovery identity
 ---@field is_active boolean
 ---@field is_open boolean
 ---@field has_bell boolean Any pane in this workspace has bell attention
@@ -1795,6 +1796,7 @@ function select.close() end
 
 ---@class HollowUiWorkspaceSource
 ---@field resolver? "local"|"wsl"|"ssh"
+---@field host? HollowAgentHost Ready host; async host.fs discovery overrides legacy resolver
 ---@field name? string
 ---@field domain? string
 ---@field roots? string[]
@@ -2010,7 +2012,8 @@ local fs = {}
 
 ---@class HollowHostConnectOpts
 ---@field id string Stable host identifier
----@field argv string[] Exact subprocess connector argv; no implicit shell
+---@field backend? "agent"|"local" Default agent; local never launches an agent
+---@field argv? string[] Required only for agent; exact connector argv, no implicit shell
 
 ---@class HollowHostExecOpts
 ---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
@@ -2051,6 +2054,7 @@ local fs = {}
 
 ---@class HollowAgentHost
 ---@field id string
+---@field generation string Opaque connection generation; cache identity only
 ---@field fs HollowHostFs
 ---@field status fun(self:HollowAgentHost): "connecting"|"ready"|"disconnected", HollowHostError|nil
 ---@field close fun(self:HollowAgentHost): boolean|nil, HollowHostError|nil
@@ -2064,6 +2068,10 @@ local host = {}
 ---@param opts HollowHostConnectOpts
 ---@return HollowPromise<HollowAgentHost>
 function host.connect(opts) end
+
+---Get the runtime's cached native-local host; existing hollow.process defaults are unchanged.
+---@return HollowPromise<HollowAgentHost>
+function host.local_host() end
 
 ---@return string
 function fs.data_dir() end

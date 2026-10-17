@@ -65,7 +65,7 @@ pub fn encode(allocator: std.mem.Allocator, operation: Operation, streams: ?tran
         },
         .list => |opts| {
             try validatePath(opts.path);
-            if (opts.offset > 1_000_000 or opts.limit > 256) return error.InvalidArgument;
+            if (opts.offset > 1_000_000 or opts.limit == 0 or opts.limit > 256) return error.InvalidArgument;
             try w.print("{{\"op\":\"FS_LIST\",\"path_b64\":\"", .{});
             try writeBase64(w, allocator, opts.path);
             try w.print("\",\"offset\":{d},\"limit\":{d}}}", .{ opts.offset, opts.limit });

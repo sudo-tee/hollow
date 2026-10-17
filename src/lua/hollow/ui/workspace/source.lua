@@ -10,6 +10,9 @@ local ui = hollow.ui
 local M = {}
 
 local DEFAULT_CACHE_TTL_MS = 5000
+local HOST_PAGE_SIZE = 256
+local HOST_ENTRY_LIMIT = 4096
+local HOST_STAT_CONCURRENCY = 4
 
 local function switcher_state()
   return state.ui.workspace_switcher
@@ -283,6 +286,224 @@ local function source_resolver(source)
   return resolver ~= "" and resolver or "local"
 end
 
+local function host_key(source)
+  local host = source.host
+  if type(host) ~= "table" or type(host.fs) ~= "table" or type(host.fs.list) ~= "function" then
+    return nil
+  end
+  return tostring(host.id or "") .. "\0" .. tostring(host.generation or "")
+end
+
+local function explicit_host(source)
+  return source.host ~= nil
+end
+
+local function host_signature(sources)
+  local parts = {}
+  local function append(value)
+    local text = tostring(value)
+    parts[#parts + 1] = tostring(#text) .. ":" .. text
+  end
+  for index, source in ipairs(sources) do
+    if explicit_host(source) then
+      local host = source.host
+      append(index); append(type(host) == "table" and host.id or "")
+      append(type(host) == "table" and host.generation or "")
+      append(source.domain or ""); append(source.cwd_resolver)
+      append(source.default); append(source.name or "")
+      append(#normalized_list(source.roots))
+      for _, root in ipairs(normalized_list(source.roots)) do
+        append(type(root)); append(root)
+      end
+    end
+  end
+  return table.concat(parts)
+end
+
+local function join_host_path(root, name)
+  if root:sub(-1) == "/" then return root .. name end
+  return root .. "/" .. name
+end
+
+local function valid_host_name(name)
+  return type(name) == "string" and name ~= "" and name ~= "." and name ~= ".."
+    and not name:find("/", 1, true) and not name:find("\0", 1, true)
+end
+
+local function promise_next(promise, resolve, reject)
+  if type(promise) ~= "table" or type(promise.next) ~= "function" then
+    reject("host fs API did not return a promise")
+    return
+  end
+  local settled = false
+  local ok, err = pcall(promise.next, promise, function(value)
+    if settled then return end
+    settled = true
+    resolve(value)
+  end, function(reason)
+    if settled then return end
+    settled = true
+    reject(reason)
+  end)
+  if not ok and not settled then settled = true; reject(err) end
+end
+
+local function invalidate_host_scan()
+  local s = switcher_state()
+  s.host_scan_generation = (s.host_scan_generation or 0) + 1
+  for promise in pairs(s.host_scan_active or {}) do
+    if type(promise.cancel) == "function" then pcall(promise.cancel, promise) end
+  end
+  s.host_scan_active = {}
+  s.host_scan_cache = nil
+  s.host_scan_pending = nil
+  s.host_scan_signature = nil
+end
+
+local function start_host_scan(sources, signature)
+  local switcher = switcher_state()
+  if switcher.host_scan_pending then return end
+  local generation = switcher.host_scan_generation or 0
+  local scans = {}
+  for index, source in ipairs(sources) do
+    if source.default ~= false and explicit_host(source) then
+      scans[#scans + 1] = { source = source, key = host_key(source), index = index }
+    end
+  end
+  if #scans == 0 then return end
+  switcher.host_scan_pending = true
+  switcher.host_scan_signature = signature
+  switcher.host_scan_active = switcher.host_scan_active or {}
+  local combined = {}
+  local warned = false
+  local function warn_host_scan()
+    if warned then return end
+    warned = true
+    notify_warn("Workspace host scan failed")
+  end
+  local scan_index = 0
+  local function current()
+    local s = switcher_state()
+    return (s.host_scan_generation or 0) == generation and s.host_scan_signature == signature
+      and host_signature(configured_sources()) == signature
+  end
+  local function defer(fn)
+    local api = state.host_api
+    if type(api) == "table" and type(api.defer) == "function" then
+      local ok = pcall(api.defer, fn)
+      if ok then return end
+    end
+    fn()
+  end
+  local function observe(promise, resolve, reject)
+    if type(promise) == "table" then switcher_state().host_scan_active[promise] = true end
+    promise_next(promise, function(value)
+      if type(promise) == "table" then switcher_state().host_scan_active[promise] = nil end
+      resolve(value)
+    end, function(err)
+      if type(promise) == "table" then switcher_state().host_scan_active[promise] = nil end
+      reject(err)
+    end)
+  end
+  local function finish_scan()
+    if not current() then return end
+    scan_index = scan_index + 1
+    local scan = scans[scan_index]
+    if not scan then
+      local s = switcher_state()
+      s.host_scan_cache = { generation = generation, signature = signature,
+        loaded_at = util.host_now_ms(state.host_api), items = combined }
+      s.host_scan_pending = nil
+      s.host_scan_revision = (s.host_scan_revision or 0) + 1
+      return
+    end
+    local source, host = scan.source, scan.source.host
+    if not host_key(source) then
+      warn_host_scan()
+      finish_scan()
+      return
+    end
+    local domain = source_domain_name(source)
+    local roots = normalized_list(source.roots)
+    local root_index = 0
+    local function next_root()
+      if not current() then return end
+      root_index = root_index + 1
+      local root = roots[root_index]
+      if type(root) ~= "string" or root == "" then
+        if root_index > #roots then finish_scan() else next_root() end
+        return
+      end
+      local offset, count, entries = 0, 0, {}
+      local function page()
+        if not current() then return end
+        local ok, promise = pcall(host.fs.list, root, { offset = offset, limit = HOST_PAGE_SIZE })
+        if not ok then warn_host_scan(); next_root(); return end
+        observe(promise, function(page_result)
+          if not current() then return end
+          local names = type(page_result) == "table" and page_result.entries or nil
+          if type(names) ~= "table" or #names > HOST_PAGE_SIZE or type(page_result.eof) ~= "boolean" then
+            warn_host_scan(); next_root(); return
+          end
+          for _, entry in ipairs(names) do
+            local name = type(entry) == "table" and entry.name or entry
+            count = count + 1
+            if count <= HOST_ENTRY_LIMIT and valid_host_name(name) then
+              entries[#entries + 1] = name
+            end
+          end
+          local old_offset = offset
+          local next_offset = page_result.next_offset
+          local more = page_result.eof == false
+          if more and (#names == 0 or type(next_offset) ~= "number" or next_offset % 1 ~= 0 or next_offset <= old_offset or next_offset > 1000000) then
+            warn_host_scan(); next_root(); return
+          end
+          offset = more and next_offset or old_offset + #names
+          if more and count < HOST_ENTRY_LIMIT then defer(page) else
+            local cursor, active = 1, 0
+            local root_finished = false
+            local function pump()
+              if not current() or root_finished then return end
+              while active < HOST_STAT_CONCURRENCY and cursor <= #entries do
+                local name = entries[cursor]; cursor = cursor + 1; active = active + 1
+                local path = join_host_path(root, name)
+                local good, stat_promise = pcall(host.fs.stat, path)
+                if not good then
+                  warn_host_scan()
+                  active = active - 1
+                  if cursor <= #entries then defer(pump) elseif active == 0 then root_finished = true; next_root() end
+                else
+                  observe(stat_promise, function(stat)
+                    if not current() then return end
+                    if type(stat) == "table" and stat.kind == "directory" and name:sub(1, 1) ~= "." then
+                      combined[#combined + 1] = { name = name, cwd = path, domain = domain,
+                        _host_key = scan.key, _host_source_index = scan.index }
+                    end
+                    active = active - 1
+                    if cursor <= #entries then defer(pump) elseif active == 0 and not root_finished then root_finished = true; next_root() end
+                  end, function()
+                    if not current() then return end
+                    warn_host_scan()
+                    active = active - 1
+                    if cursor <= #entries then defer(pump) elseif active == 0 and not root_finished then root_finished = true; next_root() end
+                  end)
+                end
+              end
+              if cursor > #entries and active == 0 and not root_finished then root_finished = true; next_root() end
+            end
+            defer(pump)
+          end
+        end, function()
+          if current() then warn_host_scan(); next_root() end
+        end)
+      end
+      page()
+    end
+    next_root()
+  end
+  finish_scan()
+end
+
 local function wsl_unc_to_linux_path(path)
   local normalized = trim_string(path):gsub("\\", "/")
   if normalized == "" then
@@ -349,6 +570,24 @@ local function normalize_possible_workspace(item)
   end
 
   local name = trim_string(item.name or item.label or item.id or item.cwd)
+  local host_identity = type(item._host_key) == "string" and item._host_key or nil
+  if host_identity then
+    name = type(item.name) == "string" and item.name or name
+    if name == "" then return nil end
+    local cwd = type(item.cwd) == "string" and item.cwd or nil
+    return {
+      id = "host:" .. host_identity .. "\0" .. tostring(item._host_id or "") .. "\0"
+        .. workspace_identity(name, cwd, item.domain) .. "\0" .. tostring(cwd or ""),
+      name = name,
+      cwd = cwd,
+      domain = normalize_domain(item.domain),
+      source = "host",
+      host_id = host_identity,
+      is_active = false,
+      is_open = false,
+      has_bell = false,
+    }
+  end
   if name == "" then
     return nil
   end
@@ -374,7 +613,12 @@ local function source_workspace_item(raw, source, resolved_domain)
     raw = util.clone_value(raw)
     raw.domain = raw.domain or resolved_domain
     raw.source = raw.source or source_resolver(source)
-    raw = resolve_source_item_cwd(source, raw)
+    if host_key(source) then
+      raw._host_key = raw._host_key or host_key(source)
+      if source.cwd_resolver ~= nil then raw = resolve_source_item_cwd(source, raw) end
+    else
+      raw = resolve_source_item_cwd(source, raw)
+    end
   end
 
   return normalize_possible_workspace(raw)
@@ -465,18 +709,42 @@ local function cached_known_workspaces(force_refresh)
   local switcher = switcher_state()
   local ttl = tonumber(switcher.cache_ttl_ms) or DEFAULT_CACHE_TTL_MS
   local current = util.host_now_ms(state.host_api)
+  local sources = configured_sources()
+  local signature = host_signature(sources)
+  local has_host_source = false
+  for _, source in ipairs(sources) do
+    if explicit_host(source) and source.default ~= false then has_host_source = true; break end
+  end
+  if switcher.host_signature ~= signature then
+    invalidate_host_scan()
+    switcher.cached_items = nil
+    switcher.cache_loaded_at_ms = 0
+    switcher.host_signature = signature
+  end
+  if switcher.host_scan_cache and switcher.host_scan_cache.signature ~= signature then
+    invalidate_host_scan()
+    switcher.cached_items = nil
+    switcher.cache_loaded_at_ms = 0
+  end
+  local host_fresh = switcher.host_scan_cache ~= nil and ttl >= 0
+    and switcher.host_scan_cache.signature == signature
+    and current - (switcher.host_scan_cache.loaded_at or 0) <= ttl
+  local revision_changed = (switcher.cached_host_revision or -1) ~= (switcher.host_scan_revision or 0)
   local fresh = switcher.cached_items ~= nil
     and ttl >= 0
     and (current - (switcher.cache_loaded_at_ms or 0)) <= ttl
+    and not revision_changed
+    and (not has_host_source or host_fresh or switcher.host_scan_pending)
 
   if not force_refresh and fresh then
     return util.clone_value(switcher.cached_items)
   end
+  if force_refresh then invalidate_host_scan(); host_fresh = false end
 
   local items = {}
   local seen = {}
-
-  for _, source in ipairs(configured_sources()) do
+  if #sources > 0 and not host_fresh then start_host_scan(sources, signature) end
+  for source_index, source in ipairs(sources) do
     if source.default ~= false then
       local resolved_domain = source_domain_name(source)
       local resolver = source_resolver(source)
@@ -485,7 +753,17 @@ local function cached_known_workspaces(force_refresh)
         append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
       end
 
+      local host_id = host_key(source)
+      local host_result = switcher.host_scan_cache
+      if explicit_host(source) and host_result and host_result.signature == signature then
+        for _, raw in ipairs(host_result.items) do
+          if raw._host_source_index == source_index and raw._host_key == host_id then
+            append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
+          end
+        end
+      end
       for _, root in ipairs(normalized_list(source.roots)) do
+        if not explicit_host(source) then
         local scanned = resolver == "wsl"
             and scan_projects_in_wsl_root(source.name or source.domain or "", root)
           or resolver == "ssh" and scan_projects_in_ssh_root(resolved_domain, root)
@@ -493,6 +771,7 @@ local function cached_known_workspaces(force_refresh)
 
         for _, raw in ipairs(scanned) do
           append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
+        end
         end
       end
     end
@@ -504,6 +783,7 @@ local function cached_known_workspaces(force_refresh)
 
   switcher.cached_items = util.clone_value(items)
   switcher.cache_loaded_at_ms = current
+  switcher.cached_host_revision = switcher.host_scan_revision or 0
   return items
 end
 
@@ -582,14 +862,16 @@ local function merged_workspace_items(force_refresh)
 
   for _, workspace in ipairs(cached_known_workspaces(force_refresh)) do
     local existing = seen[workspace.id]
-    if existing == nil then
+    if existing == nil and workspace.host_id == nil then
       existing = seen[workspace_identity(workspace.name, nil, workspace.domain)]
     end
     if existing == nil then
       workspace.last_opened_at = switcher.last_opened[workspace.id]
       merged[#merged + 1] = workspace
       seen[workspace.id] = workspace
-      seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
+      if workspace.host_id == nil then
+        seen[workspace_identity(workspace.name, nil, workspace.domain)] = workspace
+      end
     elseif existing.cwd == nil and workspace.cwd ~= nil then
       existing.cwd = workspace.cwd
     end
@@ -650,16 +932,21 @@ function M.configure(opts)
   local switcher = switcher_state()
   local invalidate = util.has_any_key(opts, { "known_workspaces", "sources", "project_roots" })
   util.merge_tables(switcher, opts)
+  if type(opts.sources) == "table" then switcher.sources = opts.sources end
   if invalidate then
+    invalidate_host_scan()
     switcher.cached_items = nil
     switcher.cache_loaded_at_ms = 0
+    switcher.host_signature = host_signature(configured_sources())
   end
 end
 
 function M.clear_cache()
   local switcher = switcher_state()
+  invalidate_host_scan()
   switcher.cached_items = nil
   switcher.cache_loaded_at_ms = 0
+  switcher.host_signature = host_signature(configured_sources())
 end
 
 function M.known_workspaces(force_refresh)

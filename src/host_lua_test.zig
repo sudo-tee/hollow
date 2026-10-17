@@ -148,5 +148,27 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
     ctx.host_manager = null;
     try run(state,
         \\assert(host_api.host_poll(oldticket).error.code=='session_gone')
+        \\native=hollow.host.local_host()
+        \\assert(native==hollow.host.local_host())
     );
+    try until(state, "DONE=native:status()~='pending'");
+    try run(state,
+        \\assert(native:status()=='fulfilled',native:error() and native:error().message)
+        \\nh=native:value(); assert(type(nh.generation)=='string')
+        \\ni=nh:info(); ns=nh.fs.stat('.')
+        \\ne=nh:exec({argv={'/bin/sh','-c','printf native; exit 4'}})
+        \\nc=nh:exec({argv={'/bin/sh','-c','exec sleep 30'}})
+        \\assert(nc:cancel())
+    );
+    try until(state, "DONE=ni:status()~='pending' and ns:status()~='pending' and ne:status()~='pending' and nc:status()~='pending'");
+    try run(state,
+        \\assert(ni:value().os=='linux' and ni:value().build=='local')
+        \\assert(ns:value().kind=='directory')
+        \\assert(ne:value().stdout=='native' and ne:value().exit_code==4)
+        \\assert(nc:error().code=='cancelled')
+        \\assert(nh:close())
+        \\again=hollow.host.local_host()
+    );
+    try until(state, "DONE=again:status()~='pending'");
+    try run(state, "assert(again:value().generation~=nh.generation)");
 }

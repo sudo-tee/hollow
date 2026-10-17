@@ -16,7 +16,9 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 310 pass under Lua 5.1; host suite 7 pass |
+| Complete Lua suite | 326 pass under Lua 5.1; host suite 8 and host workspace suite 15 pass |
+| Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
+| Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
 | HostManager and native Lua adapter Windows compile checks | Pass; no runtime execution |
 | Full Windows GUI cross-build | Blocked by two generated FreeType binding unused-constant errors; not a passing app build |
 | Local-subprocess conformance | 16 pass |
@@ -31,7 +33,7 @@ Reproduction:
 
 ```sh
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
-zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport test-host-local
 zig test src/host_transport.zig -target x86_64-windows-gnu -lc -fno-emit-bin
 python3 -m unittest discover -s scripts/tests -v
 python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
@@ -108,7 +110,7 @@ the same implementation for Windows; it does not prove runtime pipe behavior.
 
 ## HostManager and Lua slice
 
-`src/host/manager.zig` owns at most eight registered agent hosts and 64 retained
+`src/host/manager.zig` owns at most eight registered native-local/agent hosts and 64 retained
 requests. Stable caller-provided host IDs are separate from fresh connection
 generations. Old-generation terminal results remain consumable after explicit
 reconnect, while stale handles/tickets cannot submit or cancel new work. No EXEC
@@ -139,8 +141,32 @@ Full Windows GUI cross-build reached 74/77 steps but failed on generated
 constants. No vendor or pre-existing submodule changes were overwritten to work
 around this. GUI-free HostManager and native Lua adapter cross-compiles pass.
 
+## Native-local and host workspace continuation
+
+`hollow.host.local_host()` uses native OS fs/process operations, never a Linux
+agent. Requests own copied inputs and arena-backed results; each local host has
+16 retained slots. Cancellation is an owner-thread atomic flag; worker-side
+watchdogs cancel and join work before publishing results. Tests cover direct
+children, not arbitrary descendants. Shutdown may join workers; no claim covers
+uninterruptible filesystem/kernel waits. Reads check file kind before opening
+and again on the opened handle. A concurrent pathname swap can still reach a
+FIFO/device during portable native open; this is not a sandbox or a proven
+nonblocking-open guarantee. Windows runtime behavior remains unqualified.
+
+The same headless Lua test now also exercises native-local info/stat/exec,
+cancellation, cached connections and generation changes. Native-local job,
+manager and Lua adapter tests cross-compile for Windows, without execution.
+
+Workspace sources may opt into a ready `source.host`. Discovery uses bounded,
+asynchronous list/stat requests, byte-preserving identities, TTL caches,
+cancellation on reconfigure and generation changes, and live picker revision
+updates. Fifteen tests exercise pagination, concurrent stat bounds, per-source
+and cross-host isolation, stale callbacks, malformed promises, errors, refresh,
+and byte names. Legacy resolver discovery and workspace opening stay unchanged;
+host-backed discovery alone does not select a remote PTY/session domain.
+
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
-deployments and all portability runners) is still incomplete. Native-local host
-operations, production connector configuration/bootstrap and read-only workspace
-migration remain incomplete; all PTY extraction/multiplexing milestones remain
-unimplemented.
+deployments and all portability runners) is still incomplete. Production
+connector configuration/bootstrap, broader read-only query migration and native
+Windows qualification remain incomplete; all PTY extraction/multiplexing
+milestones remain unimplemented.

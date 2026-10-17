@@ -109,7 +109,7 @@ local function request(host, handle, op, opts)
 end
 
 local function make_host(id, handle)
-  local host = { id = id, closed = false }
+  local host = { id = id, generation = handle.generation, closed = false }
   local function get_status()
     local status, err = native(host_api.host_status, handle)
     if status == nil then return nil, err end
@@ -146,7 +146,7 @@ local function make_host(id, handle)
     if type(opts) ~= "table" then error("list options must be a table", 2) end
     local args = { path = path }
     if opts.offset ~= nil then check_integer(opts.offset, "offset", 0, 1000000); args.offset = opts.offset end
-    if opts.limit ~= nil then check_integer(opts.limit, "limit", 0, 256); args.limit = opts.limit end
+    if opts.limit ~= nil then check_integer(opts.limit, "limit", 1, 256); args.limit = opts.limit end
     return request(host, handle, "list", args)
   end
   function host.fs.read(path, opts)
@@ -171,11 +171,19 @@ function M.connect(opts)
   if type(opts) ~= "table" then error("connect expects an options table", 2) end
   check_string(opts.id, "id", true)
   local id = opts.id
-  local argv = dense_strings(opts.argv, "argv")
-  if #argv == 0 then error("argv must not be empty", 2) end
-  local copied = {}
-  for i, arg in ipairs(argv) do copied[i] = arg end
-  local handle, err = native(host_api.host_connect, { id = id, argv = copied })
+  local options = { id = id }
+  if opts.backend == "local" then
+    if opts.argv ~= nil then error("native-local hosts do not accept connector argv", 2) end
+    options.backend = "local"
+  else
+    if opts.backend ~= nil and opts.backend ~= "agent" then error("unsupported host backend", 2) end
+    local argv = dense_strings(opts.argv, "argv")
+    if #argv == 0 then error("argv must not be empty", 2) end
+    local copied = {}
+    for i, arg in ipairs(argv) do copied[i] = arg end
+    options.argv = copied
+  end
+  local handle, err = native(host_api.host_connect, options)
   if handle == nil then return reject_later(err) end
 
   local resolve, reject
@@ -196,6 +204,19 @@ function M.connect(opts)
   end
   host_api.defer(poll, 10)
   return promise
+end
+
+local local_connection
+
+-- Explicit native-local counterpart; does not change hollow.process defaults.
+function M.local_host()
+  if local_connection then
+    if local_connection:status() == "pending" then return local_connection end
+    local value = local_connection:value()
+    if value and not value.closed and value:status() == "ready" then return local_connection end
+  end
+  local_connection = M.connect({ id = "local", backend = "local" })
+  return local_connection
 end
 
 return M
