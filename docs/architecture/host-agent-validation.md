@@ -16,9 +16,11 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 326 pass under Lua 5.1; host suite 8 and host workspace suite 15 pass |
+| Complete Lua suite | 348 pass under Lua 5.1; host suite 10, Podman bootstrap suite 20 and host workspace suite 15 pass |
 | Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
 | Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
+| Production Lua Podman bootstrap | Pass through native bindings: deployment, reuse, corrupt-cache repair, preinstalled path and checksum rejection |
+| Production bootstrap configured UID/GID 1000:1000 | Pass; `id -u` confirms 1000, no connector root override |
 | HostManager and native Lua adapter Windows compile checks | Pass; no runtime execution |
 | Full Windows GUI cross-build | Blocked by two generated FreeType binding unused-constant errors; not a passing app build |
 | Local-subprocess conformance | 16 pass |
@@ -166,7 +168,40 @@ and byte names. Legacy resolver discovery and workspace opening stay unchanged;
 host-backed discovery alone does not select a remote PTY/session domain.
 
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
-deployments and all portability runners) is still incomplete. Production
-connector configuration/bootstrap, broader read-only query migration and native
+deployments and all portability runners) is still incomplete. Automatic release
+artifact discovery, WSL/SSH connectors, broader read-only query migration and native
 Windows qualification remain incomplete; all PTY extraction/multiplexing
 milestones remain unimplemented.
+
+## Production Podman bootstrap continuation
+
+`hollow.host.podman(opts)` confines Podman-specific discovery/deployment to Lua.
+It takes a selected existing container and trusted architecture-keyed artifacts
+with expected SHA-256 values, or an absolute preinstalled agent path. Bootstrap
+uses asynchronous native-local exec; subsequent fs/exec requests use the existing
+persistent `podman exec -i` transport. Names are resolved to immutable container
+IDs before remote commands, never followed across replacement. There is no
+container creation/removal, user override, dependency installation or PTY change
+in production connector code.
+
+Twenty Lua tests cover validation, options ownership, aliases, pinned IDs,
+cache/deployment/error paths, positional shell data, byte-preserving HOME,
+deadline/cancellation, upload cleanup after draining, and late-host closure. The
+shared host suite also tests connection cancellation and bootstrap admission caps.
+Cleanup is bounded best effort; CLI cancellation is not a transaction rollback,
+and cannot guarantee removing a temporary name whose creation result was lost.
+
+Real rootless Alpine tests execute the production connector itself (Python only
+owns the disposable fixture), including repair of an already-running agent's
+replaced pathname and rejection of a wrong expected digest. Both the image's
+default user and configured UID/GID 1000:1000 pass; `id -u` verifies effective UID.
+These do not qualify Windows Podman/WSL/SSH runtime behavior or other distributions.
+
+```sh
+python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- \
+  zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-user 1000:1000 \
+  --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+```

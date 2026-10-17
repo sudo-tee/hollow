@@ -2015,6 +2015,18 @@ local fs = {}
 ---@field backend? "agent"|"local" Default agent; local never launches an agent
 ---@field argv? string[] Required only for agent; exact connector argv, no implicit shell
 
+---@class HollowAgentArtifact
+---@field path string Absolute native path to a trusted Linux musl agent artifact
+---@field sha256 string Expected 64-hex SHA-256 from the trusted release manifest
+
+---@class HollowPodmanHostOpts
+---@field id string Stable host identifier
+---@field container string Existing running container name or ID
+---@field podman? string Native Podman executable; defaults to "podman"
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact} Required unless agent_path is supplied
+---@field agent_path? string Absolute preinstalled Linux agent executable; skips deployment
+---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
+
 ---@class HollowHostExecOpts
 ---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
 ---@field cwd? string
@@ -2064,7 +2076,7 @@ local fs = {}
 ---@class HollowHostNamespace
 local host = {}
 
----Experimental explicit subprocess connector; operation promises also support :cancel().
+---Experimental explicit subprocess connector; connection and operation promises support :cancel().
 ---@param opts HollowHostConnectOpts
 ---@return HollowPromise<HollowAgentHost>
 function host.connect(opts) end
@@ -2072,6 +2084,12 @@ function host.connect(opts) end
 ---Get the runtime's cached native-local host; existing hollow.process defaults are unchanged.
 ---@return HollowPromise<HollowAgentHost>
 function host.local_host() end
+
+---Bootstrap an agent in an existing container, then use the common persistent host API.
+---Does not create/start/remove containers or elevate the configured container user.
+---@param opts HollowPodmanHostOpts
+---@return HollowPromise<HollowAgentHost>
+function host.podman(opts) end
 
 ---@return string
 function fs.data_dir() end

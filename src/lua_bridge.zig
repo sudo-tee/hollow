@@ -117,6 +117,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
     .{ .name = "hollow.host", .source = @embedFile("lua/hollow/host.lua") },
+    .{ .name = "hollow.host.podman", .source = @embedFile("lua/hollow/host/podman.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
     .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },

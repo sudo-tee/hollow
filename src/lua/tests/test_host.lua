@@ -124,6 +124,21 @@ describe("hollow.host connector", function()
     assert.are.equal("stable", promise:value().id)
   end)
 
+  it("cancels pending connections without publishing a late ready host", function()
+    local closes = 0
+    native_host(function() return "ready" end)
+    env.host_api.host_close = function() closes = closes + 1; return true end
+    local promise = require("hollow.host").connect({ id = "stable", argv = { "connector" } })
+    assert.is_true(promise:cancel())
+    assert.is_false(promise:cancel())
+    step()
+    assert.are.equal("rejected", promise:status())
+    assert.are.equal("cancelled", promise:error().code)
+    assert.are.equal(1, closes)
+    assert.is_nil(promise:value())
+    assert.are.equal(0, #queue)
+  end)
+
   it("preserves empty argv bytes and rejects excessive numeric options", function()
     local host = ready_host()
     env.host_api.host_start = function(_, _, opts)
@@ -162,5 +177,20 @@ describe("hollow.host connector", function()
     assert.are.equal(2, connections)
     assert.are.equal(1, closes)
     assert.has_error(function() hosts.connect({ id = "x", backend = "local", argv = { "not-run" } }) end)
+  end)
+
+  it("bounds Podman bootstraps and releases capacity on rejection", function()
+    local hosts = require("hollow.host")
+    local rejects = {}
+    package.loaded["hollow.host.podman"] = { connect = function()
+      return require("hollow.async").promise(function(_, reject) rejects[#rejects + 1] = reject end)
+    end }
+    for _ = 1, 4 do assert.are.equal("pending", hosts.podman({}):status()) end
+    local full = hosts.podman({})
+    assert.are.equal("resource_exhausted", full:error().code)
+    rejects[1]({ code = "cancelled", message = "test" })
+    assert.are.equal("pending", hosts.podman({}):status())
+    assert.are.equal(5, #rejects)
+    package.loaded["hollow.host.podman"] = nil
   end)
 end)

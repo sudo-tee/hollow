@@ -34,6 +34,63 @@ Native handles are private. `host:status()` reports `connecting`, `ready`, or
 after close it creates a new generation. For another native host ID, use
 `connect({id = "my-local", backend = "local"})` without `argv`.
 
+## Podman configuration
+
+`podman(opts)` bootstraps into an **existing running container**, then returns
+the same host API. It does not create/start/remove containers, allocate a TTY,
+override the container user, or replay commands after a disconnect.
+
+```lua
+hollow.host.podman({
+  id = "build",
+  container = "my-build-container",
+  artifacts = {
+    x86_64 = {
+      path = "/absolute/release/linux-x86_64/hollow-agent",
+      sha256 = "<64 hex digits from the trusted release SHA256SUMS>",
+    },
+    -- aarch64 = { path = "...", sha256 = "..." },
+  },
+}):next(function(host)
+  host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
+    :next(function(result) print(result.stdout) end)
+  hollow.ui.workspace.configure({ sources = { { host = host, roots = { "/work" } } } })
+end, function(err) print(err.code, err.message) end)
+```
+
+Supply trusted artifacts explicitly; automatic packaged-release discovery is not
+implemented. Paths are absolute **client-native** paths (including Windows paths),
+but artifacts must be Linux agents. The connector selects `x86_64`/`aarch64` using
+the container's architecture, not the GUI's. SHA-256 protects transferred bytes;
+it does not authenticate an untrusted manifest, container, or Podman executable.
+
+The connector resolves the selected name to an immutable container ID, preserves
+its configured user, and verifies cached/uploaded bytes before installing into
+`$HOME/.cache/hollow/agents/linux-<arch>/<sha256>/hollow-agent`. Uploads use unique
+temporary paths and same-directory atomic rename. Bootstrap shell scripts use
+positional arguments for paths, not shell interpolation. Container tooling needed:
+`/bin/sh`, `uname`, `sha256sum`, `mktemp`, `mkdir`, `chmod`, `mv`, `rm`, and a writable,
+executable HOME cache. No dependencies are installed automatically.
+`mv` must support `-T` (GNU/BusyBox) so a destination directory/symlink is not
+silently followed during installation. Bootstrap is not a sandbox against a
+malicious process running as the same container user and changing cache paths.
+
+Restricted containers can instead supply `agent_path = "/opt/bin/hollow-agent"`
+without `artifacts`. This preinstalled executable is caller-trusted; deployment
+and SHA verification are skipped. The ordinary protocol handshake still applies.
+
+Optional `podman` selects the native executable (default `"podman"`).
+`timeout_ms` bounds the complete bootstrap (default 60000, maximum 300000).
+At most four bootstrap promises are active. `:cancel()` rejects pending bootstrap
+and cancels its current operation; temporary-upload cleanup is best effort after
+that operation finishes. Cancellation does not remove installed agents or stop
+containers. A later connection always inspects and verifies again.
+
+Container restart/recreation requires explicit reconnect. An in-progress bootstrap
+pinned to an old container ID fails instead of silently following a reused name.
+After connection, operations use the persistent agent protocol, not per-operation
+`podman exec`. Windows Podman runtime behavior remains unqualified.
+
 `info`, `exec`, and `fs.stat/list/read` return Hollow promises. Each operation
 promise supports `:cancel()`, which requests cancellation once; its promise
 settles only when native completion is reported. Operation failures reject with
@@ -83,7 +140,7 @@ Polling runs through deferred callbacks, so completion depends on the
 application tick. This API does not automatically replay requests or reconnect
 after disconnection.
 
-This connector slice is experimental. It does not bootstrap Podman, SSH, or WSL,
+This connector slice is experimental. It does not bootstrap SSH or WSL,
 and does not migrate session/PTY ownership. Workspace discovery may opt into a
 ready host via `source.host`; legacy resolvers remain unchanged without it.
 Availability depends on the native host bridge in the running build;
