@@ -2028,6 +2028,16 @@ local fs = {}
 ---@field agent_path? string Absolute preinstalled Linux agent executable; skips deployment
 ---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
 
+---@class HollowWslHostOpts
+---@field id string Stable host identifier
+---@field distro string Explicit existing WSL distribution name
+---@field user? string Linux user; omitted preserves distro default, never implies root
+---@field wsl? string Native WSL launcher executable; defaults to "wsl.exe"
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact} Explicit Windows artifacts override discovery
+---@field agent_dir? string Absolute client-native bundle directory
+---@field agent_path? string Absolute preinstalled Linux executable; skips deployment
+---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
+
 ---@class HollowHostExecOpts
 ---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
 ---@field cwd? string
@@ -2092,6 +2102,11 @@ function host.local_host() end
 ---@param opts HollowPodmanHostOpts
 ---@return HollowPromise<HollowAgentHost>
 function host.podman(opts) end
+
+---Experimental WSL fs/exec host. Existing PTYs and WSL bypass are unchanged.
+---@param opts HollowWslHostOpts
+---@return HollowPromise<HollowAgentHost>
+function host.wsl(opts) end
 
 ---@return string
 function fs.data_dir() end

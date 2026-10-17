@@ -160,3 +160,34 @@ class Podman:
     def close(self):
         if self.created and not self.keep_container and self.container:
             self._run(["rm", "--force", self.container], check=False)
+
+
+class WSL:
+    """Connect to an already-installed Linux agent through the native WSL launcher."""
+    def __init__(self, agent_path: str, distro: str, user: str | None = None,
+                 executable: str = "wsl.exe"):
+        if not isinstance(agent_path, str) or not agent_path.startswith("/") or "\x00" in agent_path:
+            raise ConnectorError("WSL agent path must be an absolute Linux path without NUL")
+        if not isinstance(distro, str) or not distro or distro.startswith("-") or "\x00" in distro:
+            raise ConnectorError("WSL distro must be nonempty and must not start with '-' or contain NUL")
+        if user is not None and (not isinstance(user, str) or not user or user.startswith("-") or "\x00" in user):
+            raise ConnectorError("WSL user must be nonempty and must not start with '-' or contain NUL")
+        if not isinstance(executable, str) or not executable or "\x00" in executable:
+            raise ConnectorError("WSL executable must be a nonempty native executable name")
+        self.agent_path, self.distro, self.user, self.executable = agent_path, distro, user, executable
+
+    def connect(self):
+        args = [self.executable, "--distribution", self.distro]
+        if self.user is not None:
+            args.extend(["--user", self.user])
+        args.extend(["--cd", "/", "--exec", self.agent_path, "stdio"])
+        try:
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
+        except OSError as exc:
+            raise ConnectorError(f"cannot launch WSL agent via {self.executable}: {exc}") from exc
+        return ProcessConnection(proc)
+
+    def close(self):
+        # WSL distro lifecycle belongs to the user, not this test harness.
+        pass

@@ -240,4 +240,48 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         try until(state, "DONE=wrong:status()~='pending'");
         try run(state, "assert(wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");
     }
+    const distro = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_DISTRO") catch null;
+    defer if (distro) |bytes| std.testing.allocator.free(bytes);
+    if (distro) |name| {
+        c.lua_pushlstring(state, name.ptr, name.len);
+        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "WSL_DISTRO");
+        inline for (.{ "EXE", "USER", "EXPECTED_USER", "ARTIFACT" }) |suffix| {
+            const bytes = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_" ++ suffix);
+            defer std.testing.allocator.free(bytes);
+            c.lua_pushlstring(state, bytes.ptr, bytes.len);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "WSL_" ++ suffix);
+        }
+        try run(state,
+            \\wopts={id='wsl-production',distro=WSL_DISTRO,wsl=WSL_EXE,user=WSL_USER~='' and WSL_USER or nil}
+            \\if WSL_ARTIFACT~='' then wopts.artifacts={x86_64={path=WSL_ARTIFACT,sha256=assets:value().x86_64.sha256}} end
+            \\wconnected=hollow.host.wsl(wopts)
+        );
+        try until(state, "DONE=wconnected:status()~='pending'");
+        try run(state,
+            \\assert(wconnected:status()=='fulfilled',wconnected:error() and wconnected:error().message)
+            \\wh=wconnected:value(); wi=wh:info(); wr=wh.fs.read('/etc/os-release'); wl=wh.fs.list('/tmp',{limit=3})
+            \\we=wh:exec({argv={'/bin/sh','-c','printf "%s" "$1"; printf err >&2; exit 5','test'," a'\255\n"}})
+            \\wu=wh:exec({argv={'id','-un'}})
+            \\wc=wh:exec({argv={'/bin/sh','-c','exec sleep 30'}}); assert(wc:cancel())
+        );
+        try until(state, "DONE=wi:status()~='pending' and wr:status()~='pending' and wl:status()~='pending' and we:status()~='pending' and wu:status()~='pending' and wc:status()~='pending'");
+        try run(state,
+            \\assert(wi:value().os=='linux' and #wr:value().bytes>0 and #wl:value().entries<=3)
+            \\assert(we:value().exit_code==5 and we:value().stdout==" a'\255\n" and we:value().stderr=='err')
+            \\assert(wu:value().stdout==WSL_EXPECTED_USER..'\n' and wc:error().code=='cancelled')
+            \\assert(wh:close()); wopts.id='wsl-reuse'; wreuse=hollow.host.wsl(wopts)
+        );
+        try until(state, "DONE=wreuse:status()~='pending'");
+        try run(state,
+            \\assert(wreuse:status()=='fulfilled',wreuse:error() and wreuse:error().message)
+            \\assert(wreuse:value().generation~=wh.generation); assert(wreuse:value():close())
+            \\wopts.id='wsl-preinstalled'; wopts.agent_path=wi:value().home..'/.cache/hollow/agents/linux-'..wi:value().arch..'/'..assets:value()[wi:value().arch].sha256..'/hollow-agent'
+            \\wpre=hollow.host.wsl(wopts)
+        );
+        try until(state, "DONE=wpre:status()~='pending'");
+        try run(state,
+            \\assert(wpre:status()=='fulfilled',wpre:error() and wpre:error().message)
+            \\assert(wpre:value():close())
+        );
+    }
 }

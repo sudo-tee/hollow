@@ -12,10 +12,14 @@ from agent_connectors import ConnectorError, Podman
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--connector", choices=("local-subprocess", "podman", "podman-bootstrap"), required=True)
+    parser.add_argument("--connector", choices=("local-subprocess", "podman", "podman-bootstrap", "wsl-bootstrap"), required=True)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--image", default="docker.io/library/alpine:3.21")
     parser.add_argument("--container-user", help="Fixture user for podman-bootstrap, e.g. 1000:1000")
+    parser.add_argument("--distro", help="Explicit existing WSL distro for wsl-bootstrap")
+    parser.add_argument("--wsl-user", help="Optional existing Linux user; default preserves distro configuration")
+    parser.add_argument("--wsl", default="wsl.exe", help="WSL launcher executable")
+    parser.add_argument("--wsl-artifact", help="Explicit Windows artifact path for Linux-to-Windows interop tests")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.container_user and (args.connector != "podman-bootstrap" or
@@ -25,6 +29,12 @@ def main():
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("test command required after --")
+    if args.connector == "wsl-bootstrap" and not args.distro:
+        parser.error("--distro is required for wsl-bootstrap; no distro is created or removed")
+    if args.connector == "wsl-bootstrap":
+        for label, value in (("distro", args.distro), ("wsl-user", args.wsl_user)):
+            if value is not None and (not value or value.startswith("-") or "\0" in value):
+                parser.error(f"--{label} must be nonempty, without NUL or a leading hyphen")
     fixture = None
     try:
         env = dict(os.environ)
@@ -60,6 +70,19 @@ def main():
             if not agent.is_file():
                 raise ConnectorError(f"not an agent file: {agent}")
             argv = [str(agent), "stdio"]
+            if args.connector == "wsl-bootstrap":
+                launch = [args.wsl, "--distribution", args.distro]
+                if args.wsl_user:
+                    launch += ["--user", args.wsl_user]
+                launch += ["--cd", "/", "--exec"]
+                try:
+                    selected = subprocess.run([*launch, "id", "-un"], capture_output=True, timeout=20, check=True)
+                except (OSError, subprocess.SubprocessError) as error:
+                    raise ConnectorError(f"selected WSL distro/user unavailable: {error}") from error
+                env.update(HOLLOW_TEST_WSL_DISTRO=args.distro, HOLLOW_TEST_WSL_EXE=args.wsl,
+                           HOLLOW_TEST_WSL_USER=args.wsl_user or "",
+                           HOLLOW_TEST_WSL_ARTIFACT=args.wsl_artifact or "",
+                           HOLLOW_TEST_WSL_EXPECTED_USER=selected.stdout.decode("utf-8").removesuffix("\n"))
         env["HOLLOW_TEST_CONNECTOR_ARGV"] = json.dumps(argv)
         return subprocess.run(command, env=env, check=False).returncode
     finally:

@@ -230,16 +230,19 @@ end
 local active_bootstraps = 0
 
 -- Connector policy stays in Lua; all post-connect fs/exec uses the common API.
-function M.podman(opts)
+local function bootstrap_connector(name, opts)
   if active_bootstraps >= 4 then
     return reject_later({ code = "resource_exhausted", message = "too many host bootstraps" })
   end
   active_bootstraps = active_bootstraps + 1
-  local ok, promise = pcall(function() return require("hollow.host.podman").connect(M, opts) end)
+  local ok, promise = pcall(function() return require("hollow.host." .. name).connect(M, opts) end)
   if not ok then active_bootstraps = active_bootstraps - 1; error(promise, 2) end
   local function completed() active_bootstraps = active_bootstraps - 1 end
   promise:next(completed, completed)
   return promise
 end
+
+function M.podman(opts) return bootstrap_connector("podman", opts) end
+function M.wsl(opts) return bootstrap_connector("wsl", opts) end
 
 return M
