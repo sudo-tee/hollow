@@ -24,6 +24,7 @@ pub const Env = struct { key: []const u8, value: []const u8 };
 
 pub const Failure = struct { code: []const u8, message: []const u8, truncated: bool = false };
 pub const Info = struct {
+    executable_dir: ?[]const u8 = null,
     os: []const u8,
     arch: []const u8,
     cwd: []const u8,

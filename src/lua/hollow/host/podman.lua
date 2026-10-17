@@ -1,6 +1,7 @@
 -- Bootstrap policy only. Once connected, all operations use the common agent.
 local M = {}
 local async = require("hollow.async")
+local artifact_bundle = require("hollow.host.artifacts")
 local host_api = assert(rawget(_G, "host_api"), "global host_api bridge is missing")
 local LIMIT = 16384
 
@@ -22,11 +23,15 @@ local function configuration(opts)
   if type(timeout) ~= "number" or timeout ~= timeout or timeout % 1 ~= 0 or timeout < 1 or timeout > 300000 then
     error("timeout_ms must be an integer from 1 to 300000", 3)
   end
+  if opts.agent_dir ~= nil then
+    if not artifact_bundle.absolute(opts.agent_dir) then error("agent_dir must be a client-native absolute path", 3) end
+    copy.agent_dir = opts.agent_dir
+  end
   if opts.agent_path ~= nil then
     copy.agent_path = string_value(opts.agent_path, "agent_path")
     if copy.agent_path:sub(1, 1) ~= "/" then error("agent_path must be an absolute Linux path", 3) end
-  else
-    if type(opts.artifacts) ~= "table" then error("artifacts required without agent_path", 3) end
+  elseif opts.artifacts ~= nil then
+    if type(opts.artifacts) ~= "table" then error("artifacts must be a table", 3) end
     copy.artifacts = {}
     for arch, item in pairs(opts.artifacts) do
       if arch ~= "x86_64" and arch ~= "aarch64" then error("unsupported artifact architecture", 3) end
@@ -166,8 +171,7 @@ function M.connect(hosts, options)
       end, true)
     end)
   end
-  local function begin(host)
-    native_host = host
+  local function inspect()
     command({ "container", "inspect", "--format", "{{.Id}} {{.State.Running}}", opts.container }, "container_unavailable", function(result)
       local id, running = tostring(result.stdout):match("^(%x+)%s+(%S+)%s*$")
       if not id or #id ~= 64 or running ~= "true" then stop(failure("container_unavailable", "container is not running or inspect response is invalid")); return end
@@ -178,6 +182,21 @@ function M.connect(hosts, options)
         if not arch then stop(failure("unsupported_arch", "unsupported container architecture: " .. raw)); return end
         deploy(arch)
       end)
+    end)
+  end
+  local function begin(host)
+    native_host = host
+    if opts.agent_path or opts.artifacts then inspect(); return end
+    local p = artifact_bundle.discover(host, opts.agent_dir)
+    active, cancel_active = p, true
+    p:next(function(artifacts)
+      if active == p then active = nil end
+      if settled then return end
+      opts.artifacts = artifacts
+      guarded(inspect)
+    end, function(err)
+      if active == p then active = nil end
+      if not settled then stop(native_error(err, "agent_install_unavailable")) end
     end)
   end
   function promise:cancel()

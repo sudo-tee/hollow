@@ -47,11 +47,20 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
           ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
+      - name: Build Linux agents
+        run: |
+          zig build --build-file build-agent.zig agent-all -Doptimize=ReleaseSafe
+          (cd zig-out/agents && sha256sum -c SHA256SUMS)
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
       - name: Stage release bundle
         run: |
-          mkdir -p release/hollow/conf release/hollow/wsl release/hollow/scripts
+          mkdir -p release/hollow/conf release/hollow/wsl release/hollow/scripts release/hollow/agents
           cp zig-out/bin/*.exe release/hollow/
           cp zig-out/bin/hollow-wsl-bypass release/hollow/wsl/
+          cp -a zig-out/agents/. release/hollow/agents/
           cp scripts/hollow-cli release/hollow/
           cp conf/init.lua release/hollow/conf/
           cp scripts/install-wsl-bypass.sh release/hollow/scripts/
@@ -107,11 +116,20 @@ jobs:
           ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
           ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
 
+      - name: Build Linux agents
+        run: |
+          zig build --build-file build-agent.zig agent-all -Doptimize=ReleaseSafe
+          (cd zig-out/agents && sha256sum -c SHA256SUMS)
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
       - name: Stage release bundle
         run: |
-          mkdir -p release/hollow-linux-x86_64/conf
+          mkdir -p release/hollow-linux-x86_64/conf release/hollow-linux-x86_64/agents
           cp zig-out/bin/hollow release/hollow-linux-x86_64/
           cp zig-out/bin/hollow-cli release/hollow-linux-x86_64/
+          cp -a zig-out/agents/. release/hollow-linux-x86_64/agents/
           cp conf/init.lua release/hollow-linux-x86_64/conf/
 
       - name: Archive release bundle

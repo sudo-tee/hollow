@@ -8,7 +8,7 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
 | Protocol / filesystem native tests | 5 / 3 pass |
-| Python harness / deployment / fault-safety unit tests | 16 pass |
+| Python harness / deployment / fault-safety / manifest unit tests | 20 pass |
 | Persistent native transport integration / imported protocol tests | 5 / 5 pass |
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
@@ -16,11 +16,13 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 348 pass under Lua 5.1; host suite 10, Podman bootstrap suite 20 and host workspace suite 15 pass |
+| Complete Lua suite | 370 pass under Lua 5.1; host suite 10, artifact discovery suite 17, Podman bootstrap suite 25 and host workspace suite 15 pass |
 | Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
 | Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
 | Production Lua Podman bootstrap | Pass through native bindings: deployment, reuse, corrupt-cache repair, preinstalled path and checksum rejection |
 | Production bootstrap configured UID/GID 1000:1000 | Pass; `id -u` confirms 1000, no connector root override |
+| Executable-relative agent bundle discovery | Pass through native Lua from installed prefix/bin and flat-release test layouts |
+| Production Podman bootstrap with automatic discovery | Pass; prefix/bin UID 1000 and flat-release default-user fixture, no explicit artifact map |
 | HostManager and native Lua adapter Windows compile checks | Pass; no runtime execution |
 | Full Windows GUI cross-build | Blocked by two generated FreeType binding unused-constant errors; not a passing app build |
 | Local-subprocess conformance | 16 pass |
@@ -168,8 +170,8 @@ and byte names. Legacy resolver discovery and workspace opening stay unchanged;
 host-backed discovery alone does not select a remote PTY/session domain.
 
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
-deployments and all portability runners) is still incomplete. Automatic release
-artifact discovery, WSL/SSH connectors, broader read-only query migration and native
+deployments and all portability runners) is still incomplete. WSL/SSH connectors,
+broader read-only query migration and native
 Windows qualification remain incomplete; all PTY extraction/multiplexing
 milestones remain unimplemented.
 
@@ -203,5 +205,47 @@ python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out
   -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
 python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-user 1000:1000 \
   --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+```
+
+## Packaged artifact discovery continuation
+
+When no explicit `artifacts`/`agent_path` is supplied, production Podman bootstrap
+now reads the release bundle using native-local info/read/stat promises. Native
+`info().executable_dir` is produced on a worker; remote agents do not supply it.
+The default root is `<executable-dir>/agents`. Only a `bin` executable directory
+permits the conventional `../agents` fallback, and only when the first manifest
+is missing. Flat releases do not search outside their directory. Explicit
+`agent_dir` limits discovery to one caller-selected absolute directory. Invalid
+manifests fail closed before any Podman command runs.
+
+Seventeen artifact tests and five additional Podman tests cover bounded manifest
+reads, strict path allowlisting, duplicate/traversal/missing entries, file kinds,
+byte paths, CRLF, fallback/trust boundaries, cancellation, configuration ownership
+and precedence. Full Lua results above use plain Lua 5.1; LuaJIT is CI-configured,
+not locally executed.
+
+`test-host-lua` executes an installed headless runner from `prefix/bin` with
+`prefix/agents`; `test-host-lua-flat` stages a flat runner plus adjacent `agents/`.
+Both pass native-local discovery. Production Podman tests now omit explicit
+artifacts, resolve the built bundle, and pass deployment/reuse/repair/preinstalled
+and wrong-digest checks in both layouts. The prefix layout also passes as UID/GID
+1000:1000. Native Lua adapter cross-compilation for Windows passes; Windows
+runtime and complete GUI release archive builds remain unverified.
+
+Release workflow jobs now build and stage both static Linux architectures and
+`SHA256SUMS` into Windows/Linux archives. Manifest generation streams hashing,
+validates ELF headers/architecture order, and atomically replaces output only
+after both inputs validate. Four Python tests cover generation and failure
+preservation. Local `agent-all`, `file`, and `sha256sum -c SHA256SUMS` confirm
+static x86_64/aarch64 artifacts and both checksums. No hosted release job or
+ARM64 execution is claimed; manifest header validation alone is not a complete
+ELF/static-link verifier.
+
+```sh
+zig build --build-file build-agent.zig test-host-lua test-host-lua-flat \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- \
+  zig build --build-file build-agent.zig test-host-lua-flat \
   -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
 ```

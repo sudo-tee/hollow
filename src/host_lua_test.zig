@@ -178,19 +178,24 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
     );
     try until(state, "DONE=again:status()~='pending'");
     try run(state, "assert(again:value().generation~=nh.generation)");
+    try run(state, "assets=require('hollow.host.artifacts').discover(again:value())");
+    try until(state, "DONE=assets:status()~='pending'");
+    try run(state,
+        \\assert(assets:status()=='fulfilled',assets:error() and assets:error().message)
+        \\assert(assets:value().x86_64 and assets:value().aarch64)
+    );
     const container = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_PODMAN_CONTAINER") catch null;
     defer if (container) |bytes| std.testing.allocator.free(bytes);
     if (container) |name| {
         c.lua_pushlstring(state, name.ptr, name.len);
         c.lua_setfield(state, c.LUA_GLOBALSINDEX, "PODMAN_CONTAINER");
-        inline for (.{ "ARTIFACT", "SHA256", "UID" }) |suffix| {
-            const bytes = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_PODMAN_" ++ suffix);
-            defer std.testing.allocator.free(bytes);
-            c.lua_pushlstring(state, bytes.ptr, bytes.len);
-            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "PODMAN_" ++ suffix);
-        }
+        const uid = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_PODMAN_UID");
+        defer std.testing.allocator.free(uid);
+        c.lua_pushlstring(state, uid.ptr, uid.len);
+        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "PODMAN_UID");
         try run(state,
-            \\bootstrap_opts={id='podman-production',container=PODMAN_CONTAINER,artifacts={x86_64={path=PODMAN_ARTIFACT,sha256=PODMAN_SHA256}}}
+            \\PODMAN_ARTIFACT=assets:value().x86_64.path; PODMAN_SHA256=assets:value().x86_64.sha256
+            \\bootstrap_opts={id='podman-production',container=PODMAN_CONTAINER}
             \\bootstrap=hollow.host.podman(bootstrap_opts)
         );
         try until(state, "DONE=bootstrap:status()~='pending'");
