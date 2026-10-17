@@ -153,6 +153,59 @@ a Windows UNC artifact override because native Linux bundle paths are not Window
 paths. This does not qualify automatic discovery in a native Windows client,
 Windows GUI teardown, WSL PTY latency, or the complete fault/security matrix.
 
+## SSH configuration
+
+`ssh(opts)` is an experimental Linux fs/exec connector, not a terminal/session
+backend. It uses the same agent, bootstrap engine, limits and asynchronous API:
+
+```lua
+hollow.host.ssh({
+  id = "build-server",
+  destination = "build", -- trusted SSH config alias, hostname or IP
+  -- user = "alice", port = 2222,
+  -- identity_file = "/home/alice/.ssh/id_ed25519",
+  -- known_hosts = "/home/alice/.ssh/known_hosts",
+  -- config_file = "/home/alice/.ssh/config",
+}):next(function(host)
+  host:exec({ argv = { "git", "status", "--short" }, cwd = "/srv/project" })
+end, function(err) print(err.code, err.message) end)
+```
+
+Authenticate and trust the server before connecting. Bootstrap forces
+`BatchMode=yes` and `StrictHostKeyChecking=yes`: unknown/changed host keys and
+unavailable noninteractive credentials reject; no password, passphrase or trust
+prompt is shown. Unlocked SSH-agent credentials may authenticate. An explicit
+`identity_file` additionally selects `IdentitiesOnly=yes`. Client file overrides
+must be absolute native paths without control characters. `known_hosts` selects
+the user host-key database; normal system host-key policy still applies.
+
+Normal trusted SSH configuration may supply aliases, users, ports and ProxyJump
+or ProxyCommand routes. Configuration is trusted executable policy, not a sandbox.
+The connector overrides RemoteCommand, TTY allocation, local commands, forwarding
+(including agent/X11), and interactive escape handling. ControlMaster,
+ControlPath and ControlPersist are disabled: neither deployment nor the live
+transport depends on shared OpenSSH connections. Each bootstrap step can open a
+new authenticated connection; established-agent RPCs share one persistent
+`ssh -T ... 'exec <quoted-agent> stdio'` process. No RPC replay occurs on loss.
+
+Artifact overrides/discovery, SHA-256 verification, versioned atomic installation,
+cancellation, deadlines and best-effort cleanup are shared with Podman/WSL.
+Optional `ssh`/`scp` select native executables. Deployment forces `scp -s -B`
+(SFTP), preserving the same SSH configuration, identity, host-key and port policy.
+It never falls back to legacy remote-shell SCP; an unavailable SFTP subsystem or
+old client requires a preinstalled `agent_path`. The remote also needs the common
+Linux bootstrap utilities and a POSIX-compatible login shell. Shell command
+arguments are explicitly POSIX-quoted; SFTP target paths are literal, not shell
+quoted. Connected paths/argv/results travel as bytes inside the common protocol.
+
+Linux OpenSSH client/server tests cover deployment and common conformance using
+an owned non-root fixture, including quoted/space-containing HOME and client
+paths, unknown/changed host keys and unauthorized credentials. Native Windows
+OpenSSH, jump hosts, network fault injection, and the full security matrix remain
+unqualified. This API does not change existing SSH/WSL PTYs or session ownership.
+
+## Operations
+
 `info`, `exec`, and `fs.stat/list/read` return Hollow promises. Each operation
 promise supports `:cancel()`, which requests cancellation once; its promise
 settles only when native completion is reported. Operation failures reject with
@@ -202,7 +255,7 @@ Polling runs through deferred callbacks, so completion depends on the
 application tick. This API does not automatically replay requests or reconnect
 after disconnection.
 
-This connector slice is experimental. It does not bootstrap SSH,
+This connector slice is experimental. It does not bootstrap Docker
 and does not migrate session/PTY ownership. Workspace discovery may opt into a
 ready host via `source.host`; legacy resolvers remain unchanged without it.
 Availability depends on the native host bridge in the running build;

@@ -35,11 +35,15 @@ an agent PTY.
   and WSL now share bootstrap lifecycle and checksum/atomic-install policy.
   Initial real `wsl.exe` integration runs through Linux/Windows interop; native
   Windows client qualification is still outstanding. No agent PTY support exists.
+* PR 5, in progress: experimental `hollow.host.ssh`, strict noninteractive host-key
+  verification, forced-SFTP deployment and persistent non-TTY agent transport.
+  Production Lua integration and all 16 common conformance tests pass against an
+  owned non-root SSH fixture; native Windows and network fault gates remain open.
 
-These are foundational agent/test components, **not yet a production GUI host
-runtime**. The Podman connector currently lives in the conformance harness, not
-Hollow's Zig dispatcher. `hollow.host.connect({id, argv})` is an explicit,
-experimental host API; native Windows WSL qualification, SSH connectors and host-aware project
+These are experimental host components, **not yet a fully qualified production
+GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
+RPCs use the shared Zig dispatcher. `hollow.host.connect({id, argv})` remains an
+explicit subprocess escape hatch. Native Windows qualification and host-aware project
 load/bootstrap/write migration are not implemented yet. Existing
 `hollow.process` and all PTYs retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
@@ -88,7 +92,7 @@ a preinstalled agent; automatic deployment is not promised there.
    promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
    owner thread; runtime reload cancels and joins the previous manager before
    its Lua state is destroyed, invalidating old generations.
-3. PR 4–6: finish WSL qualification; add SSH and Docker connectors; shared conformance,
+3. PR 4–6: finish WSL/SSH qualification; add Docker connector; shared conformance,
    verified deployment, watchdogs, generation handling and release hardening.
 4. PR 7: extract PTY engine without a backend change, only after reproducible
    legacy WSL measurements exist.

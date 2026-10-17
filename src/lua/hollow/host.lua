@@ -244,5 +244,6 @@ end
 
 function M.podman(opts) return bootstrap_connector("podman", opts) end
 function M.wsl(opts) return bootstrap_connector("wsl", opts) end
+function M.ssh(opts) return bootstrap_connector("ssh", opts) end
 
 return M

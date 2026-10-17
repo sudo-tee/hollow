@@ -18,7 +18,7 @@ import time
 import unittest
 import uuid
 
-from agent_connectors import ConnectorError, LocalSubprocess, Podman, WSL
+from agent_connectors import ConnectorError, LocalSubprocess, Podman, SSH, WSL
 
 HEADER = struct.Struct("<IBBQQ")
 HELLO, HELLO_ACK, REQUEST, RESPONSE, ERROR, DATA, CANCEL, PING, PONG, WINDOW_UPDATE = range(1, 11)
@@ -509,30 +509,44 @@ class PodmanDeploymentConformance(unittest.TestCase):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--connector", choices=("local-subprocess", "podman", "wsl"), required=True)
-    parser.add_argument("--agent", help="local agent binary (required except for WSL)")
+    parser.add_argument("--connector", choices=("local-subprocess", "podman", "wsl", "ssh"), required=True)
+    parser.add_argument("--agent", help="local agent binary (required for local-subprocess and Podman)")
     parser.add_argument("--image", default="docker.io/library/alpine:3.21")
     parser.add_argument("--container")
     parser.add_argument("--keep-container", action="store_true")
-    parser.add_argument("--agent-path", help="preinstalled absolute Linux agent path inside Podman or WSL")
+    parser.add_argument("--agent-path", help="preinstalled absolute Linux agent path inside Podman, WSL, or SSH host")
     parser.add_argument("--distro", help="existing WSL distribution (required for WSL)")
     parser.add_argument("--wsl-user", help="optional Linux user for WSL")
     parser.add_argument("--wsl", default="wsl.exe", help="native WSL launcher executable (default: wsl.exe)")
+    parser.add_argument("--destination", help="SSH destination alias, DNS name, or IPv6 address")
+    parser.add_argument("--port", type=int, help="SSH port")
+    parser.add_argument("--ssh-user", help="optional SSH user")
+    parser.add_argument("--identity-file", help="optional SSH private identity file")
+    parser.add_argument("--known-hosts", help="optional SSH known-hosts file")
+    parser.add_argument("--ssh-config", help="optional SSH client config file")
+    parser.add_argument("--ssh", default="ssh", help="native SSH executable (default: ssh)")
     args = parser.parse_args(argv)
-    if args.connector != "wsl" and not args.agent:
-        parser.error("--agent is required for non-WSL connectors")
+    if args.connector in ("local-subprocess", "podman") and not args.agent:
+        parser.error("--agent is required for local-subprocess and Podman connectors")
     if args.connector == "wsl" and not args.distro:
         parser.error("--distro is required for WSL")
     if args.connector == "wsl" and not args.agent_path:
         parser.error("--agent-path is required for WSL preinstalled agent")
+    if args.connector == "ssh" and not args.agent_path:
+        parser.error("--agent-path is required for SSH preinstalled agent")
+    if args.connector == "ssh" and not args.destination:
+        parser.error("--destination is required for SSH")
     if args.connector == "podman" and args.image.rsplit(":", 1)[-1] == "latest":
         parser.error("--image must use pinned, non-latest tag")
     if args.connector == "local-subprocess":
         connector = LocalSubprocess(args.agent)
     elif args.connector == "podman":
         connector = Podman(args.agent, args.image, args.container, args.keep_container, agent_path=args.agent_path)
-    else:
+    elif args.connector == "wsl":
         connector = WSL(args.agent_path, args.distro, args.wsl_user, args.wsl)
+    else:
+        connector = SSH(args.agent_path, args.destination, args.port, args.ssh_user,
+                        args.identity_file, args.known_hosts, args.ssh_config, args.ssh)
     if args.connector == "podman":
         try:
             if not shutil.which("podman"):

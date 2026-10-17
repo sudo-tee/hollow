@@ -86,12 +86,10 @@ function M.connect(hosts, opts, adapter)
     elseif code ~= "timeout" and code ~= "cancelled" and code ~= "resource_exhausted" and code ~= "permission_denied" then code = fallback end
     return failure(code, type(err) == "table" and err.message or err)
   end
-  local function command(args, code, next_step, allow_failure, track_result)
+  local function execute(argv, code, next_step, allow_failure, track_result)
     if settled then cleanup(); return end
     local left = remaining()
     if left <= 0 then stop(failure("timeout", adapter.label .. " bootstrap deadline exceeded")); return end
-    local argv = { opts.executable }
-    for _, value in ipairs(args) do argv[#argv + 1] = value end
     local ok, p = pcall(native_host.exec, native_host, { argv = argv, timeout_ms = left, output_limit = LIMIT })
     if not ok then stop(native_error(p, code)); return end
     active, cancel_active = p, true
@@ -108,8 +106,14 @@ function M.connect(hosts, opts, adapter)
       if settled then cleanup() else stop(native_error(err, code)) end
     end)
   end
+  local function command(args, code, next_step, allow_failure, track_result)
+    local argv = { opts.executable }
+    for _, value in ipairs(args) do argv[#argv + 1] = value end
+    execute(argv, code, next_step, allow_failure, track_result)
+  end
   local ctx = {
     command = command,
+    exec = execute, -- Additional local tools share the same deadline/cancel slot.
     fail = function(code, message) stop(failure(code, message)) end,
   }
   local function transport(path)

@@ -284,4 +284,66 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
             \\assert(wpre:value():close())
         );
     }
+    const ssh_destination = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_SSH_DESTINATION") catch null;
+    defer if (ssh_destination) |bytes| std.testing.allocator.free(bytes);
+    if (ssh_destination) |name| {
+        c.lua_pushlstring(state, name.ptr, name.len);
+        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "SSH_DESTINATION");
+        inline for (.{ "PORT", "USER", "IDENTITY_FILE", "KNOWN_HOSTS", "CONFIG_FILE", "BAD_KNOWN_HOSTS", "EMPTY_KNOWN_HOSTS", "BAD_IDENTITY" }) |suffix| {
+            const bytes = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_SSH_" ++ suffix);
+            defer std.testing.allocator.free(bytes);
+            c.lua_pushlstring(state, bytes.ptr, bytes.len);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "SSH_" ++ suffix);
+        }
+        try run(state,
+            \\shopts={id='ssh-production',destination=SSH_DESTINATION,port=tonumber(SSH_PORT),user=SSH_USER,identity_file=SSH_IDENTITY_FILE,known_hosts=SSH_KNOWN_HOSTS,config_file=SSH_CONFIG_FILE}
+            \\shconnected=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=shconnected:status()~='pending'");
+        try run(state,
+            \\assert(shconnected:status()=='fulfilled',shconnected:error() and shconnected:error().message)
+            \\sh=shconnected:value(); si=sh:info(); sr=sh.fs.read('/etc/os-release'); sl=sh.fs.list('/tmp',{limit=3})
+            \\se=sh:exec({argv={'/bin/sh','-c','printf "%s" "$1"; printf err >&2; exit 6','test'," a'\255\n"}})
+            \\su=sh:exec({argv={'id','-un'}}); sc=sh:exec({argv={'/bin/sh','-c','exec sleep 30'}}); assert(sc:cancel())
+        );
+        try until(state, "DONE=si:status()~='pending' and sr:status()~='pending' and sl:status()~='pending' and se:status()~='pending' and su:status()~='pending' and sc:status()~='pending'");
+        try run(state,
+            \\assert(si:value().os=='linux' and #sr:value().bytes>0 and #sl:value().entries<=3)
+            \\assert(se:value().exit_code==6 and se:value().stdout==" a'\255\n" and se:value().stderr=='err')
+            \\assert(su:value().stdout==SSH_USER..'\n' and sc:error().code=='cancelled')
+            \\assert(sh:close()); shopts.id='ssh-reuse'; shreuse=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=shreuse:status()~='pending'");
+        try run(state,
+            \\assert(shreuse:status()=='fulfilled',shreuse:error() and shreuse:error().message)
+            \\assert(shreuse:value().generation~=sh.generation); assert(shreuse:value():close())
+            \\shopts.id='ssh-preinstalled'; shopts.agent_path=si:value().home..'/.cache/hollow/agents/linux-'..si:value().arch..'/'..assets:value()[si:value().arch].sha256..'/hollow-agent'
+            \\shpre=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=shpre:status()~='pending'");
+        try run(state,
+            \\assert(shpre:status()=='fulfilled',shpre:error() and shpre:error().message)
+            \\assert(shpre:value():close())
+            \\shopts.id='ssh-bad-checksum'; shopts.agent_path=nil; shopts.artifacts={[si:value().arch]={path=assets:value()[si:value().arch].path,sha256=string.rep('0',64)}}
+            \\shwrong=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=shwrong:status()~='pending'");
+        try run(state, "assert(shwrong:error().code=='checksum_mismatch',shwrong:error() and shwrong:error().message)");
+        try run(state,
+            \\shopts.artifacts=nil; shopts.agent_path=si:value().home..'/.cache/hollow/agents/linux-'..si:value().arch..'/'..assets:value()[si:value().arch].sha256..'/hollow-agent'
+            \\shopts.id='ssh-host-key-mismatch'; shopts.known_hosts=SSH_BAD_KNOWN_HOSTS; badkey=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=badkey:status()~='pending'");
+        try run(state,
+            \\assert(badkey:status()=='rejected' and badkey:error().code=='ssh_unavailable')
+            \\shopts.id='ssh-unknown-host'; shopts.known_hosts=SSH_EMPTY_KNOWN_HOSTS; unknown=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=unknown:status()~='pending'");
+        try run(state,
+            \\assert(unknown:status()=='rejected' and unknown:error().code=='ssh_unavailable')
+            \\shopts.id='ssh-auth-rejected'; shopts.known_hosts=SSH_KNOWN_HOSTS; shopts.identity_file=SSH_BAD_IDENTITY; badauth=hollow.host.ssh(shopts)
+        );
+        try until(state, "DONE=badauth:status()~='pending'");
+        try run(state, "assert(badauth:status()=='rejected' and badauth:error().code=='ssh_unavailable')");
+    }
 }
