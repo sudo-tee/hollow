@@ -189,6 +189,14 @@ function M.connect(opts)
   local resolve, reject
   local promise = async.promise(function(r, j) resolve, reject = r, j end)
   local done = false
+  function promise:cancel()
+    if done then return false end
+    local closed, close_err = native(host_api.host_close, handle)
+    if closed == nil then return nil, close_err end
+    done = true
+    reject({ code = "cancelled", message = "host connection cancelled" })
+    return true
+  end
   local function poll()
     if done then return end
     local status, status_err = native(host_api.host_status, handle)
@@ -217,6 +225,21 @@ function M.local_host()
   end
   local_connection = M.connect({ id = "local", backend = "local" })
   return local_connection
+end
+
+local active_bootstraps = 0
+
+-- Connector policy stays in Lua; all post-connect fs/exec uses the common API.
+function M.podman(opts)
+  if active_bootstraps >= 4 then
+    return reject_later({ code = "resource_exhausted", message = "too many host bootstraps" })
+  end
+  active_bootstraps = active_bootstraps + 1
+  local ok, promise = pcall(function() return require("hollow.host.podman").connect(M, opts) end)
+  if not ok then active_bootstraps = active_bootstraps - 1; error(promise, 2) end
+  local function completed() active_bootstraps = active_bootstraps - 1 end
+  promise:next(completed, completed)
+  return promise
 end
 
 return M

@@ -22,11 +22,14 @@ an agent PTY.
 * PR 3 continuation: native-local fs/exec workers exposed as
   `hollow.host.local_host()`, plus opt-in asynchronous workspace directory
   discovery through `source.host`. Legacy resolver aliases remain operational.
+* PR 3 Podman continuation: Lua-side production bootstrap for existing containers,
+  configured per-architecture artifacts and expected checksums, or a preinstalled
+  executable. All remote operations still use the existing persistent transport.
 
 These are foundational agent/test components, **not yet a production GUI host
 runtime**. The Podman connector currently lives in the conformance harness, not
 Hollow's Zig dispatcher. `hollow.host.connect({id, argv})` is an explicit,
-experimental subprocess API; automatic connector bootstrap and host-aware
+experimental host API; automatic release-artifact discovery and host-aware
 project load/bootstrap/write migration are not implemented yet. Existing
 `hollow.process` and all PTYs retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
@@ -70,7 +73,7 @@ a preinstalled agent; automatic deployment is not promised there.
 1. Finish adversarial/fault coverage and review the standalone agent before
    depending on it from the GUI. Do not equate a green conformance subset with
    the full v4 security and failure-injection matrix.
-2. PR 3: finish production Podman configuration, native-local lifecycle
+2. PR 3: finish release artifact packaging/discovery, native-local lifecycle
    qualification, and remaining host-aware read-only project queries on HostManager and Lua
    promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
    owner thread; runtime reload cancels and joins the previous manager before

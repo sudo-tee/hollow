@@ -43,7 +43,11 @@ jobs:
       - name: Same native Lua contract through rootless Podman
         run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
       - name: Lua host promise contract
-        run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua src/lua/tests/test_ui_workspace_host.lua
+        run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua src/lua/tests/test_host_podman.lua src/lua/tests/test_ui_workspace_host.lua
+      - name: Production Lua Podman bootstrap, reuse and repair
+        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+      - name: Production bootstrap preserves configured container UID/GID
+        run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --container-user 1000:1000 --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
       - name: Rootless Podman conformance
         run: python3 scripts/agent_conformance.py --connector podman --image docker.io/library/alpine:3.21 --agent zig-out/bin/hollow-agent
       - name: Rootless Podman crash and EOF containment
