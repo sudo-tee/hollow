@@ -24,12 +24,24 @@ jobs:
         run: python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
       - name: Persistent native host transport
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+      - name: Typed operations and HostManager lifecycle
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager
       - name: Windows host transport compile check
         run: zig test src/host_transport.zig -target x86_64-windows-gnu -lc -fno-emit-bin
       - name: Local crash and EOF containment
         run: python3 scripts/agent_fault_probe.py --agent zig-out/bin/hollow-agent --output agent-faults-local.json
       - name: Install Podman
-        run: sudo apt-get update && sudo apt-get install -y podman
+        run: sudo apt-get update && sudo apt-get install -y podman luajit libluajit-5.1-dev lua-busted
+      - name: Native Lua host promises against real agent
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+      - name: Windows host manager and Lua adapter compile checks
+        run: |
+          zig test src/host_manager_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
+          zig test src/host_lua_test.zig -target x86_64-windows-gnu -I /usr/include/luajit-2.1 -lc -fno-emit-bin
+      - name: Same native Lua contract through rootless Podman
+        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+      - name: Lua host promise contract
+        run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua
       - name: Rootless Podman conformance
         run: python3 scripts/agent_conformance.py --connector podman --image docker.io/library/alpine:3.21 --agent zig-out/bin/hollow-agent
       - name: Rootless Podman crash and EOF containment

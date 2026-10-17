@@ -13,6 +13,12 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
 | Rootless Podman SIGKILL / EOF descendant containment | 6 pass |
+| Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
+| HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
+| Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
+| Complete Lua suite | 310 pass under Lua 5.1; host suite 7 pass |
+| HostManager and native Lua adapter Windows compile checks | Pass; no runtime execution |
+| Full Windows GUI cross-build | Blocked by two generated FreeType binding unused-constant errors; not a passing app build |
 | Local-subprocess conformance | 16 pass |
 | Rootless Podman conformance | 19 pass |
 | Podman configured UID/GID 1000, fs/exec subset | 2 pass; no root override |
@@ -100,7 +106,41 @@ read/error, cancellation, deadline, 1 MiB binary output, slot exhaustion,
 shutdown, reconnect nonce/generation and agent SIGKILL. Cross-compilation checks
 the same implementation for Windows; it does not prove runtime pipe behavior.
 
+## HostManager and Lua slice
+
+`src/host/manager.zig` owns at most eight registered agent hosts and 64 retained
+requests. Stable caller-provided host IDs are separate from fresh connection
+generations. Old-generation terminal results remain consumable after explicit
+reconnect, while stale handles/tickets cannot submit or cancel new work. No EXEC
+is replayed. Typed adapters preserve raw byte paths/argv/environment and copy
+decoded result bytes into an owned arena. Lua callbacks receive no borrowed
+transport memory. The manager is lazy and owned by `Runtime`; shutdown/reload
+destroys it before closing Lua. Current Lua API is explicitly experimental; it
+does not silently route existing local or workspace operations remotely.
+
+Headless end-to-end tests run Lua promises through the actual native bindings,
+HostManager, persistent pipes and agent, both locally and with the same launch
+argv contract through rootless Podman. These use installed plain Lua 5.1 locally,
+not a claim of LuaJIT/Windows runtime qualification. CI is configured to use
+LuaJIT. Optional include/library overrides for local reproduction:
+
+```sh
+zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include \
+  -Dhost-lua-object=/path/to/liblua.a
+python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- \
+  zig build --build-file build-agent.zig test-host-lua \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+LUA=lua bash scripts/test-lua.sh
+```
+
+Full Windows GUI cross-build reached 74/77 steps but failed on generated
+`ft_bindings.zig` unused `extern_local_wcscat_s` and `extern_local_wcscpy_s`
+constants. No vendor or pre-existing submodule changes were overwritten to work
+around this. GUI-free HostManager and native Lua adapter cross-compiles pass.
+
 The full v4 matrix (including allocation-failure fuzzing, read-only/noexec
-deployments and all portability runners) is still incomplete. HostManager, typed
-host adapters, production Lua integration and all PTY extraction/multiplexing
-milestones remain unimplemented.
+deployments and all portability runners) is still incomplete. Native-local host
+operations, production connector configuration/bootstrap and read-only workspace
+migration remain incomplete; all PTY extraction/multiplexing milestones remain
+unimplemented.

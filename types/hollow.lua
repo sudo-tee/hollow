@@ -2003,6 +2003,68 @@ function process.run(cmd, args) end
 ---@class HollowFsNamespace
 local fs = {}
 
+---@class HollowHostError
+---@field code string
+---@field message string
+---@field truncated boolean
+
+---@class HollowHostConnectOpts
+---@field id string Stable host identifier
+---@field argv string[] Exact subprocess connector argv; no implicit shell
+
+---@class HollowHostExecOpts
+---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
+---@field cwd? string
+---@field env? table<string, string>
+---@field timeout_ms? integer Default 30000, maximum 86400000
+---@field output_limit? integer Combined stdout/stderr limit; maximum 1048576
+
+---@class HollowHostExecResult
+---@field exit_code integer Nonzero exit is a successful RPC result
+---@field stdout string Raw bytes
+---@field stderr string Raw bytes
+
+---@class HollowHostInfo
+---@field os string
+---@field arch string
+---@field build string
+---@field protocol_major integer
+---@field protocol_minor integer
+---@field cwd string Byte-valued path
+---@field home string Byte-valued path
+
+---@class HollowHostStat
+---@field kind "file"|"directory"|"symlink"|"other"|"unknown"
+---@field mode integer
+---@field size integer|string Decimal string outside Lua's exact integer range
+---@field mtime integer|string
+
+---@class HollowHostList
+---@field entries {name:string, kind:string}[] Byte-valued names; kinds currently "unknown"
+---@field next_offset integer|nil
+---@field eof boolean
+
+---@class HollowHostFs
+---@field stat fun(path:string): HollowPromise<HollowHostStat>
+---@field list fun(path:string, opts?:{offset?:integer, limit?:integer}): HollowPromise<HollowHostList>
+---@field read fun(path:string, opts?:{offset?:integer, limit?:integer}): HollowPromise<{bytes:string, eof:boolean}>
+
+---@class HollowAgentHost
+---@field id string
+---@field fs HollowHostFs
+---@field status fun(self:HollowAgentHost): "connecting"|"ready"|"disconnected", HollowHostError|nil
+---@field close fun(self:HollowAgentHost): boolean|nil, HollowHostError|nil
+---@field info fun(self:HollowAgentHost): HollowPromise<HollowHostInfo>
+---@field exec fun(self:HollowAgentHost, opts:HollowHostExecOpts): HollowPromise<HollowHostExecResult>
+
+---@class HollowHostNamespace
+local host = {}
+
+---Experimental explicit subprocess connector; operation promises also support :cancel().
+---@param opts HollowHostConnectOpts
+---@return HollowPromise<HollowAgentHost>
+function host.connect(opts) end
+
 ---@return string
 function fs.data_dir() end
 
@@ -2158,6 +2220,7 @@ function plugins.sync() end
 ---@field htp HollowHtpNamespace
 ---@field fs HollowFsNamespace
 ---@field process HollowProcessNamespace
+---@field host HollowHostNamespace
 ---@field plugins HollowPluginsNamespace
 ---@field platform HollowPlatformInfo
 ---@field on_gui_ready fun(handler: fun())
@@ -2176,6 +2239,7 @@ function plugins.sync() end
 hollow = {}
 
 hollow.config = config
+hollow.host = host
 hollow.fonts = {}
 hollow.json = json
 hollow.term = term

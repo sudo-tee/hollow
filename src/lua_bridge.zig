@@ -1,4 +1,6 @@
 const ProcessJob = @import("process_jobs.zig").Job;
+const host_runtime = @import("host.zig");
+const host_lua = @import("host/lua.zig");
 const std = @import("std");
 const io = @import("io.zig");
 const config = @import("config.zig");
@@ -114,6 +116,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.tbl", .source = @embedFile("lua/hollow/tbl.lua") },
     .{ .name = "hollow.state", .source = @embedFile("lua/hollow/state.lua") },
     .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
+    .{ .name = "hollow.host", .source = @embedFile("lua/hollow/host.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
     .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
@@ -879,6 +882,8 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
+        // Close/join every transport before Lua callbacks and state disappear.
+        if (self.context.host_manager) |*manager| manager.deinit();
         for (self.context.process_jobs) |job| if (job) |value| value.destroy();
         if (self.lua_sources) |*sources| sources.deinit(self.allocator);
         if (self.context.pending_workspace_name) |name| self.allocator.free(name);
@@ -2119,6 +2124,16 @@ pub const Runtime = struct {
         api.push_cclosure(self.state, l_process_cancel, 1);
         api.set_field(self.state, -2, "process_cancel");
 
+        inline for (.{
+            .{ "host_connect", l_host_connect }, .{ "host_status", l_host_status },
+            .{ "host_close", l_host_close },     .{ "host_start", l_host_start },
+            .{ "host_poll", l_host_poll },       .{ "host_cancel", l_host_cancel },
+        }) |entry| {
+            api.push_light_userdata(self.state, self.context);
+            api.push_cclosure(self.state, entry[1], 1);
+            api.set_field(self.state, -2, entry[0]);
+        }
+
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_run_process, 1);
         api.set_field(self.state, -2, "run_process");
@@ -2623,6 +2638,7 @@ const BridgeContext = struct {
     link_route_ref: c_int = -1,
     gui_ready_fired: bool = false,
     process_jobs: [16]?*ProcessJob = [_]?*ProcessJob{null} ** 16,
+    host_manager: ?host_runtime.Manager = null,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
     timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty,
 };
@@ -7250,6 +7266,25 @@ fn startProcess(ctx: *BridgeContext, state: *State) !usize {
     const job = try ProcessJob.create(ctx.allocator, argv.items, cwd, timeout, limit, &environment);
     ctx.process_jobs[slot] = job;
     return slot + 1;
+}
+
+fn l_host_connect(state: *State) callconv(.c) c_int {
+    return host_lua.connect(bridgeContext(state), state);
+}
+fn l_host_status(state: *State) callconv(.c) c_int {
+    return host_lua.status(bridgeContext(state), state);
+}
+fn l_host_close(state: *State) callconv(.c) c_int {
+    return host_lua.close(bridgeContext(state), state);
+}
+fn l_host_start(state: *State) callconv(.c) c_int {
+    return host_lua.start(bridgeContext(state), state);
+}
+fn l_host_poll(state: *State) callconv(.c) c_int {
+    return host_lua.poll(bridgeContext(state), state);
+}
+fn l_host_cancel(state: *State) callconv(.c) c_int {
+    return host_lua.cancel(bridgeContext(state), state);
 }
 
 fn l_process_start(state: *State) callconv(.c) c_int {

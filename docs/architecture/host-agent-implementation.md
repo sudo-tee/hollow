@@ -15,13 +15,17 @@ an agent PTY.
   rootless disposable-container conformance, and a dedicated CI job.
 * Crash hardening: per-EXEC subreaper guardians and repeatable local/Podman
   SIGKILL/EOF descendant-cleanup gates, including detached double-fork children.
-* PR 3, initial slice: GUI-independent persistent asynchronous Zig subprocess
-  transport, bounded queues/results, cancellation, deadlines and generations.
-  Real-agent tests and Windows cross-compilation run without GUI dependencies.
+* PR 3, in progress: persistent asynchronous Zig subprocess transport,
+  bounded runtime-owned HostManager, typed byte-safe request/results, and
+  `hollow.host` Lua promises for explicit subprocess connectors. Native/Lua
+  end-to-end tests run the same contract locally and through rootless Podman.
 
 These are foundational agent/test components, **not yet a production GUI host
 runtime**. The Podman connector currently lives in the conformance harness, not
-Hollow's Zig dispatcher. There is no `hollow.host` Lua namespace yet.
+Hollow's Zig dispatcher. `hollow.host.connect({id, argv})` is an explicit,
+experimental subprocess API; automatic connector bootstrap, a native-local host
+adapter, and host-aware workspace migration are not implemented yet. Existing
+`hollow.process` and all PTYs retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
 
 ## Build and test
@@ -33,6 +37,10 @@ does not configure, fetch or link GUI, Ghostty, Sokol or LuaJIT dependencies:
 ```sh
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager
+# Optional: requires LuaJIT's Lua 5.1 API headers and library.
+zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
+python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
 python3 -m unittest discover -s scripts/tests -v
 python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
 python3 scripts/agent_conformance.py --connector podman --agent zig-out/bin/hollow-agent --image docker.io/library/alpine:3.21
@@ -58,9 +66,11 @@ a preinstalled agent; automatic deployment is not promised there.
 1. Finish adversarial/fault coverage and review the standalone agent before
    depending on it from the GUI. Do not equate a green conformance subset with
    the full v4 security and failure-injection matrix.
-2. PR 3: build HostManager/typed adapters on the asynchronous Zig transport,
-   then Lua promise bindings and
-   host-aware read-only workspace migration. Preserve `hollow.process` defaults.
+2. PR 3: finish native-local host operations, production Podman configuration,
+   and host-aware read-only workspace migration on the HostManager and Lua
+   promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
+   owner thread; runtime reload cancels and joins the previous manager before
+   its Lua state is destroyed, invalidating old generations.
 3. PR 4–6: production WSL, SSH and Docker connectors; shared conformance,
    verified deployment, watchdogs, generation handling and release hardening.
 4. PR 7: extract PTY engine without a backend change, only after reproducible
