@@ -43,10 +43,12 @@ local function make_host_api()
     set_tab_title_by_id = nil,
     set_tab_title = nil,
     set_pane_foreground_process = nil,
+    now_ms = 1234,
     reload_config = 0,
     scroll = nil,
     copy_mode = nil,
     quick_select = nil,
+    link_route_handler = nil,
     workspace_default_cwd = nil,
     send_text = {},
     bell = nil,
@@ -93,7 +95,7 @@ local function make_host_api()
   }
 
   function host_api.now_ms()
-    return 1234
+    return recorded.now_ms
   end
 
   function host_api.on_key(callback)
@@ -704,6 +706,10 @@ local function make_host_api()
   function host_api.quick_select_handlers(match_handler, action_handler)
     recorded.quick_select_match_handler = match_handler
     recorded.quick_select_action_handler = action_handler
+  end
+
+  function host_api.link_route_handler(handler)
+    recorded.link_route_handler = handler
   end
 
   function host_api.switch_tab_by_id(tab_id)

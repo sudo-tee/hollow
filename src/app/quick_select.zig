@@ -212,6 +212,8 @@ pub fn candidateLabelRemainder(self: *const App, candidate: *const Candidate) []
 }
 
 fn execute(self: *App, candidate: Candidate) void {
+    const pane = self.quick_select_pane orelse return cancel(self);
+    if (!self.hasPane(pane)) return cancel(self);
     var action = selectedAction(self.quick_select_action, candidate.default_action);
     const text = candidate.text;
     const open_target = candidate.open_target orelse text;
@@ -239,9 +241,30 @@ fn execute(self: *App, candidate: Candidate) void {
         }
     }
     switch (action) {
-        .open => platform.openExternalWithOpenerAsync(open_target, self.config.hyperlinks.opener) catch |err| {
-            std.log.err("quick select open failed: {s}", .{@errorName(err)});
-            return;
+        .open => {
+            var route_url: ?[]u8 = null;
+            switch (hyperlinks.routeLink(self, .{
+                .url = open_target,
+                .text = text,
+                .pane_id = @intFromPtr(pane),
+                .mods = 0,
+                .source = "quick_select",
+                .kind = @tagName(candidate.kind),
+                .pattern_index = if (candidate.kind == .custom) candidate.pattern_index else null,
+            })) {
+                .fallback => {},
+                .handled => {
+                    finishAction(self, candidate, "route");
+                    return;
+                },
+                .rewrite => |url| route_url = url,
+                .failed => return,
+            }
+            defer if (route_url) |url| self.allocator.free(url);
+            platform.openExternalWithOpenerAsync(route_url orelse open_target, self.config.hyperlinks.opener) catch |err| {
+                std.log.err("quick select open failed: {s}", .{@errorName(err)});
+                return;
+            };
         },
         .copy => {
             const clipboard = self.allocator.alloc(u8, text.len + 1) catch {

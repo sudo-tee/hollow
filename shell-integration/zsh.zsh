@@ -108,12 +108,12 @@ _hollow_preexec() {
   _hollow_cmd_started=1
   __hollow_restore_prompt
   __hollow_tty_print $'\e]133;C\a'
-  hollow_htp_emit "command_started" "{\"command\":\"$(hollow_htp_json_escape "$1")\"}"
+  hollow_htp_emit "command_started" "{\"command\":\"$(hollow_htp_json_escape "$1")\",\"cwd\":\"$(hollow_htp_json_escape "$PWD")\"}"
 }
 
 _hollow_precmd() {
-  emulate -L zsh
   local exit_code=$?
+  emulate -L zsh
 
   if (( _hollow_cmd_started )); then
     _hollow_cmd_started=0
@@ -123,6 +123,7 @@ _hollow_precmd() {
 
   __hollow_mark_prompt
   __hollow_osc7
+  hollow_htp_emit "prompt_ready" '{}'
 }
 
 add-zsh-hook chpwd __hollow_chpwd

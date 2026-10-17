@@ -76,7 +76,11 @@ Emit handlers return nothing. The host replies with a `result` or
 `prev_workspace`, `switch_workspace`, `set_workspace_name`,
 `toggle_pane_maximized`, `set_pane_floating`,
 `set_floating_pane_bounds`, `move_pane`, `reload_config`, `set_theme`,
-`scroll`.
+`scroll`, `command_started`, `command_ended`.
+
+The built-in command lifecycle handling always updates pane command state and
+emits `term:command_started` / `term:command_finished`. A custom emit handler
+for either channel runs after that built-in handling.
 
 ## Example: an `echo` handler
 

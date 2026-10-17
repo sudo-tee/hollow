@@ -287,6 +287,7 @@ pub const WindowsPty = struct {
     writer_thread: ?std.Thread,
     pending_input: std.ArrayListUnmanaged(u8) = .empty,
     alive: bool = true,
+    exit_status: ?u32 = null,
     closed: bool = false,
 
     pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
@@ -484,6 +485,7 @@ pub const WindowsPty = struct {
         const writer_failed = self.writer_state.failed;
         self.writer_state.mutex.unlock();
         if (writer_failed) {
+            self.captureExitStatus();
             self.alive = false;
             return false;
         }
@@ -494,7 +496,14 @@ pub const WindowsPty = struct {
         const saw_read = self.reader_state.saw_read;
         const pending = self.reader_state.buf.items.len - self.reader_state.start;
         self.reader_state.mutex.unlock();
+        if (saw_read and pending > 0) return true;
         if (eof) {
+            // ConPTY's pipe may close just before its process becomes signaled.
+            // Wait for the real status without blocking the frame thread.
+            if (self.backend == .conpty and self.process != windows.INVALID_HANDLE_VALUE and
+                @intFromPtr(self.process) != 0 and WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0)
+                return true;
+            self.captureExitStatus();
             self.alive = false;
             switch (self.backend) {
                 .conpty => std.log.info("conpty pipe closed (shell exited)", .{}),
@@ -505,10 +514,12 @@ pub const WindowsPty = struct {
             return false;
         }
 
-        if (saw_read and pending > 0) return true;
-
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0) {
             if (WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0) {
+                // The guest exit frame can still be in flight after wsl.exe
+                // exits. Let the reader consume it before capturing status.
+                if (self.backend == .wsl_bypass) return true;
+                self.captureExitStatus();
                 self.alive = false;
                 std.log.info("conpty process exited (WaitForSingleObject)", .{});
                 return false;
@@ -516,6 +527,23 @@ pub const WindowsPty = struct {
         }
 
         return true;
+    }
+
+    fn captureExitStatus(self: *WindowsPty) void {
+        if (self.backend == .wsl_bypass) {
+            self.reader_state.mutex.lock();
+            defer self.reader_state.mutex.unlock();
+            self.exit_status = self.reader_state.exit_status;
+        } else if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and
+            WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0)
+        {
+            var status: windows.DWORD = 0;
+            if (GetExitCodeProcess(self.process, &status).toBool()) self.exit_status = status;
+        }
+    }
+
+    pub fn exitStatus(self: *const WindowsPty) ?u32 {
+        return self.exit_status;
     }
 
     pub fn read(self: *WindowsPty, buffer: []u8) !usize {
@@ -719,6 +747,20 @@ pub const WindowsPty = struct {
         logAvailableBypassStderr(self.stderr_pipe);
     }
 };
+
+test "pane lifecycle WSL status uses guest exit frame including unknown status" {
+    var reader: ReaderState = .{ .exit_status = 137 };
+    // Only fields consumed by captureExitStatus's WSL branch are needed.
+    var pty: WindowsPty = undefined;
+    pty.backend = .wsl_bypass;
+    pty.reader_state = &reader;
+    pty.exit_status = null;
+    pty.captureExitStatus();
+    try std.testing.expectEqual(@as(?u32, 137), pty.exitStatus());
+    reader.exit_status = null;
+    pty.captureExitStatus();
+    try std.testing.expectEqual(@as(?u32, null), pty.exitStatus());
+}
 
 fn spawnWithWslBypass(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !WindowsPty {
     const start_ms = io.milliTimestamp();

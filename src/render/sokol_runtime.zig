@@ -5124,7 +5124,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                 } else if (bar_hit.surface == .bottom and bar_hit.node_id != null) {
                     app.emitLuaBuiltInEvent("bottombar:click", .{ .bottombar_node = .{ .id = bar_hit.node_id.?, .mods = click_mods, .shifted = click_shifted } });
                 } else if (bar_hit.close_tab_index != null and bar_hit.close_tab_index.? == ti) {
-                    _ = app.enqueueMouse(.{ .close_tab_at = ti });
+                    _ = app.enqueueMouse(.{ .user_close_tab_at = ti });
                 } else {
                     _ = app.enqueueMouse(.{ .switch_tab = ti });
                 }
@@ -5190,7 +5190,7 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
                     g_skip_mouse_release = .left;
                     g_skip_mouse_move_frames = 8;
                     g_mouse_button_down = null;
-                    _ = app.enqueueMouse(.{ .open_hyperlink = .{ .pane = hovered_link.pane, .point = hovered_link.point } });
+                    _ = app.enqueueMouse(.{ .open_hyperlink = .{ .pane = hovered_link.pane, .point = hovered_link.point, .mods = mods } });
                     return;
                 }
             }

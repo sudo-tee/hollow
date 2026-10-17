@@ -133,6 +133,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.program_status", .source = @embedFile("lua/hollow/program_status.lua") },
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
+    .{ .name = "hollow.route", .source = @embedFile("lua/hollow/route.lua") },
     .{ .name = "hollow.actions", .source = @embedFile("lua/hollow/actions.lua") },
     .{ .name = "hollow.copy_mode", .source = @embedFile("lua/hollow/copy_mode.lua") },
     .{ .name = "hollow.htp", .source = @embedFile("lua/hollow/htp.lua") },
@@ -555,6 +556,10 @@ pub const BuiltInPayload = union(enum) {
     none,
     tab_id: usize,
     pane_id: usize,
+    pane_exited: struct {
+        pane_id: usize,
+        status: ?u32,
+    },
     workspace_index: usize,
     pane_layout_changed: struct {
         pane_id: usize,
@@ -666,6 +671,23 @@ pub const QuickSelectActionResult = enum {
     copy,
     command,
     handled,
+    failed,
+};
+
+pub const LinkRouteRequest = struct {
+    url: []const u8,
+    text: []const u8,
+    pane_id: usize,
+    mods: u32,
+    source: []const u8,
+    kind: []const u8,
+    pattern_index: ?usize = null,
+};
+
+pub const LinkRouteResult = union(enum) {
+    fallback,
+    handled,
+    rewrite: []u8,
     failed,
 };
 
@@ -868,6 +890,7 @@ pub const Runtime = struct {
         if (self.context.gui_ready_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.gui_ready_ref);
         if (self.context.quick_select_match_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_match_ref);
         if (self.context.quick_select_action_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.quick_select_action_ref);
+        if (self.context.link_route_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, self.context.link_route_ref);
         for (self.context.deferred_callback_refs.items) |callback_ref| {
             if (callback_ref != LUA_NOREF) self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         }
@@ -989,6 +1012,101 @@ pub const Runtime = struct {
         if (api.pcall(self.state, 0, 0, 0) != 0) {
             logLuaError(api, self.state, "on_gui_ready");
         }
+    }
+
+    /// Invoke a user-facing tab action with an explicit target. Raw API operations
+    /// do not use this path. Returns false only when no Lua action exists.
+    pub fn invokeTabAction(self: *Runtime, name: [:0]const u8, tab_id: usize) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        api.get_field(self.state, -1, "action");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        api.get_field(self.state, -1, name);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return false;
+        api.create_table(self.state, 0, 1);
+        api.push_number(self.state, @floatFromInt(tab_id));
+        api.set_field(self.state, -2, "tab_id");
+        if (api.pcall(self.state, 1, 0, 0) != 0) {
+            logLuaError(api, self.state, "tab action");
+        }
+        return true;
+    }
+
+    /// Transform a local launch spec. Commit only after reading all fields.
+    /// Caller supplies an arena whose lifetime includes PTY creation.
+    pub fn filterSpawn(self: *Runtime, allocator: std.mem.Allocator, spec: *@import("pty/spawn_spec.zig").SpawnSpec) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return;
+        api.get_field(self.state, -1, "_filter_spawn");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return;
+        api.create_table(self.state, 0, 4);
+        try pushOwnedString(allocator, api, self.state, spec.shell);
+        api.set_field(self.state, -2, "shell");
+        if (spec.domain) |domain| {
+            try pushOwnedString(allocator, api, self.state, domain);
+            api.set_field(self.state, -2, "domain");
+        }
+        if (spec.cwd) |cwd| {
+            try pushOwnedString(allocator, api, self.state, cwd);
+            api.set_field(self.state, -2, "cwd");
+        }
+        api.create_table(self.state, 0, 16);
+        var entries = std.mem.splitScalar(u8, spec.env_block, 0);
+        while (entries.next()) |entry| {
+            const equal = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+            const key = try allocator.dupeZ(u8, entry[0..equal]);
+            try pushOwnedString(allocator, api, self.state, entry[equal + 1 ..]);
+            api.set_field(self.state, -2, key);
+        }
+        api.set_field(self.state, -2, "env");
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "spawn filter");
+            return;
+        }
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        api.get_field(self.state, -1, "cwd");
+        var cwd: ?[]const u8 = null;
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .nil_type) {
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+            var len: usize = 0;
+            const ptr = api.to_lstring(self.state, -1, &len) orelse return error.InvalidSpawnSpec;
+            if (len == 0 or std.mem.indexOfScalar(u8, ptr[0..len], 0) != null) return error.InvalidSpawnSpec;
+            cwd = try allocator.dupe(u8, ptr[0..len]);
+        }
+        pop(api, self.state, 1);
+        api.get_field(self.state, -1, "env");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        var block: std.ArrayList(u8) = .empty;
+        api.push_nil(self.state);
+        while (api.next(self.state, -2) != 0) {
+            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -2))) != .string or
+                @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+            var key_len: usize = 0;
+            const key = api.to_lstring(self.state, -2, &key_len) orelse return error.InvalidSpawnSpec;
+            var value_len: usize = 0;
+            const value = api.to_lstring(self.state, -1, &value_len) orelse return error.InvalidSpawnSpec;
+            if (key_len == 0 or std.mem.indexOfAny(u8, key[0..key_len], "=\x00") != null or
+                std.mem.indexOfScalar(u8, value[0..value_len], 0) != null) return error.InvalidSpawnSpec;
+            try block.appendSlice(allocator, key[0..key_len]);
+            try block.append(allocator, '=');
+            try block.appendSlice(allocator, value[0..value_len]);
+            try block.append(allocator, 0);
+            pop(api, self.state, 1);
+        }
+        if (block.items.len == 0) try block.append(allocator, 0);
+        try block.append(allocator, 0);
+        spec.cwd = cwd;
+        spec.env_block = block.items;
     }
 
     /// Fire the Lua on_key handler (if registered).
@@ -1287,7 +1405,47 @@ pub const Runtime = struct {
         return callback(self);
     }
 
-    pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value) !HtpDispatchResult {
+    fn pushCommandStateHandler(self: *Runtime, name: [:0]const u8) !void {
+        const api = self.context.api;
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingHollow;
+        api.get_field(self.state, -1, "term");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingTerm;
+        api.get_field(self.state, -1, name);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return error.MissingCommandStateHandler;
+    }
+
+    pub fn exportCommandStates(self: *Runtime) !std.json.Value {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        try self.pushCommandStateHandler("_export_command_states");
+        if (api.pcall(self.state, 0, 1, 0) != 0) {
+            logLuaError(api, self.state, "export_command_states");
+            return error.CommandStateExportFailed;
+        }
+        return try luaValueToJson(self.allocator, api, self.state, -1);
+    }
+
+    pub fn restoreCommandStates(self: *Runtime, value: std.json.Value) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        try self.pushCommandStateHandler("_restore_command_states");
+        try pushJsonValue(self.allocator, api, self.state, value);
+        if (api.pcall(self.state, 1, 0, 0) != 0) {
+            logLuaError(api, self.state, "restore_command_states");
+            return error.CommandStateRestoreFailed;
+        }
+    }
+
+    pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value, received_at_ms: ?i64, received_cwd: ?[]const u8) !HtpDispatchResult {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -1315,8 +1473,19 @@ pub const Runtime = struct {
             api.push_nil(self.state);
         }
         api.push_number(self.state, @floatFromInt(pane_id));
+        if (received_at_ms) |value| {
+            api.push_number(self.state, @floatFromInt(value));
+        } else {
+            api.push_nil(self.state);
+        }
 
-        if (api.pcall(self.state, 3, 2, 0) != 0) {
+        if (received_cwd) |cwd| {
+            try pushOwnedString(self.allocator, api, self.state, cwd);
+        } else {
+            api.push_nil(self.state);
+        }
+
+        if (api.pcall(self.state, 5, 2, 0) != 0) {
             const message = luaErrorToOwnedString(self.allocator, api, self.state);
             pop(api, self.state, 2);
             return .{ .success = false, .error_message = message };
@@ -1466,6 +1635,74 @@ pub const Runtime = struct {
         if (std.mem.eql(u8, result, "handled")) return .handled;
         if (std.mem.eql(u8, result, "failed")) return .failed;
         return .fallback;
+    }
+
+    pub fn runLinkRoute(self: *Runtime, request: LinkRouteRequest) LinkRouteResult {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const ref = self.context.link_route_ref;
+        if (ref == LUA_NOREF) return .fallback;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
+        api.create_table(self.state, 0, 7);
+        api.push_lstring(self.state, request.url.ptr, request.url.len);
+        api.set_field(self.state, -2, "url");
+        api.push_lstring(self.state, request.text.ptr, request.text.len);
+        api.set_field(self.state, -2, "text");
+        api.push_number(self.state, @floatFromInt(request.pane_id));
+        api.set_field(self.state, -2, "pane_id");
+        api.push_number(self.state, @floatFromInt(request.mods));
+        api.set_field(self.state, -2, "mods");
+        api.push_lstring(self.state, request.source.ptr, request.source.len);
+        api.set_field(self.state, -2, "source");
+        api.push_lstring(self.state, request.kind.ptr, request.kind.len);
+        api.set_field(self.state, -2, "kind");
+        if (request.pattern_index) |pattern_index| {
+            api.push_number(self.state, @floatFromInt(pattern_index));
+        } else {
+            api.push_nil(self.state);
+        }
+        api.set_field(self.state, -2, "pattern_index");
+
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "link_route");
+            return .failed;
+        }
+
+        const result_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (result_type == .nil_type) return .fallback;
+        if (result_type != .table) {
+            std.log.err("lua: link route must return nil, a handled result, or a URL rewrite", .{});
+            return .failed;
+        }
+
+        const result_idx = absoluteIndex(api, self.state, -1);
+        api.get_field(self.state, result_idx, "handled");
+        const handled = @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .boolean and api.to_boolean(self.state, -1) != 0;
+        pop(api, self.state, 1);
+        if (handled) return .handled;
+
+        api.get_field(self.state, result_idx, "url");
+        const url_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        if (url_type == .nil_type) {
+            std.log.err("lua: link route result must include handled=true or a url string", .{});
+            return .failed;
+        }
+        if (url_type != .string) {
+            std.log.err("lua: link route result url must be a string", .{});
+            return .failed;
+        }
+        var url_len: usize = 0;
+        const url_ptr = api.to_lstring(self.state, -1, &url_len) orelse return .failed;
+        if (url_len == 0 or std.mem.indexOfScalar(u8, url_ptr[0..url_len], 0) != null) {
+            std.log.err("lua: link route result url must be non-empty and contain no NUL", .{});
+            return .failed;
+        }
+        const url = self.allocator.dupe(u8, url_ptr[0..url_len]) catch return .failed;
+        return .{ .rewrite = url };
     }
 
     pub fn resolveTopBarTitle(self: *Runtime, index: usize, is_active: bool, is_hovered: bool, hover_close: bool, fallback: []const u8, out_buf: []u8) bar.Segment {
@@ -2140,6 +2377,10 @@ pub const Runtime = struct {
         api.set_field(self.state, -2, "quick_select_handlers");
 
         api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_link_route_handler, 1);
+        api.set_field(self.state, -2, "link_route_handler");
+
+        api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_current_tab_id, 1);
         api.set_field(self.state, -2, "current_tab_id");
 
@@ -2379,6 +2620,7 @@ const BridgeContext = struct {
     gui_ready_ref: c_int = -1,
     quick_select_match_ref: c_int = -1,
     quick_select_action_ref: c_int = -1,
+    link_route_ref: c_int = -1,
     gui_ready_fired: bool = false,
     process_jobs: [16]?*ProcessJob = [_]?*ProcessJob{null} ** 16,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
@@ -2549,6 +2791,17 @@ fn pushBuiltInPayload(allocator: std.mem.Allocator, api: Api, state: *State, pay
             api.create_table(state, 0, 1);
             api.push_number(state, @floatFromInt(pane_id));
             api.set_field(state, -2, "pane_id");
+        },
+        .pane_exited => |value| {
+            api.create_table(state, 0, 2);
+            api.push_number(state, @floatFromInt(value.pane_id));
+            api.set_field(state, -2, "pane_id");
+            if (value.status) |status| {
+                api.push_number(state, @floatFromInt(status));
+            } else {
+                api.push_nil(state);
+            }
+            api.set_field(state, -2, "status");
         },
         .pane_layout_changed => |value| {
             api.create_table(state, 0, 1);
@@ -6208,7 +6461,8 @@ fn l_now_ms(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse {
-        api.push_number(state, 0);
+        // Config-time/startup filters run before app callbacks are registered.
+        api.push_number(state, @floatFromInt(@divFloor(io.nanoTimestamp(), std.time.ns_per_ms)));
         return 1;
     };
     api.push_number(state, @floatFromInt(cbs.now_ms(cbs.app)));
@@ -6655,6 +6909,22 @@ fn l_quick_select_handlers(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_link_route_handler(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    if (ctx.link_route_ref != LUA_NOREF) {
+        api.unref(state, LUA_REGISTRYINDEX, ctx.link_route_ref);
+        ctx.link_route_ref = LUA_NOREF;
+    }
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+        std.log.err("lua: link_route_handler expects a function", .{});
+        return 0;
+    }
+    api.push_value(state, 1);
+    ctx.link_route_ref = api.ref(state, LUA_REGISTRYINDEX);
+    return 0;
+}
+
 /// hollow.on_key(fn(key, mods) -> bool)
 /// Registers a Lua function that is called for every key event before the
 /// terminal sees it. Return true to consume the key.
@@ -7036,6 +7306,140 @@ fn l_process_poll(state: *State) callconv(.c) c_int {
     api.push_boolean(state, if (job.canceled) 1 else 0);
     api.set_field(state, -2, "canceled");
     return 1;
+}
+
+test "spawn filter bridge commits valid results atomically and preserves stack" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString("assert(host_api.now_ms() > 0)");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var spec: @import("pty/spawn_spec.zig").SpawnSpec = .{
+        .shell = "/bin/sh",
+        .domain = "local",
+        .cwd = "/original",
+        .env_block = "TERM=xterm-256color\x00EDITOR=vi\x00\x00",
+    };
+    try runtime.runString(
+        \\hollow = {_filter_spawn = function(spec)
+        \\  assert(spec.shell == '/bin/sh' and spec.domain == 'local')
+        \\  assert(spec.cwd == '/original' and spec.env.EDITOR == 'vi')
+        \\  spec.cwd = '/project'
+        \\  spec.env.EDITOR = 'nvim'
+        \\  spec.env.EMPTY = ''
+        \\  return spec
+        \\end}
+    );
+    const top = runtime.context.api.get_top(runtime.state);
+    try runtime.filterSpawn(arena.allocator(), &spec);
+    try std.testing.expectEqualStrings("/project", spec.cwd.?);
+    try std.testing.expect(std.mem.indexOf(u8, spec.env_block, "EDITOR=nvim\x00") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spec.env_block, "EMPTY=\x00") != null);
+    try std.testing.expect(std.mem.endsWith(u8, spec.env_block, "\x00\x00"));
+    const previous = spec;
+    try runtime.runString("hollow._filter_spawn = function(s) s.cwd = '/bad'; s.env.BAD = 1; return s end");
+    try std.testing.expectError(error.InvalidSpawnSpec, runtime.filterSpawn(arena.allocator(), &spec));
+    try std.testing.expectEqualStrings(previous.cwd.?, spec.cwd.?);
+    try std.testing.expectEqualStrings(previous.env_block, spec.env_block);
+    try runtime.runString("hollow._filter_spawn = nil");
+    try runtime.filterSpawn(arena.allocator(), &spec);
+    try std.testing.expectEqual(top, runtime.context.api.get_top(runtime.state));
+}
+
+test "tab action bridge preserves target and Lua stack" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\received = {}
+        \\hollow = {action = {close_tab = function(opts)
+        \\  received[#received + 1] = opts.tab_id
+        \\end}}
+    );
+    const api = runtime.context.api;
+    const top = api.get_top(runtime.state);
+    try std.testing.expect(runtime.invokeTabAction("close_tab", 201));
+    try std.testing.expect(runtime.invokeTabAction("close_tab", 202));
+    try std.testing.expect(!runtime.invokeTabAction("missing", 201));
+    try std.testing.expectEqual(top, api.get_top(runtime.state));
+    try runtime.runString("assert(#received == 2 and received[1] == 201 and received[2] == 202)");
+    try runtime.runString("hollow = nil");
+    try std.testing.expect(!runtime.invokeTabAction("close_tab", 201));
+    try std.testing.expectEqual(top, api.get_top(runtime.state));
+}
+
+test "command state crosses runtime recreation without losing numeric pane IDs" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var saved: std.json.Value = undefined;
+    {
+        var runtime = try Runtime.init(std.testing.allocator, &cfg);
+        defer runtime.deinit();
+        try runtime.runString(
+            \\hollow = { term = { _export_command_states = function()
+            \\  return {{pane_id = 101, pid = 4242,
+            \\    running = {command = "sleep 60", cwd = "/origin", started_at_ms = 1000},
+            \\    last = {command = "false", status = 1, took_ms = 25}}}
+            \\end } }
+        );
+        saved = try runtime.exportCommandStates();
+    }
+    defer deinitJsonValue(std.testing.allocator, saved);
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\hollow = {term = {_restore_command_states = function(entries)
+        \\  local entry = entries[1]
+        \\  assert(entry.pane_id == 101 and entry.pid == 4242)
+        \\  assert(entry.running.command == "sleep 60")
+        \\  assert(entry.running.cwd == "/origin" and entry.running.started_at_ms == 1000)
+        \\  assert(entry.last.command == "false" and entry.last.status == 1 and entry.last.took_ms == 25)
+        \\end}}
+    );
+    try runtime.restoreCommandStates(saved);
+}
+
+test "HTP bridge forwards receipt timestamp and cwd" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\hollow = {htp = {_handle_emit = function(channel, payload, pane_id, received_at_ms, received_cwd)
+        \\  assert(channel == "command_started" and payload == nil and pane_id == 101)
+        \\  assert(received_at_ms == 1000 and received_cwd == "/origin")
+        \\  return true
+        \\end}}
+    );
+    const result = try runtime.dispatchHtpEvent(101, "command_started", null, 1000, "/origin");
+    try std.testing.expect(result.success);
+}
+
+test "pane lifecycle bridge preserves zero and unknown exit status" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\received = {}
+        \\hollow = {_emit_builtin_event = function(name, payload)
+        \\  received[#received + 1] = {name = name, payload = payload}
+        \\end}
+    );
+    runtime.emitBuiltInEvent("term:pane_created", .{ .pane_id = 101 });
+    runtime.emitBuiltInEvent("term:pane_exited", .{ .pane_exited = .{ .pane_id = 101, .status = 0 } });
+    runtime.emitBuiltInEvent("term:pane_exited", .{ .pane_exited = .{ .pane_id = 102, .status = null } });
+    runtime.emitBuiltInEvent("term:pane_closed", .{ .pane_id = 101 });
+    try runtime.runString(
+        \\assert(#received == 4)
+        \\assert(received[1].name == "term:pane_created" and received[1].payload.pane_id == 101)
+        \\assert(received[2].payload.status == 0)
+        \\assert(received[3].payload.status == nil and received[3].payload.pane_id == 102)
+        \\assert(received[4].name == "term:pane_closed" and received[4].payload.pane_id == 101)
+    );
 }
 
 test "native process bridge owns argv and returns structured results" {

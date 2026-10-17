@@ -140,13 +140,13 @@ Use `hollow.action.register()` to add a named action that appears in
 the command palette and can be bound to a key chord:
 
 ```lua
-hollow.action.register("command_palette", {
-  run = function() hollow.ui.command_palette.open() end,
-  desc = "Open command palette",
-  category = "general",
+hollow.action.register("project_status", {
+  run = function() hollow.ui.notify.info("Project ready") end,
+  desc = "Show project status",
+  category = "user",
+  available = function(ctx) return ctx.pane ~= nil end,
+  keys = { "<leader>p" },
 })
-
-hollow.keymap.set("<leader>p", "command_palette", { desc = "command palette" })
 ```
 
 The spec accepts these fields:
@@ -157,6 +157,17 @@ The spec accepts these fields:
 | `desc` | `string?` | `""` | Human-readable description shown in the command palette |
 | `category` | `string?` | `"general"` | One of `"tab"`, `"pane"`, `"workspace"`, `"window"`, `"scroll"`, `"copy_mode"`, `"general"`, `"user"` |
 | `workspace_targetable` | `boolean?` | `false` | If `true`, the command palette prompts for a target workspace before running |
+| `available` | `fun(ctx: HollowActionContext): boolean` | always available | Fast, synchronous context check; unavailable actions are hidden from the palette |
+| `keys` | `string[]?` | `{}` | Default chords for this action; explicit user bindings take precedence |
+
+`available(ctx)` runs while building the palette entries, not on each render. It
+receives `name`, `args` (empty for this check), and current `pane`, `tab`, and
+`workspace` snapshots. Keep it cheap and nonblocking. Errors or any result other
+than `true` hide the action. The predicate only affects palette visibility; it
+does not prevent direct calls to `hollow.action[name](...)`.
+
+`keys` are registered through `hollow.keymap.default()`. User bindings at the
+same chord take precedence, and `load_default_keymaps = false` disables them.
 
 ### Bind a Lua function directly
 
@@ -172,6 +183,46 @@ end, { desc = "new scratch workspace" })
 
 This style does not register the action in the command palette.
 
+## Action overrides
+
+`hollow.action.override(name, handler)` intercepts a registered action without
+replacing its metadata or key bindings:
+
+```lua
+local remove = hollow.action.override("new_tab", function(ctx)
+  hollow.ui.notify.info("Opening a tab")
+  hollow.action.new_tab(ctx.args[1]) -- calls the original action, without overrides
+  return true
+end)
+
+-- Later, if needed:
+remove()
+```
+
+- Handlers run in registration order. The first truthy return skips the remaining
+  handlers and the original action; `nil` or `false` falls through.
+- A failing handler reports an error notification and falls through.
+- While an override handler runs, **all** nested action calls bypass overrides,
+  including calls to other actions. Deferred callbacks run after this guard ends.
+- `ctx` contains `name`, `args` (original positional arguments, with `args.n`
+  recording their count), and current `pane`, `tab`, and `workspace` snapshots.
+  These snapshots may be nil when no corresponding object exists.
+- The returned unsubscribe function is safe to call repeatedly. Removing a handler
+  during dispatch skips it; adding one takes effect on the next invocation.
+- Unknown action names and non-function handlers raise errors. Custom registered
+  actions can also be overridden. `register`, `list`, and `override` are reserved
+  API names, not action names.
+
+Overrides cover named keymaps, palette entries, topbar action buttons, and direct
+`hollow.action[name](...)` calls. They do **not** intercept low-level
+`hollow.term.*` operations, native CLI operations such as `new-tab`, workspace
+restoration, or keymap callbacks that call those operations directly. Overrides
+belong to the current Lua runtime and must be registered again on config reload.
+
+The tab close button invokes `close_tab({ tab_id = id })`, including for inactive
+tabs. Read `ctx.args[1].tab_id` to identify that target; `ctx.tab` still describes
+the currently focused tab. Calling `close_tab()` without options closes the active tab.
+
 ### API reference
 
 ```lua
@@ -183,6 +234,11 @@ hollow.action.register(name, spec)
 --- Return all registered actions, sorted by category then name.
 ---@return HollowPaletteEntry[]
 hollow.action.list()
+
+---@param name string
+---@param handler fun(ctx: HollowActionContext): any
+---@return fun() unsubscribe
+hollow.action.override(name, handler)
 
 --- Call a named action directly.
 hollow.action[name]()

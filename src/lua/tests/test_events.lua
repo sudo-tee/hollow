@@ -30,10 +30,19 @@ describe("events test suite", function()
 
   describe("built-in events", function()
     it("cannot be emitted from Lua", function()
-      local built_in_error = pcall(function()
-        hollow.events.emit("term:foreground_process_changed", {})
-      end)
-      harness.assert_true(not built_in_error, "built-in events should not be emitted from Lua")
+      for _, name in ipairs({
+        "term:foreground_process_changed",
+        "term:command_started",
+        "term:command_finished",
+        "term:pane_created",
+        "term:pane_exited",
+        "term:pane_closed",
+      }) do
+        local built_in_error = pcall(function()
+          hollow.events.emit(name, {})
+        end)
+        harness.assert_true(not built_in_error, name .. " should not be emitted from Lua")
+      end
     end)
 
     it("adapts file-drop paths and pane", function()

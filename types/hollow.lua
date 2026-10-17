@@ -154,9 +154,14 @@
 ---| "term:tab_activated"
 ---| "term:tab_closed"
 ---| "term:pane_focused"
+---| "term:pane_created"
+---| "term:pane_exited"
+---| "term:pane_closed"
 ---| "term:pane_layout_changed"
 ---| "term:cwd_changed"
 ---| "term:foreground_process_changed"
+---| "term:command_started"
+---| "term:command_finished"
 ---| "term:program_status_changed"
 ---| "term:bell"
 ---| "term:notification"
@@ -196,9 +201,14 @@
 ---@field ["term:tab_activated"] { tab: HollowTab }
 ---@field ["term:tab_closed"] { tab_id: integer }
 ---@field ["term:pane_focused"] { pane: HollowPane }
+---@field ["term:pane_created"] { pane: HollowPane }
+---@field ["term:pane_exited"] { pane: HollowPane, status: integer|nil }
+---@field ["term:pane_closed"] { pane: HollowPane }
 ---@field ["term:pane_layout_changed"] { pane: HollowPane }
 ---@field ["term:cwd_changed"] { pane: HollowPane, old_cwd: string, new_cwd: string }
 ---@field ["term:foreground_process_changed"] { pane: HollowPane, old_process: string, new_process: string }
+---@field ["term:command_started"] { pane: HollowPane, command: string, cwd: string }
+---@field ["term:command_finished"] { pane: HollowPane, command?: string, status?: integer, took_ms?: integer }
 ---@field ["term:program_status_changed"] { pane: HollowPane }
 ---@field ["term:bell"] { pane: HollowPane }
 ---@field ["term:notification"] { pane: HollowPane, title: string, message: string, level: HollowNotifyLevel, id: string|nil, ttl_ms: integer|nil, close: boolean }
@@ -211,7 +221,7 @@
 ---@field ["copy_mode:search_requested"] {}
 ---@field ["quick_select:changed"] { active: boolean, action: "open"|"copy" }
 ---@field ["quick_select:no_matches"] {}
----@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command", pattern_index: integer|nil }
+---@field ["quick_select:action_executed"] { text: string, kind: HollowQuickSelectKind, action: "open"|"copy"|"callback"|"command"|"route", pattern_index: integer|nil }
 ---@field ["topbar:hover"] { id: string, mods: HollowKeyMods, shifted: boolean }
 ---@field ["topbar:leave"] {}
 ---@field ["topbar:click"] { id: string, mods: HollowKeyMods, shifted: boolean }
@@ -334,6 +344,23 @@
 
 ---@alias HollowQuickSelectKind "url"|"ip"|"quote"|"filename"|"custom"
 
+---@alias HollowLinkRouteSource "click"|"quick_select"
+
+---@class HollowLinkRouteRequest
+---@field url string Effective open target; can be URL or quick-select path
+---@field text string Original matched text; OSC 8 links use their embedded URI
+---@field pane HollowPane|nil Origin pane snapshot
+---@field pane_id integer Origin pane ID
+---@field mods HollowKeyMods Modifier chord, e.g. "<S>"; empty when unmodified
+---@field source HollowLinkRouteSource
+---@field kind HollowQuickSelectKind
+---@field pattern_index integer|nil Custom quick-select pattern index
+
+---@alias HollowLinkRouteResult { handled: true }|{ url: string }
+
+---@class HollowRouteNamespace
+---@field link fun(handler:fun(request:HollowLinkRouteRequest):HollowLinkRouteResult|false|nil):fun():boolean Register link handler; return unsubscribe function
+
 ---@class HollowQuickSelectActionContext
 ---@field kind HollowQuickSelectKind
 ---@field pattern_index integer|nil
@@ -447,6 +474,10 @@
 ---@field is_floating boolean
 ---@field is_maximized boolean
 ---@field has_bell boolean
+---@field busy boolean True while shell integration reports a running command.
+---@field at_prompt boolean True after a shell readiness hook, until the next command or run submission.
+---@field running? { command: string, ms: integer } Current shell command and elapsed time.
+---@field last? { command?: string, status?: integer, took_ms?: integer } Most recently finished shell command.
 ---@field frame { x: integer, y: integer, width: integer, height: integer }
 ---@field foreground_process string
 ---@field program_status HollowProgramStatus[] OSC 7501 records, oldest updated first.
@@ -1027,6 +1058,15 @@
 ---@field desc? string
 ---@field category? HollowActionCategory
 ---@field workspace_targetable? boolean
+---@field available? fun(ctx: HollowActionContext): boolean Fast, synchronous check; only true shows action in palette
+---@field keys? string[] Default chords registered with this action
+
+---@class HollowActionContext
+---@field name string Action being invoked or checked
+---@field args table Original positional arguments, with n recording their count (including nils)
+---@field pane? HollowPane Current pane snapshot
+---@field tab? HollowTab Current tab snapshot
+---@field workspace? HollowWorkspace Current workspace snapshot
 
 ---@class HollowPaletteEntry
 ---@field name string
@@ -1034,6 +1074,7 @@
 ---@field category HollowActionCategory
 ---@field chords string[]
 ---@field run fun()
+---@field available? fun(ctx: HollowActionContext): boolean Registry predicate used by the command palette
 ---@field workspace_targetable? boolean
 
 ---@class HollowUiCommandPaletteOptions
@@ -1051,6 +1092,7 @@
 ---@field name string
 ---@field handler fun(payload:any)
 ---@field once boolean
+---@field filter? boolean
 
 ---@alias HollowEventHandleMap table<integer, HollowEventListener>
 ---@alias HollowEventListenerMap table<string, integer[]>
@@ -1164,7 +1206,8 @@
 
 ---@class HollowActionNamespace
 ---@field register fun(name: string, spec: HollowActionSpec)
----@field list fun(): HollowPaletteEntry[]
+---@field list fun(): HollowPaletteEntry[] All registered actions
+---@field override fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function
 ---@field [string] fun(opts?: table)
 
 ---@class HollowConfigNamespace
@@ -1338,6 +1381,23 @@ function term.send_key(combo, pane_id) end
 ---@param pane_id? integer
 function term.send_text(text, pane_id) end
 
+---@class HollowTermRunOpts
+---@field pane_id? integer Defaults to the focused pane, captured at submission.
+---@field timeout_ms? integer Positive timeout in milliseconds; default 30000. Does not cancel the command.
+
+---@class HollowTermRunResult
+---@field pane_id integer
+---@field command string Submitted command, before shell expansion.
+---@field status? integer Shell exit status; nonzero exits still fulfill the promise.
+---@field took_ms? integer Command duration measured by shell integration.
+
+---Submit a single-line command and await completion and the following shell prompt.
+---Requires updated Bash, Zsh, or Fish shell integration and an exclusively driven pane.
+---@param command string Non-empty single-line shell command without control characters; Enter is appended.
+---@param opts? HollowTermRunOpts
+---@return HollowPromise<HollowTermRunResult>
+function term.run(command, opts) end
+
 ---@param pane_id? integer
 function term.bell(pane_id) end
 
@@ -1439,6 +1499,27 @@ function events.once(name, handler) end
 ---@param name string
 ---@param payload? any
 function events.emit(name, payload) end
+
+---@class HollowSpawnSpec
+---@field shell string Read-only configured shell command string (not argv).
+---@field domain? string Read-only domain name.
+---@field cwd? string Local launch directory; nil inherits the host directory.
+---@field env table<string, string> Environment overrides, not the full inherited environment.
+
+---Register an ordered synchronous transformation. Remove with events.off(handle).
+---Does not intercept notifications; the producer must call apply_filters.
+---@overload fun(name: "term:spawn", handler: fun(spec: HollowSpawnSpec): HollowSpawnSpec|nil): HollowEventHandle
+---@param name string
+---@param handler fun(payload: table): table|nil
+---@return HollowEventHandle
+function events.filter(name, handler) end
+
+---Apply custom filters. nil/error/invalid returns preserve the previous payload.
+---@generic T: table
+---@param name string
+---@param payload T
+---@return T
+function events.apply_filters(name, payload) end
 
 ---@alias HollowKeyAction string|fun()
 
@@ -2054,6 +2135,7 @@ function plugins.sync() end
 ---@field copy_mode_search_prev fun()
 ---@field quick_select_start fun(action: "open"|"copy")
 ---@field quick_select_handlers fun(match_handler:fun(row_text:string):table[], action_handler:fun(kind:string, pattern_index:integer, text:string, fallback:string):string)
+---@field link_route_handler fun(handler:fun(request:table):any)
 ---@field platform HollowPlatformInfo
 
 ---@class HollowUiModuleExports
@@ -2071,6 +2153,7 @@ function plugins.sync() end
 ---@field async HollowAsyncNamespace
 ---@field events HollowEventsNamespace
 ---@field keymap HollowKeymapNamespace
+---@field route HollowRouteNamespace
 ---@field ui HollowUi
 ---@field htp HollowHtpNamespace
 ---@field fs HollowFsNamespace
@@ -2099,6 +2182,7 @@ hollow.term = term
 hollow.workspace = workspace_api
 hollow.events = events
 hollow.keymap = keymap
+hollow.route = {}
 hollow.color = color
 hollow.ui = ui
 hollow.htp = htp

@@ -70,6 +70,110 @@ describe("actions test suite", function()
     end)
   end)
 
+  describe("registered action metadata", function()
+    it("filters unavailable actions using the current action context", function()
+      local available_context
+      local hidden_runs = 0
+      hollow.action.register("contextual_available", {
+        run = function() end,
+        desc = "Contextual visible marker",
+        available = function(ctx)
+          available_context = ctx
+          return true
+        end,
+      })
+      hollow.action.register("contextual_unavailable", {
+        run = function()
+          hidden_runs = hidden_runs + 1
+        end,
+        desc = "Contextual hidden marker",
+        available = function()
+          return false
+        end,
+      })
+
+      local visible, hidden = false, false
+      for _, entry in ipairs(hollow.action.list()) do
+        visible = visible or entry.name == "contextual_available"
+        hidden = hidden or entry.name == "contextual_unavailable"
+      end
+
+      harness.assert_true(visible, "registered actions should remain available through action.list")
+      harness.assert_true(hidden, "action.list should retain unavailable action metadata")
+
+      hollow.ui.command_palette.open({ query = "contextual" })
+      local has_visible_row, has_hidden_row = false, false
+      for row_index, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+        if row_index > 4 then
+          local text = {}
+          for _, segment in ipairs(row.segments or {}) do
+            text[#text + 1] = segment.text or ""
+          end
+          local row_text = table.concat(text)
+          has_visible_row = has_visible_row
+            or row_text:find("Contextual visible marker", 1, true) ~= nil
+          has_hidden_row = has_hidden_row
+            or row_text:find("Contextual hidden marker", 1, true) ~= nil
+        end
+      end
+      harness.assert_equal(available_context.name, "contextual_available")
+      harness.assert_equal(available_context.args.n, 0)
+      harness.assert_equal(available_context.pane.id, 101)
+      harness.assert_equal(available_context.tab.id, 201)
+      harness.assert_equal(available_context.workspace.name, "main")
+      harness.assert_true(has_visible_row, "available action should have a palette row")
+      harness.assert_true(not has_hidden_row, "unavailable action should have no palette row")
+      hollow.ui.overlay.clear()
+      hollow.action.contextual_unavailable()
+      harness.assert_equal(hidden_runs, 1, "availability should only affect palette visibility")
+    end)
+
+    it("hides actions when availability checks fail", function()
+      hollow.action.register("contextual_broken", {
+        run = function() end,
+        desc = "Contextual broken marker",
+        available = function()
+          error("availability failed")
+        end,
+      })
+
+      local found = false
+      for _, entry in ipairs(hollow.action.list()) do
+        found = found or entry.name == "contextual_broken"
+      end
+      harness.assert_true(found, "action.list should retain actions whose check fails")
+
+      hollow.ui.command_palette.open({ query = "Contextual broken marker" })
+      local has_broken_row = false
+      for row_index, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+        if row_index > 4 then
+          local text = {}
+          for _, segment in ipairs(row.segments or {}) do
+            text[#text + 1] = segment.text or ""
+          end
+          has_broken_row = has_broken_row
+            or table.concat(text):find("Contextual broken marker", 1, true) ~= nil
+        end
+      end
+      harness.assert_true(not has_broken_row, "failed availability check should fail closed")
+      hollow.ui.overlay.clear()
+    end)
+
+    it("registers declared chords as defaults", function()
+      hollow.action.register("contextual_key_action", {
+        run = function() end,
+        keys = { "<C-S-h>" },
+      })
+      hollow.keymap.apply_defaults()
+
+      harness.assert_equal(
+        hollow.keymap.get("<C-S-h>"),
+        "contextual_key_action",
+        "action keys should be installed through keymap defaults"
+      )
+    end)
+  end)
+
   describe("configured quick-select", function()
     local selected_custom_text = nil
     local configured_matches

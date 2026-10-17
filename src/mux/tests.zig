@@ -11,6 +11,187 @@ const MAX_LAYOUT_LEAVES = types.MAX_LAYOUT_LEAVES;
 const Tab = tab_mod.Tab;
 const Workspace = workspace_mod.Workspace;
 const Mux = mux_mod.Mux;
+const ghostty = @import("../term/ghostty.zig");
+
+const LifecycleTestCallbacks = struct {
+    fn write(_: ?*anyopaque, _: ?*anyopaque, _: [*]const u8, _: usize) callconv(.c) void {}
+    fn notify(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}
+    fn string(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) ghostty.String {
+        return .{ .ptr = null, .len = 0 };
+    }
+    fn size(_: ?*anyopaque, _: ?*anyopaque, _: *ghostty.SizeReportSize) callconv(.c) bool {
+        return false;
+    }
+    fn color(_: ?*anyopaque, _: ?*anyopaque, _: *ghostty.ColorScheme) callconv(.c) bool {
+        return false;
+    }
+    fn attributes(_: ?*anyopaque, _: ?*anyopaque, _: *ghostty.DeviceAttributes) callconv(.c) bool {
+        return false;
+    }
+    const callbacks: ghostty.TerminalCallbacks = .{
+        .write_pty = write,
+        .bell = notify,
+        .enquiry = string,
+        .xtversion = string,
+        .size = size,
+        .color_scheme = color,
+        .device_attributes = attributes,
+        .title_changed = notify,
+    };
+};
+
+const PaneLifecycleRecorder = struct {
+    mux: *Mux,
+    created: usize = 0,
+    closed: usize = 0,
+    all_panes_resolved: bool = true,
+
+    fn recordCreated(context: *anyopaque, pane: *Pane) void {
+        const self: *PaneLifecycleRecorder = @ptrCast(@alignCast(context));
+        self.created += 1;
+        self.checkPublished(pane);
+    }
+
+    fn recordClosing(context: *anyopaque, pane: *Pane) void {
+        const self: *PaneLifecycleRecorder = @ptrCast(@alignCast(context));
+        self.closed += 1;
+        self.checkPublished(pane);
+    }
+
+    fn checkPublished(self: *PaneLifecycleRecorder, pane: *Pane) void {
+        var panes = self.mux.paneIterator();
+        while (panes.next()) |candidate| {
+            if (candidate == pane) return;
+        }
+        self.all_panes_resolved = false;
+    }
+};
+
+test "pane lifecycle callbacks cover creation closure and moves without duplicates" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    var recorder: PaneLifecycleRecorder = .{ .mux = &mux };
+    mux.host_context = &recorder;
+    mux.pane_created = PaneLifecycleRecorder.recordCreated;
+    mux.pane_closing = PaneLifecycleRecorder.recordClosing;
+    const callbacks = LifecycleTestCallbacks.callbacks;
+
+    try std.testing.expectError(error.NoActiveWorkspace, mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, false));
+    try std.testing.expectEqual(@as(usize, 0), recorder.created);
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    try std.testing.expectError(error.MuxAlreadyBootstrapped, mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600));
+    const first = mux.activePane().?;
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, false);
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .horizontal, 0.5, null, null, true, null);
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try std.testing.expectEqual(@as(usize, 5), recorder.created);
+    try std.testing.expectEqual(@as(usize, 0), recorder.closed);
+
+    try std.testing.expect(mux.movePaneToWorkspace(&runtime, @intFromPtr(first), 1));
+    try std.testing.expectEqual(@as(usize, 5), recorder.created);
+    try std.testing.expectEqual(@as(usize, 0), recorder.closed);
+    _ = mux.closePaneById(&runtime, @intFromPtr(first));
+    try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+    _ = mux.closeTabAt(&runtime, 0);
+    try std.testing.expectEqual(@as(usize, 2), recorder.closed);
+    _ = mux.closeActivePane(&runtime);
+    try std.testing.expectEqual(@as(usize, 3), recorder.closed);
+    try std.testing.expect(mux.closeTab(&runtime));
+    try std.testing.expectEqual(@as(usize, 5), recorder.closed);
+
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    try std.testing.expect(mux.closeWorkspace(&runtime, null));
+    try std.testing.expectEqual(@as(usize, 7), recorder.created);
+    try std.testing.expectEqual(@as(usize, 7), recorder.closed);
+    _ = mux.closePaneById(&runtime, 0);
+    try std.testing.expectEqual(@as(usize, 7), recorder.closed);
+    try std.testing.expect(recorder.all_panes_resolved);
+}
+
+test "spawn filters reach initial panes tabs workspaces and splits before PTY launch" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = @import("../io.zig");
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    cfg.shell = try allocator.dupe(u8, "/bin/sh");
+    var lua = try @import("../lua_bridge.zig").Runtime.init(allocator, &cfg);
+    defer lua.deinit();
+    try lua.runString(
+        \\hollow = {events = {}}
+        \\local state = {events = {handles = {}, listeners = {}, next_handle = 1, builtin_names = {}},
+        \\  host_api = {now_ms = function() return 1 end}}
+        \\require('hollow.events').setup(hollow, state, {})
+        \\spawn_count = 0
+        \\hollow.events.filter('term:spawn', function(spec)
+        \\  spawn_count = spawn_count + 1
+        \\  spec.cwd = '/'
+        \\  spec.env.FILTER_VALUE = 'filtered'
+        \\  return spec
+        \\end)
+    );
+    const Bridge = struct {
+        fn filter(context: *anyopaque, arena: std.mem.Allocator, spec: *@import("../pty/spawn_spec.zig").SpawnSpec) !void {
+            const bridge: *@import("../lua_bridge.zig").Runtime = @ptrCast(@alignCast(context));
+            try bridge.filterSpawn(arena, spec);
+        }
+    };
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    mux.spawn_filter = .{ .context = &lua, .callback = Bridge.filter };
+    const callbacks = LifecycleTestCallbacks.callbacks;
+    try mux.bootstrapSingle(&runtime, callbacks, cfg, 8, 16, 800, 600);
+    try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, .{
+        .command = "printf 'filter:%s:%s' \"$PWD\" \"$FILTER_VALUE\"",
+    }, false);
+    const pane = mux.activePane().?;
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (std.mem.indexOf(u8, pane.boot_output.items, "filter:/:filtered") == null) {
+        if (io.nanoTimestamp() >= deadline) return error.TestUnexpectedResult;
+        _ = try pane.pollPty(&runtime, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    _ = try mux.splitActivePane(&runtime, callbacks, cfg, 8, 16, 800, 600, .horizontal, 0.5, null, null, true, null);
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, null);
+    try lua.runString("assert(spawn_count == 5)");
+}
+
+test "pane lifecycle closing callback covers automatic dead pane cleanup" {
+    const allocator = std.testing.allocator;
+    var runtime = try @import("../term/ghostty.zig").Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    var recorder: PaneLifecycleRecorder = .{ .mux = &mux };
+    mux.host_context = &recorder;
+    mux.pane_closing = PaneLifecycleRecorder.recordClosing;
+    const workspace = try allocator.create(Workspace);
+    workspace.* = Workspace.init(allocator, 1);
+    try mux.workspaces.append(allocator, workspace);
+    mux.active_workspace = workspace;
+    const tab = try workspace.newTab(2, false);
+    const pane = try allocator.create(Pane);
+    pane.* = Pane.init(allocator);
+    try tab.appendPane(pane);
+    try std.testing.expect(mux.closeDeadPanes(&runtime));
+    try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+    try std.testing.expect(recorder.all_panes_resolved);
+    try std.testing.expect(mux.closeDeadPanes(&runtime));
+    try std.testing.expectEqual(@as(usize, 1), recorder.closed);
+}
 
 test "workspace new tab can append after active tab" {
     const allocator = std.testing.allocator;

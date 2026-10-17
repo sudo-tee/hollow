@@ -23,6 +23,7 @@ const MAX_LAYOUT_LEAVES = @import("../mux.zig").MAX_LAYOUT_LEAVES;
 const SplitCommandMode = app_mod.SplitCommandMode;
 const Pane = @import("../pane.zig").Pane;
 const LaunchCommand = @import("../pty/launch_command.zig").LaunchCommand;
+const pane_lifecycle = @import("pane_lifecycle.zig");
 
 // ============================================================
 // Send/text operations
@@ -707,7 +708,7 @@ pub fn cleanupDeadPanes(self: *App, runtime: *GhosttyRuntime) void {
     while (panes.next()) |pane| {
         if (!pane.hasLiveChild()) {
             has_dead = true;
-            break;
+            pane_lifecycle.exited(self, pane);
         }
     }
     if (!has_dead) return;
