@@ -37,6 +37,7 @@ const Agent = struct {
     worker: bool = false,
     signal_fd: c_int = -1,
     agent_pid: c_int = -1,
+    experimental_pty: bool = false,
 
     fn frame(self: *Agent, kind: p.Kind, id: u64, sid: u64, payload: []const u8) !void {
         if (payload.len > self.payload_limit) return error.ResourceExhausted;
@@ -63,6 +64,21 @@ const Agent = struct {
     }
 
     fn dispatch(self: *Agent, h: p.Header, bytes: []const u8, now: u64) !void {
+        if (self.greeted and self.experimental_pty and h.kind == .window_update) {
+            if (bytes.len != 8) return error.ProtocolMismatch;
+            const amount = try p.decodeWindowUpdate(@ptrCast(bytes.ptr));
+            for (&self.jobs) |*entry| if (entry.*) |*job| {
+                if (job.id == h.request_id) {
+                    if (!job.pty or job.streams[0] != h.stream_id) return error.ProtocolMismatch;
+                    if (amount > 1024 * 1024 - job.credit) return error.ProtocolMismatch;
+                    job.credit += @intCast(amount);
+                    return;
+                }
+            };
+            // Consumed-byte acknowledgements can race the terminal response.
+            if (h.request_id > 0 and h.request_id <= self.last_id and h.stream_id > 0 and h.stream_id <= self.last_stream) return;
+            return error.ProtocolMismatch;
+        }
         if (h.stream_id != 0) return error.ProtocolMismatch;
         if (!self.greeted) {
             if (h.kind != .hello or h.request_id != 0) return error.ProtocolMismatch;
@@ -79,8 +95,12 @@ const Agent = struct {
             self.payload_limit = @intCast(payload_limit);
             self.data_limit = @intCast(@min(data_limit, payload_limit));
             self.job_limit = @intCast(@min(max_jobs, @min(streams / 2, requests)));
+            if (hello.value.object.get("experimental_pty")) |enabled| {
+                if (enabled != .bool) return error.ProtocolMismatch;
+                self.experimental_pty = enabled.bool;
+            }
             var ack: [768]u8 = undefined;
-            const body = try std.fmt.bufPrint(&ack, "{{\"major\":1,\"minor\":0,\"connection_nonce\":\"{s}\",\"max_payload\":{d},\"max_data\":{d},\"max_streams\":{d},\"max_in_flight\":{d},\"max_exec\":{d},\"monotonic_ids\":true,\"capabilities\":[\"fs.stat\",\"fs.list\",\"fs.read\",\"exec\",\"cancel\"]}}", .{ self.nonce, self.payload_limit, self.data_limit, streams, requests, self.job_limit });
+            const body = try std.fmt.bufPrint(&ack, "{{\"major\":1,\"minor\":0,\"connection_nonce\":\"{s}\",\"max_payload\":{d},\"max_data\":{d},\"max_streams\":{d},\"max_in_flight\":{d},\"max_exec\":{d},\"monotonic_ids\":true,\"capabilities\":[\"fs.stat\",\"fs.list\",\"fs.read\",\"exec\",\"cancel\"{s}]}}", .{ self.nonce, self.payload_limit, self.data_limit, streams, requests, self.job_limit, if (self.experimental_pty) ",\"experimental.pty\"" else "" });
             try self.frame(.hello_ack, 0, 0, body);
             self.greeted = true;
             return;
@@ -118,6 +138,11 @@ const Agent = struct {
         const parsed = std.json.parseFromSlice(std.json.Value, a, bytes, .{ .max_value_len = p.max_payload }) catch return error.InvalidArgument;
         const value = parsed.value;
         const op = try string(value, "op");
+        if (std.mem.startsWith(u8, op, "PTY_")) {
+            if (!self.experimental_pty) return error.Unsupported;
+            if (std.mem.eql(u8, op, "PTY_SPAWN")) return self.execRequest(a, id, value, now);
+            return self.ptyControl(a, id, op, value, now);
+        }
         if (std.mem.eql(u8, op, "EXEC")) return self.execRequest(a, id, value, now);
         // Bounded worker processes keep slow/network filesystem syscalls off
         // the transport loop. They run these exact same operation handlers.
@@ -220,6 +245,7 @@ const Agent = struct {
     }
 
     fn execRequest(self: *Agent, a: std.mem.Allocator, id: u64, value: std.json.Value, now: u64) !void {
+        const is_pty = std.mem.eql(u8, try string(value, "op"), "PTY_SPAWN");
         const av = value.object.get("argv_b64") orelse return error.InvalidArgv;
         if (av != .array or av.array.items.len == 0 or av.array.items.len > 4096) return error.InvalidArgv;
         const argv = try a.alloc([]const u8, av.array.items.len);
@@ -242,9 +268,13 @@ const Agent = struct {
         const osid = try integer(value, "stdout_stream_id", 0);
         const esid = try integer(value, "stderr_stream_id", 0);
         if (osid == 0 or esid == 0 or osid % 2 != 0 or esid % 2 != 0 or osid == esid or @min(osid, esid) <= self.last_stream) return error.InvalidArgument;
-        const timeout = try integer(value, "timeout_ms", 30000);
+        const timeout = try integer(value, "timeout_ms", if (is_pty) 86400000 else 30000);
         const limit = try integer(value, "output_limit", 1024 * 1024);
         if (timeout == 0 or timeout > 86400000 or limit > 1024 * 1024) return error.InvalidArgument;
+        const rows = try integer(value, "rows", 24);
+        const cols = try integer(value, "cols", 80);
+        const credit = try integer(value, "output_credit", 65536);
+        if (is_pty and (rows == 0 or rows > 65535 or cols == 0 or cols > 65535 or credit > 1024 * 1024)) return error.InvalidArgument;
         var active: usize = 0;
         for (self.jobs) |entry| if (entry != null) {
             active += 1;
@@ -256,12 +286,50 @@ const Agent = struct {
             inherited_fds[1 + i * 3 + j] = if (entry) |job| job.fds[j] else -1;
         };
         for (&self.jobs) |*entry| if (entry.* == null) {
-            const job = try ex.spawn(id, .{ .argv = argv, .cwd = cwd, .env = env.items, .timeout_ms = timeout, .output_limit = @intCast(limit), .stdout_stream = osid, .stderr_stream = esid, .inherited_fds = &inherited_fds }, now);
+            const job = try ex.spawn(id, .{ .argv = argv, .cwd = cwd, .env = env.items, .timeout_ms = timeout, .output_limit = @intCast(limit), .stdout_stream = osid, .stderr_stream = esid, .inherited_fds = &inherited_fds, .pty_size = if (is_pty) .{ .rows = @intCast(rows), .cols = @intCast(cols) } else null, .output_credit = @intCast(if (is_pty) credit else 0) }, now);
             entry.* = job;
             self.last_stream = @max(osid, esid);
             return;
         };
         return error.ResourceExhausted;
+    }
+
+    fn ptyControl(self: *Agent, a: std.mem.Allocator, id: u64, op: []const u8, value: std.json.Value, now: u64) !void {
+        const session = try integer(value, "session_id", 0);
+        for (&self.jobs) |*entry| if (entry.*) |*job| {
+            if (!job.pty or job.id != session) continue;
+            if (job.reason != null or job.reaped or job.fds[0] < 0) return error.NotFound;
+            if (std.mem.eql(u8, op, "PTY_INPUT")) {
+                const text = try string(value, "bytes_b64");
+                const decoder = std.base64.standard.Decoder;
+                const size = decoder.calcSizeForSlice(text) catch return error.InvalidArgument;
+                if (size > 16384) return error.InvalidArgument;
+                if (size > 65536 - job.input.items.len) return error.ResourceExhausted;
+                const data = try a.alloc(u8, size);
+                decoder.decode(data, text) catch return error.InvalidArgument;
+                try job.input.appendSlice(A, data);
+            } else if (std.mem.eql(u8, op, "PTY_RESIZE")) {
+                const rows = try integer(value, "rows", 0);
+                const cols = try integer(value, "cols", 0);
+                if (rows == 0 or rows > 65535 or cols == 0 or cols > 65535) return error.InvalidArgument;
+                try job.resize(@intCast(rows), @intCast(cols));
+            } else if (std.mem.eql(u8, op, "PTY_CLOSE")) {
+                job.cancel(.cancelled, now);
+            } else return error.Unsupported;
+            return self.frame(.response, id, 0, "{}");
+        };
+        return error.NotFound;
+    }
+
+    fn streamPty(self: *Agent, job: *ex.Job) !void {
+        if (!job.pty or job.reason != null or self.closing) return;
+        while (job.stdout.items.len > 0 and job.credit > 0 and self.output.items.len < 1024 * 1024) {
+            const count = @min(job.credit, @min(self.data_limit, job.stdout.items.len));
+            try self.frame(.data, job.id, job.streams[0], job.stdout.items[0..count]);
+            job.credit -= count;
+            std.mem.copyForwards(u8, job.stdout.items, job.stdout.items[count..]);
+            job.stdout.items.len -= count;
+        }
     }
 
     fn finish(self: *Agent, job: *ex.Job) !void {
@@ -281,6 +349,10 @@ const Agent = struct {
             if (self.output.items.len == self.sent) self.last_write = nowMs();
             try self.output.appendSlice(A, job.stdout.items);
             return;
+        }
+        if (job.pty) {
+            var exit: [64]u8 = undefined;
+            return self.frame(.response, job.id, 0, try std.fmt.bufPrint(&exit, "{{\"exit_code\":{d}}}", .{job.exitCode()}));
         }
         const streams = [_][]const u8{ job.stdout.items, job.stderr.items };
         for (streams, job.streams) |bytes, sid| {
@@ -342,7 +414,8 @@ pub fn main() !void {
         fds[1] = .{ .fd = 1, .events = if (agent.output.items.len > agent.sent) c.POLLOUT else 0, .revents = 0 };
         fds[2] = .{ .fd = signal_fd, .events = c.POLLIN, .revents = 0 };
         for (agent.jobs, 0..) |entry, i| for (0..3) |j| {
-            fds[3 + i * 3 + j] = .{ .fd = if (entry) |job| job.fds[j] else -1, .events = c.POLLIN, .revents = 0 };
+            const events: c_short = if (entry) |job| if (job.pty and j == 0) @as(c_short, if (job.stdout.items.len < 65536 or job.reason != null) c.POLLIN else 0) | @as(c_short, if (job.input.items.len > 0 and job.reason == null) c.POLLOUT else 0) else c.POLLIN else c.POLLIN;
+            fds[3 + i * 3 + j] = .{ .fd = if (entry) |job| if (job.pty and j == 0 and events == 0) -1 else job.fds[j] else -1, .events = events, .revents = 0 };
         };
         const polled = c.poll(&fds, fds.len, 20);
         if (polled < 0) {
@@ -357,7 +430,9 @@ pub fn main() !void {
         }
         reap(&agent);
         for (&agent.jobs, 0..) |*entry, i| if (entry.*) |*job| {
+            if (job.pty and (fds[3 + i * 3].revents & c.POLLOUT) != 0) try job.writeInput();
             for (0..3) |j| if ((fds[3 + i * 3 + j].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) try job.drain(j, now);
+            try agent.streamPty(job);
             if (job.done(now) and (agent.closing or agent.output.items.len < 1024 * 1024)) {
                 if (!agent.closing) try agent.finish(job);
                 job.deinit();

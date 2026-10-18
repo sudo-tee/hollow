@@ -9,7 +9,7 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
 | Protocol / filesystem native tests | 5 / 3 pass |
-| Python harness / deployment / fault-safety / manifest / connector unit tests | 38 pass |
+| Python harness / deployment / fault-safety / manifest / connector unit tests | 44 pass |
 | Persistent native transport integration / imported protocol tests | 5 / 5 pass |
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
@@ -39,6 +39,8 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 | Docker-shaped Lua contract | 25 shared container cases + 7 context/restaging cases pass |
 | Docker public API native integration through Podman-compatible CLI | Pass; configured UID/GID 1000, bootstrap/repair/reuse, prefix/bin and flat layout, 16 common conformance cases |
 | Real Docker daemon / native Windows WSL/SSH client / GUI latency | Not verified |
+| Mock socket stream conformance | 16 pass, 257-byte relay chunks, unchanged agent |
+| Mock socket native Lua and forced link loss | Prefix/bin and flat headless contracts pass; in-flight EXEC fails, reconnect nonce changes, side effect not replayed |
 
 Reproduction:
 
@@ -258,8 +260,8 @@ Tests may populate the selected user's checksum-keyed agent cache; they never
 remove/replace distributions or fault-corrupt an existing distro's agent cache.
 WSL's CLI selects registration names, not Podman-style immutable container IDs;
 replacement during bootstrap is explicitly not pinned/qualified. All existing
-PTY code, including WSL bypass, remains unchanged. The agent still has no PTY
-operation implementation.
+Production PTY code, including WSL bypass, remains unchanged. At that stage the
+agent had no PTY implementation; the later opt-in experiment is recorded below.
 
 ```sh
 python3 scripts/agent_conformance.py --connector wsl --distro Ubuntu-26.04 \
@@ -373,9 +375,84 @@ python3 scripts/agent_docker_tests.py --conformance --agent zig-out/bin/hollow-a
 ```
 
 The PR6 fs/exec release gate remains open: real Docker/native Windows qualification,
-broader fault/security coverage, host-aware read-only project query gaps and the
-mock vsock/hvsock connector proof are not completed by this slice. PTY extraction
+broader fault/security coverage and host-aware read-only project query gaps are
+not completed by this slice. The mock socket proof is recorded below. PTY extraction
 and multiplexing still require separate baselines/qualification; WSL bypass stays.
+
+## Mock socket / future vsock-hvsock boundary proof
+
+`scripts/agent_mock_socket.py` is a **test-only** AF_UNIX listener with two bounded
+stdio/socket relays. It models a connector establishing a reliable ordered byte
+stream, not actual AF_VSOCK or Hyper-V sockets. Every accepted link launches the
+same preinstalled Linux agent in stdio mode. The native client still supplies
+only subprocess connector argv; its relay process opens the private socket.
+No RPC framing or operation interpretation happens in either relay. Production
+direct-socket transports and their authentication/lifecycle remain future work.
+
+The socket lives in a fixture-owned mode-0700 temporary directory; its pathname
+is mode 0600. There is no TCP/public listener or privilege requirement. At most
+eight links/workers are active. Each relay direction buffers at most 64 KiB,
+with bounded read/write chunks and backpressure; EOF propagates only after that
+direction's queue drains, without prematurely closing the response direction.
+Fixture shutdown closes links, stops relays, waits for owned agent cleanup and
+joins workers before removing only its own endpoint/directory. No daemon is left
+running and no arbitrary PID scan or signal target is used. Same-user malicious
+clients are not isolated by this test fixture; it is not an authentication design.
+
+Executed evidence:
+
+* All 16 existing fs/exec/wire conformance cases pass over the socket path with
+  257-byte maximum relay reads/writes, including binary paths/output, concurrent
+  RPCs, malformed frames, cancellation/deadline, EOF/reconnect and nonce changes.
+* Unchanged native Lua host tests pass from prefix/bin and flat bundle layouts
+  through the socket connector argv, including concurrent operations, cancel,
+  stale generations and manager teardown. No production agent, Zig transport,
+  operation handler or Lua host API changes were needed for this proof.
+* A forced-link-loss probe starts an EXEC with a fixture-owned marker, waits for
+  its side effect, shuts down socket links, and observes pending request failure.
+  A fresh connection negotiates a distinct nonce and reads exactly one marker
+  byte: the lost EXEC is not replayed. This socket-fault probe uses the Python
+  client; native Lua tests exercise their existing close/reload lifecycle paths.
+* Six Python socket tests pass: byte-transparent fragmentation/short writes,
+  ordered bidirectional half-close, bounded backpressure/stop, private endpoint
+  cleanup, input validation, clean protocol stdout on connection failure, and
+  eight-link admission with worker joins. Total Python suite: 44 tests.
+
+```sh
+python3 scripts/agent_socket_tests.py --agent zig-out/bin/hollow-agent \
+  --fragment 257 --conformance -- \
+  zig build --build-file build-agent.zig test-host-lua test-host-lua-flat \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+python3 scripts/agent_conformance.py --connector mock-socket \
+  --agent zig-out/bin/hollow-agent --socket-fragment 257
+```
+
+CI is configured to run this Linux mock, not real vsock/hvsock. No Windows socket
+family qualification, VM identity/authentication, vsock addressing, reconnect
+policy, suspended-VM recovery, latency benchmark or PTY rollout is established.
+
+## Opt-in agent PTY implementation
+
+Actual agent PTY code now exists; this is no longer only a connector experiment.
+See [experimental PTY contract](agent-pty-experiment.md) and its runnable client.
+Eleven real tests pass on each of local Linux, rootless Podman and
+Linux → Windows `wsl.exe` interop → Ubuntu-26.04. They exercise controlling TTY on
+all stdio descriptors, prompt/output before exit, raw NUL/non-UTF-8/control input,
+interactive-shell Ctrl-C, resize/SIGWINCH, credit exhaustion while HOST_INFO stays
+responsive, final output before exit, bounded unread input, deadline, isolated
+close, failed exec, opt-in rejection, EOF cleanup and agent-SIGKILL guardian cleanup.
+Tests identify only workloads launched by the fixture and never signal reused PIDs.
+
+Static x86_64/aarch64 builds and existing native agent/fs/host tests pass after
+implementation; all 16 ordinary local fs/exec conformance cases still pass.
+CI is configured for local and Podman PTY cases; no hosted result is claimed.
+
+These are Linux PTY correctness tests, not Windows GUI execution or benchmark
+qualification. Native host streaming APIs, GUI backend/pane attachment, terminal
+rendering integration, full crash/descendant stress and input-latency/throughput
+comparisons remain unfinished. Existing WSL bypass and all production defaults
+remain active. The Python interactive client is an experiment, not a production
+Lua/PTy API or a release gate waiver.
 
 ## Packaged artifact discovery continuation
 

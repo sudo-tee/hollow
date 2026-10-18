@@ -15,6 +15,8 @@ pub const Options = struct {
     stdout_stream: u64,
     stderr_stream: u64,
     inherited_fds: []const c_int = &.{},
+    pty_size: ?struct { rows: u16, cols: u16 } = null,
+    output_credit: usize = 0,
 };
 
 pub const Job = struct {
@@ -35,6 +37,9 @@ pub const Job = struct {
     descendant_cleanup_at: ?u64 = null,
     rpc_worker: bool = false,
     supervised: bool = false,
+    pty: bool = false,
+    credit: usize = 0,
+    input: std.ArrayList(u8) = .empty,
 
     pub fn deinit(self: *Job) void {
         for (&self.fds) |*fd| if (fd.* >= 0) {
@@ -43,6 +48,7 @@ pub const Job = struct {
         };
         self.stdout.deinit(A);
         self.stderr.deinit(A);
+        self.input.deinit(A);
     }
 
     pub fn cancel(self: *Job, reason: Reason, now: u64) void {
@@ -52,6 +58,7 @@ pub const Job = struct {
         if (!self.reaped) _ = c.kill(if (self.supervised) self.pid else -self.pid, c.SIGTERM);
         self.stdout.clearRetainingCapacity();
         self.stderr.clearRetainingCapacity();
+        self.input.clearRetainingCapacity();
     }
 
     pub fn tick(self: *Job, now: u64) void {
@@ -85,7 +92,9 @@ pub const Job = struct {
         // Per-dispatch budget keeps noisy children from monopolizing the loop.
         var budget: usize = 65536;
         while (budget != 0) {
-            const n = c.read(self.fds[index], &buf, @min(buf.len, budget));
+            const room = if (self.pty and index == 0 and self.reason == null) 65536 - self.stdout.items.len else buf.len;
+            if (room == 0) return;
+            const n = c.read(self.fds[index], &buf, @min(room, @min(buf.len, budget)));
             if (n == 0) {
                 _ = c.close(self.fds[index]);
                 self.fds[index] = -1;
@@ -95,6 +104,11 @@ pub const Job = struct {
                 const e = c.__errno_location().*;
                 if (e == c.EINTR) continue;
                 if (e == c.EAGAIN) return;
+                if (self.pty and index == 0 and e == c.EIO) {
+                    _ = c.close(self.fds[index]);
+                    self.fds[index] = -1;
+                    return;
+                }
                 return error.IoError;
             }
             const count: usize = @intCast(n);
@@ -104,7 +118,7 @@ pub const Job = struct {
                 if (count == @sizeOf(c_int)) self.launch_error = std.mem.bytesToValue(c_int, buf[0..@sizeOf(c_int)]);
             } else if (self.reason == null) {
                 const used = self.stdout.items.len + self.stderr.items.len;
-                if (count > self.limit - used) {
+                if (!self.pty and count > self.limit - used) {
                     self.cancel(.output_limit, now);
                     continue;
                 }
@@ -116,6 +130,7 @@ pub const Job = struct {
 
     pub fn done(self: *const Job, now: u64) bool {
         if (!self.reaped) return false;
+        if (self.pty and self.stdout.items.len != 0) return false;
         if (self.supervised) return self.fds[0] < 0 and self.fds[1] < 0 and self.fds[2] < 0;
         if (self.reason != null) return self.killed or (groupGone(self.pid) and self.fds[0] < 0 and self.fds[1] < 0);
         _ = now;
@@ -124,6 +139,28 @@ pub const Job = struct {
 
     pub fn exitCode(self: *const Job) i32 {
         return if (c.WIFEXITED(self.status)) c.WEXITSTATUS(self.status) else 128 + c.WTERMSIG(self.status);
+    }
+
+    pub fn writeInput(self: *Job) !void {
+        if (self.input.items.len == 0 or self.fds[0] < 0) return;
+        const n = c.write(self.fds[0], self.input.items.ptr, self.input.items.len);
+        if (n < 0) {
+            const err = c.__errno_location().*;
+            if (err == c.EAGAIN or err == c.EINTR) return;
+            if (err == c.EIO) {
+                self.input.clearRetainingCapacity();
+                return;
+            }
+            return error.IoError;
+        }
+        const count: usize = @intCast(n);
+        std.mem.copyForwards(u8, self.input.items, self.input.items[count..]);
+        self.input.items.len -= count;
+    }
+
+    pub fn resize(self: *Job, rows: u16, cols: u16) !void {
+        var size: c.struct_winsize = .{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+        if (self.fds[0] < 0 or c.ioctl(self.fds[0], c.TIOCSWINSZ, &size) < 0) return error.IoError;
     }
 };
 
@@ -188,10 +225,26 @@ pub fn spawn(id: u64, opts: Options, now: u64) !Job {
     if (null_fd < 0) return error.ResourceExhausted;
     defer _ = c.close(null_fd);
     const parent = c.getpid();
+    var master: c_int = -1;
+    var slave: c_int = -1;
+    defer {
+        if (master >= 0) _ = c.close(master);
+        if (slave >= 0) _ = c.close(slave);
+    }
+    if (opts.pty_size) |size| {
+        master = c.posix_openpt(c.O_RDWR | c.O_NOCTTY | c.O_CLOEXEC);
+        if (master < 0 or c.grantpt(master) != 0 or c.unlockpt(master) != 0) return error.IoError;
+        var name: [256]u8 = undefined;
+        if (c.ptsname_r(master, &name, name.len) != 0) return error.IoError;
+        slave = c.open(@ptrCast(&name), c.O_RDWR | c.O_NOCTTY | c.O_CLOEXEC);
+        if (slave < 0) return error.IoError;
+        var window: c.struct_winsize = .{ .ws_row = size.rows, .ws_col = size.cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+        if (c.ioctl(slave, c.TIOCSWINSZ, &window) < 0) return error.IoError;
+    }
     const pid = c.fork();
     if (pid < 0) return error.ResourceExhausted;
     if (pid == 0) {
-        supervisor.run(parent, .{ .pipes = pipes, .null_fd = null_fd, .argv = argv, .env = envp, .candidates = candidates.items, .cwd = cwd, .inherited_fds = opts.inherited_fds });
+        supervisor.run(parent, .{ .pipes = pipes, .null_fd = null_fd, .argv = argv, .env = envp, .candidates = candidates.items, .cwd = cwd, .inherited_fds = opts.inherited_fds, .pty_master = master, .pty_slave = slave });
     }
     _ = c.setpgid(pid, pid);
     var fds: [3]c_int = undefined;
@@ -201,5 +254,14 @@ pub fn spawn(id: u64, opts: Options, now: u64) !Job {
         const flags = c.fcntl(fds[index], c.F_GETFL, @as(c_int, 0));
         _ = c.fcntl(fds[index], c.F_SETFL, flags | c.O_NONBLOCK);
     }
-    return .{ .id = id, .pid = pid, .fds = fds, .limit = opts.output_limit, .streams = .{ opts.stdout_stream, opts.stderr_stream }, .deadline = now + opts.timeout_ms, .supervised = true };
+    if (master >= 0) {
+        _ = c.close(fds[0]);
+        _ = c.close(fds[1]);
+        fds[0] = master;
+        fds[1] = -1;
+        master = -1;
+        const flags = c.fcntl(fds[0], c.F_GETFL, @as(c_int, 0));
+        _ = c.fcntl(fds[0], c.F_SETFL, flags | c.O_NONBLOCK);
+    }
+    return .{ .id = id, .pid = pid, .fds = fds, .limit = opts.output_limit, .streams = .{ opts.stdout_stream, opts.stderr_stream }, .deadline = now + opts.timeout_ms, .supervised = true, .pty = opts.pty_size != null, .credit = opts.output_credit };
 }
