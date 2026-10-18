@@ -40,6 +40,14 @@ def validate(result: dict, config: dict) -> dict:
             or not isinstance(result.get("spawn_to_ready_ns"), int)
             or result["spawn_to_ready_ns"] <= 0):
         raise ValueError("benchmark identity, readiness or clean exit check failed")
+    if "allocator" in config and result.get("allocator") != config["allocator"]:
+        raise ValueError("benchmark allocator does not match requested allocator")
+    if config.get("telemetry") and config["backend"] == "agent":
+        metrics = result.get("telemetry")
+        if (not isinstance(metrics, dict) or any(type(value) is not int or value < 0 for value in metrics.values())
+                or metrics.get("max_pty_buffered", 65537) > 65536
+                or metrics.get("max_queued_bytes", 4194305) > 4194304):
+            raise ValueError("invalid or out-of-bounds transport telemetry")
     if config["workload"] == "prompt":
         samples = result.get("samples_ns")
         if (not isinstance(samples, list) or len(samples) != config["samples"]
@@ -78,6 +86,9 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=5000)
     parser.add_argument("--size-mib", type=int, nargs="+", default=[10])
     parser.add_argument("--timeout", type=int, default=120, help="wall deadline per subprocess, seconds")
+    parser.add_argument("--allocator", choices=("page", "smp", "debug"), default="debug",
+                        help="client allocator; debug matches the GUI's thread-safe DebugAllocator")
+    parser.add_argument("--telemetry", action="store_true", help="enable fixed-size host I/O counters")
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
     if not (1 <= args.runs <= 100 and 1 <= args.samples <= 100000 and 1 <= args.timeout <= 3600
@@ -106,7 +117,7 @@ def main() -> None:
         "platform": platform.platform(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
         "python": sys.version, "command": sys.argv, "cwd": os.getcwd(),
         "ordering": "backend order alternates each independent run",
-        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP") if key in os.environ},
+        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE") if key in os.environ},
     }
     with args.output.open("x", encoding="utf-8") as output:
         def emit(row: dict) -> None:
@@ -119,6 +130,7 @@ def main() -> None:
                 for size in ([0] if workload == "prompt" else args.size_mib):
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
+                                  "allocator": args.allocator, "telemetry": args.telemetry,
                                   "bytes": size * 1024 * 1024 if size else 1,
                                   "timeout_ms": min(args.timeout, 30) * 1000,
                                   "connector_argv": connector if backend == "agent" else []}

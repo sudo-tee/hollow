@@ -6,6 +6,7 @@ const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("unistd.h");
     @cInclude("fcntl.h");
     @cInclude("poll.h");
@@ -19,6 +20,26 @@ const c = @cImport({
 const A = std.heap.page_allocator;
 const max_jobs = 16;
 const queue_limit = 4 * 1024 * 1024;
+
+const Profile = struct {
+    polls: u64 = 0,
+    poll_ns: u64 = 0,
+    ready_polls: u64 = 0,
+    ready_poll_ns: u64 = 0,
+    ready_stalls: u64 = 0,
+    writes: u64 = 0,
+    bytes_written: u64 = 0,
+    data_frames: u64 = 0,
+    window_updates: u64 = 0,
+    max_queued: usize = 0,
+    max_pty_buffered: usize = 0,
+};
+
+fn profileClock() u64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
 
 const Agent = struct {
     input: std.ArrayList(u8) = .empty,
@@ -38,6 +59,8 @@ const Agent = struct {
     signal_fd: c_int = -1,
     agent_pid: c_int = -1,
     experimental_pty: bool = false,
+    profiling: bool = false,
+    profile: Profile = .{},
 
     fn frame(self: *Agent, kind: p.Kind, id: u64, sid: u64, payload: []const u8) !void {
         if (payload.len > self.payload_limit) return error.ResourceExhausted;
@@ -47,6 +70,10 @@ const Agent = struct {
         try self.output.ensureUnusedCapacity(A, header.len + payload.len);
         self.output.appendSliceAssumeCapacity(&header);
         self.output.appendSliceAssumeCapacity(payload);
+        if (self.profiling) {
+            self.profile.max_queued = @max(self.profile.max_queued, self.output.items.len - self.sent);
+            if (kind == .data) self.profile.data_frames += 1;
+        }
     }
 
     fn sendError(self: *Agent, id: u64, err: anyerror) !void {
@@ -65,6 +92,7 @@ const Agent = struct {
 
     fn dispatch(self: *Agent, h: p.Header, bytes: []const u8, now: u64) !void {
         if (self.greeted and self.experimental_pty and h.kind == .window_update) {
+            if (self.profiling) self.profile.window_updates += 1;
             if (bytes.len != 8) return error.ProtocolMismatch;
             const amount = try p.decodeWindowUpdate(@ptrCast(bytes.ptr));
             for (&self.jobs) |*entry| if (entry.*) |*job| {
@@ -323,6 +351,7 @@ const Agent = struct {
 
     fn streamPty(self: *Agent, job: *ex.Job) !void {
         if (!job.pty or job.reason != null or self.closing) return;
+        if (self.profiling) self.profile.max_pty_buffered = @max(self.profile.max_pty_buffered, job.stdout.items.len);
         while (job.stdout.items.len > 0 and job.credit > 0 and self.output.items.len < 1024 * 1024) {
             const count = @min(job.credit, @min(self.data_limit, job.stdout.items.len));
             try self.frame(.data, job.id, job.streams[0], job.stdout.items[0..count]);
@@ -332,7 +361,29 @@ const Agent = struct {
         }
     }
 
+    fn preparePoll(self: *Agent, now: u64) !usize {
+        var active: usize = 0;
+        for (&self.jobs) |*entry| if (entry.*) |*job| {
+            active += 1;
+            job.tick(now);
+            // WINDOW_UPDATE is dispatched at the end of the previous turn.
+            // A full PTY capture is not polled for more input, so restored credit
+            // must make buffered DATA writable before we can block in poll().
+            try self.streamPty(job);
+        };
+        return active;
+    }
+
     fn finish(self: *Agent, job: *ex.Job) !void {
+        if (self.profiling and job.pty) {
+            // Explicit diagnostic opt-in; never write telemetry to protocol stdout.
+            var storage: [1024]u8 = undefined;
+            var output: std.Io.Writer = .fixed(&storage);
+            try output.writeAll("AGENT_PROFILE ");
+            try std.json.Stringify.value(self.profile, .{}, &output);
+            try output.writeAll("\n");
+            _ = c.write(2, output.buffered().ptr, output.buffered().len);
+        }
         if (job.reason) |reason| return self.sendError(job.id, switch (reason) {
             .cancelled => error.Cancelled,
             .timeout => error.Timeout,
@@ -371,6 +422,7 @@ const Agent = struct {
 
 pub fn main() !void {
     var agent = Agent{ .agent_pid = c.getpid() };
+    agent.profiling = c.getenv("HOLLOW_AGENT_PROFILE") != null;
     var random: [16]u8 = undefined;
     var random_count: usize = 0;
     while (random_count < random.len) {
@@ -403,11 +455,7 @@ pub fn main() !void {
     agent.last_write = nowMs();
     while (true) {
         const now = nowMs();
-        var active: usize = 0;
-        for (&agent.jobs) |*entry| if (entry.*) |*job| {
-            active += 1;
-            job.tick(now);
-        };
+        const active = try agent.preparePoll(now);
         if (agent.closing and active == 0 and agent.output.items.len == agent.sent) break;
         var fds: [3 + max_jobs * 3]c.struct_pollfd = undefined;
         fds[0] = .{ .fd = if (agent.closing) -1 else 0, .events = c.POLLIN, .revents = 0 };
@@ -417,7 +465,24 @@ pub fn main() !void {
             const events: c_short = if (entry) |job| if (job.pty and j == 0) @as(c_short, if (job.stdout.items.len < 65536 or job.reason != null) c.POLLIN else 0) | @as(c_short, if (job.input.items.len > 0 and job.reason == null) c.POLLOUT else 0) else c.POLLIN else c.POLLIN;
             fds[3 + i * 3 + j] = .{ .fd = if (entry) |job| if (job.pty and j == 0 and events == 0) -1 else job.fds[j] else -1, .events = events, .revents = 0 };
         };
+        var sendable = false;
+        if (agent.profiling and !agent.closing and agent.output.items.len < 1024 * 1024) {
+            for (agent.jobs) |entry| if (entry) |job| {
+                if (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0) sendable = true;
+            };
+        }
+        const poll_start = if (agent.profiling) profileClock() else 0;
         const polled = c.poll(&fds, fds.len, 20);
+        if (agent.profiling) {
+            const duration = profileClock() - poll_start;
+            agent.profile.polls += 1;
+            agent.profile.poll_ns += duration;
+            if (sendable) {
+                agent.profile.ready_polls += 1;
+                agent.profile.ready_poll_ns += duration;
+                if (duration >= std.time.ns_per_ms) agent.profile.ready_stalls += 1;
+            }
+        }
         if (polled < 0) {
             if (c.__errno_location().* == c.EINTR) continue;
             return error.IoError;
@@ -443,6 +508,10 @@ pub fn main() !void {
         if ((fds[1].revents & c.POLLOUT) != 0 and agent.output.items.len > agent.sent) {
             const n = c.write(1, agent.output.items.ptr + agent.sent, @min(65536, agent.output.items.len - agent.sent));
             if (n > 0) {
+                if (agent.profiling) {
+                    agent.profile.writes += 1;
+                    agent.profile.bytes_written += @intCast(n);
+                }
                 agent.sent += @intCast(n);
                 agent.last_write = now;
                 if (agent.sent == agent.output.items.len) {
@@ -499,6 +568,46 @@ pub fn main() !void {
             agent.input.items.len -= consumed;
         }
     }
+}
+
+test "restored PTY credit schedules full buffered output before poll" {
+    var agent: Agent = .{ .greeted = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    agent.jobs[0] = .{
+        .id = 1,
+        .pid = 0,
+        .fds = .{ -1, -1, -1 },
+        .limit = 0,
+        .streams = .{ 2, 4 },
+        .deadline = std.math.maxInt(u64),
+        .pty = true,
+        .supervised = true,
+    };
+    const job = &agent.jobs[0].?;
+    defer job.deinit();
+    try job.stdout.appendNTimes(A, 0xab, 65536);
+    try std.testing.expectEqual(@as(usize, 1), try agent.preparePoll(0));
+    try std.testing.expectEqual(@as(usize, 0), agent.output.items.len);
+    var credit: [8]u8 = undefined;
+    std.mem.writeInt(u64, &credit, 65536, .little);
+    try agent.dispatch(.{ .kind = .window_update, .request_id = 1, .stream_id = 2, .payload_len = 8 }, &credit, 0);
+    _ = try agent.preparePoll(0);
+    try std.testing.expectEqual(@as(usize, 0), job.stdout.items.len);
+    try std.testing.expectEqual(@as(usize, 0), job.credit);
+    var offset: usize = 0;
+    var total: usize = 0;
+    while (offset < agent.output.items.len) {
+        const header = try p.Header.decode(@ptrCast(agent.output.items.ptr + offset));
+        try std.testing.expectEqual(p.Kind.data, header.kind);
+        try std.testing.expectEqual(@as(u64, 1), header.request_id);
+        try std.testing.expectEqual(@as(u64, 2), header.stream_id);
+        try std.testing.expect(header.payload_len <= p.max_data);
+        offset += p.header_len;
+        for (agent.output.items[offset..][0..header.payload_len]) |byte| try std.testing.expectEqual(@as(u8, 0xab), byte);
+        total += header.payload_len;
+        offset += header.payload_len;
+    }
+    try std.testing.expectEqual(@as(usize, 65536), total);
 }
 
 fn cleanup(agent: *Agent) void {

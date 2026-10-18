@@ -1,5 +1,10 @@
 # Dedicated PTY adapter measurements
 
+**Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
+local dedicated-agent throughput to roughly 98% / 101% of native medians at
+10/100 MiB with GUI-matched allocator, and 96% / 100% with the original page
+allocator. Original results below remain historical baselines, not current speed.
+
 These are Linux-client, headless measurements inside WSL2, **not native Windows
 GUI or WSL-bypass qualification**. Native means Hollow's existing POSIX PTY;
 agent means one dedicated local agent connection through the native Zig adapter.
@@ -22,6 +27,10 @@ samples are not pooled. The tables report median per-run statistics and ranges.
 
 ## Unbuffered host reader baseline
 
+This original benchmark used `page_allocator`, unlike the GUI's thread-safe
+`DebugAllocator`. Later datasets label/select the allocator explicitly; see the
+linked investigation rather than interpreting 16–17% as measured GUI performance.
+
 Raw dataset: [`2026-10-18-local-unbuffered.jsonl.gz`](2026-10-18-local-unbuffered.jsonl.gz).
 
 | Metric | Native median (range) | Agent median (range) |
@@ -42,6 +51,8 @@ backend switch follows from the latency result. No loaded-neighbor, GPU, CPU/RSS
 power-mode control, or 40/100/200-PTY scalability evidence is established.
 
 ## Rejected read-ahead experiment
+
+This experiment predates the scheduling and allocation fixes linked above.
 
 The experiment replaced the host's separate unbuffered frame-header/payload reads
 with one 64 KiB streaming reader. No wire format, credit budget or agent changes

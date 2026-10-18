@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const profile = b.option(bool, "agent-profile", "Keep symbols and frame pointers in agent/PTY benchmark binaries") orelse false;
     const agent_step = b.step("agent", "Build the standalone Linux musl agent for the selected architecture");
     if (target.result.cpu.arch != .x86_64 and target.result.cpu.arch != .aarch64) {
         agent_step.dependOn(&b.addFail("hollow-agent supports only x86_64 and aarch64 Linux targets").step);
@@ -15,6 +16,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .target = agent_target,
             .optimize = optimize,
             .link_libc = true,
+            .strip = if (profile) false else null,
+            .omit_frame_pointer = if (profile) false else null,
         });
         const exe = b.addExecutable(.{ .name = "hollow-agent", .root_module = module, .linkage = .static });
         manifest.addArtifactArg(exe);
@@ -34,6 +37,13 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     }) });
     const run_tests = b.addRunArtifact(tests);
     b.step("test-agent", "Run GUI-independent agent protocol tests").dependOn(&run_tests.step);
+    const loop_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent/main.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.step("test-agent-loop", "Run agent scheduling regressions without real child processes").dependOn(&b.addRunArtifact(loop_tests).step);
     const fs_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/fs.zig"),
         .target = b.graph.host,
@@ -85,6 +95,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .target = b.graph.host,
         .optimize = optimize,
         .link_libc = true,
+        .strip = if (profile) false else null,
+        .omit_frame_pointer = if (profile) false else null,
     });
     pty_bench_module.addImport("build_options", b.createModule(.{ .root_source_file = b.path("src/agent_pty_build_options.zig") }));
     if (b.graph.host.result.os.tag == .linux) pty_bench_module.linkSystemLibrary("util", .{});
