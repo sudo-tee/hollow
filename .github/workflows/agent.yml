@@ -6,6 +6,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  agent-pane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Fetch and patch terminal dependency without GUI or Lua dependencies
+        run: bash scripts/setup.sh --agent-pane
+      - name: Real pane bootstrap, terminal grid, queued input and exit isolation
+        run: zig build -Dagent-pane-only=true test-agent-pane -Doptimize=ReleaseSafe
   docker:
     runs-on: ubuntu-latest
     steps:

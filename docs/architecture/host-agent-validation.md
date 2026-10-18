@@ -471,6 +471,29 @@ CI now includes native local/Podman runs and Windows adapter compilation, but no
 hosted result is claimed. `HOLLOW_EXPERIMENTAL_AGENT_PTY` is a process-wide explicit
 development override, not Lua workspace policy or a default backend change.
 
+### Real pane/terminal integration continuation
+
+The separate `zig build -Dagent-pane-only=true test-agent-pane` graph links the
+actual terminal engine, bypassing font, GPU, Lua and window dependencies. Its two
+tests pass locally, through rootless Podman, and through Linux → Windows
+`wsl.exe` → WSL interop. They run actual `Pane.bootstrap`, layout resize and
+`pollPty`, verify 128 KiB binary startup input by SHA-256, exercise terminal
+query/reply through the pane callback, inspect primary/alternate terminal grids,
+release render helpers for background parsing, and check final output/status.
+Closing a pane during partial input delivery leaves a second pane usable.
+
+These tests exposed and now cover two integration fixes: deadline-aware agent
+input accepts a bounded prefix of oversized pane chunks, and pane startup-input
+ownership retains the original allocation length across partial writes. Fully
+draining, replacing or destroying a partial queue now frees the full allocation.
+The standalone adapter's all-or-error `writeAll` behavior is unchanged.
+
+`scripts/setup.sh --agent-pane` fetches/patches only the terminal dependency and
+leaves submodules and Lua tooling untouched; the corresponding CI job is configured,
+not observed. Test callbacks are lightweight fixtures, not the full application
+callback bundle. No GPU rendering, native Windows GUI or baseline performance
+qualification is claimed.
+
 ## Packaged artifact discovery continuation
 
 When no explicit `artifacts`/`agent_path` is supplied, production Podman bootstrap

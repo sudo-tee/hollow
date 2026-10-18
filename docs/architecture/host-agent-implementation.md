@@ -59,6 +59,12 @@ backends. Agent pane attachment requires an explicit development override.
   with the pane PTY interface. `HOLLOW_EXPERIMENTAL_AGENT_PTY` explicitly selects
   one agent connection per pane, with no automatic deployment or replay. Native
   Windows GUI execution and baseline/performance rollout gates stay open.
+* Real pane/terminal integration: a terminal-only headless graph now runs actual
+  pane bootstrap, layout, output parsing/render-state updates and teardown. Two
+  cases pass locally, through Podman and through WSL interop, including binary
+  startup input, terminal query/reply, alternate-screen grids and pane isolation.
+  Integration fixes allow partial admission of oversized startup chunks and retain
+  allocation ownership across partial delivery; GPU/window execution stays unqualified.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected

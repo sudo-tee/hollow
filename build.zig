@@ -42,6 +42,10 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
+    if (b.option(bool, "agent-pane-only", "Configure headless agent pane integration tests without GUI dependencies") orelse false) {
+        @import("src/agent/pane_build_steps.zig").add(b, target, optimize, ghostty_dep);
+        return;
+    }
     // fontdeps is lazy because it bundles libpng_upstream (also lazy); on a
     // cold cache the first configure pass can't satisfy that chain, so the
     // vendored build silently returns without installing the freetype/

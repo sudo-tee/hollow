@@ -201,11 +201,16 @@ pub const AgentPty = struct {
     }
     pub fn writeAllUntil(self: *AgentPty, bytes: []const u8, deadline_ns: i128) !usize {
         if (io.nanoTimestamp() >= deadline_ns) return 0;
-        self.writeAll(bytes) catch |err| {
+        self.pump();
+        if (self.closed or !self.alive) return error.WriteFailed;
+        // Pane startup/paste chunks can exceed this backend's queue capacity.
+        // Admit a prefix so their retained remainder can progress on later ticks.
+        const count = @min(bytes.len, 65536 - self.input.items.len);
+        self.writeAll(bytes[0..count]) catch |err| {
             if (err == error.InputQueueFull) return 0;
             return err;
         };
-        return bytes.len;
+        return count;
     }
     pub fn resize(self: *AgentPty, cols: u16, rows: u16) void {
         if (cols == 0 or rows == 0) return;

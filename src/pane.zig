@@ -203,6 +203,7 @@ pub const Pane = struct {
     htp_message_handler: ?HtpMessageHandler = null,
     boot_output: std.ArrayListUnmanaged(u8) = .empty,
     pending_startup_input: []u8 = &.{},
+    pending_startup_input_capacity: usize = 0,
     startup_input_quiet_ticks: u8 = 0,
     /// Set to true by pollPty when actual PTY bytes were written to the terminal
     /// this tick.  Cleared by tickPanes after updateRenderState is called.
@@ -318,7 +319,7 @@ pub const Pane = struct {
         if (self.pty) |*pty| pty.deinit();
         if (self.title.len > 0) self.allocator.free(self.title);
         if (self.cwd.len > 0) self.allocator.free(self.cwd);
-        if (self.pending_startup_input.len > 0) self.allocator.free(self.pending_startup_input);
+        if (self.pending_startup_input_capacity > 0) self.allocator.free(self.pending_startup_input.ptr[0..self.pending_startup_input_capacity]);
         if (self.domain_name.len > 0) self.allocator.free(self.domain_name);
         self.* = Pane.init(self.allocator);
     }
@@ -638,8 +639,9 @@ pub const Pane = struct {
                         if (written == 0) {
                             self.startup_input_quiet_ticks = 0;
                         } else if (written == self.pending_startup_input.len) {
-                            self.allocator.free(self.pending_startup_input);
+                            self.allocator.free(self.pending_startup_input.ptr[0..self.pending_startup_input_capacity]);
                             self.pending_startup_input = &.{};
+                            self.pending_startup_input_capacity = 0;
                             self.startup_input_quiet_ticks = 0;
                         } else {
                             fastmem.move(u8, self.pending_startup_input[0 .. self.pending_startup_input.len - written], self.pending_startup_input[written..]);
@@ -769,8 +771,9 @@ pub const Pane = struct {
         std.mem.copyForwards(u8, queued[0..old.len], old);
         std.mem.copyForwards(u8, queued[old.len..][0..text.len], text);
         std.mem.copyForwards(u8, queued[old.len + text.len ..], suffix);
-        if (old.len > 0) self.allocator.free(old);
+        if (self.pending_startup_input_capacity > 0) self.allocator.free(old.ptr[0..self.pending_startup_input_capacity]);
         self.pending_startup_input = queued;
+        self.pending_startup_input_capacity = queued.len;
         self.startup_input_quiet_ticks = 0;
     }
 
