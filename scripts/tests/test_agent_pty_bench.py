@@ -53,6 +53,19 @@ class AgentPtyBenchTests(unittest.TestCase):
         self.assertEqual(stderr_text(error), "diagnostic\ufffd")
         self.assertIsNone(stderr_text(ValueError("bad output")))
 
+    def test_allocator_identity_and_telemetry_bounds_are_checked(self):
+        config, result = self.prompt()
+        config.update(allocator="debug", telemetry=True)
+        with self.assertRaises(ValueError):
+            validate(result, config)
+        result.update(allocator="debug", telemetry={"max_pty_buffered": 65536, "max_queued_bytes": 4096})
+        validate(copy.deepcopy(result), config)
+        for metrics in ({"max_pty_buffered": 65537, "max_queued_bytes": 0},
+                        {"max_pty_buffered": 0, "max_queued_bytes": 4194305},
+                        {"max_pty_buffered": -1, "max_queued_bytes": 0}):
+            with self.subTest(metrics=metrics), self.assertRaises(ValueError):
+                validate(dict(result, telemetry=metrics), config)
+
 
 if __name__ == "__main__":
     unittest.main()

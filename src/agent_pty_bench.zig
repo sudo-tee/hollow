@@ -5,10 +5,12 @@ const builtin = @import("builtin");
 const io = @import("io.zig");
 const Pty = @import("pty/pty.zig").Pty;
 const AgentPty = @import("pty/agent.zig").AgentPty;
-const a = std.heap.page_allocator;
+var a: std.mem.Allocator = std.heap.page_allocator;
 const ready = "HOLLOW_READY\n";
 
 const Config = struct {
+    allocator: enum { page, smp, debug } = .debug,
+    telemetry: bool = false,
     backend: enum { native, agent },
     workload: enum { prompt, output },
     connector_argv: []const []const u8 = &.{},
@@ -71,16 +73,24 @@ pub fn main(init: std.process.Init) !void {
     const parsed = try std.json.parseFromSlice(Config, a, args[1], .{});
     defer parsed.deinit();
     const cfg = parsed.value;
+    var debug_allocator: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
+    defer _ = debug_allocator.deinit();
+    a = switch (cfg.allocator) {
+        .page => std.heap.page_allocator,
+        .smp => std.heap.smp_allocator,
+        .debug => debug_allocator.allocator(),
+    };
     if (cfg.samples == 0 or cfg.samples > 100000 or cfg.bytes == 0 or cfg.bytes > 1024 * 1024 * 1024 or cfg.timeout_ms == 0 or cfg.timeout_ms > 3600000) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
         .output => try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c {d} /dev/zero", .{cfg.bytes}),
     };
+    defer if (cfg.workload == .output) a.free(command);
     var wake: Wake = .{};
     const notification: @import("pty/wake.zig").Wake = .{ .context = &wake, .callback = Wake.signal };
     const spawn_start = clock();
     var pty: Pty = switch (cfg.backend) {
-        .agent => .{ .agent = try AgentPty.spawn(a, .{ .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command } }, 120, 40, notification) },
+        .agent => .{ .agent = try AgentPty.spawn(a, .{ .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command }, .telemetry = cfg.telemetry }, 120, 40, notification) },
         .native => if (builtin.os.tag == .linux) blk: {
             // Native launch-command parser strips one quoting layer. Both
             // backends execute the identical script in /bin/sh -c.
@@ -142,6 +152,8 @@ pub fn main(init: std.process.Init) !void {
     }
     try exited(&pty, &wake, clock() + timeout);
     const result = .{
+        .allocator = cfg.allocator,
+        .telemetry = if (pty == .agent and cfg.telemetry) pty.agent.connection.metrics() else null,
         .backend = cfg.backend,
         .build_mode = builtin.mode,
         .zig_version = builtin.zig_version_string,

@@ -40,7 +40,7 @@ jobs:
         with:
           version: 0.16.0
       - name: Build static agent artifacts without GUI dependencies
-        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-loop test-agent-fs
       - name: Verify bundled checksums
         working-directory: zig-out/agents
         run: sha256sum -c SHA256SUMS

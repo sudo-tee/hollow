@@ -7,6 +7,7 @@ const Wake = @import("wake.zig").Wake;
 
 pub const Env = struct { key: []const u8, value: []const u8 };
 pub const Config = struct {
+    telemetry: bool = false,
     connector_argv: []const []const u8,
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
@@ -60,6 +61,7 @@ pub const AgentPty = struct {
         if (json.written().len > 1024 * 1024) return error.InvalidArgument;
         const connection = try transport.Connection.createWithOptions(allocator, io.get(), config.connector_argv, .{
             .experimental_pty = true,
+            .telemetry = config.telemetry,
             .context = wake.context,
             .notify = wake.callback,
         });

@@ -70,6 +70,12 @@ backends. Agent pane attachment requires an explicit development override.
   datasets show substantial agent throughput overhead; an attempted host
   read-ahead optimization was measured, rejected and removed. See the
   [measurement report](../benchmarks/agent-pty/README.md); defaults stay unchanged.
+* Throughput investigation: scheduling already-buffered PTY output before poll
+  removes credit-restoration stalls; bounded DATA scratch and inline credits remove
+  per-frame allocations. Explicit GUI-matched and original-allocator five-run
+  comparisons now show near-native local median throughput. Fixed-size optional
+  diagnostics, regression tests and [raw evidence](../benchmarks/agent-pty/2026-10-18-throughput-fix.md)
+  ship with the changes; native Windows GUI/multiplexing gates remain open.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected

@@ -110,6 +110,15 @@ repeat counts alone cannot establish WSL/GUI parity. Preserve the original file,
 including failure rows, and compare per-run distributions rather than pooling
 samples or cherry-picking the fastest run.
 
+The client allocator is explicit: `--allocator debug` (the current default)
+matches the GUI's thread-safe DebugAllocator; `--allocator page` reproduces the
+original allocator choice and `--allocator smp` permits a separate experiment.
+Never compare allocator changes without labeling them. `--telemetry` enables
+bounded host counters; `HOLLOW_AGENT_PROFILE=1` separately enables agent stderr
+diagnostics, forwarded only with client telemetry enabled. Use
+`-Dagent-profile=true` to keep symbols/frame pointers for `perf`, not to enable
+runtime instrumentation. Compare diagnostics on/off independently.
+
 For prepared remote agents, pass `--connector-argv '<JSON argv>'` or
 `HOLLOW_TEST_CONNECTOR_ARGV`; no discovery, authentication or deployment occurs.
 `--backend agent` measures only that path. A paired local-native/remote-agent run
@@ -120,3 +129,6 @@ and the 40/100/200-PTY matrix remain separate unexecuted gates.
 
 Executed local five-run datasets and the rejected read-ahead experiment are
 preserved in [the dedicated adapter measurement report](../benchmarks/agent-pty/README.md).
+The subsequent [throughput investigation](../benchmarks/agent-pty/2026-10-18-throughput-fix.md)
+identifies/removes avoidable ready-output poll sleeps and transient DATA/credit
+allocations; four additional five-run datasets preserve the controlled evidence.

@@ -505,10 +505,10 @@ preserved in [the measurement report](../benchmarks/agent-pty/README.md).
 
 On this Linux client inside WSL2, median per-run prompt p99 is 0.320 ms native
 versus 0.643 ms agent. Median 10/100 MiB output throughput is 75.04/72.15 MiB/s
-native versus 11.80/12.23 MiB/s agent. The measured throughput gap blocks any
+native versus 11.80/12.23 MiB/s agent. At that stage the measured throughput gap blocked any
 default-switch argument. A second five-run experiment with 64 KiB host read-ahead
 did not improve throughput; its runtime change was removed and experiment patch
-preserved. Root cause is not yet identified.
+preserved. The subsequent investigation below identifies the dominant scheduling bug.
 
 Final benchmark correctness smokes pass locally, through rootless Podman and
 through WSL interop; remote smoke timings are not parity measurements. The final
@@ -517,6 +517,32 @@ cross-compiles for Windows, with native comparison explicitly Linux-only.
 The new CI benchmark smoke checks correctness, never machine-dependent thresholds.
 This is neither legacy WSL-bypass comparison nor GUI/scalability qualification;
 all dataset rows intentionally retain `qualification: false`.
+
+### Dedicated PTY throughput fixes
+
+Optional fixed-size counters identify avoidable ready-output poll sleeps after
+credit restoration. The agent now schedules buffered output before poll, and the
+host reuses one DATA-frame-sized scratch buffer plus inline credit payloads
+instead of allocating both on every transfer. Queue, frame and credit caps stay
+unchanged; regression tests cover scheduling and allocation-free DATA/credit paths.
+
+The original allocator choice is now explicit: old benchmarks used page allocator,
+while GUI uses thread-safe DebugAllocator. Controlled before/after tests with
+GUI-matched allocator and identical diagnostics show 100 MiB throughput improving
+2.51× from the scheduling fix alone, with all observed ready-output poll stalls
+removed. With both fixes and diagnostics off, five-run GUI-allocator medians reach
+98.1%/101.4% of native 10/100 MiB throughput; prompt p99 delta is +0.274 ms.
+Repeating the original page-allocator path reaches 96.0%/100.1%, so this is not
+merely an allocator-label change. Individual short-transfer runs still vary below
+95%; these local data do not qualify Windows/WSL bypass or GUI rollout.
+
+Four additional raw datasets and exact hashes are preserved in the
+[throughput investigation](../benchmarks/agent-pty/2026-10-18-throughput-fix.md).
+The regression build executes 104 native tests across targets (including imports),
+50 Python unit tests, 16 local fs/exec conformance cases and 11 real PTY cases.
+Native Lua contracts pass in prefix/bin and flat layouts; PTY adapters pass through
+Podman, WSL interop and fragmented mock sockets. Windows adapter cross-compilation
+and both static agent architecture builds pass. Production defaults remain unchanged.
 
 ## Packaged artifact discovery continuation
 
