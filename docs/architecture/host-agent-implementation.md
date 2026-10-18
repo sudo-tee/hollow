@@ -65,6 +65,11 @@ backends. Agent pane attachment requires an explicit development override.
   startup input, terminal query/reply, alternate-screen grids and pane isolation.
   Integration fixes allow partial admission of oversized startup chunks and retain
   allocation ownership across partial delivery; GPU/window execution stays unqualified.
+* E1 measurement: a shared native client measures dedicated native/agent PTY
+  readiness, prompt round trips and verified 10/100 MiB output. Five-run raw
+  datasets show substantial agent throughput overhead; an attempted host
+  read-ahead optimization was measured, rejected and removed. See the
+  [measurement report](../benchmarks/agent-pty/README.md); defaults stay unchanged.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected

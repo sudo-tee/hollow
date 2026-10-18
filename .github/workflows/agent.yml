@@ -54,6 +54,10 @@ jobs:
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
       - name: Experimental native streaming PTY and pane adapter
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pty
+      - name: Build headless native-versus-agent PTY benchmark
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseFast agent agent-pty-bench
+      - name: Benchmark correctness smoke, not performance qualification
+        run: python3 scripts/agent_pty_bench.py --runs 1 --samples 20 --size-mib 1 --output agent-pty-smoke.jsonl
       - name: Windows experimental PTY adapter compile check
         run: zig test -target x86_64-windows-gnu --dep build_options -Mroot=src/agent_pty_test.zig -Mbuild_options=src/agent_pty_build_options.zig -lc -fno-emit-bin
       - name: Typed operations and HostManager lifecycle
@@ -96,7 +100,9 @@ jobs:
         if: always()
         with:
           name: hollow-agent-fault-diagnostics
-          path: agent-faults-*.json
+          path: |
+            agent-faults-*.json
+            agent-pty-smoke.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: hollow-agent-linux-musl

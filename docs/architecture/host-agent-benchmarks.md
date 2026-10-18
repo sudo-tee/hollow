@@ -74,3 +74,49 @@ The 10/25/50-session matrix means 40/100/200 PTYs for the four-pane profile.
 The current harness measures only the legacy echo/throughput reference, not
 that entire experiment matrix or GUI rendering. No backend switch is justified
 by these harness tests alone.
+
+## Dedicated native/agent adapter comparison (E1)
+
+`scripts/agent_pty_bench.py` drives one native Zig client binary against either
+the existing Linux native PTY backend or the experimental dedicated agent adapter.
+Both execute the same `/bin/sh` workload at 120×40. This is **not** a comparison
+against WSL bypass and does not replace the E0/Windows or multiplexing gates above.
+
+```sh
+zig build --build-file build-agent.zig agent agent-pty-bench -Doptimize=ReleaseFast
+python3 scripts/agent_pty_bench.py --runs 5 --samples 5000 --size-mib 10 100 --output results/agent-pty-local.jsonl
+```
+
+Create the destination directory first; output files must not already exist.
+Default runs alternate backend order, use a new connection/PTY per independent
+run/workload/size, and preserve every raw sample. Startup time runs from spawn
+through the checked ready marker, including connector startup for agent cases.
+Prompt measurements exclude 32 verified warmup exchanges and measure client
+dispatch through receipt of the exact unique line token on one monotonic clock.
+The same client loop waits on the backend wake callback, not a periodic read
+sleep; a 10 ms heartbeat bounds native exit reaping after the reader's last wake.
+
+Output mode waits for readiness and a `GO` input before producing deterministic
+raw zero bytes. Timing includes dispatch through consumption of all requested
+bytes, but excludes the subsequent clean-exit wait. The client checks each byte,
+records SHA-256 and rejects extra output or a nonzero/missing exit status. This
+is output-only throughput, not duplex echo. The harness records no GPU/frame
+times, loaded-neighbor fairness, CPU/RSS counters or multiplexing measurements.
+
+JSONL includes source and executable SHA-256, git revision/dirty paths, exact
+connector argv, runner command, host metadata, raw latency samples, nearest-rank
+p50/p95/p99/max and per-run throughput. It always records `qualification: false`;
+repeat counts alone cannot establish WSL/GUI parity. Preserve the original file,
+including failure rows, and compare per-run distributions rather than pooling
+samples or cherry-picking the fastest run.
+
+For prepared remote agents, pass `--connector-argv '<JSON argv>'` or
+`HOLLOW_TEST_CONNECTOR_ARGV`; no discovery, authentication or deployment occurs.
+`--backend agent` measures only that path. A paired local-native/remote-agent run
+has **different execution paths** and must not be described as same-host backend
+parity; remote agent build identity is not attested by the local binary hash.
+The native benchmark currently requires Linux. Native Windows GUI, real WSL bypass,
+and the 40/100/200-PTY matrix remain separate unexecuted gates.
+
+Executed local five-run datasets and the rejected read-ahead experiment are
+preserved in [the dedicated adapter measurement report](../benchmarks/agent-pty/README.md).
