@@ -54,6 +54,26 @@ This headless target tests the adapter and pane PTY union, not a rendered pane.
 `HOLLOW_TEST_CONNECTOR_ARGV` selects a remote connector for adapter cases; pane
 entry-point and wake tests still use their explicit local fixture.
 
+### Real pane and terminal integration
+
+A separate headless graph links the actual terminal engine and exercises
+`Pane.bootstrap`, layout resize, `pollPty`, startup deferral, render-state updates,
+background parsing, and teardown without window/GPU/Lua/font dependencies:
+
+```sh
+bash scripts/setup.sh --agent-pane
+zig build -Dagent-pane-only=true test-agent-pane -Doptimize=ReleaseSafe
+```
+
+Two cases verify 128 KiB binary startup input by SHA-256, terminal query/reply
+through the pane write callback, primary/alternate terminal grid contents, final
+output and exit status, and closing one pane with partially delivered input while
+another remains usable. The fixture uses lightweight callbacks, not the complete
+application callback bundle. `HOLLOW_TEST_CONNECTOR_ARGV` routes these sessions
+through an explicitly prepared connector; unset selects the built local agent.
+This is real pane/terminal-state integration, not GPU rendering or a native
+Windows application run.
+
 ## Experimental wire contract
 
 HELLO must include `"experimental_pty":true`; HELLO_ACK then advertises
@@ -115,6 +135,7 @@ OOM/fork-bomb/guardian-death stress, or hostile PTY clients. ARM64 is cross-buil
 not runtime-tested. Native adapter tests additionally cover multi-megabyte output,
 exact input across real backpressure, wakeups, exit/drain ordering, transport-loss
 isolation, and explicit pane backend selection. Windows adapter code is
-cross-compiled, not executed. Rendered GUI lifecycle and baseline performance
+cross-compiled, not executed. Real pane/terminal-state cases additionally pass
+locally, through rootless Podman and through WSL interop. Rendered GUI lifecycle and baseline performance
 comparisons remain required before any default switch. The adapter uses one
 connection per pane, not HostManager session multiplexing or persistent sessions.

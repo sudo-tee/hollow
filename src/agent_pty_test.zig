@@ -104,6 +104,7 @@ test "native agent PTY input admission is bounded, atomic and deadline-aware" {
     try std.testing.expectEqual(@as(usize, 0), pty.input.items.len);
     try std.testing.expectEqual(@as(usize, 0), try pty.writeAllUntil("not queued", clock() - 1));
     try std.testing.expectEqual(@as(usize, 0), pty.input.items.len);
+    try std.testing.expectEqual(@as(usize, 65536), try pty.writeAllUntil(huge, clock() + std.time.ns_per_s));
     pty.close();
     pty.close();
     try std.testing.expectError(error.WriteFailed, pty.writeAll("late"));
