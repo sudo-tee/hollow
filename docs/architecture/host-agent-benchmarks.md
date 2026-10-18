@@ -132,3 +132,20 @@ preserved in [the dedicated adapter measurement report](../benchmarks/agent-pty/
 The subsequent [throughput investigation](../benchmarks/agent-pty/2026-10-18-throughput-fix.md)
 identifies/removes avoidable ready-output poll sleeps and transient DATA/credit
 allocations; four additional five-run datasets preserve the controlled evidence.
+
+### Initial shared-connection matrix
+
+The same client/runner additionally supports `--backend all` (native POSIX,
+dedicated agent, shared agent), `--sessions 1 4 8 16` and
+`--load idle noisy stalled`. Each total includes one checked foreground and
+the remaining backgrounds. Results include per-background byte totals and maximum
+delivery gaps; background payloads have distinct byte values to detect bad
+demultiplexing. The stalled case deliberately never consumes one background.
+
+See the [initial shared PTY report](../benchmarks/agent-pty/2026-10-18-shared-pty.md)
+for workload limits, owner scheduling, buffer differences and remaining gates.
+These tests do not implement GUI focus hints, filesystem bulk, 40/100/200-PTY
+scaling or native Windows/WSL bypass comparison. Aggregate throughput must be
+interpreted separately from the foreground's throughput; raw background counts
+and elapsed duration are retained for that purpose. CI runs correctness smokes,
+not machine-independent latency thresholds.

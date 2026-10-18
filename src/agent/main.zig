@@ -20,6 +20,9 @@ const c = @cImport({
 const A = std.heap.page_allocator;
 const max_jobs = 16;
 const queue_limit = 4 * 1024 * 1024;
+// Bound bulk DATA ahead of newly dispatched control responses. Partial frames
+// remain serialized by the existing single stdout writer.
+const pty_batch_limit = 65536 + 4 * p.header_len;
 
 const Profile = struct {
     polls: u64 = 0,
@@ -51,6 +54,7 @@ const Agent = struct {
     last_id: u64 = 0,
     last_stream: u64 = 0,
     last_write: u64 = 0,
+    next_pty: usize = 0,
     nonce: [32]u8 = undefined,
     data_limit: usize = p.max_data,
     payload_limit: usize = p.max_payload,
@@ -349,15 +353,34 @@ const Agent = struct {
         return error.NotFound;
     }
 
-    fn streamPty(self: *Agent, job: *ex.Job) !void {
+    fn streamPty(self: *Agent, job: *ex.Job, quantum: usize) !void {
         if (!job.pty or job.reason != null or self.closing) return;
         if (self.profiling) self.profile.max_pty_buffered = @max(self.profile.max_pty_buffered, job.stdout.items.len);
-        while (job.stdout.items.len > 0 and job.credit > 0 and self.output.items.len < 1024 * 1024) {
-            const count = @min(job.credit, @min(self.data_limit, job.stdout.items.len));
+        var budget = quantum;
+        while (job.stdout.items.len > 0 and job.credit > 0 and budget > 0 and self.output.items.len + p.header_len < pty_batch_limit) {
+            const count = @min(@min(self.data_limit, budget), @min(pty_batch_limit - self.output.items.len - p.header_len, @min(job.credit, job.stdout.items.len)));
             try self.frame(.data, job.id, job.streams[0], job.stdout.items[0..count]);
             job.credit -= count;
+            budget -= count;
             std.mem.copyForwards(u8, job.stdout.items, job.stdout.items[count..]);
             job.stdout.items.len -= count;
+        }
+    }
+
+    fn schedulePtys(self: *Agent) !void {
+        var count: usize = 0;
+        for (self.jobs) |entry| if (entry) |job| {
+            if (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0) count += 1;
+        };
+        const start = self.next_pty;
+        for (0..max_jobs) |offset| {
+            const index = (start + offset) % max_jobs;
+            if (self.jobs[index]) |*job| {
+                const before = self.output.items.len;
+                try self.streamPty(job, if (count <= 1) 65536 else 16384);
+                if (self.output.items.len > before) self.next_pty = (index + 1) % max_jobs;
+            }
+            if (self.output.items.len + p.header_len >= pty_batch_limit) break;
         }
     }
 
@@ -369,8 +392,8 @@ const Agent = struct {
             // WINDOW_UPDATE is dispatched at the end of the previous turn.
             // A full PTY capture is not polled for more input, so restored credit
             // must make buffered DATA writable before we can block in poll().
-            try self.streamPty(job);
         };
+        try self.schedulePtys();
         return active;
     }
 
@@ -466,7 +489,7 @@ pub fn main() !void {
             fds[3 + i * 3 + j] = .{ .fd = if (entry) |job| if (job.pty and j == 0 and events == 0) -1 else job.fds[j] else -1, .events = events, .revents = 0 };
         };
         var sendable = false;
-        if (agent.profiling and !agent.closing and agent.output.items.len < 1024 * 1024) {
+        if (agent.profiling and !agent.closing and agent.output.items.len + p.header_len < pty_batch_limit) {
             for (agent.jobs) |entry| if (entry) |job| {
                 if (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0) sendable = true;
             };
@@ -497,13 +520,13 @@ pub fn main() !void {
         for (&agent.jobs, 0..) |*entry, i| if (entry.*) |*job| {
             if (job.pty and (fds[3 + i * 3].revents & c.POLLOUT) != 0) try job.writeInput();
             for (0..3) |j| if ((fds[3 + i * 3 + j].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) try job.drain(j, now);
-            try agent.streamPty(job);
             if (job.done(now) and (agent.closing or agent.output.items.len < 1024 * 1024)) {
                 if (!agent.closing) try agent.finish(job);
                 job.deinit();
                 entry.* = null;
             }
         };
+        try agent.schedulePtys();
         if ((fds[1].revents & (c.POLLERR | c.POLLHUP)) != 0) agent.disconnect(now);
         if ((fds[1].revents & c.POLLOUT) != 0 and agent.output.items.len > agent.sent) {
             const n = c.write(1, agent.output.items.ptr + agent.sent, @min(65536, agent.output.items.len - agent.sent));
@@ -608,6 +631,53 @@ test "restored PTY credit schedules full buffered output before poll" {
         offset += header.payload_len;
     }
     try std.testing.expectEqual(@as(usize, 65536), total);
+}
+
+test "shared PTY scheduling bounds queued bulk and rotates across all credited jobs" {
+    var agent: Agent = .{ .greeted = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    defer for (&agent.jobs) |*entry| if (entry.*) |*job| job.deinit();
+    for (&agent.jobs, 0..) |*entry, index| {
+        entry.* = .{
+            .id = index + 1,
+            .pid = 0,
+            .fds = .{ -1, -1, -1 },
+            .limit = 0,
+            .streams = .{ 2 + index * 4, 4 + index * 4 },
+            .deadline = std.math.maxInt(u64),
+            .pty = true,
+            .supervised = true,
+            .credit = 65536,
+        };
+        try entry.*.?.stdout.appendNTimes(A, @intCast(index), 65536);
+    }
+    var delivered: [max_jobs]usize = @splat(0);
+    for (0..4) |_| {
+        _ = try agent.preparePoll(0);
+        try std.testing.expect(agent.output.items.len <= pty_batch_limit);
+        var offset: usize = 0;
+        while (offset < agent.output.items.len) {
+            const header = try p.Header.decode(@ptrCast(agent.output.items.ptr + offset));
+            const index: usize = @intCast(header.request_id - 1);
+            try std.testing.expectEqual(p.Kind.data, header.kind);
+            try std.testing.expectEqual(@as(u64, 2 + index * 4), header.stream_id);
+            offset += p.header_len;
+            for (agent.output.items[offset..][0..header.payload_len]) |byte| try std.testing.expectEqual(@as(u8, @intCast(index)), byte);
+            delivered[index] += header.payload_len;
+            offset += header.payload_len;
+        }
+        agent.output.clearRetainingCapacity(); // Emulate successful stdout drain.
+    }
+    for (delivered) |bytes| try std.testing.expectEqual(@as(usize, 16384), bytes);
+    // A non-consuming stream cannot prevent the remaining streams progressing.
+    agent.jobs[0].?.credit = 0;
+    for (0..4) |_| {
+        _ = try agent.preparePoll(0);
+        try std.testing.expect(agent.output.items.len <= pty_batch_limit);
+        agent.output.clearRetainingCapacity();
+    }
+    try std.testing.expectEqual(@as(usize, 49152), agent.jobs[0].?.stdout.items.len);
+    for (agent.jobs[1..]) |entry| try std.testing.expect(entry.?.stdout.items.len < 49152);
 }
 
 fn cleanup(agent: *Agent) void {

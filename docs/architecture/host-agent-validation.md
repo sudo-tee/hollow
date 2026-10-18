@@ -544,6 +544,36 @@ Native Lua contracts pass in prefix/bin and flat layouts; PTY adapters pass thro
 Podman, WSL interop and fragmented mock sockets. Windows adapter cross-compilation
 and both static agent architecture builds pass. Production defaults remain unchanged.
 
+### Initial shared PTY experiment (E2/E3 subset)
+
+An explicit native shared owner supports 1/4/8/16 session adapters. Pane selection
+still opens dedicated connections. Filtered per-request completion polling,
+separate job/request admission, per-session cancellation tombstones and retained
+transport ownership cover isolation and teardown without persistence or replay.
+Sixteen PTYs leave request slots for input/resize while preserving the 16-job cap.
+
+Two complete local three-run matrices (180 measurements each) compare native,
+dedicated and shared adapters under idle, all-noisy and one-stalled-consumer loads.
+A bounded rotating PTY scheduler reduces shared 16-PTY noisy median prompt p99
+from 27.92 to 8.61 ms. All consuming background streams make checked progress,
+and the stalled shared consumer stays at 64 KiB. However, five of 18 post-change
+loaded pairs still exceed a local +5 ms p99 check versus native POSIX, and worst
+background delivery gap increases to 80.31 ms. This is **not** a shared rollout
+pass, nor a replacement for the legacy WSL-bypass comparison.
+
+A separate five-run dedicated E1 repeat retains 96.9%/97.0% native median
+throughput at 10/100 MiB, with slow individual pairs preserved. All datasets,
+reconstructable source patches, raw hashes, per-stream/aggregate throughput and
+latency graph are in the [shared experiment report](../benchmarks/agent-pty/2026-10-18-shared-pty.md).
+The standalone graph passes 120 native test executions (including imported tests)
+and 52 Python harness tests. Shared adapter cases also pass through Podman, WSL
+interop and fragmented mock sockets; Windows adapter/benchmark compile checks,
+real pane integration, fs/exec conformance and installed-layout Lua tests pass.
+
+Keep the bounded scheduler for further opt-in research; reject shared-pane
+rollout until focus-aware/tail-fairness, filesystem bulk, CPU/RSS, fault/load,
+40/100/200-PTY and native Windows GUI/WSL parity experiments qualify the design.
+
 ## Packaged artifact discovery continuation
 
 When no explicit `artifacts`/`agent_path` is supplied, production Podman bootstrap

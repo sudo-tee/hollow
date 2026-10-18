@@ -1,5 +1,6 @@
 const std = @import("std");
 const AgentPty = @import("pty/agent.zig").AgentPty;
+const SharedConnection = @import("pty/agent.zig").SharedConnection;
 const a = std.testing.allocator;
 
 fn create(argv: []const []const u8) !AgentPty {
@@ -16,6 +17,113 @@ fn create(argv: []const []const u8) !AgentPty {
 }
 fn clock() i128 {
     return std.Io.Clock.awake.now(std.testing.io).toNanoseconds();
+}
+
+fn sharedConnection() !*SharedConnection {
+    const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
+    defer a.free(path);
+    const configured = std.testing.environ.getAlloc(a, "HOLLOW_TEST_CONNECTOR_ARGV") catch null;
+    defer if (configured) |bytes| a.free(bytes);
+    if (configured) |json| {
+        const args = try std.json.parseFromSlice([]const []const u8, a, json, .{});
+        defer args.deinit();
+        return SharedConnection.create(a, args.value, .{});
+    }
+    return SharedConnection.create(a, &.{ path, "stdio" }, .{});
+}
+
+test "shared PTYs 1/4/8/16 route exits and controls without stealing completions" {
+    for ([_]usize{ 1, 4, 8, 16 }) |count| {
+        const owner = try sharedConnection();
+        defer owner.destroy();
+        var sessions: [16]AgentPty = undefined;
+        var created: usize = 0;
+        defer for (sessions[0..created]) |*pty| pty.deinit();
+        for (sessions[0..count], 0..) |*pty, index| {
+            const command = try std.fmt.allocPrint(a, "stty -echo; printf READY; read v; printf '<{d}:%s>' \"$v\"; exit {d}", .{ index, index });
+            defer a.free(command);
+            pty.* = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", command } }, 80, 24);
+            created += 1;
+        }
+        if (count == 16) try std.testing.expectError(error.ResourceExhausted, AgentPty.spawnShared(a, owner, .{ .argv = &.{"/bin/sh"} }, 80, 24));
+        // Submit in reverse handle order: stream IDs must follow actual requests.
+        var index = count;
+        while (index > 0) {
+            index -= 1;
+            try until(&sessions[index], "READY");
+        }
+        // Sixteen long-lived spawn slots must leave room for input/resize RPCs.
+        for (sessions[0..count]) |*pty| {
+            pty.resize(100, 30);
+            try pty.writeAll("payload\n");
+        }
+        index = count;
+        while (index > 0) {
+            index -= 1;
+            const expected = try std.fmt.allocPrint(a, "<{d}:payload>", .{index});
+            defer a.free(expected);
+            try until(&sessions[index], expected);
+            try finished(&sessions[index]);
+            try std.testing.expectEqual(@as(?u32, @intCast(index)), sessions[index].exitStatus());
+        }
+        try std.testing.expectEqual(@import("host/transport.zig").State.ready, owner.connection.status());
+    }
+}
+
+test "shared stalled consumer, close and failed launch do not stop sibling" {
+    const owner = try sharedConnection();
+    defer owner.destroy();
+    var stalled = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "stty raw -echo; head -c 4194304 /dev/zero; sleep 30" } }, 80, 24);
+    defer stalled.deinit();
+    _ = stalled.isAlive();
+    const deadline = clock() + 8 * std.time.ns_per_s;
+    while (stalled.pendingOutputBytes() < 65536) {
+        if (clock() > deadline) return error.Timeout;
+        try pause();
+    }
+    var sibling = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "stty -echo; printf READY; while read v; do printf '<%s>' \"$v\"; done" } }, 80, 24);
+    defer sibling.deinit();
+    try until(&sibling, "READY");
+    for (0..20) |_| {
+        try sibling.writeAll("probe\n");
+        try until(&sibling, "<probe>");
+        try std.testing.expectEqual(@as(usize, 65536), stalled.pendingOutputBytes());
+    }
+    var failed = try AgentPty.spawnShared(a, owner, .{ .argv = &.{"/missing-shared-pty"} }, 80, 24);
+    defer failed.deinit();
+    try finished(&failed);
+    try std.testing.expectEqual(@as(?u32, 125), failed.exitStatus());
+    stalled.close();
+    stalled.close();
+    try sibling.writeAll("after-close\n");
+    try until(&sibling, "<after-close>");
+    // Repeated close/replacement also exercises asynchronous tombstone retirement.
+    for (0..20) |_| {
+        var replacement = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "printf REPLACED" } }, 80, 24);
+        defer replacement.deinit();
+        try until(&replacement, "REPLACED");
+        try finished(&replacement);
+    }
+    try sibling.writeAll("still-alive\n");
+    try until(&sibling, "<still-alive>");
+}
+
+test "shared owner shutdown retains live session storage until teardown" {
+    const owner = try sharedConnection();
+    var owner_live = true;
+    defer if (owner_live) owner.destroy();
+    var first = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "printf READY; sleep 30" } }, 80, 24);
+    defer first.deinit();
+    var second = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "sleep 30" } }, 80, 24);
+    defer second.deinit();
+    try until(&first, "READY");
+    _ = second.isAlive();
+    owner.destroy();
+    owner_live = false;
+    try finished(&first);
+    try finished(&second);
+    try std.testing.expectEqual(@as(?u32, 125), first.exitStatus());
+    try std.testing.expectEqual(@as(?u32, 125), second.exitStatus());
 }
 fn pause() !void {
     try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);

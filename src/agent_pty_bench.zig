@@ -1,22 +1,82 @@
-//! Same client loop/clock/workloads for native Linux and dedicated agent PTYs.
-//! No GUI, parser, multiplexing, shell integration or deployment qualification.
+//! Same client loop/clock/workloads for native, dedicated and shared agent PTYs.
+//! No GUI, parser, focus hints, shell integration or deployment qualification.
 const std = @import("std");
 const builtin = @import("builtin");
 const io = @import("io.zig");
 const Pty = @import("pty/pty.zig").Pty;
 const AgentPty = @import("pty/agent.zig").AgentPty;
+const SharedConnection = @import("pty/agent.zig").SharedConnection;
 var a: std.mem.Allocator = std.heap.page_allocator;
 const ready = "HOLLOW_READY\n";
 
 const Config = struct {
     allocator: enum { page, smp, debug } = .debug,
     telemetry: bool = false,
-    backend: enum { native, agent },
+    backend: enum { native, agent, shared },
+    sessions: usize = 1,
+    load: enum { idle, noisy, stalled } = .idle,
     workload: enum { prompt, output },
     connector_argv: []const []const u8 = &.{},
     samples: usize = 5000,
     bytes: usize = 10 * 1024 * 1024,
     timeout_ms: u32 = 30000,
+};
+
+fn spawn(cfg: Config, command: []const u8, notification: @import("pty/wake.zig").Wake, owner: ?*SharedConnection) !Pty {
+    const config: @import("pty/agent.zig").Config = .{ .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command }, .telemetry = cfg.telemetry };
+    return switch (cfg.backend) {
+        .shared => .{ .agent = try AgentPty.spawnShared(a, owner.?, config, 120, 40) },
+        .agent => .{ .agent = try AgentPty.spawn(a, config, 120, 40, notification) },
+        .native => if (builtin.os.tag == .linux) blk: {
+            var launch: std.Io.Writer.Allocating = .init(a);
+            defer launch.deinit();
+            try launch.writer.writeAll("/bin/sh -c '");
+            for (command) |byte| {
+                if (byte == '\'') try launch.writer.writeAll("'\\''") else try launch.writer.writeByte(byte);
+            }
+            try launch.writer.writeAll("'");
+            break :blk .{ .native = try @import("pty/pty_posix.zig").PosixPty.spawn(a, "/bin/sh", 120, 40, null, null, .{ .command = launch.written() }, notification) };
+        } else return error.NativeBenchmarkRequiresLinux,
+    };
+}
+
+/// Identical bounded owner scheduling for all backends: foreground first, then
+/// one 16 KiB read per background. Not a simulation of GUI focus/render policy.
+const Backgrounds = struct {
+    config: Config,
+    ptys: [15]Pty = undefined,
+    count: usize = 0,
+    bytes: [15]u64 = @splat(0),
+    max_gap_ns: [15]u64 = @splat(0),
+    last_progress: [15]i128 = @splat(0),
+    started: i128 = 0,
+    fn reset(self: *Backgrounds) void {
+        self.started = clock();
+        self.bytes = @splat(0);
+        self.max_gap_ns = @splat(0);
+        self.last_progress = @splat(self.started);
+    }
+    fn service(self: *Backgrounds) !bool {
+        if (self.started == 0) return false;
+        var progress = false;
+        for (self.ptys[0..self.count], 0..) |*pty, index| {
+            if (self.config.load == .stalled and index == 0) continue;
+            var buffer: [16384]u8 = undefined;
+            const count = try pty.read(&buffer);
+            progress = progress or count > 0;
+            for (buffer[0..count]) |byte| if (byte != 'A' + @as(u8, @intCast(index))) return error.CorruptBackground;
+            self.bytes[index] += count;
+            const now = clock();
+            self.max_gap_ns[index] = @max(self.max_gap_ns[index], @as(u64, @intCast(now - self.last_progress[index])));
+            if (count > 0) self.last_progress[index] = now;
+            if (!pty.isAlive()) return error.BackgroundExited;
+            if (pty.* == .agent and pty.pendingOutputBytes() > 65536) return error.UnboundedBackground;
+        }
+        return progress;
+    }
+    fn deinit(self: *Backgrounds) void {
+        for (self.ptys[0..self.count]) |*pty| pty.deinit();
+    }
 };
 
 const Wake = struct {
@@ -41,16 +101,20 @@ fn clock() i128 {
     return std.Io.Clock.awake.now(io.get()).toNanoseconds();
 }
 
-fn receive(pty: *Pty, wake: *Wake, output: []u8, deadline: i128) !void {
+fn receive(pty: *Pty, wake: *Wake, backgrounds: *Backgrounds, output: []u8, deadline: i128) !void {
     var offset: usize = 0;
     while (offset < output.len) {
         if (clock() >= deadline) return error.Timeout;
         const epoch = wake.epoch.load(.acquire);
         const count = try pty.read(output[offset..]);
         offset += count;
+        const background_progress = try backgrounds.service();
         if (count == 0) {
-            if (!pty.isAlive()) return error.EarlyExit;
-            try wake.wait(epoch, deadline);
+            // POSIX waitpid can observe exit before the reader has copied the
+            // last kernel bytes. Expected-byte deadline, not child liveness,
+            // governs completion of this checked receive.
+            if (!pty.isAlive() and pty.* == .agent) return error.EarlyExit;
+            if (!background_progress) try wake.wait(epoch, deadline);
         }
     }
 }
@@ -80,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
         .smp => std.heap.smp_allocator,
         .debug => debug_allocator.allocator(),
     };
-    if (cfg.samples == 0 or cfg.samples > 100000 or cfg.bytes == 0 or cfg.bytes > 1024 * 1024 * 1024 or cfg.timeout_ms == 0 or cfg.timeout_ms > 3600000) return error.InvalidArgument;
+    if (cfg.samples == 0 or cfg.samples > 100000 or cfg.bytes == 0 or cfg.bytes > 1024 * 1024 * 1024 or cfg.timeout_ms == 0 or cfg.timeout_ms > 3600000 or cfg.sessions == 0 or cfg.sessions > 16 or (cfg.load != .idle and cfg.sessions == 1)) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
         .output => try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c {d} /dev/zero", .{cfg.bytes}),
@@ -88,28 +152,31 @@ pub fn main(init: std.process.Init) !void {
     defer if (cfg.workload == .output) a.free(command);
     var wake: Wake = .{};
     const notification: @import("pty/wake.zig").Wake = .{ .context = &wake, .callback = Wake.signal };
+    const owner = if (cfg.backend == .shared) try SharedConnection.createWithTelemetry(a, cfg.connector_argv, notification, cfg.telemetry) else null;
+    defer if (owner) |shared| shared.destroy();
+    var backgrounds: Backgrounds = .{ .config = cfg };
+    defer backgrounds.deinit();
     const spawn_start = clock();
-    var pty: Pty = switch (cfg.backend) {
-        .agent => .{ .agent = try AgentPty.spawn(a, .{ .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command }, .telemetry = cfg.telemetry }, 120, 40, notification) },
-        .native => if (builtin.os.tag == .linux) blk: {
-            // Native launch-command parser strips one quoting layer. Both
-            // backends execute the identical script in /bin/sh -c.
-            var launch: std.Io.Writer.Allocating = .init(a);
-            defer launch.deinit();
-            try launch.writer.writeAll("/bin/sh -c '");
-            for (command) |byte| {
-                if (byte == '\'') try launch.writer.writeAll("'\\''") else try launch.writer.writeByte(byte);
-            }
-            try launch.writer.writeAll("'");
-            break :blk .{ .native = try @import("pty/pty_posix.zig").PosixPty.spawn(a, "/bin/sh", 120, 40, null, null, .{ .command = launch.written() }, notification) };
-        } else return error.NativeBenchmarkRequiresLinux,
-    };
+    var pty = try spawn(cfg, command, notification, owner);
     defer pty.deinit();
     const timeout: i128 = @as(i128, cfg.timeout_ms) * std.time.ns_per_ms;
     var greeting: [ready.len]u8 = undefined;
-    try receive(&pty, &wake, &greeting, spawn_start + timeout);
+    try receive(&pty, &wake, &backgrounds, &greeting, spawn_start + timeout);
     if (!std.mem.eql(u8, &greeting, ready)) return error.InvalidGreeting;
     const ready_ns = clock() - spawn_start;
+    for (0..cfg.sessions - 1) |index| {
+        const background_command = if (cfg.load == .idle)
+            try a.dupe(u8, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; sleep 600")
+        else
+            try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c 1073741824 /dev/zero | tr '\\000' '{c}'; sleep 600", .{'A' + @as(u8, @intCast(index))});
+        defer a.free(background_command);
+        backgrounds.ptys[index] = try spawn(cfg, background_command, notification, owner);
+        backgrounds.count += 1;
+        try receive(&backgrounds.ptys[index], &wake, &backgrounds, &greeting, clock() + timeout);
+        if (!std.mem.eql(u8, &greeting, ready)) return error.InvalidGreeting;
+    }
+    for (backgrounds.ptys[0..backgrounds.count]) |*background| try background.writeAll("GO\n");
+    backgrounds.reset();
     var timings: std.ArrayList(u64) = .empty;
     defer timings.deinit(a);
     var elapsed_ns: i128 = 0;
@@ -124,7 +191,7 @@ pub fn main(init: std.process.Init) !void {
                 var echo: [64]u8 = undefined;
                 const start = clock();
                 try pty.writeAll(token);
-                try receive(&pty, &wake, echo[0..token.len], start + timeout);
+                try receive(&pty, &wake, &backgrounds, echo[0..token.len], start + timeout);
                 const duration: u64 = @intCast(clock() - start);
                 if (!std.mem.eql(u8, token, echo[0..token.len])) return error.CorruptEcho;
                 if (index >= 32) timings.appendAssumeCapacity(duration);
@@ -139,7 +206,7 @@ pub fn main(init: std.process.Init) !void {
             while (remaining > 0) {
                 var buffer: [16384]u8 = undefined;
                 const chunk = buffer[0..@min(buffer.len, remaining)];
-                try receive(&pty, &wake, chunk, start + timeout);
+                try receive(&pty, &wake, &backgrounds, chunk, start + timeout);
                 for (chunk) |byte| if (byte != 0) return error.CorruptOutput;
                 hash.update(chunk);
                 remaining -= chunk.len;
@@ -150,11 +217,22 @@ pub fn main(init: std.process.Init) !void {
             digest_hex = std.fmt.bytesToHex(digest, .lower);
         },
     }
+    const background_elapsed_ns = clock() - backgrounds.started;
+    const stalled_buffered = if (cfg.load == .stalled) backgrounds.ptys[0].pendingOutputBytes() else 0;
+    for (backgrounds.bytes[0..backgrounds.count], 0..) |bytes, index| {
+        if (cfg.load != .idle and !(cfg.load == .stalled and index == 0) and bytes == 0) return error.BackgroundStarved;
+    }
     try exited(&pty, &wake, clock() + timeout);
     const result = .{
         .allocator = cfg.allocator,
         .telemetry = if (pty == .agent and cfg.telemetry) pty.agent.connection.metrics() else null,
         .backend = cfg.backend,
+        .sessions = cfg.sessions,
+        .load = cfg.load,
+        .background_bytes = backgrounds.bytes[0..backgrounds.count],
+        .background_max_gap_ns = backgrounds.max_gap_ns[0..backgrounds.count],
+        .background_elapsed_ns = background_elapsed_ns,
+        .stalled_buffered = stalled_buffered,
         .build_mode = builtin.mode,
         .zig_version = builtin.zig_version_string,
         .cols = 120,

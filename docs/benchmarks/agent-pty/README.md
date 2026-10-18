@@ -1,5 +1,8 @@
 # Dedicated PTY adapter measurements
 
+The [initial shared-connection experiment](2026-10-18-shared-pty.md) adds a separate
+1/4/8/16-session noisy/stalled matrix; it does not change pane defaults.
+
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at
 10/100 MiB with GUI-matched allocator, and 96% / 100% with the original page
