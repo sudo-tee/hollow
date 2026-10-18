@@ -35,6 +35,8 @@ const Slot = struct {
     stdout_id: u64 = 0,
     stderr_id: u64 = 0,
     file_read: bool = false,
+    pty: bool = false,
+    pty_budget: usize = 0,
     stdout: std.ArrayList(u8) = .empty,
     stderr: std.ArrayList(u8) = .empty,
 
@@ -59,7 +61,12 @@ pub const Completion = struct {
     stderr_storage: std.ArrayList(u8),
 };
 
-const Outbound = struct { kind: protocol.Kind, id: u64, bytes: []u8 };
+const Outbound = struct { kind: protocol.Kind, id: u64, stream: u64 = 0, bytes: []u8 };
+pub const Options = struct {
+    experimental_pty: bool = false,
+    context: ?*anyopaque = null,
+    notify: ?*const fn (*anyopaque) void = null,
+};
 
 pub const Connection = struct {
     allocator: std.mem.Allocator,
@@ -89,10 +96,16 @@ pub const Connection = struct {
     peer_payload: usize = protocol.max_payload,
     peer_data: usize = protocol.max_data,
     connect_deadline_ns: i128,
+    options: Options = .{},
+    notify_deadline_ns: i128 = 0,
 
     /// Returns immediately after scheduling connection work. No launch, HELLO,
     /// remote reads or pipe writes happen on the caller's thread.
     pub fn create(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !*Connection {
+        return createWithOptions(allocator, io, argv, .{});
+    }
+
+    pub fn createWithOptions(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, options: Options) !*Connection {
         if (argv.len == 0 or argv[0].len == 0 or argv.len > 4096) return error.InvalidArgument;
         const generation = try newGeneration();
         const self = try allocator.create(Connection);
@@ -106,7 +119,7 @@ pub const Connection = struct {
             if (total > protocol.max_payload or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidArgument;
             owned[i] = try arena.allocator().dupe(u8, arg);
         }
-        self.* = .{ .allocator = allocator, .io = io, .arena = arena, .argv = owned, .generation = generation, .connect_deadline_ns = now(io) + 5000 * std.time.ns_per_ms };
+        self.* = .{ .allocator = allocator, .io = io, .arena = arena, .argv = owned, .generation = generation, .connect_deadline_ns = now(io) + 5000 * std.time.ns_per_ms, .options = options };
         self.future = try io.concurrent(run, .{self});
         return self;
     }
@@ -142,7 +155,15 @@ pub const Connection = struct {
         if (parsed.value != .object) return error.InvalidPayload;
         const op = parsed.value.object.get("op") orelse return error.InvalidPayload;
         if (op != .string) return error.InvalidPayload;
-        const exec = std.mem.eql(u8, op.string, "EXEC");
+        const pty = std.mem.eql(u8, op.string, "PTY_SPAWN");
+        if (pty and !self.options.experimental_pty) return error.InvalidArgument;
+        const exec = std.mem.eql(u8, op.string, "EXEC") or pty;
+        var credit: usize = 0;
+        if (pty) {
+            const v = parsed.value.object.get("output_credit") orelse return error.InvalidPayload;
+            if (v != .integer or v.integer < 0 or v.integer > 65536) return error.InvalidPayload;
+            credit = @intCast(v.integer);
+        }
         const file_read = std.mem.eql(u8, op.string, "FS_READ");
         var out: u64 = 0;
         var err: u64 = 0;
@@ -170,7 +191,7 @@ pub const Connection = struct {
         if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
         const id = self.next_id;
         try self.enqueue(.request, id, json);
-        slot.* = .{ .id = id, .deadline_ns = now(self.io) + @as(i128, timeout_ms) * std.time.ns_per_ms, .stdout_id = out, .stderr_id = err, .file_read = file_read };
+        slot.* = .{ .id = id, .deadline_ns = now(self.io) + @as(i128, timeout_ms) * std.time.ns_per_ms, .stdout_id = out, .stderr_id = err, .file_read = file_read, .pty = pty, .pty_budget = credit };
         self.next_id += 1;
         if (exec) {
             self.last_stream = @max(out, err);
@@ -199,6 +220,7 @@ pub const Connection = struct {
         defer self.mutex.unlock(self.io);
         for (&self.slots) |*slot| {
             if (slot.id == 0 or !slot.done or slot.published) continue;
+            if (slot.pty and slot.stdout.items.len > 0) continue;
             const completion = Completion{ .id = slot.id, .generation = self.generation, .failure = slot.failure, .metadata_json = slot.metadata, .stdout_stream_id = slot.stdout_id, .stderr_stream_id = slot.stderr_id, .stdout = slot.stdout.items, .stderr = slot.stderr.items, .stdout_storage = slot.stdout, .stderr_storage = slot.stderr };
             slot.metadata = null;
             slot.stdout = .empty;
@@ -207,6 +229,48 @@ pub const Connection = struct {
             return completion;
         }
         return null;
+    }
+
+    /// Nonblocking owner-thread consumption. Credit follows consumption, never
+    /// network receipt. Terminal completions cannot overtake buffered output.
+    pub fn readPty(self: *Connection, id: u64, buffer: []u8) !usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const slot = self.find(id) orelse return error.Disconnected;
+        if (!slot.pty) return error.InvalidArgument;
+        const count = @min(buffer.len, slot.stdout.items.len);
+        if (count == 0) return 0;
+        if (!slot.remote_terminal and !self.closing and self.state == .ready) {
+            var credit: [8]u8 = undefined;
+            std.mem.writeInt(u64, &credit, count, .little);
+            try self.enqueue(.window_update, id, &credit);
+            self.queue[(self.queue_start + self.queue_len - 1) % queue_capacity].?.stream = slot.stdout_id;
+            slot.pty_budget += count;
+            self.changed.signal(self.io);
+        }
+        @memcpy(buffer[0..count], slot.stdout.items[0..count]);
+        std.mem.copyForwards(u8, slot.stdout.items, slot.stdout.items[count..]);
+        slot.stdout.items.len -= count;
+        return count;
+    }
+
+    pub fn pendingPtyBytes(self: *Connection, id: u64) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const slot = self.find(id) orelse return 0;
+        return if (slot.pty) slot.stdout.items.len else 0;
+    }
+
+    fn notify(self: *Connection) void {
+        if (self.options.notify) |callback| if (self.options.context) |context| callback(context);
+    }
+
+    /// Owner requests a single future wake without polling or doing transport I/O.
+    pub fn wakeAfter(self: *Connection, milliseconds: u32) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const deadline = now(self.io) + @as(i128, milliseconds) * std.time.ns_per_ms;
+        if (self.notify_deadline_ns == 0 or deadline < self.notify_deadline_ns) self.notify_deadline_ns = deadline;
     }
 
     pub fn freeCompletion(self: *Connection, completion: Completion) void {
@@ -223,6 +287,7 @@ pub const Connection = struct {
         defer self.mutex.unlock(self.io);
         self.closing = true;
         self.changed.broadcast(self.io);
+        self.notify();
     }
 
     /// Owner teardown only. All task cancellation joins before memory is freed.
@@ -287,10 +352,11 @@ pub const Connection = struct {
             if (slot.published) slot.deinit(self.allocator);
         }
         self.changed.broadcast(self.io);
+        self.notify();
     }
 
     fn writeLoop(self: *Connection) !void {
-        try self.writeFrame(.hello, 0, "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
+        try self.writeFrame(.hello, 0, 0, if (self.options.experimental_pty) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
         while (true) {
             try self.mutex.lock(self.io);
             var locked = true;
@@ -305,7 +371,7 @@ pub const Connection = struct {
             self.mutex.unlock(self.io);
             locked = false;
             defer self.allocator.free(frame.bytes);
-            try self.writeFrame(frame.kind, frame.id, frame.bytes);
+            try self.writeFrame(frame.kind, frame.id, frame.stream, frame.bytes);
         }
     }
 
@@ -316,6 +382,10 @@ pub const Connection = struct {
             defer self.mutex.unlock(self.io);
             if (self.closing) return error.Disconnected;
             const timestamp = now(self.io);
+            if (self.notify_deadline_ns != 0 and timestamp >= self.notify_deadline_ns) {
+                self.notify_deadline_ns = 0;
+                self.notify();
+            }
             if (self.state == .connecting and timestamp >= self.connect_deadline_ns) return error.Timeout;
             for (&self.slots) |*slot| {
                 if (slot.id == 0 or slot.remote_terminal) continue;
@@ -327,6 +397,7 @@ pub const Connection = struct {
                     slot.failure = error.Timeout;
                     slot.stdout.clearRetainingCapacity();
                     slot.stderr.clearRetainingCapacity();
+                    self.notify();
                 }
             }
         }
@@ -353,6 +424,15 @@ pub const Connection = struct {
         defer parsed.deinit();
         if (parsed.value != .object) return error.ProtocolMismatch;
         const object = parsed.value.object;
+        if (self.options.experimental_pty) {
+            const capabilities = object.get("capabilities") orelse return error.ProtocolMismatch;
+            if (capabilities != .array) return error.ProtocolMismatch;
+            var found = false;
+            for (capabilities.array.items) |value| if (value == .string and std.mem.eql(u8, value.string, "experimental.pty")) {
+                found = true;
+            };
+            if (!found) return error.ProtocolMismatch;
+        }
         const major = object.get("major") orelse return error.ProtocolMismatch;
         if (major != .integer or major.integer != 1) return error.ProtocolMismatch;
         const nonce = object.get("connection_nonce") orelse return error.ProtocolMismatch;
@@ -379,6 +459,7 @@ pub const Connection = struct {
             self.peer_data = @intCast(data);
             self.state = .ready;
             self.changed.broadcast(self.io);
+            self.notify();
         }
         while (true) {
             const frame = try self.readFrame();
@@ -398,6 +479,10 @@ pub const Connection = struct {
                 const destination = if ((slot.file_read and header.stream_id == 0) or
                     (slot.stdout_id != 0 and header.stream_id == slot.stdout_id)) &slot.stdout else if (slot.stderr_id != 0 and header.stream_id == slot.stderr_id) &slot.stderr else return error.ProtocolMismatch;
                 if (slot.abandoned) return;
+                if (slot.pty) {
+                    if (header.stream_id != slot.stdout_id or frame.payload.len > slot.pty_budget or slot.stdout.items.len + frame.payload.len > 65536) return error.ProtocolMismatch;
+                    slot.pty_budget -= frame.payload.len;
+                }
                 if (slot.stdout.items.len + slot.stderr.items.len + frame.payload.len > max_stream_bytes) {
                     try self.cancelLocked(slot);
                     slot.done = true;
@@ -422,6 +507,7 @@ pub const Connection = struct {
             },
             else => return error.ProtocolMismatch,
         }
+        self.notify();
     }
 
     fn find(self: *Connection, id: u64) ?*Slot {
@@ -430,8 +516,8 @@ pub const Connection = struct {
         return null;
     }
 
-    fn writeFrame(self: *Connection, kind: protocol.Kind, id: u64, bytes: []const u8) !void {
-        const header = try (protocol.Header{ .kind = kind, .request_id = id, .payload_len = @intCast(bytes.len) }).encode();
+    fn writeFrame(self: *Connection, kind: protocol.Kind, id: u64, sid: u64, bytes: []const u8) !void {
+        const header = try (protocol.Header{ .kind = kind, .request_id = id, .stream_id = sid, .payload_len = @intCast(bytes.len) }).encode();
         try self.child.?.stdin.?.writeStreamingAll(self.io, &header);
         try self.child.?.stdin.?.writeStreamingAll(self.io, bytes);
     }

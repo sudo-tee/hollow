@@ -62,6 +62,24 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_host_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_host_tests.step.dependOn(&install_test_agent.step);
     b.step("test-host-transport", "Run persistent transport integration tests against a native Linux agent").dependOn(&run_host_tests.step);
+    const pty_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_pty_test.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    if (b.graph.host.result.os.tag == .linux) pty_tests.root_module.linkSystemLibrary("util", .{});
+    pty_tests.root_module.addImport("build_options", b.createModule(.{ .root_source_file = b.path("src/agent_pty_build_options.zig") }));
+    const run_pty_tests = b.addRunArtifact(pty_tests);
+    run_pty_tests.has_side_effects = true;
+    run_pty_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+    const pane_agent_config = std.json.Stringify.valueAlloc(b.allocator, .{
+        .connector_argv = &[_][]const u8{ b.getInstallPath(.prefix, "host-test/hollow-agent-test"), "stdio" },
+        .argv = &[_][]const u8{ "/bin/sh", "-c", "printf PANE_ENTRY; exit 4" },
+    }, .{}) catch @panic("out of memory");
+    run_pty_tests.setEnvironmentVariable("HOLLOW_EXPERIMENTAL_AGENT_PTY", pane_agent_config);
+    run_pty_tests.step.dependOn(&install_test_agent.step);
+    b.step("test-agent-pty", "Run experimental native streaming PTY and pane-adapter tests").dependOn(&run_pty_tests.step);
     const operation_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/host_operations.zig"),
         .target = b.graph.host,
