@@ -80,6 +80,17 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_pty_tests.setEnvironmentVariable("HOLLOW_EXPERIMENTAL_AGENT_PTY", pane_agent_config);
     run_pty_tests.step.dependOn(&install_test_agent.step);
     b.step("test-agent-pty", "Run experimental native streaming PTY and pane-adapter tests").dependOn(&run_pty_tests.step);
+    const pty_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_pty_bench.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    pty_bench_module.addImport("build_options", b.createModule(.{ .root_source_file = b.path("src/agent_pty_build_options.zig") }));
+    if (b.graph.host.result.os.tag == .linux) pty_bench_module.linkSystemLibrary("util", .{});
+    const pty_bench = b.addExecutable(.{ .name = "hollow-agent-pty-bench", .root_module = pty_bench_module });
+    const install_pty_bench = b.addInstallArtifact(pty_bench, .{});
+    b.step("agent-pty-bench", "Build the headless native-versus-agent PTY benchmark").dependOn(&install_pty_bench.step);
     const operation_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/host_operations.zig"),
         .target = b.graph.host,

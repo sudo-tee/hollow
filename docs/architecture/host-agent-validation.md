@@ -494,6 +494,30 @@ not observed. Test callbacks are lightweight fixtures, not the full application
 callback bundle. No GPU rendering, native Windows GUI or baseline performance
 qualification is claimed.
 
+### Dedicated PTY adapter measurements (E1)
+
+The native Zig benchmark runs identical ready/prompt/output workloads through the
+native Linux PTY backend and experimental dedicated-agent adapter. Five
+independent paired ReleaseFast runs, each with 5,000 recorded prompt exchanges and
+10/100 MiB output, completed with exact byte checks, SHA-256 and clean exits.
+Raw compressed JSONL, source/executable hashes, ranges and conclusions are
+preserved in [the measurement report](../benchmarks/agent-pty/README.md).
+
+On this Linux client inside WSL2, median per-run prompt p99 is 0.320 ms native
+versus 0.643 ms agent. Median 10/100 MiB output throughput is 75.04/72.15 MiB/s
+native versus 11.80/12.23 MiB/s agent. The measured throughput gap blocks any
+default-switch argument. A second five-run experiment with 64 KiB host read-ahead
+did not improve throughput; its runtime change was removed and experiment patch
+preserved. Root cause is not yet identified.
+
+Final benchmark correctness smokes pass locally, through rootless Podman and
+through WSL interop; remote smoke timings are not parity measurements. The final
+build passes 65 native regressions and 49 Python harness tests; benchmark code
+cross-compiles for Windows, with native comparison explicitly Linux-only.
+The new CI benchmark smoke checks correctness, never machine-dependent thresholds.
+This is neither legacy WSL-bypass comparison nor GUI/scalability qualification;
+all dataset rows intentionally retain `qualification: false`.
+
 ## Packaged artifact discovery continuation
 
 When no explicit `artifacts`/`agent_path` is supplied, production Podman bootstrap
