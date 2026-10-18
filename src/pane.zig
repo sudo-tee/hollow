@@ -493,6 +493,9 @@ pub const Pane = struct {
 
         var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.host_wake);
         errdefer pty.deinit();
+        // Agent sessions are not local PIDs/cwd authorities, even when their
+        // connector happens to launch a local development agent.
+        self.is_remote = self.is_remote or @import("pty/pty.zig").usesAgent(&pty);
 
         self.terminal = terminal;
         self.render_state = render_state;

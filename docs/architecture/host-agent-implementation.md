@@ -1,14 +1,14 @@
 # Universal host runtime implementation
 
 The design source is `hollow-agent-architecture-plan-v4.md`. Implementation is
-staged; this change does **not** complete the entire plan or switch any pane to
-an agent PTY.
+staged; this change does **not** complete the entire plan or switch default pane
+backends. Agent pane attachment requires an explicit development override.
 
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and
   [qualification methodology](host-agent-benchmarks.md). Windows/WSL GUI baseline
-  qualification remains a prerequisite for future PTY experiments.
+  qualification remains a prerequisite for a default PTY backend switch.
 * PR 1: GUI-independent Linux agent, bounded read-only filesystem operations and
   non-PTY exec, protocol tests, local-subprocess conformance harness.
 * PR 2: test-harness Podman connector, checksum-verified versioned installation,
@@ -53,15 +53,19 @@ an agent PTY.
   HELLO-opted-in controlling terminals, streamed output with byte credits,
   bounded binary input, resize/SIGWINCH and supervised close/exit. Eleven real
   PTY tests pass locally, through rootless Podman, and through `wsl.exe` interop.
-  [Wire contract and interactive client](agent-pty-experiment.md). No GUI pane is
-  migrated; Windows baseline/performance/failure-isolation rollout gates stay open.
+  [Wire contract and interactive client](agent-pty-experiment.md).
+* Experimental native PTY adapter: bounded credit-based streaming, queued input
+  with remote-backpressure retries, resize, wakeups and drain-before-exit integrate
+  with the pane PTY interface. `HOLLOW_EXPERIMENTAL_AGENT_PTY` explicitly selects
+  one agent connection per pane, with no automatic deployment or replay. Native
+  Windows GUI execution and baseline/performance rollout gates stay open.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
 RPCs use the shared Zig dispatcher. `hollow.host.connect({id, argv})` remains an
 explicit subprocess escape hatch. Native Windows qualification and host-aware project
 load/bootstrap/write migration are not implemented yet. Existing
-`hollow.process` and all PTYs retain their behavior.
+`hollow.process` and default PTY selection retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
 
 ## Build and test

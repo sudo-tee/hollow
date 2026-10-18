@@ -4,6 +4,7 @@ const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
 const shell_integration = @import("../shell_integration.zig");
 const c = @cImport({
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("errno.h");
     @cInclude("fcntl.h");
     @cInclude("pty.h");

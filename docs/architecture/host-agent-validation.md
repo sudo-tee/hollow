@@ -448,11 +448,28 @@ implementation; all 16 ordinary local fs/exec conformance cases still pass.
 CI is configured for local and Podman PTY cases; no hosted result is claimed.
 
 These are Linux PTY correctness tests, not Windows GUI execution or benchmark
-qualification. Native host streaming APIs, GUI backend/pane attachment, terminal
-rendering integration, full crash/descendant stress and input-latency/throughput
-comparisons remain unfinished. Existing WSL bypass and all production defaults
+qualification. Native streaming and experimental pane selection are now implemented
+as described below; rendered GUI integration, full crash/descendant stress and
+input-latency/throughput comparisons remain unfinished. Existing WSL bypass and all production defaults
 remain active. The Python interactive client is an experiment, not a production
 Lua/PTy API or a release gate waiver.
+
+### Native streaming adapter and explicit pane selection
+
+`test-agent-pty` passes 20 tests locally and with adapter sessions routed through
+rootless Podman and real `wsl.exe` interop. This count includes imported native
+PTY/protocol unit tests and local-only wake/entry-point fixtures, not 20 remote
+agent cases. Coverage includes 2 MiB streamed raw output with a 64 KiB pending
+bound, exit/drain ordering, resize/Ctrl-C, SHA-256 verification of ordered input
+after genuine remote queue exhaustion, atomic local input admission, failed launch,
+scheduled wakes, connection-loss pane isolation and explicit pane spawn selection.
+The native host regression run passes 65 tests including this target.
+
+Windows adapter compile checks pass with the headless build-options stub. GUI
+rendering/execution is not tested; the stub does not qualify shell integration.
+CI now includes native local/Podman runs and Windows adapter compilation, but no
+hosted result is claimed. `HOLLOW_EXPERIMENTAL_AGENT_PTY` is a process-wide explicit
+development override, not Lua workspace policy or a default backend change.
 
 ## Packaged artifact discovery continuation
 

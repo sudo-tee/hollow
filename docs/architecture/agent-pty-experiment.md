@@ -1,8 +1,9 @@
 # Experimental agent PTYs
 
 The Linux agent now runs real PTYs behind an explicit protocol opt-in. This
-experiment does **not** switch Hollow panes or replace WSL bypass. It supplies
-the agent/session half of the next PTY integration step, not GUI qualification.
+experiment includes a bounded native stream adapter and explicit development-only
+pane opt-in. It does **not** change default pane backends or replace WSL bypass,
+and headless adapter tests are not GUI qualification.
 
 ## Try it
 
@@ -19,6 +20,39 @@ Optional `--connector-argv '<JSON argv>'` opens the same agent through a selecte
 `podman exec -i`, `wsl.exe --exec`, or `ssh -T` command. Configure/authenticate the
 transport yourself; this client does not implement bootstrap or host-key policy.
 Never pass `-t`/`-tt` to the outer launcher: only the agent allocates the PTY.
+
+## Experimental pane attachment
+
+Launch Hollow with an explicit JSON configuration (absolute connector paths are
+recommended):
+
+```sh
+export HOLLOW_EXPERIMENTAL_AGENT_PTY='{"connector_argv":["/absolute/path/hollow-agent","stdio"],"argv":["/bin/sh","-i"],"cwd":"/","env":[{"key":"TERM","value":"xterm-256color"}]}'
+```
+
+Every new pane in that process then opens its own connection/session. Unset the
+variable to retain native/WSL bypass selection. Invalid configuration or an
+unsupported agent fails closed, never silently falls back. Launch-command panes
+are rejected rather than ignoring their command. This development override does
+not deploy agents or infer remote argv, cwd, or environment from native spawn
+settings; configure those explicitly. Lua workspace/host policy integration is
+still pending. Agent sessions expose no local PID and disable local cwd inference.
+
+The adapter starts asynchronously, signals the existing pane wake callback, queues
+at most 64 KiB input, and consumes at most 64 KiB pending output. Output credit
+follows consumption; terminal completion cannot overtake buffered output. Input
+is chunked to 16 KiB with one control request in flight, and a full remote queue
+retries retained bytes after a scheduled wake. Resize is coalesced. Closing the
+pane destroys its connection and invokes agent connection-scoped cleanup; no
+reconnect or replay is attempted.
+
+```sh
+zig build --build-file build-agent.zig test-agent-pty -Doptimize=ReleaseSafe
+```
+
+This headless target tests the adapter and pane PTY union, not a rendered pane.
+`HOLLOW_TEST_CONNECTOR_ARGV` selects a remote connector for adapter cases; pane
+entry-point and wake tests still use their explicit local fixture.
 
 ## Experimental wire contract
 
@@ -78,7 +112,9 @@ Eleven tests pass locally, through rootless Podman, and through real `wsl.exe`
 invoked from Linux/Windows interop. Ordinary fs/exec conformance remains green.
 These results do not qualify native Windows GUI behavior, latency, throughput,
 OOM/fork-bomb/guardian-death stress, or hostile PTY clients. ARM64 is cross-built,
-not runtime-tested. The Python client is deliberately separate from Hollow's
-native host manager and pane backends. Next integration must add a bounded native
-stream/session adapter, then opt-in pane attachment and real baseline comparisons;
-it must not replace bypass/default PTYs merely because these headless tests pass.
+not runtime-tested. Native adapter tests additionally cover multi-megabyte output,
+exact input across real backpressure, wakeups, exit/drain ordering, transport-loss
+isolation, and explicit pane backend selection. Windows adapter code is
+cross-compiled, not executed. Rendered GUI lifecycle and baseline performance
+comparisons remain required before any default switch. The adapter uses one
+connection per pane, not HostManager session multiplexing or persistent sessions.
