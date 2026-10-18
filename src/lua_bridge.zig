@@ -118,6 +118,8 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.async", .source = @embedFile("lua/hollow/async.lua") },
     .{ .name = "hollow.host", .source = @embedFile("lua/hollow/host.lua") },
     .{ .name = "hollow.host.podman", .source = @embedFile("lua/hollow/host/podman.lua") },
+    .{ .name = "hollow.host.container", .source = @embedFile("lua/hollow/host/container.lua") },
+    .{ .name = "hollow.host.docker", .source = @embedFile("lua/hollow/host/docker.lua") },
     .{ .name = "hollow.host.artifacts", .source = @embedFile("lua/hollow/host/artifacts.lua") },
     .{ .name = "hollow.host.bootstrap", .source = @embedFile("lua/hollow/host/bootstrap.lua") },
     .{ .name = "hollow.host.wsl", .source = @embedFile("lua/hollow/host/wsl.lua") },

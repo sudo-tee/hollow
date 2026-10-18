@@ -39,6 +39,11 @@ an agent PTY.
   verification, forced-SFTP deployment and persistent non-TTY agent transport.
   Production Lua integration and all 16 common conformance tests pass against an
   owned non-root SSH fixture; native Windows and network fault gates remain open.
+* PR 6, in progress: minimal Docker connector shares existing-container selection,
+  immutable IDs and bootstrap policy with Podman. Optional context is applied to
+  every command. Common contract tests and CLI-compatible Podman integration pass;
+  real Docker runner is configured but not locally verified. No agent/core
+  handlers or PTYs change, and the fs/exec release gate is not yet complete.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
@@ -92,7 +97,7 @@ a preinstalled agent; automatic deployment is not promised there.
    promises. Preserve `hollow.process` defaults. No remote I/O runs in Lua's
    owner thread; runtime reload cancels and joins the previous manager before
    its Lua state is destroyed, invalidating old generations.
-3. PR 4–6: finish WSL/SSH qualification; add Docker connector; shared conformance,
+3. PR 4–6: finish WSL/SSH/Docker qualification; shared conformance,
    verified deployment, watchdogs, generation handling and release hardening.
 4. PR 7: extract PTY engine without a backend change, only after reproducible
    legacy WSL measurements exist.

@@ -165,6 +165,39 @@ class Podman:
             self._run(["rm", "--force", self.container], check=False)
 
 
+class Docker:
+    """Preinstalled agent only; container lifecycle and deployment stay elsewhere."""
+    def __init__(self, agent_path, container, executable="docker", context=None):
+        if not isinstance(agent_path, str) or not agent_path.startswith("/") or "\0" in agent_path:
+            raise ConnectorError("Docker agent path must be absolute without NUL")
+        if not isinstance(container, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", container):
+            raise ConnectorError("invalid Docker container name or ID")
+        if not isinstance(executable, str) or not executable or "\0" in executable:
+            raise ConnectorError("invalid Docker executable")
+        if context is not None and (not isinstance(context, str) or not context or context.startswith("-") or "\0" in context or len(context) > 256):
+            raise ConnectorError("invalid Docker context")
+        self.agent_path, self.container = agent_path, container
+        self.prefix = [executable] + (["--context", context] if context else [])
+
+    def connect(self):
+        try:
+            probe = subprocess.run([*self.prefix, "container", "inspect", "--format", "{{.Id}} {{.State.Running}}", self.container],
+                                   capture_output=True, timeout=20, check=False)
+            match = re.fullmatch(rb"([a-fA-F0-9]{64}) true\s*", probe.stdout)
+            if probe.returncode or not match:
+                raise ConnectorError("Docker container unavailable or inspect response invalid")
+            self.container = match[1].decode("ascii").lower()
+            child = subprocess.Popen([*self.prefix, "exec", "-i", self.container, self.agent_path, "stdio"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     bufsize=0, start_new_session=True)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ConnectorError(f"cannot launch Docker agent: {exc}") from exc
+        return ProcessConnection(child)
+
+    def close(self):
+        pass  # Never remove, stop or create caller-owned containers.
+
+
 class WSL:
     """Connect to an already-installed Linux agent through the native WSL launcher."""
     def __init__(self, agent_path: str, distro: str, user: str | None = None,

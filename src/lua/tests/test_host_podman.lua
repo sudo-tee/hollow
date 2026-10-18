@@ -1,6 +1,8 @@
 local harness = require("tests.harness")
 
-describe("hollow.host.podman", function()
+-- Both CLIs must honor the identical existing-container contract.
+for _, engine in ipairs({ "podman", "docker" }) do
+describe("hollow.host." .. engine, function()
   local env, queue, now
 
   local function fulfilled(value)
@@ -28,7 +30,7 @@ describe("hollow.host.podman", function()
     local home = config.home or "/home/worker"
     local function execute(argv)
       commands[#commands + 1] = argv
-      if argv[1] ~= (config.executable or "podman") then return result(127, "", "missing executable") end
+      if argv[1] ~= (config.executable or engine) then return result(127, "", "missing executable") end
       if argv[2] == "container" and argv[3] == "inspect" then
         if config.inspect_error then return config.inspect_error end
         return result(config.running == false and 0 or 0, immutable .. " " .. (config.running == false and "false" or "true") .. "\n")
@@ -90,7 +92,7 @@ describe("hollow.host.podman", function()
 
   local function start(f, opts)
     opts = opts or { id = "agent", container = "worker", agent_path = "/opt/hollow-agent" }
-    return require("hollow.host.podman").connect(f.hosts, opts)
+    return require("hollow.host." .. engine).connect(f.hosts, opts)
   end
 
   local function install_bundle(native, directory, contents)
@@ -126,7 +128,7 @@ describe("hollow.host.podman", function()
     local f = fixture({ arch = "amd64\n" })
     local p = start(f)
     assert.are.equal("fulfilled", p:status())
-    assert.are.same({ id = "agent", argv = { "podman", "exec", "-i", string.rep("a", 64), "/opt/hollow-agent", "stdio" } }, f.connects[1])
+    assert.are.same({ id = "agent", argv = { engine, "exec", "-i", string.rep("a", 64), "/opt/hollow-agent", "stdio" } }, f.connects[1])
     assert.are.equal(string.rep("a", 64), f.commands[2][3])
     assert.are.equal(string.rep("a", 64), f.commands[3][3])
     assert.are.equal(0, #f.closes)
@@ -141,20 +143,20 @@ describe("hollow.host.podman", function()
     f.config.pending_exec.resolve(result(0, string.rep("a", 64) .. " true\n"))
     assert.are.equal("fulfilled", p:status())
     assert.are.equal("worker", f.commands[1][6])
-    assert.are.same({ id = "agent", argv = { "podman", "exec", "-i", string.rep("a", 64), "/opt/agent", "stdio" } }, f.connects[1])
+    assert.are.same({ id = "agent", argv = { engine, "exec", "-i", string.rep("a", 64), "/opt/agent", "stdio" } }, f.connects[1])
   end)
 
   it("validates all arguments before calling local_host", function()
     local effects = 0
     local hosts = { local_host = function() effects = effects + 1; return fulfilled({}) end, connect = function() effects = effects + 1 end }
-    local podman = require("hollow.host.podman")
+    local connector = require("hollow.host." .. engine)
     for _, opts in ipairs({
       { id = "x", container = "--help", agent_path = "/agent" },
       { id = "x", container = "bad/name", agent_path = "/agent" },
       { id = "x", container = "worker", agent_path = "relative" },
       { id = "x\0y", container = "worker", agent_path = "/agent" },
       { id = "x", container = "worker", timeout_ms = 300001, agent_path = "/agent" },
-    }) do assert.has_error(function() podman.connect(hosts, opts) end) end
+    }) do assert.has_error(function() connector.connect(hosts, opts) end) end
     assert.are.equal(0, effects)
   end)
 
@@ -166,7 +168,7 @@ describe("hollow.host.podman", function()
       { path = "relative", sha256 = string.rep("a", 64) },
       { path = "/tmp/agent\0bad", sha256 = string.rep("a", 64) },
     }) do
-      assert.has_error(function() require("hollow.host.podman").connect(hosts, { id = "x", container = "worker", artifacts = { x86_64 = artifact } }) end)
+      assert.has_error(function() require("hollow.host." .. engine).connect(hosts, { id = "x", container = "worker", artifacts = { x86_64 = artifact } }) end)
     end
     assert.are.equal(0, effects)
   end)
@@ -193,8 +195,8 @@ describe("hollow.host.podman", function()
     assert.are.equal(1, #f.commands)
   end)
 
-  it("maps missing podman and propagates native exec errors", function()
-    local f = fixture({ native_error = { code = "not_found", message = "podman missing" } })
+  it("maps missing executable and propagates native exec errors", function()
+    local f = fixture({ native_error = { code = "not_found", message = engine .. " missing" } })
     local p = start(f)
     assert.are.equal("connector_unavailable", p:error().code)
     local g = fixture({ native_error = { code = "permission_denied", message = "denied" } })
@@ -218,7 +220,7 @@ describe("hollow.host.podman", function()
       assert.is_not.equal("run", argv[2])
       assert.is_not.equal("rm", argv[2])
     end
-    assert.are.same({ id = "agent", argv = { "podman", "exec", "-i", string.rep("a", 64), "/home/worker/.cache/hollow/agents/linux-x86_64/" .. digest .. "/hollow-agent", "stdio" } }, f.connects[1])
+    assert.are.same({ id = "agent", argv = { engine, "exec", "-i", string.rep("a", 64), "/home/worker/.cache/hollow/agents/linux-x86_64/" .. digest .. "/hollow-agent", "stdio" } }, f.connects[1])
   end)
 
   it("preserves newline bytes in HOME when constructing installed target", function()
@@ -327,7 +329,7 @@ describe("hollow.host.podman", function()
     local watchdog = table.remove(queue, 1)
     watchdog.fn()
     assert.are.equal("timeout", p:error().code)
-    for _, argv in ipairs(f.commands) do assert.are.equal("podman", argv[1]) end
+    for _, argv in ipairs(f.commands) do assert.are.equal(engine, argv[1]) end
   end)
 
   it("passes shell paths and digests as argv data, never interpolated", function()
@@ -384,7 +386,7 @@ describe("hollow.host.podman", function()
     assert.are.equal("cancelled", p:error().code)
   end)
 
-  it("discovers default artifacts before issuing any Podman command", function()
+  it("discovers default artifacts before issuing any container command", function()
     local f = fixture()
     install_bundle(f.native, "/opt/hollow/agents", string.rep("a", 64) .. "  linux-x86_64/hollow-agent\n" .. string.rep("b", 64) .. "  linux-aarch64/hollow-agent\n")
     local info = f.native.info
@@ -396,7 +398,7 @@ describe("hollow.host.podman", function()
     f.native.info = info
     resolve_info({ executable_dir = "/opt/hollow" })
     assert.are.equal("fulfilled", p:status())
-    assert.are.equal("podman", f.commands[1][1])
+    assert.are.equal(engine, f.commands[1][1])
     local cp
     for _, argv in ipairs(f.commands) do if argv[2] == "cp" then cp = argv end end
     assert.is_truthy(cp)
@@ -431,12 +433,12 @@ describe("hollow.host.podman", function()
     local effects = 0
     local hosts = { local_host = function() effects = effects + 1; return fulfilled({}) end, connect = function() effects = effects + 1 end }
     assert.has_error(function()
-      require("hollow.host.podman").connect(hosts, { id = "agent", container = "worker", agent_dir = "relative" })
+      require("hollow.host." .. engine).connect(hosts, { id = "agent", container = "worker", agent_dir = "relative" })
     end)
     assert.are.equal(0, effects)
   end)
 
-  it("does not run Podman when bundle discovery fails", function()
+  it("does not run container CLI when bundle discovery fails", function()
     local f = fixture()
     install_bundle(f.native, "/elsewhere", "invalid\n")
     local p = start(f, { id = "agent", container = "worker" })
@@ -475,3 +477,4 @@ describe("hollow.host.podman", function()
     assert.are.equal(0, #g.commands)
   end)
 end)
+end

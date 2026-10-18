@@ -184,61 +184,73 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         \\assert(assets:status()=='fulfilled',assets:error() and assets:error().message)
         \\assert(assets:value().x86_64 and assets:value().aarch64)
     );
-    const container = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_PODMAN_CONTAINER") catch null;
-    defer if (container) |bytes| std.testing.allocator.free(bytes);
-    if (container) |name| {
-        c.lua_pushlstring(state, name.ptr, name.len);
-        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "PODMAN_CONTAINER");
-        const uid = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_PODMAN_UID");
-        defer std.testing.allocator.free(uid);
-        c.lua_pushlstring(state, uid.ptr, uid.len);
-        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "PODMAN_UID");
-        try run(state,
-            \\PODMAN_ARTIFACT=assets:value().x86_64.path; PODMAN_SHA256=assets:value().x86_64.sha256
-            \\bootstrap_opts={id='podman-production',container=PODMAN_CONTAINER}
-            \\bootstrap=hollow.host.podman(bootstrap_opts)
-        );
-        try until(state, "DONE=bootstrap:status()~='pending'");
-        try run(state,
-            \\assert(bootstrap:status()=='fulfilled',bootstrap:error() and bootstrap:error().message)
-            \\bh=bootstrap:value(); bi=bh:info(); bl=bh.fs.list('/tmp'); be=bh:exec({argv={'/bin/sh','-c','printf deployed'}}); bu=bh:exec({argv={'id','-u'}})
-        );
-        try until(state, "DONE=bi:status()~='pending' and bl:status()~='pending' and be:status()~='pending' and bu:status()~='pending'");
-        try run(state,
-            \\assert(bi:value().os=='linux' and be:value().stdout=='deployed' and bl:value().eof~=nil)
-            \\assert(bu:value().stdout==PODMAN_UID..'\n')
-            \\bc=bh:exec({argv={'/bin/sh','-c','exec sleep 30'}}); assert(bc:cancel())
-        );
-        try until(state, "DONE=bc:status()~='pending'");
-        try run(state,
-            \\assert(bc:error().code=='cancelled'); assert(bh:close())
-            \\bootstrap_opts.id='podman-reuse'; reuse=hollow.host.podman(bootstrap_opts)
-        );
-        try until(state, "DONE=reuse:status()~='pending'");
-        try run(state,
-            \\assert(reuse:status()=='fulfilled',reuse:error() and reuse:error().message)
-            \\rh=reuse:value(); assert(rh.generation~=bh.generation)
-            \\corrupt=rh:exec({argv={'/bin/sh','-c','p="$HOME/.cache/hollow/agents/linux-x86_64/$1/hollow-agent"; printf broken > "$p.bad" && mv -f "$p.bad" "$p"','test',PODMAN_SHA256}})
-        );
-        try until(state, "DONE=corrupt:status()~='pending'");
-        try run(state,
-            \\assert(corrupt:value().exit_code==0); assert(rh:close())
-            \\bootstrap_opts.id='podman-repair'; repair=hollow.host.podman(bootstrap_opts)
-        );
-        try until(state, "DONE=repair:status()~='pending'");
-        try run(state,
-            \\assert(repair:status()=='fulfilled',repair:error() and repair:error().message)
-            \\assert(repair:value():close())
-            \\preinstalled=hollow.host.podman({id='podman-preinstalled',container=PODMAN_CONTAINER,agent_path=bi:value().home..'/.cache/hollow/agents/linux-x86_64/'..PODMAN_SHA256..'/hollow-agent'})
-        );
-        try until(state, "DONE=preinstalled:status()~='pending'");
-        try run(state,
-            \\assert(preinstalled:status()=='fulfilled',preinstalled:error() and preinstalled:error().message)
-            \\assert(preinstalled:value():close())
-            \\wrong=hollow.host.podman({id='podman-bad-checksum',container=PODMAN_CONTAINER,artifacts={x86_64={path=PODMAN_ARTIFACT,sha256=string.rep('0',64)}}})
-        );
-        try until(state, "DONE=wrong:status()~='pending'");
-        try run(state, "assert(wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");
+    inline for (.{ "PODMAN", "DOCKER" }) |engine| {
+        const container = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_CONTAINER") catch null;
+        defer if (container) |bytes| std.testing.allocator.free(bytes);
+        if (container) |name| {
+            c.lua_pushlstring(state, name.ptr, name.len);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "TEST_CONTAINER");
+            const uid = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_UID");
+            defer std.testing.allocator.free(uid);
+            c.lua_pushlstring(state, uid.ptr, uid.len);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_UID");
+            const engine_name = if (comptime std.mem.eql(u8, engine, "PODMAN")) "podman" else "docker";
+            c.lua_pushstring(state, engine_name);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_ENGINE");
+            inline for (.{ "EXE", "CONTEXT" }) |suffix| {
+                const bytes = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_" ++ suffix) catch null;
+                defer if (bytes) |value| std.testing.allocator.free(value);
+                if (bytes) |value| c.lua_pushlstring(state, value.ptr, value.len) else c.lua_pushnil(state);
+                c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_" ++ suffix);
+            }
+            try run(state,
+                \\CONTAINER_ARTIFACT=assets:value().x86_64.path; CONTAINER_SHA256=assets:value().x86_64.sha256
+                \\function boot_container(opts) opts[CONTAINER_ENGINE]=CONTAINER_EXE; opts.context=CONTAINER_CONTEXT; return hollow.host[CONTAINER_ENGINE](opts) end
+                \\bootstrap_opts={id=CONTAINER_ENGINE..'-production',container=TEST_CONTAINER}
+                \\bootstrap=boot_container(bootstrap_opts)
+            );
+            try until(state, "DONE=bootstrap:status()~='pending'");
+            try run(state,
+                \\assert(bootstrap:status()=='fulfilled',bootstrap:error() and bootstrap:error().message)
+                \\bh=bootstrap:value(); bi=bh:info(); bl=bh.fs.list('/tmp'); be=bh:exec({argv={'/bin/sh','-c','printf deployed'}}); bu=bh:exec({argv={'id','-u'}})
+            );
+            try until(state, "DONE=bi:status()~='pending' and bl:status()~='pending' and be:status()~='pending' and bu:status()~='pending'");
+            try run(state,
+                \\assert(bi:value().os=='linux' and be:value().stdout=='deployed' and bl:value().eof~=nil)
+                \\assert(bu:value().stdout==CONTAINER_UID..'\n')
+                \\bc=bh:exec({argv={'/bin/sh','-c','exec sleep 30'}}); assert(bc:cancel())
+            );
+            try until(state, "DONE=bc:status()~='pending'");
+            try run(state,
+                \\assert(bc:error().code=='cancelled'); assert(bh:close())
+                \\bootstrap_opts.id=CONTAINER_ENGINE..'-reuse'; reuse=boot_container(bootstrap_opts)
+            );
+            try until(state, "DONE=reuse:status()~='pending'");
+            try run(state,
+                \\assert(reuse:status()=='fulfilled',reuse:error() and reuse:error().message)
+                \\rh=reuse:value(); assert(rh.generation~=bh.generation)
+                \\corrupt=rh:exec({argv={'/bin/sh','-c','p="$HOME/.cache/hollow/agents/linux-x86_64/$1/hollow-agent"; printf broken > "$p.bad" && mv -f "$p.bad" "$p"','test',CONTAINER_SHA256}})
+            );
+            try until(state, "DONE=corrupt:status()~='pending'");
+            try run(state,
+                \\assert(corrupt:value().exit_code==0); assert(rh:close())
+                \\bootstrap_opts.id=CONTAINER_ENGINE..'-repair'; repair=boot_container(bootstrap_opts)
+            );
+            try until(state, "DONE=repair:status()~='pending'");
+            try run(state,
+                \\assert(repair:status()=='fulfilled',repair:error() and repair:error().message)
+                \\assert(repair:value():close())
+                \\preinstalled=boot_container({id=CONTAINER_ENGINE..'-preinstalled',container=TEST_CONTAINER,agent_path=bi:value().home..'/.cache/hollow/agents/linux-x86_64/'..CONTAINER_SHA256..'/hollow-agent'})
+            );
+            try until(state, "DONE=preinstalled:status()~='pending'");
+            try run(state,
+                \\assert(preinstalled:status()=='fulfilled',preinstalled:error() and preinstalled:error().message)
+                \\assert(preinstalled:value():close())
+                \\wrong=boot_container({id=CONTAINER_ENGINE..'-bad-checksum',container=TEST_CONTAINER,artifacts={x86_64={path=CONTAINER_ARTIFACT,sha256=string.rep('0',64)}}})
+            );
+            try until(state, "DONE=wrong:status()~='pending'");
+            try run(state, "assert(wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");
+        }
     }
     const distro = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_DISTRO") catch null;
     defer if (distro) |bytes| std.testing.allocator.free(bytes);
