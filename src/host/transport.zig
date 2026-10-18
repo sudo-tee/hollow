@@ -36,6 +36,7 @@ const Slot = struct {
     stderr_id: u64 = 0,
     file_read: bool = false,
     pty: bool = false,
+    job: bool = false,
     pty_budget: usize = 0,
     stdout: std.ArrayList(u8) = .empty,
     stderr: std.ArrayList(u8) = .empty,
@@ -137,6 +138,7 @@ pub const Connection = struct {
     next_stream: u64 = 2,
     last_stream: u64 = 0,
     peer_requests: usize = max_requests,
+    peer_jobs: usize = max_requests,
     peer_streams: usize = max_requests * 2,
     peer_payload: usize = protocol.max_payload,
     peer_data: usize = protocol.max_data,
@@ -196,7 +198,9 @@ pub const Connection = struct {
     }
 
     /// Submit opaque wire JSON. The public host API's byte encoding belongs in
-    /// its typed adapter, not this transport. Completed slots are never reused
+    /// its typed adapter, not this transport. Worker-job admission is separate
+    /// from request slots, leaving room for PTY controls at the job ceiling.
+    /// Completed slots are never reused
     /// before poll transfers their owned result to the consumer.
     pub fn request(self: *Connection, json: []const u8, timeout_ms: u64) !u64 {
         if (json.len == 0 or json.len > protocol.max_payload or timeout_ms == 0 or timeout_ms > 86400000) return error.InvalidArgument;
@@ -208,6 +212,7 @@ pub const Connection = struct {
         const pty = std.mem.eql(u8, op.string, "PTY_SPAWN");
         if (pty and !self.options.experimental_pty) return error.InvalidArgument;
         const exec = std.mem.eql(u8, op.string, "EXEC") or pty;
+        const job = !std.mem.eql(u8, op.string, "PTY_INPUT") and !std.mem.eql(u8, op.string, "PTY_RESIZE") and !std.mem.eql(u8, op.string, "PTY_CLOSE");
         var credit: usize = 0;
         if (pty) {
             const v = parsed.value.object.get("output_credit") orelse return error.InvalidPayload;
@@ -230,18 +235,21 @@ pub const Connection = struct {
         if (exec and @min(out, err) <= self.last_stream) return error.InvalidPayload;
         var active: usize = 0;
         var streams: usize = 0;
+        var jobs: usize = 0;
         var available: ?*Slot = null;
         for (&self.slots) |*slot| {
             if (slot.id == 0) available = slot else active += 1;
             if (slot.id != 0 and slot.stdout_id != 0) streams += 2;
+            if (slot.id != 0 and slot.job) jobs += 1;
         }
         if (active >= self.peer_requests) return error.ResourceExhausted;
+        if (job and jobs >= self.peer_jobs) return error.ResourceExhausted;
         if (exec and streams + 2 > self.peer_streams) return error.ResourceExhausted;
         const slot = available orelse return error.ResourceExhausted;
         if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
         const id = self.next_id;
         try self.enqueue(.request, id, json);
-        slot.* = .{ .id = id, .deadline_ns = now(self.io) + @as(i128, timeout_ms) * std.time.ns_per_ms, .stdout_id = out, .stderr_id = err, .file_read = file_read, .pty = pty, .pty_budget = credit };
+        slot.* = .{ .id = id, .deadline_ns = now(self.io) + @as(i128, timeout_ms) * std.time.ns_per_ms, .stdout_id = out, .stderr_id = err, .file_read = file_read, .pty = pty, .job = job, .pty_budget = credit };
         self.next_id += 1;
         if (exec) {
             self.last_stream = @max(out, err);
@@ -266,10 +274,20 @@ pub const Connection = struct {
     }
 
     pub fn poll(self: *Connection) ?Completion {
+        return self.pollMatching(null);
+    }
+
+    /// Shared owners must never steal another session's terminal/control result.
+    pub fn pollFor(self: *Connection, id: u64) ?Completion {
+        return self.pollMatching(id);
+    }
+
+    fn pollMatching(self: *Connection, id: ?u64) ?Completion {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         for (&self.slots) |*slot| {
             if (slot.id == 0 or !slot.done or slot.published) continue;
+            if (id) |wanted| if (slot.id != wanted) continue;
             if (slot.pty and slot.stdout.items.len > 0) continue;
             const completion = Completion{ .id = slot.id, .generation = self.generation, .failure = slot.failure, .metadata_json = slot.metadata, .stdout_stream_id = slot.stdout_id, .stderr_stream_id = slot.stderr_id, .stdout = slot.stdout.items, .stderr = slot.stderr.items, .stdout_storage = slot.stdout, .stderr_storage = slot.stderr };
             slot.metadata = null;
@@ -279,6 +297,27 @@ pub const Connection = struct {
             return completion;
         }
         return null;
+    }
+
+    /// Drop owner interest without closing a shared connection. Keep a tombstone
+    /// until the terminal response arrives, so late DATA cannot alias a new job.
+    pub fn abandon(self: *Connection, id: u64) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const slot = self.find(id) orelse return;
+        if (slot.remote_terminal) {
+            slot.deinit(self.allocator);
+            return;
+        }
+        slot.abandoned = true;
+        slot.published = true;
+        slot.done = true;
+        slot.stdout.clearRetainingCapacity();
+        slot.stderr.clearRetainingCapacity();
+        // A full outbound queue must not turn per-session close into a global
+        // disconnect. The watchdog retries cancellation once queue space opens.
+        self.cancelLocked(slot) catch {};
+        self.changed.signal(self.io);
     }
 
     /// Nonblocking owner-thread consumption. Credit follows consumption, never
@@ -465,6 +504,12 @@ pub const Connection = struct {
             if (self.state == .connecting and timestamp >= self.connect_deadline_ns) return error.Timeout;
             for (&self.slots) |*slot| {
                 if (slot.id == 0 or slot.remote_terminal) continue;
+                if (slot.abandoned and !slot.cancel_sent) {
+                    self.cancelLocked(slot) catch |err| switch (err) {
+                        error.ResourceExhausted => continue,
+                        else => return err,
+                    };
+                }
                 if (slot.cancel_deadline_ns != 0 and timestamp >= slot.cancel_deadline_ns) return error.Timeout;
                 if (!slot.done and timestamp >= slot.deadline_ns) {
                     try self.cancelLocked(slot);
@@ -543,7 +588,8 @@ pub const Connection = struct {
             defer self.mutex.unlock(self.io);
             @memcpy(self.nonce[0..nonce.string.len], nonce.string);
             self.nonce_len = nonce.string.len;
-            self.peer_requests = @intCast(@min(requests, jobs));
+            self.peer_requests = @intCast(requests);
+            self.peer_jobs = @intCast(jobs);
             self.peer_streams = @intCast(streams);
             self.peer_payload = @intCast(payload);
             self.peer_data = @intCast(data);
@@ -683,4 +729,58 @@ test "consumed PTY credit is inline, bounded and allocation-free" {
     connection.queue_len = queue_capacity;
     try std.testing.expectError(error.ResourceExhausted, connection.readPty(1, &buffer));
     try std.testing.expectEqualStrings("llo", slot.stdout.items);
+}
+
+test "shared polling only transfers selected completion and abandon retires late frames" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var connection: Connection = .{ .allocator = a, .io = std.testing.io, .arena = arena, .argv = &.{}, .generation = 1, .connect_deadline_ns = 0, .state = .ready };
+    defer {
+        for (&connection.slots) |*slot| slot.deinit(a);
+        for (connection.queue) |entry| if (entry) |frame| a.free(frame.bytes);
+    }
+    connection.slots[0] = .{ .id = 1, .done = true, .remote_terminal = true };
+    connection.slots[1] = .{ .id = 2, .done = true, .remote_terminal = true };
+    try std.testing.expect(connection.pollFor(3) == null);
+    const second = connection.pollFor(2).?;
+    defer connection.freeCompletion(second);
+    try std.testing.expectEqual(@as(u64, 2), second.id);
+    const first = connection.pollFor(1).?;
+    defer connection.freeCompletion(first);
+    try std.testing.expectEqual(@as(u64, 1), first.id);
+    connection.slots[0] = .{ .id = 3, .pty = true, .stdout_id = 2, .pty_budget = 0 };
+    // Force deferred cancel admission, then let watchdog-equivalent retry work.
+    connection.queue_len = queue_capacity;
+    connection.abandon(3);
+    try std.testing.expect(connection.slots[0].published);
+    try std.testing.expect(!connection.slots[0].cancel_sent);
+    connection.queue_len = 0;
+    try connection.cancel(3);
+    // cancel() only acts on live slots; tombstone retry uses cancelLocked().
+    try connection.cancelLocked(&connection.slots[0]);
+    try std.testing.expect(connection.slots[0].cancel_sent);
+    var late_data = [_]u8{1};
+    try connection.accept(.{ .header = .{ .kind = .data, .request_id = 3, .stream_id = 2, .payload_len = 1 }, .payload = &late_data, .owned = false });
+    try std.testing.expectEqual(@as(usize, 0), connection.pendingPtyBytes(3));
+    var response = [_]u8{ '{', '}' };
+    try connection.accept(.{ .header = .{ .kind = .response, .request_id = 3, .stream_id = 0, .payload_len = 2 }, .payload = &response, .owned = false });
+    try std.testing.expectEqual(@as(u64, 0), connection.slots[0].id);
+    try std.testing.expect(connection.poll() == null);
+    try std.testing.expectEqual(State.ready, connection.status());
+}
+
+test "job capacity leaves separate request slots for PTY controls" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    var connection: Connection = .{ .allocator = a, .io = std.testing.io, .arena = arena, .argv = &.{}, .generation = 1, .connect_deadline_ns = 0, .state = .ready, .peer_jobs = 16, .next_id = 17 };
+    defer {
+        for (&connection.slots) |*slot| slot.deinit(a);
+        for (connection.queue) |entry| if (entry) |frame| a.free(frame.bytes);
+    }
+    for (connection.slots[0..16], 0..) |*slot, index| slot.* = .{ .id = index + 1, .job = true };
+    try std.testing.expectError(error.ResourceExhausted, connection.request("{\"op\":\"HOST_INFO\"}", 1000));
+    for (0..16) |_| _ = try connection.request("{\"op\":\"PTY_RESIZE\",\"session_id\":1,\"rows\":40,\"cols\":120}", 1000);
+    try std.testing.expectError(error.ResourceExhausted, connection.request("{\"op\":\"PTY_INPUT\",\"session_id\":1,\"bytes_b64\":\"\"}", 1000));
 }

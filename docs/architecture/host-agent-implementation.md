@@ -76,6 +76,12 @@ backends. Agent pane attachment requires an explicit development override.
   comparisons now show near-native local median throughput. Fixed-size optional
   diagnostics, regression tests and [raw evidence](../benchmarks/agent-pty/2026-10-18-throughput-fix.md)
   ship with the changes; native Windows GUI/multiplexing gates remain open.
+* Initial E2/E3 adapter: explicit owner-thread shared connections support up to
+  16 PTYs with filtered completion delivery, job/control-slot separation,
+  per-session cancellation tombstones and safe owner-first shutdown. Pane
+  selection stays dedicated. The same benchmark now compares native/dedicated/
+  shared transports with idle, noisy and stalled backgrounds; see the
+  [initial shared report](../benchmarks/agent-pty/2026-10-18-shared-pty.md).
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected

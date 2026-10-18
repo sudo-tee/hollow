@@ -54,6 +54,39 @@ This headless target tests the adapter and pane PTY union, not a rendered pane.
 `HOLLOW_TEST_CONNECTOR_ARGV` selects a remote connector for adapter cases; pane
 entry-point and wake tests still use their explicit local fixture.
 
+### Explicit shared native adapter (research only)
+
+`SharedConnection.create` and `AgentPty.spawnShared` let a headless experiment
+attach up to 16 adapters to one prepared connector. This is not a new pane
+configuration or HostManager backend: the development pane override above still
+creates one dedicated connection per pane. No persistence/replay is added.
+
+The wrapper and all session methods are owner-thread-only. It owns one aggregate
+wake callback; its caller services every attached session after a wake. Each
+adapter polls only its own spawn/control IDs, so a fast sibling cannot consume
+another session's completion. Stream IDs are allocated in submission order,
+including when handles are created and first serviced in different orders.
+
+Job admission and request-slot admission are separate: the agent's existing
+16-job limit still includes PTYs, EXECs and filesystem workers, while up to 32
+requests leave room for each PTY's one input/resize RPC. Full admission retries
+on a scheduled wake rather than silently failing the session.
+
+Closing a shared adapter cancels only its spawn and pending control. Bounded
+tombstones discard late frames and retire only after terminal acknowledgement;
+if the outbound queue is full, the watchdog retries cancellation. A cancellation
+deadline failure can still disconnect the transport, as before. Destroying the
+shared owner closes the connection for all sessions but retains its storage until
+the last adapter closes; owner handle becomes invalid on destruction. The wake
+callback/context must therefore outlive all attached adapters. Unexpected
+transport loss intentionally fails every attached PTY: sharing changes the fault
+boundary, not just connection count.
+
+Regression cases cover 1/4/8/16 sessions with reverse submission/consumption,
+full-load input/resize, failed launch isolation, stopped consumption at 64 KiB,
+close/replacement and owner-first teardown. They are correctness tests, not
+shared-connection performance qualification.
+
 ### Real pane and terminal integration
 
 A separate headless graph links the actual terminal engine and exercises
@@ -137,5 +170,6 @@ exact input across real backpressure, wakeups, exit/drain ordering, transport-lo
 isolation, and explicit pane backend selection. Windows adapter code is
 cross-compiled, not executed. Real pane/terminal-state cases additionally pass
 locally, through rootless Podman and through WSL interop. Rendered GUI lifecycle and baseline performance
-comparisons remain required before any default switch. The adapter uses one
-connection per pane, not HostManager session multiplexing or persistent sessions.
+comparisons remain required before any default switch. Pane attachment uses one
+connection per pane. Explicit shared native experiments do not add HostManager
+session multiplexing or persistent sessions.

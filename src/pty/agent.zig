@@ -1,5 +1,5 @@
-//! Experimental pane-compatible PTY. One explicitly configured agent connection
-//! per pane; no fallback, reconnect/replay, bootstrap or workspace policy here.
+//! Experimental pane-compatible PTY. Dedicated by default; explicitly shared
+//! ownership is available to experiments, not inferred from pane configuration.
 const std = @import("std");
 const io = @import("../io.zig");
 const transport = @import("../host/transport.zig");
@@ -7,16 +7,62 @@ const Wake = @import("wake.zig").Wake;
 
 pub const Env = struct { key: []const u8, value: []const u8 };
 pub const Config = struct {
+    // Connection options apply only to dedicated spawn(); shared sessions use
+    // the already-created owner's transport and callback.
     telemetry: bool = false,
-    connector_argv: []const []const u8,
+    connector_argv: []const []const u8 = &.{},
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
     env: []const Env = &.{},
 };
 
+/// Owner-thread-only lifetime/admission wrapper. One wake covers all sessions;
+/// caller must service every session after it fires. No per-pane callback fanout.
+pub const SharedConnection = struct {
+    allocator: std.mem.Allocator,
+    connection: *transport.Connection,
+    references: usize = 1,
+    sessions: usize = 0,
+    closed: bool = false,
+    pub const max_sessions = 16;
+
+    pub fn create(allocator: std.mem.Allocator, argv: []const []const u8, wake: Wake) !*SharedConnection {
+        return createWithTelemetry(allocator, argv, wake, false);
+    }
+
+    pub fn createWithTelemetry(allocator: std.mem.Allocator, argv: []const []const u8, wake: Wake, telemetry: bool) !*SharedConnection {
+        const self = try allocator.create(SharedConnection);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .connection = try transport.Connection.createWithOptions(allocator, io.get(), argv, .{
+            .experimental_pty = true,
+            .context = wake.context,
+            .notify = wake.callback,
+            .telemetry = telemetry,
+        }) };
+        return self;
+    }
+
+    fn release(self: *SharedConnection) void {
+        self.references -= 1;
+        if (self.references == 0) {
+            self.connection.destroy();
+            self.allocator.destroy(self);
+        }
+    }
+
+    /// Invalidates the owner's handle; live sessions retain transport storage
+    /// until their own teardown, observe disconnect, and must still be closed.
+    pub fn destroy(self: *SharedConnection) void {
+        self.closed = true;
+        self.connection.close();
+        self.release();
+    }
+};
+
 pub const AgentPty = struct {
     allocator: std.mem.Allocator,
     connection: *transport.Connection,
+    shared: ?*SharedConnection = null,
     spawn_json: []u8,
     session: ?u64 = null,
     control: ?u64 = null,
@@ -32,13 +78,22 @@ pub const AgentPty = struct {
     exit_status: ?u32 = null,
 
     pub fn spawn(allocator: std.mem.Allocator, config: Config, cols: u16, rows: u16, wake: Wake) !AgentPty {
+        return init(allocator, config, cols, rows, wake, null);
+    }
+
+    pub fn spawnShared(allocator: std.mem.Allocator, shared: *SharedConnection, config: Config, cols: u16, rows: u16) !AgentPty {
+        if (shared.closed) return error.Disconnected;
+        if (shared.sessions == SharedConnection.max_sessions) return error.ResourceExhausted;
+        return init(allocator, config, cols, rows, .{}, shared);
+    }
+
+    fn init(allocator: std.mem.Allocator, config: Config, cols: u16, rows: u16, wake: Wake, shared: ?*SharedConnection) !AgentPty {
         if (config.argv.len == 0 or config.argv.len > 4096 or rows == 0 or cols == 0 or config.env.len > 4096) return error.InvalidArgument;
-        const streams = transport.Streams{ .stdout = 2, .stderr = 4 };
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
         var json: std.Io.Writer.Allocating = .init(a);
-        try json.writer.print("{{\"op\":\"PTY_SPAWN\",\"stdout_stream_id\":{d},\"stderr_stream_id\":{d},\"rows\":{d},\"cols\":{d},\"output_credit\":65536,\"timeout_ms\":86400000,\"argv_b64\":[", .{ streams.stdout, streams.stderr, rows, cols });
+        try json.writer.print("{{\"op\":\"PTY_SPAWN\",\"rows\":{d},\"cols\":{d},\"output_credit\":65536,\"timeout_ms\":86400000,\"argv_b64\":[", .{ rows, cols });
         for (config.argv, 0..) |arg, i| {
             if (arg.len > 131072 or std.mem.indexOfScalar(u8, arg, 0) != null or (i == 0 and arg.len == 0)) return error.InvalidArgument;
             if (i > 0) try json.writer.writeAll(",");
@@ -59,21 +114,28 @@ pub const AgentPty = struct {
         }
         try json.writer.writeAll("}");
         if (json.written().len > 1024 * 1024) return error.InvalidArgument;
-        const connection = try transport.Connection.createWithOptions(allocator, io.get(), config.connector_argv, .{
+        const connection = if (shared) |owner| owner.connection else try transport.Connection.createWithOptions(allocator, io.get(), config.connector_argv, .{
             .experimental_pty = true,
             .telemetry = config.telemetry,
             .context = wake.context,
             .notify = wake.callback,
         });
-        errdefer connection.destroy();
-        _ = try connection.allocateStreams();
-        return .{ .allocator = allocator, .connection = connection, .spawn_json = try allocator.dupe(u8, json.written()), .rows = rows, .cols = cols };
+        errdefer if (shared == null) connection.destroy();
+        const spawn_json = try allocator.dupe(u8, json.written());
+        if (shared) |owner| {
+            owner.references += 1;
+            owner.sessions += 1;
+        }
+        return .{ .allocator = allocator, .connection = connection, .shared = shared, .spawn_json = spawn_json, .rows = rows, .cols = cols };
     }
 
     fn fail(self: *AgentPty) void {
         self.alive = false;
         self.exit_status = 125;
-        self.connection.close();
+        if (self.shared == null) self.connection.close() else {
+            if (self.session) |id| self.connection.abandon(id);
+            if (self.control) |id| self.connection.abandon(id);
+        }
     }
 
     fn pump(self: *AgentPty) void {
@@ -85,17 +147,35 @@ pub const AgentPty = struct {
                     self.fail();
                     return;
                 },
-                .ready => self.session = self.connection.request(self.spawn_json, 86400000) catch {
-                    self.fail();
-                    return;
+                .ready => {
+                    // Allocate IDs in submission order, not handle creation order.
+                    const streams = self.connection.allocateStreams() catch {
+                        self.fail();
+                        return;
+                    };
+                    const json = std.fmt.allocPrint(self.allocator, "{{\"stdout_stream_id\":{d},\"stderr_stream_id\":{d},{s}", .{ streams.stdout, streams.stderr, self.spawn_json[1..] }) catch {
+                        self.fail();
+                        return;
+                    };
+                    defer self.allocator.free(json);
+                    self.session = self.connection.request(json, 86400000) catch |err| {
+                        if (err == error.ResourceExhausted) {
+                            self.connection.wakeAfter(10);
+                            return;
+                        }
+                        self.fail();
+                        return;
+                    };
                 },
             }
         }
-        while (self.connection.poll()) |completion| {
+        while (self.connection.pollFor(self.session.?) orelse if (self.control) |id| self.connection.pollFor(id) else null) |completion| {
             defer self.connection.freeCompletion(completion);
             if (completion.id == self.session.?) {
                 self.alive = false;
                 self.exit_status = 125;
+                if (self.control) |id| self.connection.abandon(id);
+                self.control = null;
                 if (completion.failure == null) if (completion.metadata_json) |json| {
                     const result = std.json.parseFromSlice(struct { exit_code: u32 }, self.allocator, json, .{}) catch return;
                     defer result.deinit();
@@ -143,7 +223,11 @@ pub const AgentPty = struct {
                 self.fail();
                 return;
             };
-            self.control = self.connection.request(json, 5000) catch {
+            self.control = self.connection.request(json, 5000) catch |err| {
+                if (err == error.ResourceExhausted) {
+                    self.connection.wakeAfter(10);
+                    return;
+                }
                 self.fail();
                 return;
             };
@@ -159,7 +243,11 @@ pub const AgentPty = struct {
                 self.fail();
                 return;
             };
-            self.control = self.connection.request(json, 5000) catch {
+            self.control = self.connection.request(json, 5000) catch |err| {
+                if (err == error.ResourceExhausted) {
+                    self.connection.wakeAfter(10);
+                    return;
+                }
                 self.fail();
                 return;
             };
@@ -227,7 +315,12 @@ pub const AgentPty = struct {
     pub fn close(self: *AgentPty) void {
         if (self.closed) return;
         self.closed = true;
-        self.connection.destroy();
+        if (self.shared) |owner| {
+            if (self.session) |id| self.connection.abandon(id);
+            if (self.control) |id| self.connection.abandon(id);
+            owner.sessions -= 1;
+            owner.release();
+        } else self.connection.destroy();
         self.allocator.free(self.spawn_json);
         self.input.deinit(self.allocator);
     }

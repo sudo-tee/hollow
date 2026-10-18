@@ -66,6 +66,26 @@ class AgentPtyBenchTests(unittest.TestCase):
             with self.subTest(metrics=metrics), self.assertRaises(ValueError):
                 validate(dict(result, telemetry=metrics), config)
 
+    def test_shared_identity_and_background_progress_are_checked(self):
+        config, result = self.prompt()
+        config.update(backend="shared", sessions=4, load="stalled")
+        result.update(backend="shared", sessions=4, load="stalled", background_bytes=[0, 10, 20],
+                      background_max_gap_ns=[0, 100, 200], background_elapsed_ns=1000, stalled_buffered=65536)
+        validate(copy.deepcopy(result), config)
+        for update in ({"sessions": 8}, {"load": "idle"}, {"background_bytes": [0, 0, 20]},
+                       {"background_bytes": [1, 10, 20]}, {"background_max_gap_ns": []},
+                       {"stalled_buffered": 65537}, {"background_elapsed_ns": 0}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+
+    def test_single_session_noisy_only_is_not_a_successful_empty_dataset(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        result = subprocess.run([sys.executable, str(script), "--sessions", "1", "--load", "noisy",
+                                 "--binary", "/nonexistent/benchmark", "--output", "/nonexistent/output"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no runnable cases", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

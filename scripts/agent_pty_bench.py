@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -42,7 +43,22 @@ def validate(result: dict, config: dict) -> dict:
         raise ValueError("benchmark identity, readiness or clean exit check failed")
     if "allocator" in config and result.get("allocator") != config["allocator"]:
         raise ValueError("benchmark allocator does not match requested allocator")
-    if config.get("telemetry") and config["backend"] == "agent":
+    if "sessions" in config:
+        if result.get("sessions") != config["sessions"] or result.get("load") != config["load"]:
+            raise ValueError("benchmark session count/load mismatch")
+        counts, gaps = result.get("background_bytes"), result.get("background_max_gap_ns")
+        if (not isinstance(counts, list) or not isinstance(gaps, list)
+                or len(counts) != config["sessions"] - 1 or len(gaps) != len(counts)
+                or any(type(n) is not int or n < 0 for n in counts + gaps)
+                or type(result.get("background_elapsed_ns")) is not int or result["background_elapsed_ns"] <= 0):
+            raise ValueError("invalid bounded background counters")
+        for index, count in enumerate(counts):
+            should_progress = config["load"] != "idle" and not (config["load"] == "stalled" and index == 0)
+            if (should_progress and count == 0) or (not should_progress and count != 0):
+                raise ValueError("background starvation or unexpected idle/stalled consumption")
+        if config["backend"] != "native" and not 0 <= result.get("stalled_buffered", 65537) <= 65536:
+            raise ValueError("stalled output exceeds per-session cap")
+    if config.get("telemetry") and config["backend"] in ("agent", "shared"):
         metrics = result.get("telemetry")
         if (not isinstance(metrics, dict) or any(type(value) is not int or value < 0 for value in metrics.values())
                 or metrics.get("max_pty_buffered", 65537) > 65536
@@ -80,7 +96,9 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, default=ROOT / "zig-out/bin/hollow-agent-pty-bench")
     parser.add_argument("--agent", type=Path, default=ROOT / "zig-out/bin/hollow-agent")
     parser.add_argument("--connector-argv", help="JSON argv for a prepared agent; no automatic bootstrap")
-    parser.add_argument("--backend", choices=("both", "native", "agent"), default="both")
+    parser.add_argument("--backend", choices=("both", "all", "native", "agent", "shared"), default="both")
+    parser.add_argument("--sessions", type=int, nargs="+", default=[1], help="total foreground + background PTYs, 1..16")
+    parser.add_argument("--load", choices=("idle", "noisy", "stalled"), nargs="+", default=["idle"])
     parser.add_argument("--workload", choices=("both", "prompt", "output"), default="both")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--samples", type=int, default=5000)
@@ -92,8 +110,10 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
     if not (1 <= args.runs <= 100 and 1 <= args.samples <= 100000 and 1 <= args.timeout <= 3600
-            and all(1 <= size <= 1024 for size in args.size_mib)):
+            and all(1 <= size <= 1024 for size in args.size_mib) and all(1 <= n <= 16 for n in args.sessions)):
         parser.error("runs/samples/timeout/size outside bounded benchmark limits")
+    if all(n == 1 for n in args.sessions) and "idle" not in args.load:
+        parser.error("no runnable cases: noisy/stalled load requires at least two sessions")
     binary = args.binary.resolve()
     agent = args.agent.resolve()
     connector_json = args.connector_argv or os.environ.get("HOLLOW_TEST_CONNECTOR_ARGV")
@@ -101,14 +121,14 @@ def main() -> None:
     if (not isinstance(connector, list) or not connector
             or any(not isinstance(arg, str) or "\0" in arg for arg in connector) or not connector[0]):
         parser.error("connector must be a nonempty JSON argv array without NUL")
-    backends = ["native", "agent"] if args.backend == "both" else [args.backend]
+    backends = ["native", "agent", "shared"] if args.backend == "all" else ["native", "agent"] if args.backend == "both" else [args.backend]
     workloads = ["prompt", "output"] if args.workload == "both" else [args.workload]
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "scope": "headless dedicated PTY adapter; not WSL bypass/GUI/multiplexing qualification",
+        "scope": "headless 1..16 PTY adapters; no GUI/focus policy/fs bulk/WSL bypass or rollout qualification",
         "qualification": False, "revision": git("rev-parse", "HEAD"),
         "dirty_paths": git("status", "--short"), "source_sha256": {name: sha(ROOT / name) for name in sources},
         "binary": str(binary), "binary_sha256": sha(binary),
@@ -126,14 +146,17 @@ def main() -> None:
 
         emit(metadata)
         for run in range(args.runs):
-            for workload in workloads:
+            for sessions, load, workload in itertools.product(args.sessions, args.load, workloads):
+                if sessions == 1 and load != "idle":
+                    continue  # A noisy neighbor requires at least two sessions.
                 for size in ([0] if workload == "prompt" else args.size_mib):
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
-                                  "allocator": args.allocator, "telemetry": args.telemetry,
-                                  "bytes": size * 1024 * 1024 if size else 1,
-                                  "timeout_ms": min(args.timeout, 30) * 1000,
-                                  "connector_argv": connector if backend == "agent" else []}
+                                   "allocator": args.allocator, "telemetry": args.telemetry,
+                                   "sessions": sessions, "load": load,
+                                    "bytes": size * 1024 * 1024 if size else 1,
+                                    "timeout_ms": min(args.timeout, 30) * 1000,
+                                   "connector_argv": connector if backend in ("agent", "shared") else []}
                         try:
                             completed = subprocess.run([str(binary), json.dumps(config)], check=True,
                                                        capture_output=True, text=True, timeout=args.timeout)
@@ -145,7 +168,7 @@ def main() -> None:
                         emit({"kind": "measurement", "run": run, "config": config,
                               "result": result, "stderr": completed.stderr})
                         summary = result.get("latency_ms", result.get("mib_per_second"))
-                        print(f"run={run} {backend} {workload} size_mib={size}: {summary}", flush=True)
+                        print(f"run={run} {backend} sessions={sessions} load={load} {workload} size_mib={size}: {summary}", flush=True)
 
 
 if __name__ == "__main__":
