@@ -204,6 +204,49 @@ paths, unknown/changed host keys and unauthorized credentials. Native Windows
 OpenSSH, jump hosts, network fault injection, and the full security matrix remain
 unqualified. This API does not change existing SSH/WSL PTYs or session ownership.
 
+## Docker configuration
+
+`docker(opts)` selects an **existing running Linux container**, just like Podman:
+
+```lua
+hollow.host.docker({
+  id = "api-dev",
+  container = "api-dev",
+  -- context = "desktop-linux", -- optional explicit Docker context
+}):next(function(host)
+  host.fs.list("/work")
+end, function(err) print(err.code, err.message) end)
+```
+
+Docker and Podman share container selection and bootstrap policy, not only the
+agent handlers. Inspect resolves a full immutable container ID; every subsequent
+probe, upload and persistent `exec -i` transport uses that ID. Neither connector
+creates, starts, stops, removes or restarts containers or overrides the configured
+user. Container replacement/disconnection does not replay EXEC requests.
+
+Optional `docker` selects the native executable (default `"docker"`). Optional
+`context` is copied before asynchronous work and supplied as `--context` on every
+Docker command, including cleanup. Omission preserves Docker's configured
+context/environment selection; users must not change that selection during
+bootstrap. Explicit contexts still rely on trusted Docker client configuration;
+the connector does not pin mutable context definitions or daemon identity.
+
+`artifacts`, `agent_dir`, `agent_path` and `timeout_ms` have the same precedence
+and bounds as Podman. Deployment uses `cp`, then reopens the copied inode and
+recreates the reserved temporary under the configured user (Docker's archive
+copy can assign root ownership). No privileged exec or chown is used. Shared
+SHA-256 verification, mode 0700 and atomic installation follow restaging.
+The copied artifact must be readable by that user; bundled mode-0755 binaries
+meet this requirement. A writable executable cache is required; restricted targets can
+use a preinstalled `agent_path`. Windows containers are unsupported.
+
+Local validation covers Docker-shaped mocks and actual native integration using
+Podman's compatible CLI via an explicit executable override. **No real Docker
+client/daemon was available locally.** This evidence does not qualify Docker
+ownership semantics, Docker Desktop, remote Docker contexts or Windows clients.
+A dedicated CI job is configured for a real Docker/non-root fixture; its result
+has not been observed locally. Docker remains experimental until those gates pass.
+
 ## Operations
 
 `info`, `exec`, and `fs.stat/list/read` return Hollow promises. Each operation
@@ -255,8 +298,8 @@ Polling runs through deferred callbacks, so completion depends on the
 application tick. This API does not automatically replay requests or reconnect
 after disconnection.
 
-This connector slice is experimental. It does not bootstrap Docker
-and does not migrate session/PTY ownership. Workspace discovery may opt into a
+This connector slice is experimental and does not migrate session/PTY ownership.
+Workspace discovery may opt into a
 ready host via `source.host`; legacy resolvers remain unchanged without it.
 Availability depends on the native host bridge in the running build;
 Lua stub tests do not establish that native connector functionality is present.

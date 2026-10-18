@@ -6,6 +6,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install headless Lua test dependencies
+        run: sudo apt-get update && sudo apt-get install -y luajit libluajit-5.1-dev
+      - name: Verify real Docker daemon is available
+        run: docker info
+      - name: Build static agent bundle
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all
+      - name: Production Docker bootstrap and common conformance, configured non-root user
+        run: python3 scripts/agent_docker_tests.py --conformance --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
   agent:
     runs-on: ubuntu-latest
     steps:
@@ -43,7 +58,7 @@ jobs:
       - name: Same native Lua contract through rootless Podman
         run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
       - name: Lua host promise contract
-        run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua src/lua/tests/test_host_artifacts.lua src/lua/tests/test_host_podman.lua src/lua/tests/test_host_wsl.lua src/lua/tests/test_host_ssh.lua src/lua/tests/test_ui_workspace_host.lua
+        run: LUA=luajit bash scripts/test-lua.sh src/lua/tests/test_host.lua src/lua/tests/test_host_artifacts.lua src/lua/tests/test_host_podman.lua src/lua/tests/test_host_docker.lua src/lua/tests/test_host_wsl.lua src/lua/tests/test_host_ssh.lua src/lua/tests/test_ui_workspace_host.lua
       - name: Production Lua Podman bootstrap, reuse and repair
         run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
       - name: Production bootstrap preserves configured container UID/GID

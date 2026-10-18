@@ -9,7 +9,7 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
 | Protocol / filesystem native tests | 5 / 3 pass |
-| Python harness / deployment / fault-safety / manifest / WSL / SSH unit tests | 32 pass |
+| Python harness / deployment / fault-safety / manifest / connector unit tests | 38 pass |
 | Persistent native transport integration / imported protocol tests | 5 / 5 pass |
 | Windows x86_64 GNU transport cross-compile | Pass; compile only, no Windows execution |
 | Local SIGKILL / EOF descendant containment | 6 pass |
@@ -17,7 +17,7 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 | Typed request/result tests | Pass; byte encoding, owned results, invalid metadata and allocation failure |
 | HostManager tests | 4 real-agent integration + 1 handle validation pass (10 with imported protocol tests) |
 | Native Lua host promises through local / rootless Podman | Pass, same headless integration test; local Lua 5.1 API |
-| Complete Lua suite | 403 pass under Lua 5.1; SSH bootstrap adds 19 cases to previous 384 |
+| Complete Lua suite | 435 pass under Lua 5.1; Docker adds 25 common container cases and 7 context/restaging cases to previous 403 |
 | Native-local operations | 6 pass; byte paths/argv/env, pagination, symlink stat/read, direct-child cancellation/deadlines and combined output cap |
 | Native-local manager | 3 integration tests pass (10 including imports); shared dispatch, reconnect isolation and retained-request bounds |
 | Production Lua Podman bootstrap | Pass through native bindings: deployment, reuse, corrupt-cache repair, preinstalled path and checksum rejection |
@@ -36,7 +36,9 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 | Production Lua WSL bootstrap through Windows interop from Linux | Pass; Windows UNC artifact, default/explicit user, binary RPCs, cancellation, reuse and preinstalled path |
 | Production Lua SSH bootstrap | Pass; strict verified non-root deployment, reuse, preinstalled path, checksum rejection and authentication/host-key failures |
 | SSH common fs/exec conformance | 16 pass against owned Alpine/OpenSSH fixture |
-| Native Windows WSL/SSH client / GUI latency, Docker | Not verified |
+| Docker-shaped Lua contract | 25 shared container cases + 7 context/restaging cases pass |
+| Docker public API native integration through Podman-compatible CLI | Pass; configured UID/GID 1000, bootstrap/repair/reuse, prefix/bin and flat layout, 16 common conformance cases |
+| Real Docker daemon / native Windows WSL/SSH client / GUI latency | Not verified |
 
 Reproduction:
 
@@ -317,6 +319,63 @@ python3 scripts/agent_ssh_tests.py --conformance --agent zig-out/bin/hollow-agen
 Native Windows OpenSSH execution, ProxyJump routes, network loss during upload,
 agent SIGKILL through SSH, OOM and full hostile-cache/failure matrices remain
 unqualified. No session/PTY implementation changed; WSL PTYs still use bypass.
+
+## Experimental Docker connector continuation
+
+`hollow.host.docker` and `hollow.host.podman` now share container selection and
+adapter policy in `hollow.host.container`. Both pin the inspect result's full ID,
+preserve the configured container user, and use the same Linux binary, operation
+handlers and persistent transport. Docker's optional explicit context prefixes
+all commands, including cleanup; configuration is copied before async work.
+No agent, protocol handler, workspace policy or PTY changes were needed.
+
+Docker-specific restaging handles archive copy ownership: after `cp`, the configured
+user opens the uploaded inode, removes only the reserved temp name, and recreates
+it with noclobber and umask 077 before common SHA/chmod/atomic installation. No
+privileged exec, chown, second named temporary or fallback to root is introduced.
+Unreadable copied files fail closed; release artifacts are mode 0755. This step
+addresses Docker's root-owned-copy behavior by design; actual Docker ownership
+semantics still require real-daemon qualification, not compatible-CLI evidence.
+
+Executed locally:
+
+* All 25 existing container contract cases run for both Podman and Docker.
+  Seven Docker context/restaging cases additionally verify exact argv prefixes,
+  retained options, validation, copy/restaging failures and cancellation/drain
+  before context-specific cleanup. The four connectors share bootstrap admission
+  limits. Complete Lua suite: 435 tests.
+* Six Docker connector/fixture Python unit tests pass (38 Python tests total),
+  covering full-ID pinning, exact binary-clean argv, validation, failed inspect,
+  missing tool and cleanup limited to a fixture-owned ID/ownership label.
+* Production Docker API passes native prefix/bin and flat-layout integration
+  using **`--docker podman`**, an explicit compatible-CLI override, in an owned
+  container configured as UID/GID 1000:1000. Automatic discovery, deployment,
+  restaging, reuse, corrupt-cache repair, preinstalled path, checksum rejection,
+  exec cancellation and new generations pass. All 16 common wire/fs/exec
+  conformance cases pass through the Docker harness with the same override.
+* Production Podman UID/GID 1000 bootstrap regression, native transport/manager/
+  operations/local tests and Windows adapter cross-compilation pass.
+
+Neither `docker` nor `dockerd` was installed locally. These results are **not real
+Docker qualification**. Docker copy ownership, remote contexts, Docker Desktop,
+Windows clients, daemon/container failures, OOM, and the broader release matrix
+remain unverified. CI now defines a real-Docker non-root bootstrap/conformance job;
+its result has not been observed in this session.
+
+Run on a Docker-capable machine (fixture creates/starts/removes only its owned
+container; production Lua never performs those lifecycle actions):
+
+```sh
+python3 scripts/agent_docker_tests.py --conformance --agent zig-out/bin/hollow-agent -- \
+  zig build --build-file build-agent.zig test-host-lua test-host-lua-flat \
+  -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
+# Optional --context <name>; --docker podman is compatibility evidence only.
+```
+
+The PR6 fs/exec release gate remains open: real Docker/native Windows qualification,
+broader fault/security coverage, host-aware read-only project query gaps and the
+mock vsock/hvsock connector proof are not completed by this slice. PTY extraction
+and multiplexing still require separate baselines/qualification; WSL bypass stays.
 
 ## Packaged artifact discovery continuation
 

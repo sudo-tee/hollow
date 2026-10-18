@@ -185,15 +185,13 @@ describe("hollow.host connector", function()
     package.loaded["hollow.host.podman"] = { connect = function()
       return require("hollow.async").promise(function(_, reject) rejects[#rejects + 1] = reject end)
     end }
-    package.loaded["hollow.host.wsl"] = package.loaded["hollow.host.podman"]
-    for _ = 1, 3 do assert.are.equal("pending", hosts.podman({}):status()) end
-    assert.are.equal("pending", hosts.wsl({}):status())
-    local full = hosts.podman({})
+    for _, name in ipairs({ "wsl", "ssh", "docker" }) do package.loaded["hollow.host." .. name] = package.loaded["hollow.host.podman"] end
+    for _, name in ipairs({ "podman", "wsl", "ssh", "docker" }) do assert.are.equal("pending", hosts[name]({}):status()) end
+    local full = hosts.docker({})
     assert.are.equal("resource_exhausted", full:error().code)
     rejects[1]({ code = "cancelled", message = "test" })
-    assert.are.equal("pending", hosts.wsl({}):status())
+    assert.are.equal("pending", hosts.docker({}):status())
     assert.are.equal(5, #rejects)
-    package.loaded["hollow.host.podman"] = nil
-    package.loaded["hollow.host.wsl"] = nil
+    for _, name in ipairs({ "podman", "wsl", "ssh", "docker" }) do package.loaded["hollow.host." .. name] = nil end
   end)
 end)

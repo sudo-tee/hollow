@@ -2053,6 +2053,16 @@ local fs = {}
 ---@field agent_path? string Absolute preinstalled Linux executable; skips deployment
 ---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
 
+---@class HollowDockerHostOpts
+---@field id string Stable host identifier
+---@field container string Existing running Linux container name or ID
+---@field docker? string Native Docker executable; default "docker"
+---@field context? string Explicit Docker context; omitted uses native Docker client selection
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
+---@field agent_dir? string Absolute client-native bundle directory
+---@field agent_path? string Absolute preinstalled Linux executable; skips deployment
+---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
+
 ---@class HollowHostExecOpts
 ---@field argv string[] Byte strings; empty arguments after argv[1] are preserved
 ---@field cwd? string
@@ -2127,6 +2137,12 @@ function host.wsl(opts) end
 ---@param opts HollowSshHostOpts
 ---@return HollowPromise<HollowAgentHost>
 function host.ssh(opts) end
+
+---Experimental Docker fs/exec host; selects an existing running Linux container.
+---Preserves configured user and never creates, starts, stops or removes containers.
+---@param opts HollowDockerHostOpts
+---@return HollowPromise<HollowAgentHost>
+function host.docker(opts) end
 
 ---@return string
 function fs.data_dir() end
