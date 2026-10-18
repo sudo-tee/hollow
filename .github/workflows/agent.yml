@@ -37,6 +37,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Local subprocess conformance
         run: python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
+      - name: Experimental opt-in agent PTY lifecycle
+        run: python3 scripts/agent_pty_tests.py --agent zig-out/bin/hollow-agent
       - name: Persistent native host transport
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
       - name: Typed operations and HostManager lifecycle
@@ -49,6 +51,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y podman luajit libluajit-5.1-dev lua-busted
       - name: Native Lua host promises against real agent
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
+      - name: Mock socket transport independence, native Lua and link-loss probes
+        run: python3 scripts/agent_socket_tests.py --agent zig-out/bin/hollow-agent --fragment 257 --conformance -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
       - name: Windows host manager and Lua adapter compile checks
         run: |
           zig test src/host_manager_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
@@ -67,6 +71,8 @@ jobs:
         run: python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua-flat
       - name: Rootless Podman conformance
         run: python3 scripts/agent_conformance.py --connector podman --image docker.io/library/alpine:3.21 --agent zig-out/bin/hollow-agent
+      - name: Same experimental PTY implementation through rootless Podman
+        run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- python3 scripts/agent_pty_tests.py --agent zig-out/bin/hollow-agent
       - name: Rootless Podman crash and EOF containment
         run: python3 scripts/agent_fault_probe.py --connector podman --agent zig-out/bin/hollow-agent --image docker.io/library/alpine:3.21 --output agent-faults-podman.json
       - uses: actions/upload-artifact@v4

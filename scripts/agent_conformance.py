@@ -19,6 +19,7 @@ import unittest
 import uuid
 
 from agent_connectors import ConnectorError, Docker, LocalSubprocess, Podman, SSH, WSL
+from agent_mock_socket import MockSocket
 
 HEADER = struct.Struct("<IBBQQ")
 HELLO, HELLO_ACK, REQUEST, RESPONSE, ERROR, DATA, CANCEL, PING, PONG, WINDOW_UPDATE = range(1, 11)
@@ -509,8 +510,9 @@ class PodmanDeploymentConformance(unittest.TestCase):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--connector", choices=("local-subprocess", "podman", "wsl", "ssh", "docker"), required=True)
-    parser.add_argument("--agent", help="local agent binary (required for local-subprocess and Podman)")
+    parser.add_argument("--connector", choices=("local-subprocess", "podman", "wsl", "ssh", "docker", "mock-socket"), required=True)
+    parser.add_argument("--agent", help="local agent binary (required for local-subprocess, mock-socket and Podman)")
+    parser.add_argument("--socket-fragment", type=int, default=65536, help="test-only mock socket maximum read/write chunk")
     parser.add_argument("--image", default="docker.io/library/alpine:3.21")
     parser.add_argument("--container")
     parser.add_argument("--docker", default="docker", help="native Docker client executable")
@@ -528,8 +530,8 @@ def main(argv=None):
     parser.add_argument("--ssh-config", help="optional SSH client config file")
     parser.add_argument("--ssh", default="ssh", help="native SSH executable (default: ssh)")
     args = parser.parse_args(argv)
-    if args.connector in ("local-subprocess", "podman") and not args.agent:
-        parser.error("--agent is required for local-subprocess and Podman connectors")
+    if args.connector in ("local-subprocess", "podman", "mock-socket") and not args.agent:
+        parser.error("--agent is required for local-subprocess, mock-socket and Podman connectors")
     if args.connector == "wsl" and not args.distro:
         parser.error("--distro is required for WSL")
     if args.connector == "wsl" and not args.agent_path:
@@ -544,6 +546,8 @@ def main(argv=None):
         parser.error("--image must use pinned, non-latest tag")
     if args.connector == "local-subprocess":
         connector = LocalSubprocess(args.agent)
+    elif args.connector == "mock-socket":
+        connector = MockSocket(args.agent, fragment=args.socket_fragment)
     elif args.connector == "podman":
         connector = Podman(args.agent, args.image, args.container, args.keep_container, agent_path=args.agent_path)
     elif args.connector == "wsl":

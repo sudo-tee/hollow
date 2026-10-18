@@ -34,7 +34,8 @@ an agent PTY.
   Windows artifact path conversion and persistent binary-clean transport. Podman
   and WSL now share bootstrap lifecycle and checksum/atomic-install policy.
   Initial real `wsl.exe` integration runs through Linux/Windows interop; native
-  Windows client qualification is still outstanding. No agent PTY support exists.
+  Windows client qualification is still outstanding. Production pane backends
+  remain unchanged.
 * PR 5, in progress: experimental `hollow.host.ssh`, strict noninteractive host-key
   verification, forced-SFTP deployment and persistent non-TTY agent transport.
   Production Lua integration and all 16 common conformance tests pass against an
@@ -44,6 +45,16 @@ an agent PTY.
   every command. Common contract tests and CLI-compatible Podman integration pass;
   real Docker runner is configured but not locally verified. No agent/core
   handlers or PTYs change, and the fs/exec release gate is not yet complete.
+* PR 6 mock transport proof: private AF_UNIX listener and bounded opaque byte
+  relays model future socket establishment without agent/host/Lua operation edits.
+  Common conformance and native Lua contracts pass; forced link loss/reconnect
+  verifies no EXEC replay. This is not production vsock/hvsock support.
+* Experimental PTY implementation started at the user's explicit direction:
+  HELLO-opted-in controlling terminals, streamed output with byte credits,
+  bounded binary input, resize/SIGWINCH and supervised close/exit. Eleven real
+  PTY tests pass locally, through rootless Podman, and through `wsl.exe` interop.
+  [Wire contract and interactive client](agent-pty-experiment.md). No GUI pane is
+  migrated; Windows baseline/performance/failure-isolation rollout gates stay open.
 
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
