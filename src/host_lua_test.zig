@@ -406,6 +406,20 @@ test "native Windows public Lua WSL bootstrap discovers installed agent bundle" 
     const state = c.luaL_newstate() orelse return error.OutOfMemory;
     defer c.lua_close(state);
     c.luaL_openlibs(state);
+    const require_jit = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_REQUIRE_LUAJIT") catch null;
+    defer if (require_jit) |bytes| std.testing.allocator.free(bytes);
+    if (require_jit) |value| {
+        if (!std.mem.eql(u8, value, "1")) return error.InvalidArgument;
+        try run(state,
+            \\assert(jit and jit.version and jit.status(), 'LuaJIT with enabled JIT required')
+            \\jit.flush(); jit.opt.start('hotloop=1')
+            \\local function sum(n) local s=0; for i=1,n do s=s+i end; return s end
+            \\assert(sum(10000)==50005000)
+            \\assert(require('jit.util').traceinfo(1), 'expected an actual compiled JIT trace')
+            \\print('WINDOWS_LUA_ENGINE '..jit.version..' '..jit.arch..' '..jit.os..' compiled-trace')
+            \\jit.opt.start('hotloop=56')
+        );
+    }
     var ctx: Context = .{ .allocator = std.testing.allocator };
     defer if (ctx.host_manager) |*manager| manager.deinit();
     c.lua_createtable(state, 0, 7);

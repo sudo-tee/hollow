@@ -7,6 +7,14 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 ## Independent fs/exec release closure — 2026-10-19
 
+[Vendored Windows LuaJIT follow-up](../validation/2026-10-19-windows-luajit-bootstrap.md)
+executes six final Windows processes: **72** passing executions including imports,
+six Linux-case skips, compiled JIT traces required. Covers direct cache reuse,
+four isolated cold install/repair layouts and missing-bundle rejection; stock Lua
+negative control rejects correctly. Uses hashed copies of current production
+dependency sources including pre-existing patches, without altering originals.
+Full application runtime/GUI lifecycle, teardown and wider fault gaps remain.
+
 [Windows WSL cold deployment/repair](../validation/2026-10-19-windows-wsl-cold-deploy.md)
 subsequently passes four UNC/C: flat/prefix layouts with isolated temporary HOME
 through test-only launcher forwarding actual WSL. Each HOME starts without cache
