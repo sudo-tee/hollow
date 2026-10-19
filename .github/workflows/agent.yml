@@ -25,13 +25,18 @@ jobs:
         with:
           version: 0.16.0
       - name: Install headless Lua test dependencies
-        run: sudo apt-get update && sudo apt-get install -y luajit libluajit-5.1-dev
+        run: sudo apt-get update && sudo apt-get install -y luajit libluajit-5.1-dev lua-busted
       - name: Verify real Docker daemon is available
         run: docker info
       - name: Build static agent bundle
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all
-      - name: Production Docker bootstrap and common conformance, configured non-root user
-        run: python3 scripts/agent_docker_tests.py --conformance --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua test-host-lua-flat
+      - name: Independent fs/exec release checks including real Docker and non-root production bootstrap
+        run: python3 scripts/agent_fs_exec_release.py --profile local docker --output fs-exec-release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fs-exec-release-docker
+          path: fs-exec-release/
   agent:
     runs-on: ubuntu-latest
     steps:

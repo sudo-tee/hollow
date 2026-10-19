@@ -1,7 +1,10 @@
 import signal
+import sys
+from pathlib import Path
 import unittest
 from unittest.mock import Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent_fault_probe as probe
 
 
@@ -36,6 +39,25 @@ class FaultProbeSafetyTests(unittest.TestCase):
         state = {7: ("Z", "start", 1)}
         with unittest.mock.patch.object(probe, "identity", side_effect=lambda pid: state.get(pid)):
             self.assertEqual(probe._wait_snapshot([7], probe.time.monotonic()), {7: state[7]})
+
+    def test_waits_for_guardian_exit_after_workload_disappears(self):
+        states = {20: ("R", "guardian", 1)}
+        def advance(_):
+            states[20] = ("Z", "guardian", 1)
+        with unittest.mock.patch.object(probe.time, "monotonic", side_effect=[0, 1]), \
+             unittest.mock.patch.object(probe.time, "sleep", side_effect=advance) as sleep:
+            result = probe._wait_snapshot([21], 5, states.get, guardian_pid=20)
+        self.assertEqual(result, {21: None})
+        sleep.assert_called_once()
+
+    def test_live_guardian_still_exhausts_original_cleanup_deadline(self):
+        identify = Mock(side_effect=lambda pid: ("R", "guardian", 1) if pid == 20 else None)
+        with unittest.mock.patch.object(probe.time, "monotonic", side_effect=[0, 6]), \
+             unittest.mock.patch.object(probe.time, "sleep") as sleep:
+            result = probe._wait_snapshot([21], 5, identify, guardian_pid=20)
+        self.assertEqual(result, {21: None})
+        sleep.assert_called_once()
+        self.assertEqual(identify(20)[0], "R")
 
 
 if __name__ == "__main__":

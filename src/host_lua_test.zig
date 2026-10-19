@@ -134,6 +134,29 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         \\assert(list:status()=='fulfilled' and #list:value().entries<=5)
         \\assert(missing:error().code=='not_found')
         \\assert(canceled:error().code=='cancelled')
+        \\fixture=h:exec({argv={'/bin/sh','-c',[[p=$(mktemp /tmp/hollow-workspace-XXXXXX) || exit 1; printf '%s' '{"tabs":[]}' > "$p"; head -c 20000 /dev/zero | tr '\000' ' ' >> "$p"; printf '%s' "$p"]]}})
+    );
+    try until(state, "DONE=fixture:status()~='pending'");
+    try run(state,
+        \\assert(fixture:status()=='fulfilled' and fixture:value().exit_code==0)
+        \\fixture_path=fixture:value().stdout
+        \\-- The GUI JSON bridge is outside this headless harness; check exact
+        \\-- document bytes here while exercising real paged host I/O.
+        \\host_api.json_decode=function(text) assert(text=='{"tabs":[]}'..string.rep(' ',20000)); return {tabs={}} end
+        \\workspace=require('hollow.workspace')
+        \\loaded=workspace.load_host(h,fixture_path)
+        \\limited=workspace.load_host(h,fixture_path,{max_bytes=10})
+    );
+    try until(state, "DONE=loaded:status()~='pending' and limited:status()~='pending'");
+    try run(state,
+        \\assert(loaded:status()=='fulfilled',loaded:error() and loaded:error().message)
+        \\assert(loaded:value()._path==fixture_path and type(loaded:value().tabs)=='table')
+        \\assert(limited:error().code=='resource_exhausted')
+        \\removed=h:exec({argv={'/bin/rm','--',fixture_path}})
+    );
+    try until(state, "DONE=removed:status()~='pending'");
+    try run(state,
+        \\assert(removed:status()=='fulfilled' and removed:value().exit_code==0)
         \\-- Native entry points reject malformed/dense-hole argv without launch.
         \\raw=assert(host_api.host_connect({id='bad',argv=CONNECTOR_ARGV}))
         \\local bad,err=host_api.host_start(raw,'exec',{argv={[1]='x',[3]='y'}})
@@ -173,6 +196,21 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         \\assert(ns:value().kind=='directory')
         \\assert(ne:value().stdout=='native' and ne:value().exit_code==4)
         \\assert(nc:error().code=='cancelled')
+        \\nf=nh:exec({argv={'/bin/sh','-c',[[p=$(mktemp /tmp/hollow-workspace-local-XXXXXX) || exit 1; printf '%s' '{"tabs":[]}' > "$p"; head -c 20000 /dev/zero | tr '\000' ' ' >> "$p"; printf '%s' "$p"]]}})
+    );
+    try until(state, "DONE=nf:status()~='pending'");
+    try run(state,
+        \\assert(nf:status()=='fulfilled' and nf:value().exit_code==0)
+        \\nl=workspace.load_host(nh,nf:value().stdout)
+    );
+    try until(state, "DONE=nl:status()~='pending'");
+    try run(state,
+        \\assert(nl:status()=='fulfilled',nl:error() and nl:error().message)
+        \\nr=nh:exec({argv={'/bin/rm','--',nf:value().stdout}})
+    );
+    try until(state, "DONE=nr:status()~='pending'");
+    try run(state,
+        \\assert(nr:status()=='fulfilled' and nr:value().exit_code==0)
         \\assert(nh:close())
         \\again=hollow.host.local_host()
     );
