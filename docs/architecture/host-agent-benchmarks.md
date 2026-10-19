@@ -332,6 +332,24 @@ The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXE
 captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
 and dynamic-focus timing still need independently sustained workloads.
 
+### Explicit bulk placement comparison
+
+`--separate-bulk --backend shared --bulk mixed` explicitly moves only fs/exec
+interference onto another connection/process using the same prepared connector
+and agent binary. PTYs retain their shared connection and optional static focus.
+Omit the option for the co-located control. Native/dedicated placement is unchanged.
+Inactive bulk and non-shared backends reject the option. Result `separate_bulk`
+and `bulk_lane` must agree with requested topology; the runner never falls back.
+
+Both placements prime one checked operation per kind before load. At equal PTY
+count, compare foreground echo/output, each background's delivered bytes/gaps and
+bulk completion throughput. Full 16-PTY plus separate-bulk smoke validates separate
+admission, not equal resources or higher per-connection capacity. The owner loop
+still services foreground first and bounded background/bulk work. Extra process,
+transport, worker-loop isolation and OS scheduling all change, so this probe
+cannot attribute differences solely to stdout head-of-line blocking or qualify
+same-agent lanes. See [experiment](../benchmarks/agent-pty/2026-10-19-split-bulk.md).
+
 ### Per-sequence focus observability
 
 With focus negotiated, existing target-side queue profiling also emits separate

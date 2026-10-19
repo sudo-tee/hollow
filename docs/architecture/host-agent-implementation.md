@@ -49,6 +49,16 @@ This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
 157 measurements plus one preserved short-smoke failure show redistribution,
 not a rollout pass; per-update loaded correlation and broader gates remain open.
 
+The [separate bulk-agent probe](../benchmarks/agent-pty/2026-10-19-split-bulk.md)
+adds benchmark-only `--separate-bulk` for shared PTYs with active fs/exec. It uses
+the same prepared connector/binary for an independent ordinary agent connection,
+not same-agent dual lanes or production routing. Per-connection limits remain
+unchanged; explicit placement is validated and cannot silently fall back. Across
+80 ReleaseFast cases, bulk benefits but median foreground echo p99 worsens versus
+co-located counterparts. Two additional ReleaseSafe full-admission profiling cases
+pass. Automatic split routing is not adopted; default/fault/resource/platform
+blockers remain distinct from this finite local result.
+
 [Per-sequence focus diagnostics](../benchmarks/agent-pty/2026-10-19-focus-profile.md)
 now add a separate 64-event fixed profiler inside the already opt-in queue
 profiler allocation. `AGENT_FOCUS_PROFILE` maps accepted sequences to first

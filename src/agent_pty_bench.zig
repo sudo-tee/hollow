@@ -19,6 +19,7 @@ const Config = struct {
     sessions: usize = 1,
     load: enum { idle, noisy, stalled } = .idle,
     bulk: bulk_module.Mode = .off,
+    separate_bulk: bool = false,
     bulk_path: ?[]const u8 = null,
     bulk_exec_bytes: u32 = 524288,
     resize_every: u32 = 0,
@@ -178,7 +179,8 @@ pub fn main(init: std.process.Init) !void {
         .mixed => 2,
         else => 1,
     };
-    if (cfg.backend == .shared and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
+    if (cfg.separate_bulk and (cfg.backend != .shared or cfg.bulk == .off)) return error.InvalidArgument;
+    if (cfg.backend == .shared and !cfg.separate_bulk and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
     if (cfg.focus_scheduler and cfg.backend != .shared) return error.InvalidArgument;
     if (cfg.focus_every > 100000 or (cfg.focus_every != 0 and !cfg.focus_scheduler)) return error.InvalidArgument;
     const command = switch (cfg.workload) {
@@ -211,7 +213,7 @@ pub fn main(init: std.process.Init) !void {
         try receive(&backgrounds.ptys[index], &wake, &backgrounds, &greeting, clock() + timeout);
         if (!std.mem.eql(u8, &greeting, ready)) return error.InvalidGreeting;
     }
-    var bulk = try bulk_module.Bulk.init(a, io.get(), cfg.bulk, cfg.bulk_path, cfg.bulk_exec_bytes, cfg.connector_argv, .{ .context = &wake, .notify = Wake.signal, .telemetry = cfg.telemetry }, if (owner) |shared| shared.connection else null);
+    var bulk = try bulk_module.Bulk.init(a, io.get(), cfg.bulk, cfg.bulk_path, cfg.bulk_exec_bytes, cfg.connector_argv, .{ .context = &wake, .notify = Wake.signal, .telemetry = cfg.telemetry }, if (!cfg.separate_bulk and owner != null) owner.?.connection else null);
     defer bulk.deinit();
     // Warm exactly one checked RPC of each enabled kind before starting load.
     // No cold separate-agent HELLO is compared with an already-warm shared one.
@@ -306,7 +308,8 @@ pub fn main(init: std.process.Init) !void {
         .sessions = cfg.sessions,
         .load = cfg.load,
         .bulk = cfg.bulk,
-        .bulk_lane = if (cfg.bulk == .off) "off" else if (cfg.backend == .shared) "shared" else "separate_agent",
+        .bulk_lane = if (cfg.bulk == .off) "off" else if (cfg.backend == .shared and !cfg.separate_bulk) "shared" else "separate_agent",
+        .separate_bulk = cfg.separate_bulk,
         .bulk_stats = bulk.stats,
         .bulk_telemetry = if (cfg.telemetry and bulk.connection != null) bulk.connection.?.metrics() else null,
         .resize_every = cfg.resize_every,
