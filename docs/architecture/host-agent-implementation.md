@@ -49,6 +49,15 @@ This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
 157 measurements plus one preserved short-smoke failure show redistribution,
 not a rollout pass; per-update loaded correlation and broader gates remain open.
 
+The [static foreground-isolation experiment](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)
+is benchmark-only: explicit second shared-connection owner for foreground, original
+owner for backgrounds/bulk, same prepared connector and agent. Selected logical
+group spans agents with session-only background focus, not a global scheduler.
+128 total finite checks/measurements show large local foreground improvement but
+background/bulk costs. No agent/transport handler, default route, live migration or
+fault-recovery policy changes. Separately labeled host telemetry is supported;
+ambiguous queue-profile traces are rejected pending connection identity.
+
 The [hierarchical byte-deficit prototype](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md)
 adds fixed-capacity DRR beside weighted visits, requiring an additional target
 flag, HELLO opt-in and ACK capability `experimental.deficit`. Native requested

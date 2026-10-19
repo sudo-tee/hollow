@@ -30,6 +30,9 @@ The [hierarchical byte-deficit experiment](2026-10-19-deficit-scheduler.md) adds
 independent DRR negotiation and actual scheduled-wire-byte charging alongside
 weighted visits, preserving metadata retries and zero-credit isolation. Byte
 proportions in deterministic tests are not wall-time or native-platform QoS.
+The [static foreground-isolation probe](2026-10-19-isolated-foreground.md) shows
+large local echo/output gains by pinning foreground to a second agent, with
+background/bulk costs and no dynamic migration or default routing changes.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

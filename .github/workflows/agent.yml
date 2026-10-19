@@ -80,6 +80,8 @@ jobs:
         run: python3 scripts/agent_focus_tests.py --agent zig-out/bin/hollow-agent --deficit-scheduler
       - name: Hierarchical byte-deficit checked contention, not qualification
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 HOLLOW_AGENT_DEFICIT_SCHEDULER=1 python3 scripts/agent_pty_bench.py --focus-scheduler --deficit-scheduler --backend shared --sessions 8 --load stalled --bulk off mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 200 --size-mib 10 --output agent-pty-deficit-smoke.jsonl
+      - name: Explicit isolated foreground with separately labeled host telemetry
+        run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 HOLLOW_AGENT_DEFICIT_SCHEDULER=1 python3 scripts/agent_pty_bench.py --telemetry --focus-scheduler --deficit-scheduler --focus-every 32 --separate-foreground --backend shared --sessions 8 --load stalled --bulk mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 200 --size-mib 10 --output agent-pty-isolated-foreground-smoke.jsonl
       - name: Windows experimental PTY adapter compile check
         run: zig test -target x86_64-windows-gnu --dep build_options -Mroot=src/agent_pty_test.zig -Mbuild_options=src/agent_pty_build_options.zig -lc -fno-emit-bin
       - name: Typed operations and HostManager lifecycle
@@ -133,6 +135,7 @@ jobs:
             agent-pty-focus-profile-smoke.jsonl
             agent-pty-split-bulk-smoke.jsonl
             agent-pty-deficit-smoke.jsonl
+            agent-pty-isolated-foreground-smoke.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: hollow-agent-linux-musl

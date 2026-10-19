@@ -163,6 +163,20 @@ def parse_focus_profiles(stderr: str) -> list[dict]:
 
 
 def validate(result: dict, config: dict) -> dict:
+    isolated = config.get("separate_foreground", False)
+    if (type(isolated) is not bool or type(result.get("separate_foreground", False)) is not bool
+            or result.get("separate_foreground", False) != isolated
+            or (isolated and (config["backend"] != "shared" or config.get("sessions", 1) < 2 or config.get("separate_bulk", False)))):
+        raise ValueError("isolated foreground topology mismatch")
+    lane = "isolated_agent" if isolated else "shared" if config["backend"] == "shared" else "dedicated_agent" if config["backend"] == "agent" else "native"
+    if (isolated or "foreground_lane" in result) and result.get("foreground_lane") != lane:
+        raise ValueError("foreground lane identity mismatch")
+    background_ack = result.get("background_focus_ack_ns")
+    if isolated and config.get("focus_scheduler", False):
+        if type(background_ack) is not int or background_ack <= 0:
+            raise ValueError("missing isolated background session-only focus ACK")
+    elif background_ack is not None:
+        raise ValueError("unexpected background focus ACK")
     deficit = config.get("deficit_scheduler", False)
     if (type(deficit) is not bool or type(result.get("deficit_scheduler", False)) is not bool
             or result.get("deficit_scheduler", False) != deficit or (deficit and not config.get("focus_scheduler", False))):
@@ -215,7 +229,7 @@ def validate(result: dict, config: dict) -> dict:
             raise ValueError("stalled output exceeds per-session cap")
     if "bulk" in config:
         mode = config["bulk"]
-        lane = "off" if mode == "off" else "shared" if config["backend"] == "shared" and not separate else "separate_agent"
+        lane = "off" if mode == "off" else "shared_background" if isolated else "shared" if config["backend"] == "shared" and not separate else "separate_agent"
         stats = result.get("bulk_stats")
         if result.get("bulk") != mode or result.get("bulk_lane") != lane or not isinstance(stats, dict):
             raise ValueError("bulk workload/lane identity mismatch")
@@ -236,11 +250,13 @@ def validate(result: dict, config: dict) -> dict:
         if result.get("resize_every") != every or result.get("resizes_issued") != expected:
             raise ValueError("resize workload identity/count mismatch")
     if config.get("telemetry") and config["backend"] in ("agent", "shared"):
-        metrics = result.get("telemetry")
-        if (not isinstance(metrics, dict) or any(type(value) is not int or value < 0 for value in metrics.values())
-                or metrics.get("max_pty_buffered", 65537) > 65536
-                or metrics.get("max_queued_bytes", 4194305) > 4194304):
-            raise ValueError("invalid or out-of-bounds transport telemetry")
+        for metrics in ([result.get("telemetry"), result.get("background_telemetry")] if isolated else [result.get("telemetry")]):
+            if (not isinstance(metrics, dict) or any(type(value) is not int or value < 0 for value in metrics.values())
+                    or metrics.get("max_pty_buffered", 65537) > 65536
+                    or metrics.get("max_queued_bytes", 4194305) > 4194304):
+                raise ValueError("invalid or out-of-bounds transport telemetry")
+    if not (isolated and config.get("telemetry")) and result.get("background_telemetry") is not None:
+        raise ValueError("unexpected background transport telemetry")
     if config["workload"] == "prompt":
         samples = result.get("samples_ns")
         if (not isinstance(samples, list) or len(samples) != config["samples"]
@@ -278,6 +294,7 @@ def main() -> None:
     parser.add_argument("--load", choices=("idle", "noisy", "stalled"), nargs="+", default=["idle"])
     parser.add_argument("--bulk", choices=("off", "fs", "exec", "mixed"), nargs="+", default=["off"])
     parser.add_argument("--separate-bulk", action="store_true", help="shared PTYs only, active bulk required: run fs/exec on another agent connection/process; no production routing change")
+    parser.add_argument("--separate-foreground", action="store_true", help="shared backend, 2+ PTYs: pin foreground to another agent; backgrounds and bulk stay shared; no dynamic migration")
     parser.add_argument("--bulk-path", help="prepared target path containing exactly 16 KiB of zero bytes; local fixture created if omitted")
     parser.add_argument("--bulk-exec-bytes", type=int, default=524288, help="checked bytes per repeated non-PTY EXEC, 1..1048576")
     parser.add_argument("--resize-every", type=int, default=0, help="resize before every Nth prompt, including warmups; 0 disables")
@@ -296,6 +313,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.deficit_scheduler and not args.focus_scheduler:
         parser.error("--deficit-scheduler requires --focus-scheduler")
+    if args.separate_foreground and (args.backend != "shared" or min(args.sessions) < 2 or args.separate_bulk):
+        parser.error("--separate-foreground requires --backend shared, 2+ sessions, and no --separate-bulk")
+    if args.separate_foreground and "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ:
+        parser.error("--separate-foreground queue profiles lack connection identity; clear HOLLOW_AGENT_QUEUE_PROFILE")
     if not 0 <= args.focus_every <= 100000 or (args.focus_every and not args.focus_scheduler):
         parser.error("--focus-every requires --focus-scheduler and interval 0..100000")
     if "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not args.telemetry:
@@ -346,7 +367,8 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "scope": "headless PTY adapters with optional fs/exec and explicit static focus research; no GUI policy/WSL bypass or rollout qualification",
         "bulk_fixture": {"path": bulk_path, "expected_bytes": 16384,
                          "expected_sha256": hashlib.sha256(bytes(16384)).hexdigest()} if bulk_path else None,
-        "bulk_placement": "explicit separate agent for shared PTYs" if args.separate_bulk else "same connection for shared PTYs; separate agent for native/dedicated PTYs",
+        "bulk_placement": "explicit separate agent for shared PTYs" if args.separate_bulk else "shared background connection, not isolated foreground" if args.separate_foreground else "same connection for shared PTYs; separate agent for native/dedicated PTYs",
+        "foreground_placement": "independent agent; backgrounds and bulk remain shared" if args.separate_foreground else "unchanged backend placement",
         "qualification": False, "revision": git("rev-parse", "HEAD"),
         "dirty_paths": git("status", "--short"), "source_sha256": {name: sha(ROOT / name) for name in sources},
         "binary": str(binary), "binary_sha256": sha(binary),
@@ -377,6 +399,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                                     "sessions": sessions, "load": load,
                                      "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,
                                      "separate_bulk": args.separate_bulk,
+                                     "separate_foreground": args.separate_foreground,
                                     "bulk_exec_bytes": args.bulk_exec_bytes, "resize_every": args.resize_every,
                                     "bytes": size * 1024 * 1024 if size else 1,
                                     "timeout_ms": min(args.timeout, 30) * 1000,
@@ -387,6 +410,8 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                             result = validate(json.loads(completed.stdout), config)
                             queue_profiles = parse_queue_profiles(completed.stderr)
                             focus_profiles = parse_focus_profiles(completed.stderr)
+                            if config["separate_foreground"] and (focus_profiles or queue_profiles):
+                                raise ValueError("isolated foreground queue traces lack connection identity")
                             if focus_profiles and not config["focus_scheduler"]:
                                 raise ValueError("unexpected focus diagnostics on non-focus connection")
                             if config["focus_scheduler"] and "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not connector_json and not focus_profiles:

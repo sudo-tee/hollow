@@ -12,6 +12,40 @@ from agent_pty_bench import parse_focus_profiles, parse_queue_profiles, percenti
 
 
 class AgentPtyBenchTests(unittest.TestCase):
+    def test_isolated_foreground_identity_focus_and_per_connection_telemetry(self):
+        config, result = self.prompt()
+        config.update(backend="shared", sessions=2, load="noisy", separate_foreground=True,
+                      focus_scheduler=True, telemetry=True)
+        metrics = {"max_pty_buffered": 65536, "max_queued_bytes": 4096}
+        result.update(backend="shared", sessions=2, load="noisy", separate_foreground=True,
+                      foreground_lane="isolated_agent", focus_scheduler=True, focus_ack_ns=1,
+                      background_focus_ack_ns=2, telemetry=metrics, background_telemetry=metrics,
+                      background_bytes=[1], background_max_gap_ns=[1], background_elapsed_ns=1, stalled_buffered=0)
+        validate(result, config)
+        for update in ({"separate_foreground": False}, {"separate_foreground": 1},
+                       {"foreground_lane": "shared"}, {"background_focus_ack_ns": None},
+                       {"background_focus_ack_ns": True}, {"background_telemetry": None},
+                       {"background_telemetry": dict(metrics, max_queued_bytes=4194305)}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+        for update in ({"sessions": 1}, {"separate_bulk": True}, {"backend": "agent"}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(result, dict(config, **update))
+
+    def test_isolated_foreground_rejects_ambiguous_topologies_and_queue_traces(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        for flags in (["--backend", "native", "--sessions", "8"], ["--backend", "shared", "--sessions", "1"],
+                      ["--backend", "shared", "--sessions", "8", "--separate-bulk", "--bulk", "mixed"]):
+            completed = subprocess.run([sys.executable, str(script), "--separate-foreground", *flags,
+                                        "--output", "/nonexistent/output"], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("--separate-foreground requires", completed.stderr)
+        completed = subprocess.run([sys.executable, str(script), "--separate-foreground", "--backend", "shared",
+                                    "--sessions", "8", "--telemetry", "--output", "/nonexistent/output"],
+                                   env=dict(os.environ, HOLLOW_AGENT_QUEUE_PROFILE="1"), capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("lack connection identity", completed.stderr)
+
     def test_deficit_identity_requires_explicit_focus_and_exact_boolean(self):
         config, result = self.prompt()
         config.update(backend="shared", focus_scheduler=True, deficit_scheduler=True)
