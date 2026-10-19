@@ -178,6 +178,76 @@ foreground-first consumption remains identical; no focus-first GUI parsing/rende
 variable is simulated. Dynamic focus switching is tested for correctness, not yet
 latency-qualified. Every result remains `qualification:false`.
 
+### Per-focus diagnostics and loaded refresh probe
+
+On a negotiated focus connection, existing target-side
+`HOLLOW_AGENT_QUEUE_PROFILE` additionally emits **`AGENT_FOCUS_PROFILE`** JSON on
+stderr before each PTY terminal response. Native callers must drain stderr
+(`--telemetry` in the benchmark); remote launchers must set the flag explicitly
+on the target. No new wire frames, production telemetry or default scheduler
+selection is introduced. Aggregate `AGENT_QUEUE_PROFILE` schema stays unchanged.
+
+Each snapshot contains absolute `queued_wire_bytes`, `written_wire_bytes`,
+`discarded_wire_bytes` and `consumed_wire_bytes` (written plus discarded), plus
+`focus` schema 1: `capacity:64`, `accepted`, `dropped` and retained `events`.
+This is fixed storage, **not a ring**: after the first 64 accepted updates,
+additional timing records are dropped, never wire bytes. Accepted sequence count
+still advances; new output is never attributed to an older retained focus.
+Snapshots repeat connection history, so do not sum records from multiple PTY
+terminal snapshots as independent samples.
+
+Events identify accepted `sequence`, logical `group` and output `stream`, using
+agent-local CLOCK_MONOTONIC nanoseconds:
+
+* `dispatch_ns`: explicit metadata accepted/applied, not ACK receipt.
+* `ready_ns`: first observation after dispatch of **captured target PTY bytes plus
+  positive credit**. If already buffered/credited at dispatch, it equals dispatch
+  time. Not kernel readiness, child output creation or newly echoed input.
+* `enqueue_ns`: first matching **newly queued** DATA frame after dispatch. Already
+  queued target DATA cannot satisfy it. It may still contain captured older child
+  output; no prompt-token causal identity is asserted.
+* `payload_begin`/`payload_end`: absolute wire-byte interval for that DATA payload,
+  excluding its header. Positions survive output compaction and diagnostic span
+  overflow; they are not PTY payload byte offsets.
+* `first_write_ns`/`complete_write_ns`: successful stdout writes intersecting first
+  payload byte / covering final byte of that **one frame**, respectively. A
+  header-only write cannot mark payload progress. These end at agent stdout, not
+  connector delivery, client consumption, parsing, rendering or visible echo.
+
+Nullable timestamps preserve incomplete observations. `stop` is null for pending
+or completed records, `superseded` for an unqueued target replaced by newer focus,
+`released` for an unqueued terminated target, `no_stream` for clear/session-only
+selection, or `discarded` for connection-discarded incomplete output. An enqueued
+record remains write-tracked after later focus changes. Its pending fields are
+not completed just because a terminal snapshot was emitted; serialization occurs
+before that terminal frame is queued. Rejected/stale updates create no accepted
+event. No raw payload, paths or argv are included in these diagnostic records.
+
+`--focus-every N` adds an explicitly different workload: refresh **the same target**
+before each Nth prompt, including warmups, and wait for its ACK while servicing
+backgrounds/bulk. Result `focus_refreshes` retains sequence, warmup-inclusive
+`before_prompt_index` and client-side `ack_ns`; initial pre-load ACK stays in
+`focus_ack_ns`. Refresh waits are **outside** input-to-echo timing, so report both.
+The update itself truncates residual scheduler quota; compare identical refresh
+workloads with profiling off/on instead of treating it as invisible instrumentation.
+It is not cross-pane/session switching or GUI focus wiring. Output workloads have
+only the initial pre-load update. Parser checks accepted counts, sequence order,
+timestamp/position bounds and censoring without filling missing timings.
+
+```sh
+HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 \
+HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py \
+  --telemetry --focus-scheduler --focus-every 32 --backend shared \
+  --sessions 8 --load noisy stalled --bulk off mixed --resize-every 16 \
+  --runs 3 --samples 1000 --size-mib 10 --output focus-profile-research.jsonl
+```
+
+Subtract timestamps only within the agent clock (or separately client ACK RTTs);
+correlate clocks by sequence, not by subtracting client and agent absolute values.
+`ready_ns → enqueue_ns` bounds observed captured/credited waiting in this loop,
+not all stream scheduling delay. Per-stream sustained QoS, genuine loaded target
+switches, byte-fair DRR and split-lane alternatives remain separate experiments.
+
 ### Real pane and terminal integration
 
 A separate headless graph links the actual terminal engine and exercises

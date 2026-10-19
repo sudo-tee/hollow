@@ -117,7 +117,11 @@ const Agent = struct {
         try self.output.ensureUnusedCapacity(A, header.len + payload.len);
         self.output.appendSliceAssumeCapacity(&header);
         self.output.appendSliceAssumeCapacity(payload);
-        if (self.queue_profile) |profile| profile.enqueue(class, header.len + payload.len, profileClock());
+        if (self.queue_profile) |profile| {
+            const now = profileClock();
+            profile.enqueue(class, header.len + payload.len, now);
+            if (class == .pty_data and payload.len > 0) profile.focus.enqueue(sid, profile.stats.queued_wire_bytes - payload.len, profile.stats.queued_wire_bytes, now);
+        }
         if (self.profiling) {
             self.profile.max_queued = @max(self.profile.max_queued, self.output.items.len - self.sent);
             if (kind == .data) self.profile.data_frames += 1;
@@ -553,6 +557,13 @@ const Agent = struct {
             };
             if (!valid) return error.InvalidArgument;
             applied = self.focus.focus(sequence, group, stream);
+            if (self.queue_profile) |profile| {
+                const stamp = profileClock();
+                profile.focus.acceptedFocus(sequence, group, stream, stamp);
+                for (self.jobs) |entry| if (entry) |job| {
+                    if (job.pty and job.streams[0] == stream and job.reason == null and job.stdout.items.len > 0 and job.credit > 0) profile.focus.ready(stream, stamp);
+                };
+            }
         }
         var buffer: [128]u8 = undefined;
         const body = try std.fmt.bufPrint(&buffer, "{{\"applied\":{},\"sequence\":{d}}}", .{ applied, self.focus.sequence });
@@ -566,6 +577,7 @@ const Agent = struct {
             const can_send = if (job.pty) job.reason == null and job.stdout.items.len > 0 and job.credit > 0 else state.ready;
             slots[index] = .{ .group = group, .stream = if (job.pty) job.streams[0] else 0, .ready = can_send };
             if (can_send) ready += 1;
+            if (can_send and job.pty) if (self.queue_profile) |profile| profile.focus.ready(job.streams[0], profileClock());
         };
         // Bound work even for tiny terminal frames; no new storage or job slots.
         for (0..max_jobs * focus_scheduler.weight) |_| {
@@ -600,6 +612,7 @@ const Agent = struct {
 
     fn finish(self: *Agent, job: *ex.Job) !void {
         if (self.queue_profile) |profile| if (job.pty) {
+            profile.focus.release(job.streams[0]);
             // Snapshot precedes the terminal response; queued records are censored.
             // Diagnostic serialization failure must never change RPC semantics.
             var storage: [65536]u8 = undefined;
@@ -608,6 +621,14 @@ const Agent = struct {
             std.json.Stringify.value(profile.stats, .{}, &output) catch return self.finishWithoutQueueProfile(job);
             output.writeAll("\n") catch return self.finishWithoutQueueProfile(job);
             _ = c.write(2, output.buffered().ptr, output.buffered().len);
+            if (self.experimental_focus) {
+                output = .fixed(&storage);
+                output.writeAll("AGENT_FOCUS_PROFILE ") catch unreachable;
+                const snapshot = .{ .schema = @as(u32, 1), .queued_wire_bytes = profile.stats.queued_wire_bytes, .written_wire_bytes = profile.stats.written_wire_bytes, .discarded_wire_bytes = profile.stats.discarded_wire_bytes, .consumed_wire_bytes = profile.consumed, .focus = profile.focus.snapshot() };
+                std.json.Stringify.value(snapshot, .{}, &output) catch return self.finishWithoutQueueProfile(job);
+                output.writeAll("\n") catch return self.finishWithoutQueueProfile(job);
+                _ = c.write(2, output.buffered().ptr, output.buffered().len);
+            }
         };
         return self.finishWithoutQueueProfile(job);
     }
@@ -908,6 +929,38 @@ test "focus capability requires both server flags and both client HELLO opt-ins"
         try std.testing.expectEqual(expected, agent.experimental_focus);
         try std.testing.expectEqual(expected, std.mem.indexOf(u8, agent.output.items, "experimental.focus") != null);
     }
+}
+
+test "focus correlation binds only post-dispatch DATA payload, not old queued bytes or headers" {
+    var profile: queue_profile.Profiler = .{};
+    var agent: Agent = .{ .experimental_pty = true, .bounded_bulk = true, .experimental_focus = true, .nonce = @splat('a'), .queue_profile = &profile };
+    defer agent.output.deinit(A);
+    agent.jobs[0] = completedCapture(1);
+    defer agent.jobs[0].?.deinit();
+    agent.jobs[0].?.pty = true;
+    agent.jobs[0].?.credit = 3;
+    agent.session_groups[0] = 7;
+    try agent.jobs[0].?.stdout.appendSlice(A, "NEW");
+    try agent.frameClass(.data, 1, 6, "OLD", .pty_data);
+    const old_bytes = agent.output.items.len;
+    try agent.request(2, "{\"op\":\"FOCUS_UPDATE\",\"generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":1,\"active_session_id\":7,\"active_stream_id\":6}", 0);
+    profile.wrote(old_bytes, profileClock());
+    try std.testing.expect(profile.focus.events[0].enqueue_ns == null);
+    try agent.scheduleOutputs();
+    const event = &profile.focus.events[0];
+    try std.testing.expectEqual(@as(u64, 1), event.sequence);
+    try std.testing.expectEqual(@as(u64, 6), event.stream);
+    try std.testing.expect(event.dispatch_ns <= event.ready_ns.? and event.ready_ns.? <= event.enqueue_ns.?);
+    profile.wrote(@intCast(event.payload_begin.? - profile.consumed), profileClock());
+    try std.testing.expect(event.first_write_ns == null);
+    profile.wrote(1, profileClock());
+    try std.testing.expect(event.first_write_ns != null and event.complete_write_ns == null);
+    profile.wrote(2, profileClock());
+    try std.testing.expect(event.complete_write_ns != null);
+    try std.testing.expectEqual(profile.stats.queued_wire_bytes, profile.consumed);
+    // Stale focus is not an accepted diagnostic event.
+    try agent.request(3, "{\"op\":\"FOCUS_UPDATE\",\"generation\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":1,\"active_session_id\":999,\"active_stream_id\":6}", 0);
+    try std.testing.expectEqual(@as(u64, 1), profile.focus.accepted);
 }
 
 test "bounded outputs rotate all sixteen PTY and completed exec slots within batch limits" {

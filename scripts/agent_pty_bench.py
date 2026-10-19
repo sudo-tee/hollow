@@ -98,6 +98,70 @@ def parse_queue_profiles(stderr: str) -> list[dict]:
     return profiles
 
 
+def parse_focus_profiles(stderr: str) -> list[dict]:
+    """Absolute queue positions and timestamps; preserve incomplete/censored events."""
+    profiles = []
+
+    def integer(value):
+        return type(value) is int and value >= 0
+
+    for line in stderr.splitlines():
+        if not line.startswith("AGENT_FOCUS_PROFILE "):
+            continue
+        profile = json.loads(line.removeprefix("AGENT_FOCUS_PROFILE "))
+        if not isinstance(profile, dict) or type(profile.get("schema")) is not int or profile["schema"] != 1:
+            raise ValueError("invalid focus profile identity")
+        queued, written, discarded, consumed = (profile.get(k) for k in
+            ("queued_wire_bytes", "written_wire_bytes", "discarded_wire_bytes", "consumed_wire_bytes"))
+        if not all(integer(n) for n in (queued, written, discarded, consumed)) or not written + discarded == consumed <= queued:
+            raise ValueError("invalid focus wire positions")
+        focus = profile.get("focus")
+        if (not isinstance(focus, dict) or type(focus.get("schema")) is not int or focus["schema"] != 1
+                or type(focus.get("capacity")) is not int or focus["capacity"] != 64
+                or not integer(focus.get("accepted")) or not integer(focus.get("dropped"))
+                or not isinstance(focus.get("events"), list) or len(focus["events"]) > 64
+                or len(focus["events"]) + focus["dropped"] != focus["accepted"]
+                or (focus["dropped"] and len(focus["events"]) != 64)):
+            raise ValueError("invalid bounded focus accounting")
+        previous_sequence, previous_dispatch = 0, 0
+        for event in focus["events"]:
+            if (not isinstance(event, dict) or any(not integer(event.get(k)) for k in ("sequence", "group", "stream", "dispatch_ns"))
+                    or not previous_sequence < event["sequence"] <= 2**63 - 1
+                    or max(event["group"], event["stream"]) > 2**63 - 1
+                    or event["dispatch_ns"] < previous_dispatch
+                    or (event["stream"] and (event["group"] == 0 or event["stream"] % 2))):
+                raise ValueError("invalid focus event identity")
+            previous_sequence, previous_dispatch = event["sequence"], event["dispatch_ns"]
+            stop = event.get("stop")
+            if stop not in (None, "no_stream", "superseded", "released", "discarded"):
+                raise ValueError("invalid focus censoring")
+            values = [event.get(k) for k in ("ready_ns", "enqueue_ns", "first_write_ns", "complete_write_ns")]
+            seen_null = False
+            last = event["dispatch_ns"]
+            for value in values:
+                if value is None:
+                    seen_null = True
+                elif seen_null or not integer(value) or value < last:
+                    raise ValueError("invalid focus timestamp ordering")
+                else:
+                    last = value
+            ready, enqueue, first, complete = values
+            begin, end = event.get("payload_begin"), event.get("payload_end")
+            if enqueue is None:
+                if begin is not None or end is not None:
+                    raise ValueError("unqueued focus has wire positions")
+            elif (not integer(begin) or not integer(end) or not begin < end <= queued
+                  or (first is not None and consumed <= begin) or (complete is not None and consumed < end)):
+                raise ValueError("invalid focus payload positions")
+            if ((stop in ("no_stream", "superseded", "released") and enqueue is not None)
+                    or (stop == "discarded" and complete is not None)
+                    or (event["stream"] == 0 and (stop != "no_stream" or ready is not None))
+                    or (stop == "no_stream" and event["stream"] != 0)):
+                raise ValueError("inconsistent focus censoring")
+        profiles.append(profile)
+    return profiles
+
+
 def validate(result: dict, config: dict) -> dict:
     focus = config.get("focus_scheduler", False)
     if (type(focus) is not bool or type(result.get("focus_scheduler", False)) is not bool or result.get("focus_scheduler", False) != focus
@@ -105,6 +169,18 @@ def validate(result: dict, config: dict) -> dict:
                            or result["focus_ack_ns"] <= 0))
             or (not focus and result.get("focus_ack_ns") is not None)):
         raise ValueError("focus negotiation/workload identity mismatch")
+    every = config.get("focus_every", 0)
+    refreshes = result.get("focus_refreshes", [])
+    if type(every) is not int or not 0 <= every <= 100000 or (every and not focus):
+        raise ValueError("invalid focus refresh interval")
+    expected = list(range(0, config["samples"] + 32, every)) if every and config["workload"] == "prompt" else []
+    if (type(result.get("focus_every", 0)) is not int or result.get("focus_every", 0) != every or not isinstance(refreshes, list) or len(refreshes) != len(expected)):
+        raise ValueError("focus refresh workload/count mismatch")
+    for sequence, (index, refresh) in enumerate(zip(expected, refreshes), 2):
+        if (not isinstance(refresh, dict) or type(refresh.get("sequence")) is not int or refresh["sequence"] != sequence
+                or type(refresh.get("before_prompt_index")) is not int or refresh["before_prompt_index"] != index
+                or type(refresh.get("ack_ns")) is not int or refresh["ack_ns"] <= 0):
+            raise ValueError("invalid focus refresh sequence/timing")
     if (result.get("backend") != config["backend"]
             or result.get("workload") != config["workload"]
             or result.get("exit_code") != 0 or result.get("qualification") is not False
@@ -204,8 +280,11 @@ def main() -> None:
                         help="client allocator; debug matches the GUI's thread-safe DebugAllocator")
     parser.add_argument("--telemetry", action="store_true", help="enable fixed-size host I/O counters")
     parser.add_argument("--focus-scheduler", action="store_true", help="shared only: explicitly negotiate focus; target needs both scheduler flags; groups of four panes")
+    parser.add_argument("--focus-every", type=int, default=0, help="explicitly refresh same focused stream before every Nth prompt, including warmups; ACK wait excluded from echo timer")
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
+    if not 0 <= args.focus_every <= 100000 or (args.focus_every and not args.focus_scheduler):
+        parser.error("--focus-every requires --focus-scheduler and interval 0..100000")
     if "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not args.telemetry:
         parser.error("HOLLOW_AGENT_QUEUE_PROFILE requires --telemetry to inherit agent stderr")
     if not (1 <= args.runs <= 100 and 1 <= args.samples <= 100000 and 1 <= args.timeout <= 3600
@@ -246,7 +325,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
-                "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig", "src/agent/focus_scheduler.zig"]
+                "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig", "src/agent/focus_scheduler.zig", "src/agent/focus_profile.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "scope": "headless PTY adapters with optional fs/exec and explicit static focus research; no GUI policy/WSL bypass or rollout qualification",
@@ -276,7 +355,8 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                 for size in ([0] if workload == "prompt" else args.size_mib):
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
-                                  "focus_scheduler": args.focus_scheduler,
+                                   "focus_scheduler": args.focus_scheduler,
+                                   "focus_every": args.focus_every,
                                    "allocator": args.allocator, "telemetry": args.telemetry,
                                     "sessions": sessions, "load": load,
                                     "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,
@@ -289,6 +369,15 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                                                        capture_output=True, text=True, timeout=args.timeout)
                             result = validate(json.loads(completed.stdout), config)
                             queue_profiles = parse_queue_profiles(completed.stderr)
+                            focus_profiles = parse_focus_profiles(completed.stderr)
+                            if focus_profiles and not config["focus_scheduler"]:
+                                raise ValueError("unexpected focus diagnostics on non-focus connection")
+                            if config["focus_scheduler"] and "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not connector_json and not focus_profiles:
+                                raise ValueError("missing requested local focus diagnostics")
+                            if focus_profiles and config["focus_scheduler"] and not connector_json:
+                                expected_updates = 1 + len(result.get("focus_refreshes", []))
+                                if max(p["focus"]["accepted"] for p in focus_profiles) != expected_updates:
+                                    raise ValueError("focus diagnostics do not match accepted refresh workload")
                             if ("HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not connector_json
                                     and backend in ("agent", "shared") and not queue_profiles):
                                 raise ValueError("requested agent queue profile missing")
@@ -301,7 +390,8 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                                   "stderr": stderr_text(error), "qualification": False})
                             raise
                         emit({"kind": "measurement", "run": run, "config": config,
-                              "result": result, "stderr": completed.stderr, "agent_queue_profiles": queue_profiles})
+                               "result": result, "stderr": completed.stderr, "agent_queue_profiles": queue_profiles,
+                               "agent_focus_profiles": focus_profiles})
                         summary = result.get("latency_ms", result.get("mib_per_second"))
                         print(f"run={run} {backend} sessions={sessions} load={load} bulk={bulk} {workload} size_mib={size}: {summary}", flush=True)
 

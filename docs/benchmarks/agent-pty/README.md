@@ -19,6 +19,10 @@ The [explicit focus/session baseline](2026-10-18-focus-scheduler.md) redistribut
 foreground output share through hierarchical weighted visits, not byte-fair DRR.
 It retains one local loaded-latency miss, bulk/background tradeoffs and a short
 smoke `BulkStarved` failure. Defaults and rollout status remain unchanged.
+The [per-sequence focus diagnostics](2026-10-19-focus-profile.md) correlate accepted
+updates with captured/credited readiness, new DATA enqueue and stdout payload
+writes, retaining explicit censoring/overflow. Its 107 measurements do not qualify
+rollout; default E1 still has failed individual current/prior comparisons.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

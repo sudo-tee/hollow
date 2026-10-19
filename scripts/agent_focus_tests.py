@@ -4,17 +4,19 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 
 from agent_connectors import ProcessConnection
 from agent_conformance import DATA, ERROR, RESPONSE, b64
 from agent_pty import PtyClient
+from agent_pty_bench import parse_focus_profiles
 
 
 class FocusTests(unittest.TestCase):
     agent = "zig-out/bin/hollow-agent"
 
-    def client(self, *, bounded=True, enabled=True, negotiate=True):
+    def client(self, *, bounded=True, enabled=True, negotiate=True, profile=False, stderr=subprocess.PIPE):
         env = dict(os.environ)
         for key in ("HOLLOW_AGENT_BOUNDED_BULK", "HOLLOW_AGENT_FOCUS_SCHEDULER",
                     "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE"):
@@ -23,14 +25,54 @@ class FocusTests(unittest.TestCase):
             env["HOLLOW_AGENT_BOUNDED_BULK"] = "1"
         if enabled:
             env["HOLLOW_AGENT_FOCUS_SCHEDULER"] = "1"
+        if profile:
+            env["HOLLOW_AGENT_QUEUE_PROFILE"] = "1"
         connection = ProcessConnection(subprocess.Popen([self.agent, "stdio"], env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
             bufsize=0, start_new_session=True))
         client = PtyClient(connection)
         self.addCleanup(client.close)
         if negotiate:
             client.start(focus=True)
         return client
+
+    def test_profile_correlates_payload_and_preserves_unenqueued_censoring(self):
+        # File-backed stderr cannot fill a pipe and block diagnostic serialization.
+        with tempfile.TemporaryFile(dir="/tmp/opencode" if os.path.isdir("/tmp/opencode") else None) as stderr:
+            client = self.client(profile=True, stderr=stderr)
+            pane = client.spawn(["/bin/sh", "-c", "stty raw -echo; printf READY; read line; printf OUT; read line"], logical_session=7)
+            for expected in (b"READY", b"OUT"):
+                if expected == b"OUT":
+                    self.assertTrue(client.focus(1, 7, pane.stream)[1]["applied"])
+                    self.assertEqual(pane.input(b"go\n")[0], RESPONSE)
+                output = bytearray()
+                while len(output) < len(expected):
+                    kind, payload = pane.receive()
+                    self.assertEqual(kind, DATA)
+                    output.extend(payload)
+                    pane.grant(len(payload))
+                self.assertEqual(output, expected)
+            self.assertTrue(client.focus(2, 7, pane.stream)[1]["applied"])
+            self.assertTrue(client.focus(3, 0)[1]["applied"])
+            self.assertTrue(client.focus(4, 7)[1]["applied"])
+            self.assertTrue(client.focus(5, 7, pane.stream)[1]["applied"])
+            self.assertFalse(client.focus(2, 7, pane.stream)[1]["applied"])
+            self.assertEqual(pane.close()[0], RESPONSE)
+            self.assertEqual(pane.receive()[0], ERROR)
+            client.close()
+            stderr.seek(0)
+            profiles = parse_focus_profiles(stderr.read().decode())
+            self.assertTrue(profiles)
+            focus = profiles[-1]["focus"]
+            self.assertEqual(focus["accepted"], 5)
+            self.assertEqual(focus["dropped"], 0)
+            first, superseded, clear, session, released = focus["events"]
+            self.assertIsNotNone(first["complete_write_ns"])
+            self.assertEqual(first["payload_end"] - first["payload_begin"], 3)
+            self.assertEqual(superseded["stop"], "superseded")
+            self.assertEqual(clear["stop"], "no_stream")
+            self.assertEqual(session["stop"], "no_stream")
+            self.assertEqual(released["stop"], "released")
 
     def test_both_flags_and_hello_are_required(self):
         for bounded, enabled, hello_focus in ((False, True, True), (True, False, True), (True, True, False)):
