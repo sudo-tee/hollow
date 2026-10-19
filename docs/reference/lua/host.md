@@ -168,6 +168,10 @@ Follow-up [vendored LuaJIT checks](../../validation/2026-10-19-windows-luajit-bo
 repeat direct bootstrap, isolated cold/repair and missing-bundle cases with actual
 compiled JIT traces. Engine gap narrows; full application runtime/GUI, teardown
 and wider Windows qualification remain separate.
+Separate [live-work teardown checks](../../validation/2026-10-19-windows-manager-teardown.md)
+exercise explicit manager deinit with pending EXEC, stale-promise rejection and
+external workload/guardian/agent disappearance. Actual Runtime/GUI reload and
+immediate-teardown upload cleanup remain unqualified.
 
 ## SSH configuration
 

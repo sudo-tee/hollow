@@ -162,6 +162,11 @@ fs/exec checklist and uploads report/logs. A configured job is not proof it pass
 Full native Windows WSL/SSH/Podman qualification and ARM64 execution require their own runner
 or controlled manual record; Linux-musl cross-builds do not qualify execution.
 
+Subsequent [live-work Windows manager teardown checks](../validation/2026-10-19-windows-manager-teardown.md)
+pass six processes with all 18 workload/guardian/agent identities gone and stale
+promise rejection verified. Explicit manager deinit is covered; full application
+Runtime/GUI reload, abrupt crash and teardown upload cleanup remain unqualified.
+
 ### Controlled WSL/native Windows manual record
 
 Record commit/source hashes, build mode, client OS, launcher/SSH versions,
