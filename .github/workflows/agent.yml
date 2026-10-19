@@ -6,6 +6,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  windows-fs-exec:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Native Windows local fs/exec, WSL case requires explicit target
+        shell: pwsh
+        run: |
+          zig test src/host_windows_test.zig -lc -OReleaseSafe 2>&1 | Tee-Object -FilePath fs-exec-windows-native.log
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fs-exec-windows-native
+          path: fs-exec-windows-native.log
   agent-pane:
     runs-on: ubuntu-latest
     steps:

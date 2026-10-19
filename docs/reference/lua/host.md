@@ -154,6 +154,10 @@ Real launcher tests currently run **Linux → Windows interop → WSL**. They su
 a Windows UNC artifact override because native Linux bundle paths are not Windows
 paths. This does not qualify automatic discovery in a native Windows client,
 Windows GUI teardown, WSL PTY latency, or the complete fault/security matrix.
+Separate [native Windows dispatcher smoke](../../validation/2026-10-19-windows-fs-exec-smoke.md)
+now executes native-local and preinstalled WSL fs/exec through production native
+HostManager. Public Lua bootstrap and automatic Windows bundle discovery remain
+unverified; that smoke does not qualify them or change the pane backend.
 
 ## SSH configuration
 
