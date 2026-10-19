@@ -156,8 +156,11 @@ paths. This does not qualify automatic discovery in a native Windows client,
 Windows GUI teardown, WSL PTY latency, or the complete fault/security matrix.
 Separate [native Windows dispatcher smoke](../../validation/2026-10-19-windows-fs-exec-smoke.md)
 now executes native-local and preinstalled WSL fs/exec through production native
-HostManager. Public Lua bootstrap and automatic Windows bundle discovery remain
-unverified; that smoke does not qualify them or change the pane backend.
+HostManager. Follow-up [public Lua WSL bootstrap](../../validation/2026-10-19-windows-lua-bootstrap.md)
+checks cache reuse and automatic bundle discovery from Windows UNC/C: flat and
+prefix layouts, including Unicode parent paths and missing-bundle rejection.
+It uses headless Lua 5.1 C API, not production LuaJIT/GUI; successful cold install
+and wider Windows qualification remain open. Pane backend unchanged.
 
 ## SSH configuration
 

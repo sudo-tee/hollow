@@ -68,6 +68,7 @@ fn nowMs(maybe_state: ?*c.lua_State) callconv(.c) c_int {
 }
 
 test "Lua host promises execute native concurrent RPCs and cancel on runtime teardown" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const state = c.luaL_newstate() orelse return error.OutOfMemory;
     defer c.lua_close(state);
     c.luaL_openlibs(state);
@@ -396,4 +397,97 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         try until(state, "DONE=badauth:status()~='pending'");
         try run(state, "assert(badauth:status()=='rejected' and badauth:error().code=='ssh_unavailable')");
     }
+}
+
+test "native Windows public Lua WSL bootstrap discovers installed agent bundle" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const distro = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_DISTRO") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(distro);
+    const state = c.luaL_newstate() orelse return error.OutOfMemory;
+    defer c.lua_close(state);
+    c.luaL_openlibs(state);
+    var ctx: Context = .{ .allocator = std.testing.allocator };
+    defer if (ctx.host_manager) |*manager| manager.deinit();
+    c.lua_createtable(state, 0, 7);
+    inline for (.{ "connect", "status", "close", "start", "poll", "cancel" }) |name| {
+        c.lua_pushlightuserdata(state, &ctx);
+        c.lua_pushcclosure(state, Callback(name).call, 1);
+        c.lua_setfield(state, -2, "host_" ++ name);
+    }
+    c.lua_pushcclosure(state, nowMs, 0);
+    c.lua_setfield(state, -2, "now_ms");
+    c.lua_setfield(state, c.LUA_GLOBALSINDEX, "host_api");
+    c.lua_pushlstring(state, distro.ptr, distro.len);
+    c.lua_setfield(state, c.LUA_GLOBALSINDEX, "WSL_DISTRO");
+    const root = try std.testing.environ.getAlloc(std.testing.allocator, "SystemRoot");
+    defer std.testing.allocator.free(root);
+    const launcher = try std.fs.path.join(std.testing.allocator, &.{ root, "System32", "wsl.exe" });
+    defer std.testing.allocator.free(launcher);
+    c.lua_pushlstring(state, launcher.ptr, launcher.len);
+    c.lua_setfield(state, c.LUA_GLOBALSINDEX, "WSL_EXE");
+    try run(state,
+        \\package.path='src/lua/?.lua;'..package.path
+        \\deferred={}; host_api.defer=function(fn) deferred[#deferred+1]=fn end
+        \\hollow={async=require('hollow.async'),host=require('hollow.host')}
+        \\local_p=hollow.host.local_host()
+    );
+    try until(state, "DONE=local_p:status()~='pending'");
+    try run(state,
+        \\assert(local_p:status()=='fulfilled',local_p:error() and local_p:error().message)
+        \\native=local_p:value(); ni=native:info()
+        \\assets=require('hollow.host.artifacts').discover(native)
+    );
+    try until(state, "DONE=assets:status()~='pending' and ni:status()~='pending'");
+    const missing = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_EXPECT_NO_BUNDLE") catch null;
+    defer if (missing) |bytes| std.testing.allocator.free(bytes);
+    if (missing) |value| {
+        if (!std.mem.eql(u8, value, "1")) return error.InvalidArgument;
+        try run(state,
+            \\assert(ni:value().os=='windows')
+            \\assert(assets:status()=='rejected' and assets:error().code=='agent_install_unavailable')
+            \\print('WINDOWS_LUA_MISSING_BUNDLE_REJECTED '..ni:value().executable_dir)
+        );
+        return;
+    }
+    try run(state,
+        \\assert(ni:value().os=='windows')
+        \\assert(assets:status()=='fulfilled',assets:error() and assets:error().message)
+        \\assert(assets:value().x86_64 and assets:value().aarch64)
+        \\print('WINDOWS_LUA_BUNDLE '..assets:value().x86_64.path)
+        \\-- No artifact, agent_dir or agent_path override: public default discovery.
+        \\opts={id='windows-lua-wsl',distro=WSL_DISTRO,wsl=WSL_EXE}
+        \\connected=hollow.host.wsl(opts)
+    );
+    try until(state, "DONE=connected:status()~='pending'");
+    try run(state,
+        \\assert(connected:status()=='fulfilled',connected:error() and connected:error().message)
+        \\remote=connected:value(); info=remote:info()
+        \\read=remote.fs.read('/etc/os-release',{limit=64}); list=remote.fs.list('/tmp',{limit=2})
+        \\exec=remote:exec({argv={'/bin/sh','-c','printf "\\000%s" "$1"; printf err >&2; exit 7','probe'," a'\255\n"},cwd='/tmp'})
+        \\cancel=remote:exec({argv={'/bin/sleep','30'}}); assert(cancel:cancel())
+    );
+    try until(state, "DONE=info:status()~='pending' and read:status()~='pending' and list:status()~='pending' and exec:status()~='pending' and cancel:status()~='pending'");
+    try run(state,
+        \\assert(info:value().os=='linux' and #read:value().bytes>0 and #list:value().entries<=2)
+        \\assert(exec:value().exit_code==7 and exec:value().stdout=="\000 a'\255\n" and exec:value().stderr=='err')
+        \\assert(cancel:error().code=='cancelled')
+        \\assert(remote:close()); opts.id='windows-lua-wsl-reuse'; reused=hollow.host.wsl(opts)
+    );
+    try until(state, "DONE=reused:status()~='pending'");
+    try run(state,
+        \\assert(reused:status()=='fulfilled',reused:error() and reused:error().message)
+        \\assert(reused:value().generation~=remote.generation); assert(reused:value():close())
+        \\opts.id='windows-lua-wsl-preinstalled'
+        \\opts.agent_path=info:value().home..'/.cache/hollow/agents/linux-'..info:value().arch..'/'..assets:value()[info:value().arch].sha256..'/hollow-agent'
+        \\pre=hollow.host.wsl(opts)
+    );
+    try until(state, "DONE=pre:status()~='pending'");
+    try run(state,
+        \\assert(pre:status()=='fulfilled',pre:error() and pre:error().message); assert(pre:value():close())
+        \\opts.agent_path=nil; opts.id='windows-lua-wsl-bad-checksum'
+        \\opts.artifacts={[info:value().arch]={path=assets:value()[info:value().arch].path,sha256=string.rep('0',64)}}
+        \\wrong=hollow.host.wsl(opts)
+    );
+    try until(state, "DONE=wrong:status()~='pending'");
+    try run(state, "assert(wrong:status()=='rejected' and wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");
 }
