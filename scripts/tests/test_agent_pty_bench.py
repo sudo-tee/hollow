@@ -231,6 +231,22 @@ class AgentPtyBenchTests(unittest.TestCase):
                        {"bulk_stats": dict(result["bulk_stats"], fs=dict(timing, ns_log2=[]))}):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 validate(dict(result, **update), config)
+        config["separate_bulk"] = True
+        result.update(separate_bulk=True, bulk_lane="separate_agent")
+        validate(copy.deepcopy(result), config)
+        for update in ({"separate_bulk": False}, {"separate_bulk": 1}, {"bulk_lane": "shared"}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+
+    def test_separate_bulk_rejects_ambiguous_or_inactive_topologies_before_launch(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        for backend, modes in (("native", ["mixed"]), ("all", ["mixed"]), ("shared", ["off"]), ("shared", ["off", "mixed"])):
+            result = subprocess.run([sys.executable, str(script), "--separate-bulk", "--backend", backend,
+                                     "--bulk", *modes, "--binary", "/nonexistent/benchmark", "--output", "/nonexistent/output"],
+                                    capture_output=True, text=True)
+            with self.subTest(backend=backend, modes=modes):
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("--separate-bulk requires", result.stderr)
 
     def test_shared_bulk_does_not_silently_raise_sixteen_job_limit(self):
         script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"

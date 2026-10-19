@@ -178,6 +178,41 @@ foreground-first consumption remains identical; no focus-first GUI parsing/rende
 variable is simulated. Dynamic focus switching is tested for correctness, not yet
 latency-qualified. Every result remains `qualification:false`.
 
+### Explicit separate-bulk topology probe
+
+`--separate-bulk --backend shared --bulk fs|exec|mixed` keeps all PTYs on their
+existing shared connection but gives checked filesystem/exec interference its own
+prepared connection to **another instance of the same agent** via the same
+connector argv. No HostManager routing, pane default, new protocol, handler or
+priority control lane is introduced. Focus stays on the PTY connection only;
+the bulk agent uses ordinary fs/exec negotiation, not experimental PTYs/focus.
+Both agents see the same inherited target environment; bounded-bulk flags remain
+inactive on a connection that did not negotiate experimental PTYs.
+
+The benchmark already warms one complete checked operation of each selected kind
+before load for both placements. Separate startup/HELLO therefore does not enter
+foreground echo/output measurements, though it remains a real deployment cost.
+One owner loop still services foreground first and bounded background/bulk work;
+separation does not create a dedicated client bulk-consumer thread.
+
+Result `separate_bulk:true` and `bulk_lane:"separate_agent"` must match explicit
+configuration. Without the option, shared placement and its existing admission
+rules stay unchanged. Inactive bulk and non-shared backends reject this option
+rather than silently ignoring it. Separate mode allows 16 PTYs **plus** bulk on
+the other connection, not more than 16 jobs per connection; compare at equal
+PTY count for performance. No extra connection is created for `--bulk off`.
+Both pending bulk operations are abandoned and their independently owned
+connection destroyed at teardown; no fallback to the PTY connection is attempted.
+
+This is a **two-process/two-transport experiment**, not same-agent dual lanes.
+It changes process scheduling, resources and failure boundaries along with
+head-of-line contention. It cannot isolate which factor caused a difference.
+Remote runs require an already prepared connector that supports concurrent
+connections to the intended target and an explicit prepared zero fixture path;
+the benchmark does not deploy agents or attest target identity. CPU/RSS,
+transport establishment, remote reconnect and fault containment need independent
+qualification. Report background/bulk rates alongside foreground improvement.
+
 ### Per-focus diagnostics and loaded refresh probe
 
 On a negotiated focus connection, existing target-side

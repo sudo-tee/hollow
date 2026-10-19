@@ -163,6 +163,11 @@ def parse_focus_profiles(stderr: str) -> list[dict]:
 
 
 def validate(result: dict, config: dict) -> dict:
+    separate = config.get("separate_bulk", False)
+    if (type(separate) is not bool or type(result.get("separate_bulk", False)) is not bool
+            or result.get("separate_bulk", False) != separate
+            or (separate and (config["backend"] != "shared" or config.get("bulk", "off") == "off"))):
+        raise ValueError("separate bulk topology mismatch")
     focus = config.get("focus_scheduler", False)
     if (type(focus) is not bool or type(result.get("focus_scheduler", False)) is not bool or result.get("focus_scheduler", False) != focus
             or (focus and (config["backend"] != "shared" or type(result.get("focus_ack_ns")) is not int
@@ -206,7 +211,7 @@ def validate(result: dict, config: dict) -> dict:
             raise ValueError("stalled output exceeds per-session cap")
     if "bulk" in config:
         mode = config["bulk"]
-        lane = "off" if mode == "off" else "shared" if config["backend"] == "shared" else "separate_agent"
+        lane = "off" if mode == "off" else "shared" if config["backend"] == "shared" and not separate else "separate_agent"
         stats = result.get("bulk_stats")
         if result.get("bulk") != mode or result.get("bulk_lane") != lane or not isinstance(stats, dict):
             raise ValueError("bulk workload/lane identity mismatch")
@@ -268,6 +273,7 @@ def main() -> None:
     parser.add_argument("--sessions", type=int, nargs="+", default=[1], help="total foreground + background PTYs, 1..16")
     parser.add_argument("--load", choices=("idle", "noisy", "stalled"), nargs="+", default=["idle"])
     parser.add_argument("--bulk", choices=("off", "fs", "exec", "mixed"), nargs="+", default=["off"])
+    parser.add_argument("--separate-bulk", action="store_true", help="shared PTYs only, active bulk required: run fs/exec on another agent connection/process; no production routing change")
     parser.add_argument("--bulk-path", help="prepared target path containing exactly 16 KiB of zero bytes; local fixture created if omitted")
     parser.add_argument("--bulk-exec-bytes", type=int, default=524288, help="checked bytes per repeated non-PTY EXEC, 1..1048576")
     parser.add_argument("--resize-every", type=int, default=0, help="resize before every Nth prompt, including warmups; 0 disables")
@@ -303,7 +309,9 @@ def main() -> None:
     backends = ["native", "agent", "shared"] if args.backend == "all" else ["native", "agent"] if args.backend == "both" else [args.backend]
     if args.focus_scheduler and backends != ["shared"]:
         parser.error("--focus-scheduler requires --backend shared")
-    if "shared" in backends and any(n + (0 if mode == "off" else 2 if mode == "mixed" else 1) > 16
+    if args.separate_bulk and (backends != ["shared"] or "off" in args.bulk):
+        parser.error("--separate-bulk requires --backend shared and active --bulk modes only")
+    if "shared" in backends and not args.separate_bulk and any(n + (0 if mode == "off" else 2 if mode == "mixed" else 1) > 16
                                     for n, mode in itertools.product(args.sessions, args.bulk)):
         parser.error("shared PTYs plus bulk workers exceed the unchanged 16-job limit")
     needs_file = any(mode in ("fs", "mixed") for mode in args.bulk)
@@ -331,7 +339,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "scope": "headless PTY adapters with optional fs/exec and explicit static focus research; no GUI policy/WSL bypass or rollout qualification",
         "bulk_fixture": {"path": bulk_path, "expected_bytes": 16384,
                          "expected_sha256": hashlib.sha256(bytes(16384)).hexdigest()} if bulk_path else None,
-        "bulk_placement": "same connection for shared PTYs; separate agent for native/dedicated PTYs",
+        "bulk_placement": "explicit separate agent for shared PTYs" if args.separate_bulk else "same connection for shared PTYs; separate agent for native/dedicated PTYs",
         "qualification": False, "revision": git("rev-parse", "HEAD"),
         "dirty_paths": git("status", "--short"), "source_sha256": {name: sha(ROOT / name) for name in sources},
         "binary": str(binary), "binary_sha256": sha(binary),
@@ -359,7 +367,8 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                                    "focus_every": args.focus_every,
                                    "allocator": args.allocator, "telemetry": args.telemetry,
                                     "sessions": sessions, "load": load,
-                                    "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,
+                                     "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,
+                                     "separate_bulk": args.separate_bulk,
                                     "bulk_exec_bytes": args.bulk_exec_bytes, "resize_every": args.resize_every,
                                     "bytes": size * 1024 * 1024 if size else 1,
                                     "timeout_ms": min(args.timeout, 30) * 1000,

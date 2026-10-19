@@ -161,6 +161,25 @@ timings without losing wire bytes. Repeated snapshots are deduplicated by sequen
 Default E1 current/native still fails two of 12 output pairs, prior/native three;
 no root cause, default preservation or release qualification is asserted.
 
+## 2026-10-19 separate bulk-agent topology
+
+The [split-bulk report](../benchmarks/agent-pty/2026-10-19-split-bulk.md) retains
+**80** ReleaseFast measurements (60 matrix, 16 single-kind correctness and four
+16-PTY admission), plus **two** separate ReleaseSafe full-admission profile smoke
+cases. All byte/progress/bounded-counter checks pass. **84** native
+loop/adapter/transport executions, **65** Python unit tests and three direct
+native-runner invalid-topology/admission checks pass. All **15** final runner
+source hashes reconstruct on `9a4dfe9`. Agent and benchmark restored to ReleaseSafe.
+
+All **24/24** round-matched local loaded prompt pairs pass +5 ms in this matrix;
+earlier misses are not erased. Separate bulk improves checked EXEC throughput
+roughly 6–8× in prompt cases, but worsens all four policy/load median echo p99
+comparisons and lowers focus/noisy foreground output ~11%. It spends an extra
+agent/connection; CPU/RSS, sustained fairness/fault behavior, 40/100/200 PTYs and
+native Windows/actual WSL bypass remain untested here. No default E1 repeat is
+claimed for this benchmark-only change; latest failed default pairs remain open.
+No new agent protocol, production routing, DRR or same-agent priority lane exists.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000
