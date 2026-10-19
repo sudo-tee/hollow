@@ -75,6 +75,7 @@ const Outbound = struct {
 };
 pub const Options = struct {
     experimental_pty: bool = false,
+    experimental_focus: bool = false,
     telemetry: bool = false,
     context: ?*anyopaque = null,
     notify: ?*const fn (*anyopaque) void = null,
@@ -155,6 +156,7 @@ pub const Connection = struct {
 
     pub fn createWithOptions(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, options: Options) !*Connection {
         if (argv.len == 0 or argv[0].len == 0 or argv.len > 4096) return error.InvalidArgument;
+        if (options.experimental_focus and !options.experimental_pty) return error.InvalidArgument;
         const generation = try newGeneration();
         const self = try allocator.create(Connection);
         errdefer allocator.destroy(self);
@@ -211,8 +213,10 @@ pub const Connection = struct {
         if (op != .string) return error.InvalidPayload;
         const pty = std.mem.eql(u8, op.string, "PTY_SPAWN");
         if (pty and !self.options.experimental_pty) return error.InvalidArgument;
+        const focus = std.mem.eql(u8, op.string, "FOCUS_UPDATE");
+        if (focus and !self.options.experimental_focus) return error.InvalidArgument;
         const exec = std.mem.eql(u8, op.string, "EXEC") or pty;
-        const job = !std.mem.eql(u8, op.string, "PTY_INPUT") and !std.mem.eql(u8, op.string, "PTY_RESIZE") and !std.mem.eql(u8, op.string, "PTY_CLOSE");
+        const job = !focus and !std.mem.eql(u8, op.string, "PTY_INPUT") and !std.mem.eql(u8, op.string, "PTY_RESIZE") and !std.mem.eql(u8, op.string, "PTY_CLOSE");
         var credit: usize = 0;
         if (pty) {
             const v = parsed.value.object.get("output_credit") orelse return error.InvalidPayload;
@@ -257,6 +261,29 @@ pub const Connection = struct {
         }
         self.changed.signal(self.io);
         return id;
+    }
+
+    /// Connection-nonce-scoped focus update; returns an ordinary async control
+    /// request ID. Caller must pollFor()/deinit its completion, including errors.
+    pub fn updateFocus(self: *Connection, sequence: u64, session: u64, stream: u64) !u64 {
+        if (!self.options.experimental_focus or sequence == 0 or sequence > std.math.maxInt(i64) or session > std.math.maxInt(i64) or stream > std.math.maxInt(i64) or (session == 0 and stream != 0)) return error.InvalidArgument;
+        var nonce: [64]u8 = undefined;
+        self.mutex.lockUncancelable(self.io);
+        if (self.state != .ready or self.closing) {
+            const err = if (self.state == .disconnected or self.closing) error.Disconnected else error.NotReady;
+            self.mutex.unlock(self.io);
+            return err;
+        }
+        const length = self.nonce_len;
+        @memcpy(nonce[0..length], self.nonce[0..length]);
+        self.mutex.unlock(self.io);
+        // No reconnect on Connection itself; generation cannot change between
+        // snapshot and submission. Validate/escape even a malformed peer nonce.
+        const escaped = try std.json.Stringify.valueAlloc(self.allocator, nonce[0..length], .{});
+        defer self.allocator.free(escaped);
+        var buffer: [512]u8 = undefined;
+        const json = try std.fmt.bufPrint(&buffer, "{{\"op\":\"FOCUS_UPDATE\",\"generation\":{s},\"sequence\":{d},\"active_session_id\":{d},\"active_stream_id\":{d}}}", .{ escaped, sequence, session, stream });
+        return self.request(json, 5000);
     }
 
     pub fn cancel(self: *Connection, id: u64) !void {
@@ -466,7 +493,7 @@ pub const Connection = struct {
     }
 
     fn writeLoop(self: *Connection) !void {
-        try self.writeFrame(.hello, 0, 0, if (self.options.experimental_pty) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
+        try self.writeFrame(.hello, 0, 0, if (self.options.experimental_focus) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"experimental_focus\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else if (self.options.experimental_pty) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
         while (true) {
             try self.mutex.lock(self.io);
             var locked = true;
@@ -564,6 +591,15 @@ pub const Connection = struct {
             if (capabilities != .array) return error.ProtocolMismatch;
             var found = false;
             for (capabilities.array.items) |value| if (value == .string and std.mem.eql(u8, value.string, "experimental.pty")) {
+                found = true;
+            };
+            if (!found) return error.ProtocolMismatch;
+        }
+        if (self.options.experimental_focus) {
+            const capabilities = object.get("capabilities") orelse return error.ProtocolMismatch;
+            if (capabilities != .array) return error.ProtocolMismatch;
+            var found = false;
+            for (capabilities.array.items) |value| if (value == .string and std.mem.eql(u8, value.string, "experimental.focus")) {
                 found = true;
             };
             if (!found) return error.ProtocolMismatch;

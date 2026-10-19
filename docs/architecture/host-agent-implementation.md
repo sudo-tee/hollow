@@ -38,6 +38,17 @@ queue-copy hot spot in both builds. A narrow
 that copy only, with nonuniform-byte/short-credit regression coverage; it does not
 claim to solve the intermittent loss or qualify shared/default PTY rollout.
 
+The next [explicit focus/session baseline](../benchmarks/agent-pty/2026-10-18-focus-scheduler.md)
+adds target-side `HOLLOW_AGENT_FOCUS_SCHEDULER` on bounded-bulk connections, client
+`experimental_focus` negotiation/capability checking, spawn-time logical groups,
+and nonce/sequence-scoped `FOCUS_UPDATE`. Native shared adapters expose explicit
+async updates without GUI/HostManager inference; focus remains control-admitted
+at the existing 16-job ceiling. Fixed-capacity hierarchical weighted round robin
+rotates session then pane visits, retaining credit/batch/metadata constraints.
+This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
+157 measurements plus one preserved short-smoke failure show redistribution,
+not a rollout pass; per-update loaded correlation and broader gates remain open.
+
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and

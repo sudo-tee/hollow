@@ -1,5 +1,5 @@
 //! Same client loop/clock/workloads for native, dedicated and shared agent PTYs.
-//! No GUI, parser, focus hints, shell integration or deployment qualification.
+//! No GUI, parser, shell integration or deployment qualification.
 const std = @import("std");
 const builtin = @import("builtin");
 const io = @import("io.zig");
@@ -13,6 +13,7 @@ const ready = "HOLLOW_READY\n";
 const Config = struct {
     allocator: enum { page, smp, debug } = .debug,
     telemetry: bool = false,
+    focus_scheduler: bool = false,
     backend: enum { native, agent, shared },
     sessions: usize = 1,
     load: enum { idle, noisy, stalled } = .idle,
@@ -27,8 +28,8 @@ const Config = struct {
     timeout_ms: u32 = 30000,
 };
 
-fn spawn(cfg: Config, command: []const u8, notification: @import("pty/wake.zig").Wake, owner: ?*SharedConnection) !Pty {
-    const config: @import("pty/agent.zig").Config = .{ .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command }, .telemetry = cfg.telemetry };
+fn spawn(cfg: Config, command: []const u8, notification: @import("pty/wake.zig").Wake, owner: ?*SharedConnection, pane_index: usize) !Pty {
+    const config: @import("pty/agent.zig").Config = .{ .logical_session_id = if (cfg.focus_scheduler) 1 + pane_index / 4 else null, .connector_argv = cfg.connector_argv, .argv = &.{ "/bin/sh", "-c", command }, .telemetry = cfg.telemetry };
     return switch (cfg.backend) {
         .shared => .{ .agent = try AgentPty.spawnShared(a, owner.?, config, 120, 40) },
         .agent => .{ .agent = try AgentPty.spawn(a, config, 120, 40, notification) },
@@ -157,6 +158,7 @@ pub fn main(init: std.process.Init) !void {
         else => 1,
     };
     if (cfg.backend == .shared and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
+    if (cfg.focus_scheduler and cfg.backend != .shared) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
         .output => try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c {d} /dev/zero", .{cfg.bytes}),
@@ -164,12 +166,12 @@ pub fn main(init: std.process.Init) !void {
     defer if (cfg.workload == .output) a.free(command);
     var wake: Wake = .{};
     const notification: @import("pty/wake.zig").Wake = .{ .context = &wake, .callback = Wake.signal };
-    const owner = if (cfg.backend == .shared) try SharedConnection.createWithTelemetry(a, cfg.connector_argv, notification, cfg.telemetry) else null;
+    const owner = if (cfg.backend == .shared) try SharedConnection.createWithOptions(a, cfg.connector_argv, notification, .{ .telemetry = cfg.telemetry, .experimental_focus = cfg.focus_scheduler }) else null;
     defer if (owner) |shared| shared.destroy();
     var backgrounds: Backgrounds = .{ .config = cfg };
     defer backgrounds.deinit();
     const spawn_start = clock();
-    var pty = try spawn(cfg, command, notification, owner);
+    var pty = try spawn(cfg, command, notification, owner, 0);
     defer pty.deinit();
     const timeout: i128 = @as(i128, cfg.timeout_ms) * std.time.ns_per_ms;
     var greeting: [ready.len]u8 = undefined;
@@ -182,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
         else
             try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c 1073741824 /dev/zero | tr '\\000' '{c}'; sleep 600", .{'A' + @as(u8, @intCast(index))});
         defer a.free(background_command);
-        backgrounds.ptys[index] = try spawn(cfg, background_command, notification, owner);
+        backgrounds.ptys[index] = try spawn(cfg, background_command, notification, owner, index + 1);
         backgrounds.count += 1;
         try receive(&backgrounds.ptys[index], &wake, &backgrounds, &greeting, clock() + timeout);
         if (!std.mem.eql(u8, &greeting, ready)) return error.InvalidGreeting;
@@ -204,6 +206,26 @@ pub fn main(init: std.process.Init) !void {
     }
     bulk.priming = false;
     bulk.stats = .{};
+    var focus_ack_ns: ?u64 = null;
+    if (cfg.focus_scheduler) {
+        const start = clock();
+        const shared = owner.?;
+        const id = try shared.updateFocus(1, 1, pty.agent.output_stream.?);
+        defer shared.connection.abandon(id);
+        while (true) {
+            const epoch = wake.epoch.load(.acquire);
+            if (shared.connection.pollFor(id)) |completion| {
+                defer shared.connection.freeCompletion(completion);
+                if (completion.failure != null or completion.metadata_json == null) return error.FocusFailed;
+                const response = try std.json.parseFromSlice(struct { applied: bool, sequence: u64 }, a, completion.metadata_json.?, .{});
+                defer response.deinit();
+                if (!response.value.applied or response.value.sequence != 1) return error.FocusFailed;
+                focus_ack_ns = @intCast(clock() - start);
+                break;
+            }
+            try wake.wait(epoch, start + timeout);
+        }
+    }
     for (backgrounds.ptys[0..backgrounds.count]) |*background| try background.writeAll("GO\n");
     backgrounds.bulk = &bulk;
     backgrounds.reset();
@@ -263,6 +285,8 @@ pub fn main(init: std.process.Init) !void {
         .allocator = cfg.allocator,
         .telemetry = if (pty == .agent and cfg.telemetry) pty.agent.connection.metrics() else null,
         .backend = cfg.backend,
+        .focus_scheduler = cfg.focus_scheduler,
+        .focus_ack_ns = focus_ack_ns,
         .sessions = cfg.sessions,
         .load = cfg.load,
         .bulk = cfg.bulk,

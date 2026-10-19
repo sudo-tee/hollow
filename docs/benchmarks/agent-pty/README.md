@@ -15,6 +15,10 @@ The [balanced source-isolation follow-up](2026-10-18-default-source-isolation.md
 retains intermittent losses without attributing them to an unproven cause.
 Its [measured compaction experiment](2026-10-18-pty-compaction.md) replaces one hot
 overlapping copy; local throughput medians are mixed, not a general speed claim.
+The [explicit focus/session baseline](2026-10-18-focus-scheduler.md) redistributes
+foreground output share through hierarchical weighted visits, not byte-fair DRR.
+It retains one local loaded-latency miss, bulk/background tradeoffs and a short
+smoke `BulkStarved` failure. Defaults and rollout status remain unchanged.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

@@ -299,3 +299,35 @@ Historical snapshots without these optional fields remain readable. The runner
 checks local snapshot selection against the requested environment flag. Remote
 connectors must explicitly set target environment/argv; client flags alone do not
 attest remote selection or build identity. Compare diagnostic-on/off separately.
+
+### Explicit hierarchical focus baseline
+
+`--focus-scheduler` is valid only with `--backend shared`; it requires both
+target-side scheduler flags plus HELLO's `experimental_focus` and the matching
+capability. Missing capability fails rather than silently timing flat RR.
+See [wire/native API contract](agent-pty-experiment.md#explicit-focussession-scheduler-research-only).
+Neither flag changes existing pane selection or ordinary host API routing.
+
+The benchmark assigns explicit logical groups of four panes and selects the
+measured foreground pane in group one before load starts. `sessions` retains its
+historical meaning of **PTY/pane count**: eight here means two logical sessions,
+not the plan's 10/25/50 logical sessions. Focus remains static during timing.
+Its initial `focus_ack_ns` measures request-to-ACK wall time before load, not
+focus-to-output causality, loaded change latency or a per-update p99. No GUI
+renderer/parser work or warm shared-connection reuse is added.
+
+Compare native, legacy flat PTY scheduling, bounded flat bulk scheduling and the
+focus baseline separately. Hierarchical weighting changes how a logical session
+shares visits irrespective of its pane count; it is **not byte-fair DRR**. It may
+improve foreground shares by reducing siblings, other sessions or bulk rates.
+Keep per-stream counters, aggregate PTY throughput, completed fs/exec throughput,
+stopped-buffer size and background progress gaps alongside prompt p99. Equal
+frame-visit weights do not imply equal bytes/second or starvation-free wall time.
+
+Keep runs long enough to observe checked bulk completions. In an initial 1 MiB
+focus smoke, the output workload ended with no completed mixed bulk progress and
+the harness correctly failed `BulkStarved`. Do not weaken that validator, report
+the partial dataset as passing, or treat a longer repeat as disproving starvation.
+The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXEC
+captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
+and dynamic-focus timing still need independently sustained workloads.

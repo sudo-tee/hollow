@@ -54,14 +54,26 @@ class PtySession:
 
 
 class PtyClient(AgentClient):
-    def start(self):
-        kind, rid, sid, payload = self.hello(b'{"major":1,"minor":0,"experimental_pty":true}')
+    def start(self, *, focus=False):
+        kind, rid, sid, payload = self.hello(json.dumps({"major": 1, "minor": 0, "experimental_pty": True,
+                                                        "experimental_focus": focus}).encode())
         hello = json.loads(payload)
         if kind != HELLO_ACK or "experimental.pty" not in hello.get("capabilities", []):
             raise RuntimeError("peer did not negotiate experimental PTY support")
+        if focus and "experimental.focus" not in hello.get("capabilities", []):
+            raise RuntimeError("peer did not negotiate experimental focus support")
+        self.focus_generation = hello["connection_nonce"]
+        self.focus_negotiated = focus
         return hello
 
-    def spawn(self, argv, *, rows=24, cols=80, credit=65536, env=(), cwd=None, timeout_ms=30000):
+    def focus(self, sequence, logical_session, stream=0):
+        return self.request("FOCUS_UPDATE", {"generation": self.focus_generation, "sequence": sequence,
+                                             "active_session_id": logical_session, "active_stream_id": stream})
+
+    def spawn(self, argv, *, rows=24, cols=80, credit=65536, env=(), cwd=None, timeout_ms=30000,
+              logical_session=None):
+        if self.focus_negotiated and logical_session is None:
+            raise ValueError("negotiated focus requires explicit logical_session")
         out, err = self.allocate_streams()
         body = {"op": "PTY_SPAWN", "argv_b64": [b64(os.fsencode(arg)) for arg in argv],
                 "stdout_stream_id": out, "stderr_stream_id": err, "rows": rows, "cols": cols,
@@ -69,6 +81,8 @@ class PtyClient(AgentClient):
                 "env_b64": [{"key_b64": b64(os.fsencode(k)), "value_b64": b64(os.fsencode(v))} for k, v in env]}
         if cwd is not None:
             body["cwd_b64"] = b64(os.fsencode(cwd))
+        if logical_session is not None:
+            body["logical_session_id"] = logical_session
         events = queue.Queue()
         with self.write_lock:
             with self.lock:
