@@ -75,11 +75,9 @@ fn readSpawn(allocator: std.mem.Allocator, reader: *wire.Reader) ![]u8 {
     }
 }
 
-fn serve(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn, reader: *wire.Reader) !void {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+const Prepared = struct { cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8 };
 
+fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepared {
     for (spawn.env) |entry| {
         if (entry.key.len == 0 or std.mem.indexOfScalar(u8, entry.key, '=') != null) return error.InvalidEnv;
         const value = if (spawn.path_style == .wsl and isPathEnvironmentVariable(entry.key)) try windowsPathToWsl(arena, entry.value) else entry.value;
@@ -94,6 +92,22 @@ fn serve(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn, reader: *w
     const bundle = if (integrate) shell_integration.install(arena, shell) catch null else null;
     if (bundle) |value| try shell_integration.setupEnv(arena, value);
     const argv = try buildShellArgv(arena, spawn.argv, shell, spawn.command, spawn.close_on_exit, bundle);
+    return .{ .cwd = cwd, .argv = argv };
+}
+
+/// Mux calls this only after fork, so environment and filesystem preparation
+/// cannot mutate or block the long-lived transport owner.
+pub fn execSpawn(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const prepared = try prepareSpawn(arena.allocator(), io, spawn);
+    return execPrepared(prepared.cwd, prepared.argv);
+}
+
+fn serve(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn, reader: *wire.Reader) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const prepared = try prepareSpawn(arena_state.allocator(), io, spawn);
 
     // Block SIGCHLD before fork so its signalfd cannot miss an early exit.
     var signals: c.sigset_t = undefined;
@@ -110,7 +124,7 @@ fn serve(allocator: std.mem.Allocator, io: std.Io, spawn: wire.Spawn, reader: *w
     var master: c_int = -1;
     const pid = c.forkpty(&master, null, null, &winsize);
     if (pid < 0) return error.ForkPtyFailed;
-    if (pid == 0) childExec(cwd, argv);
+    if (pid == 0) childExec(prepared.cwd, prepared.argv);
     defer _ = c.close(master);
     setNonBlocking(master);
     setNonBlocking(0);
@@ -241,6 +255,15 @@ fn applyResize(master: c_int, cols: u16, rows: u16) void {
 }
 
 fn childExec(cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8) noreturn {
+    execPrepared(cwd, argv) catch {};
+    // stdout is the PTY slave here, so the message lands in the pane.
+    var msg: [512]u8 = undefined;
+    const text = std.fmt.bufPrint(&msg, "hollow-agent: cannot execute {s}: errno {d}\r\n", .{ std.mem.span(argv[0].?), errno() }) catch "hollow-agent: exec failed\r\n";
+    _ = c.write(2, text.ptr, text.len);
+    c._exit(127);
+}
+
+fn execPrepared(cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8) !void {
     var empty: c.sigset_t = undefined;
     _ = c.sigemptyset(&empty);
     _ = c.sigprocmask(c.SIG_SETMASK, &empty, null);
@@ -251,11 +274,7 @@ fn childExec(cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8) noreturn {
         if (home) |dir| _ = c.chdir(dir);
     }
     _ = c.execvp(argv[0].?, @ptrCast(argv.ptr));
-    // stdout is the PTY slave here, so the message lands in the pane.
-    var msg: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&msg, "hollow-agent: cannot execute {s}: errno {d}\r\n", .{ std.mem.span(argv[0].?), errno() }) catch "hollow-agent: exec failed\r\n";
-    _ = c.write(2, text.ptr, text.len);
-    c._exit(127);
+    return error.ExecFailed;
 }
 
 fn buildShellArgv(arena: std.mem.Allocator, input: []const []const u8, shell: []const u8, command: ?[]const u8, close_on_exit: bool, bundle: ?shell_integration.Bundle) ![:null]const ?[*:0]const u8 {

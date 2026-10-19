@@ -5,6 +5,7 @@ const p = @import("protocol.zig");
 const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const pty = @import("pty.zig");
+const mux = @import("mux.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cInclude("unistd.h");
@@ -303,6 +304,7 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const mode = args.next() orelse "stdio";
     if (std.mem.eql(u8, mode, "pty")) return pty.run(init.gpa, init.io);
+    if (std.mem.eql(u8, mode, "mux")) return mux.run(init.gpa, init.io);
     if (!std.mem.eql(u8, mode, "stdio")) return error.InvalidArgument;
     var agent = Agent{ .agent_pid = c.getpid() };
     var random: [16]u8 = undefined;
@@ -525,4 +527,5 @@ fn errorCode(err: anyerror) []const u8 {
 
 test {
     _ = pty;
+    _ = mux;
 }

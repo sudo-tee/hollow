@@ -111,6 +111,15 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_pty_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_pty_tests.step.dependOn(&install_test_agent.step);
     b.step("test-agent-pty", "Run agent PTY client tests against a native Linux agent").dependOn(&run_pty_tests.step);
+    const mux_test_step = b.step("test-agent-mux", "Run headless mux isolation/flow-control tests with inline, 2, and 4 readers");
+    inline for (.{ "0", "2", "4" }) |workers| {
+        const mux_tests = b.addSystemCommand(&.{ "python3", b.path("scripts/test_agent_mux.py").getPath(b) });
+        mux_tests.has_side_effects = true;
+        mux_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+        mux_tests.setEnvironmentVariable("HOLLOW_MUX_READ_WORKERS", workers);
+        mux_tests.step.dependOn(&install_test_agent.step);
+        mux_test_step.dependOn(&mux_tests.step);
+    }
     const operation_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/host_operations.zig"),
         .target = b.graph.host,
