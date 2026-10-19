@@ -159,8 +159,11 @@ now executes native-local and preinstalled WSL fs/exec through production native
 HostManager. Follow-up [public Lua WSL bootstrap](../../validation/2026-10-19-windows-lua-bootstrap.md)
 checks cache reuse and automatic bundle discovery from Windows UNC/C: flat and
 prefix layouts, including Unicode parent paths and missing-bundle rejection.
-It uses headless Lua 5.1 C API, not production LuaJIT/GUI; successful cold install
-and wider Windows qualification remain open. Pane backend unchanged.
+It uses headless Lua 5.1 C API, not production LuaJIT/GUI. Separate
+[cold install/repair checks](../../validation/2026-10-19-windows-wsl-cold-deploy.md)
+pass with a test-only HOME-isolating launcher across four layouts; direct-launcher
+cold installation, teardown cleanup and wider Windows qualification remain open.
+Pane backend unchanged.
 
 ## SSH configuration
 
