@@ -76,9 +76,17 @@ and `timeout_ms`.
   passes it as one POSIX-quoted `exec '...'` word.
 - **Containers** must already be running; Hollow does not create, start, stop
   or restart them, and preserves the container's configured user. `via =
-  { type = "wsl", distro, user? }` runs the container CLI inside WSL (then
+  { type = "wsl", distro, user?, wsl? }` runs the container CLI inside WSL (then
   `podman`/`docker` name the Linux executable). A restarted container needs an
   explicit reconnect.
+
+For container descriptors, `via` accepts only `type = "wsl"`, required `distro`,
+optional `user` (otherwise the distro default), and optional `wsl` (Windows
+launcher, default `"wsl.exe"`). Without `via`, the container CLI runs on the
+Hollow client. With it, `podman`/`docker` overrides name Linux executables inside
+the selected distro, and Docker's `context` applies to that Linux CLI. The WSL
+user must be able to access the container; `via.user` is not a container-user
+override. The container must already be running.
 
 Connections never replay RPCs after a disconnect; reconnecting gets a new
 `generation`. Deploy failures reject with `connector_unavailable` (connector
@@ -99,7 +107,10 @@ hollow.ui.workspace.configure({ sources = { {
 ```
 
 A source's `host` does not route panes; give a terminal domain the same
-descriptor for that (see [Pane PTYs](#pane-ptys)).
+descriptor and a container shell, then set the source's `domain` to its name
+(see [Pane PTYs](#pane-ptys)). Without a source domain, opening inherits the
+current pane's domain, not the discovery host. For a complete configuration, see
+the [Podman-through-WSL workspace recipe](../../examples/ui-recipes.md#workspace-switcher-with-podman-inside-wsl).
 
 ## Agent deployment
 
