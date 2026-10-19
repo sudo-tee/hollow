@@ -574,6 +574,39 @@ Keep the bounded scheduler for further opt-in research; reject shared-pane
 rollout until focus-aware/tail-fairness, filesystem bulk, CPU/RSS, fault/load,
 40/100/200-PTY and native Windows GUI/WSL parity experiments qualify the design.
 
+### Mixed filesystem/exec harness continuation
+
+The headless benchmark can now run bounded repeated `FS_READ`, non-PTY `EXEC`,
+or both alongside PTYs. Shared mode reuses the PTY connection; native/dedicated
+mode uses a separate agent, explicitly recorded in each result. Every completed
+bulk operation verifies exact bytes, and starvation fails rather than silently
+producing a clean dataset. Optional periodic foreground resize issuance shares
+the prompt path; issuance counts are not applied-size latency measurements.
+The existing 16-job limit remains enforced, including bulk workers.
+
+The local `test-agent-pty` target passes 29 tests including imports. New coverage
+fills one shared PTY's stopped-consumer buffer to exactly 64 KiB, then checks
+filesystem/exec completions, sibling input and post-cancellation progress.
+Fixed-size latency-histogram tests and 54 Python harness tests pass. The initial
+24-measurement smoke covers all backends, all four bulk modes, stalled background
+consumption and resize issuance. CI adds a smaller mixed-load correctness smoke;
+no hosted run is claimed.
+
+The [repeated eight-PTY comparison](../benchmarks/agent-pty/2026-10-18-mixed-8.md)
+preserves 72 measurements and reconstructable benchmark sources. Shared noisy
+median prompt p99 increases from 6.48 ms without bulk to 9.89 ms with mixed bulk;
+stalled median p99 increases from 6.62 to 9.40 ms. Every consuming stream and
+enabled bulk operation makes checked progress, with the shared stopped consumer
+still at exactly 64 KiB. Local loaded-latency comparisons continue to fail.
+The 29-test adapter target also passes through Podman and real WSL interop;
+16 fs/exec conformance cases and Windows adapter/benchmark compile checks pass.
+
+See [methodology](host-agent-benchmarks.md#mixed-filesystemexec-interference) for
+fixture ownership, connection placement and owner-observed timing limits. This
+follow-up changes benchmark/test code, not production scheduling or defaults.
+Internal dispatch/control-queue instrumentation, focus-aware scheduling, split
+lanes and full Windows/WSL qualification remain open.
+
 ## Packaged artifact discovery continuation
 
 When no explicit `artifacts`/`agent_path` is supplied, production Podman bootstrap

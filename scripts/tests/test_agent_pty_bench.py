@@ -86,6 +86,30 @@ class AgentPtyBenchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("no runnable cases", result.stderr)
 
+    def test_bulk_progress_histograms_and_resize_counts_are_checked(self):
+        config, result = self.prompt()
+        config.update(backend="shared", bulk="mixed", bulk_exec_bytes=524288, resize_every=8)
+        histogram = [0] * 64
+        histogram[10] = 2
+        timing = {"count": 2, "total_ns": 3000, "max_ns": 1500, "ns_log2": histogram}
+        result.update(backend="shared", bulk="mixed", bulk_lane="shared", resize_every=8, resizes_issued=5,
+                      bulk_stats={"fs": timing, "exec": timing, "fs_bytes": 32768, "exec_bytes": 1048576})
+        validate(copy.deepcopy(result), config)
+        for update in ({"bulk_lane": "separate_agent"}, {"resizes_issued": 4},
+                       {"bulk_stats": dict(result["bulk_stats"], fs_bytes=1)},
+                       {"bulk_stats": dict(result["bulk_stats"], exec=dict(timing, count=0))},
+                       {"bulk_stats": dict(result["bulk_stats"], fs=dict(timing, ns_log2=[]))}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+
+    def test_shared_bulk_does_not_silently_raise_sixteen_job_limit(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        result = subprocess.run([sys.executable, str(script), "--backend", "shared", "--sessions", "16",
+                                 "--bulk", "mixed", "--binary", "/nonexistent/benchmark", "--output", "/nonexistent/output"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("16-job limit", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

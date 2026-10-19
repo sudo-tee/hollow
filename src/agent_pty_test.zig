@@ -1,6 +1,7 @@
 const std = @import("std");
 const AgentPty = @import("pty/agent.zig").AgentPty;
 const SharedConnection = @import("pty/agent.zig").SharedConnection;
+const bulk_module = @import("agent_pty_bench_bulk.zig");
 const a = std.testing.allocator;
 
 fn create(argv: []const []const u8) !AgentPty {
@@ -30,6 +31,69 @@ fn sharedConnection() !*SharedConnection {
         return SharedConnection.create(a, args.value, .{});
     }
     return SharedConnection.create(a, &.{ path, "stdio" }, .{});
+}
+
+fn sharedExec(connection: *@import("host/transport.zig").Connection, argv: []const []const u8) ![]u8 {
+    const operations = @import("host/operations.zig");
+    const deadline = clock() + 10 * std.time.ns_per_s;
+    while (connection.status() != .ready) {
+        if (connection.status() == .disconnected or clock() > deadline) return error.Timeout;
+        try pause();
+    }
+    const json = try operations.encode(a, .{ .exec = .{ .argv = argv } }, try connection.allocateStreams());
+    defer a.free(json);
+    const id = try connection.request(json, 5000);
+    while (clock() < deadline) {
+        if (connection.pollFor(id)) |completion| {
+            defer connection.freeCompletion(completion);
+            var result = try operations.decode(a, .exec, completion);
+            defer result.deinit();
+            if (result.value != .exec or result.value.exec.exit_code != 0 or result.value.exec.stderr.len != 0) return error.BadExit;
+            return a.dupe(u8, result.value.exec.stdout);
+        }
+        try pause();
+    }
+    return error.Timeout;
+}
+
+test "shared stalled PTY permits checked filesystem, exec, input and resize progress" {
+    const owner = try sharedConnection();
+    defer owner.destroy();
+    const path = try sharedExec(owner.connection, &.{ "/bin/sh", "-c", "umask 077; p=$(mktemp /tmp/hollow-pty-bulk-test.XXXXXX) || exit; head -c 16384 /dev/zero > \"$p\" || exit; printf '%s' \"$p\"" });
+    defer a.free(path);
+    try std.testing.expect(std.mem.startsWith(u8, path, "/tmp/hollow-pty-bulk-test."));
+    defer {
+        // Remove only the unique file created by this test, on the same host.
+        if (sharedExec(owner.connection, &.{ "/bin/rm", "--", path })) |output| a.free(output) else |_| {}
+    }
+    var stalled = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "stty raw -echo; head -c 4194304 /dev/zero; sleep 30" } }, 80, 24);
+    defer stalled.deinit();
+    const deadline = clock() + 15 * std.time.ns_per_s;
+    while (stalled.pendingOutputBytes() < 65536) {
+        if (clock() > deadline) return error.Timeout;
+        try pause();
+    }
+    var sibling = try AgentPty.spawnShared(a, owner, .{ .argv = &.{ "/bin/sh", "-c", "stty -echo; printf READY; while read v; do printf '<%s>' \"$v\"; done" } }, 80, 24);
+    defer sibling.deinit();
+    try until(&sibling, "READY");
+    var bulk = try bulk_module.Bulk.init(a, std.testing.io, .mixed, path, 524288, &.{}, .{}, owner.connection);
+    defer bulk.deinit();
+    var probes: usize = 0;
+    while (probes < 20 or bulk.stats.fs.count < 2 or bulk.stats.exec.count < 2) : (probes += 1) {
+        _ = try bulk.service();
+        if (probes % 4 == 0) sibling.resize(@intCast(80 + (probes / 4) % 2), 24);
+        try sibling.writeAll("rpc-probe\n");
+        try until(&sibling, "<rpc-probe>");
+        try std.testing.expectEqual(@as(usize, 65536), stalled.pendingOutputBytes());
+        if (clock() > deadline) return error.Timeout;
+    }
+    try bulk.requireProgress();
+    try std.testing.expectEqual(bulk.stats.fs.count * 16384, bulk.stats.fs_bytes);
+    try std.testing.expectEqual(bulk.stats.exec.count * 524288, bulk.stats.exec_bytes);
+    bulk.deinit();
+    stalled.close();
+    try sibling.writeAll("after-rpc-close\n");
+    try until(&sibling, "<after-rpc-close>");
 }
 
 test "shared PTYs 1/4/8/16 route exits and controls without stealing completions" {

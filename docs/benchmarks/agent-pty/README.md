@@ -2,6 +2,8 @@
 
 The [initial shared-connection experiment](2026-10-18-shared-pty.md) adds a separate
 1/4/8/16-session noisy/stalled matrix; it does not change pane defaults.
+The [eight-PTY mixed filesystem/exec follow-up](2026-10-18-mixed-8.md) measures
+additional contention without changing production scheduling.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at
