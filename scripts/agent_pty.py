@@ -54,14 +54,18 @@ class PtySession:
 
 
 class PtyClient(AgentClient):
-    def start(self, *, focus=False):
+    def start(self, *, focus=False, deficit=False):
+        if deficit and not focus:
+            raise ValueError("deficit scheduling requires explicit focus negotiation")
         kind, rid, sid, payload = self.hello(json.dumps({"major": 1, "minor": 0, "experimental_pty": True,
-                                                        "experimental_focus": focus}).encode())
+                                                         "experimental_focus": focus, "experimental_deficit": deficit}).encode())
         hello = json.loads(payload)
         if kind != HELLO_ACK or "experimental.pty" not in hello.get("capabilities", []):
             raise RuntimeError("peer did not negotiate experimental PTY support")
         if focus and "experimental.focus" not in hello.get("capabilities", []):
             raise RuntimeError("peer did not negotiate experimental focus support")
+        if deficit and "experimental.deficit" not in hello.get("capabilities", []):
+            raise RuntimeError("peer did not negotiate experimental deficit support")
         self.focus_generation = hello["connection_nonce"]
         self.focus_negotiated = focus
         return hello

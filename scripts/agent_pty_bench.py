@@ -163,6 +163,10 @@ def parse_focus_profiles(stderr: str) -> list[dict]:
 
 
 def validate(result: dict, config: dict) -> dict:
+    deficit = config.get("deficit_scheduler", False)
+    if (type(deficit) is not bool or type(result.get("deficit_scheduler", False)) is not bool
+            or result.get("deficit_scheduler", False) != deficit or (deficit and not config.get("focus_scheduler", False))):
+        raise ValueError("deficit scheduler identity mismatch")
     separate = config.get("separate_bulk", False)
     if (type(separate) is not bool or type(result.get("separate_bulk", False)) is not bool
             or result.get("separate_bulk", False) != separate
@@ -286,9 +290,12 @@ def main() -> None:
                         help="client allocator; debug matches the GUI's thread-safe DebugAllocator")
     parser.add_argument("--telemetry", action="store_true", help="enable fixed-size host I/O counters")
     parser.add_argument("--focus-scheduler", action="store_true", help="shared only: explicitly negotiate focus; target needs both scheduler flags; groups of four panes")
+    parser.add_argument("--deficit-scheduler", action="store_true", help="requires --focus-scheduler and target HOLLOW_AGENT_DEFICIT_SCHEDULER: explicitly negotiate wire-byte hierarchical DRR")
     parser.add_argument("--focus-every", type=int, default=0, help="explicitly refresh same focused stream before every Nth prompt, including warmups; ACK wait excluded from echo timer")
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
+    if args.deficit_scheduler and not args.focus_scheduler:
+        parser.error("--deficit-scheduler requires --focus-scheduler")
     if not 0 <= args.focus_every <= 100000 or (args.focus_every and not args.focus_scheduler):
         parser.error("--focus-every requires --focus-scheduler and interval 0..100000")
     if "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not args.telemetry:
@@ -333,7 +340,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
-                "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig", "src/agent/focus_scheduler.zig", "src/agent/focus_profile.zig"]
+                 "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig", "src/agent/focus_scheduler.zig", "src/agent/focus_profile.zig", "src/agent/deficit_scheduler.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "scope": "headless PTY adapters with optional fs/exec and explicit static focus research; no GUI policy/WSL bypass or rollout qualification",
@@ -348,7 +355,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "platform": platform.platform(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
         "python": sys.version, "command": sys.argv, "cwd": os.getcwd(),
         "ordering": "backend order alternates each independent run",
-        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE", "HOLLOW_AGENT_BOUNDED_BULK", "HOLLOW_AGENT_FOCUS_SCHEDULER") if key in os.environ},
+        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE", "HOLLOW_AGENT_BOUNDED_BULK", "HOLLOW_AGENT_FOCUS_SCHEDULER", "HOLLOW_AGENT_DEFICIT_SCHEDULER") if key in os.environ},
     }
     with args.output.open("x", encoding="utf-8") as output:
         def emit(row: dict) -> None:
@@ -364,6 +371,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
                                    "focus_scheduler": args.focus_scheduler,
+                                   "deficit_scheduler": args.deficit_scheduler,
                                    "focus_every": args.focus_every,
                                    "allocator": args.allocator, "telemetry": args.telemetry,
                                     "sessions": sessions, "load": load,

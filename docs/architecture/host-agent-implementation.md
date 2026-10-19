@@ -49,6 +49,20 @@ This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
 157 measurements plus one preserved short-smoke failure show redistribution,
 not a rollout pass; per-update loaded correlation and broader gates remain open.
 
+The [hierarchical byte-deficit prototype](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md)
+adds fixed-capacity DRR beside weighted visits, requiring an additional target
+flag, HELLO opt-in and ACK capability `experimental.deficit`. Native requested
+clients fail closed without it. Focus/group/sequence ownership stays common;
+scheduled-output eligibility uses next frame size and charging uses actual wire
+bytes. Unready budgets reset, focus cannot refill deficits, metadata accumulation
+and reserved retries survive churn. Immediate control frames are outside these
+budgets. No default policy or transport lane changes.
+
+154 validated measurements preserve DRR's 12/12 local loaded-latency passes,
+mixed throughput/background/bulk tradeoffs and one individual default-throughput
+miss. Fixed-ready byte proportions are not sustained wall-time QoS. Full scale,
+resources/faults, real target switches and native-platform gates remain open.
+
 The [separate bulk-agent probe](../benchmarks/agent-pty/2026-10-19-split-bulk.md)
 adds benchmark-only `--separate-bulk` for shared PTYs with active fs/exec. It uses
 the same prepared connector/binary for an independent ordinary agent connection,

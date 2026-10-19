@@ -12,6 +12,22 @@ from agent_pty_bench import parse_focus_profiles, parse_queue_profiles, percenti
 
 
 class AgentPtyBenchTests(unittest.TestCase):
+    def test_deficit_identity_requires_explicit_focus_and_exact_boolean(self):
+        config, result = self.prompt()
+        config.update(backend="shared", focus_scheduler=True, deficit_scheduler=True)
+        result.update(backend="shared", focus_scheduler=True, deficit_scheduler=True, focus_ack_ns=1)
+        validate(result, config)
+        for update in ({"deficit_scheduler": False}, {"deficit_scheduler": 1}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+        with self.assertRaises(ValueError):
+            validate(result, dict(config, focus_scheduler=False))
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        completed = subprocess.run([sys.executable, str(script), "--deficit-scheduler", "--backend", "shared",
+                                    "--output", "/nonexistent/output"], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--deficit-scheduler requires", completed.stderr)
+
     def focus_profile(self):
         event = {"sequence": 1, "group": 7, "stream": 2, "dispatch_ns": 10, "ready_ns": 12,
                  "enqueue_ns": 15, "payload_begin": 122, "payload_end": 132,

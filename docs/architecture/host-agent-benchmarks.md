@@ -332,6 +332,23 @@ The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXE
 captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
 and dynamic-focus timing still need independently sustained workloads.
 
+### Hierarchical wire-byte scheduling comparison
+
+`--focus-scheduler --deficit-scheduler` explicitly selects byte-deficit research,
+requiring all three target scheduler flags and ACK `experimental.deficit`.
+Otherwise weighted-focus, bounded-flat and default paths remain independently
+selectable. Foreground grouping/focus metadata and consumption loop stay the same.
+Use identical binaries/workloads with deficit off/on plus frozen prior/native
+controls; do not equate weighted visit counts with weighted byte proportions.
+
+The [DRR report](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md) specifies
+wire-byte quanta, actual enqueue charging, conservative terminal reservations,
+idle deficit resets, bounded metadata accumulation/retry and focus churn behavior.
+All immediate control frames remain outside byte budgets, and large indivisible
+metadata can still block stdout after enqueue. Static finite tests, fixed storage
+and bounded virtual rounds do not qualify wall-time QoS, flood resistance or
+sustained resources/scale. Preserve default E1 and per-stream/bulk tradeoffs.
+
 ### Explicit bulk placement comparison
 
 `--separate-bulk --backend shared --bulk mixed` explicitly moves only fs/exec

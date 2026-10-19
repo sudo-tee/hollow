@@ -80,10 +80,15 @@ fn focusResult(owner: *SharedConnection, sequence: u64, group: u64, stream: u64,
 }
 
 test "explicit focus stays control-admitted at sixteen PTYs without stealing pane completions" {
+    try fullFocus(false);
+    try fullFocus(true);
+}
+
+fn fullFocus(deficit: bool) !void {
     // Local target-side flags, not inferred from the client environment or GUI.
     const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
     defer a.free(path);
-    const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "HOLLOW_AGENT_BOUNDED_BULK=1", "HOLLOW_AGENT_FOCUS_SCHEDULER=1", path, "stdio" }, .{}, .{ .experimental_focus = true });
+    const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "HOLLOW_AGENT_BOUNDED_BULK=1", "HOLLOW_AGENT_FOCUS_SCHEDULER=1", "HOLLOW_AGENT_DEFICIT_SCHEDULER=1", path, "stdio" }, .{}, .{ .experimental_focus = true, .experimental_deficit = deficit });
     defer owner.destroy();
     try std.testing.expectError(error.InvalidArgument, AgentPty.spawnShared(a, owner, .{ .argv = &.{"/bin/sh"} }, 80, 24));
     var panes: [16]AgentPty = undefined;
@@ -110,6 +115,20 @@ test "requested focus fails closed when peer omits focus capability" {
     const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
     defer a.free(path);
     const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "-u", "HOLLOW_AGENT_FOCUS_SCHEDULER", path, "stdio" }, .{}, .{ .experimental_focus = true });
+    defer owner.destroy();
+    const deadline = clock() + 5 * std.time.ns_per_s;
+    while (owner.connection.status() == .connecting) {
+        if (clock() > deadline) return error.Timeout;
+        try pause();
+    }
+    try std.testing.expectEqual(@import("host/transport.zig").State.disconnected, owner.connection.status());
+    try std.testing.expectError(error.Disconnected, owner.updateFocus(1, 0, 0));
+}
+
+test "requested deficit fails closed when peer only negotiates weighted focus" {
+    const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
+    defer a.free(path);
+    const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "-u", "HOLLOW_AGENT_DEFICIT_SCHEDULER", "HOLLOW_AGENT_BOUNDED_BULK=1", "HOLLOW_AGENT_FOCUS_SCHEDULER=1", path, "stdio" }, .{}, .{ .experimental_focus = true, .experimental_deficit = true });
     defer owner.destroy();
     const deadline = clock() + 5 * std.time.ns_per_s;
     while (owner.connection.status() == .connecting) {

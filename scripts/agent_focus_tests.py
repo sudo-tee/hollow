@@ -15,16 +15,19 @@ from agent_pty_bench import parse_focus_profiles
 
 class FocusTests(unittest.TestCase):
     agent = "zig-out/bin/hollow-agent"
+    deficit = False
 
     def client(self, *, bounded=True, enabled=True, negotiate=True, profile=False, stderr=subprocess.PIPE):
         env = dict(os.environ)
         for key in ("HOLLOW_AGENT_BOUNDED_BULK", "HOLLOW_AGENT_FOCUS_SCHEDULER",
-                    "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE"):
+                    "HOLLOW_AGENT_DEFICIT_SCHEDULER", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE"):
             env.pop(key, None)
         if bounded:
             env["HOLLOW_AGENT_BOUNDED_BULK"] = "1"
         if enabled:
             env["HOLLOW_AGENT_FOCUS_SCHEDULER"] = "1"
+        if self.deficit:
+            env["HOLLOW_AGENT_DEFICIT_SCHEDULER"] = "1"
         if profile:
             env["HOLLOW_AGENT_QUEUE_PROFILE"] = "1"
         connection = ProcessConnection(subprocess.Popen([self.agent, "stdio"], env=env,
@@ -33,7 +36,7 @@ class FocusTests(unittest.TestCase):
         client = PtyClient(connection)
         self.addCleanup(client.close)
         if negotiate:
-            client.start(focus=True)
+            client.start(focus=True, deficit=self.deficit)
         return client
 
     def test_profile_correlates_payload_and_preserves_unenqueued_censoring(self):
@@ -158,6 +161,8 @@ class FocusTests(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", default=FocusTests.agent)
+    parser.add_argument("--deficit-scheduler", action="store_true")
     args, remaining = parser.parse_known_args()
     FocusTests.agent = args.agent
+    FocusTests.deficit = args.deficit_scheduler
     unittest.main(argv=[__file__, *remaining], verbosity=2)

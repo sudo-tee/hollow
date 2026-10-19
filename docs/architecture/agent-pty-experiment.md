@@ -178,6 +178,40 @@ foreground-first consumption remains identical; no focus-first GUI parsing/rende
 variable is simulated. Dynamic focus switching is tested for correctness, not yet
 latency-qualified. Every result remains `qualification:false`.
 
+### Explicit hierarchical byte-deficit scheduling
+
+The independent deficit prototype requires target flag
+`HOLLOW_AGENT_DEFICIT_SCHEDULER` **in addition to** bounded-bulk/focus flags,
+HELLO `experimental_deficit:true` **in addition to** PTY/focus opt-ins, and ACK
+`experimental.deficit`. Native `SharedConnection.Options.experimental_deficit`
+requires explicit `experimental_focus`; missing capability disconnects rather
+than silently reverting to weighted visits. Python `PtyClient.start(focus=True,
+deficit=True)` follows the same rule. Existing ordinary and weighted-focus
+connections are unchanged, even when target deficit flag is present.
+
+`FOCUS_UPDATE` fields, nonce/sequence checks, grouping and ownership are unchanged.
+Outer selected session gets four 16,406-byte wire quanta versus other sessions
+and aggregate bulk class one; selected pane gets four versus sibling leaves one.
+Known next frame size determines eligibility, actual queued header+payload bytes
+determine charge. Terminal/error eligibility uses a conservative size bound but
+charges actual emitted bytes. A PTY selection emits one DATA frame within its
+existing credit/data/batch limits. Immediate control frames are not deficit-charged.
+
+Deficits reset for unready/zero-credit leaves and wholly unready groups. Focus
+updates preserve cursors and never grant budget; positive residuals clamp to one
+base quantum or the observed next indivisible frame size. The latter exception
+prevents large metadata starvation under focus churn. Frame size and existing
+metadata-alone batch exception stay unchanged; a failed whole-frame fit retains
+retry precedence across focus changes until enqueue or slot release. Fixed
+16-slot state, bounded virtual-round searches and 64 successful selections per
+call do not establish wall-time QoS or sustained flood/scale behavior.
+
+Use `--focus-scheduler --deficit-scheduler` in the benchmark, with all three
+target flags. Result `deficit_scheduler` must exactly match explicit request.
+See [DRR experiment](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md) for
+byte-accounting, unequal-frame tests and matched comparisons. This does not add
+Lua/GUI routing, live regrouping, new job slots or a separate priority transport.
+
 ### Explicit separate-bulk topology probe
 
 `--separate-bulk --backend shared --bulk fs|exec|mixed` keeps all PTYs on their
