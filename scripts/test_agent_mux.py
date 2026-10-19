@@ -9,6 +9,7 @@ import unittest
 from agent_mux import (
     Client, HEADER, SPAWN, INPUT, OUTPUT, RESIZE, EXIT, ERROR, CLOSE,
     SPAWNED, CREDIT, FOCUS, WINDOW,
+    mixed_benchmark,
 )
 
 AGENT = os.environ.get("HOLLOW_TEST_AGENT", "zig-out/bin/hollow-agent")
@@ -28,6 +29,15 @@ class MuxTests(unittest.TestCase):
             if predicate(*frame):
                 return frames
         self.fail("deadline exceeded")
+
+    def test_mixed_benchmark_counts_each_flood_and_actual_echoes(self):
+        # Functional checks only; timing thresholds belong in comparative runs.
+        for mode, panes in (("pty", 1), ("pty", 4), ("mux", 4)):
+            result = mixed_benchmark([AGENT], mode, panes, 3)
+            self.assertEqual(result["samples"], 3)
+            self.assertEqual(len(result["flood_bytes"]), panes - 1)
+            self.assertTrue(all(n > 0 for n in result["flood_bytes"]))
+            self.assertGreater(result["echo_ms"]["p50"], 0)
 
     def test_independent_environment_cwd_exit_and_spawn_failure(self):
         self.client.spawn(1, ["/bin/sh", "-c", "printf '%s:%s' \"$MUX_TEST\" \"$PWD\"; exit 7"],

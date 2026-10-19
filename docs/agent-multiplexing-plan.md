@@ -32,6 +32,7 @@ Not included in the first version:
 - `src/agent/pty.zig` serves one PTY using a poll loop and synchronous framed output writes.
 - `src/agent/mux.zig` adds a separate nonblocking multi-PTY poll loop; `src/agent/mux_protocol.zig` defines experimental negotiation, limits, and credit handling. Spawn preparation is shared with dedicated mode but runs after fork in mux mode.
 - `src/agent/pty_read_pool.zig` adds a fixed-size read-worker experiment, selected only with `HOLLOW_MUX_READ_WORKERS=1..4`; zero/default retains inline reads. All transport, credits, and lifecycle remain owner-thread responsibilities. Multi-pane throughput improves, but single-pane regression and remaining parity/latency gates keep it opt-in.
+- Focus-first read turns now alternate with background byte DRR without advancing its cursor. `scripts/agent_mux.py --workload mixed` measures actual focused echoes under sustained floods and verifies every background stream progresses. Local tail latency improved substantially; supported-connector qualification and numerical release budgets remain outstanding.
 - `src/agent/pty_protocol.zig` has a binary frame header containing kind, stream ID, and payload length. The current implementation uses one fixed stream.
 - Spawn metadata is JSON; terminal input and output are raw byte payloads inside binary frames.
 - Dedicated `pty` mode modifies its process environment while preparing its sole spawn; `mux` prepares each spawn in the child so the shared agent environment stays isolated.
