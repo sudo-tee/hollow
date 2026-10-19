@@ -99,6 +99,12 @@ def parse_queue_profiles(stderr: str) -> list[dict]:
 
 
 def validate(result: dict, config: dict) -> dict:
+    focus = config.get("focus_scheduler", False)
+    if (type(focus) is not bool or type(result.get("focus_scheduler", False)) is not bool or result.get("focus_scheduler", False) != focus
+            or (focus and (config["backend"] != "shared" or type(result.get("focus_ack_ns")) is not int
+                           or result["focus_ack_ns"] <= 0))
+            or (not focus and result.get("focus_ack_ns") is not None)):
+        raise ValueError("focus negotiation/workload identity mismatch")
     if (result.get("backend") != config["backend"]
             or result.get("workload") != config["workload"]
             or result.get("exit_code") != 0 or result.get("qualification") is not False
@@ -197,6 +203,7 @@ def main() -> None:
     parser.add_argument("--allocator", choices=("page", "smp", "debug"), default="debug",
                         help="client allocator; debug matches the GUI's thread-safe DebugAllocator")
     parser.add_argument("--telemetry", action="store_true", help="enable fixed-size host I/O counters")
+    parser.add_argument("--focus-scheduler", action="store_true", help="shared only: explicitly negotiate focus; target needs both scheduler flags; groups of four panes")
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
     if "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not args.telemetry:
@@ -215,6 +222,8 @@ def main() -> None:
             or any(not isinstance(arg, str) or "\0" in arg for arg in connector) or not connector[0]):
         parser.error("connector must be a nonempty JSON argv array without NUL")
     backends = ["native", "agent", "shared"] if args.backend == "all" else ["native", "agent"] if args.backend == "both" else [args.backend]
+    if args.focus_scheduler and backends != ["shared"]:
+        parser.error("--focus-scheduler requires --backend shared")
     if "shared" in backends and any(n + (0 if mode == "off" else 2 if mode == "mixed" else 1) > 16
                                     for n, mode in itertools.product(args.sessions, args.bulk)):
         parser.error("shared PTYs plus bulk workers exceed the unchanged 16-job limit")
@@ -237,10 +246,10 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
-               "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig"]
+                "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig", "src/agent/focus_scheduler.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "scope": "headless PTY adapters with optional fs/exec interference; no GUI/focus policy/WSL bypass or rollout qualification",
+        "scope": "headless PTY adapters with optional fs/exec and explicit static focus research; no GUI policy/WSL bypass or rollout qualification",
         "bulk_fixture": {"path": bulk_path, "expected_bytes": 16384,
                          "expected_sha256": hashlib.sha256(bytes(16384)).hexdigest()} if bulk_path else None,
         "bulk_placement": "same connection for shared PTYs; separate agent for native/dedicated PTYs",
@@ -252,7 +261,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "platform": platform.platform(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
         "python": sys.version, "command": sys.argv, "cwd": os.getcwd(),
         "ordering": "backend order alternates each independent run",
-        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE", "HOLLOW_AGENT_BOUNDED_BULK") if key in os.environ},
+        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE", "HOLLOW_AGENT_BOUNDED_BULK", "HOLLOW_AGENT_FOCUS_SCHEDULER") if key in os.environ},
     }
     with args.output.open("x", encoding="utf-8") as output:
         def emit(row: dict) -> None:
@@ -267,6 +276,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                 for size in ([0] if workload == "prompt" else args.size_mib):
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
+                                  "focus_scheduler": args.focus_scheduler,
                                    "allocator": args.allocator, "telemetry": args.telemetry,
                                     "sessions": sessions, "load": load,
                                     "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,

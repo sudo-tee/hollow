@@ -7,6 +7,8 @@ const Wake = @import("wake.zig").Wake;
 
 pub const Env = struct { key: []const u8, value: []const u8 };
 pub const Config = struct {
+    // Focus research only: caller's logical session, not PTY request/session ID.
+    logical_session_id: ?u64 = null,
     // Connection options apply only to dedicated spawn(); shared sessions use
     // the already-created owner's transport and callback.
     telemetry: bool = false,
@@ -31,15 +33,27 @@ pub const SharedConnection = struct {
     }
 
     pub fn createWithTelemetry(allocator: std.mem.Allocator, argv: []const []const u8, wake: Wake, telemetry: bool) !*SharedConnection {
+        return createWithOptions(allocator, argv, wake, .{ .telemetry = telemetry });
+    }
+
+    pub const Options = struct { telemetry: bool = false, experimental_focus: bool = false };
+    pub fn createWithOptions(allocator: std.mem.Allocator, argv: []const []const u8, wake: Wake, options: Options) !*SharedConnection {
         const self = try allocator.create(SharedConnection);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator, .connection = try transport.Connection.createWithOptions(allocator, io.get(), argv, .{
             .experimental_pty = true,
             .context = wake.context,
             .notify = wake.callback,
-            .telemetry = telemetry,
+            .telemetry = options.telemetry,
+            .experimental_focus = options.experimental_focus,
         }) };
         return self;
+    }
+
+    /// Explicit owner/UI metadata only. Completion remains owned by caller.
+    pub fn updateFocus(self: *SharedConnection, sequence: u64, session: u64, stream: u64) !u64 {
+        if (self.closed) return error.Disconnected;
+        return self.connection.updateFocus(sequence, session, stream);
     }
 
     fn release(self: *SharedConnection) void {
@@ -65,6 +79,7 @@ pub const AgentPty = struct {
     shared: ?*SharedConnection = null,
     spawn_json: []u8,
     session: ?u64 = null,
+    output_stream: ?u64 = null,
     control: ?u64 = null,
     sent_input: usize = 0,
     input: std.ArrayList(u8) = .empty,
@@ -89,6 +104,9 @@ pub const AgentPty = struct {
 
     fn init(allocator: std.mem.Allocator, config: Config, cols: u16, rows: u16, wake: Wake, shared: ?*SharedConnection) !AgentPty {
         if (config.argv.len == 0 or config.argv.len > 4096 or rows == 0 or cols == 0 or config.env.len > 4096) return error.InvalidArgument;
+        const focused = if (shared) |owner| owner.connection.options.experimental_focus else false;
+        if (focused != (config.logical_session_id != null)) return error.InvalidArgument;
+        if (config.logical_session_id) |id| if (id == 0 or id > std.math.maxInt(i64)) return error.InvalidArgument;
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
@@ -108,6 +126,7 @@ pub const AgentPty = struct {
             if (json.written().len > 1024 * 1024) return error.InvalidArgument;
         }
         try json.writer.writeAll("]");
+        if (config.logical_session_id) |id| try json.writer.print(",\"logical_session_id\":{d}", .{id});
         if (config.cwd) |cwd| {
             if (cwd.len == 0 or cwd.len > 4096 or std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidArgument;
             try json.writer.print(",\"cwd_b64\":\"{s}\"", .{try encode(a, cwd)});
@@ -166,6 +185,7 @@ pub const AgentPty = struct {
                         self.fail();
                         return;
                     };
+                    self.output_stream = streams.stdout;
                 },
             }
         }

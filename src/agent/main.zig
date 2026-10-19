@@ -6,6 +6,7 @@ const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const queue_profile = @import("queue_profile.zig");
 const bulk_delivery = @import("bulk_delivery.zig");
+const focus_scheduler = @import("focus_scheduler.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cUndef("_FORTIFY_SOURCE");
@@ -71,15 +72,27 @@ const Agent = struct {
     bounded_bulk: bool = false,
     deliveries: [max_jobs]bulk_delivery.State = @splat(.{}),
     next_output: usize = 0,
+    focus_enabled: bool = false,
+    experimental_focus: bool = false,
+    session_groups: [max_jobs]u64 = @splat(0),
+    focus: focus_scheduler.Scheduler = .{},
 
     fn usesBoundedBulk(self: *const Agent) bool {
         return self.bounded_bulk and self.experimental_pty;
     }
 
     fn releaseJob(self: *Agent, index: usize) void {
+        const group = self.session_groups[index];
+        if (self.jobs[index].?.pty and self.focus.active_stream == self.jobs[index].?.streams[0]) self.focus.active_stream = 0;
         self.jobs[index].?.deinit();
         self.jobs[index] = null;
         self.deliveries[index] = .{};
+        self.session_groups[index] = 0;
+        self.focus.forget(index);
+        if (group != 0 and self.focus.active_group == group) {
+            for (self.session_groups) |live| if (live == group) return;
+            self.focus.active_group = 0;
+        }
     }
 
     fn tickJob(self: *Agent, index: usize, now: u64) void {
@@ -165,8 +178,12 @@ const Agent = struct {
                 if (enabled != .bool) return error.ProtocolMismatch;
                 self.experimental_pty = enabled.bool;
             }
+            if (hello.value.object.get("experimental_focus")) |enabled| {
+                if (enabled != .bool) return error.ProtocolMismatch;
+                self.experimental_focus = enabled.bool and self.focus_enabled and self.usesBoundedBulk();
+            }
             var ack: [768]u8 = undefined;
-            const body = try std.fmt.bufPrint(&ack, "{{\"major\":1,\"minor\":0,\"connection_nonce\":\"{s}\",\"max_payload\":{d},\"max_data\":{d},\"max_streams\":{d},\"max_in_flight\":{d},\"max_exec\":{d},\"monotonic_ids\":true,\"capabilities\":[\"fs.stat\",\"fs.list\",\"fs.read\",\"exec\",\"cancel\"{s}]}}", .{ self.nonce, self.payload_limit, self.data_limit, streams, requests, self.job_limit, if (self.experimental_pty) ",\"experimental.pty\"" else "" });
+            const body = try std.fmt.bufPrint(&ack, "{{\"major\":1,\"minor\":0,\"connection_nonce\":\"{s}\",\"max_payload\":{d},\"max_data\":{d},\"max_streams\":{d},\"max_in_flight\":{d},\"max_exec\":{d},\"monotonic_ids\":true,\"capabilities\":[\"fs.stat\",\"fs.list\",\"fs.read\",\"exec\",\"cancel\"{s}{s}]}}", .{ self.nonce, self.payload_limit, self.data_limit, streams, requests, self.job_limit, if (self.experimental_pty) ",\"experimental.pty\"" else "", if (self.experimental_focus) ",\"experimental.focus\"" else "" });
             try self.frame(.hello_ack, 0, 0, body);
             self.greeted = true;
             if (self.queue_profile) |profile| profile.stats.bounded_bulk = self.usesBoundedBulk();
@@ -206,6 +223,7 @@ const Agent = struct {
         const parsed = std.json.parseFromSlice(std.json.Value, a, bytes, .{ .max_value_len = p.max_payload }) catch return error.InvalidArgument;
         const value = parsed.value;
         const op = try string(value, "op");
+        if (std.mem.eql(u8, op, "FOCUS_UPDATE")) return self.focusUpdate(id, value);
         defer if (self.queue_profile) |profile| {
             const class: queue_profile.Request = if (std.mem.eql(u8, op, "PTY_INPUT")) .pty_input else if (std.mem.eql(u8, op, "PTY_RESIZE")) .pty_resize else if (std.mem.eql(u8, op, "PTY_CLOSE")) .pty_close else if (std.mem.eql(u8, op, "EXEC")) .exec else .filesystem;
             // PTY_SPAWN is covered by dispatch_ns, not filesystem dispatch.
@@ -353,14 +371,17 @@ const Agent = struct {
             active += 1;
         };
         if (active >= self.job_limit) return error.ResourceExhausted;
+        const group = if (is_pty and self.experimental_focus) try integer(value, "logical_session_id", 0) else 0;
+        if (is_pty and self.experimental_focus and group == 0) return error.InvalidArgument;
         var inherited_fds: [1 + max_jobs * 3]c_int = undefined;
         inherited_fds[0] = self.signal_fd;
         for (self.jobs, 0..) |entry, i| for (0..3) |j| {
             inherited_fds[1 + i * 3 + j] = if (entry) |job| job.fds[j] else -1;
         };
-        for (&self.jobs) |*entry| if (entry.* == null) {
+        for (&self.jobs, 0..) |*entry, index| if (entry.* == null) {
             const job = try ex.spawn(id, .{ .argv = argv, .cwd = cwd, .env = env.items, .timeout_ms = timeout, .output_limit = @intCast(limit), .stdout_stream = osid, .stderr_stream = esid, .inherited_fds = &inherited_fds, .pty_size = if (is_pty) .{ .rows = @intCast(rows), .cols = @intCast(cols) } else null, .output_credit = @intCast(if (is_pty) credit else 0) }, now);
             entry.* = job;
+            self.session_groups[index] = group;
             self.last_stream = @max(osid, esid);
             return;
         };
@@ -490,6 +511,7 @@ const Agent = struct {
     fn scheduleOutputs(self: *Agent) !void {
         if (!self.usesBoundedBulk()) return self.schedulePtys();
         if (self.closing) return;
+        if (self.experimental_focus) return self.scheduleFocused();
         var ready: usize = 0;
         for (self.jobs, self.deliveries) |entry, state| if (entry) |job| {
             if (state.ready or (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0)) ready += 1;
@@ -512,6 +534,54 @@ const Agent = struct {
                 if (self.output.items.len > before) self.next_output = (index + 1) % max_jobs;
             }
             if (self.output.items.len + p.header_len >= pty_batch_limit) break;
+        }
+    }
+
+    fn focusUpdate(self: *Agent, id: u64, value: std.json.Value) !void {
+        if (!self.experimental_focus) return error.Unsupported;
+        const generation = try string(value, "generation");
+        if (!std.mem.eql(u8, generation, &self.nonce)) return error.InvalidArgument;
+        const sequence = try integer(value, "sequence", 0);
+        const group = try integer(value, "active_session_id", 0);
+        const stream = try integer(value, "active_stream_id", 0);
+        if (sequence == 0) return error.InvalidArgument;
+        var applied = false;
+        if (sequence > self.focus.sequence) {
+            var valid = group == 0 and stream == 0;
+            for (self.jobs, self.session_groups) |entry, session| if (entry) |job| {
+                if (job.pty and job.reason == null and session == group and group != 0 and (stream == 0 or job.streams[0] == stream)) valid = true;
+            };
+            if (!valid) return error.InvalidArgument;
+            applied = self.focus.focus(sequence, group, stream);
+        }
+        var buffer: [128]u8 = undefined;
+        const body = try std.fmt.bufPrint(&buffer, "{{\"applied\":{},\"sequence\":{d}}}", .{ applied, self.focus.sequence });
+        try self.frame(.response, id, 0, body);
+    }
+
+    fn scheduleFocused(self: *Agent) !void {
+        var slots: [max_jobs]?focus_scheduler.Slot = @splat(null);
+        var ready: usize = 0;
+        for (self.jobs, self.deliveries, self.session_groups, 0..) |entry, state, group, index| if (entry) |job| {
+            const can_send = if (job.pty) job.reason == null and job.stdout.items.len > 0 and job.credit > 0 else state.ready;
+            slots[index] = .{ .group = group, .stream = if (job.pty) job.streams[0] else 0, .ready = can_send };
+            if (can_send) ready += 1;
+        };
+        // Bound work even for tiny terminal frames; no new storage or job slots.
+        for (0..max_jobs * focus_scheduler.weight) |_| {
+            if (self.output.items.len + p.header_len >= pty_batch_limit) break;
+            const index = self.focus.next(&slots) orelse break;
+            const before = self.output.items.len;
+            if (self.jobs[index].?.pty) {
+                try self.streamPty(&self.jobs[index].?, if (ready <= 1) 65536 else 16384);
+            } else if (!try self.streamBulk(index)) {
+                self.focus.retry = index;
+                break;
+            }
+            if (self.output.items.len == before) break;
+            if (self.jobs[index]) |job| {
+                slots[index].?.ready = if (job.pty) job.reason == null and job.stdout.items.len > 0 and job.credit > 0 else self.deliveries[index].ready;
+            } else slots[index] = null;
         }
     }
 
@@ -596,6 +666,7 @@ const Agent = struct {
 pub fn main() !void {
     var agent = Agent{ .agent_pid = c.getpid() };
     agent.bounded_bulk = c.getenv("HOLLOW_AGENT_BOUNDED_BULK") != null;
+    agent.focus_enabled = c.getenv("HOLLOW_AGENT_FOCUS_SCHEDULER") != null;
     if (c.getenv("HOLLOW_AGENT_QUEUE_PROFILE") != null) {
         agent.queue_profile = try A.create(queue_profile.Profiler);
         agent.queue_profile.?.* = .{};
@@ -826,14 +897,34 @@ test "bounded bulk requires experimental PTY negotiation as well as environment 
     try std.testing.expect(!agent.usesBoundedBulk());
 }
 
+test "focus capability requires both server flags and both client HELLO opt-ins" {
+    for (0..16) |bits| {
+        var agent: Agent = .{ .bounded_bulk = bits & 1 != 0, .focus_enabled = bits & 2 != 0, .nonce = @splat('a') };
+        defer agent.output.deinit(A);
+        var storage: [128]u8 = undefined;
+        const hello = try std.fmt.bufPrint(&storage, "{{\"major\":1,\"experimental_pty\":{},\"experimental_focus\":{}}}", .{ bits & 4 != 0, bits & 8 != 0 });
+        try agent.dispatch(.{ .kind = .hello, .request_id = 0, .payload_len = @intCast(hello.len) }, hello, 0);
+        const expected = bits == 15;
+        try std.testing.expectEqual(expected, agent.experimental_focus);
+        try std.testing.expectEqual(expected, std.mem.indexOf(u8, agent.output.items, "experimental.focus") != null);
+    }
+}
+
 test "bounded outputs rotate all sixteen PTY and completed exec slots within batch limits" {
-    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    try rotateOutputs(false);
+    try rotateOutputs(true);
+}
+
+fn rotateOutputs(focused: bool) !void {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true, .experimental_focus = focused };
+    _ = agent.focus.focus(1, 1, 6);
     defer agent.output.deinit(A);
     defer for (&agent.jobs) |*entry| if (entry.*) |*job| job.deinit();
     for (&agent.jobs, 0..) |*entry, index| {
         entry.* = completedCapture(index + 1);
         const job = &entry.*.?;
         job.pty = index % 2 == 0;
+        agent.session_groups[index] = if (job.pty) 1 + index / 4 else 0;
         job.credit = 65536;
         try job.stdout.appendNTimes(A, @intCast(index), if (job.pty) 65536 else 131072);
         agent.deliveries[index].ready = !job.pty;
@@ -930,12 +1021,19 @@ test "bounded exec cancellation after DATA emits one truncation and clears deliv
 }
 
 test "oversized filesystem metadata waits for empty output and cannot starve behind PTYs" {
-    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    try metadataStarvation(false);
+    try metadataStarvation(true);
+}
+
+fn metadataStarvation(focused: bool) !void {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true, .experimental_focus = focused };
+    agent.session_groups[0] = 1;
+    _ = agent.focus.focus(1, 1, 6);
     defer agent.output.deinit(A);
     defer for (&agent.jobs) |*entry| if (entry.*) |*job| job.deinit();
     agent.jobs[0] = completedCapture(1);
     agent.jobs[0].?.pty = true;
-    agent.jobs[0].?.credit = 65536;
+    agent.jobs[0].?.credit = 16384;
     try agent.jobs[0].?.stdout.appendNTimes(A, 'P', 65536);
     agent.jobs[1] = completedCapture(2);
     agent.jobs[1].?.rpc_worker = true;
@@ -944,9 +1042,13 @@ test "oversized filesystem metadata waits for empty output and cannot starve beh
     try agent.jobs[1].?.stdout.appendNTimes(A, 'M', 100000);
     agent.deliveries[1].ready = true;
     try agent.scheduleOutputs();
-    try std.testing.expectEqual(@as(usize, 1), agent.next_output);
+    if (focused) try std.testing.expectEqual(@as(?usize, 1), agent.focus.retry) else try std.testing.expectEqual(@as(usize, 1), agent.next_output);
     try std.testing.expect(agent.jobs[1] != null);
     try std.testing.expectEqual(@as(usize, 16384 + p.header_len), agent.output.items.len);
+    // Restore a ready competing PTY and change focus: neither may steal the
+    // empty batch reserved for the indivisible metadata retry.
+    agent.jobs[0].?.credit = 65536;
+    _ = agent.focus.focus(2, 0, 0);
     agent.output.clearRetainingCapacity();
     try agent.scheduleOutputs();
     try std.testing.expectEqual(@as(usize, 100000 + p.header_len), agent.output.items.len);

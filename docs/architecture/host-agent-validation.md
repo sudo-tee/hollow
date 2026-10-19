@@ -122,6 +122,25 @@ See [compaction report](../benchmarks/agent-pty/2026-10-18-pty-compaction.md).
 No native Windows, legacy-bypass, ARM64-execution, resource/fault/scale or shared
 rollout qualification is added. Default pane backends/scheduler selection stay unchanged.
 
+## 2026-10-18 explicit focus/session baseline
+
+Local correctness: **145** standalone native executions, **77** opt-in
+loop/adapter/transport executions with both scheduler flags and queue profiling,
+**60** Python unit tests, **five** new focus wire cases, **11** PTY lifecycle
+cases, **16** ordinary fs/exec cases and **two** pane/VT cases pass. Both Linux
+musl cross-builds/checksums and Windows adapter/transport compile checks pass;
+native Windows runtime/GUI and ARM64 execution remain unverified.
+
+The [focus/session report](../benchmarks/agent-pty/2026-10-18-focus-scheduler.md)
+preserves **157** validated measurements plus one short-smoke `BulkStarved`
+failure, with all 14 runner source hashes reconstructed on `693e767`. Static focus
+roughly triples foreground output share but does not increase aggregate throughput
+or consistently improve echo p99. One of 12 focus/native loaded pairs exceeds
++5 ms locally; background/bulk tradeoffs and missing byte-QoS/loaded focus timing
+remain. Repeated default E1 medians are 95.8%/99.4% of prior agent at 10/100 MiB;
+all current/native output pairs pass local 95%, without resolving earlier failed
+datasets or qualifying Windows/WSL bypass. No default routing or admission changes.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000

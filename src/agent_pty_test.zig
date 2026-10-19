@@ -61,6 +61,65 @@ fn sharedExec(connection: *@import("host/transport.zig").Connection, argv: []con
     return a.dupe(u8, result.value.exec.stdout);
 }
 
+fn focusResult(owner: *SharedConnection, sequence: u64, group: u64, stream: u64, applied: bool) !void {
+    const id = try owner.updateFocus(sequence, group, stream);
+    defer owner.connection.abandon(id);
+    const deadline = clock() + 5 * std.time.ns_per_s;
+    while (clock() < deadline) {
+        if (owner.connection.pollFor(id)) |completion| {
+            defer owner.connection.freeCompletion(completion);
+            try std.testing.expect(completion.failure == null);
+            const parsed = try std.json.parseFromSlice(std.json.Value, a, completion.metadata_json.?, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqual(applied, parsed.value.object.get("applied").?.bool);
+            return;
+        }
+        try pause();
+    }
+    return error.Timeout;
+}
+
+test "explicit focus stays control-admitted at sixteen PTYs without stealing pane completions" {
+    // Local target-side flags, not inferred from the client environment or GUI.
+    const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
+    defer a.free(path);
+    const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "HOLLOW_AGENT_BOUNDED_BULK=1", "HOLLOW_AGENT_FOCUS_SCHEDULER=1", path, "stdio" }, .{}, .{ .experimental_focus = true });
+    defer owner.destroy();
+    try std.testing.expectError(error.InvalidArgument, AgentPty.spawnShared(a, owner, .{ .argv = &.{"/bin/sh"} }, 80, 24));
+    var panes: [16]AgentPty = undefined;
+    var count: usize = 0;
+    defer for (panes[0..count]) |*pane| pane.deinit();
+    for (&panes, 0..) |*pane, index| {
+        pane.* = try AgentPty.spawnShared(a, owner, .{ .logical_session_id = 1 + index / 4, .argv = &.{ "/bin/sh", "-c", "printf FOCUS_READY; read line; printf '<%s>' \"$line\"" } }, 80, 24);
+        count += 1;
+        try until(pane, "FOCUS_READY");
+    }
+    try focusResult(owner, 10, 1, panes[0].output_stream.?, true);
+    try focusResult(owner, 9, 4, panes[15].output_stream.?, false);
+    try focusResult(owner, 11, 4, panes[15].output_stream.?, true);
+    try focusResult(owner, 12, 0, 0, true);
+    for (&panes) |*pane| {
+        try pane.writeAll("focus-ok\n");
+        try until(pane, "<focus-ok>");
+        try finished(pane);
+        try std.testing.expectEqual(@as(?u32, 0), pane.exitStatus());
+    }
+}
+
+test "requested focus fails closed when peer omits focus capability" {
+    const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
+    defer a.free(path);
+    const owner = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "-u", "HOLLOW_AGENT_FOCUS_SCHEDULER", path, "stdio" }, .{}, .{ .experimental_focus = true });
+    defer owner.destroy();
+    const deadline = clock() + 5 * std.time.ns_per_s;
+    while (owner.connection.status() == .connecting) {
+        if (clock() > deadline) return error.Timeout;
+        try pause();
+    }
+    try std.testing.expectEqual(@import("host/transport.zig").State.disconnected, owner.connection.status());
+    try std.testing.expectError(error.Disconnected, owner.updateFocus(1, 0, 0));
+}
+
 test "shared completed exec captures and oversized filesystem metadata remain exact" {
     const owner = try sharedConnection();
     defer owner.destroy();

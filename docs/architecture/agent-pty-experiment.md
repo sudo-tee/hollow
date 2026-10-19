@@ -87,6 +87,97 @@ full-load input/resize, failed launch isolation, stopped consumption at 64 KiB,
 close/replacement and owner-first teardown. They are correctness tests, not
 shared-connection performance qualification.
 
+### Explicit focus/session scheduler (research only)
+
+This is an independently negotiated **hierarchical weighted round-robin baseline**,
+not byte-fair DRR, GUI workspace policy, or a rollout switch. Agent must have both
+`HOLLOW_AGENT_BOUNDED_BULK` and `HOLLOW_AGENT_FOCUS_SCHEDULER` present; client HELLO
+must include both `experimental_pty:true` and `experimental_focus:true`.
+Only then does HELLO_ACK advertise `experimental.focus`. Requested native clients
+fail closed if that capability is missing. Ordinary fs/exec connections and
+non-focus PTY connections keep their existing scheduler selection.
+
+For a prepared local target, the native research API is:
+
+```zig
+const owner = try SharedConnection.createWithOptions(allocator, connector_argv, wake,
+    .{ .experimental_focus = true });
+// Each attached pane supplies caller-owned logical session metadata.
+var pane = try AgentPty.spawnShared(allocator, owner,
+    .{ .argv = &.{ "/bin/sh", "-i" }, .logical_session_id = 7 }, cols, rows);
+// After pane startup, output_stream is available. Explicit UI/experiment input:
+const request_id = try owner.updateFocus(1, 7, pane.output_stream.?);
+// Caller must pollFor(request_id) and freeCompletion(), including remote errors.
+```
+
+No GUI event wiring, shared-pane configuration or HostManager policy is inferred.
+The development pane override remains dedicated and cannot select this scheduler.
+Server flags must be explicitly supplied on the **target** for prepared remote
+connectors, not merely in the client's environment. Python `PtyClient.start(focus=True)`
+and `spawn(..., logical_session=7)` expose the same wire contract.
+
+* Negotiated `PTY_SPAWN` requires positive `logical_session_id`, distinct from the
+  spawn request ID used by PTY_INPUT/RESIZE/CLOSE. Several panes may share it.
+* `FOCUS_UPDATE` is an ordinary short-lived REQUEST with `generation` equal to
+  HELLO_ACK's `connection_nonce`, positive monotonic `sequence`,
+  `active_session_id` (logical group), and `active_stream_id` (PTY output stream).
+  IDs/sequences are JSON integers in 0–2^63−1; sequences and logical PTY groups
+  must be nonzero. Session and stream zero together clear focus. A positive live
+  group with stream zero selects only that session; otherwise stream must belong
+  to that group on this connection.
+* RESPONSE `{ "applied":true, "sequence":N }` means metadata applied during
+  dispatch, **not** bytes reprioritized retroactively or child input consumed.
+  Stale/duplicate sequences return `applied:false` with current sequence, without
+  validating an obsolete target. Wrong nonce, invalid new target, or sequence zero
+  returns `invalid_argument`, without advancing accepted sequence. Without the
+  capability, operation returns `unsupported` without spawning a worker.
+* Closed/cancelled targets cannot receive new focus. Terminally released panes
+  clear their stream selection; releasing last group member clears selected group.
+  Sequence remains monotonic. Stream IDs are never reused; slot reuse cannot
+  retarget an old stream. No replay/reconnect or persistence is introduced.
+* Native transport treats focus as a control, not a worker job. The 16-job/32-request
+  admission split remains; focus can return NotReady/ResourceExhausted locally and
+  callers must retain/retry metadata explicitly. Caller supplies sequences; neither
+  wrapper nor agent infers focus from traffic or pane activity.
+
+Scheduler first rotates **logical session groups**, then panes within each group.
+Selected session receives four visits per outer turn versus one for each other
+session and one for the aggregate bulk group; selected pane receives four visits
+per inner turn versus one for siblings. Bulk fs/exec jobs rotate inside their one
+group. More panes do not multiply a session's outer weight. Without a selected
+group, all groups have equal weight; this is still different from flat per-job RR.
+
+One visit emits at most one 16 KiB PTY quantum or one whole bulk frame; the existing
+64 KiB single-ready-stream quantum and 65,624-byte soft batch limit remain. Small
+frames count as full visits, not proportional bytes. Oversized atomic filesystem
+metadata may queue alone into empty output under existing limits. A frame that
+cannot fit reserves next selection until output drains, even across focus changes.
+Partially written/queued frames are not reordered or preempted. Control direction
+remains full-duplex FIFO; no independent control lane or flood rate limiter is added.
+
+State is fixed-capacity for 16 jobs/groups, with at most 64 selections per output
+scheduling call. Cursors/quota carry across calls; focus changes never restart them
+and truncate residual quota to at most one visit. Unready/zero-credit panes are
+skipped; credit and capture limits are unchanged. Deterministic tests check exact
+stable weighted visits, bounded visit gaps for continuously ready slots, focus
+churn, slot reuse and metadata retry. These are not wall-time fairness, byte-QoS,
+arbitrary arrival/churn or CPU/RSS/scale qualification.
+
+```sh
+python3 scripts/agent_focus_tests.py --agent zig-out/bin/hollow-agent
+HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 \
+  python3 scripts/agent_pty_bench.py --focus-scheduler --backend shared \
+  --sessions 8 --load noisy stalled --bulk off mixed --resize-every 16 \
+  --runs 3 --samples 1000 --size-mib 10 --output focus-research.jsonl
+```
+
+Benchmark groups every four panes, explicitly selects foreground stream in group
+one **before load starts**, and leaves focus static. `focus_ack_ns` is initial
+request-to-ACK wall time, not loaded focus-change application delay. Existing
+foreground-first consumption remains identical; no focus-first GUI parsing/render
+variable is simulated. Dynamic focus switching is tested for correctness, not yet
+latency-qualified. Every result remains `qualification:false`.
+
 ### Real pane and terminal integration
 
 A separate headless graph links the actual terminal engine and exercises

@@ -12,6 +12,29 @@ from agent_pty_bench import parse_queue_profiles, percentile, stderr_text, valid
 
 
 class AgentPtyBenchTests(unittest.TestCase):
+    def test_focus_identity_requires_shared_negotiation_and_ack(self):
+        config, result = self.prompt()
+        config.update(backend="shared", focus_scheduler=True)
+        result.update(backend="shared", focus_scheduler=True, focus_ack_ns=42)
+        self.assertEqual(validate(result, config)["focus_ack_ns"], 42)
+        for update in ({"focus_scheduler": False}, {"focus_scheduler": 1}, {"focus_ack_ns": None},
+                       {"focus_ack_ns": 0}, {"focus_ack_ns": True}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+        with self.assertRaises(ValueError):
+            validate(result, dict(config, backend="agent"))
+        with self.assertRaises(ValueError):
+            validate(dict(result, focus_scheduler=False), dict(config, focus_scheduler=False))
+
+    def test_focus_cli_rejects_nonshared_backend(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        env = dict(os.environ)
+        env.pop("HOLLOW_AGENT_QUEUE_PROFILE", None)
+        result = subprocess.run([sys.executable, str(script), "--focus-scheduler", "--output", "/nonexistent/output"],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --backend shared", result.stderr)
+
     def queue_profile(self):
         def samples():
             return {"count": 0, "sum": 0, "max": 0, "log2": [0] * 64}
