@@ -11,6 +11,10 @@ shared latency by reducing bulk bandwidth, but still fails bulk-free latency
 checks. Its candidate default-path short-transfer throughput also misses 95% in
 two checks; root cause remains unresolved. Neither candidate nor shared rollout
 is performance-qualified. Earlier successful medians below remain historical.
+The [balanced source-isolation follow-up](2026-10-18-default-source-isolation.md)
+retains intermittent losses without attributing them to an unproven cause.
+Its [measured compaction experiment](2026-10-18-pty-compaction.md) replaces one hot
+overlapping copy; local throughput medians are mixed, not a general speed claim.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

@@ -97,6 +97,31 @@ Current local correctness rerun, Zig 0.16.0 ReleaseSafe:
 No new native Windows, GUI/GPU, real Docker daemon, remote connector, fault/OOM,
 soak or large-scale qualification is claimed by this follow-up.
 
+## 2026-10-18 source isolation and compaction follow-up
+
+Balanced source-order, CPU-affinity and prompt-context checks preserve 144 new
+measurements including sampling; no stable candidate/prior median loss reproduces,
+but severe intermittent losses remain unexplained. See
+[source isolation](../benchmarks/agent-pty/2026-10-18-default-source-isolation.md).
+CPU sampling/disassembly identifies overlapping scalar PTY queue copies in both
+builds, not a proven cause of the intermittent loss.
+
+A one-copy `@memmove` optimization plus nonuniform-byte/short-credit regression
+passes **138** standalone native executions, **70** opt-in loop/PTY/transport
+executions with queue profiling, **58** Python unit tests, **11** opt-in PTY wire
+cases, **16** ordinary fs/exec conformance cases and **two** real pane/VT cases.
+Both static Linux musl builds and checksum verification pass; installed local
+agent restored to ReleaseSafe. These are local correctness results, not hosted CI.
+
+Its 120 additional measurements cover 54 dedicated checks, 18 software CPU samples
+and 48 mixed shared checks. Source/binary provenance and all result checks were
+revalidated, totaling **264** new measurements across this follow-up. Dedicated
+100 MiB median improves while 10 MiB median falls slightly versus the matched
+pre-change binary; no general speed claim follows. Earlier failed gates remain.
+See [compaction report](../benchmarks/agent-pty/2026-10-18-pty-compaction.md).
+No native Windows, legacy-bypass, ARM64-execution, resource/fault/scale or shared
+rollout qualification is added. Default pane backends/scheduler selection stay unchanged.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000

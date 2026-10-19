@@ -30,6 +30,13 @@ shows mixed shared p99 improvements at substantial bulk bandwidth cost, remainin
 bulk-free latency failures, and an unresolved candidate default-path throughput
 regression in diagnostics-off old/new comparisons. Keep this research unqualified;
 do not infer default throughput preservation from unchanged scheduling selection.
+Follow-up [source isolation](../benchmarks/agent-pty/2026-10-18-default-source-isolation.md)
+balances native/prior/current ordering and tests CPU/workload context, retaining
+unexplained slow tails. Software CPU samples identify the same overlapping PTY
+queue-copy hot spot in both builds. A narrow
+[`@memmove` experiment](../benchmarks/agent-pty/2026-10-18-pty-compaction.md) changes
+that copy only, with nonuniform-byte/short-credit regression coverage; it does not
+claim to solve the intermittent loss or qualify shared/default PTY rollout.
 
 ## Current scope
 
