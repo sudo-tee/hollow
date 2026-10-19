@@ -201,6 +201,24 @@ DRR wire and correctness smoke; hosted execution is not claimed. No sustained
 resource/fault/flood/scale, loaded target-switch, ARM64 execution or native GUI /
 actual WSL-bypass qualification follows from these local tests.
 
+## 2026-10-19 finite isolation resources and transport death
+
+[Resource/fault follow-up](../benchmarks/agent-pty/2026-10-19-isolation-resources.md):
+**80/80** validated finite measurements, 40 monitored and 40 matched monitor-off.
+No timeout, cleanup signals or recorded capacity censoring. Process read races
+and missed short-lived work remain explicit. Isolation uses roughly 33–43% more
+sampled concurrent CPU and about five extra threads; similar summed RSS does not
+prove physical-memory parity. Observer perturbs timings; no steady-state claim.
+
+**92** ReleaseSafe loop/adapter/transport executions, **74** Python unit tests,
+and **seven** wire focus tests per WRR/DRR pass locally. Native asynchronous close
+and real-wire owned-agent SIGKILL cover both independent connection directions
+under both policies; survivor must handle focus, resize, exact echo and EXEC.
+No reconnect, loaded failure, OOM containment or GUI recovery is implemented or
+qualified. Production agent/transport and installed ReleaseSafe binaries unchanged.
+Default throughput, sustained/fault/scale, real focus switching and native
+Windows/WSL qualification gates stay open; prior failures remain evidence.
+
 ## 2026-10-19 static foreground-isolation topology
 
 [Foreground isolation](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)

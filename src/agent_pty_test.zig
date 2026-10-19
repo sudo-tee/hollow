@@ -139,6 +139,47 @@ test "requested deficit fails closed when peer only negotiates weighted focus" {
     try std.testing.expectError(error.Disconnected, owner.updateFocus(1, 0, 0));
 }
 
+test "closing either independent transport preserves other pane focus and bulk" {
+    const path = try std.testing.environ.getAlloc(a, "HOLLOW_TEST_AGENT");
+    defer a.free(path);
+    for ([_]bool{ false, true }) |deficit| for (0..2) |victim_index| {
+        var owners: [2]*SharedConnection = undefined;
+        var count: usize = 0;
+        defer for (owners[0..count]) |owner| owner.destroy();
+        for (&owners) |*owner| {
+            owner.* = try SharedConnection.createWithOptions(a, &.{ "/usr/bin/env", "HOLLOW_AGENT_BOUNDED_BULK=1", "HOLLOW_AGENT_FOCUS_SCHEDULER=1", "HOLLOW_AGENT_DEFICIT_SCHEDULER=1", path, "stdio" }, .{}, .{ .experimental_focus = true, .experimental_deficit = deficit });
+            count += 1;
+        }
+        var panes: [2]AgentPty = undefined;
+        var pane_count: usize = 0;
+        defer for (panes[0..pane_count]) |*pane| pane.deinit();
+        for (&panes, owners) |*pane, owner| {
+            pane.* = try AgentPty.spawnShared(a, owner, .{ .logical_session_id = 1, .argv = &.{ "/bin/sh", "-c", "stty raw -echo; printf READY; read line; printf '<%s>' \"$line\"; read line" } }, 80, 24);
+            pane_count += 1;
+            try until(pane, "READY");
+            try focusResult(owner, 1, 1, pane.output_stream.?, true);
+        }
+        owners[victim_index].connection.close();
+        const deadline = clock() + 5 * std.time.ns_per_s;
+        while (owners[victim_index].connection.status() != .disconnected) {
+            if (clock() > deadline) return error.Timeout;
+            try pause();
+        }
+        try std.testing.expect(!panes[victim_index].isAlive());
+        try std.testing.expectError(error.WriteFailed, panes[victim_index].writeAll("rejected"));
+        const survivor = 1 - victim_index;
+        try focusResult(owners[survivor], 2, 1, panes[survivor].output_stream.?, true);
+        panes[survivor].resize(120, 40);
+        try panes[survivor].writeAll("survived\n");
+        try until(&panes[survivor], "<survived>");
+        const output = try sharedExec(owners[survivor].connection, &.{ "/bin/printf", "bulk-alive" });
+        defer a.free(output);
+        try std.testing.expectEqualStrings("bulk-alive", output);
+        try panes[survivor].writeAll("done\n");
+        try finished(&panes[survivor]);
+    };
+}
+
 test "shared completed exec captures and oversized filesystem metadata remain exact" {
     const owner = try sharedConnection();
     defer owner.destroy();

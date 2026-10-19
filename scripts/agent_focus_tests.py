@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -76,6 +77,53 @@ class FocusTests(unittest.TestCase):
             self.assertEqual(clear["stop"], "no_stream")
             self.assertEqual(session["stop"], "no_stream")
             self.assertEqual(released["stop"], "released")
+
+    def test_agent_sigkill_does_not_break_an_independent_pty_and_bulk_connection(self):
+        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+            self.skipTest("Linux pidfds required for owned-process fault injection")
+        for victim_index in (0, 1):
+            clients = [self.client(), self.client()]
+            panes = [client.spawn(["/bin/sh", "-c", "stty raw -echo; printf READY; read line; printf '<%s>' \"$line\"; read line"],
+                                  logical_session=1) for client in clients]
+            for client, pane in zip(clients, panes):
+                greeting = bytearray()
+                while len(greeting) < len(b"READY"):
+                    kind, payload = pane.receive()
+                    self.assertEqual(kind, DATA)
+                    greeting.extend(payload)
+                    pane.grant(len(payload))
+                self.assertEqual(greeting, b"READY")
+                self.assertTrue(client.focus(1, 1, pane.stream)[1]["applied"])
+            victim, survivor = clients[victim_index], clients[1 - victim_index]
+            pane = panes[1 - victim_index]
+            # Exact subprocess handle, never an inferred remote PTY PID.
+            fd = os.pidfd_open(victim.process.pid)
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            finally:
+                os.close(fd)
+            victim.process.wait(timeout=5)
+            self.assertEqual(victim.process.returncode, -signal.SIGKILL)
+            self.assertTrue(survivor.focus(2, 1, pane.stream)[1]["applied"])
+            self.assertEqual(pane.resize(40, 120)[0], RESPONSE)
+            self.assertEqual(pane.input(b"survived\n")[0], RESPONSE)
+            received = bytearray()
+            while len(received) < len(b"<survived>"):
+                kind, payload = pane.receive()
+                self.assertEqual(kind, DATA)
+                received.extend(payload)
+                pane.grant(len(payload))
+            self.assertEqual(received, b"<survived>")
+            stdout, stderr = survivor.allocate_streams()
+            kind, _, output = survivor.request("EXEC", {"argv_b64": [b64(b"/bin/printf"), b64(b"bulk-alive")],
+                "stdout_stream_id": stdout, "stderr_stream_id": stderr}, stream_ids=(stdout, stderr))
+            self.assertEqual(kind, RESPONSE)
+            self.assertEqual(bytes(output[stdout]), b"bulk-alive")
+            self.assertEqual(bytes(output[stderr]), b"")
+            self.assertEqual(pane.input(b"done\n")[0], RESPONSE)
+            self.assertEqual(pane.receive()[0], RESPONSE)
+            for client in clients:
+                client.close()
 
     def test_both_flags_and_hello_are_required(self):
         for bounded, enabled, hello_focus in ((False, True, True), (True, False, True), (True, True, False)):

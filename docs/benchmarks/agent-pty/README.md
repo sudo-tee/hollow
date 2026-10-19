@@ -33,6 +33,10 @@ proportions in deterministic tests are not wall-time or native-platform QoS.
 The [static foreground-isolation probe](2026-10-19-isolated-foreground.md) shows
 large local echo/output gains by pinning foreground to a second agent, with
 background/bulk costs and no dynamic migration or default routing changes.
+The [resource and fault follow-up](2026-10-19-isolation-resources.md) retains
+80 monitor-on/off measurements: isolation uses more concurrent CPU/threads,
+with material observer perturbation. Independent close/SIGKILL survival is tested,
+not reconnect, loaded recovery or host-wide OOM isolation.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

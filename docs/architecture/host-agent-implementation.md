@@ -49,6 +49,13 @@ This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
 157 measurements plus one preserved short-smoke failure show redistribution,
 not a rollout pass; per-update loaded correlation and broader gates remain open.
 
+The [resource/fault follow-up](../benchmarks/agent-pty/2026-10-19-isolation-resources.md)
+adds a Linux process-tree observer and independent native-close/real-wire SIGKILL
+regressions under WRR/DRR, without agent/transport runtime changes. Eighty finite
+on/off measurements expose extra concurrent CPU/threads and observer perturbation;
+they are not sustained/equal-resource qualification. Surviving owner handles focus,
+resize, echo and EXEC, but reconnect/migration/loaded recovery remain unimplemented.
+
 The [static foreground-isolation experiment](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)
 is benchmark-only: explicit second shared-connection owner for foreground, original
 owner for backgrounds/bulk, same prepared connector and agent. Selected logical

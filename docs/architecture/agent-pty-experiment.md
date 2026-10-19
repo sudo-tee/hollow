@@ -214,6 +214,12 @@ misattributing them. Remote targets must also keep queue profiling off; host
 telemetry alone is supported. Genuine cross-connection diagnostic correlation,
 failure/reconnect behavior, resources and GUI focus switching need separate work.
 See [foreground isolation](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md).
+The [resource/fault follow-up](../benchmarks/agent-pty/2026-10-19-isolation-resources.md)
+records 80 finite observer-on/off measurements and independent-close/SIGKILL
+survival under WRR/DRR. Concurrent sampled CPU and thread counts increase;
+similar summed RSS does not prove equal physical-memory cost. Observer perturbation,
+short-process censoring and per-variant fixed monitor order remain explicit.
+Survivor checks are established idle connections, not loaded recovery/reconnect.
 
 ### Explicit hierarchical byte-deficit scheduling
 
