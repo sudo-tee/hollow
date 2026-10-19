@@ -1,0 +1,2806 @@
+{
+  "qualification": false,
+  "base_revision": "1df1b6704f6a7e575b4b5539be22853bdec2149c",
+  "scope": "Default dedicated source isolation, headless POSIX comparisons only; no agent or benchmark binary changes; earlier failures retained.",
+  "stages": [
+    {
+      "tag": "order",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "runs": [
+        {
+          "round": 0,
+          "variant": "native",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "e6a715f3fe3bb95756b23211e31801349dad38952f2a88562434627e50282e89",
+          "usage": {
+            "ru_utime": 0.357249,
+            "ru_stime": 1.619937,
+            "ru_nvcsw": 42274,
+            "ru_nivcsw": 507,
+            "ru_minflt": 10113,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.50 0.65 1.24 2/1274 946892",
+            "cpu_ticks": "cpu  3363056 357 1852177 78541406 35949 0 1717300 0 0 0",
+            "monotonic_ns": 141525336950333
+          },
+          "end": {
+            "loadavg": "0.50 0.65 1.24 1/1274 946954",
+            "cpu_ticks": "cpu  3363137 357 1852392 78542082 35949 0 1717364 0 0 0",
+            "monotonic_ns": 141527064137797
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 64.74592359341325,
+              "elapsed_ns": 154449878,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 72.34859423928529,
+              "elapsed_ns": 1382196863,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "prior",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "06626f938b545e5f20ffc5a70979f5741f9410ddf9c0033779458eb295d105a9",
+          "usage": {
+            "ru_utime": 0.45375899999999997,
+            "ru_stime": 1.752359,
+            "ru_nvcsw": 45009,
+            "ru_nivcsw": 121,
+            "ru_minflt": 8578,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.50 0.65 1.24 1/1274 946954",
+            "cpu_ticks": "cpu  3363137 357 1852392 78542083 35949 0 1717364 0 0 0",
+            "monotonic_ns": 141527064203976
+          },
+          "end": {
+            "loadavg": "0.62 0.67 1.24 1/1275 946988",
+            "cpu_ticks": "cpu  3363194 357 1852608 78542767 35949 0 1717432 0 0 0",
+            "monotonic_ns": 141528753789079
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 69.37293251317878,
+              "elapsed_ns": 144148440,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 72.37484633435953,
+              "elapsed_ns": 1381695507,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "current",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "6be50171548f12ef81509c70f6358cf1ddae932b746aca0c9587dd55ba4d3a18",
+          "usage": {
+            "ru_utime": 0.39661900000000005,
+            "ru_stime": 1.756309,
+            "ru_nvcsw": 44829,
+            "ru_nivcsw": 126,
+            "ru_minflt": 8558,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.62 0.67 1.24 1/1275 946988",
+            "cpu_ticks": "cpu  3363194 357 1852608 78542767 35949 0 1717432 0 0 0",
+            "monotonic_ns": 141528753863043
+          },
+          "end": {
+            "loadavg": "0.62 0.67 1.24 2/1275 947022",
+            "cpu_ticks": "cpu  3363249 357 1852829 78543433 35950 0 1717496 0 0 0",
+            "monotonic_ns": 141530396751770
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 69.84982176560679,
+              "elapsed_ns": 143164288,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 74.90252911415615,
+              "elapsed_ns": 1335068404,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "native",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "e67a11ca741a46adc2aa37ca502ea0194b5077a70999bb97938cba7ff602f1f3",
+          "usage": {
+            "ru_utime": 0.3729429999999998,
+            "ru_stime": 1.609565,
+            "ru_nvcsw": 42324,
+            "ru_nivcsw": 88,
+            "ru_minflt": 10117,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.62 0.67 1.24 1/1275 947022",
+            "cpu_ticks": "cpu  3363249 357 1852829 78543433 35950 0 1717496 0 0 0",
+            "monotonic_ns": 141530396841966
+          },
+          "end": {
+            "loadavg": "0.62 0.67 1.24 1/1275 947066",
+            "cpu_ticks": "cpu  3363296 357 1853041 78544143 35950 0 1717564 0 0 0",
+            "monotonic_ns": 141532106502188
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 69.20399085297635,
+              "elapsed_ns": 144500337,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 72.44276459622152,
+              "elapsed_ns": 1380400107,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "current",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "4496d0dd85caab9ad94c8d2a94066b478cbc2ca0dfddcd289a32fda0dc8b9711",
+          "usage": {
+            "ru_utime": 0.3953420000000003,
+            "ru_stime": 1.8681739999999998,
+            "ru_nvcsw": 44777,
+            "ru_nivcsw": 202,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.62 0.67 1.24 1/1275 947066",
+            "cpu_ticks": "cpu  3363296 357 1853041 78544143 35950 0 1717564 0 0 0",
+            "monotonic_ns": 141532106567596
+          },
+          "end": {
+            "loadavg": "0.97 0.75 1.26 1/1275 947102",
+            "cpu_ticks": "cpu  3363381 357 1853266 78544822 35950 0 1717627 0 0 0",
+            "monotonic_ns": 141533854386769
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 72.93508733466163,
+              "elapsed_ns": 137108220,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.28712830831678,
+              "elapsed_ns": 1443269514,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "prior",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "ae4c579a21e5ac40c7e1377c57297e93f9c8ae7f971d37a023fd963c0502116f",
+          "usage": {
+            "ru_utime": 0.45976399999999984,
+            "ru_stime": 1.7436240000000005,
+            "ru_nvcsw": 44975,
+            "ru_nivcsw": 115,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.97 0.75 1.26 1/1275 947102",
+            "cpu_ticks": "cpu  3363381 357 1853266 78544822 35950 0 1717627 0 0 0",
+            "monotonic_ns": 141533854451555
+          },
+          "end": {
+            "loadavg": "0.97 0.75 1.26 1/1275 947137",
+            "cpu_ticks": "cpu  3363444 357 1853478 78545508 35950 0 1717703 0 0 0",
+            "monotonic_ns": 141535550315004
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 72.07441117890839,
+              "elapsed_ns": 138745497,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 72.69041456356003,
+              "elapsed_ns": 1375697203,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "eccf0a4efd09144e338ce187e9a1cb120c96f698d74d6642a233e4886499ef3e",
+          "usage": {
+            "ru_utime": 0.383467,
+            "ru_stime": 1.7831670000000006,
+            "ru_nvcsw": 44395,
+            "ru_nivcsw": 2402,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.97 0.75 1.26 1/1275 947137",
+            "cpu_ticks": "cpu  3363444 357 1853478 78545508 35950 0 1717703 0 0 0",
+            "monotonic_ns": 141535550387706
+          },
+          "end": {
+            "loadavg": "0.97 0.75 1.26 3/1275 947190",
+            "cpu_ticks": "cpu  3363580 357 1853721 78546124 35950 0 1717752 0 0 0",
+            "monotonic_ns": 141537280187723
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 68.85683503758015,
+              "elapsed_ns": 145228865,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.30788761659565,
+              "elapsed_ns": 1402369406,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "native",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "0cc1d687066ae29420653a656f5da77b257553093d93edc5571206d54461b7b0",
+          "usage": {
+            "ru_utime": 0.3661620000000001,
+            "ru_stime": 1.6600209999999986,
+            "ru_nvcsw": 42364,
+            "ru_nivcsw": 95,
+            "ru_minflt": 10133,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "0.97 0.75 1.26 1/1275 947190",
+            "cpu_ticks": "cpu  3363580 357 1853721 78546124 35950 0 1717752 0 0 0",
+            "monotonic_ns": 141537280276436
+          },
+          "end": {
+            "loadavg": "1.29 0.82 1.28 2/1275 947234",
+            "cpu_ticks": "cpu  3363640 357 1853936 78546843 35951 0 1717819 0 0 0",
+            "monotonic_ns": 141539027007710
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 58.946154055820784,
+              "elapsed_ns": 169646352,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.37723095896858,
+              "elapsed_ns": 1401006997,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "current",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "eedaa3d7fb96e62a7e160b272875bfa35cd1a2cfba6e7326ab9f266116334276",
+          "usage": {
+            "ru_utime": 0.38716899999999965,
+            "ru_stime": 1.8457559999999997,
+            "ru_nvcsw": 44706,
+            "ru_nivcsw": 117,
+            "ru_minflt": 8573,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.29 0.82 1.28 2/1275 947234",
+            "cpu_ticks": "cpu  3363640 357 1853936 78546843 35951 0 1717819 0 0 0",
+            "monotonic_ns": 141539027099589
+          },
+          "end": {
+            "loadavg": "1.29 0.82 1.28 1/1275 947268",
+            "cpu_ticks": "cpu  3363694 357 1854155 78547530 35951 0 1717888 0 0 0",
+            "monotonic_ns": 141540726734868
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 70.84498937087828,
+              "elapsed_ns": 141153243,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.96018935506362,
+              "elapsed_ns": 1389657266,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "20310c5713b4d7a5b5eb43533c31a32be1900aada90c044635903ee00bf2296f",
+          "usage": {
+            "ru_utime": 0.46239900000000045,
+            "ru_stime": 1.7106790000000025,
+            "ru_nvcsw": 44856,
+            "ru_nivcsw": 148,
+            "ru_minflt": 8567,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.29 0.82 1.28 2/1275 947268",
+            "cpu_ticks": "cpu  3363694 357 1854155 78547530 35951 0 1717888 0 0 0",
+            "monotonic_ns": 141540726817008
+          },
+          "end": {
+            "loadavg": "1.29 0.82 1.28 1/1275 947302",
+            "cpu_ticks": "cpu  3363750 357 1854356 78548209 35951 0 1717964 0 0 0",
+            "monotonic_ns": 141542396610106
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 72.20495051726147,
+              "elapsed_ns": 138494659,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 73.80966325706618,
+              "elapsed_ns": 1354836150,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "current",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "41bc833e8765900e11cf947d7b95d7728299f3cb01e09cf624258dc59f5dfda8",
+          "usage": {
+            "ru_utime": 0.4694419999999999,
+            "ru_stime": 1.8028089999999999,
+            "ru_nvcsw": 45045,
+            "ru_nivcsw": 124,
+            "ru_minflt": 8559,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.29 0.82 1.28 1/1275 947302",
+            "cpu_ticks": "cpu  3363750 357 1854356 78548209 35951 0 1717964 0 0 0",
+            "monotonic_ns": 141542396695693
+          },
+          "end": {
+            "loadavg": "1.35 0.84 1.29 1/1275 947338",
+            "cpu_ticks": "cpu  3363812 357 1854583 78548929 35952 0 1718034 0 0 0",
+            "monotonic_ns": 141544169767461
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 66.05281757672873,
+              "elapsed_ns": 151393996,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.33639200301135,
+              "elapsed_ns": 1421739119,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "native",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "e33c4ff64ce00ddb9dbf78153aa1fae2de1246be721c2846958ad870928348bc",
+          "usage": {
+            "ru_utime": 0.3569180000000003,
+            "ru_stime": 1.7581229999999977,
+            "ru_nvcsw": 42396,
+            "ru_nivcsw": 177,
+            "ru_minflt": 10155,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.35 0.84 1.29 1/1275 947338",
+            "cpu_ticks": "cpu  3363812 357 1854583 78548929 35952 0 1718034 0 0 0",
+            "monotonic_ns": 141544169953403
+          },
+          "end": {
+            "loadavg": "1.35 0.84 1.29 1/1275 947382",
+            "cpu_ticks": "cpu  3363891 357 1854815 78549663 35952 0 1718104 0 0 0",
+            "monotonic_ns": 141546001091770
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 66.98062943639918,
+              "elapsed_ns": 149296895,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.5078813611848,
+              "elapsed_ns": 1503581199,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "current",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "8682c5db698a17d2e16f82e5ec3a1dd73b770a69f6afb09696d1c5d835f65138",
+          "usage": {
+            "ru_utime": 0.43311099999999936,
+            "ru_stime": 1.79129,
+            "ru_nvcsw": 44866,
+            "ru_nivcsw": 144,
+            "ru_minflt": 8582,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.35 0.84 1.29 2/1275 947382",
+            "cpu_ticks": "cpu  3363891 357 1854815 78549663 35952 0 1718104 0 0 0",
+            "monotonic_ns": 141546001155975
+          },
+          "end": {
+            "loadavg": "1.35 0.84 1.29 1/1275 947416",
+            "cpu_ticks": "cpu  3363944 357 1855026 78550352 35952 0 1718180 0 0 0",
+            "monotonic_ns": 141547697612230
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 72.0456236692813,
+              "elapsed_ns": 138800936,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 72.02164944278283,
+              "elapsed_ns": 1388471394,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "native",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "04d61b5da6e9ef86c22bb7153d799eef8cd206d92071d9492c4d2f7793565a86",
+          "usage": {
+            "ru_utime": 0.3394529999999998,
+            "ru_stime": 1.830452000000001,
+            "ru_nvcsw": 42310,
+            "ru_nivcsw": 1759,
+            "ru_minflt": 10194,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.35 0.84 1.29 1/1275 947416",
+            "cpu_ticks": "cpu  3363944 357 1855026 78550352 35952 0 1718180 0 0 0",
+            "monotonic_ns": 141547697675423
+          },
+          "end": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947458",
+            "cpu_ticks": "cpu  3364092 357 1855268 78551031 35952 0 1718236 0 0 0",
+            "monotonic_ns": 141549585925704
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 70.92946258583271,
+              "elapsed_ns": 140985137,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 64.6392354570516,
+              "elapsed_ns": 1547048001,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "prior",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "83f0b6b44c687368d2583e892b3aed73dc595e83cd2e59c8108ce08fd63104ac",
+          "usage": {
+            "ru_utime": 0.44137700000000013,
+            "ru_stime": 1.8358209999999993,
+            "ru_nvcsw": 44919,
+            "ru_nivcsw": 254,
+            "ru_minflt": 8566,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947458",
+            "cpu_ticks": "cpu  3364092 357 1855268 78551031 35952 0 1718236 0 0 0",
+            "monotonic_ns": 141549586054014
+          },
+          "end": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947494",
+            "cpu_ticks": "cpu  3364195 357 1855504 78551707 35952 0 1718296 0 0 0",
+            "monotonic_ns": 141551358147468
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 60.44882113253067,
+              "elapsed_ns": 165429198,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.77455384680734,
+              "elapsed_ns": 1393251433,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "current",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "5af7980bf65e03e342298289aad9e97f391bf176259af94b4f88f3cc13d504a8",
+          "usage": {
+            "ru_utime": 0.4054220000000006,
+            "ru_stime": 1.835720000000002,
+            "ru_nvcsw": 44892,
+            "ru_nivcsw": 339,
+            "ru_minflt": 8568,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947494",
+            "cpu_ticks": "cpu  3364195 357 1855504 78551707 35952 0 1718296 0 0 0",
+            "monotonic_ns": 141551358219549
+          },
+          "end": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947530",
+            "cpu_ticks": "cpu  3364311 357 1855741 78552368 35952 0 1718352 0 0 0",
+            "monotonic_ns": 141553133264808
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 68.11977314426173,
+              "elapsed_ns": 146800254,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.24679054109615,
+              "elapsed_ns": 1444110250,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "prior",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "660f77e7216eabe1005fccff7147001742fcb945b861bd841439b7a3af6ea387",
+          "usage": {
+            "ru_utime": 0.3952619999999998,
+            "ru_stime": 1.9153819999999975,
+            "ru_nvcsw": 45273,
+            "ru_nivcsw": 505,
+            "ru_minflt": 8577,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.40 0.86 1.29 1/1275 947530",
+            "cpu_ticks": "cpu  3364311 357 1855741 78552368 35952 0 1718352 0 0 0",
+            "monotonic_ns": 141553133332490
+          },
+          "end": {
+            "loadavg": "1.77 0.94 1.32 3/1275 947566",
+            "cpu_ticks": "cpu  3364448 357 1855980 78553033 35953 0 1718415 0 0 0",
+            "monotonic_ns": 141554970336501
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 63.94815227057763,
+              "elapsed_ns": 156376684,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.61005899616289,
+              "elapsed_ns": 1501274755,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "native",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "94f417a3cf288d7223e57f718cd0388ae00f83ec9f1291099a664e2ef556505b",
+          "usage": {
+            "ru_utime": 0.3889490000000002,
+            "ru_stime": 1.7410650000000025,
+            "ru_nvcsw": 42369,
+            "ru_nivcsw": 539,
+            "ru_minflt": 10115,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.77 0.94 1.32 2/1275 947566",
+            "cpu_ticks": "cpu  3364448 357 1855980 78553033 35953 0 1718415 0 0 0",
+            "monotonic_ns": 141554970404333
+          },
+          "end": {
+            "loadavg": "1.77 0.94 1.32 1/1275 947608",
+            "cpu_ticks": "cpu  3364597 357 1856214 78553690 35953 0 1718476 0 0 0",
+            "monotonic_ns": 141556812426606
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 71.99524393658936,
+              "elapsed_ns": 138898064,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.01348231505114,
+              "elapsed_ns": 1514842067,
+              "qualification": false
+            }
+          ]
+        }
+      ],
+      "medians": {
+        "native": {
+          "10_mib_per_second": 68.09231014468776,
+          "100_mib_per_second": 68.94255616007669
+        },
+        "prior": {
+          "10_mib_per_second": 69.11488377537947,
+          "100_mib_per_second": 72.07470009058343
+        },
+        "current": {
+          "10_mib_per_second": 70.34740556824254,
+          "100_mib_per_second": 71.14829067903749
+        }
+      }
+    },
+    {
+      "tag": "singlecpu",
+      "affinity": [
+        0
+      ],
+      "runs": [
+        {
+          "round": 0,
+          "variant": "native",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "24d3156f2cf07f208744913e4c61d39039e353d3a75683a6bf1a4842c0c0851a",
+          "usage": {
+            "ru_utime": 0.309314,
+            "ru_stime": 1.469235,
+            "ru_nvcsw": 54700,
+            "ru_nivcsw": 29841,
+            "ru_minflt": 10103,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.29 0.90 1.29 7/1277 947788",
+            "cpu_ticks": "cpu  3365207 357 1856526 78570044 35960 0 1718883 0 0 0",
+            "monotonic_ns": 141585940519800
+          },
+          "end": {
+            "loadavg": "1.29 0.90 1.29 2/1275 947845",
+            "cpu_ticks": "cpu  3365282 357 1856730 78570824 35960 0 1719017 0 0 0",
+            "monotonic_ns": 141587771822977
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 67.89908531037307,
+              "elapsed_ns": 147277389,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 68.64189932629657,
+              "elapsed_ns": 1456836145,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "prior",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "20369abf6f5a9482b5b1eebde001838d6f1f71e5ecc3ccbd49c3dbbd917b343f",
+          "usage": {
+            "ru_utime": 0.39651000000000003,
+            "ru_stime": 1.339557,
+            "ru_nvcsw": 47559,
+            "ru_nivcsw": 23019,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.29 0.90 1.29 3/1275 947845",
+            "cpu_ticks": "cpu  3365282 357 1856730 78570824 35960 0 1719017 0 0 0",
+            "monotonic_ns": 141587771920437
+          },
+          "end": {
+            "loadavg": "1.51 0.95 1.30 2/1276 947899",
+            "cpu_ticks": "cpu  3365390 357 1856971 78571551 35979 0 1719130 0 0 0",
+            "monotonic_ns": 141589675947461
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 65.19043746766677,
+              "elapsed_ns": 153396731,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 63.42148797970445,
+              "elapsed_ns": 1576752662,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "current",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "10e68acce25e49675183620e6f13d366bf2bf2cdb434b70b41cfd48cc61d3749",
+          "usage": {
+            "ru_utime": 0.35470599999999997,
+            "ru_stime": 1.3951120000000001,
+            "ru_nvcsw": 46987,
+            "ru_nivcsw": 22218,
+            "ru_minflt": 8565,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.51 0.95 1.30 1/1276 947899",
+            "cpu_ticks": "cpu  3365390 357 1856971 78571551 35979 0 1719131 0 0 0",
+            "monotonic_ns": 141589676051303
+          },
+          "end": {
+            "loadavg": "1.51 0.95 1.30 1/1277 948052",
+            "cpu_ticks": "cpu  3365510 357 1857238 78572259 35989 0 1719215 0 0 0",
+            "monotonic_ns": 141591612624448
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 54.44057092523568,
+              "elapsed_ns": 183686538,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 63.916547487605904,
+              "elapsed_ns": 1564540075,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "native",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "61106c1e7a1c521f52425f7d19106933a0918972a3fa1749d8f33822896d7b9d",
+          "usage": {
+            "ru_utime": 0.32472199999999996,
+            "ru_stime": 1.575837,
+            "ru_nvcsw": 54237,
+            "ru_nivcsw": 29485,
+            "ru_minflt": 10118,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.51 0.95 1.30 1/1277 948052",
+            "cpu_ticks": "cpu  3365510 357 1857238 78572259 35989 0 1719215 0 0 0",
+            "monotonic_ns": 141591612689265
+          },
+          "end": {
+            "loadavg": "1.71 1.00 1.32 1/1278 948144",
+            "cpu_ticks": "cpu  3365633 357 1857550 78572999 35991 0 1719320 0 0 0",
+            "monotonic_ns": 141593662615637
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 66.80138680480624,
+              "elapsed_ns": 149697491,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 58.61064359077635,
+              "elapsed_ns": 1706174747,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "current",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "2ba749412f489dd89a9785e0e627582bdbe9491e6ccf8795f1c82e721c78d64f",
+          "usage": {
+            "ru_utime": 0.3768799999999999,
+            "ru_stime": 1.424435,
+            "ru_nvcsw": 47175,
+            "ru_nivcsw": 22612,
+            "ru_minflt": 8578,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.71 1.00 1.32 1/1278 948144",
+            "cpu_ticks": "cpu  3365633 357 1857550 78572999 35991 0 1719320 0 0 0",
+            "monotonic_ns": 141593662704250
+          },
+          "end": {
+            "loadavg": "1.71 1.00 1.32 2/1277 948181",
+            "cpu_ticks": "cpu  3365692 357 1857764 78573865 35991 0 1719457 0 0 0",
+            "monotonic_ns": 141595616613401
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 61.162779048298596,
+              "elapsed_ns": 163498130,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 62.14373420534267,
+              "elapsed_ns": 1609172691,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "prior",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "d32004e46219291dba1db2fc39a951a818d6da5c7a38a03121e39afaefb9cbc3",
+          "usage": {
+            "ru_utime": 0.42904600000000004,
+            "ru_stime": 1.3112649999999997,
+            "ru_nvcsw": 46613,
+            "ru_nivcsw": 22409,
+            "ru_minflt": 8585,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.71 1.00 1.32 1/1277 948181",
+            "cpu_ticks": "cpu  3365692 357 1857764 78573865 35991 0 1719457 0 0 0",
+            "monotonic_ns": 141595616705731
+          },
+          "end": {
+            "loadavg": "1.71 1.00 1.32 1/1276 948217",
+            "cpu_ticks": "cpu  3365758 357 1857949 78574698 35991 0 1719571 0 0 0",
+            "monotonic_ns": 141597494398038
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 55.73445821224279,
+              "elapsed_ns": 179422216,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.27145569194253,
+              "elapsed_ns": 1508945276,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "1ef980b5afb0787597038288ee8dac8a6522d7c5db3d1071d4c0c0495b878ac5",
+          "usage": {
+            "ru_utime": 0.3667560000000001,
+            "ru_stime": 1.3590239999999998,
+            "ru_nvcsw": 46699,
+            "ru_nivcsw": 22622,
+            "ru_minflt": 8583,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.71 1.00 1.32 1/1276 948217",
+            "cpu_ticks": "cpu  3365758 357 1857949 78574698 35991 0 1719571 0 0 0",
+            "monotonic_ns": 141597494501790
+          },
+          "end": {
+            "loadavg": "1.73 1.02 1.32 1/1275 948254",
+            "cpu_ticks": "cpu  3365860 357 1858149 78575496 35992 0 1719692 0 0 0",
+            "monotonic_ns": 141599386670093
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 68.41480308334845,
+              "elapsed_ns": 146167197,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 64.09212140066857,
+              "elapsed_ns": 1560254175,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "native",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "f2b67b329c287fb7c41b0f72e6ca1c65a6b2d9c96635d9f81c91e208b19ef9ce",
+          "usage": {
+            "ru_utime": 0.31585600000000014,
+            "ru_stime": 1.5863560000000003,
+            "ru_nvcsw": 54767,
+            "ru_nivcsw": 29569,
+            "ru_minflt": 10110,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.73 1.02 1.32 1/1275 948254",
+            "cpu_ticks": "cpu  3365860 357 1858149 78575496 35992 0 1719692 0 0 0",
+            "monotonic_ns": 141599386749768
+          },
+          "end": {
+            "loadavg": "1.73 1.02 1.32 2/1275 948298",
+            "cpu_ticks": "cpu  3366028 357 1858367 78576250 35992 0 1719813 0 0 0",
+            "monotonic_ns": 141601369279084
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 59.146127700653594,
+              "elapsed_ns": 169072776,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 64.0480497692288,
+              "elapsed_ns": 1561327790,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "current",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "43a842c1e336867edf73cbcfd38e0a52ca94cebbfe4fa4f5b43d6ce2f0a38bcd",
+          "usage": {
+            "ru_utime": 0.4010229999999999,
+            "ru_stime": 1.3522049999999997,
+            "ru_nvcsw": 46994,
+            "ru_nivcsw": 22359,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.73 1.02 1.32 1/1275 948298",
+            "cpu_ticks": "cpu  3366028 357 1858367 78576250 35992 0 1719813 0 0 0",
+            "monotonic_ns": 141601369355573
+          },
+          "end": {
+            "loadavg": "1.73 1.02 1.32 3/1275 948335",
+            "cpu_ticks": "cpu  3366164 357 1858561 78577017 35992 0 1719928 0 0 0",
+            "monotonic_ns": 141603282672550
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 59.786264463261425,
+              "elapsed_ns": 167262499,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 64.42925250348058,
+              "elapsed_ns": 1552090023,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "bc69f022428624b565a76d76d3ecf123d78c2ed8dd95f56bf210549602856ecb",
+          "usage": {
+            "ru_utime": 0.3807559999999999,
+            "ru_stime": 1.3556260000000009,
+            "ru_nvcsw": 47133,
+            "ru_nivcsw": 22597,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.73 1.02 1.32 3/1275 948335",
+            "cpu_ticks": "cpu  3366164 357 1858561 78577017 35992 0 1719928 0 0 0",
+            "monotonic_ns": 141603282743568
+          },
+          "end": {
+            "loadavg": "1.91 1.07 1.34 1/1276 948372",
+            "cpu_ticks": "cpu  3366261 357 1858756 78577819 35992 0 1720051 0 0 0",
+            "monotonic_ns": 141605181602618
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 58.01207493493975,
+              "elapsed_ns": 172377906,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 64.24850544757199,
+              "elapsed_ns": 1556456439,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "current",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "601bd47cc4bcf222b482c08bae98893298096532c2da8ff6aca5cdfad0bc89be",
+          "usage": {
+            "ru_utime": 0.4225500000000002,
+            "ru_stime": 1.2823309999999992,
+            "ru_nvcsw": 46842,
+            "ru_nivcsw": 22736,
+            "ru_minflt": 8562,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.91 1.07 1.34 1/1276 948372",
+            "cpu_ticks": "cpu  3366261 357 1858756 78577819 35992 0 1720051 0 0 0",
+            "monotonic_ns": 141605181670581
+          },
+          "end": {
+            "loadavg": "1.91 1.07 1.34 1/1276 948408",
+            "cpu_ticks": "cpu  3366366 357 1858944 78578590 35992 0 1720178 0 0 0",
+            "monotonic_ns": 141607030566505
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 59.722809123244375,
+              "elapsed_ns": 167440215,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.03909398663517,
+              "elapsed_ns": 1514254572,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "native",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "bfd3978a6e0db1c101caf48d453fcab4b89a7f7230b43106a87b33962862ab0c",
+          "usage": {
+            "ru_utime": 0.27835500000000035,
+            "ru_stime": 1.5463850000000008,
+            "ru_nvcsw": 54501,
+            "ru_nivcsw": 30169,
+            "ru_minflt": 10096,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.91 1.07 1.34 1/1276 948408",
+            "cpu_ticks": "cpu  3366366 357 1858944 78578590 35992 0 1720178 0 0 0",
+            "monotonic_ns": 141607030628656
+          },
+          "end": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948470",
+            "cpu_ticks": "cpu  3366524 357 1859170 78579327 35993 0 1720292 0 0 0",
+            "monotonic_ns": 141608971524030
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 55.74937196381255,
+              "elapsed_ns": 179374218,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 63.804018433611304,
+              "elapsed_ns": 1567299403,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "current",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "06b58f4a3a04d4d47cf48e3a767ebf2f5349f81d18d0714e0572bb86634821b9",
+          "usage": {
+            "ru_utime": 0.40083499999999983,
+            "ru_stime": 1.2437690000000003,
+            "ru_nvcsw": 46632,
+            "ru_nivcsw": 22758,
+            "ru_minflt": 8565,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948470",
+            "cpu_ticks": "cpu  3366524 357 1859170 78579327 35993 0 1720292 0 0 0",
+            "monotonic_ns": 141608971631480
+          },
+          "end": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948502",
+            "cpu_ticks": "cpu  3366579 357 1859352 78580126 35993 0 1720408 0 0 0",
+            "monotonic_ns": 141610760618385
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 68.76696614290742,
+              "elapsed_ns": 145418659,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 67.70062326195745,
+              "elapsed_ns": 1477091276,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "native",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "5c3bb52e331391fed74e6642cebf2b5a25e7b1c36b49e10f809da5b45c25dba1",
+          "usage": {
+            "ru_utime": 0.29624399999999973,
+            "ru_stime": 1.430896999999998,
+            "ru_nvcsw": 54256,
+            "ru_nivcsw": 30161,
+            "ru_minflt": 10116,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948502",
+            "cpu_ticks": "cpu  3366579 357 1859352 78580126 35993 0 1720408 0 0 0",
+            "monotonic_ns": 141610760715164
+          },
+          "end": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948546",
+            "cpu_ticks": "cpu  3366626 357 1859542 78580902 35993 0 1720530 0 0 0",
+            "monotonic_ns": 141612512797001
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 67.62106085259163,
+              "elapsed_ns": 147882921,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.89506652962956,
+              "elapsed_ns": 1430716143,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "prior",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "b88df48d8928330102010a1d56412bca7ea2566094c6de0b0e3701ff0e7bb7bb",
+          "usage": {
+            "ru_utime": 0.3734869999999999,
+            "ru_stime": 1.3151650000000004,
+            "ru_nvcsw": 46851,
+            "ru_nivcsw": 22670,
+            "ru_minflt": 8575,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.00 1.10 1.35 1/1276 948546",
+            "cpu_ticks": "cpu  3366626 357 1859542 78580902 35993 0 1720530 0 0 0",
+            "monotonic_ns": 141612512863410
+          },
+          "end": {
+            "loadavg": "2.16 1.15 1.36 1/1276 948582",
+            "cpu_ticks": "cpu  3366704 357 1859733 78581692 35994 0 1720646 0 0 0",
+            "monotonic_ns": 141614345209483
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 67.91771090147178,
+              "elapsed_ns": 147237000,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.08723065846796,
+              "elapsed_ns": 1513151618,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "current",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "313df8a6d81137c92a0587d5937e18946300953ce8599a04de4a0d2377f6e46d",
+          "usage": {
+            "ru_utime": 0.36144400000000054,
+            "ru_stime": 1.359881999999999,
+            "ru_nvcsw": 47159,
+            "ru_nivcsw": 22533,
+            "ru_minflt": 8570,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.16 1.15 1.36 1/1276 948582",
+            "cpu_ticks": "cpu  3366704 357 1859733 78581692 35994 0 1720646 0 0 0",
+            "monotonic_ns": 141614345278628
+          },
+          "end": {
+            "loadavg": "2.16 1.15 1.36 2/1276 948618",
+            "cpu_ticks": "cpu  3366778 357 1859932 78582499 35994 0 1720766 0 0 0",
+            "monotonic_ns": 141616218890970
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 62.29006612601298,
+              "elapsed_ns": 160539242,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 65.40879976254146,
+              "elapsed_ns": 1528846277,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "prior",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "a3a8fd43f07e3b3d2627463bfee07427f36c956815ed11fd8d377537151595e5",
+          "usage": {
+            "ru_utime": 0.32762199999999986,
+            "ru_stime": 1.3351700000000015,
+            "ru_nvcsw": 46810,
+            "ru_nivcsw": 22796,
+            "ru_minflt": 8558,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.16 1.15 1.36 1/1276 948618",
+            "cpu_ticks": "cpu  3366778 357 1859932 78582499 35994 0 1720766 0 0 0",
+            "monotonic_ns": 141616219006886
+          },
+          "end": {
+            "loadavg": "2.16 1.15 1.36 1/1276 948654",
+            "cpu_ticks": "cpu  3366833 357 1860122 78583303 35994 0 1720895 0 0 0",
+            "monotonic_ns": 141618022370749
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 57.26657716511499,
+              "elapsed_ns": 174621926,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 68.5295343289718,
+              "elapsed_ns": 1459224858,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "native",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "dd55b1d5f74a92d82cb38c3b0af9620e2f361c2c698e47bbfbbc644e8ffb29b4",
+          "usage": {
+            "ru_utime": 0.2970860000000002,
+            "ru_stime": 1.4646110000000014,
+            "ru_nvcsw": 54522,
+            "ru_nivcsw": 30523,
+            "ru_minflt": 10113,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.16 1.15 1.36 1/1276 948654",
+            "cpu_ticks": "cpu  3366833 357 1860122 78583303 35994 0 1720895 0 0 0",
+            "monotonic_ns": 141618022466776
+          },
+          "end": {
+            "loadavg": "2.07 1.15 1.36 1/1275 948694",
+            "cpu_ticks": "cpu  3366904 357 1860314 78584093 35994 0 1721027 0 0 0",
+            "monotonic_ns": 141619852904028
+          },
+          "cases": [
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 65.03644365897763,
+              "elapsed_ns": 153759945,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 67.61902075368869,
+              "elapsed_ns": 1478873827,
+              "qualification": false
+            }
+          ]
+        }
+      ],
+      "medians": {
+        "native": {
+          "10_mib_per_second": 65.91891523189193,
+          "100_mib_per_second": 65.83353526145874
+        },
+        "prior": {
+          "10_mib_per_second": 61.60125620130326,
+          "100_mib_per_second": 65.16786805301997
+        },
+        "current": {
+          "10_mib_per_second": 60.47452175578001,
+          "100_mib_per_second": 64.91902613301102
+        }
+      }
+    },
+    {
+      "tag": "prompt-context",
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "runs": [
+        {
+          "round": 0,
+          "variant": "native",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "fe90fc9e58803f7aa8b8a610f0d98a8ef4d5432f25332a6b8ed351fc0e1d2494",
+          "usage": {
+            "ru_utime": 0.39721399999999996,
+            "ru_stime": 2.32816,
+            "ru_nvcsw": 62476,
+            "ru_nivcsw": 105,
+            "ru_minflt": 12149,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.04 1.17 1.36 2/1276 948760",
+            "cpu_ticks": "cpu  3367079 357 1860422 78590132 35996 0 1721150 0 0 0",
+            "monotonic_ns": 141630523164727
+          },
+          "end": {
+            "loadavg": "2.04 1.17 1.36 1/1276 948839",
+            "cpu_ticks": "cpu  3367182 357 1860738 78591303 35996 0 1721258 0 0 0",
+            "monotonic_ns": 141633298058075
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.188942,
+                "p95": 0.245368,
+                "p99": 0.325187,
+                "max": 1.116609
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 70.5309591766103,
+              "elapsed_ns": 141781710,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.99735494597326,
+              "elapsed_ns": 1408503177,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "prior",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "014950a31f781e502d835da60475213b2a1a01da83429c7274ff81d20f7258ac",
+          "usage": {
+            "ru_utime": 0.7040220000000001,
+            "ru_stime": 4.334945,
+            "ru_nvcsw": 95763,
+            "ru_nivcsw": 190,
+            "ru_minflt": 85028,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.04 1.17 1.36 2/1276 948839",
+            "cpu_ticks": "cpu  3367182 357 1860738 78591303 35996 0 1721258 0 0 0",
+            "monotonic_ns": 141633298145946
+          },
+          "end": {
+            "loadavg": "1.96 1.17 1.36 1/1276 948892",
+            "cpu_ticks": "cpu  3367300 357 1861234 78592855 35996 0 1721335 0 0 0",
+            "monotonic_ns": 141637116058325
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.390195,
+                "p95": 0.528048,
+                "p99": 0.620528,
+                "max": 2.181106
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 66.69700935945794,
+              "elapsed_ns": 149931760,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.10345025393642,
+              "elapsed_ns": 1447105747,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 0,
+          "variant": "current",
+          "order": [
+            "native",
+            "prior",
+            "current"
+          ],
+          "raw_sha256": "5f6bc63ffd95930c7ca4bc836f458a48b57643d17c71eaadfa422504d824b6a1",
+          "usage": {
+            "ru_utime": 0.6965019999999997,
+            "ru_stime": 4.123189999999999,
+            "ru_nvcsw": 95423,
+            "ru_nivcsw": 209,
+            "ru_minflt": 85031,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.96 1.17 1.36 1/1276 948892",
+            "cpu_ticks": "cpu  3367300 357 1861235 78592855 35996 0 1721335 0 0 0",
+            "monotonic_ns": 141637116159261
+          },
+          "end": {
+            "loadavg": "1.88 1.17 1.36 1/1275 948941",
+            "cpu_ticks": "cpu  3367409 357 1861714 78594344 35997 0 1721406 0 0 0",
+            "monotonic_ns": 141640753875083
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.373006,
+                "p95": 0.476653,
+                "p99": 0.597509,
+                "max": 1.213025
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 71.46418509475494,
+              "elapsed_ns": 139930232,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.80191203494336,
+              "elapsed_ns": 1392720572,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "native",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "f5e73587d795fa341d7691537729abf10d9986bf05fafa7a028ab973b02a318a",
+          "usage": {
+            "ru_utime": 0.38035600000000036,
+            "ru_stime": 2.2273270000000007,
+            "ru_nvcsw": 62166,
+            "ru_nivcsw": 2544,
+            "ru_minflt": 12318,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.88 1.17 1.36 1/1275 948941",
+            "cpu_ticks": "cpu  3367409 357 1861714 78594344 35997 0 1721406 0 0 0",
+            "monotonic_ns": 141640753967342
+          },
+          "end": {
+            "loadavg": "1.89 1.18 1.36 1/1275 949002",
+            "cpu_ticks": "cpu  3367500 357 1862006 78595479 35997 0 1721514 0 0 0",
+            "monotonic_ns": 141643405216940
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.179459,
+                "p95": 0.232834,
+                "p99": 0.288797,
+                "max": 0.700964
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 84.04278894045306,
+              "elapsed_ns": 118987008,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.45340965453035,
+              "elapsed_ns": 1399513340,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "current",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "449ce6a33396983194a10da3e41a23d6ae08383f9fa14d6ab4c0309564b14a19",
+          "usage": {
+            "ru_utime": 0.8687019999999999,
+            "ru_stime": 5.202700999999999,
+            "ru_nvcsw": 96039,
+            "ru_nivcsw": 1825,
+            "ru_minflt": 85029,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "1.89 1.18 1.36 1/1275 949002",
+            "cpu_ticks": "cpu  3367500 357 1862006 78595479 35997 0 1721514 0 0 0",
+            "monotonic_ns": 141643405288108
+          },
+          "end": {
+            "loadavg": "2.30 1.28 1.39 1/1276 949080",
+            "cpu_ticks": "cpu  3367891 357 1862660 78597229 35998 0 1721591 0 0 0",
+            "monotonic_ns": 141648433179333
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.417562,
+                "p95": 0.692042,
+                "p99": 1.102357,
+                "max": 23.840052
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 24.642926824253156,
+              "elapsed_ns": 405795954,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 50.745741066122335,
+              "elapsed_ns": 1970608723,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "prior",
+          "order": [
+            "native",
+            "current",
+            "prior"
+          ],
+          "raw_sha256": "45b053bd5f4cb52ef0a06a4796ecde50daf0994e7be7749dab8d06180b878f15",
+          "usage": {
+            "ru_utime": 0.8002569999999998,
+            "ru_stime": 4.135560999999999,
+            "ru_nvcsw": 95334,
+            "ru_nivcsw": 223,
+            "ru_minflt": 85036,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.30 1.28 1.39 1/1276 949080",
+            "cpu_ticks": "cpu  3367891 357 1862660 78597229 35998 0 1721591 0 0 0",
+            "monotonic_ns": 141648433245161
+          },
+          "end": {
+            "loadavg": "2.30 1.28 1.39 1/1276 949133",
+            "cpu_ticks": "cpu  3368024 357 1863148 78598747 35998 0 1721660 0 0 0",
+            "monotonic_ns": 141652179400556
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.373447,
+                "p95": 0.482368,
+                "p99": 0.563206,
+                "max": 1.332303
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 64.9270843845434,
+              "elapsed_ns": 154018929,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 68.71600237559191,
+              "elapsed_ns": 1455265099,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "543a6f45e711708af6735a81964be48817042f76e8d471f325cb28dd70d08d92",
+          "usage": {
+            "ru_utime": 0.7294350000000005,
+            "ru_stime": 4.435644,
+            "ru_nvcsw": 95343,
+            "ru_nivcsw": 211,
+            "ru_minflt": 85030,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.30 1.28 1.39 1/1276 949133",
+            "cpu_ticks": "cpu  3368024 357 1863148 78598747 35998 0 1721660 0 0 0",
+            "monotonic_ns": 141652179469129
+          },
+          "end": {
+            "loadavg": "2.28 1.29 1.40 1/1276 949196",
+            "cpu_ticks": "cpu  3368154 357 1863669 78600310 35999 0 1721731 0 0 0",
+            "monotonic_ns": 141656061159081
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.417693,
+                "p95": 0.539841,
+                "p99": 0.657198,
+                "max": 3.4455
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 66.94692434448584,
+              "elapsed_ns": 149372060,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.35862638988787,
+              "elapsed_ns": 1421289828,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "native",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "88c57574f06baea7fc0d1c0fadfa2138614e5d2dd1605f9265795a58d7a4032c",
+          "usage": {
+            "ru_utime": 0.40157299999999996,
+            "ru_stime": 2.433950000000003,
+            "ru_nvcsw": 62376,
+            "ru_nivcsw": 855,
+            "ru_minflt": 12203,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.28 1.29 1.40 1/1276 949196",
+            "cpu_ticks": "cpu  3368154 357 1863669 78600310 35999 0 1721731 0 0 0",
+            "monotonic_ns": 141656061234709
+          },
+          "end": {
+            "loadavg": "2.34 1.32 1.41 1/1275 949256",
+            "cpu_ticks": "cpu  3368302 357 1863990 78601479 36000 0 1721836 0 0 0",
+            "monotonic_ns": 141658946419826
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.194574,
+                "p95": 0.260803,
+                "p99": 0.332708,
+                "max": 1.081966
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 67.24687630189952,
+              "elapsed_ns": 148705792,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.13939385072305,
+              "elapsed_ns": 1511958217,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "current",
+          "order": [
+            "prior",
+            "native",
+            "current"
+          ],
+          "raw_sha256": "48a20fd60bd544713810acab58c38085146ca99aa2ecf69474b4262382930ccf",
+          "usage": {
+            "ru_utime": 1.0912879999999996,
+            "ru_stime": 5.581339,
+            "ru_nvcsw": 95734,
+            "ru_nivcsw": 1211,
+            "ru_minflt": 85011,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.34 1.32 1.41 1/1275 949256",
+            "cpu_ticks": "cpu  3368302 357 1863990 78601479 36000 0 1721836 0 0 0",
+            "monotonic_ns": 141658946486205
+          },
+          "end": {
+            "loadavg": "2.47 1.37 1.42 3/1276 949326",
+            "cpu_ticks": "cpu  3368744 357 1864675 78603275 36000 0 1721922 0 0 0",
+            "monotonic_ns": 141664133678116
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.528981,
+                "p95": 0.790289,
+                "p99": 1.229248,
+                "max": 10.281932
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 46.554951078311596,
+              "elapsed_ns": 214799925,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 52.97909178659227,
+              "elapsed_ns": 1887537076,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "prior",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "2cef28906dba00016dde37fd4c7765b10ab33e17aa1bd6da7fa819af6932138d",
+          "usage": {
+            "ru_utime": 0.8173019999999998,
+            "ru_stime": 4.691344000000001,
+            "ru_nvcsw": 95691,
+            "ru_nivcsw": 251,
+            "ru_minflt": 85040,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.47 1.37 1.42 4/1276 949326",
+            "cpu_ticks": "cpu  3368744 357 1864675 78603275 36000 0 1721922 0 0 0",
+            "monotonic_ns": 141664133814301
+          },
+          "end": {
+            "loadavg": "2.47 1.37 1.42 1/1276 949386",
+            "cpu_ticks": "cpu  3368908 357 1865226 78604939 36000 0 1722004 0 0 0",
+            "monotonic_ns": 141668316498127
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.428414,
+                "p95": 0.589653,
+                "p99": 0.738717,
+                "max": 2.389531
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 57.98380420734078,
+              "elapsed_ns": 172461951,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.04246019021589,
+              "elapsed_ns": 1514177390,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "current",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "f5894d4597bbd58a93fd02cec8e43fd23073eb672b3af1e6895f5f4295105605",
+          "usage": {
+            "ru_utime": 0.7333690000000006,
+            "ru_stime": 4.480354999999996,
+            "ru_nvcsw": 95676,
+            "ru_nivcsw": 205,
+            "ru_minflt": 85031,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.47 1.37 1.42 1/1276 949386",
+            "cpu_ticks": "cpu  3368908 357 1865226 78604939 36000 0 1722004 0 0 0",
+            "monotonic_ns": 141668316585007
+          },
+          "end": {
+            "loadavg": "2.35 1.36 1.42 2/1276 949439",
+            "cpu_ticks": "cpu  3369040 357 1865745 78606548 36001 0 1722076 0 0 0",
+            "monotonic_ns": 141672288681213
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.42399,
+                "p95": 0.588216,
+                "p99": 0.809447,
+                "max": 6.5843
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 74.31332996842576,
+              "elapsed_ns": 134565360,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.96080540230288,
+              "elapsed_ns": 1409228650,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "native",
+          "order": [
+            "prior",
+            "current",
+            "native"
+          ],
+          "raw_sha256": "7153756b6ce3b9f4c9e28e68920755aac7b39cf6e304e091b9e18646febbb9d7",
+          "usage": {
+            "ru_utime": 0.44642299999999935,
+            "ru_stime": 2.268995000000004,
+            "ru_nvcsw": 62327,
+            "ru_nivcsw": 89,
+            "ru_minflt": 12136,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.35 1.36 1.42 1/1276 949439",
+            "cpu_ticks": "cpu  3369040 357 1865745 78606548 36001 0 1722076 0 0 0",
+            "monotonic_ns": 141672288758924
+          },
+          "end": {
+            "loadavg": "2.24 1.35 1.42 1/1276 949500",
+            "cpu_ticks": "cpu  3369105 357 1866056 78607742 36002 0 1722191 0 0 0",
+            "monotonic_ns": 141675020881222
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.182837,
+                "p95": 0.236841,
+                "p99": 0.293531,
+                "max": 0.73697
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 65.72512187146448,
+              "elapsed_ns": 152148824,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.57798726316638,
+              "elapsed_ns": 1437236171,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "current",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "eb1a392d4ffdd8e4e2e618e92fe150a87a16fefc521e3980a8c3971dd7908970",
+          "usage": {
+            "ru_utime": 0.7437009999999997,
+            "ru_stime": 4.223360999999997,
+            "ru_nvcsw": 95617,
+            "ru_nivcsw": 386,
+            "ru_minflt": 85026,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.24 1.35 1.42 1/1276 949500",
+            "cpu_ticks": "cpu  3369105 357 1866056 78607742 36002 0 1722191 0 0 0",
+            "monotonic_ns": 141675020949114
+          },
+          "end": {
+            "loadavg": "2.54 1.43 1.44 1/1276 949551",
+            "cpu_ticks": "cpu  3369242 357 1866552 78609277 36002 0 1722266 0 0 0",
+            "monotonic_ns": 141678815051394
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.385822,
+                "p95": 0.497714,
+                "p99": 0.619737,
+                "max": 7.313925
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 71.26409593127906,
+              "elapsed_ns": 140323116,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 68.77456650727056,
+              "elapsed_ns": 1454025886,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "native",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "4f54a08258c2933f027fac58441c02eb561192b7999a8f6670c7fcc6c12cd065",
+          "usage": {
+            "ru_utime": 0.4194399999999998,
+            "ru_stime": 2.2552769999999995,
+            "ru_nvcsw": 62501,
+            "ru_nivcsw": 60,
+            "ru_minflt": 12120,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.54 1.43 1.44 1/1276 949551",
+            "cpu_ticks": "cpu  3369242 357 1866552 78609277 36002 0 1722266 0 0 0",
+            "monotonic_ns": 141678815115178
+          },
+          "end": {
+            "loadavg": "2.54 1.43 1.44 2/1276 949610",
+            "cpu_ticks": "cpu  3369319 357 1866852 78610453 36002 0 1722378 0 0 0",
+            "monotonic_ns": 141681534006413
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.181884,
+                "p95": 0.240694,
+                "p99": 0.32599,
+                "max": 2.210157
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 71.34237098964647,
+              "elapsed_ns": 140169157,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.67437643356303,
+              "elapsed_ns": 1414939969,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 4,
+          "variant": "prior",
+          "order": [
+            "current",
+            "native",
+            "prior"
+          ],
+          "raw_sha256": "23ff95c48f24d514db9658dfda65e86cd769f0eaa53311146673fee2e018677d",
+          "usage": {
+            "ru_utime": 0.7033820000000013,
+            "ru_stime": 4.343212000000001,
+            "ru_nvcsw": 95488,
+            "ru_nivcsw": 373,
+            "ru_minflt": 85030,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.54 1.43 1.44 2/1276 949610",
+            "cpu_ticks": "cpu  3369319 357 1866852 78610453 36002 0 1722378 0 0 0",
+            "monotonic_ns": 141681534129783
+          },
+          "end": {
+            "loadavg": "2.50 1.44 1.44 1/1276 949664",
+            "cpu_ticks": "cpu  3369492 357 1867356 78611967 36003 0 1722440 0 0 0",
+            "monotonic_ns": 141685372382157
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.401272,
+                "p95": 0.520071,
+                "p99": 0.650536,
+                "max": 5.116719
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 72.99360062913476,
+              "elapsed_ns": 136998311,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 70.15639155466086,
+              "elapsed_ns": 1425386879,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "current",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "14bd55fb7aa3896c3b8127a172b78c97635f71173dcfdc809cb311136e395252",
+          "usage": {
+            "ru_utime": 0.6834249999999997,
+            "ru_stime": 4.312587000000001,
+            "ru_nvcsw": 95365,
+            "ru_nivcsw": 220,
+            "ru_minflt": 85031,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.50 1.44 1.44 1/1276 949664",
+            "cpu_ticks": "cpu  3369492 357 1867356 78611967 36003 0 1722440 0 0 0",
+            "monotonic_ns": 141685372447665
+          },
+          "end": {
+            "loadavg": "2.54 1.47 1.45 1/1276 949717",
+            "cpu_ticks": "cpu  3369629 357 1867859 78613504 36003 0 1722513 0 0 0",
+            "monotonic_ns": 141689189444873
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.386047,
+                "p95": 0.527016,
+                "p99": 0.653433,
+                "max": 3.779401
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 65.94198795812257,
+              "elapsed_ns": 151648446,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 69.63046106066031,
+              "elapsed_ns": 1436153064,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "prior",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "14f268e58adbe0a6c39547d44073769c9dc14471eaffb90dbe79fcba87801cfb",
+          "usage": {
+            "ru_utime": 0.7944239999999994,
+            "ru_stime": 4.3805869999999985,
+            "ru_nvcsw": 95520,
+            "ru_nivcsw": 261,
+            "ru_minflt": 85036,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.54 1.47 1.45 1/1276 949717",
+            "cpu_ticks": "cpu  3369629 357 1867859 78613504 36003 0 1722513 0 0 0",
+            "monotonic_ns": 141689189516523
+          },
+          "end": {
+            "loadavg": "2.54 1.47 1.45 1/1276 949770",
+            "cpu_ticks": "cpu  3369786 357 1868375 78615086 36003 0 1722586 0 0 0",
+            "monotonic_ns": 141693139522652
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.414175,
+                "p95": 0.577384,
+                "p99": 0.866948,
+                "max": 7.203842
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 67.31674809322955,
+              "elapsed_ns": 148551442,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 71.72061351479587,
+              "elapsed_ns": 1394299283,
+              "qualification": false
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "variant": "native",
+          "order": [
+            "current",
+            "prior",
+            "native"
+          ],
+          "raw_sha256": "ec8b56f73ca76a9e8799bf90073f4ae870805ee38de6eba850a6692f3a777360",
+          "usage": {
+            "ru_utime": 0.4786420000000007,
+            "ru_stime": 2.354191,
+            "ru_nvcsw": 62480,
+            "ru_nivcsw": 167,
+            "ru_minflt": 12155,
+            "ru_majflt": 0
+          },
+          "start": {
+            "loadavg": "2.54 1.47 1.45 2/1276 949770",
+            "cpu_ticks": "cpu  3369786 357 1868375 78615086 36003 0 1722586 0 0 0",
+            "monotonic_ns": 141693139590003
+          },
+          "end": {
+            "loadavg": "2.42 1.46 1.45 1/1290 949865",
+            "cpu_ticks": "cpu  3369915 357 1868714 78616249 36004 0 1722692 0 0 0",
+            "monotonic_ns": 141695990987647
+          },
+          "cases": [
+            {
+              "workload": "prompt",
+              "bytes": 1,
+              "latency_ms": {
+                "p50": 0.188603,
+                "p95": 0.247442,
+                "p99": 0.351009,
+                "max": 1.394169
+              },
+              "mib_per_second": null,
+              "elapsed_ns": 0,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 10485760,
+              "latency_ms": null,
+              "mib_per_second": 62.40748947787885,
+              "elapsed_ns": 160237178,
+              "qualification": false
+            },
+            {
+              "workload": "output",
+              "bytes": 104857600,
+              "latency_ms": null,
+              "mib_per_second": 66.2778542624216,
+              "elapsed_ns": 1508799600,
+              "qualification": false
+            }
+          ]
+        }
+      ],
+      "medians": {
+        "native": {
+          "10_mib_per_second": 68.88891773925491,
+          "100_mib_per_second": 70.1261818483647,
+          "prompt_p99_ms": 0.3255885
+        },
+        "prior": {
+          "10_mib_per_second": 66.8219668519719,
+          "100_mib_per_second": 69.62992090429864,
+          "prompt_p99_ms": 0.653867
+        },
+        "current": {
+          "10_mib_per_second": 68.6030419447008,
+          "100_mib_per_second": 69.20251378396543,
+          "prompt_p99_ms": 0.7314400000000001
+        }
+      }
+    }
+  ],
+  "measurements": 126,
+  "archive_uncompressed_sha256": "5779614ce23d27f0d85d3118a16fcdbc5ef1d0296c2580714827c702c41c2917"
+}

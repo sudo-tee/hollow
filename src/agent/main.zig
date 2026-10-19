@@ -404,7 +404,7 @@ const Agent = struct {
             try self.frameClass(.data, job.id, job.streams[0], job.stdout.items[0..count], .pty_data);
             job.credit -= count;
             budget -= count;
-            std.mem.copyForwards(u8, job.stdout.items, job.stdout.items[count..]);
+            @memmove(job.stdout.items[0 .. job.stdout.items.len - count], job.stdout.items[count..]);
             job.stdout.items.len -= count;
         }
     }
@@ -776,6 +776,45 @@ fn completedCapture(id: u64) ex.Job {
         .reaped = true,
         .supervised = true,
     };
+}
+
+test "PTY compaction preserves nonuniform bytes with overlapping tails and short credit" {
+    const cases = [_]struct { length: usize, credit: usize, quantum: usize }{
+        .{ .length = 65536, .credit = 16384, .quantum = 65536 },
+        .{ .length = 32769, .credit = 1, .quantum = 65536 },
+        .{ .length = 16385, .credit = 16384, .quantum = 65536 },
+        .{ .length = 16384, .credit = 65536, .quantum = 65536 },
+        .{ .length = 65536, .credit = 65536, .quantum = 65536 },
+        .{ .length = 65536, .credit = 65536, .quantum = 8193 },
+    };
+    for (cases) |case| {
+        var agent: Agent = .{};
+        defer agent.output.deinit(A);
+        var job = completedCapture(1);
+        defer job.deinit();
+        job.pty = true;
+        job.credit = case.credit;
+        var bytes: [65536]u8 = undefined;
+        for (&bytes, 0..) |*byte, index| byte.* = @truncate((index * 131 + index / 251) % 256);
+        try job.stdout.appendSlice(A, bytes[0..case.length]);
+        try agent.streamPty(&job, case.quantum);
+        const count = @min(case.length, @min(case.credit, case.quantum));
+        try std.testing.expectEqual(case.credit - count, job.credit);
+        try std.testing.expectEqualSlices(u8, bytes[count..case.length], job.stdout.items);
+        var wire_offset: usize = 0;
+        var byte_offset: usize = 0;
+        while (wire_offset < agent.output.items.len) {
+            const h = try p.Header.decode(@ptrCast(agent.output.items.ptr + wire_offset));
+            try std.testing.expectEqual(p.Kind.data, h.kind);
+            try std.testing.expectEqual(job.id, h.request_id);
+            try std.testing.expectEqual(job.streams[0], h.stream_id);
+            try std.testing.expect(h.payload_len <= p.max_data);
+            try std.testing.expectEqualSlices(u8, bytes[byte_offset..][0..h.payload_len], agent.output.items[wire_offset + p.header_len ..][0..h.payload_len]);
+            wire_offset += p.header_len + h.payload_len;
+            byte_offset += h.payload_len;
+        }
+        try std.testing.expectEqual(count, byte_offset);
+    }
 }
 
 test "bounded bulk requires experimental PTY negotiation as well as environment opt-in" {
