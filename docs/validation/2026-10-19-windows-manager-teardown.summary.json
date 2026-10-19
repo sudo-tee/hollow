@@ -1,0 +1,31 @@
+{
+  "base_revision": "6c170e53af707601bf4001685ed922d4337031e5",
+  "scope": "Windows native manager deinit with live WSL EXEC, stale promise rejection and independent Linux workload/guardian/agent disappearance; not GUI reload or abrupt crash qualification",
+  "windows_version": "Microsoft Windows [Version 10.0.26100.9445]",
+  "agent_sha256": "82ca8fde34ce8703ba735703c036c2e71fa85902928edafdc63f2c736380c09c",
+  "deadline": "One shared 5-second Linux observation deadline begins immediately after Windows executable exits; manager deinit itself must take less than 8 seconds. This is not a 5-second bound starting at deinit entry.",
+  "windows_processes": 6,
+  "passing_executions_including_imports": 72,
+  "linux_case_skips": 6,
+  "layouts": [
+    "UNC flat (three runs)",
+    "UNC prefix/bin",
+    "C: Unicode flat",
+    "C: Unicode prefix/bin"
+  ],
+  "observed_process_identities": 18,
+  "deinit_ns_min": 2472600,
+  "deinit_ns_max": 4391700,
+  "post_exit_observation_seconds_max": 0.0004964929830748588,
+  "python_unit_tests": 84,
+  "linux_lua_layouts": 2,
+  "repository_sources": 181,
+  "archive_uncompressed_sha256": "3658e752f11ea05be05bfab11d57b9a338f0d1817c22f66391dfa97100abb897",
+  "patch_uncompressed_sha256": "bc8bab27bd65215acd883d4d185c927d2a8798386b2b872ccd704f1e5a7defe6",
+  "remaining": [
+    "full application zluajit/runtime/GUI reload and Lua-state destruction",
+    "abrupt Windows crash and process/job-tree fault injection",
+    "bootstrap-stage cancellation and cleanup under teardown",
+    "other Windows connectors, Docker daemon and ARM64 execution"
+  ]
+}

@@ -7,6 +7,14 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 ## Independent fs/exec release closure — 2026-10-19
 
+[Windows live-work manager teardown](../validation/2026-10-19-windows-manager-teardown.md)
+passes six Windows processes/72 executions with six Linux-only skips. All 18
+workload/guardian/agent identities disappear under one post-exit deadline;
+same-identity zombies fail. Old promise rejects `session_gone`, fresh native-local
+work succeeds. Full Python suite now **84**; both Linux Lua layouts pass. This
+exercises native manager deinit while Lua stays alive, not actual Runtime/GUI
+destruction, abrupt crash or teardown upload cleanup.
+
 [Vendored Windows LuaJIT follow-up](../validation/2026-10-19-windows-luajit-bootstrap.md)
 executes six final Windows processes: **72** passing executions including imports,
 six Linux-case skips, compiled JIT traces required. Covers direct cache reuse,

@@ -559,4 +559,47 @@ test "native Windows public Lua WSL bootstrap discovers installed agent bundle" 
             \\assert(cleanup_host:value():close()); print('WINDOWS_LUA_UPLOAD_CLEANUP '..FIXTURE_HOME)
         );
     }
+    const teardown = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_TEARDOWN") catch null;
+    defer if (teardown) |bytes| std.testing.allocator.free(bytes);
+    if (teardown) |value| {
+        if (!std.mem.eql(u8, value, "1") or fixture == null) return error.InvalidArgument;
+        try run(state,
+            \\opts.id='windows-lua-wsl-teardown'; teardown_host=hollow.host.wsl(opts)
+        );
+        try until(state, "DONE=teardown_host:status()~='pending'");
+        try run(state,
+            \\assert(teardown_host:status()=='fulfilled',teardown_host:error() and teardown_host:error().message)
+            \\th=teardown_host:value()
+            \\teardown_pending=th:exec({argv={'/bin/sh','-c','printf "%s\\n" "$$" > "$HOME/teardown.pid"; exec /bin/sleep 120'},timeout_ms=150000})
+            \\witness=th:exec({argv={'/bin/sh','-c','set -eu; n=0; while [ ! -s "$HOME/teardown.pid" ]; do n=$((n+1)); [ "$n" -lt 100 ] || exit 1; sleep 0.02; done; pid=$(cat "$HOME/teardown.pid"); cat "/proc/$pid/stat"; guardian=$(cut -d " " -f 4 "/proc/$pid/stat"); printf "WINDOWS_LUA_GUARDIAN_BEFORE "; cat "/proc/$guardian/stat"; agent=$(cut -d " " -f 4 "/proc/$guardian/stat"); printf "WINDOWS_LUA_AGENT_BEFORE "; cat "/proc/$agent/stat"'},timeout_ms=5000})
+        );
+        try until(state, "DONE=witness:status()~='pending'");
+        try run(state,
+            \\assert(witness:status()=='fulfilled' and witness:value().exit_code==0)
+            \\assert(teardown_pending:status()=='pending')
+            \\print('WINDOWS_LUA_TEARDOWN_BEFORE '..witness:value().stdout)
+        );
+        const started = std.Io.Clock.awake.now(std.testing.io).toNanoseconds();
+        ctx.host_manager.?.deinit();
+        ctx.host_manager = null;
+        const elapsed = std.Io.Clock.awake.now(std.testing.io).toNanoseconds() - started;
+        std.debug.print("WINDOWS_LUA_MANAGER_DEINIT_NS {d}\n", .{elapsed});
+        try std.testing.expect(elapsed < 8000 * std.time.ns_per_ms);
+        try until(state, "DONE=teardown_pending:status()~='pending'");
+        try run(state,
+            \\assert(teardown_pending:status()=='rejected' and teardown_pending:error().code=='session_gone')
+            \\fresh_local=hollow.host.local_host()
+        );
+        try until(state, "DONE=fresh_local:status()~='pending'");
+        try run(state,
+            \\assert(fresh_local:status()=='fulfilled')
+            \\fresh_info=fresh_local:value():info()
+        );
+        try until(state, "DONE=fresh_info:status()~='pending'");
+        try run(state,
+            \\assert(fresh_info:value().os=='windows')
+            \\assert(teardown_pending:error().code=='session_gone')
+            \\print('WINDOWS_LUA_TEARDOWN_STALE_REJECTED '..FIXTURE_HOME)
+        );
+    }
 }
