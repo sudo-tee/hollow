@@ -306,8 +306,11 @@ test "split pane ratio applies to new pane" {
     const leaves = tab.computeLayoutInBounds(bounds, &layout_buf, 0, 0);
 
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
-    try std.testing.expectEqual(@as(u32, 299), leaves[1].bounds.width);
-    try std.testing.expectEqual(@as(u32, 700), leaves[0].bounds.width);
+    // The ratio applies to the 999 pixels remaining after the divider.
+    try std.testing.expectEqual(@as(u32, 300), leaves[1].bounds.width);
+    try std.testing.expectEqual(@as(u32, 699), leaves[0].bounds.width);
+    try std.testing.expectEqual(leaves[0].bounds.x + leaves[0].bounds.width + 1, leaves[1].bounds.x);
+    try std.testing.expectEqual(bounds.x + bounds.width, leaves[1].bounds.x + leaves[1].bounds.width);
 }
 
 test "horizontal split rounds to nearest whole row" {
@@ -344,7 +347,10 @@ test "horizontal split rounds to nearest whole row" {
 
     try std.testing.expectEqual(@as(usize, 2), leaves.len);
     try std.testing.expectEqual(@as(u32, 18 * 20), leaves[0].bounds.height);
-    try std.testing.expectEqual(@as(u32, 16 * 20 + 1), leaves[1].bounds.height);
+    // The extra pixel belongs to the divider, not the second pane.
+    try std.testing.expectEqual(@as(u32, 16 * 20), leaves[1].bounds.height);
+    try std.testing.expectEqual(leaves[0].bounds.y + leaves[0].bounds.height + 1, leaves[1].bounds.y);
+    try std.testing.expectEqual(bounds.y + bounds.height, leaves[1].bounds.y + leaves[1].bounds.height);
 }
 
 test "maximized pane takes full tab bounds" {
