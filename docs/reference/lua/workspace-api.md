@@ -11,6 +11,7 @@ see [`hollow.ui.workspace`](workspace.md).
 ```lua
 hollow.workspace.bootstrap(spec, opts?)               -- open from a spec
 hollow.workspace.load(path)                           -- load JSON from disk
+hollow.workspace.load_host(host, path, opts?)          -- promise: bounded read-only host JSON
 hollow.workspace.load_and_bootstrap(path, opts?)      -- load + bootstrap
 hollow.workspace.export_current()                      -- current state as spec
 hollow.workspace.export_to(path)                      -- write to disk
@@ -21,6 +22,14 @@ hollow.workspace.bootstrap_project(dir?, domain?)      -- load project-local lay
 ```
 
 ## Bootstrap spec
+
+`load_host` uses the same `hollow.host` filesystem API for local or remote reads,
+preserves path bytes and returns a cancellable promise. `opts.max_bytes` defaults
+to 1 MiB (maximum 1 MiB); oversized/invalid documents reject rather than truncate.
+It never probes local paths, runs commands or creates panes. Remote pane/domain
+policy must be chosen separately before calling `bootstrap`; loading a spec does
+not authorize its commands. Existing synchronous local loading is unchanged.
+See [host API](host.md#read-only-workspace-loading).
 
 ```json
 {

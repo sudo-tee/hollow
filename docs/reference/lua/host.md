@@ -1,7 +1,9 @@
 # `hollow.host`
 
-Experimental connector API for executing commands and accessing files on a host
-managed by Hollow's native host bridge.
+Asynchronous connector API for executing commands and accessing files on a host
+managed by Hollow's native host bridge. Fs/exec release checks are independent
+of experimental PTY rollout; see the [release checklist](../../architecture/host-agent-fs-exec-release.md)
+for verified scope and outstanding platform qualification.
 
 ```lua
 local connecting = hollow.host.connect({
@@ -248,6 +250,28 @@ A dedicated CI job is configured for a real Docker/non-root fixture; its result
 has not been observed locally. Docker remains experimental until those gates pass.
 
 ## Operations
+
+### Read-only workspace loading
+
+```lua
+hollow.workspace.load_host(host, "/work/demo/.hollow/workspace.json")
+  :next(function(spec)
+    -- Inspect the document. Choose pane/domain/bootstrap policy separately.
+    print(spec._path)
+  end, function(err) print(err.code, err.message) end)
+```
+
+`workspace.load_host(host, path, {max_bytes = 1048576})` returns a cancellable
+promise, reads bounded pages through the same host filesystem API, and validates
+the JSON workspace document. No local path probing, shell command, remote script
+execution or pane creation occurs. It preserves path bytes and rejects oversized
+files rather than accepting truncated JSON. `max_bytes` must be 1–1,048,576;
+default 1 MiB. Cancellation rejects immediately and forwards cancellation to the
+active read, whose native completion is still drained. Pages use ordinary host
+operation deadlines; the sequence is not an atomic file snapshot. Existing
+synchronous local `workspace.load(path)` and resolver aliases remain unchanged.
+
+### Primitive host operations
 
 `info`, `exec`, and `fs.stat/list/read` return Hollow promises. Each operation
 promise supports `:cancel()`, which requests cancellation once; its promise

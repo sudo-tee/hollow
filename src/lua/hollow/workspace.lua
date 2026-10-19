@@ -368,6 +368,75 @@ function M.load(path)
   return spec
 end
 
+-- Read-only host integration. Loading never selects a pane backend or executes
+-- commands from the spec; callers must explicitly choose bootstrap policy.
+function M.load_host(host, path, opts)
+  if type(host) ~= "table" or type(host.fs) ~= "table" or type(host.fs.read) ~= "function" then
+    error("hollow.workspace.load_host(host, path) expects a ready host")
+  end
+  if type(path) ~= "string" or path == "" or path:find("\0", 1, true) then
+    error("hollow.workspace.load_host(host, path) expects a nonempty NUL-free path")
+  end
+  if opts == nil then opts = {} end
+  if type(opts) ~= "table" then error("load_host options must be a table") end
+  local maximum = opts.max_bytes
+  if maximum == nil then maximum = 1048576 end
+  if type(maximum) ~= "number" or maximum ~= maximum or maximum % 1 ~= 0 or maximum < 1 or maximum > 1048576 then
+    error("load_host max_bytes must be an integer from 1 to 1048576")
+  end
+  local resolve, reject
+  local promise = async.promise(function(r, j) resolve, reject = r, j end)
+  local settled, active, offset, chunks = false, nil, 0, {}
+  local function fail(err)
+    if settled then return end
+    settled, chunks = true, nil
+    reject(type(err) == "table" and err or { code = "io_error", message = tostring(err) })
+  end
+  function promise:cancel()
+    if settled then return false end
+    if active and active.cancel then pcall(active.cancel, active) end
+    fail({ code = "cancelled", message = "workspace host load cancelled" })
+    return true
+  end
+  local function read_page()
+    if settled then return end
+    -- One extra byte distinguishes an exactly-full file from truncation. Never
+    -- accept a valid JSON prefix of an oversized file as a complete document.
+    local limit = math.min(16384, maximum - offset + 1)
+    local ok, request = pcall(host.fs.read, path, { offset = offset, limit = limit })
+    if not ok then fail(request); return end
+    if type(request) ~= "table" or type(request.next) ~= "function" then
+      fail({ code = "io_error", message = "host read did not return a promise" }); return
+    end
+    active = request
+    request:next(function(page)
+      active = nil
+      if settled then return end
+      if type(page) ~= "table" or type(page.bytes) ~= "string" or type(page.eof) ~= "boolean"
+        or #page.bytes > limit or (#page.bytes == 0 and not page.eof) then
+        fail({ code = "io_error", message = "invalid workspace host read page" }); return
+      end
+      offset = offset + #page.bytes
+      if offset > maximum then
+        fail({ code = "resource_exhausted", message = "workspace file exceeds max_bytes" }); return
+      end
+      chunks[#chunks + 1] = page.bytes
+      if not page.eof then host_api.defer(read_page); return end
+      local valid, spec = pcall(function()
+        local value = json.decode(table.concat(chunks))
+        validate_spec(value)
+        value._path = path
+        return value
+      end)
+      if not valid then fail({ code = "invalid_argument", message = tostring(spec) }); return end
+      settled, chunks = true, nil
+      resolve(spec)
+    end, fail)
+  end
+  host_api.defer(read_page)
+  return promise
+end
+
 function M.load_and_bootstrap(path, opts)
   local spec = M.load(path)
   opts = opts or {}

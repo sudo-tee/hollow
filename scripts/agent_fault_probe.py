@@ -73,12 +73,16 @@ def verified_job(agent_pid, guardian_pid, guardian, workloads, identify=None):
     return True
 
 
-def _wait_snapshot(pids, deadline, identify=None):
+def _wait_snapshot(pids, deadline, identify=None, guardian_pid=None):
     identify = identify or identity
     while time.monotonic() < deadline:
         current = {pid: identify(pid) for pid in pids}
         # Zombie is not reaped: only absence counts as dead.
-        if all(item is None for item in current.values()):
+        guardian = identify(guardian_pid) if guardian_pid is not None else None
+        # Workload disappearance can precede guardian exit by a scheduling turn.
+        # Wait for both within the original cleanup deadline; never accept a
+        # runnable guardian or treat a workload zombie as reaped.
+        if all(item is None for item in current.values()) and (guardian is None or guardian[0] == "Z"):
             return current
         time.sleep(.02)
     return {pid: identify(pid) for pid in pids}
@@ -244,7 +248,7 @@ def probe(agent, directory, scenario, fault="sigkill", target=None):
             raise ValueError(f"unknown fault: {fault}")
         client.process.wait(timeout=PROBE_TIMEOUT)
         worker.join(PROBE_TIMEOUT)
-        states = _wait_snapshot(pids, time.monotonic() + TERM_GRACE + 3, target.identity)
+        states = _wait_snapshot(pids, time.monotonic() + TERM_GRACE + 3, target.identity, guardian_pid)
         guardian_state = target.identity(guardian_pid)
         # Guardian exit may be visible as zombie if container init has not
         # reaped it. Never treat that as proof that recorded workloads are gone.

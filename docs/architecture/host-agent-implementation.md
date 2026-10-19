@@ -4,6 +4,12 @@ The design source is `hollow-agent-architecture-plan-v4.md`. Implementation is
 staged; this change does **not** complete the entire plan or switch default pane
 backends. Agent pane attachment requires an explicit development override.
 
+Fs/exec now has its own [release checklist and check command](host-agent-fs-exec-release.md).
+Its release scope is asynchronous host operations, connector bootstrap, read-only
+workspace discovery/loading and packaged agents—not PTY performance qualification.
+Unexecuted native Windows/Docker/ARM64 gates stay explicit and do not invalidate
+Linux evidence or silently become passing results.
+
 The headless shared experiment now also offers bounded, byte-checked filesystem
 and non-PTY exec interference plus optional foreground resize issuance. Shared
 bulk uses the PTY connection; native/dedicated comparisons use a separate agent.
@@ -117,7 +123,8 @@ DRR, split lanes and rollout/resource/platform gates remain open.
   end-to-end tests run the same contract locally and through rootless Podman.
 * PR 3 continuation: native-local fs/exec workers exposed as
   `hollow.host.local_host()`, plus opt-in asynchronous workspace directory
-  discovery through `source.host`. Legacy resolver aliases remain operational.
+  discovery through `source.host` and bounded, cancellable `workspace.load_host`
+  reads. Legacy resolver aliases and synchronous local loading remain operational.
 * PR 3 Podman continuation: Lua-side production bootstrap for existing containers,
   configured per-architecture artifacts and expected checksums, or a preinstalled
   executable. All remote operations still use the existing persistent transport.
@@ -182,8 +189,9 @@ DRR, split lanes and rollout/resource/platform gates remain open.
 These are experimental host components, **not yet a fully qualified production
 GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
 RPCs use the shared Zig dispatcher. `hollow.host.connect({id, argv})` remains an
-explicit subprocess escape hatch. Native Windows qualification and host-aware project
-load/bootstrap/write migration are not implemented yet. Existing
+explicit subprocess escape hatch. Native Windows qualification remains open;
+automatic remote pane/bootstrap routing and workspace writes are outside the
+read-only fs/exec release. Existing
 `hollow.process` and default PTY selection retain their behavior.
 See [executed validation and known blockers](host-agent-validation.md).
 
