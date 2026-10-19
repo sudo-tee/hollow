@@ -106,9 +106,8 @@ Workspace host loading has seven focused Lua tests plus real >16 KiB paged reads
 and oversized-document rejection through native host bindings and native-local
 workers. The headless native harness uses an exact-document JSON bridge stub;
 it tests real file bytes/pagination, not a new JSON parser or GUI execution.
-Full Lua suite passes **442** cases. Python suite adds two guardian-wait
-regressions to the previous **78** passing cases; closing-run count is recorded
-with its report below.
+Full Lua suite passes **442** cases and Python suite **80** cases, including
+two guardian-wait regressions.
 
 Initial local/Podman/SSH/socket release run passes all 11 requested checks. The
 next source-integrity run adds WSL but fails **one local containment check**:
@@ -122,7 +121,35 @@ exhaustion. **32/32** direct SIGKILL repeats pass with the corrected observer.
 That does not recover the original guardian's exact exit latency or retroactively
 make the failed run pass. No production agent/guardian implementation changed.
 
-Closing source-integrity run will be recorded with immutable archived evidence.
+Closing source-integrity run passes **13/13** selected checks: local, Podman,
+SSH, socket and WSL interop. All **177** source hashes remain unchanged and match
+the implementation committed as `f2cc4a5`; run baseline revision was `e410fb0`.
+Standalone native checks total **107 executions including imports**; both static
+musl artifacts and their manifest verify. A separate direct Podman-native host
+probe passes both installed layouts, exercising the same >16 KiB workspace load
+code against a real remote agent as well as native-local workers.
+
+Evidence: [`2026-10-19-fs-exec-release.json.gz`](../validation/2026-10-19-fs-exec-release.json.gz)
+retains all three run reports/logs, containment records, environment/tool versions,
+32 direct SIGKILL repeats and direct Podman-host logs. Adjacent `.summary.json`
+lists selected/unverified scope and the preserved failure. `.patch.gz` reconstructs
+all **177** closing source hashes on `e410fb0`; failed-run hashes also reconstruct
+by retaining that revision's original fault probe and its unit test. Initial
+preliminary run is historical; closing source-verified run is authoritative.
+Source patch includes earlier resource/fault helpers exercised by common Python
+unit tests; docs/CI changes are not part of the measured source patch.
+
+Uncompressed archive SHA-256:
+`02066b8ca1b9b07e457379c99a939dbbc0fe549b6607fca2f0ac68dec7bdf070`.
+Uncompressed source patch SHA-256:
+`b0131c298023ea81743218770fe646c6118c691705860c5300731ec932e79800`.
+
+**Release decision:** fs/exec implementation/checklist is complete for the verified
+Linux/interop scope above, independently of PTY rollout. This is not universal
+client/platform approval. Real Docker, native Windows client and ARM64 execution
+remain explicitly unverified; no PTY performance result blocks the verified
+fs/exec scope. Installed local agent remains ReleaseSafe; native/WSL pane defaults
+unchanged. No push, tag, release publication or hosted CI success is claimed.
 The initial run preceded final argument/driver-test refinements; only the final
 run is authoritative for final source hashes. Missing system LuaJIT dependencies
 and a static LuaJIT unwind-link failure were resolved by explicitly selecting

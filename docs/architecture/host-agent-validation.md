@@ -5,6 +5,34 @@ plan. Environment: x86_64 Linux under WSL2, Zig 0.16.0, rootless Podman 5.7.0,
 `docker.io/library/alpine:3.21`. No Windows GUI qualification ran. SSH validation
 uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
+## Independent fs/exec release closure — 2026-10-19
+
+The [fs/exec checklist](host-agent-fs-exec-release.md) now closes separately from
+PTY research. Closing run passes **13/13** selected checks across local Linux,
+rootless Podman, owned SSH, mock socket and WSL interop. **177** source hashes
+remain unchanged; both static Linux-musl bundles/checksums verify. **107** core
+native executions including imports, **80** Python unit tests and **442** Lua
+tests pass. Wire suites: local/SSH/socket/WSL **16** each, Podman **19**. Production
+bootstrap/native Lua covers both installed bundle layouts; direct Podman host
+tests also exercise large paged workspace loading. Windows transport, manager,
+native-local and Lua compile checks pass, without native Windows execution.
+
+One intermediate direct-SIGKILL local containment failure remains archived:
+workload reaped, guardian sampled runnable. Probe previously stopped waiting on
+workload disappearance before guardian exit. Corrected observer waits for both
+within the same original deadline, still rejects live guardians/workload zombies,
+and passes deterministic regressions plus **32/32** direct SIGKILL repetitions.
+Closing local/Podman containment passes. No agent runtime change or retroactive
+passing status for the failed run is claimed.
+
+[Archived evidence](../validation/2026-10-19-fs-exec-release.summary.json) retains
+all reports/logs and reconstructible closing/failed source identities. Verified
+fs/exec scope is releasable independently of PTY performance. Real Docker daemon,
+native Windows clients and ARM64 execution remain unverified; no hosted CI/release
+publication or default PTY change is implied.
+
+## Historical foundation checks — 2026-10-17
+
 | Check | Result |
 |---|---|
 | Static Linux musl x86_64 and aarch64 builds | Pass; `file` confirms static ELF |
