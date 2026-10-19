@@ -50,7 +50,7 @@ jobs:
         run: python3 scripts/agent_conformance.py --connector local-subprocess --agent zig-out/bin/hollow-agent
       - name: Experimental opt-in agent PTY lifecycle
         run: python3 scripts/agent_pty_tests.py --agent zig-out/bin/hollow-agent
-      - name: Explicit focus negotiation, stale generations, churn and credit isolation
+      - name: Focus negotiation, credit isolation and independent-agent SIGKILL survival
         run: python3 scripts/agent_focus_tests.py --agent zig-out/bin/hollow-agent
       - name: Persistent native host transport
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
@@ -76,7 +76,7 @@ jobs:
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry --focus-scheduler --focus-every 32 --backend shared --sessions 8 --load stalled --bulk off mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 100 --size-mib 10 --output agent-pty-focus-profile-smoke.jsonl
       - name: Explicit separate bulk agent with full sixteen-PTY admission, not qualification
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 python3 scripts/agent_pty_bench.py --focus-scheduler --separate-bulk --backend shared --sessions 16 --load stalled --bulk mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 200 --size-mib 10 --output agent-pty-split-bulk-smoke.jsonl
-      - name: Explicit hierarchical byte-deficit wire correctness
+      - name: Hierarchical byte-deficit wire correctness and independent-agent SIGKILL survival
         run: python3 scripts/agent_focus_tests.py --agent zig-out/bin/hollow-agent --deficit-scheduler
       - name: Hierarchical byte-deficit checked contention, not qualification
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 HOLLOW_AGENT_DEFICIT_SCHEDULER=1 python3 scripts/agent_pty_bench.py --focus-scheduler --deficit-scheduler --backend shared --sessions 8 --load stalled --bulk off mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 200 --size-mib 10 --output agent-pty-deficit-smoke.jsonl

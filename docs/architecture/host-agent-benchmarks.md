@@ -332,6 +332,23 @@ The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXE
 captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
 and dynamic-focus timing still need independently sustained workloads.
 
+### Foreground-isolation resource observer
+
+`scripts/agent_pty_resources.py --output FILE -- COMMAND...` explicitly samples
+Linux local process-tree CPU ticks, simultaneous summed RSS, process/thread
+counts and bounded per-identity history through `/proc`/pidfds. It does not
+configure/validate benchmark workloads or measure remote physical memory. RSS
+double-counts shared pages, short-lived processes/CPU tails can be missed, and
+observer-off controls are required. File-backed command output is not size-limited.
+
+The [resource/fault follow-up](../benchmarks/agent-pty/2026-10-19-isolation-resources.md)
+archives 80 finite measurements: isolation increases concurrent sampled CPU
+roughly 33–43% and peak threads about five; peak summed RSS stays close locally.
+Observer perturbation is material. Two repeats and fixed per-variant observer
+order do not qualify steady state, equal-resource efficiency or default E1.
+Independent native-close and real-wire SIGKILL checks verify surviving connection
+focus/echo/EXEC, not loaded recovery, migration, reconnect or host-wide OOM isolation.
+
 ### Static foreground-isolation comparison
 
 `--separate-foreground --backend shared --sessions 8` pins foreground to another
