@@ -1,0 +1,105 @@
+{
+  "base_revision": "e410fb0",
+  "scope": "fs/exec release checks, not PTY rollout or universal platform approval",
+  "selected_checks_passed": true,
+  "selected_profiles": [
+    "local",
+    "podman",
+    "socket",
+    "ssh",
+    "wsl"
+  ],
+  "unverified_profiles": [
+    "docker"
+  ],
+  "unverified_platforms": [
+    "native Windows client execution",
+    "ARM64 execution"
+  ],
+  "source_files": 177,
+  "checks": [
+    {
+      "name": "build-and-native",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "unit-harness",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "lua-contracts",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "bundle-checksums",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "local-conformance",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "local-containment",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "podman-conformance",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "podman-containment",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "podman-production",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "ssh-production",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "socket-conformance-and-loss",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "wsl-production",
+      "passed": true,
+      "returncode": 0
+    },
+    {
+      "name": "wsl-conformance",
+      "passed": true,
+      "returncode": 0
+    }
+  ],
+  "artifacts_sha256": {
+    "zig-out/agents/SHA256SUMS": "4e5fc96af7250f5dc06376e9e731a2a0752f418286efbe1f9856367193c2ffa5",
+    "zig-out/agents/linux-x86_64/hollow-agent": "82ca8fde34ce8703ba735703c036c2e71fa85902928edafdc63f2c736380c09c",
+    "zig-out/agents/linux-aarch64/hollow-agent": "33b903ab7693a782c2eeaa4bf79a6ed828016e41f33e808c3b1effb23f23c3a5"
+  },
+  "archive_uncompressed_sha256": "02066b8ca1b9b07e457379c99a939dbbc0fe549b6607fca2f0ac68dec7bdf070",
+  "patch_uncompressed_sha256": "b0131c298023ea81743218770fe646c6118c691705860c5300731ec932e79800",
+  "preserved_failures": [
+    {
+      "run": "fs-exec-release-final-20261019",
+      "check": "local-containment",
+      "scenario": "direct",
+      "fault": "sigkill",
+      "workload": "reaped",
+      "guardian": "R"
+    }
+  ],
+  "notes": "Closing source/test patch includes earlier uncommitted resource/fault helpers exercised by the common Python suite. Docs/CI excluded. Initial all-pass run and later containment failure preserved. Closing source-verified run authoritative; original failure not erased. Native Windows/Docker/ARM64 execution not qualified."
+}
