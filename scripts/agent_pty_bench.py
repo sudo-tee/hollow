@@ -36,6 +36,60 @@ def stderr_text(error: Exception) -> str | None:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
 
+def parse_queue_profiles(stderr: str) -> list[dict]:
+    """Validate optional agent-side snapshots without mistaking censored spans for completions."""
+    profiles = []
+    classes = ["other", "pty_data", "exec_data", "filesystem_reply", "pty_input_ack", "pty_resize_ack", "pty_close_ack"]
+    requests = ["pty_input", "pty_resize", "pty_close", "exec", "filesystem"]
+
+    def integer(value):
+        return type(value) is int and value >= 0
+
+    def samples(value):
+        if not isinstance(value, dict):
+            raise ValueError("invalid queue profile samples")
+        count, total, maximum, histogram = (value.get(k) for k in ("count", "sum", "max", "log2"))
+        if (not all(integer(n) for n in (count, total, maximum)) or maximum > total
+                or not isinstance(histogram, list) or len(histogram) != 64
+                or not all(integer(n) for n in histogram) or sum(histogram) != count
+                or (count == 0 and (total != 0 or maximum != 0))):
+            raise ValueError("invalid queue profile histogram")
+        return count
+
+    for line in stderr.splitlines():
+        if not line.startswith("AGENT_QUEUE_PROFILE "):
+            continue
+        profile = json.loads(line.removeprefix("AGENT_QUEUE_PROFILE "))
+        if (not isinstance(profile, dict) or type(profile.get("schema")) is not int or profile.get("schema") != 1 or profile.get("class_order") != classes
+                or profile.get("request_order") != requests
+                or not isinstance(profile.get("classes"), list) or len(profile["classes"]) != len(classes)
+                or not isinstance(profile.get("request_handler_ns"), list) or len(profile["request_handler_ns"]) != len(requests)):
+            raise ValueError("invalid queue profile identity")
+        for name in ("dispatch_ns", "poll_ns", "poll_with_complete_command_ns"):
+            samples(profile.get(name))
+        for timing in profile["request_handler_ns"]:
+            samples(timing)
+        pending = 0
+        for stats in profile["classes"]:
+            if not isinstance(stats, dict):
+                raise ValueError("invalid queue profile class")
+            enqueued, untracked, discarded = (stats.get(k) for k in ("enqueued", "untracked", "discarded"))
+            if not all(integer(n) for n in (enqueued, untracked, discarded)):
+                raise ValueError("invalid queue profile accounting")
+            ahead = samples(stats.get("bytes_ahead"))
+            first = samples(stats.get("first_write_ns"))
+            complete = samples(stats.get("complete_write_ns"))
+            if ahead != enqueued or not complete <= first <= enqueued - untracked or complete + discarded > enqueued - untracked:
+                raise ValueError("invalid queue profile span counts")
+            pending += enqueued - untracked - complete - discarded
+        counters = [profile.get(k) for k in ("pending", "max_pending", "queued_wire_bytes", "written_wire_bytes", "discarded_wire_bytes")]
+        if (not all(integer(n) for n in counters) or counters[0] != pending
+                or not counters[0] <= counters[1] <= 1024 or counters[2] < counters[3] + counters[4]):
+            raise ValueError("invalid queue profile bounded counters")
+        profiles.append(profile)
+    return profiles
+
+
 def validate(result: dict, config: dict) -> dict:
     if (result.get("backend") != config["backend"]
             or result.get("workload") != config["workload"]
@@ -137,6 +191,8 @@ def main() -> None:
     parser.add_argument("--telemetry", action="store_true", help="enable fixed-size host I/O counters")
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
+    if "HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not args.telemetry:
+        parser.error("HOLLOW_AGENT_QUEUE_PROFILE requires --telemetry to inherit agent stderr")
     if not (1 <= args.runs <= 100 and 1 <= args.samples <= 100000 and 1 <= args.timeout <= 3600
             and all(1 <= size <= 1024 for size in args.size_mib) and all(1 <= n <= 16 for n in args.sessions)
             and 1 <= args.bulk_exec_bytes <= 1048576 and 0 <= args.resize_every <= 100000):
@@ -173,7 +229,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
-               "src/host/operations.zig", "src/agent/fs.zig"]
+               "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "scope": "headless PTY adapters with optional fs/exec interference; no GUI/focus policy/WSL bypass or rollout qualification",
@@ -188,7 +244,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "platform": platform.platform(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
         "python": sys.version, "command": sys.argv, "cwd": os.getcwd(),
         "ordering": "backend order alternates each independent run",
-        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE") if key in os.environ},
+        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE") if key in os.environ},
     }
     with args.output.open("x", encoding="utf-8") as output:
         def emit(row: dict) -> None:
@@ -214,12 +270,16 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                             completed = subprocess.run([str(binary), json.dumps(config)], check=True,
                                                        capture_output=True, text=True, timeout=args.timeout)
                             result = validate(json.loads(completed.stdout), config)
+                            queue_profiles = parse_queue_profiles(completed.stderr)
+                            if ("HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not connector_json
+                                    and backend in ("agent", "shared") and not queue_profiles):
+                                raise ValueError("requested agent queue profile missing")
                         except Exception as error:
                             emit({"kind": "failure", "run": run, "config": config, "error": str(error),
                                   "stderr": stderr_text(error), "qualification": False})
                             raise
                         emit({"kind": "measurement", "run": run, "config": config,
-                              "result": result, "stderr": completed.stderr})
+                              "result": result, "stderr": completed.stderr, "agent_queue_profiles": queue_profiles})
                         summary = result.get("latency_ms", result.get("mib_per_second"))
                         print(f"run={run} {backend} sessions={sessions} load={load} bulk={bulk} {workload} size_mib={size}: {summary}", flush=True)
 

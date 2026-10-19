@@ -8,9 +8,14 @@ The headless shared experiment now also offers bounded, byte-checked filesystem
 and non-PTY exec interference plus optional foreground resize issuance. Shared
 bulk uses the PTY connection; native/dedicated comparisons use a separate agent.
 See [benchmark methodology](host-agent-benchmarks.md#mixed-filesystemexec-interference).
-No production transport, scheduler, workspace policy or backend defaults change
-in this follow-up; internal queue instrumentation and focus-aware scheduling
-remain future experiments.
+That mixed-load follow-up changes no production transport, scheduler, workspace
+policy or backend defaults.
+
+The next [diagnostics experiment](../benchmarks/agent-pty/2026-10-18-queue-profile.md)
+adds opt-in agent dispatch/output-span timing and explicit coverage/censoring
+counters. It confirms mixed bulk can queue well beyond the PTY-only batch cap,
+but changes no scheduling policy or defaults. Per-stream ready-to-enqueue timing,
+focus-aware priorities and split-lane comparisons remain future work.
 
 ## Current scope
 

@@ -1,15 +1,60 @@
 import copy
 import hashlib
+import json
+import os
 import pathlib
 import sys
 import subprocess
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from agent_pty_bench import percentile, stderr_text, validate
+from agent_pty_bench import parse_queue_profiles, percentile, stderr_text, validate
 
 
 class AgentPtyBenchTests(unittest.TestCase):
+    def queue_profile(self):
+        def samples():
+            return {"count": 0, "sum": 0, "max": 0, "log2": [0] * 64}
+        return {"schema": 1,
+                "class_order": ["other", "pty_data", "exec_data", "filesystem_reply", "pty_input_ack", "pty_resize_ack", "pty_close_ack"],
+                "request_order": ["pty_input", "pty_resize", "pty_close", "exec", "filesystem"],
+                "classes": [{"enqueued": 0, "untracked": 0, "discarded": 0, "bytes_ahead": samples(),
+                             "first_write_ns": samples(), "complete_write_ns": samples()} for _ in range(7)],
+                "request_handler_ns": [samples() for _ in range(5)],
+                "dispatch_ns": samples(), "poll_ns": samples(), "poll_with_complete_command_ns": samples(),
+                "pending": 0, "max_pending": 0, "queued_wire_bytes": 0,
+                "written_wire_bytes": 0, "discarded_wire_bytes": 0}
+
+    def test_queue_profile_parser_keeps_pending_and_untracked_censoring(self):
+        profile = self.queue_profile()
+        stats = profile["classes"][4]
+        stats.update(enqueued=2, untracked=1)
+        stats["bytes_ahead"].update(count=2)
+        stats["bytes_ahead"]["log2"][0] = 2
+        profile.update(pending=1, max_pending=1024, queued_wire_bytes=100)
+        parsed = parse_queue_profiles("unrelated diagnostic\nAGENT_QUEUE_PROFILE " + json.dumps(profile) + "\n")
+        self.assertEqual(parsed, [profile])
+        self.assertEqual(parsed[0]["classes"][4]["complete_write_ns"]["count"], 0)
+        self.assertEqual(parse_queue_profiles("AGENT_PROFILE {}\n"), [])
+
+    def test_queue_profile_parser_rejects_malformed_or_unbounded_snapshots(self):
+        for update in ({"pending": 1}, {"max_pending": 1025}, {"written_wire_bytes": 1},
+                       {"classes": [None] * 7}, {"class_order": []}, {"request_handler_ns": []},
+                       {"dispatch_ns": {"count": 1, "sum": 1, "max": 1, "log2": [0] * 64}}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                parse_queue_profiles("AGENT_QUEUE_PROFILE " + json.dumps(dict(self.queue_profile(), **update)))
+        for value in ("{", "null", "[]"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_queue_profiles("AGENT_QUEUE_PROFILE " + value)
+
+    def test_queue_profiling_requires_stderr_inheritance(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "agent_pty_bench.py"
+        env = dict(os.environ, HOLLOW_AGENT_QUEUE_PROFILE="1")
+        result = subprocess.run([sys.executable, str(script), "--output", "/nonexistent/output"],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --telemetry", result.stderr)
+
     def prompt(self):
         return ({"backend": "agent", "workload": "prompt", "samples": 3},
                 {"backend": "agent", "workload": "prompt", "exit_code": 0,

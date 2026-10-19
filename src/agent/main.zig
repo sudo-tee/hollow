@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const p = @import("protocol.zig");
 const fs = @import("fs.zig");
 const ex = @import("exec.zig");
+const queue_profile = @import("queue_profile.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cUndef("_FORTIFY_SOURCE");
@@ -65,8 +66,13 @@ const Agent = struct {
     experimental_pty: bool = false,
     profiling: bool = false,
     profile: Profile = .{},
+    queue_profile: ?*queue_profile.Profiler = null,
 
     fn frame(self: *Agent, kind: p.Kind, id: u64, sid: u64, payload: []const u8) !void {
+        return self.frameClass(kind, id, sid, payload, .other);
+    }
+
+    fn frameClass(self: *Agent, kind: p.Kind, id: u64, sid: u64, payload: []const u8, class: queue_profile.Class) !void {
         if (payload.len > self.payload_limit) return error.ResourceExhausted;
         const header = try (p.Header{ .kind = kind, .request_id = id, .stream_id = sid, .payload_len = @intCast(payload.len) }).encode();
         if (self.output.items.len + header.len + payload.len > queue_limit) return error.ResourceExhausted;
@@ -74,6 +80,7 @@ const Agent = struct {
         try self.output.ensureUnusedCapacity(A, header.len + payload.len);
         self.output.appendSliceAssumeCapacity(&header);
         self.output.appendSliceAssumeCapacity(payload);
+        if (self.queue_profile) |profile| profile.enqueue(class, header.len + payload.len, profileClock());
         if (self.profiling) {
             self.profile.max_queued = @max(self.profile.max_queued, self.output.items.len - self.sent);
             if (kind == .data) self.profile.data_frames += 1;
@@ -91,10 +98,13 @@ const Agent = struct {
         self.closing = true;
         self.output.clearRetainingCapacity();
         self.sent = 0;
+        if (self.queue_profile) |profile| profile.discard();
         for (&self.jobs) |*entry| if (entry.*) |*job| job.cancel(.cancelled, now);
     }
 
     fn dispatch(self: *Agent, h: p.Header, bytes: []const u8, now: u64) !void {
+        const started = if (self.queue_profile != null) profileClock() else 0;
+        defer if (self.queue_profile) |profile| profile.stats.dispatch_ns.record(profileClock() - started);
         if (self.greeted and self.experimental_pty and h.kind == .window_update) {
             if (self.profiling) self.profile.window_updates += 1;
             if (bytes.len != 8) return error.ProtocolMismatch;
@@ -164,12 +174,18 @@ const Agent = struct {
     }
 
     fn request(self: *Agent, id: u64, bytes: []const u8, now: u64) anyerror!void {
+        const started = if (self.queue_profile != null) profileClock() else 0;
         var arena = std.heap.ArenaAllocator.init(A);
         defer arena.deinit();
         const a = arena.allocator();
         const parsed = std.json.parseFromSlice(std.json.Value, a, bytes, .{ .max_value_len = p.max_payload }) catch return error.InvalidArgument;
         const value = parsed.value;
         const op = try string(value, "op");
+        defer if (self.queue_profile) |profile| {
+            const class: queue_profile.Request = if (std.mem.eql(u8, op, "PTY_INPUT")) .pty_input else if (std.mem.eql(u8, op, "PTY_RESIZE")) .pty_resize else if (std.mem.eql(u8, op, "PTY_CLOSE")) .pty_close else if (std.mem.eql(u8, op, "EXEC")) .exec else .filesystem;
+            // PTY_SPAWN is covered by dispatch_ns, not filesystem dispatch.
+            if (!std.mem.eql(u8, op, "PTY_SPAWN")) profile.stats.request_handler_ns[@intFromEnum(class)].record(profileClock() - started);
+        };
         if (std.mem.startsWith(u8, op, "PTY_")) {
             if (!self.experimental_pty) return error.Unsupported;
             if (std.mem.eql(u8, op, "PTY_SPAWN")) return self.execRequest(a, id, value, now);
@@ -348,7 +364,8 @@ const Agent = struct {
             } else if (std.mem.eql(u8, op, "PTY_CLOSE")) {
                 job.cancel(.cancelled, now);
             } else return error.Unsupported;
-            return self.frame(.response, id, 0, "{}");
+            const class: queue_profile.Class = if (std.mem.eql(u8, op, "PTY_INPUT")) .pty_input_ack else if (std.mem.eql(u8, op, "PTY_RESIZE")) .pty_resize_ack else .pty_close_ack;
+            return self.frameClass(.response, id, 0, "{}", class);
         };
         return error.NotFound;
     }
@@ -359,7 +376,7 @@ const Agent = struct {
         var budget = quantum;
         while (job.stdout.items.len > 0 and job.credit > 0 and budget > 0 and self.output.items.len + p.header_len < pty_batch_limit) {
             const count = @min(@min(self.data_limit, budget), @min(pty_batch_limit - self.output.items.len - p.header_len, @min(job.credit, job.stdout.items.len)));
-            try self.frame(.data, job.id, job.streams[0], job.stdout.items[0..count]);
+            try self.frameClass(.data, job.id, job.streams[0], job.stdout.items[0..count], .pty_data);
             job.credit -= count;
             budget -= count;
             std.mem.copyForwards(u8, job.stdout.items, job.stdout.items[count..]);
@@ -398,6 +415,20 @@ const Agent = struct {
     }
 
     fn finish(self: *Agent, job: *ex.Job) !void {
+        if (self.queue_profile) |profile| if (job.pty) {
+            // Snapshot precedes the terminal response; queued records are censored.
+            // Diagnostic serialization failure must never change RPC semantics.
+            var storage: [65536]u8 = undefined;
+            var output: std.Io.Writer = .fixed(&storage);
+            output.writeAll("AGENT_QUEUE_PROFILE ") catch unreachable;
+            std.json.Stringify.value(profile.stats, .{}, &output) catch return self.finishWithoutQueueProfile(job);
+            output.writeAll("\n") catch return self.finishWithoutQueueProfile(job);
+            _ = c.write(2, output.buffered().ptr, output.buffered().len);
+        };
+        return self.finishWithoutQueueProfile(job);
+    }
+
+    fn finishWithoutQueueProfile(self: *Agent, job: *ex.Job) !void {
         if (self.profiling and job.pty) {
             // Explicit diagnostic opt-in; never write telemetry to protocol stdout.
             var storage: [1024]u8 = undefined;
@@ -422,6 +453,7 @@ const Agent = struct {
             if (self.output.items.len + job.stdout.items.len > queue_limit) return error.ResourceExhausted;
             if (self.output.items.len == self.sent) self.last_write = nowMs();
             try self.output.appendSlice(A, job.stdout.items);
+            if (self.queue_profile) |profile| profile.enqueue(.filesystem_reply, job.stdout.items.len, profileClock());
             return;
         }
         if (job.pty) {
@@ -433,7 +465,7 @@ const Agent = struct {
             var offset: usize = 0;
             while (offset < bytes.len) {
                 const count = @min(self.data_limit, bytes.len - offset);
-                try self.frame(.data, job.id, sid, bytes[offset..][0..count]);
+                try self.frameClass(.data, job.id, sid, bytes[offset..][0..count], .exec_data);
                 offset += count;
             }
         }
@@ -445,6 +477,11 @@ const Agent = struct {
 
 pub fn main() !void {
     var agent = Agent{ .agent_pid = c.getpid() };
+    if (c.getenv("HOLLOW_AGENT_QUEUE_PROFILE") != null) {
+        agent.queue_profile = try A.create(queue_profile.Profiler);
+        agent.queue_profile.?.* = .{};
+    }
+    defer if (agent.queue_profile) |profile| A.destroy(profile);
     agent.profiling = c.getenv("HOLLOW_AGENT_PROFILE") != null;
     var random: [16]u8 = undefined;
     var random_count: usize = 0;
@@ -494,8 +531,14 @@ pub fn main() !void {
                 if (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0) sendable = true;
             };
         }
-        const poll_start = if (agent.profiling) profileClock() else 0;
+        const buffered_command = agent.queue_profile != null and hasCompleteCommand(agent.input.items);
+        const poll_start = if (agent.profiling or agent.queue_profile != null) profileClock() else 0;
         const polled = c.poll(&fds, fds.len, 20);
+        if (agent.queue_profile) |profile| {
+            const duration = profileClock() - poll_start;
+            profile.stats.poll_ns.record(duration);
+            if (buffered_command) profile.stats.poll_with_complete_command_ns.record(duration);
+        }
         if (agent.profiling) {
             const duration = profileClock() - poll_start;
             agent.profile.polls += 1;
@@ -536,6 +579,7 @@ pub fn main() !void {
                     agent.profile.bytes_written += @intCast(n);
                 }
                 agent.sent += @intCast(n);
+                if (agent.queue_profile) |profile| profile.wrote(@intCast(n), profileClock());
                 agent.last_write = now;
                 if (agent.sent == agent.output.items.len) {
                     agent.output.clearRetainingCapacity();
@@ -591,6 +635,64 @@ pub fn main() !void {
             agent.input.items.len -= consumed;
         }
     }
+}
+
+fn hasCompleteCommand(input: []const u8) bool {
+    if (input.len < p.header_len) return false;
+    const header = p.Header.decode(@ptrCast(input.ptr)) catch return false;
+    return input.len - p.header_len >= header.payload_len;
+}
+
+test "queue diagnostics distinguish complete buffered commands from partial frames" {
+    const raw = try (p.Header{ .kind = .request, .request_id = 1, .payload_len = 2 }).encode();
+    var frame: [p.header_len + 2]u8 = undefined;
+    @memcpy(frame[0..p.header_len], &raw);
+    @memcpy(frame[p.header_len..], "{}");
+    try std.testing.expect(!hasCompleteCommand(frame[0 .. p.header_len - 1]));
+    try std.testing.expect(!hasCompleteCommand(frame[0..p.header_len]));
+    try std.testing.expect(hasCompleteCommand(&frame));
+}
+
+test "queue diagnostics account for opaque filesystem replies and control ACKs" {
+    var profile: queue_profile.Profiler = .{};
+    var agent: Agent = .{ .greeted = true, .experimental_pty = true, .queue_profile = &profile };
+    defer agent.output.deinit(A);
+    try agent.frameClass(.data, 1, 2, "data", .pty_data);
+    var worker: ex.Job = .{
+        .id = 2,
+        .pid = 0,
+        .fds = .{ -1, -1, -1 },
+        .limit = 1024,
+        .streams = .{ 0, 0 },
+        .deadline = 0,
+        .rpc_worker = true,
+    };
+    defer worker.deinit();
+    const raw = try (p.Header{ .kind = .response, .request_id = 2, .payload_len = 2 }).encode();
+    try worker.stdout.appendSlice(A, &raw);
+    try worker.stdout.appendSlice(A, "{}");
+    try agent.finishWithoutQueueProfile(&worker);
+    const fd = c.dup(1);
+    if (fd < 0) return error.IoError;
+    agent.jobs[0] = .{
+        .id = 1,
+        .pid = 0,
+        .fds = .{ fd, -1, -1 },
+        .limit = 0,
+        .streams = .{ 2, 4 },
+        .deadline = std.math.maxInt(u64),
+        .pty = true,
+    };
+    defer agent.jobs[0].?.deinit();
+    const input = "{\"op\":\"PTY_INPUT\",\"session_id\":1,\"bytes_b64\":\"WA==\"}";
+    try agent.dispatch(.{ .kind = .request, .request_id = 3, .payload_len = input.len }, input, 0);
+    try std.testing.expectEqualStrings("X", agent.jobs[0].?.input.items);
+    try std.testing.expectEqual(@as(u64, 1), profile.stats.classes[@intFromEnum(queue_profile.Class.filesystem_reply)].enqueued);
+    try std.testing.expectEqual(@as(u64, 1), profile.stats.classes[@intFromEnum(queue_profile.Class.pty_input_ack)].enqueued);
+    try std.testing.expectEqual(@as(u64, 1), profile.stats.request_handler_ns[@intFromEnum(queue_profile.Request.pty_input)].count);
+    profile.wrote(agent.output.items.len, profileClock());
+    try std.testing.expectEqual(@as(u64, @intCast(agent.output.items.len)), profile.stats.written_wire_bytes);
+    try std.testing.expectEqual(@as(usize, 0), profile.count);
 }
 
 test "restored PTY credit schedules full buffered output before poll" {
