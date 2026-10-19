@@ -146,6 +146,15 @@ PTY output does not monopolize the loop or prevent control/fs RPCs. If a peer
 withholds output credits, normal exit waits for output drainage; explicit close,
 connection loss or deadline terminates the session instead of waiting forever.
 
+An independent server-side `HOLLOW_AGENT_BOUNDED_BULK` research flag additionally
+rotates completed fs/exec frames with PTY output quanta on experimental-PTY
+connections. It adds no wire messages, capabilities, HostManager selection or
+GUI focus policy, and is ignored without experimental PTY HELLO. Whole metadata
+frames may exceed the ~64 KiB soft batch cap only as an empty-buffer atomic
+exception; negotiated payload and global limits still apply. See
+[benchmark methodology](host-agent-benchmarks.md#opt-in-bounded-bulk-scheduling).
+This flag is not a pane/shared-backend rollout switch.
+
 ## Process and terminal ownership
 
 The same per-job subreaper guardian supervises EXEC and PTY workloads. A PTY

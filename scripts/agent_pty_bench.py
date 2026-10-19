@@ -65,6 +65,14 @@ def parse_queue_profiles(stderr: str) -> list[dict]:
                 or not isinstance(profile.get("classes"), list) or len(profile["classes"]) != len(classes)
                 or not isinstance(profile.get("request_handler_ns"), list) or len(profile["request_handler_ns"]) != len(requests)):
             raise ValueError("invalid queue profile identity")
+        if "bounded_bulk" in profile:
+            if type(profile["bounded_bulk"]) is not bool:
+                raise ValueError("invalid bounded bulk identity")
+            for name in ("bulk_frames", "bulk_deferred", "bulk_oversized_frames", "bulk_max_queued_bytes"):
+                if not integer(profile.get(name)):
+                    raise ValueError("invalid bounded bulk counters")
+            if profile["bulk_max_queued_bytes"] > 4194304 or profile["bulk_oversized_frames"] > profile["bulk_frames"]:
+                raise ValueError("out-of-bounds bulk counters")
         for name in ("dispatch_ns", "poll_ns", "poll_with_complete_command_ns"):
             samples(profile.get(name))
         for timing in profile["request_handler_ns"]:
@@ -229,7 +237,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
                "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
-               "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig"]
+               "src/host/operations.zig", "src/agent/fs.zig", "src/agent/queue_profile.zig", "src/agent/bulk_delivery.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "scope": "headless PTY adapters with optional fs/exec interference; no GUI/focus policy/WSL bypass or rollout qualification",
@@ -244,7 +252,7 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
         "platform": platform.platform(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
         "python": sys.version, "command": sys.argv, "cwd": os.getcwd(),
         "ordering": "backend order alternates each independent run",
-        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE") if key in os.environ},
+        "environment": {key: os.environ[key] for key in ("WSL_DISTRO_NAME", "WSL_INTEROP", "HOLLOW_AGENT_PROFILE", "HOLLOW_AGENT_QUEUE_PROFILE", "HOLLOW_AGENT_BOUNDED_BULK") if key in os.environ},
     }
     with args.output.open("x", encoding="utf-8") as output:
         def emit(row: dict) -> None:
@@ -274,6 +282,10 @@ def run_benchmarks(args, binary, agent, connector, connector_json, backends, bul
                             if ("HOLLOW_AGENT_QUEUE_PROFILE" in os.environ and not connector_json
                                     and backend in ("agent", "shared") and not queue_profiles):
                                 raise ValueError("requested agent queue profile missing")
+                            if not connector_json and backend in ("agent", "shared"):
+                                expected = "HOLLOW_AGENT_BOUNDED_BULK" in os.environ
+                                if any(p.get("bounded_bulk", False) != expected for p in queue_profiles):
+                                    raise ValueError("bounded bulk trace does not match requested local scheduler")
                         except Exception as error:
                             emit({"kind": "failure", "run": run, "config": config, "error": str(error),
                                   "stderr": stderr_text(error), "qualification": False})

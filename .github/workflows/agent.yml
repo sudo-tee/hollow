@@ -64,6 +64,10 @@ jobs:
         run: python3 scripts/agent_pty_bench.py --backend all --sessions 4 --load stalled --bulk mixed --resize-every 8 --runs 1 --samples 20 --size-mib 1 --output agent-pty-bulk-smoke.jsonl
       - name: Opt-in bounded agent queue diagnostics, not latency qualification
         run: HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry --backend shared --sessions 4 --load stalled --bulk off mixed --resize-every 8 --runs 1 --samples 40 --size-mib 1 --output agent-pty-queue-smoke.jsonl
+      - name: Opt-in bounded bulk ordering, metadata and cancellation regressions
+        run: HOLLOW_AGENT_BOUNDED_BULK=1 zig build --build-file build-agent.zig test-agent-loop test-agent-pty -Doptimize=ReleaseSafe
+      - name: Opt-in bounded bulk checked shared contention smoke
+        run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry --backend shared --sessions 4 --load stalled --bulk off mixed --resize-every 8 --runs 1 --samples 40 --size-mib 1 --output agent-pty-bounded-smoke.jsonl
       - name: Windows experimental PTY adapter compile check
         run: zig test -target x86_64-windows-gnu --dep build_options -Mroot=src/agent_pty_test.zig -Mbuild_options=src/agent_pty_build_options.zig -lc -fno-emit-bin
       - name: Typed operations and HostManager lifecycle
@@ -112,6 +116,7 @@ jobs:
             agent-pty-shared-smoke.jsonl
             agent-pty-bulk-smoke.jsonl
             agent-pty-queue-smoke.jsonl
+            agent-pty-bounded-smoke.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: hollow-agent-linux-musl

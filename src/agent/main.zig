@@ -5,6 +5,7 @@ const p = @import("protocol.zig");
 const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const queue_profile = @import("queue_profile.zig");
+const bulk_delivery = @import("bulk_delivery.zig");
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cUndef("_FORTIFY_SOURCE");
@@ -67,6 +68,29 @@ const Agent = struct {
     profiling: bool = false,
     profile: Profile = .{},
     queue_profile: ?*queue_profile.Profiler = null,
+    bounded_bulk: bool = false,
+    deliveries: [max_jobs]bulk_delivery.State = @splat(.{}),
+    next_output: usize = 0,
+
+    fn usesBoundedBulk(self: *const Agent) bool {
+        return self.bounded_bulk and self.experimental_pty;
+    }
+
+    fn releaseJob(self: *Agent, index: usize) void {
+        self.jobs[index].?.deinit();
+        self.jobs[index] = null;
+        self.deliveries[index] = .{};
+    }
+
+    fn tickJob(self: *Agent, index: usize, now: u64) void {
+        const job = &self.jobs[index].?;
+        if (self.deliveries[index].ready) {
+            // This child and its containment have already completed. Retaining
+            // captured bytes must not extend process-group/PID ownership.
+            std.debug.assert(job.reaped);
+            if (job.reason == null and now >= job.deadline) job.cancel(.timeout, now);
+        } else job.tick(now);
+    }
 
     fn frame(self: *Agent, kind: p.Kind, id: u64, sid: u64, payload: []const u8) !void {
         return self.frameClass(kind, id, sid, payload, .other);
@@ -145,6 +169,7 @@ const Agent = struct {
             const body = try std.fmt.bufPrint(&ack, "{{\"major\":1,\"minor\":0,\"connection_nonce\":\"{s}\",\"max_payload\":{d},\"max_data\":{d},\"max_streams\":{d},\"max_in_flight\":{d},\"max_exec\":{d},\"monotonic_ids\":true,\"capabilities\":[\"fs.stat\",\"fs.list\",\"fs.read\",\"exec\",\"cancel\"{s}]}}", .{ self.nonce, self.payload_limit, self.data_limit, streams, requests, self.job_limit, if (self.experimental_pty) ",\"experimental.pty\"" else "" });
             try self.frame(.hello_ack, 0, 0, body);
             self.greeted = true;
+            if (self.queue_profile) |profile| profile.stats.bounded_bulk = self.usesBoundedBulk();
             return;
         }
         switch (h.kind) {
@@ -401,16 +426,105 @@ const Agent = struct {
         }
     }
 
+    fn bulkFits(self: *Agent, size: usize) bool {
+        const fits = bulk_delivery.fitsBatch(self.output.items.len, size, pty_batch_limit, queue_limit);
+        if (self.queue_profile) |profile| if (!fits) {
+            profile.stats.bulk_deferred += 1;
+        };
+        return fits;
+    }
+
+    fn bulkQueued(self: *Agent, size: usize) void {
+        if (self.queue_profile) |profile| {
+            profile.stats.bulk_frames += 1;
+            if (size > pty_batch_limit) profile.stats.bulk_oversized_frames += 1;
+            profile.stats.bulk_max_queued_bytes = @max(profile.stats.bulk_max_queued_bytes, self.output.items.len - self.sent);
+        }
+    }
+
+    // Return false only when the next whole frame needs output to drain first.
+    fn streamBulk(self: *Agent, index: usize) !bool {
+        const job = &self.jobs[index].?;
+        const state = &self.deliveries[index];
+        if (job.reason != null or job.launch_error != null or (job.rpc_worker and (job.exitCode() != 0 or job.stdout.items.len == 0))) {
+            if (!self.bulkFits(p.header_len + 256)) return false;
+            try self.finish(job);
+            self.releaseJob(index);
+            return true;
+        }
+        if (job.rpc_worker) {
+            const next = bulk_delivery.workerFrame(job.stdout.items, state.worker_offset, job.id, self.payload_limit, self.data_limit) catch {
+                if (!self.bulkFits(p.header_len + 256)) return false;
+                try self.sendError(job.id, error.IoError);
+                self.releaseJob(index);
+                return true;
+            };
+            if (!self.bulkFits(next.bytes.len)) return false;
+            if (self.output.items.len == self.sent) self.last_write = nowMs();
+            try self.output.appendSlice(A, next.bytes);
+            if (self.queue_profile) |profile| profile.enqueue(.filesystem_reply, next.bytes.len, profileClock());
+            self.bulkQueued(next.bytes.len);
+            state.worker_offset += next.bytes.len;
+            if (next.terminal) self.releaseJob(index);
+            return true;
+        }
+        const streams = [_][]const u8{ job.stdout.items, job.stderr.items };
+        const offsets = [_]*usize{ &state.stdout_offset, &state.stderr_offset };
+        for (streams, job.streams, offsets) |bytes, sid, offset| {
+            if (offset.* >= bytes.len) continue;
+            const count = @min(self.data_limit, bytes.len - offset.*);
+            if (!self.bulkFits(p.header_len + count)) return false;
+            try self.frameClass(.data, job.id, sid, bytes[offset.*..][0..count], .exec_data);
+            self.bulkQueued(p.header_len + count);
+            offset.* += count;
+            return true;
+        }
+        if (!self.bulkFits(p.header_len + 256)) return false;
+        const before = self.output.items.len;
+        try self.execResponse(job);
+        self.bulkQueued(self.output.items.len - before);
+        self.releaseJob(index);
+        return true;
+    }
+
+    fn scheduleOutputs(self: *Agent) !void {
+        if (!self.usesBoundedBulk()) return self.schedulePtys();
+        if (self.closing) return;
+        var ready: usize = 0;
+        for (self.jobs, self.deliveries) |entry, state| if (entry) |job| {
+            if (state.ready or (job.pty and job.reason == null and job.stdout.items.len > 0 and job.credit > 0)) ready += 1;
+        };
+        const start = self.next_output;
+        for (0..max_jobs) |offset| {
+            const index = (start + offset) % max_jobs;
+            if (self.jobs[index]) |*job| {
+                const before = self.output.items.len;
+                if (job.pty) {
+                    try self.streamPty(job, if (ready <= 1) 65536 else 16384);
+                } else if (self.deliveries[index].ready) {
+                    if (!try self.streamBulk(index)) {
+                        // Do not let small PTY chunks continually steal space from
+                        // an indivisible filesystem metadata frame.
+                        self.next_output = index;
+                        break;
+                    }
+                }
+                if (self.output.items.len > before) self.next_output = (index + 1) % max_jobs;
+            }
+            if (self.output.items.len + p.header_len >= pty_batch_limit) break;
+        }
+    }
+
     fn preparePoll(self: *Agent, now: u64) !usize {
         var active: usize = 0;
-        for (&self.jobs) |*entry| if (entry.*) |*job| {
+        for (&self.jobs, 0..) |*entry, index| if (entry.* != null) {
             active += 1;
-            job.tick(now);
+            self.tickJob(index, now);
             // WINDOW_UPDATE is dispatched at the end of the previous turn.
             // A full PTY capture is not polled for more input, so restored credit
             // must make buffered DATA writable before we can block in poll().
         };
-        try self.schedulePtys();
+        try self.scheduleOutputs();
         return active;
     }
 
@@ -469,6 +583,10 @@ const Agent = struct {
                 offset += count;
             }
         }
+        return self.execResponse(job);
+    }
+
+    fn execResponse(self: *Agent, job: *const ex.Job) !void {
         var buf: [256]u8 = undefined;
         const body = try std.fmt.bufPrint(&buf, "{{\"exit_code\":{d},\"stdout_bytes\":{d},\"stderr_bytes\":{d},\"truncated\":false}}", .{ job.exitCode(), job.stdout.items.len, job.stderr.items.len });
         try self.frame(.response, job.id, 0, body);
@@ -477,6 +595,7 @@ const Agent = struct {
 
 pub fn main() !void {
     var agent = Agent{ .agent_pid = c.getpid() };
+    agent.bounded_bulk = c.getenv("HOLLOW_AGENT_BOUNDED_BULK") != null;
     if (c.getenv("HOLLOW_AGENT_QUEUE_PROFILE") != null) {
         agent.queue_profile = try A.create(queue_profile.Profiler);
         agent.queue_profile.?.* = .{};
@@ -563,13 +682,16 @@ pub fn main() !void {
         for (&agent.jobs, 0..) |*entry, i| if (entry.*) |*job| {
             if (job.pty and (fds[3 + i * 3].revents & c.POLLOUT) != 0) try job.writeInput();
             for (0..3) |j| if ((fds[3 + i * 3 + j].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) try job.drain(j, now);
-            if (job.done(now) and (agent.closing or agent.output.items.len < 1024 * 1024)) {
-                if (!agent.closing) try agent.finish(job);
-                job.deinit();
-                entry.* = null;
+            if ((agent.deliveries[i].ready or job.done(now)) and (agent.closing or agent.output.items.len < 1024 * 1024)) {
+                if (!agent.closing and agent.usesBoundedBulk() and !job.pty) {
+                    agent.deliveries[i].ready = true;
+                } else {
+                    if (!agent.closing) try agent.finish(job);
+                    agent.releaseJob(i);
+                }
             }
         };
-        try agent.schedulePtys();
+        try agent.scheduleOutputs();
         if ((fds[1].revents & (c.POLLERR | c.POLLHUP)) != 0) agent.disconnect(now);
         if ((fds[1].revents & c.POLLOUT) != 0 and agent.output.items.len > agent.sent) {
             const n = c.write(1, agent.output.items.ptr + agent.sent, @min(65536, agent.output.items.len - agent.sent));
@@ -641,6 +763,160 @@ fn hasCompleteCommand(input: []const u8) bool {
     if (input.len < p.header_len) return false;
     const header = p.Header.decode(@ptrCast(input.ptr)) catch return false;
     return input.len - p.header_len >= header.payload_len;
+}
+
+fn completedCapture(id: u64) ex.Job {
+    return .{
+        .id = id,
+        .pid = 0,
+        .fds = .{ -1, -1, -1 },
+        .limit = 1024 * 1024,
+        .streams = .{ id * 4 + 2, id * 4 + 4 },
+        .deadline = std.math.maxInt(u64),
+        .reaped = true,
+        .supervised = true,
+    };
+}
+
+test "bounded bulk requires experimental PTY negotiation as well as environment opt-in" {
+    var agent: Agent = .{ .bounded_bulk = true };
+    try std.testing.expect(!agent.usesBoundedBulk());
+    agent.experimental_pty = true;
+    try std.testing.expect(agent.usesBoundedBulk());
+    agent.bounded_bulk = false;
+    try std.testing.expect(!agent.usesBoundedBulk());
+}
+
+test "bounded outputs rotate all sixteen PTY and completed exec slots within batch limits" {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    defer for (&agent.jobs) |*entry| if (entry.*) |*job| job.deinit();
+    for (&agent.jobs, 0..) |*entry, index| {
+        entry.* = completedCapture(index + 1);
+        const job = &entry.*.?;
+        job.pty = index % 2 == 0;
+        job.credit = 65536;
+        try job.stdout.appendNTimes(A, @intCast(index), if (job.pty) 65536 else 131072);
+        agent.deliveries[index].ready = !job.pty;
+    }
+    var received: [max_jobs]usize = @splat(0);
+    var terminal: [max_jobs]bool = @splat(false);
+    for (0..40) |_| {
+        try agent.scheduleOutputs();
+        try std.testing.expect(agent.output.items.len <= pty_batch_limit);
+        var offset: usize = 0;
+        while (offset < agent.output.items.len) {
+            const h = try p.Header.decode(@ptrCast(agent.output.items.ptr + offset));
+            const index: usize = @intCast(h.request_id - 1);
+            try std.testing.expect(!terminal[index]);
+            const bytes = agent.output.items[offset + p.header_len ..][0..h.payload_len];
+            if (h.kind == .data) {
+                try std.testing.expect(bytes.len <= 16384);
+                for (bytes) |byte| try std.testing.expectEqual(@as(u8, @intCast(index)), byte);
+                received[index] += bytes.len;
+            } else {
+                try std.testing.expectEqual(p.Kind.response, h.kind);
+                try std.testing.expectEqual(@as(usize, 131072), received[index]);
+                terminal[index] = true;
+            }
+            offset += p.header_len + bytes.len;
+        }
+        agent.output.clearRetainingCapacity();
+    }
+    for (received, 0..) |count, index| {
+        try std.testing.expectEqual(@as(usize, if (index % 2 == 0) 65536 else 131072), count);
+        try std.testing.expectEqual(index % 2 != 0, terminal[index]);
+        try std.testing.expectEqual(index % 2 != 0, agent.jobs[index] == null);
+    }
+}
+
+test "bounded exec keeps both streams and terminal totals in order without duplication" {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    agent.jobs[0] = completedCapture(1);
+    defer if (agent.jobs[0]) |*job| job.deinit();
+    try agent.jobs[0].?.stdout.appendNTimes(A, 'A', 40000);
+    try agent.jobs[0].?.stderr.appendNTimes(A, 'B', 50000);
+    agent.deliveries[0].ready = true;
+    var counts: [2]usize = .{ 0, 0 };
+    var ended = false;
+    for (0..20) |_| {
+        try agent.scheduleOutputs();
+        if (agent.output.items.len == 0) continue;
+        try std.testing.expect(!ended);
+        const h = try p.Header.decode(@ptrCast(agent.output.items.ptr));
+        try std.testing.expectEqual(p.header_len + h.payload_len, agent.output.items.len);
+        const payload = agent.output.items[p.header_len..];
+        if (h.kind == .data) {
+            const index: usize = if (h.stream_id == 6) 0 else 1;
+            if (index == 1) try std.testing.expectEqual(@as(usize, 40000), counts[0]);
+            for (payload) |byte| try std.testing.expectEqual(@as(u8, if (index == 0) 'A' else 'B'), byte);
+            counts[index] += payload.len;
+        } else {
+            try std.testing.expectEqual(p.Kind.response, h.kind);
+            var parsed = try std.json.parseFromSlice(std.json.Value, A, payload, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqual(@as(u64, 40000), try integer(parsed.value, "stdout_bytes", 0));
+            try std.testing.expectEqual(@as(u64, 50000), try integer(parsed.value, "stderr_bytes", 0));
+            ended = true;
+        }
+        agent.output.clearRetainingCapacity();
+    }
+    try std.testing.expectEqual([2]usize{ 40000, 50000 }, counts);
+    try std.testing.expect(ended and agent.jobs[0] == null);
+}
+
+test "bounded exec cancellation after DATA emits one truncation and clears delivery state" {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    agent.jobs[0] = completedCapture(1);
+    defer if (agent.jobs[0]) |*job| job.deinit();
+    try agent.jobs[0].?.stdout.appendNTimes(A, 'X', 131072);
+    agent.deliveries[0].ready = true;
+    try agent.scheduleOutputs();
+    const first = try p.Header.decode(@ptrCast(agent.output.items.ptr));
+    try std.testing.expectEqual(p.Kind.data, first.kind);
+    try std.testing.expectEqual(@as(usize, 16384), agent.deliveries[0].stdout_offset);
+    agent.jobs[0].?.cancel(.cancelled, 0);
+    try agent.scheduleOutputs();
+    const offset = p.header_len + first.payload_len;
+    const last = try p.Header.decode(@ptrCast(agent.output.items.ptr + offset));
+    try std.testing.expectEqual(p.Kind.error_response, last.kind);
+    try std.testing.expectEqual(offset + p.header_len + last.payload_len, agent.output.items.len);
+    try std.testing.expect(agent.jobs[0] == null);
+    try std.testing.expectEqual(bulk_delivery.State{}, agent.deliveries[0]);
+    const size = agent.output.items.len;
+    try agent.scheduleOutputs();
+    try std.testing.expectEqual(size, agent.output.items.len);
+}
+
+test "oversized filesystem metadata waits for empty output and cannot starve behind PTYs" {
+    var agent: Agent = .{ .bounded_bulk = true, .experimental_pty = true };
+    defer agent.output.deinit(A);
+    defer for (&agent.jobs) |*entry| if (entry.*) |*job| job.deinit();
+    agent.jobs[0] = completedCapture(1);
+    agent.jobs[0].?.pty = true;
+    agent.jobs[0].?.credit = 65536;
+    try agent.jobs[0].?.stdout.appendNTimes(A, 'P', 65536);
+    agent.jobs[1] = completedCapture(2);
+    agent.jobs[1].?.rpc_worker = true;
+    const raw = try (p.Header{ .kind = .response, .request_id = 2, .payload_len = 100000 }).encode();
+    try agent.jobs[1].?.stdout.appendSlice(A, &raw);
+    try agent.jobs[1].?.stdout.appendNTimes(A, 'M', 100000);
+    agent.deliveries[1].ready = true;
+    try agent.scheduleOutputs();
+    try std.testing.expectEqual(@as(usize, 1), agent.next_output);
+    try std.testing.expect(agent.jobs[1] != null);
+    try std.testing.expectEqual(@as(usize, 16384 + p.header_len), agent.output.items.len);
+    agent.output.clearRetainingCapacity();
+    try agent.scheduleOutputs();
+    try std.testing.expectEqual(@as(usize, 100000 + p.header_len), agent.output.items.len);
+    try std.testing.expect(agent.jobs[1] == null);
+    const h = try p.Header.decode(@ptrCast(agent.output.items.ptr));
+    try std.testing.expectEqual(@as(u64, 2), h.request_id);
+    agent.output.clearRetainingCapacity();
+    try agent.scheduleOutputs();
+    try std.testing.expect(agent.output.items.len > 0);
 }
 
 test "queue diagnostics distinguish complete buffered commands from partial frames" {
@@ -784,7 +1060,9 @@ test "shared PTY scheduling bounds queued bulk and rotates across all credited j
 
 fn cleanup(agent: *Agent) void {
     const start = nowMs();
-    for (&agent.jobs) |*entry| if (entry.*) |*job| job.cancel(.cancelled, start);
+    for (&agent.jobs, 0..) |*entry, index| if (entry.*) |*job| {
+        if (agent.deliveries[index].ready) agent.releaseJob(index) else job.cancel(.cancelled, start);
+    };
     while (true) {
         reap(agent);
         var active = false;
@@ -807,11 +1085,46 @@ fn reap(agent: *Agent) void {
         var status: c_int = 0;
         const pid = c.waitpid(-1, &status, c.WNOHANG);
         if (pid <= 0) break;
-        for (&agent.jobs) |*entry| if (entry.*) |*job| if (job.pid == pid) {
-            job.reaped = true;
-            job.status = status;
-        };
+        recordReaped(agent, pid, status);
     }
+}
+
+fn recordReaped(agent: *Agent, pid: c.pid_t, status: c_int) void {
+    for (&agent.jobs) |*entry| if (entry.*) |*job| if (!job.reaped and job.pid == pid) {
+        job.reaped = true;
+        job.status = status;
+        return;
+    };
+}
+
+test "retained completion never claims a newly reaped child with the same PID" {
+    var agent: Agent = .{};
+    agent.jobs[0] = completedCapture(1);
+    agent.jobs[0].?.pid = 123;
+    agent.jobs[0].?.status = 7;
+    agent.deliveries[0].ready = true;
+    agent.jobs[1] = completedCapture(2);
+    agent.jobs[1].?.pid = 123;
+    agent.jobs[1].?.reaped = false;
+    recordReaped(&agent, 123, 41);
+    try std.testing.expectEqual(@as(c_int, 7), agent.jobs[0].?.status);
+    try std.testing.expectEqual(@as(c_int, 41), agent.jobs[1].?.status);
+    try std.testing.expect(agent.jobs[1].?.reaped);
+}
+
+test "retained completion skips process cleanup ticks but retains delivery deadline" {
+    var agent: Agent = .{};
+    agent.jobs[0] = completedCapture(1);
+    agent.jobs[0].?.cancel(.cancelled, 0);
+    agent.deliveries[0].ready = true;
+    agent.tickJob(0, 2000);
+    try std.testing.expect(!agent.jobs[0].?.killed);
+    agent.jobs[1] = completedCapture(2);
+    agent.jobs[1].?.deadline = 1;
+    agent.deliveries[1].ready = true;
+    agent.tickJob(1, 2);
+    try std.testing.expectEqual(ex.Reason.timeout, agent.jobs[1].?.reason.?);
+    try std.testing.expect(!agent.jobs[1].?.killed);
 }
 
 fn nonblocking(fd: c_int) !void {
