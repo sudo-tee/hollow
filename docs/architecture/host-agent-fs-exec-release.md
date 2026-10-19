@@ -16,9 +16,12 @@ handlers, Lua bootstrap policy and read-only workspace integration.
   spawn, implicit command replay or silent backend fallback.
 * Executable-relative x86_64/aarch64 static musl bundle and strict SHA manifest;
   explicit artifact/preinstalled overrides, checksum validation and atomic install.
-* Workspace discovery uses explicit `source.host`; `workspace.load_host` reads
-  and validates bounded host files asynchronously. Local resolver aliases and
-  synchronous `workspace.load` remain compatible. Arbitrary read-only project
+* Workspace discovery uses `host.fs` exclusively: ready `source.host` objects or
+  declarative host descriptors, defaulting to native-local for local roots.
+  Managed guest connections persist across scans; legacy resolvers are converted
+  in memory with migration warnings, never scanned through shell fallbacks.
+  `workspace.load_host` reads and validates bounded host files asynchronously;
+  synchronous `workspace.load` remains compatible. Arbitrary read-only project
   queries use `host:exec({argv=...,cwd=...})`, not per-environment handlers.
 * Workspace export/write and automatic remote pane/bootstrap routing are **not**
   part of read-only fs/exec. Loading a remote document never executes it or chooses

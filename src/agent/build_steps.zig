@@ -30,6 +30,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     }
     const install_manifest = b.addInstallFile(manifest_file, "agents/SHA256SUMS");
     all_step.dependOn(&install_manifest.step);
+    // Guest management is a default capability, not a separately prepared add-on.
+    b.getInstallStep().dependOn(all_step);
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/protocol.zig"),
         .target = b.graph.host,

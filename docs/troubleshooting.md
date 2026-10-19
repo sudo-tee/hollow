@@ -170,8 +170,8 @@ hollow.config.set({
 
 ### `cwd` shows a Windows path inside WSL
 
-Use a workspace source with `cwd_resolver = "wsl_unc"`, or pass a
-Linux `cwd` directly to `new_tab` / `split_pane`. See
+Use a workspace source with `host = { type = "wsl", distro = "Ubuntu" }`
+and Linux-native roots, or pass a Linux `cwd` directly to `new_tab` / `split_pane`. See
 [WSL → WSL workflow patterns](platforms/wsl.md#wsl-workflow-patterns).
 
 ## Plugins

@@ -1,6 +1,8 @@
 local program_status = require("hollow.program_status")
 local state = require("hollow.state").get()
 local util = require("hollow.util")
+local compat = require("hollow.ui.workspace.compat")
+local hosts = require("hollow.ui.workspace.hosts")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -29,21 +31,6 @@ end
 local function notify_warn(message, ttl)
   local notify = ui.notify
   notify.warn(message, { ttl = ttl or 1800 })
-end
-
-local function path_exists(path)
-  path = trim_string(path)
-  if path == "" then
-    return false
-  end
-
-  local ok, result, code = os.rename(path, path)
-  return ok or code == 13 or type(result) == "string"
-end
-
-local function is_wsl_unc_path(path)
-  local normalized = trim_string(path):gsub("\\", "/"):lower()
-  return normalized:match("^//wsl%$/") ~= nil or normalized:match("^//wsl%.localhost/") ~= nil
 end
 
 local function safe_table_result(callback)
@@ -128,33 +115,6 @@ local function first_pane_cwd(workspace)
   return cwd ~= "" and cwd or nil
 end
 
-local function scan_projects_in_root(root)
-  root = trim_string(root)
-  if root == "" or not path_exists(root) then
-    return {}
-  end
-
-  local skip_child_exists_check = is_wsl_unc_path(root)
-
-  local entries = safe_table_result(function()
-    return hollow.read_dir(root)
-  end) or {}
-
-  local items = {}
-  for _, entry in ipairs(entries) do
-    local cwd = trim_string(entry)
-    local name = trim_string(util.basename(cwd))
-    if name ~= "" and name:sub(1, 1) ~= "." and (skip_child_exists_check or path_exists(cwd)) then
-      items[#items + 1] = {
-        name = name,
-        cwd = cwd,
-      }
-    end
-  end
-
-  return items
-end
-
 local function workspace_name_key(name, domain)
   local normalized_name = normalize_workspace_id(name)
   if normalized_name == "" then
@@ -165,125 +125,30 @@ local function workspace_name_key(name, domain)
   return normalized_domain .. ":name:" .. normalized_name
 end
 
-local function scan_projects_in_wsl_root(source_name, root)
-  source_name = trim_string(source_name)
-  root = trim_string(root)
-  if source_name == "" or root == "" then
-    return {}
-  end
-
-  local escaped_name = source_name:gsub('"', '\\"')
-  local escaped_root = root:gsub('"', '\\"')
-  local command = 'cmd.exe /c "wsl.exe -d '
-    .. escaped_name
-    .. ' -- ls -1A "'
-    .. escaped_root
-    .. '" 2>nul"'
-  local pipe = io.popen(command)
-  if pipe == nil then
-    notify_warn("Workspace source failed: wsl " .. source_name)
-    return {}
-  end
-
-  local items = {}
-  for line in pipe:lines() do
-    local name = trim_string(line)
-    local cwd = name ~= "" and util.join_path(root, name) or ""
-    if cwd ~= "" then
-      items[#items + 1] = {
-        name = name,
-        cwd = cwd,
-      }
-    end
-  end
-  pipe:close()
-
-  if #items == 0 then
-    notify_warn("Workspace source returned no folders: wsl " .. source_name)
-  end
-
-  return items
-end
-
-local function scan_projects_in_ssh_root(domain, root)
-  domain = trim_string(domain)
-  root = trim_string(root)
-  if domain == "" or root == "" then
-    return {}
-  end
-
-  local ok, stdout, stderr = hollow.term.run_domain_process({ "ls", "-1Ap", root }, domain)
-  if not ok then
-    local detail = trim_string(stderr)
-    notify_warn(
-      detail ~= "" and ("Workspace source failed: " .. detail)
-        or ("Workspace source failed: ssh " .. domain)
-    )
-    return {}
-  end
-
-  local items = {}
-  for line in stdout:gmatch("[^\r\n]+") do
-    local raw_name = trim_string(line)
-    local is_dir = raw_name:sub(-1) == "/"
-    local name = is_dir and raw_name:sub(1, -2) or raw_name
-    local cwd = name ~= "" and util.join_path(root, name) or ""
-    local basename = trim_string(util.basename(cwd))
-    if is_dir and basename ~= "" and basename:sub(1, 1) ~= "." then
-      items[#items + 1] = {
-        name = basename,
-        cwd = cwd,
-        domain = domain,
-      }
-    end
-  end
-
-  if #items == 0 then
-    notify_warn("Workspace source returned no folders: ssh " .. domain)
-  end
-
-  return items
-end
-
-local function default_known_workspaces()
-  local domain = current_domain_name()
-  local merged = {}
-  local seen = {}
-
-  for _, root in ipairs(normalized_list(switcher_state().project_roots)) do
-    for _, item in ipairs(scan_projects_in_root(root)) do
-      local id = workspace_identity(item.name, item.cwd, domain)
-      if not seen[id] then
-        seen[id] = true
-        item.domain = domain
-        merged[#merged + 1] = item
-      end
-    end
-  end
-
-  table.sort(merged, function(a, b)
-    return a.name < b.name
-  end)
-
-  return merged
-end
-
 local function configured_known_workspaces()
-  return safe_table_result(switcher_state().known_workspaces or default_known_workspaces) or {}
+  return safe_table_result(switcher_state().known_workspaces) or {}
 end
 
 local function configured_sources()
-  local sources = switcher_state().sources
-  return safe_table_result(sources) or normalized_list(sources)
+  local switcher = switcher_state()
+  local raw = safe_table_result(switcher.sources) or normalized_list(switcher.sources)
+  local sources = {}
+  for _, value in ipairs(raw) do
+    if type(value) == "table" then
+      local source, err = compat.source(value)
+      if source then sources[#sources + 1] = source else compat.warn_invalid(value, err) end
+    end
+  end
+  if switcher.known_workspaces == nil and #normalized_list(switcher.project_roots) > 0 then
+    local raw_source = compat.project_roots(switcher.project_roots)
+    local source, err = compat.source(raw_source)
+    if source then sources[#sources + 1] = source else compat.warn_invalid(raw_source, err) end
+  end
+  return hosts.prepare(sources)
 end
 
 local function source_domain_name(source)
   return normalize_domain(source.domain) or current_domain_name()
-end
-
-local function source_resolver(source)
-  local resolver = trim_string(source.resolver)
-  return resolver ~= "" and resolver or "local"
 end
 
 local function host_key(source)
@@ -309,7 +174,7 @@ local function host_signature(sources)
       local host = source.host
       append(index); append(type(host) == "table" and host.id or "")
       append(type(host) == "table" and host.generation or "")
-      append(source.domain or ""); append(source.cwd_resolver)
+      append(source.domain or ""); append(source._legacy_cwd)
       append(source.default); append(source.name or "")
       append(#normalized_list(source.roots))
       for _, root in ipairs(normalized_list(source.roots)) do
@@ -366,7 +231,7 @@ local function start_host_scan(sources, signature)
   local generation = switcher.host_scan_generation or 0
   local scans = {}
   for index, source in ipairs(sources) do
-    if source.default ~= false and explicit_host(source) then
+    if source.default ~= false and explicit_host(source) and not source._host_pending and #normalized_list(source.roots) > 0 then
       scans[#scans + 1] = { source = source, key = host_key(source), index = index }
     end
   end
@@ -504,48 +369,6 @@ local function start_host_scan(sources, signature)
   finish_scan()
 end
 
-local function wsl_unc_to_linux_path(path)
-  local normalized = trim_string(path):gsub("\\", "/")
-  if normalized == "" then
-    return nil
-  end
-
-  return normalized:match("^//wsl%$/[^/]+(/.*)$")
-    or normalized:match("^//wsl%.localhost/[^/]+(/.*)$")
-end
-
-local function resolve_source_item_cwd(source, item)
-  local resolver = source.cwd_resolver
-  local cwd = trim_string(item.cwd)
-  if resolver == nil or cwd == "" then
-    return item
-  end
-
-  local clone = util.clone_value(item)
-  if resolver == "wsl_unc" then
-    clone.cwd = wsl_unc_to_linux_path(cwd) or cwd
-    return clone
-  end
-
-  if type(resolver) ~= "function" then
-    return item
-  end
-
-  local ok, resolved = pcall(resolver, cwd, util.clone_value(clone), util.clone_value(source))
-  if not ok then
-    return item
-  end
-
-  if type(resolved) == "string" then
-    resolved = trim_string(resolved)
-    clone.cwd = resolved ~= "" and resolved or nil
-  elseif resolved == nil then
-    clone.cwd = nil
-  end
-
-  return clone
-end
-
 local function normalize_possible_workspace(item)
   if type(item) == "string" then
     local name = trim_string(item)
@@ -609,15 +432,13 @@ local function normalize_possible_workspace(item)
 end
 
 local function source_workspace_item(raw, source, resolved_domain)
+  raw = compat.item(source, raw)
   if type(raw) == "table" then
     raw = util.clone_value(raw)
     raw.domain = raw.domain or resolved_domain
-    raw.source = raw.source or source_resolver(source)
+    raw.source = raw.source or "host"
     if host_key(source) then
       raw._host_key = raw._host_key or host_key(source)
-      if source.cwd_resolver ~= nil then raw = resolve_source_item_cwd(source, raw) end
-    else
-      raw = resolve_source_item_cwd(source, raw)
     end
   end
 
@@ -747,7 +568,6 @@ local function cached_known_workspaces(force_refresh)
   for source_index, source in ipairs(sources) do
     if source.default ~= false then
       local resolved_domain = source_domain_name(source)
-      local resolver = source_resolver(source)
 
       for _, raw in ipairs(safe_table_result(source.items) or {}) do
         append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
@@ -760,18 +580,6 @@ local function cached_known_workspaces(force_refresh)
           if raw._host_source_index == source_index and raw._host_key == host_id then
             append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
           end
-        end
-      end
-      for _, root in ipairs(normalized_list(source.roots)) do
-        if not explicit_host(source) then
-        local scanned = resolver == "wsl"
-            and scan_projects_in_wsl_root(source.name or source.domain or "", root)
-          or resolver == "ssh" and scan_projects_in_ssh_root(resolved_domain, root)
-          or scan_projects_in_root(root)
-
-        for _, raw in ipairs(scanned) do
-          append_unique(items, seen, source_workspace_item(raw, source, resolved_domain))
-        end
         end
       end
     end
@@ -933,6 +741,7 @@ function M.configure(opts)
   local invalidate = util.has_any_key(opts, { "known_workspaces", "sources", "project_roots" })
   util.merge_tables(switcher, opts)
   if type(opts.sources) == "table" then switcher.sources = opts.sources end
+  if type(opts.project_roots) == "table" then switcher.project_roots = opts.project_roots end
   if invalidate then
     invalidate_host_scan()
     switcher.cached_items = nil
@@ -944,6 +753,7 @@ end
 function M.clear_cache()
   local switcher = switcher_state()
   invalidate_host_scan()
+  hosts.retry()
   switcher.cached_items = nil
   switcher.cache_loaded_at_ms = 0
   switcher.host_signature = host_signature(configured_sources())

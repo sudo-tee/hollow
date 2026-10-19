@@ -14,6 +14,7 @@ For the per-platform caveats see [Platforms](platforms/README.md).
   hard-fail on any other version.
 - A C/C++ toolchain for the Zig C backend.
 - Git, to fetch submodules.
+- Python 3, to generate the checksummed guest-agent bundle included in normal builds.
 - Windows-specific: the `x86_64-windows-gnu` Zig target. The
   `launch.sh` wrapper handles the cross-compile from WSL.
 

@@ -26,6 +26,9 @@ A Windows release zip should contain:
 | `hollow-cli` _(optional)_                    | Python HTP client (talks OSC over a tty)     |
 | `conf/init.lua` _(optional)_                 | Editable shipped base config                 |
 | `hollow-wsl-bypass`                           | Linux-side WSL helper binary (auto-deployed) |
+| `agents/SHA256SUMS`                         | Checksums for the bundled guest agents      |
+| `agents/linux-x86_64/hollow-agent`           | Static Linux x86_64 guest agent             |
+| `agents/linux-aarch64/hollow-agent`          | Static Linux aarch64 guest agent            |
 | `scripts/install-wsl-bypass.sh` _(optional)_ | Legacy manual install script                 |
 | `README.md`, `LICENSE`                       | Standard release files                       |
 
@@ -52,6 +55,10 @@ After a user unpacks a release and runs `hollow.exe` once:
   hollow-gui.exe
   hollow-native.exe
   hollow-cli                  # Python client, if shipped
+  agents/
+    SHA256SUMS
+    linux-x86_64/hollow-agent
+    linux-aarch64/hollow-agent
   conf/
     init.lua                  # shipped base, if shipped
   %APPDATA%\hollow\
@@ -93,6 +100,14 @@ zig build -Doptimize=ReleaseFast
 
 `launch.sh` is the dev loop; `zig build -Doptimize=ReleaseFast` is the
 shape of a CI release build.
+
+Normal `zig build` also installs both Linux agent architectures and `SHA256SUMS`
+under `zig-out/agents/`. `launch.sh --install` copies the complete bundle beside
+the Windows executable. With `--no-build`, a missing bundle fails installation
+with build guidance rather than installing an app unable to deploy guest agents.
+Guest connections verify/deploy the selected bundled binary automatically; there
+is no network download. See [`hollow.host`](reference/lua/host.md) for trusted
+bundle overrides, guest prerequisites and platform qualification.
 
 ## WSL bypass helper
 
