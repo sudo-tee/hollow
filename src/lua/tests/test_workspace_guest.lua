@@ -168,6 +168,26 @@ describe("host-first workspace guests", function()
     end
   end)
 
+  it("pools nested container hosts by distro and user without changing terminal domains", function()
+    for _, kind in ipairs({ "podman", "docker" }) do
+      calls, hosts = {}, {}
+      local via = { type = "wsl", distro = "Ubuntu", user = "alice" }
+      local sources = {
+        { host = { type = kind, container = "dev", via = via }, roots = { "/one" }, domain = "container-shell" },
+        { host = { type = kind, container = "dev", via = { user = "alice", distro = "Ubuntu", type = "wsl" } }, roots = { "/two" }, domain = "container-shell" },
+        { host = { type = kind, container = "dev", via = { type = "wsl", distro = "Ubuntu", user = "bob" } }, roots = { "/three" }, domain = "other-shell" },
+      }
+      hollow.ui.workspace.configure({ sources = sources })
+      assert.are.equal(3, #items(true))
+      assert.are.equal(2, #calls)
+      assert.are.same(via, calls[1].opts.via)
+      assert.are_not.equal(via, calls[1].opts.via)
+      assert.are.equal("container-shell", items()[1].domain)
+      items(true)
+      assert.are.equal(2, #calls)
+    end
+  end)
+
   it("does not start disabled or items-only guest sources", function()
     hollow.ui.workspace.configure({ sources = {
       { host = { type = "wsl", distro = "Ubuntu" }, roots = { "/p" }, default = false },

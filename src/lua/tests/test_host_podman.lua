@@ -30,6 +30,20 @@ describe("hollow.host." .. engine, function()
     local home = config.home or "/home/worker"
     local function execute(argv)
       commands[#commands + 1] = argv
+      if config.via then
+        assert.are.equal(config.wsl or "wsl.exe", argv[1])
+        local index
+        for i, value in ipairs(argv) do if value == "--exec" then index = i; break end end
+        assert.is_truthy(index)
+        local inner = {}
+        for i = index + 1, #argv do inner[#inner + 1] = argv[i] end
+        argv = inner
+        if argv[1] == "/bin/true" then return config.distro_error or result(0) end
+        if argv[1] == "wslpath" then return config.path_error or result(0, config.mapped or "/mnt/c/Hollow/agent\n") end
+        -- Context is scoped to the Linux Docker CLI, never wsl.exe.
+        if argv[2] == "--context" then table.remove(argv, 2); table.remove(argv, 2) end
+        if argv[2] == "--version" then return config.version_error or result(0, engine .. " version\n") end
+      end
       if argv[1] ~= (config.executable or engine) then return result(127, "", "missing executable") end
       if argv[2] == "container" and argv[3] == "inspect" then
         if config.inspect_error then return config.inspect_error end
@@ -132,6 +146,152 @@ describe("hollow.host." .. engine, function()
     assert.are.equal(string.rep("a", 64), f.commands[2][3])
     assert.are.equal(string.rep("a", 64), f.commands[3][3])
     assert.are.equal(0, #f.closes)
+  end)
+
+  local function nested_options(extra)
+    local opts = { id = "nested", container = "worker", via = { type = "wsl", distro = "Ubuntu", user = "alice" } }
+    for key, value in pairs(extra or {}) do opts[key] = value end
+    return opts
+  end
+
+  local function linux_argv(argv)
+    for i, value in ipairs(argv) do
+      if value == "--exec" then
+        local out = {}
+        for j = i + 1, #argv do out[#out + 1] = argv[j] end
+        return out
+      end
+    end
+    error("missing WSL --exec")
+  end
+
+  local function nested_call(f, command)
+    for _, argv in ipairs(f.commands) do
+      local inner = linux_argv(argv)
+      if inner[1] == command or inner[2] == command then return inner, argv end
+    end
+  end
+
+  it("connects through WSL without a shell wrapper or transport TTY", function()
+    local f = fixture({ via = true })
+    local opts = nested_options({ agent_path = "/opt/agent with spaces'\n" })
+    opts.via.distro, opts.via.user = "Ubuntu 'quoted'", "alice smith"
+    local p = start(f, opts)
+    assert.are.equal("fulfilled", p:status(), p:error() and p:error().message)
+    assert.are.same({ "wsl.exe", "--distribution", "Ubuntu 'quoted'", "--user", "alice smith", "--cd", "/", "--exec", "/bin/true" }, f.commands[1])
+    assert.are.same({ id = "nested", argv = { "wsl.exe", "--distribution", "Ubuntu 'quoted'", "--user", "alice smith", "--cd", "/", "--exec", engine, "exec", "-i", string.rep("a", 64), opts.agent_path, "stdio" } }, f.connects[1])
+    assert.is_nil(nested_call(f, "wslpath"))
+  end)
+
+  it("maps Windows artifacts in the selected distro before container copy", function()
+    local source, mapped = "C:\\Hollow Files\\agent'\n", "/mnt/c/Hollow Files/agent'\n\n"
+    local f = fixture({ via = true, mapped = mapped })
+    local opts = nested_options({ artifacts = { x86_64 = { path = source, sha256 = string.rep("b", 64) } } })
+    local p = start(f, opts)
+    assert.are.equal("fulfilled", p:status(), p:error() and p:error().message)
+    assert.are.same({ "wslpath", "-a", "-u", source }, nested_call(f, "wslpath"))
+    local cp = nested_call(f, "cp")
+    assert.are.equal(mapped:sub(1, -2), cp[3])
+    assert.are.equal(string.rep("a", 64) .. ":/home/worker/.cache/hollow/agents/linux-x86_64/" .. string.rep("b", 64) .. "/.upload-abcdef123456", cp[4])
+    assert.are.equal(engine, linux_argv(f.connects[1].argv)[1])
+  end)
+
+  it("discovers bundled artifacts automatically for nested containers", function()
+    local f = fixture({ via = true })
+    install_bundle(f.native, "/opt/hollow/agents", string.rep("a", 64) .. "  linux-x86_64/hollow-agent\n" .. string.rep("b", 64) .. "  linux-aarch64/hollow-agent\n")
+    local p = start(f, nested_options())
+    assert.are.equal("fulfilled", p:status(), p:error() and p:error().message)
+    assert.are.same({ "wslpath", "-a", "-u", "/opt/hollow/agents/linux-x86_64/hollow-agent" }, nested_call(f, "wslpath"))
+  end)
+
+  it("copies nested launcher policy before async work and preserves CLI override", function()
+    local f = fixture({ via = true, exec_deferred_at = 1, executable = "/opt/container CLI", wsl = "custom-wsl.exe" })
+    local opts = nested_options({ agent_path = "/agent" })
+    opts[engine], opts.via.wsl = "/opt/container CLI", "custom-wsl.exe"
+    local p = start(f, opts)
+    opts.via.distro, opts.via.user, opts.via.wsl, opts[engine] = "Changed", "root", "other.exe", "other"
+    f.config.pending_exec.resolve(result(0))
+    assert.are.equal("fulfilled", p:status())
+    local argv = f.connects[1].argv
+    assert.are.same({ "custom-wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec", "/opt/container CLI", "exec", "-i", string.rep("a", 64), "/agent", "stdio" }, argv)
+  end)
+
+  it("preserves default WSL user and scopes Docker context inside WSL", function()
+    local f = fixture({ via = true })
+    local opts = nested_options({ agent_path = "/agent", context = engine == "docker" and "build cluster" or nil })
+    opts.via.user = nil
+    assert.are.equal("fulfilled", start(f, opts):status())
+    assert.are.equal("--cd", f.commands[1][4])
+    local argv = linux_argv(f.connects[1].argv)
+    if engine == "docker" then
+      assert.are.same({ engine, "--context", "build cluster", "exec", "-i", string.rep("a", 64), "/agent", "stdio" }, argv)
+    end
+  end)
+
+  it("rejects invalid or unsupported nesting before native effects", function()
+    local effects = 0
+    local hosts = { local_host = function() effects = effects + 1 end }
+    for _, via in ipairs({ false, "wsl", {}, { type = "ssh" }, { type = "wsl" },
+      { type = "wsl", distro = "--help" }, { type = "wsl", distro = "Ubuntu", user = "-root" },
+      { type = "wsl", distro = "Ubuntu", wsl = "" }, { type = "wsl", distro = "Ubuntu", via = {} },
+      { type = "wsl", distro = "Ubuntu", agent_path = "/ignored" } }) do
+      assert.has_error(function() require("hollow.host." .. engine).connect(hosts, nested_options({ via = via, agent_path = "/agent" })) end)
+    end
+    assert.are.equal(0, effects)
+  end)
+
+  it("distinguishes unavailable distro, CLI and stopped container", function()
+    local cases = {
+      { config = { distro_error = result(1, "", "unknown distro/user") }, code = "distro_unavailable" },
+      { config = { version_error = result(1, "", "missing CLI") }, code = "connector_unavailable" },
+      { config = { running = false }, code = "container_unavailable" },
+      { config = { native_error = { code = "not_found", message = "wsl missing" } }, code = "connector_unavailable" },
+    }
+    for _, case in ipairs(cases) do
+      case.config.via = true
+      local f = fixture(case.config)
+      assert.are.equal(case.code, start(f, nested_options({ agent_path = "/agent" })):error().code)
+      assert.are.equal(0, #f.connects)
+    end
+  end)
+
+  it("cleans container temp through WSL after path/copy/checksum failure", function()
+    for _, config in ipairs({
+      { path_error = result(1, "", "mapping failed") },
+      { mapped = "relative\n" }, { mapped = "/bad\0path\n" }, { mapped = "/missing-newline" },
+      { cp_error = true }, { checksum_error = true },
+    }) do
+      config.via = true
+      local f = fixture(config)
+      local p = start(f, nested_options({ artifacts = { x86_64 = { path = "C:\\agent", sha256 = string.rep("c", 64) } } }))
+      assert.are.equal(config.checksum_error and "checksum_mismatch" or "agent_install_unavailable", p:error().code, p:error().message)
+      local cleanup = linux_argv(f.commands[#f.commands])
+      assert.are.same({ engine, "exec", string.rep("a", 64), "rm", "-f", "--", "/home/worker/.cache/hollow/agents/linux-x86_64/" .. string.rep("c", 64) .. "/.upload-abcdef123456" }, cleanup)
+      assert.are.equal(0, #f.connects)
+      if config.mapped or config.path_error then assert.is_nil(nested_call(f, "cp")) end
+    end
+  end)
+
+  it("reuses verified nested cache without path mapping or copy", function()
+    local f = fixture({ via = true, cached = true })
+    assert.are.equal("fulfilled", start(f, nested_options({ artifacts = { x86_64 = { path = "C:\\agent", sha256 = string.rep("d", 64) } } })):status())
+    assert.is_nil(nested_call(f, "wslpath"))
+    assert.is_nil(nested_call(f, "cp"))
+  end)
+
+  it("cancels or times out pending nested launcher work without connecting", function()
+    for _, timeout in ipairs({ false, true }) do
+      local f = fixture({ via = true, exec_deferred_at = 1 })
+      local p = start(f, nested_options({ agent_path = "/agent", timeout_ms = 5 }))
+      local cancels = 0
+      function f.config.pending_exec.promise:cancel() cancels = cancels + 1 end
+      if timeout then now = now + 6; table.remove(queue, #queue).fn() else p:cancel() end
+      assert.are.equal(timeout and "timeout" or "cancelled", p:error().code)
+      assert.are.equal(1, cancels)
+      f.config.pending_exec.resolve(result(0))
+      assert.are.equal(1, #f.commands)
+      assert.are.equal(0, #f.connects)
+    end
   end)
 
   it("deep-copies options before async work", function()
