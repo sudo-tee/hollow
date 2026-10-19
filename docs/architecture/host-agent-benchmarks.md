@@ -331,3 +331,29 @@ the partial dataset as passing, or treat a longer repeat as disproving starvatio
 The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXEC
 captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
 and dynamic-focus timing still need independently sustained workloads.
+
+### Per-sequence focus observability
+
+With focus negotiated, existing target-side queue profiling also emits separate
+`AGENT_FOCUS_PROFILE` snapshots. They retain the first 64 accepted sequences with
+dispatch, first observed captured/credited readiness, next matching DATA enqueue,
+absolute payload interval and successful stdout first/final payload writes.
+Already queued DATA and header-only writes cannot satisfy correlation. Fixed
+overflow drops timings only; superseded/no-stream/released/discarded records and
+nullable pending timestamps stay explicit. Snapshots repeat per connection: select
+latest observations by sequence within each run, never sum terminal duplicates.
+
+`--focus-every N` explicitly refreshes the same foreground target before every
+Nth prompt, including warmups, waiting for its ACK while servicing backgrounds and
+bulk. ACK waits are outside the echo timer; preserve `focus_refreshes` sequence,
+prompt index and RTT separately. Output cases still use only initial focus. This
+is not a target-switch benchmark; quota truncation makes refresh a real workload
+change, so compare identical refresh settings on/off. Never subtract client and
+agent clock epochs or equate stdout writes with visible echo.
+
+The [diagnostics report](../benchmarks/agent-pty/2026-10-19-focus-profile.md)
+preserves 107 measurements and 15 reconstructed source hashes. Loaded samples
+give per-sequence ready/enqueue/write boundaries, not kernel-readiness, prompt
+identity, sustained QoS or GUI/application timing. At 32 loaded refreshes per run,
+nearest-rank p99 equals max; missing/dropped records are not completed or imputed.
+Default E1 remains inconclusive with failed individual prior/current native pairs.

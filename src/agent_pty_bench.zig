@@ -14,6 +14,7 @@ const Config = struct {
     allocator: enum { page, smp, debug } = .debug,
     telemetry: bool = false,
     focus_scheduler: bool = false,
+    focus_every: usize = 0,
     backend: enum { native, agent, shared },
     sessions: usize = 1,
     load: enum { idle, noisy, stalled } = .idle,
@@ -44,6 +45,26 @@ fn spawn(cfg: Config, command: []const u8, notification: @import("pty/wake.zig")
             break :blk .{ .native = try @import("pty/pty_posix.zig").PosixPty.spawn(a, "/bin/sh", 120, 40, null, null, .{ .command = launch.written() }, notification) };
         } else return error.NativeBenchmarkRequiresLinux,
     };
+}
+
+// Explicit refresh of the same foreground target, not a pane-switch benchmark.
+fn focusAck(owner: *SharedConnection, sequence: u64, stream: u64, wake: *Wake, backgrounds: *Backgrounds, timeout: i128) !u64 {
+    const start = clock();
+    const id = try owner.updateFocus(sequence, 1, stream);
+    defer owner.connection.abandon(id);
+    while (clock() < start + timeout) {
+        const epoch = wake.epoch.load(.acquire);
+        if (owner.connection.pollFor(id)) |completion| {
+            defer owner.connection.freeCompletion(completion);
+            if (completion.failure != null or completion.metadata_json == null) return error.FocusFailed;
+            const response = try std.json.parseFromSlice(struct { applied: bool, sequence: u64 }, a, completion.metadata_json.?, .{});
+            defer response.deinit();
+            if (!response.value.applied or response.value.sequence != sequence) return error.FocusFailed;
+            return @intCast(clock() - start);
+        }
+        if (!try backgrounds.service()) try wake.wait(epoch, start + timeout);
+    }
+    return error.Timeout;
 }
 
 /// Identical bounded owner scheduling for all backends: foreground first, then
@@ -159,6 +180,7 @@ pub fn main(init: std.process.Init) !void {
     };
     if (cfg.backend == .shared and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
     if (cfg.focus_scheduler and cfg.backend != .shared) return error.InvalidArgument;
+    if (cfg.focus_every > 100000 or (cfg.focus_every != 0 and !cfg.focus_scheduler)) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
         .output => try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c {d} /dev/zero", .{cfg.bytes}),
@@ -208,23 +230,7 @@ pub fn main(init: std.process.Init) !void {
     bulk.stats = .{};
     var focus_ack_ns: ?u64 = null;
     if (cfg.focus_scheduler) {
-        const start = clock();
-        const shared = owner.?;
-        const id = try shared.updateFocus(1, 1, pty.agent.output_stream.?);
-        defer shared.connection.abandon(id);
-        while (true) {
-            const epoch = wake.epoch.load(.acquire);
-            if (shared.connection.pollFor(id)) |completion| {
-                defer shared.connection.freeCompletion(completion);
-                if (completion.failure != null or completion.metadata_json == null) return error.FocusFailed;
-                const response = try std.json.parseFromSlice(struct { applied: bool, sequence: u64 }, a, completion.metadata_json.?, .{});
-                defer response.deinit();
-                if (!response.value.applied or response.value.sequence != 1) return error.FocusFailed;
-                focus_ack_ns = @intCast(clock() - start);
-                break;
-            }
-            try wake.wait(epoch, start + timeout);
-        }
+        focus_ack_ns = try focusAck(owner.?, 1, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
     }
     for (backgrounds.ptys[0..backgrounds.count]) |*background| try background.writeAll("GO\n");
     backgrounds.bulk = &bulk;
@@ -234,11 +240,19 @@ pub fn main(init: std.process.Init) !void {
     var elapsed_ns: i128 = 0;
     var digest_hex: ?[64]u8 = null;
     var resizes_issued: usize = 0;
+    const Refresh = struct { sequence: u64, before_prompt_index: usize, ack_ns: u64 };
+    var refreshes: std.ArrayList(Refresh) = .empty;
+    defer refreshes.deinit(a);
     switch (cfg.workload) {
         .prompt => {
             try timings.ensureTotalCapacity(a, cfg.samples);
             // Warmup stays out of recorded samples, but is byte-checked too.
             for (0..cfg.samples + 32) |index| {
+                if (cfg.focus_every != 0 and index % cfg.focus_every == 0) {
+                    const sequence: u64 = refreshes.items.len + 2;
+                    const ack_ns = try focusAck(owner.?, sequence, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
+                    try refreshes.append(a, .{ .sequence = sequence, .before_prompt_index = index, .ack_ns = ack_ns });
+                }
                 var token_buffer: [64]u8 = undefined;
                 const token = try std.fmt.bufPrint(&token_buffer, "HOLLOW_{d:0>8}\n", .{index});
                 var echo: [64]u8 = undefined;
@@ -287,6 +301,8 @@ pub fn main(init: std.process.Init) !void {
         .backend = cfg.backend,
         .focus_scheduler = cfg.focus_scheduler,
         .focus_ack_ns = focus_ack_ns,
+        .focus_every = cfg.focus_every,
+        .focus_refreshes = refreshes.items,
         .sessions = cfg.sessions,
         .load = cfg.load,
         .bulk = cfg.bulk,

@@ -141,6 +141,26 @@ remain. Repeated default E1 medians are 95.8%/99.4% of prior agent at 10/100 MiB
 all current/native output pairs pass local 95%, without resolving earlier failed
 datasets or qualifying Windows/WSL bypass. No default routing or admission changes.
 
+## 2026-10-19 per-sequence focus diagnostics
+
+Local correctness: **152** standalone native executions, **84** opt-in
+loop/adapter/transport executions, **64** Python unit tests, **six** focus wire
+cases, **11** existing PTY cases, **16** ordinary fs/exec cases and **two** real
+pane/VT cases pass. Both static musl builds/checksums pass; installed local agent
+restored to ReleaseSafe. Focus serialization is bounded for a full 64-event
+snapshot; stale/old queued bytes, headers, overflow and partial/discarded writes
+cannot become false payload completions. CI adds a correctness-only trace smoke.
+
+The [107-measurement report](../benchmarks/agent-pty/2026-10-19-focus-profile.md)
+preserves 48 refresh on/off cases, 54 default E1 cases, one deliberate overflow
+and four smoke cases. All 15 runner source hashes reconstruct on `413c036`.
+Loaded probes refresh the same target, not cross-pane focus; client ACK waits are
+outside echo timing and agent readiness means captured bytes plus credit, not
+kernel/child readiness. Overflow accepts 130 updates, keeps 64 and drops 66
+timings without losing wire bytes. Repeated snapshots are deduplicated by sequence.
+Default E1 current/native still fails two of 12 output pairs, prior/native three;
+no root cause, default preservation or release qualification is asserted.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000

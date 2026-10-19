@@ -2,6 +2,7 @@
 //! Positions count successfully queued/written wire bytes, independent of buffer
 //! compaction. A filesystem worker reply is one opaque framed span, not one DATA.
 const std = @import("std");
+const focus_profile = @import("focus_profile.zig");
 
 pub const Class = enum { other, pty_data, exec_data, filesystem_reply, pty_input_ack, pty_resize_ack, pty_close_ack };
 pub const Request = enum { pty_input, pty_resize, pty_close, exec, filesystem };
@@ -62,6 +63,7 @@ const Mark = struct {
 };
 
 pub const Profiler = struct {
+    focus: focus_profile.Profiler = .{},
     marks: [capacity]Mark = undefined,
     head: usize = 0,
     count: usize = 0,
@@ -92,6 +94,7 @@ pub const Profiler = struct {
 
     pub fn wrote(self: *Profiler, bytes: usize, now_ns: u64) void {
         std.debug.assert(bytes <= self.stats.queued_wire_bytes - self.consumed);
+        self.focus.wrote(self.consumed, self.consumed + bytes, now_ns);
         self.consumed += bytes;
         self.stats.written_wire_bytes += bytes;
         while (self.count > 0) {
@@ -112,6 +115,7 @@ pub const Profiler = struct {
     }
 
     pub fn discard(self: *Profiler) void {
+        self.focus.discard();
         while (self.count > 0) {
             const mark = self.marks[self.head];
             self.stats.classes[@intFromEnum(mark.class)].discarded += 1;
@@ -166,4 +170,25 @@ test "discarded and partially written spans are censored, not false completions"
     profile.wrote(10, 40);
     try std.testing.expectEqual(@as(u64, 0), profile.stats.classes[1].bytes_ahead.max);
     try std.testing.expectEqual(@as(u64, 10), profile.stats.classes[1].complete_write_ns.max);
+}
+
+test "focus payload positions remain correct when aggregate span marks overflow or discard" {
+    var profile: Profiler = .{};
+    for (0..capacity) |_| profile.enqueue(.other, 1, 1);
+    profile.focus.acceptedFocus(1, 7, 2, 2);
+    profile.focus.ready(2, 3);
+    profile.enqueue(.pty_data, 32, 4);
+    profile.focus.enqueue(2, capacity + 22, capacity + 32, 4);
+    profile.wrote(capacity + 22, 5);
+    try std.testing.expect(profile.focus.events[0].first_write_ns == null);
+    profile.wrote(1, 6);
+    profile.discard();
+    try std.testing.expectEqual(@as(?focus_profile.Stop, .discarded), profile.focus.events[0].stop);
+    try std.testing.expect(profile.focus.events[0].complete_write_ns == null);
+    profile.focus.acceptedFocus(2, 7, 2, 7);
+    profile.focus.ready(2, 8);
+    profile.enqueue(.pty_data, 32, 9);
+    profile.focus.enqueue(2, profile.stats.queued_wire_bytes - 10, profile.stats.queued_wire_bytes, 9);
+    profile.wrote(32, 10);
+    try std.testing.expectEqual(@as(?u64, 10), profile.focus.events[1].complete_write_ns);
 }

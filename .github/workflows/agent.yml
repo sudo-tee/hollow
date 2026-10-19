@@ -72,6 +72,8 @@ jobs:
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry --backend shared --sessions 4 --load stalled --bulk off mixed --resize-every 8 --runs 1 --samples 40 --size-mib 1 --output agent-pty-bounded-smoke.jsonl
       - name: Explicit hierarchical focus checked contention smoke, not qualification
         run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 python3 scripts/agent_pty_bench.py --focus-scheduler --backend shared --sessions 8 --load stalled --bulk off mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 200 --size-mib 10 --output agent-pty-focus-smoke.jsonl
+      - name: Bounded per-sequence focus dispatch, readiness and payload-write correlation
+        run: HOLLOW_AGENT_BOUNDED_BULK=1 HOLLOW_AGENT_FOCUS_SCHEDULER=1 HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry --focus-scheduler --focus-every 32 --backend shared --sessions 8 --load stalled --bulk off mixed --bulk-exec-bytes 65536 --resize-every 8 --runs 1 --samples 100 --size-mib 10 --output agent-pty-focus-profile-smoke.jsonl
       - name: Windows experimental PTY adapter compile check
         run: zig test -target x86_64-windows-gnu --dep build_options -Mroot=src/agent_pty_test.zig -Mbuild_options=src/agent_pty_build_options.zig -lc -fno-emit-bin
       - name: Typed operations and HostManager lifecycle
@@ -122,6 +124,7 @@ jobs:
             agent-pty-queue-smoke.jsonl
             agent-pty-bounded-smoke.jsonl
             agent-pty-focus-smoke.jsonl
+            agent-pty-focus-profile-smoke.jsonl
       - uses: actions/upload-artifact@v4
         with:
           name: hollow-agent-linux-musl

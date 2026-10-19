@@ -8,10 +8,62 @@ import subprocess
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from agent_pty_bench import parse_queue_profiles, percentile, stderr_text, validate
+from agent_pty_bench import parse_focus_profiles, parse_queue_profiles, percentile, stderr_text, validate
 
 
 class AgentPtyBenchTests(unittest.TestCase):
+    def focus_profile(self):
+        event = {"sequence": 1, "group": 7, "stream": 2, "dispatch_ns": 10, "ready_ns": 12,
+                 "enqueue_ns": 15, "payload_begin": 122, "payload_end": 132,
+                 "first_write_ns": 20, "complete_write_ns": None, "stop": None}
+        return {"schema": 1, "queued_wire_bytes": 140, "written_wire_bytes": 123,
+                "consumed_wire_bytes": 123, "discarded_wire_bytes": 0,
+                "focus": {"schema": 1, "capacity": 64, "accepted": 1, "dropped": 0, "events": [event]}}
+
+    def test_focus_parser_preserves_partial_payload_pending_and_censored_records(self):
+        profile = self.focus_profile()
+        self.assertEqual(parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile)), [profile])
+        event = profile["focus"]["events"][0]
+        event["stop"] = "discarded"
+        self.assertIsNone(parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile))[0]["focus"]["events"][0]["complete_write_ns"])
+        event.update(ready_ns=None, enqueue_ns=None, payload_begin=None, payload_end=None, first_write_ns=None, stop="released")
+        self.assertEqual(parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile)), [profile])
+        self.assertEqual(parse_focus_profiles("AGENT_QUEUE_PROFILE {}"), [])
+
+    def test_focus_parser_rejects_corrupt_identity_timestamps_offsets_and_false_completions(self):
+        for update in ({"sequence": 0}, {"group": 0}, {"stream": 3}, {"ready_ns": 9}, {"enqueue_ns": None},
+                       {"first_write_ns": 14}, {"complete_write_ns": 21}, {"payload_begin": 123},
+                       {"payload_end": 141}, {"stop": "superseded"}, {"stop": "invented"}):
+            profile = self.focus_profile()
+            profile["focus"]["events"][0].update(update)
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile))
+        for update in ({"schema": True}, {"capacity": 65}, {"accepted": 2}, {"dropped": 1}):
+            profile = self.focus_profile()
+            profile["focus"].update(update)
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile))
+
+    def test_focus_parser_accepts_bounded_overflow_and_unenqueued_supersession(self):
+        profile = self.focus_profile()
+        event = profile["focus"]["events"][0]
+        event.update(ready_ns=None, enqueue_ns=None, payload_begin=None, payload_end=None,
+                     first_write_ns=None, stop="superseded")
+        profile["focus"].update(accepted=65, dropped=1, events=[dict(event, sequence=index + 1) for index in range(64)])
+        self.assertEqual(parse_focus_profiles("AGENT_FOCUS_PROFILE " + json.dumps(profile)), [profile])
+
+    def test_focus_refresh_identity_and_exact_sequence_count(self):
+        config, result = self.prompt()
+        config.update(backend="shared", focus_scheduler=True, focus_every=16)
+        result.update(backend="shared", focus_scheduler=True, focus_ack_ns=1, focus_every=16,
+                      focus_refreshes=[{"sequence": index + 2, "before_prompt_index": prompt, "ack_ns": 42}
+                                       for index, prompt in enumerate((0, 16, 32))])
+        self.assertEqual(len(validate(result, config)["focus_refreshes"]), 3)
+        for update in ({"focus_every": True}, {"focus_every": 0}, {"focus_refreshes": []},
+                       {"focus_refreshes": [{"sequence": 1, "before_prompt_index": 0, "ack_ns": 0}] * 3}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                validate(dict(result, **update), config)
+
     def test_focus_identity_requires_shared_negotiation_and_ack(self):
         config, result = self.prompt()
         config.update(backend="shared", focus_scheduler=True)

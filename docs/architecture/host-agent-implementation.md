@@ -49,6 +49,17 @@ This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
 157 measurements plus one preserved short-smoke failure show redistribution,
 not a rollout pass; per-update loaded correlation and broader gates remain open.
 
+[Per-sequence focus diagnostics](../benchmarks/agent-pty/2026-10-19-focus-profile.md)
+now add a separate 64-event fixed profiler inside the already opt-in queue
+profiler allocation. `AGENT_FOCUS_PROFILE` maps accepted sequences to first
+observed credited/captured target readiness, first new DATA payload interval and
+successful stdout payload writes. Repeated terminal snapshots preserve pending,
+superseded, no-stream, release, discard and overflow accounting; no raw payload
+is logged. Aggregate queue schema and scheduling/admission remain unchanged.
+The benchmark's explicit same-target refresh probe separates client ACK RTT from
+echo timing; genuine target switching, ready-from-kernel timestamps, byte-fair
+DRR, split lanes and rollout/resource/platform gates remain open.
+
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and
