@@ -17,6 +17,20 @@ counters. It confirms mixed bulk can queue well beyond the PTY-only batch cap,
 but changes no scheduling policy or defaults. Per-stream ready-to-enqueue timing,
 focus-aware priorities and split-lane comparisons remain future work.
 
+An additional `HOLLOW_AGENT_BOUNDED_BULK` experiment, gated by experimental PTY
+HELLO, rotates whole completed-job frames with PTY quanta instead of immediately
+queueing entire fs/exec captures. It preserves atomic oversized metadata as an
+explicit empty-buffer exception. Completed captures retain job slots but not
+live-child cleanup ownership; already-reaped jobs cannot match a reused PID.
+The flag is ignored for ordinary fs/exec connections. Default scheduling, pane
+selection, resource limits and Lua workspace policy remain unchanged. See
+[methodology](host-agent-benchmarks.md#opt-in-bounded-bulk-scheduling).
+The [306-measurement comparison](../benchmarks/agent-pty/2026-10-18-bounded-bulk.md)
+shows mixed shared p99 improvements at substantial bulk bandwidth cost, remaining
+bulk-free latency failures, and an unresolved candidate default-path throughput
+regression in diagnostics-off old/new comparisons. Keep this research unqualified;
+do not infer default throughput preservation from unchanged scheduling selection.
+
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and

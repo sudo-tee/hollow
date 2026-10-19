@@ -34,6 +34,11 @@ pub const ClassStats = struct {
 
 pub const Snapshot = struct {
     schema: u32 = 1,
+    bounded_bulk: bool = false,
+    bulk_frames: u64 = 0,
+    bulk_deferred: u64 = 0,
+    bulk_oversized_frames: u64 = 0,
+    bulk_max_queued_bytes: usize = 0,
     class_order: [class_count]Class = std.meta.tags(Class).*,
     classes: [class_count]ClassStats = @splat(.{}),
     request_order: [std.meta.tags(Request).len]Request = std.meta.tags(Request).*,

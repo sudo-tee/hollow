@@ -6,6 +6,11 @@ The [eight-PTY mixed filesystem/exec follow-up](2026-10-18-mixed-8.md) measures
 additional contention without changing production scheduling.
 The [agent-side queue diagnostics follow-up](2026-10-18-queue-profile.md) adds
 opt-in dispatch/write timing, an on/off comparison and a dedicated E1 recheck.
+The [bounded-bulk scheduling experiment](2026-10-18-bounded-bulk.md) improves mixed
+shared latency by reducing bulk bandwidth, but still fails bulk-free latency
+checks. Its candidate default-path short-transfer throughput also misses 95% in
+two checks; root cause remains unresolved. Neither candidate nor shared rollout
+is performance-qualified. Earlier successful medians below remain historical.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

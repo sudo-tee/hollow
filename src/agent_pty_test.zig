@@ -33,27 +33,70 @@ fn sharedConnection() !*SharedConnection {
     return SharedConnection.create(a, &.{ path, "stdio" }, .{});
 }
 
-fn sharedExec(connection: *@import("host/transport.zig").Connection, argv: []const []const u8) ![]u8 {
+fn sharedOperation(connection: *@import("host/transport.zig").Connection, operation: @import("host/operations.zig").Operation) !@import("host/operations.zig").Result {
     const operations = @import("host/operations.zig");
     const deadline = clock() + 10 * std.time.ns_per_s;
     while (connection.status() != .ready) {
         if (connection.status() == .disconnected or clock() > deadline) return error.Timeout;
         try pause();
     }
-    const json = try operations.encode(a, .{ .exec = .{ .argv = argv } }, try connection.allocateStreams());
+    const json = try operations.encode(a, operation, if (operation == .exec) try connection.allocateStreams() else null);
     defer a.free(json);
     const id = try connection.request(json, 5000);
+    defer connection.abandon(id);
     while (clock() < deadline) {
         if (connection.pollFor(id)) |completion| {
             defer connection.freeCompletion(completion);
-            var result = try operations.decode(a, .exec, completion);
-            defer result.deinit();
-            if (result.value != .exec or result.value.exec.exit_code != 0 or result.value.exec.stderr.len != 0) return error.BadExit;
-            return a.dupe(u8, result.value.exec.stdout);
+            return operations.decode(a, std.meta.activeTag(operation), completion);
         }
         try pause();
     }
     return error.Timeout;
+}
+
+fn sharedExec(connection: *@import("host/transport.zig").Connection, argv: []const []const u8) ![]u8 {
+    var result = try sharedOperation(connection, .{ .exec = .{ .argv = argv } });
+    defer result.deinit();
+    if (result.value != .exec or result.value.exec.exit_code != 0 or result.value.exec.stderr.len != 0) return error.BadExit;
+    return a.dupe(u8, result.value.exec.stdout);
+}
+
+test "shared completed exec captures and oversized filesystem metadata remain exact" {
+    const owner = try sharedConnection();
+    defer owner.destroy();
+    const directory = try sharedExec(owner.connection, &.{ "/bin/sh", "-c", "umask 077; p=$(mktemp -d /tmp/hollow-bulk-list-test.XXXXXX) || exit; trap 'rm -f -- \"$p\"/*; rmdir -- \"$p\"' EXIT; pad=$(printf '%0197d' 0); i=0; while [ \"$i\" -lt 256 ]; do name=$(printf '%03d-%s' \"$i\" \"$pad\"); : > \"$p/$name\" || exit; i=$((i+1)); done; trap - EXIT; printf '%s' \"$p\"" });
+    defer a.free(directory);
+    try std.testing.expect(std.mem.startsWith(u8, directory, "/tmp/hollow-bulk-list-test."));
+    defer {
+        if (sharedExec(owner.connection, &.{ "/bin/sh", "-c", "for f in \"$1\"/*; do rm -- \"$f\" || exit; done; rmdir -- \"$1\"", "hollow-owned-cleanup", directory })) |output| a.free(output) else |_| {}
+    }
+    var list = try sharedOperation(owner.connection, .{ .list = .{ .path = directory, .limit = 256 } });
+    defer list.deinit();
+    try std.testing.expect(list.value == .list);
+    try std.testing.expectEqual(@as(usize, 256), list.value.list.entries.len);
+    var seen: [256]bool = @splat(false);
+    for (list.value.list.entries) |entry| {
+        try std.testing.expectEqual(@as(usize, 201), entry.name.len);
+        const index = try std.fmt.parseInt(u16, entry.name[0..3], 10);
+        try std.testing.expect(index < 256 and !seen[index]);
+        seen[index] = true;
+        try std.testing.expectEqual(@as(u8, '-'), entry.name[3]);
+        for (entry.name[4..]) |byte| try std.testing.expectEqual(@as(u8, '0'), byte);
+    }
+    var capture = try sharedOperation(owner.connection, .{ .exec = .{ .argv = &.{ "/bin/sh", "-c", "head -c 524288 /dev/zero; head -c 393216 /dev/zero >&2; exit 7" } } });
+    defer capture.deinit();
+    try std.testing.expect(capture.value == .exec);
+    try std.testing.expectEqual(@as(i32, 7), capture.value.exec.exit_code);
+    try std.testing.expectEqual(@as(usize, 524288), capture.value.exec.stdout.len);
+    try std.testing.expectEqual(@as(usize, 393216), capture.value.exec.stderr.len);
+    for (capture.value.exec.stdout) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+    for (capture.value.exec.stderr) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
+    const missing_path = try std.fmt.allocPrint(a, "{s}/missing", .{directory});
+    defer a.free(missing_path);
+    var missing = try sharedOperation(owner.connection, .{ .stat = missing_path });
+    defer missing.deinit();
+    try std.testing.expect(missing.value == .failure);
+    try std.testing.expectEqualStrings("not_found", missing.value.failure.code);
 }
 
 test "shared stalled PTY permits checked filesystem, exec, input and resize progress" {

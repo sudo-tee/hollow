@@ -217,9 +217,11 @@ allocate memory. It tracks at most 1,024 pending spans, dropping **timings**, no
 wire bytes, on overflow; `untracked`, `discarded` and `pending` explicitly report
 coverage/censoring. Every successfully appended frame advances monotonic wire
 positions; successful partial stdout writes advance completion positions, unaffected
-by output-buffer compaction. Filesystem workers append opaque already-framed
-responses, so their entire reply is tracked as one span, not falsely as one DATA
-frame. Disconnect discards unresolved spans rather than recording false completions.
+by output-buffer compaction. With the legacy scheduler, filesystem workers append
+opaque already-framed responses, so their entire reply is tracked as one span,
+not falsely as one DATA frame. The bounded-bulk experiment below instead tracks
+each issued worker frame separately. Disconnect discards unresolved spans rather
+than recording false completions.
 
 `AGENT_QUEUE_PROFILE` stderr records contain schema/version and explicit class
 orders. Each class has enqueue counts, bytes already queued ahead, and enqueue-to-
@@ -249,3 +251,51 @@ requested local agent/shared diagnostics fail if no snapshot arrives. No protoco
 schema, scheduling policy, queue/admission limits or backend defaults change.
 The [first diagnostic report](../benchmarks/agent-pty/2026-10-18-queue-profile.md)
 preserves the on/off comparison, internal observations and dedicated E1 recheck.
+
+### Opt-in bounded bulk scheduling
+
+`HOLLOW_AGENT_BOUNDED_BULK=1` selects a research scheduler **only on connections
+whose HELLO explicitly enables experimental PTYs**. The flag is ignored for
+ordinary fs/exec connections. It does not select pane backends, infer GUI focus,
+change protocol capabilities or raise the 16-job/32-request limits. An example:
+
+```sh
+HOLLOW_AGENT_BOUNDED_BULK=1 python3 scripts/agent_pty_bench.py --backend all \
+  --sessions 8 --load noisy stalled --bulk off mixed --resize-every 16 \
+  --runs 3 --samples 1000 --size-mib 10 --output bounded.jsonl
+```
+
+Completed exec/filesystem captures remain in their existing bounded job slots
+until their terminal frame is queued. A rotating cursor shares output issuance
+among credited PTYs and completed bulk jobs: one whole bulk frame or 16 KiB PTY
+quantum per visited job, retaining the old 64 KiB PTY quantum when only one output
+source is ready. Successful execs retain stdout-then-stderr DATA ordering and
+terminal byte totals. Worker replies are validated and issued at whole-frame
+boundaries, never spliced or re-encoded. Already queued/partially written frames
+remain in their original byte order under the existing single stdout writer.
+
+The shared batch budget is 65,536 payload bytes plus four 22-byte headers
+(65,624 bytes), applied to bulk as well as PTY issuance. Control/error responses
+can still exceed this soft budget; the existing 4 MiB safety cap remains. An
+indivisible filesystem metadata frame larger than the batch budget may queue
+**alone into an empty buffer**, within negotiated payload/global limits. This is
+an explicit atomic-frame exception, not a claim that all metadata is at most
+16 KiB. A blocked bulk frame retains the scheduling cursor so continuously ready
+PTYs cannot keep stealing the space it needs after output drains.
+
+Retained completed jobs own captured bytes, not a live child/process-group
+identity. They skip process cleanup ticks; delivery deadlines/cancellation can
+still discard unissued capture and emit one truncated error after any already
+queued DATA. Reap matching ignores previously reaped jobs, preventing a reused
+PID from overwriting an older completion. Connection teardown releases completed
+captures directly. The already-reaped PID guard also protects the legacy path;
+default scheduling remains unchanged. Retention can delay job admission and memory release; CPU/RSS,
+many-job resource pressure and hostile control-flood fairness remain unqualified.
+
+With queue diagnostics also enabled, `bounded_bulk` reports the negotiated
+scheduler selection; `bulk_frames`, `bulk_deferred`, `bulk_oversized_frames` and
+`bulk_max_queued_bytes` expose issuance, budget deferrals and atomic exceptions.
+Historical snapshots without these optional fields remain readable. The runner
+checks local snapshot selection against the requested environment flag. Remote
+connectors must explicitly set target environment/argv; client flags alone do not
+attest remote selection or build identity. Compare diagnostic-on/off separately.

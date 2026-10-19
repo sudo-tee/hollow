@@ -61,6 +61,42 @@ agent is live, verifies reinstall, restarts the container and recreates it.
 Those destructive fixtures run **only** on containers created by this harness,
 never with `--container` pointing to a user's existing container.
 
+## 2026-10-18 bounded-bulk candidate follow-up
+
+The opt-in candidate is **not performance-qualified**. Its
+[306-measurement report](../benchmarks/agent-pty/2026-10-18-bounded-bulk.md)
+records lower mixed shared p99 at substantial bulk-throughput cost, remaining
+bulk-free latency failures, and an unresolved possible default-path throughput
+regression. Default scheduling and pane selection remain unchanged; neither
+numeric parity nor regression absence follows from correctness results.
+
+Current local correctness rerun, Zig 0.16.0 ReleaseSafe:
+
+* 137 standalone native test executions pass, including imports: protocol 5,
+  agent loop 24, filesystem 3, PTY adapter 30, host transport 15, typed operations
+  17, manager 14, native-local 15 + 14.
+* Both `HOLLOW_AGENT_BOUNDED_BULK` and queue profiling enabled: loop/PTY/transport
+  rerun passes 69 executions (24 + 30 + 15).
+* 58 Python harness unit tests pass. Bounded flag enabled: 11 PTY wire/lifecycle
+  cases pass; 16 ordinary fs/exec conformance cases pass with the flag ignored
+  because those connections do not negotiate experimental PTYs.
+* New regressions cover 16-slot output rotation, ordered exact stdout/stderr,
+  cancellation after partial DATA, oversized atomic filesystem metadata,
+  retained-completion deadlines and reused-PID reap matching. Real-agent test
+  checks all 256 long filesystem names without duplicates and exact large
+  stdout/stderr captures and nonzero exit status.
+* Static x86_64/aarch64 musl builds and both SHA256SUMS pass; ARM64 execution
+  remains unverified. Installed local agent restored to ReleaseSafe.
+* New four-measurement bounded/profiling CI command passes locally on ReleaseSafe
+  with concurrent correctness work; correctness smoke only, not timing evidence.
+  Measured ReleaseFast datasets above ran separately without concurrent builds/tests.
+* All 306 completed measurements revalidated, all 13 measured workspace source
+  hashes reconstructed, and current measured source hashes remain unchanged.
+  Separate old-agent overrides retain independently verified binary identity.
+
+No new native Windows, GUI/GPU, real Docker daemon, remote connector, fault/OOM,
+soak or large-scale qualification is claimed by this follow-up.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000

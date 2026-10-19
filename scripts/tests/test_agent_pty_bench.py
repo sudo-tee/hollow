@@ -55,6 +55,16 @@ class AgentPtyBenchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires --telemetry", result.stderr)
 
+    def test_bounded_bulk_trace_identity_and_atomic_exception_accounting(self):
+        profile = self.queue_profile()
+        profile.update(bounded_bulk=True, bulk_frames=2, bulk_deferred=1,
+                       bulk_oversized_frames=1, bulk_max_queued_bytes=100000)
+        self.assertEqual(parse_queue_profiles("AGENT_QUEUE_PROFILE " + json.dumps(profile)), [profile])
+        for update in ({"bounded_bulk": 1}, {"bulk_frames": -1}, {"bulk_oversized_frames": 3},
+                       {"bulk_max_queued_bytes": 4194305}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                parse_queue_profiles("AGENT_QUEUE_PROFILE " + json.dumps(dict(profile, **update)))
+
     def prompt(self):
         return ({"backend": "agent", "workload": "prompt", "samples": 3},
                 {"backend": "agent", "workload": "prompt", "exit_code": 0,
