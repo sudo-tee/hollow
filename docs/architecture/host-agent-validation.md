@@ -7,6 +7,15 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 ## Independent fs/exec release closure — 2026-10-19
 
+[Windows WSL cold deployment/repair](../validation/2026-10-19-windows-wsl-cold-deploy.md)
+subsequently passes four UNC/C: flat/prefix layouts with isolated temporary HOME
+through test-only launcher forwarding actual WSL. Each HOME starts without cache
+and ends with only checksum-verified 0700 agent. Five final Windows processes
+including direct-launcher cache-reuse regression: **60** pass executions and five
+Linux-case skips. Initial checksum-upload residue after immediate test teardown
+is preserved as failed post-run validation; final harness drains existing async
+cleanup without altering production semantics. LuaJIT/GUI/teardown/fault gaps remain.
+
 Later [Windows public Lua bootstrap evidence](../validation/2026-10-19-windows-lua-bootstrap.md)
 narrows the discovery/bootstrap gap below: **7/7** Windows processes, **84** passing
 executions including imports and seven expected Linux-case skips. Covers UNC/C:

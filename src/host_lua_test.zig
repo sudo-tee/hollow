@@ -423,8 +423,20 @@ test "native Windows public Lua WSL bootstrap discovers installed agent bundle" 
     defer std.testing.allocator.free(root);
     const launcher = try std.fs.path.join(std.testing.allocator, &.{ root, "System32", "wsl.exe" });
     defer std.testing.allocator.free(launcher);
-    c.lua_pushlstring(state, launcher.ptr, launcher.len);
+    const fixture = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_FIXTURE") catch null;
+    defer if (fixture) |bytes| std.testing.allocator.free(bytes);
+    const selected_launcher = fixture orelse launcher;
+    c.lua_pushlstring(state, selected_launcher.ptr, selected_launcher.len);
     c.lua_setfield(state, c.LUA_GLOBALSINDEX, "WSL_EXE");
+    if (fixture != null) {
+        const home = try std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_WSL_HOME");
+        defer std.testing.allocator.free(home);
+        const prefix = "/tmp/hollow-wsl-home-";
+        if (!std.mem.startsWith(u8, home, prefix) or home.len != prefix.len + 12) return error.InvalidFixtureHome;
+        for (home[prefix.len..]) |byte| if (!std.ascii.isAlphanumeric(byte)) return error.InvalidFixtureHome;
+        c.lua_pushlstring(state, home.ptr, home.len);
+        c.lua_setfield(state, c.LUA_GLOBALSINDEX, "FIXTURE_HOME");
+    }
     try run(state,
         \\package.path='src/lua/?.lua;'..package.path
         \\deferred={}; host_api.defer=function(fn) deferred[#deferred+1]=fn end
@@ -484,10 +496,53 @@ test "native Windows public Lua WSL bootstrap discovers installed agent bundle" 
     try until(state, "DONE=pre:status()~='pending'");
     try run(state,
         \\assert(pre:status()=='fulfilled',pre:error() and pre:error().message); assert(pre:value():close())
+    );
+    if (fixture != null) {
+        try run(state,
+            \\assert(info:value().home==FIXTURE_HOME)
+            \\-- Only modify the agent installed inside this validated owned HOME.
+            \\repair_host=hollow.host.wsl(opts)
+        );
+        try until(state, "DONE=repair_host:status()~='pending'");
+        try run(state,
+            \\assert(repair_host:status()=='fulfilled',repair_host:error() and repair_host:error().message)
+            \\owned=repair_host:value()
+            \\corrupt=owned:exec({argv={'/bin/sh','-c','printf broken > "$1.bad" && mv -fT -- "$1.bad" "$1"','test',opts.agent_path}})
+        );
+        try until(state, "DONE=corrupt:status()~='pending'");
+        try run(state,
+            \\assert(corrupt:value().exit_code==0); assert(owned:close())
+            \\opts.agent_path=nil; opts.id='windows-lua-wsl-repair'; repaired=hollow.host.wsl(opts)
+        );
+        try until(state, "DONE=repaired:status()~='pending'");
+        try run(state,
+            \\assert(repaired:status()=='fulfilled',repaired:error() and repaired:error().message)
+            \\assert(repaired:value():close()); print('WINDOWS_LUA_COLD_REPAIR '..FIXTURE_HOME)
+        );
+    }
+    try run(state,
         \\opts.agent_path=nil; opts.id='windows-lua-wsl-bad-checksum'
         \\opts.artifacts={[info:value().arch]={path=assets:value()[info:value().arch].path,sha256=string.rep('0',64)}}
         \\wrong=hollow.host.wsl(opts)
     );
     try until(state, "DONE=wrong:status()~='pending'");
     try run(state, "assert(wrong:status()=='rejected' and wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");
+    if (fixture != null) {
+        try run(state,
+            \\-- Rejection precedes best-effort cleanup. Keep runtime alive to drain it.
+            \\opts.artifacts=nil; opts.agent_path=FIXTURE_HOME..'/.cache/hollow/agents/linux-'..info:value().arch..'/'..assets:value()[info:value().arch].sha256..'/hollow-agent'
+            \\opts.id='windows-lua-wsl-cleanup'; cleanup_host=hollow.host.wsl(opts)
+        );
+        try until(state, "DONE=cleanup_host:status()~='pending'");
+        try run(state,
+            \\assert(cleanup_host:status()=='fulfilled',cleanup_host:error() and cleanup_host:error().message)
+            \\zero_dir=FIXTURE_HOME..'/.cache/hollow/agents/linux-'..info:value().arch..'/'..string.rep('0',64)
+            \\cleaned=cleanup_host:value():exec({argv={'/bin/sh','-c','dir=$1; n=0; while [ "$n" -lt 100 ]; do set -- "$dir"/.upload-*; [ -e "$1" ] || exit 0; n=$((n+1)); sleep 0.05; done; exit 1','test',zero_dir},timeout_ms=8000})
+        );
+        try until(state, "DONE=cleaned:status()~='pending'");
+        try run(state,
+            \\assert(cleaned:value().exit_code==0,'asynchronous upload cleanup did not finish')
+            \\assert(cleanup_host:value():close()); print('WINDOWS_LUA_UPLOAD_CLEANUP '..FIXTURE_HOME)
+        );
+    }
 }
