@@ -42,7 +42,7 @@ fn run(state: *c.lua_State, source: []const u8) !void {
     if (c.luaL_loadbuffer(state, source.ptr, source.len, "host-test") != 0 or c.lua_pcall(state, 0, 0, 0) != 0) {
         var len: usize = 0;
         const text = c.lua_tolstring(state, -1, &len);
-        std.debug.print("Lua: {s}\n", .{text[0..len]});
+        std.debug.print("Lua: {s}\nLua source:\n{s}\n", .{ text[0..len], source });
         c.lua_settop(state, -2);
         return error.LuaError;
     }
@@ -242,9 +242,28 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
                 if (bytes) |value| c.lua_pushlstring(state, value.ptr, value.len) else c.lua_pushnil(state);
                 c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_" ++ suffix);
             }
+            // Linux-hosted integration runs can exercise the Windows-client-shaped
+            // WSL nesting path with an explicit UNC artifact override.
+            const via_distro = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_VIA_WSL_DISTRO") catch null;
+            defer if (via_distro) |value| std.testing.allocator.free(value);
+            if (via_distro) |value| c.lua_pushlstring(state, value.ptr, value.len) else c.lua_pushnil(state);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_VIA_WSL_DISTRO");
+            const via_user = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_VIA_WSL_USER") catch null;
+            defer if (via_user) |value| std.testing.allocator.free(value);
+            if (via_user) |value| c.lua_pushlstring(state, value.ptr, value.len) else c.lua_pushstring(state, "");
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_VIA_WSL_USER");
+            const via_artifact = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_" ++ engine ++ "_VIA_WSL_ARTIFACT") catch null;
+            defer if (via_artifact) |value| std.testing.allocator.free(value);
+            if (via_artifact) |value| c.lua_pushlstring(state, value.ptr, value.len) else c.lua_pushnil(state);
+            c.lua_setfield(state, c.LUA_GLOBALSINDEX, "CONTAINER_VIA_WSL_ARTIFACT");
             try run(state,
                 \\CONTAINER_ARTIFACT=assets:value().x86_64.path; CONTAINER_SHA256=assets:value().x86_64.sha256
-                \\function boot_container(opts) opts[CONTAINER_ENGINE]=CONTAINER_EXE; opts.context=CONTAINER_CONTEXT; return hollow.host[CONTAINER_ENGINE](opts) end
+                \\function boot_container(opts)
+                \\  opts[CONTAINER_ENGINE]=CONTAINER_EXE; opts.context=CONTAINER_CONTEXT
+                \\  if CONTAINER_VIA_WSL_DISTRO then opts.via={type='wsl',distro=CONTAINER_VIA_WSL_DISTRO,user=CONTAINER_VIA_WSL_USER~='' and CONTAINER_VIA_WSL_USER or nil} end
+                \\  if CONTAINER_VIA_WSL_ARTIFACT and not opts.agent_path and not opts.artifacts then opts.artifacts={x86_64={path=CONTAINER_VIA_WSL_ARTIFACT,sha256=CONTAINER_SHA256}} end
+                \\  return hollow.host[CONTAINER_ENGINE](opts)
+                \\end
                 \\bootstrap_opts={id=CONTAINER_ENGINE..'-production',container=TEST_CONTAINER}
                 \\bootstrap=boot_container(bootstrap_opts)
             );
@@ -256,7 +275,7 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
             try until(state, "DONE=bi:status()~='pending' and bl:status()~='pending' and be:status()~='pending' and bu:status()~='pending'");
             try run(state,
                 \\assert(bi:value().os=='linux' and be:value().stdout=='deployed' and bl:value().eof~=nil)
-                \\assert(bu:value().stdout==CONTAINER_UID..'\n')
+                \\assert(bu:value().stdout==CONTAINER_UID..'\n','container uid mismatch: '..string.format('%q',bu:value().stdout)..' ~= '..string.format('%q',CONTAINER_UID..'\n'))
                 \\bc=bh:exec({argv={'/bin/sh','-c','exec sleep 30'}}); assert(bc:cancel())
             );
             try until(state, "DONE=bc:status()~='pending'");
@@ -285,7 +304,7 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
             try run(state,
                 \\assert(preinstalled:status()=='fulfilled',preinstalled:error() and preinstalled:error().message)
                 \\assert(preinstalled:value():close())
-                \\wrong=boot_container({id=CONTAINER_ENGINE..'-bad-checksum',container=TEST_CONTAINER,artifacts={x86_64={path=CONTAINER_ARTIFACT,sha256=string.rep('0',64)}}})
+                \\wrong=boot_container({id=CONTAINER_ENGINE..'-bad-checksum',container=TEST_CONTAINER,artifacts={x86_64={path=CONTAINER_VIA_WSL_ARTIFACT or CONTAINER_ARTIFACT,sha256=string.rep('0',64)}}})
             );
             try until(state, "DONE=wrong:status()~='pending'");
             try run(state, "assert(wrong:error().code=='checksum_mismatch',wrong:error() and wrong:error().message)");

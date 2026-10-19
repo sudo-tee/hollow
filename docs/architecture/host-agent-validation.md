@@ -919,6 +919,19 @@ ELF/static-link verifier.
 zig build --build-file build-agent.zig test-host-lua test-host-lua-flat \
   -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
 python3 scripts/agent_host_tests.py --connector podman-bootstrap --agent zig-out/bin/hollow-agent -- \
-  zig build --build-file build-agent.zig test-host-lua-flat \
+zig build --build-file build-agent.zig test-host-lua-flat \
   -Dhost-lua-include=/path/to/lua51/include -Dhost-lua-object=/path/to/liblua.a
 ```
+
+## Container CLI through WSL
+
+Podman and Docker container hosts can run their CLI inside an explicitly selected
+WSL distro via `via = { type = "wsl", distro = "...", user = "..." }`. The live
+`host_lua_test` fixture accepts `HOLLOW_TEST_<ENGINE>_VIA_WSL_DISTRO` and optional
+`..._VIA_WSL_USER`; a Linux-hosted runner can supply `..._VIA_WSL_ARTIFACT` as a
+Windows UNC path to exercise WSL artifact-path conversion. On October 19, 2026,
+the Podman path passed against a disposable Linux container through WSL's native
+Windows launcher and rootless Podman, including automatic deployment, fs/exec,
+cache reuse/repair, preinstalled-agent handshake, checksum rejection and cleanup.
+The Linux host process used WSL interop; this does not qualify the native Windows
+GUI/runtime or Docker Desktop.

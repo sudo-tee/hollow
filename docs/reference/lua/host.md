@@ -107,7 +107,69 @@ containers. A later connection always inspects and verifies again.
 Container restart/recreation requires explicit reconnect. An in-progress bootstrap
 pinned to an old container ID fails instead of silently following a reused name.
 After connection, operations use the persistent agent protocol, not per-operation
-`podman exec`. Windows Podman runtime behavior remains unqualified.
+`podman exec`. Native Windows Podman runtime behavior remains unqualified.
+
+### Container hosts through WSL (Windows)
+
+Podman and Docker support an explicit `via` descriptor. Install the container CLI
+inside WSL and select an existing running Linux container:
+
+```lua
+hollow.host.podman({
+  id = "dev-container",
+  container = "dev",
+  via = { type = "wsl", distro = "Ubuntu-26.04", user = "francis" },
+}):next(function(host)
+  host.fs.list("/work")
+  host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
+end, function(err) print(err.code, err.message) end)
+```
+
+Use `hollow.host.docker` with the same `via` shape for Docker. Optional `podman`
+or `docker` selects the **Linux** executable inside the distro; `via.wsl` selects
+the native Windows launcher. Optional Docker `context` applies to that Linux CLI.
+Only WSL is supported as a `via`; arbitrary nested hosts are not supported.
+Omitting `via.user` preserves the distro default. For rootless Podman, select the
+WSL user who owns the container; the container's configured user is still preserved.
+
+The bundled agent deploys directly into the container. No intermediate WSL agent,
+manual agent installation, wrapper script, SSH server or exposed API socket is
+needed. Client-native artifact paths are converted by `wslpath -a -u` in the selected
+distro/user before container `cp`; no drive-mount layout is guessed. WSL needs
+`/bin/true`, `wslpath`, and the chosen container CLI. Containers need the same
+bootstrap tools and writable executable HOME cache described above. A preinstalled
+`agent_path` bypasses artifact discovery, path mapping and upload.
+
+The existing `launch.sh --install` flow already stages the checksummed Linux-agent
+bundle beside the Windows executable, where default artifact discovery finds it.
+No extra download or install switch is needed.
+
+One binary-clean `wsl.exe ... --exec podman exec -i <immutable-id> <agent> stdio`
+process carries subsequent RPCs. No transport TTY or login shell is allocated.
+Deadlines, cancellation, cache verification/repair and best-effort upload cleanup
+are shared with direct container connections. Missing launcher/CLI rejects with
+`connector_unavailable`, failed distro/user launch with `distro_unavailable`, and
+missing/stopped containers with `container_unavailable`. No automatic reconnect
+or container creation/start/stop occurs.
+
+Workspace discovery accepts the same descriptor without an explicit `id`:
+
+```lua
+hollow.ui.workspace.configure({ sources = { {
+  name = "Container projects",
+  host = {
+    type = "podman", container = "dev",
+    via = { type = "wsl", distro = "Ubuntu-26.04", user = "francis" },
+  },
+  roots = { "/work" }, -- container-native paths
+  -- domain = "container-shell", -- configure terminal routing separately
+} } })
+```
+
+**Scope: filesystem/exec and workspace discovery, not agent-backed GUI terminals.**
+Workspace `domain` still controls pane creation independently; this descriptor
+does not automatically route terminals into the container. Configure an appropriate
+terminal domain separately. Production host-to-pane integration is a separate rollout.
 
 ## WSL configuration
 

@@ -2043,11 +2043,18 @@ local fs = {}
 ---@class HollowPodmanHostOpts
 ---@field id string Stable host identifier
 ---@field container string Existing running container name or ID
----@field podman? string Native Podman executable; defaults to "podman"
+---@field podman? string Podman executable (inside WSL when via is set); defaults to "podman"
+---@field via? HollowContainerWslVia Run container CLI inside this WSL distro
 ---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact} Explicit artifacts override bundle discovery
 ---@field agent_dir? string Client-native absolute directory containing SHA256SUMS and linux-*/hollow-agent
 ---@field agent_path? string Absolute preinstalled Linux agent executable; skips deployment
 ---@field timeout_ms? integer Whole bootstrap deadline; default 60000, maximum 300000
+
+---@class HollowContainerWslVia
+---@field type "wsl"
+---@field distro string Explicit existing WSL distribution name
+---@field user? string WSL user owning the containers; omitted preserves distro default
+---@field wsl? string Native launcher executable; defaults to "wsl.exe"
 
 ---@class HollowWslHostOpts
 ---@field id string Stable host identifier
@@ -2077,7 +2084,8 @@ local fs = {}
 ---@class HollowDockerHostOpts
 ---@field id string Stable host identifier
 ---@field container string Existing running Linux container name or ID
----@field docker? string Native Docker executable; default "docker"
+---@field docker? string Docker executable (inside WSL when via is set); default "docker"
+---@field via? HollowContainerWslVia Run container CLI inside this WSL distro
 ---@field context? string Explicit Docker context; omitted uses native Docker client selection
 ---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
 ---@field agent_dir? string Absolute client-native bundle directory
