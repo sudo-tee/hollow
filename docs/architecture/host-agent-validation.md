@@ -7,6 +7,14 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 ## Independent fs/exec release closure — 2026-10-19
 
+Later [Windows public Lua bootstrap evidence](../validation/2026-10-19-windows-lua-bootstrap.md)
+narrows the discovery/bootstrap gap below: **7/7** Windows processes, **84** passing
+executions including imports and seven expected Linux-case skips. Covers UNC/C:
+flat/prefix layouts, Unicode parent paths, missing-bundle rejection, public WSL
+cache reuse, typed fs/exec, cancellation, reconnect and checksum rejection. Uses
+Lua 5.1 C API; successful cold install/repair, production LuaJIT/GUI and broader
+Windows qualification remain open. First external C sanitizer trap is preserved.
+
 Follow-up [native Windows dispatcher smoke](../validation/2026-10-19-windows-fs-exec-smoke.md)
 executes an actual Windows x86_64 test process against native-local operations
 and a persistent preinstalled WSL agent: **13/13** in three fresh processes,

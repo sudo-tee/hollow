@@ -1,0 +1,31 @@
+{
+  "base_revision": "b4c30eb",
+  "scope": "Native Windows public Lua WSL bootstrap, executable-relative bundle discovery and cache reuse; not GUI, production LuaJIT engine, or successful cold deployment qualification",
+  "windows_version": "Microsoft Windows [Version 10.0.26100.9445]",
+  "agent_sha256": "82ca8fde34ce8703ba735703c036c2e71fa85902928edafdc63f2c736380c09c",
+  "processes": 7,
+  "passed_executions_including_imports": 84,
+  "expected_skips": 7,
+  "windows_specific_positive_cases": 6,
+  "windows_specific_missing_bundle_cases": 1,
+  "layouts": [
+    "UNC flat (2 runs)",
+    "UNC prefix/bin (2 runs)",
+    "C: Unicode flat",
+    "C: Unicode prefix/bin",
+    "UNC missing bundle (reject)"
+  ],
+  "source_files": 178,
+  "test_source_sha256": "38c728c9d6a5bc6400cce2ea47550cddfd6696e1a09b7ea7181a9af654f65074",
+  "test_binary_sha256": "853a1ca53d0ca36900d8dde949dae5eefde6050ffe31d0f8f6eb47a6a61a03e7",
+  "archive_uncompressed_sha256": "c4e6c7560d2aabd095e8c1fccc4126534f45822aa8780822a17428850e2c886a",
+  "patch_uncompressed_sha256": "ccdc031c27499071bd5198a0532a511b1bd248f84e98ebd1cb0aefa195aa3793",
+  "preserved_failure": "First external Lua 5.1.5 library build trapped during lua_number2int before connector ran; failed log/binary and library hashes preserved, not reclassified as passing.",
+  "remaining": [
+    "successful cold deployment/repair in isolated WSL cache",
+    "production LuaJIT engine and GUI teardown",
+    "broader native Unicode file operation matrix",
+    "Windows SSH/Podman/Docker clients and fault/resource matrix",
+    "ARM64 execution"
+  ]
+}

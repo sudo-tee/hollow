@@ -99,7 +99,7 @@ interop have current integration evidence; see [validation](host-agent-validatio
 | Mock socket, 257-byte relay fragments | 16 common wire cases, production Lua, explicit loss/reconnect and no EXEC replay | Design fixture, not production vsock/hvsock |
 | Linux→Windows launcher→Ubuntu-26.04 | 16 common wire cases, public WSL bootstrap/default and explicit user, both layouts | Explicit Windows-accessible artifact; not native Windows automatic discovery/client execution |
 | Real Docker | Dedicated CI gate configured | Not executed locally: no Docker CLI/daemon available; no Podman substitution accepted |
-| Native Windows client | [Native dispatcher/native-local and preinstalled-WSL smoke](../validation/2026-10-19-windows-fs-exec-smoke.md): 13/13 tests per process, three runs | Public Lua/bootstrap, automatic discovery, Unicode native paths and broader client qualification remain open |
+| Native Windows client | [Dispatcher/native-local smoke](../validation/2026-10-19-windows-fs-exec-smoke.md): 13/13 per process, three runs; [public Lua WSL/discovery](../validation/2026-10-19-windows-lua-bootstrap.md): seven processes, 12 pass + one expected skip each, UNC/C: flat/prefix and missing-bundle rejection | Cache reuse with Lua 5.1 C API; successful cold install/repair, production LuaJIT/GUI, broader Unicode/fault/client matrix remain open |
 | ARM64 | Static Linux-musl bundle/checksum | Cross-build only; runtime qualification still required |
 
 Workspace host loading has seven focused Lua tests plus real >16 KiB paged reads
@@ -146,9 +146,9 @@ Uncompressed source patch SHA-256:
 
 **Release decision:** fs/exec implementation/checklist is complete for the verified
 Linux/interop scope above, independently of PTY rollout. This is not universal
-client/platform approval. Real Docker, native Windows public-Lua/bootstrap clients
+client/platform approval. Real Docker, complete native Windows client qualification
 and ARM64 execution remain explicitly unverified. Subsequent native Windows
-dispatcher smoke is scoped separately above; the original release report retains
+dispatcher and public Lua bootstrap checks are scoped separately above; original release report retains
 its historical exclusions. No PTY performance result blocks verified fs/exec.
 Installed local agent remains ReleaseSafe; native/WSL pane defaults
 unchanged. No push, tag, release publication or hosted CI success is claimed.
@@ -159,7 +159,7 @@ matching Nix Lua 5.1 headers/static library, not by removing native Lua checks.
 
 Real Docker requires its CI/native daemon job; that job now runs this independent
 fs/exec checklist and uploads report/logs. A configured job is not proof it passed.
-Native Windows WSL/SSH/Podman clients and ARM64 execution require their own runner
+Full native Windows WSL/SSH/Podman qualification and ARM64 execution require their own runner
 or controlled manual record; Linux-musl cross-builds do not qualify execution.
 
 ### Controlled WSL/native Windows manual record
