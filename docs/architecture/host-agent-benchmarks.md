@@ -332,6 +332,29 @@ The CI focus correctness workload uses 10 MiB output, 200 prompts and 64 KiB EXE
 captures; performance comparisons retain 512 KiB captures. Resource/QoS bounds
 and dynamic-focus timing still need independently sustained workloads.
 
+### Static foreground-isolation comparison
+
+`--separate-foreground --backend shared --sessions 8` pins foreground to another
+prepared instance of the same agent, keeping background PTYs and bulk on the
+original connection. It requires 2+ PTYs and rejects simultaneous separate bulk.
+Existing conservative admission stays unchanged. Focused runs select foreground
+stream on its connection and selected session/stream-zero on background; record
+both pre-load ACKs independently. This is not live migration, cross-connection
+global fairness, same-agent lanes or GUI routing.
+
+Host `telemetry` and `background_telemetry` are separate connection snapshots;
+`bulk_telemetry` may duplicate background connection and must not be summed again.
+Queue-profile snapshots lack connection identity: this topology rejects local
+queue flag and any received queue/focus traces rather than merging equal sequence
+numbers. Remote queue profiling must remain off too.
+
+The [isolation report](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)
+preserves 124 ReleaseFast measurements plus four separate ReleaseSafe checks.
+Local foreground gains are substantial, but prompt background/bulk rates fall,
+and output aggregate gains conceal slower non-selected-session panes. Same offered
+load is not equal achieved output/resources. Extra process/thread/transport costs,
+genuine focus transitions and independent fault/recovery remain open; keep defaults.
+
 ### Hierarchical wire-byte scheduling comparison
 
 `--focus-scheduler --deficit-scheduler` explicitly selects byte-deficit research,

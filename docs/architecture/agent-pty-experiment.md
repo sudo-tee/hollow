@@ -178,6 +178,43 @@ foreground-first consumption remains identical; no focus-first GUI parsing/rende
 variable is simulated. Dynamic focus switching is tested for correctness, not yet
 latency-qualified. Every result remains `qualification:false`.
 
+### Static foreground isolation topology
+
+`--separate-foreground --backend shared --sessions 8` explicitly pins the first
+PTY to another independently prepared connection/process using the **same**
+connector argv, binary and handlers. Background PTYs and any fs/exec remain on
+the original shared connection. At least two PTYs are required. The option rejects
+native/dedicated backends and simultaneous `--separate-bulk`; existing conservative
+PTY-plus-bulk admission checks remain unchanged. No production routing, implicit
+fallback, live migration or same-agent control lane is added.
+
+Both connections use the explicitly requested focus/DRR negotiation, or neither
+when focus is off. Logical session IDs still follow groups of four across the
+whole workload. Focused runs select foreground group 1/output stream on its own
+connection and separately select **session 1, stream 0** on the background
+connection. This preserves selected-session priority for foreground siblings
+without falsely selecting a pane there. These are two generation/sequence
+namespaces. Results retain foreground `focus_ack_ns` and separate pre-load
+`background_focus_ack_ns`. Optional refresh probes update only foreground
+connection; no target is moved and background selection remains static.
+
+Result `separate_foreground:true`, `foreground_lane:"isolated_agent"` and active
+`bulk_lane:"shared_background"` identify placement; bulk-off lane stays `off`.
+With host telemetry, `telemetry` is foreground connection and
+`background_telemetry` is background connection. `bulk_telemetry` may snapshot
+the same background connection: **do not sum it again** as independent transport.
+The owner loop still consumes foreground first then bounded background/bulk work.
+An extra agent and host transport state/threads cost resources not captured by
+foreground medians. Teardown retains each connection until its panes are closed.
+
+Queue/focus stderr snapshots currently lack connection identity and can repeat
+the same sequence on both agents. This option rejects local
+`HOLLOW_AGENT_QUEUE_PROFILE` and any received queue/focus snapshots instead of
+misattributing them. Remote targets must also keep queue profiling off; host
+telemetry alone is supported. Genuine cross-connection diagnostic correlation,
+failure/reconnect behavior, resources and GUI focus switching need separate work.
+See [foreground isolation](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md).
+
 ### Explicit hierarchical byte-deficit scheduling
 
 The independent deficit prototype requires target flag

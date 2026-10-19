@@ -21,6 +21,7 @@ const Config = struct {
     load: enum { idle, noisy, stalled } = .idle,
     bulk: bulk_module.Mode = .off,
     separate_bulk: bool = false,
+    separate_foreground: bool = false,
     bulk_path: ?[]const u8 = null,
     bulk_exec_bytes: u32 = 524288,
     resize_every: u32 = 0,
@@ -181,6 +182,10 @@ pub fn main(init: std.process.Init) !void {
         else => 1,
     };
     if (cfg.separate_bulk and (cfg.backend != .shared or cfg.bulk == .off)) return error.InvalidArgument;
+    if (cfg.separate_foreground and (cfg.backend != .shared or cfg.sessions < 2 or cfg.separate_bulk)) return error.InvalidArgument;
+    // Queue/focus stderr snapshots lack connection identity. Do not pool traces
+    // from two experimental PTY connections under one sequence namespace.
+    if (cfg.separate_foreground and std.c.getenv("HOLLOW_AGENT_QUEUE_PROFILE") != null) return error.InvalidArgument;
     if (cfg.backend == .shared and !cfg.separate_bulk and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
     if (cfg.focus_scheduler and cfg.backend != .shared) return error.InvalidArgument;
     if (cfg.deficit_scheduler and !cfg.focus_scheduler) return error.InvalidArgument;
@@ -194,10 +199,13 @@ pub fn main(init: std.process.Init) !void {
     const notification: @import("pty/wake.zig").Wake = .{ .context = &wake, .callback = Wake.signal };
     const owner = if (cfg.backend == .shared) try SharedConnection.createWithOptions(a, cfg.connector_argv, notification, .{ .telemetry = cfg.telemetry, .experimental_focus = cfg.focus_scheduler, .experimental_deficit = cfg.deficit_scheduler }) else null;
     defer if (owner) |shared| shared.destroy();
+    const isolated = if (cfg.separate_foreground) try SharedConnection.createWithOptions(a, cfg.connector_argv, notification, .{ .telemetry = cfg.telemetry, .experimental_focus = cfg.focus_scheduler, .experimental_deficit = cfg.deficit_scheduler }) else null;
+    defer if (isolated) |shared| shared.destroy();
+    const foreground_owner = isolated orelse owner;
     var backgrounds: Backgrounds = .{ .config = cfg };
     defer backgrounds.deinit();
     const spawn_start = clock();
-    var pty = try spawn(cfg, command, notification, owner, 0);
+    var pty = try spawn(cfg, command, notification, foreground_owner, 0);
     defer pty.deinit();
     const timeout: i128 = @as(i128, cfg.timeout_ms) * std.time.ns_per_ms;
     var greeting: [ready.len]u8 = undefined;
@@ -233,8 +241,10 @@ pub fn main(init: std.process.Init) !void {
     bulk.priming = false;
     bulk.stats = .{};
     var focus_ack_ns: ?u64 = null;
+    var background_focus_ack_ns: ?u64 = null;
     if (cfg.focus_scheduler) {
-        focus_ack_ns = try focusAck(owner.?, 1, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
+        focus_ack_ns = try focusAck(foreground_owner.?, 1, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
+        if (cfg.separate_foreground) background_focus_ack_ns = try focusAck(owner.?, 1, 0, &wake, &backgrounds, timeout);
     }
     for (backgrounds.ptys[0..backgrounds.count]) |*background| try background.writeAll("GO\n");
     backgrounds.bulk = &bulk;
@@ -254,7 +264,7 @@ pub fn main(init: std.process.Init) !void {
             for (0..cfg.samples + 32) |index| {
                 if (cfg.focus_every != 0 and index % cfg.focus_every == 0) {
                     const sequence: u64 = refreshes.items.len + 2;
-                    const ack_ns = try focusAck(owner.?, sequence, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
+                    const ack_ns = try focusAck(foreground_owner.?, sequence, pty.agent.output_stream.?, &wake, &backgrounds, timeout);
                     try refreshes.append(a, .{ .sequence = sequence, .before_prompt_index = index, .ack_ns = ack_ns });
                 }
                 var token_buffer: [64]u8 = undefined;
@@ -306,13 +316,17 @@ pub fn main(init: std.process.Init) !void {
         .focus_scheduler = cfg.focus_scheduler,
         .deficit_scheduler = cfg.deficit_scheduler,
         .focus_ack_ns = focus_ack_ns,
+        .background_focus_ack_ns = background_focus_ack_ns,
         .focus_every = cfg.focus_every,
         .focus_refreshes = refreshes.items,
         .sessions = cfg.sessions,
         .load = cfg.load,
         .bulk = cfg.bulk,
-        .bulk_lane = if (cfg.bulk == .off) "off" else if (cfg.backend == .shared and !cfg.separate_bulk) "shared" else "separate_agent",
+        .bulk_lane = if (cfg.bulk == .off) "off" else if (cfg.separate_foreground) "shared_background" else if (cfg.backend == .shared and !cfg.separate_bulk) "shared" else "separate_agent",
         .separate_bulk = cfg.separate_bulk,
+        .separate_foreground = cfg.separate_foreground,
+        .foreground_lane = if (cfg.separate_foreground) "isolated_agent" else if (cfg.backend == .shared) "shared" else if (cfg.backend == .agent) "dedicated_agent" else "native",
+        .background_telemetry = if (cfg.separate_foreground and cfg.telemetry) owner.?.connection.metrics() else null,
         .bulk_stats = bulk.stats,
         .bulk_telemetry = if (cfg.telemetry and bulk.connection != null) bulk.connection.?.metrics() else null,
         .resize_every = cfg.resize_every,

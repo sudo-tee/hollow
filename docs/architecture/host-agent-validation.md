@@ -201,6 +201,26 @@ DRR wire and correctness smoke; hosted execution is not claimed. No sustained
 resource/fault/flood/scale, loaded target-switch, ARM64 execution or native GUI /
 actual WSL-bypass qualification follows from these local tests.
 
+## 2026-10-19 static foreground-isolation topology
+
+[Foreground isolation](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)
+retains **124** ReleaseFast measurements (120 matrix/four smoke), plus **four**
+separate ReleaseSafe correctness measurements. All **16** final runner source
+hashes reconstruct on `a515459`. **91** loop/adapter/transport executions,
+**68** Python unit tests and four direct native-runner rejection checks pass.
+Host counters and pre-load focus ACKs are labeled per connection; ambiguous
+queue/focus profiles are explicitly rejected. Installed binaries restored Safe.
+
+Isolated WRR/DRR median echo p99 is **0.86–1.37 ms**, versus corresponding shared
+**4.69–6.15 ms**; foreground output rises **1.88–2.67×**. All 48 local loaded
+native comparisons pass this run, including shared controls; prior failures are
+not erased. Prompt background rates fall 7–11% and mixed EXEC completion rates
+10–26%. Output aggregate background gains conceal slower non-selected-session
+panes. Extra process/transport resources are unmeasured; no migration, sustained
+starvation/fault/recovery, 40/100/200-PTY or native GUI/bypass qualification follows.
+No agent source changed; latest default E1 still has one current/native pair below
+95%. CI adds a labeled-host-telemetry correctness smoke, not hosted-run evidence.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000
