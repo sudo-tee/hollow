@@ -98,6 +98,10 @@ hollow.term.set_title(title, tab_id?)  -- set tab title
 }
 ```
 
+When `domain` is omitted, new tabs inherit the active pane's domain, falling
+back to the configured default when the pane has no domain. An omitted `cwd`
+inherits the active pane's cwd only when the domains match.
+
 ## Pane operations
 
 ### Create and split

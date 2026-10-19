@@ -318,7 +318,10 @@ pub const Mux = struct {
     pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool) !void {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
-        const resolved_domain = domain_name orelse cfg.defaultDomainName();
+        const resolved_domain = domain_name orelse if (current_pane) |pane|
+            if (pane.domain_name.len > 0) pane.domain_name else cfg.defaultDomainName()
+        else
+            cfg.defaultDomainName();
         const inherited_cwd: ?[]const u8 = if (cwd) |value|
             if (value.len > 0) value else null
         else if (current_pane) |pane|

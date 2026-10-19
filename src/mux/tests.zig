@@ -117,6 +117,35 @@ test "pane lifecycle callbacks cover creation closure and moves without duplicat
     try std.testing.expect(recorder.all_panes_resolved);
 }
 
+test "new tabs inherit the active pane domain and cwd unless explicitly overridden" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try ghostty.Runtime.init(allocator, null);
+    defer runtime.deinit();
+    var cfg = @import("../config.zig").Config.init(allocator);
+    defer cfg.deinit();
+    try cfg.setDomainShell("default", "/bin/sh");
+    try cfg.setDomainShell("container", "/bin/sh");
+    try cfg.setDefaultDomain("default");
+    try cfg.setDomainDefaultCwd("default", "/");
+    var mux = Mux.init(allocator);
+    defer mux.deinit(&runtime);
+    const callbacks = LifecycleTestCallbacks.callbacks;
+
+    try mux.newWorkspace(&runtime, callbacks, cfg, 8, 16, 800, 600, "/tmp", "container", null, null);
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, null, null, false);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("/tmp", mux.activePane().?.cwd);
+
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, "/var", null, null, false);
+    try std.testing.expectEqualStrings("container", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("/var", mux.activePane().?.cwd);
+
+    try mux.newTab(&runtime, callbacks, cfg, 8, 16, 800, 600, null, "default", null, false);
+    try std.testing.expectEqualStrings("default", mux.activePane().?.domain_name);
+    try std.testing.expectEqualStrings("/", mux.activePane().?.cwd);
+}
+
 test "spawn filters reach initial panes tabs workspaces and splits before PTY launch" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const io = @import("../io.zig");
