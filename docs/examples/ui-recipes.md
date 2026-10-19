@@ -189,6 +189,68 @@ hollow.keymap.set("<leader>ws", function()
 end, { desc = "open workspace switcher" })
 ```
 
+## Workspace switcher with Podman inside WSL
+
+Discover projects inside an existing, running Linux container and open terminal
+panes there too. Replace the distro, WSL user, container name and roots below.
+The selected WSL user must have access to that container (important for rootless
+Podman). This example uses `/bin/sh`, which must exist inside the container;
+use `/bin/bash -l` instead if Bash is installed and you want a login shell.
+
+```lua
+local container_host = {
+  type = "podman",
+  container = "dev",
+  via = {
+    type = "wsl",
+    distro = "Ubuntu-26.04",
+    user = "me",
+  },
+}
+
+hollow.config.set({
+  domains = {
+    ContainerDev = {
+      shell = "/bin/sh",
+      host = container_host,
+    },
+  },
+})
+
+hollow.ui.workspace.configure({
+  prompt = "Container projects",
+  sources = {
+    {
+      name = "Podman dev",
+      host = container_host,
+      domain = "ContainerDev",
+      roots = { "/work" },
+    },
+  },
+})
+
+hollow.keymap.set("<leader>ws", function()
+  hollow.ui.workspace.open_switcher()
+end, { desc = "open workspace switcher" })
+```
+
+- `host.via` selects where the container CLI runs: Windows → WSL → container.
+  It belongs inside the host descriptor, not directly on the workspace source.
+- `sources[].host` controls filesystem discovery; `roots` are paths **inside the
+  container**, not Windows or WSL-host paths.
+- `sources[].domain` selects the terminal domain. That domain's `host` routes
+  panes into the same container. A discovery host alone does not route panes;
+  omitting `domain` inherits the current pane's domain instead.
+- New tabs inherit the active pane's domain unless another domain is explicitly
+  requested. Splits also inherit the active pane's domain.
+- `via.user` selects the WSL user running Podman, not the container user. Hollow
+  preserves the container's configured user and deploys its bundled agent there.
+
+For Docker, change `type = "podman"` to `type = "docker"`; optionally add
+`context = "my-context"` to the host descriptor. Both CLIs must be available
+inside the selected distro. See [host connector options](../reference/lua/host.md)
+and [workspace sources](../reference/lua/workspace.md#sources).
+
 ## Workspace button in the top bar
 
 ```lua

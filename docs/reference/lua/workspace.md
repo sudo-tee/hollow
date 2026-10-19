@@ -113,6 +113,32 @@ options, with optional `id` (allocated automatically when omitted). Omitted `hos
 uses the shared native-local host, except when converting legacy guest settings.
 An explicit host takes precedence over legacy resolver/domain inference.
 
+For Podman or Docker running **inside WSL**, put `via` inside the source's
+`host` descriptor (not on the source itself):
+
+```lua
+{
+  name = "Container projects",
+  host = {
+    type = "podman", -- or "docker"
+    container = "dev",
+    via = { type = "wsl", distro = "Ubuntu-26.04", user = "me" },
+  },
+  domain = "ContainerDev",
+  roots = { "/work" }, -- paths inside the container
+}
+```
+
+`via.distro` is required; `via.user` and `via.wsl` (the Windows WSL launcher)
+are optional. The WSL user runs the container CLI; it does not change the
+container's configured user. Without `via`, the CLI runs on the Hollow client.
+
+The source's `host` controls discovery only. Define `domains.ContainerDev` with
+an explicit container shell and the same `host` descriptor to open panes in that
+container. Without a source `domain`, opening inherits the current pane's domain;
+it does not infer a terminal target from `host`. See the
+[complete Podman-through-WSL recipe](../../examples/ui-recipes.md#workspace-switcher-with-podman-inside-wsl).
+
 Equivalent descriptors share one pending/ready connection across sources and
 refreshes. The manager closes owned guest connections when their last source is
 removed; it never closes caller-supplied ready hosts or the shared native-local
