@@ -604,8 +604,35 @@ The 29-test adapter target also passes through Podman and real WSL interop;
 See [methodology](host-agent-benchmarks.md#mixed-filesystemexec-interference) for
 fixture ownership, connection placement and owner-observed timing limits. This
 follow-up changes benchmark/test code, not production scheduling or defaults.
-Internal dispatch/control-queue instrumentation, focus-aware scheduling, split
-lanes and full Windows/WSL qualification remain open.
+At that stage, internal dispatch/control-queue instrumentation, focus-aware
+scheduling, split lanes and full Windows/WSL qualification remained open; the
+diagnostics below add partial internal timings, not scheduling qualification.
+
+### Agent-side queue diagnostics continuation
+
+`HOLLOW_AGENT_QUEUE_PROFILE` independently enables fixed-size output-span,
+dispatch/handler and buffered-command poll timing. The parser validates raw
+filesystem reply accounting, partial writes and explicitly censored/dropped
+timings. No queue/scheduler/admission/default changes accompany diagnostics.
+
+The [diagnostic report](../benchmarks/agent-pty/2026-10-18-queue-profile.md)
+preserves 12 profiling-off, 12 profiling-on and 30 dedicated E1 measurements.
+Profiled mixed prompt runs show up to 590,710 wire bytes ahead of input ACKs,
+17.29 ms maximum ACK queue residence and 22.75 ms maximum PTY DATA queue
+residence. These are aggregate per-connection observations, not causally matched
+foreground echoes. No trace overflow occurs; no complete buffered-command poll
+occurs. Profiling shifts measured tails and remains opt-in.
+
+Standalone regression targets execute 127 tests including imports; 57 Python
+tests and 16 opt-in fs/exec conformance cases pass. Adapter/transport tests pass
+with diagnostics off/on; target-enabled adapters pass through Podman and WSL
+interop. A Podman mixed smoke captures valid traces. Both static architectures
+build and both real pane/terminal integration tests pass; ARM64 execution and
+native Windows GUI remain unqualified. Dedicated
+diagnostics-off E1 medians remain near native, with one slow sub-95% short-transfer
+pair preserved. The local CI diagnostic smoke passes; no hosted result is claimed.
+Ready-to-enqueue/per-stream correlation, focus-aware and split-lane scheduling,
+fairness/resource/fault matrices and GUI/legacy-bypass parity remain future work.
 
 ## Packaged artifact discovery continuation
 

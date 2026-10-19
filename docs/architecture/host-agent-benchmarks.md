@@ -191,3 +191,61 @@ CLI defaults remain bulk off and resize disabled. CI exercises correctness, not
 latency acceptance. This adds no GUI focus policy or rollout qualification.
 The [eight-PTY repeated comparison](../benchmarks/agent-pty/2026-10-18-mixed-8.md)
 preserves 72 off/mixed measurements, source patches and per-run summaries.
+
+### Opt-in agent dispatch/output-queue diagnostics
+
+`HOLLOW_AGENT_QUEUE_PROFILE=1` enables independently gated, fixed-size diagnostics
+inside the Linux agent. The runner requires `--telemetry` with this environment
+flag so the subprocess transport inherits agent stderr. The existing
+`HOLLOW_AGENT_PROFILE` flag remains separate. For example:
+
+```sh
+HOLLOW_AGENT_QUEUE_PROFILE=1 python3 scripts/agent_pty_bench.py --telemetry \
+  --backend shared --sessions 8 --load stalled --bulk off mixed \
+  --resize-every 16 --runs 3 --samples 1000 --size-mib 10 --output queue-on.jsonl
+```
+
+Run a matching `--telemetry` comparison with the queue flag absent to measure its
+overhead; compare neither directly with diagnostics-off historical numbers.
+The flag must be explicitly supplied in the target environment for prepared
+remote connectors; a client environment variable does not attest remote settings.
+Stderr must be continuously drained. Snapshot serialization/emission occurs at
+PTY completion and can add teardown latency; no logging occurs on protocol stdout.
+
+The agent allocates one fixed-size profiler only when enabled. No timing samples
+allocate memory. It tracks at most 1,024 pending spans, dropping **timings**, not
+wire bytes, on overflow; `untracked`, `discarded` and `pending` explicitly report
+coverage/censoring. Every successfully appended frame advances monotonic wire
+positions; successful partial stdout writes advance completion positions, unaffected
+by output-buffer compaction. Filesystem workers append opaque already-framed
+responses, so their entire reply is tracked as one span, not falsely as one DATA
+frame. Disconnect discards unresolved spans rather than recording false completions.
+
+`AGENT_QUEUE_PROFILE` stderr records contain schema/version and explicit class
+orders. Each class has enqueue counts, bytes already queued ahead, and enqueue-to-
+first/complete-successful-write durations. Classes distinguish PTY DATA, exec DATA,
+filesystem reply spans, successful PTY input/resize/close ACKs, and other frames.
+These aggregate all streams on that connection, **not just foreground**. Input
+ACK still means queued, not consumed by the child. Queue timings end when bytes
+are accepted by the agent's stdout write, not when the client/VT/GUI consumes them.
+They exclude delay before frame enqueue, including buffered PTY output and any
+earlier credit or scheduling wait.
+
+Dispatch duration covers one handler invocation, not arrival-to-dispatch latency.
+Per-request durations include JSON parse/handler work; filesystem/exec values
+measure dispatch/spawn, not asynchronous job completion. Poll timings separately
+count calls made while a complete command is already buffered in agent memory.
+They do not measure commands still waiting in the kernel pipe or incomplete frames.
+Histograms have 64 fixed log2 buckets; bucket 0 includes 0/1, and bucket i>0 covers
+`[2^i, 2^(i+1))`. Timing units are ns, queued-ahead units bytes. Sums saturate at
+u64 maximum. Do not report histogram boundaries as exact percentiles.
+
+Snapshots are cumulative over connection startup, priming and prompt warmups,
+emitted when an open connection finalizes a PTY, before its terminal response/error. Pending/dropped spans remain
+censored; a connection lost or closed before any PTY completion may emit no record.
+Repeated snapshots are not independent samples. The runner preserves raw stderr
+and parsed `agent_queue_profiles`, checking histogram/accounting and fixed bounds;
+requested local agent/shared diagnostics fail if no snapshot arrives. No protocol
+schema, scheduling policy, queue/admission limits or backend defaults change.
+The [first diagnostic report](../benchmarks/agent-pty/2026-10-18-queue-profile.md)
+preserves the on/off comparison, internal observations and dedicated E1 recheck.
