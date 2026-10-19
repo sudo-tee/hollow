@@ -6,6 +6,7 @@ const io = @import("io.zig");
 const Pty = @import("pty/pty.zig").Pty;
 const AgentPty = @import("pty/agent.zig").AgentPty;
 const SharedConnection = @import("pty/agent.zig").SharedConnection;
+const bulk_module = @import("agent_pty_bench_bulk.zig");
 var a: std.mem.Allocator = std.heap.page_allocator;
 const ready = "HOLLOW_READY\n";
 
@@ -15,6 +16,10 @@ const Config = struct {
     backend: enum { native, agent, shared },
     sessions: usize = 1,
     load: enum { idle, noisy, stalled } = .idle,
+    bulk: bulk_module.Mode = .off,
+    bulk_path: ?[]const u8 = null,
+    bulk_exec_bytes: u32 = 524288,
+    resize_every: u32 = 0,
     workload: enum { prompt, output },
     connector_argv: []const []const u8 = &.{},
     samples: usize = 5000,
@@ -50,6 +55,7 @@ const Backgrounds = struct {
     max_gap_ns: [15]u64 = @splat(0),
     last_progress: [15]i128 = @splat(0),
     started: i128 = 0,
+    bulk: ?*bulk_module.Bulk = null,
     fn reset(self: *Backgrounds) void {
         self.started = clock();
         self.bytes = @splat(0);
@@ -58,7 +64,7 @@ const Backgrounds = struct {
     }
     fn service(self: *Backgrounds) !bool {
         if (self.started == 0) return false;
-        var progress = false;
+        var progress = if (self.bulk) |bulk| try bulk.service() else false;
         for (self.ptys[0..self.count], 0..) |*pty, index| {
             if (self.config.load == .stalled and index == 0) continue;
             var buffer: [16384]u8 = undefined;
@@ -145,6 +151,12 @@ pub fn main(init: std.process.Init) !void {
         .debug => debug_allocator.allocator(),
     };
     if (cfg.samples == 0 or cfg.samples > 100000 or cfg.bytes == 0 or cfg.bytes > 1024 * 1024 * 1024 or cfg.timeout_ms == 0 or cfg.timeout_ms > 3600000 or cfg.sessions == 0 or cfg.sessions > 16 or (cfg.load != .idle and cfg.sessions == 1)) return error.InvalidArgument;
+    const bulk_jobs: usize = switch (cfg.bulk) {
+        .off => 0,
+        .mixed => 2,
+        else => 1,
+    };
+    if (cfg.backend == .shared and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
         .output => try std.fmt.allocPrint(a, "stty raw -echo; printf 'HOLLOW_READY\\n'; read go; head -c {d} /dev/zero", .{cfg.bytes}),
@@ -175,12 +187,31 @@ pub fn main(init: std.process.Init) !void {
         try receive(&backgrounds.ptys[index], &wake, &backgrounds, &greeting, clock() + timeout);
         if (!std.mem.eql(u8, &greeting, ready)) return error.InvalidGreeting;
     }
+    var bulk = try bulk_module.Bulk.init(a, io.get(), cfg.bulk, cfg.bulk_path, cfg.bulk_exec_bytes, cfg.connector_argv, .{ .context = &wake, .notify = Wake.signal, .telemetry = cfg.telemetry }, if (owner) |shared| shared.connection else null);
+    defer bulk.deinit();
+    // Warm exactly one checked RPC of each enabled kind before starting load.
+    // No cold separate-agent HELLO is compared with an already-warm shared one.
+    bulk.priming = true;
+    const prime_deadline = clock() + timeout;
+    while (true) {
+        const epoch = wake.epoch.load(.acquire);
+        _ = try bulk.service();
+        bulk.requireProgress() catch {
+            try wake.wait(epoch, prime_deadline);
+            continue;
+        };
+        break;
+    }
+    bulk.priming = false;
+    bulk.stats = .{};
     for (backgrounds.ptys[0..backgrounds.count]) |*background| try background.writeAll("GO\n");
+    backgrounds.bulk = &bulk;
     backgrounds.reset();
     var timings: std.ArrayList(u64) = .empty;
     defer timings.deinit(a);
     var elapsed_ns: i128 = 0;
     var digest_hex: ?[64]u8 = null;
+    var resizes_issued: usize = 0;
     switch (cfg.workload) {
         .prompt => {
             try timings.ensureTotalCapacity(a, cfg.samples);
@@ -190,6 +221,10 @@ pub fn main(init: std.process.Init) !void {
                 const token = try std.fmt.bufPrint(&token_buffer, "HOLLOW_{d:0>8}\n", .{index});
                 var echo: [64]u8 = undefined;
                 const start = clock();
+                if (cfg.resize_every != 0 and index % cfg.resize_every == 0) {
+                    pty.resize(@intCast(120 + resizes_issued % 2), 40);
+                    resizes_issued += 1;
+                }
                 try pty.writeAll(token);
                 try receive(&pty, &wake, &backgrounds, echo[0..token.len], start + timeout);
                 const duration: u64 = @intCast(clock() - start);
@@ -218,6 +253,7 @@ pub fn main(init: std.process.Init) !void {
         },
     }
     const background_elapsed_ns = clock() - backgrounds.started;
+    try bulk.requireProgress();
     const stalled_buffered = if (cfg.load == .stalled) backgrounds.ptys[0].pendingOutputBytes() else 0;
     for (backgrounds.bytes[0..backgrounds.count], 0..) |bytes, index| {
         if (cfg.load != .idle and !(cfg.load == .stalled and index == 0) and bytes == 0) return error.BackgroundStarved;
@@ -229,6 +265,12 @@ pub fn main(init: std.process.Init) !void {
         .backend = cfg.backend,
         .sessions = cfg.sessions,
         .load = cfg.load,
+        .bulk = cfg.bulk,
+        .bulk_lane = if (cfg.bulk == .off) "off" else if (cfg.backend == .shared) "shared" else "separate_agent",
+        .bulk_stats = bulk.stats,
+        .bulk_telemetry = if (cfg.telemetry and bulk.connection != null) bulk.connection.?.metrics() else null,
+        .resize_every = cfg.resize_every,
+        .resizes_issued = resizes_issued,
         .background_bytes = backgrounds.bytes[0..backgrounds.count],
         .background_max_gap_ns = backgrounds.max_gap_ns[0..backgrounds.count],
         .background_elapsed_ns = background_elapsed_ns,

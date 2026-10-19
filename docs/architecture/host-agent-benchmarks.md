@@ -144,8 +144,50 @@ demultiplexing. The stalled case deliberately never consumes one background.
 
 See the [initial shared PTY report](../benchmarks/agent-pty/2026-10-18-shared-pty.md)
 for workload limits, owner scheduling, buffer differences and remaining gates.
-These tests do not implement GUI focus hints, filesystem bulk, 40/100/200-PTY
+Those initial measurements do not implement GUI focus hints, filesystem bulk, 40/100/200-PTY
 scaling or native Windows/WSL bypass comparison. Aggregate throughput must be
 interpreted separately from the foreground's throughput; raw background counts
 and elapsed duration are retained for that purpose. CI runs correctness smokes,
 not machine-independent latency thresholds.
+
+### Mixed filesystem/exec interference
+
+The runner additionally accepts `--bulk off fs exec mixed`,
+`--bulk-exec-bytes` (default 524,288; maximum 1,048,576) and
+`--resize-every N` (default 0, disabled). For example:
+
+```sh
+python3 scripts/agent_pty_bench.py --backend all --sessions 8 \
+  --load noisy stalled --bulk off mixed --resize-every 16 \
+  --runs 3 --samples 1000 --size-mib 10 --output mixed.jsonl
+```
+
+Bulk uses existing typed operations and protocol handlers. At most one 16 KiB
+`FS_READ` and one non-PTY `EXEC` are pending; each completion is checked for exact
+length and all-zero contents before another request of that kind is submitted.
+The exec command reads `/dev/zero`. Shared PTYs use their existing connection;
+native and dedicated PTYs use one additional agent connection, explicitly labeled
+`separate_agent`. This is a connection-placement experiment, not native filesystem
+versus agent filesystem performance. Requested PTYs plus enabled bulk workers
+must fit the unchanged 16-job shared limit; invalid matrices fail before launch.
+
+Local fs runs create and remove a unique 16 KiB zero fixture. Prepared remote
+connectors require an explicit `--bulk-path` to an equivalent target-side fixture;
+the runner does not deploy or delete remote files. Each enabled operation completes
+one checked warmup before load starts, then counters reset. Counters include
+foreground prompt warmups. They retain completion counts, exact byte totals,
+total/max owner-observed RPC latency and a fixed 64-bucket log2-nanosecond histogram.
+These timings include owner-loop scheduling and result decoding/verification;
+they are **not** internal dispatch/control-queue timings or exact percentiles.
+Pending bulk work is abandoned at teardown, not counted as completed throughput.
+
+During receive, foreground reads precede bulk completion/submission and then the
+existing bounded background service. Bulk processing can therefore delay the
+owner loop even on separate connections. `--resize-every` alternates foreground
+widths before selected prompt writes, including warmups; `resizes_issued` records
+issuance only, not acknowledgement or applied-size latency. The lifecycle suite
+separately checks terminal resize semantics. Output workloads do not issue resizes.
+CLI defaults remain bulk off and resize disabled. CI exercises correctness, not
+latency acceptance. This adds no GUI focus policy or rollout qualification.
+The [eight-PTY repeated comparison](../benchmarks/agent-pty/2026-10-18-mixed-8.md)
+preserves 72 off/mixed measurements, source patches and per-run summaries.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import itertools
@@ -12,6 +13,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +60,28 @@ def validate(result: dict, config: dict) -> dict:
                 raise ValueError("background starvation or unexpected idle/stalled consumption")
         if config["backend"] != "native" and not 0 <= result.get("stalled_buffered", 65537) <= 65536:
             raise ValueError("stalled output exceeds per-session cap")
+    if "bulk" in config:
+        mode = config["bulk"]
+        lane = "off" if mode == "off" else "shared" if config["backend"] == "shared" else "separate_agent"
+        stats = result.get("bulk_stats")
+        if result.get("bulk") != mode or result.get("bulk_lane") != lane or not isinstance(stats, dict):
+            raise ValueError("bulk workload/lane identity mismatch")
+        for operation, size in (("fs", 16384), ("exec", config["bulk_exec_bytes"])):
+            timing = stats.get(operation, {})
+            count, total, maximum = timing.get("count"), timing.get("total_ns"), timing.get("max_ns")
+            histogram = timing.get("ns_log2")
+            active = mode in (operation, "mixed")
+            if (any(type(n) is not int or n < 0 for n in (count, total, maximum))
+                    or not isinstance(histogram, list) or len(histogram) != 64
+                    or any(type(n) is not int or n < 0 for n in histogram)
+                    or sum(histogram) != count or stats.get(operation + "_bytes") != count * size
+                    or (active and (count == 0 or total <= 0 or maximum <= 0 or maximum > total))
+                    or (not active and (count != 0 or total != 0 or maximum != 0))):
+                raise ValueError("bulk progress, checksum-size accounting or bounded timing counters invalid")
+        every = config["resize_every"]
+        expected = (config["samples"] + 31) // every + 1 if every and config["workload"] == "prompt" else 0
+        if result.get("resize_every") != every or result.get("resizes_issued") != expected:
+            raise ValueError("resize workload identity/count mismatch")
     if config.get("telemetry") and config["backend"] in ("agent", "shared"):
         metrics = result.get("telemetry")
         if (not isinstance(metrics, dict) or any(type(value) is not int or value < 0 for value in metrics.values())
@@ -99,6 +123,10 @@ def main() -> None:
     parser.add_argument("--backend", choices=("both", "all", "native", "agent", "shared"), default="both")
     parser.add_argument("--sessions", type=int, nargs="+", default=[1], help="total foreground + background PTYs, 1..16")
     parser.add_argument("--load", choices=("idle", "noisy", "stalled"), nargs="+", default=["idle"])
+    parser.add_argument("--bulk", choices=("off", "fs", "exec", "mixed"), nargs="+", default=["off"])
+    parser.add_argument("--bulk-path", help="prepared target path containing exactly 16 KiB of zero bytes; local fixture created if omitted")
+    parser.add_argument("--bulk-exec-bytes", type=int, default=524288, help="checked bytes per repeated non-PTY EXEC, 1..1048576")
+    parser.add_argument("--resize-every", type=int, default=0, help="resize before every Nth prompt, including warmups; 0 disables")
     parser.add_argument("--workload", choices=("both", "prompt", "output"), default="both")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--samples", type=int, default=5000)
@@ -110,7 +138,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="new JSONL file; existing files are never overwritten")
     args = parser.parse_args()
     if not (1 <= args.runs <= 100 and 1 <= args.samples <= 100000 and 1 <= args.timeout <= 3600
-            and all(1 <= size <= 1024 for size in args.size_mib) and all(1 <= n <= 16 for n in args.sessions)):
+            and all(1 <= size <= 1024 for size in args.size_mib) and all(1 <= n <= 16 for n in args.sessions)
+            and 1 <= args.bulk_exec_bytes <= 1048576 and 0 <= args.resize_every <= 100000):
         parser.error("runs/samples/timeout/size outside bounded benchmark limits")
     if all(n == 1 for n in args.sessions) and "idle" not in args.load:
         parser.error("no runnable cases: noisy/stalled load requires at least two sessions")
@@ -122,13 +151,35 @@ def main() -> None:
             or any(not isinstance(arg, str) or "\0" in arg for arg in connector) or not connector[0]):
         parser.error("connector must be a nonempty JSON argv array without NUL")
     backends = ["native", "agent", "shared"] if args.backend == "all" else ["native", "agent"] if args.backend == "both" else [args.backend]
+    if "shared" in backends and any(n + (0 if mode == "off" else 2 if mode == "mixed" else 1) > 16
+                                    for n, mode in itertools.product(args.sessions, args.bulk)):
+        parser.error("shared PTYs plus bulk workers exceed the unchanged 16-job limit")
+    needs_file = any(mode in ("fs", "mixed") for mode in args.bulk)
+    if needs_file and connector_json and not args.bulk_path:
+        parser.error("remote fs bulk requires --bulk-path to a prepared 16 KiB zero fixture")
+    with contextlib.ExitStack() as resources:
+        bulk_path = args.bulk_path
+        if needs_file and not bulk_path:
+            directory = resources.enter_context(tempfile.TemporaryDirectory(
+                prefix="hollow-pty-bulk-", dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None))
+            fixture = Path(directory) / "zeros"
+            fixture.write_bytes(bytes(16384))
+            bulk_path = str(fixture)
+        run_benchmarks(args, binary, agent, connector, connector_json, backends, bulk_path)
+
+
+def run_benchmarks(args, binary, agent, connector, connector_json, backends, bulk_path):
     workloads = ["prompt", "output"] if args.workload == "both" else [args.workload]
     sources = ["src/agent_pty_bench.zig", "src/pty/agent.zig", "src/pty/pty_posix.zig",
                "src/host/transport.zig", "src/agent/main.zig", "src/agent/exec.zig",
-               "src/agent/supervisor.zig", "scripts/agent_pty_bench.py"]
+               "src/agent/supervisor.zig", "scripts/agent_pty_bench.py", "src/agent_pty_bench_bulk.zig",
+               "src/host/operations.zig", "src/agent/fs.zig"]
     metadata = {
         "kind": "metadata", "schema": 1, "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "scope": "headless 1..16 PTY adapters; no GUI/focus policy/fs bulk/WSL bypass or rollout qualification",
+        "scope": "headless PTY adapters with optional fs/exec interference; no GUI/focus policy/WSL bypass or rollout qualification",
+        "bulk_fixture": {"path": bulk_path, "expected_bytes": 16384,
+                         "expected_sha256": hashlib.sha256(bytes(16384)).hexdigest()} if bulk_path else None,
+        "bulk_placement": "same connection for shared PTYs; separate agent for native/dedicated PTYs",
         "qualification": False, "revision": git("rev-parse", "HEAD"),
         "dirty_paths": git("status", "--short"), "source_sha256": {name: sha(ROOT / name) for name in sources},
         "binary": str(binary), "binary_sha256": sha(binary),
@@ -146,17 +197,19 @@ def main() -> None:
 
         emit(metadata)
         for run in range(args.runs):
-            for sessions, load, workload in itertools.product(args.sessions, args.load, workloads):
+            for sessions, load, workload, bulk in itertools.product(args.sessions, args.load, workloads, args.bulk):
                 if sessions == 1 and load != "idle":
                     continue  # A noisy neighbor requires at least two sessions.
                 for size in ([0] if workload == "prompt" else args.size_mib):
                     for backend in (backends if run % 2 == 0 else backends[::-1]):
                         config = {"backend": backend, "workload": workload, "samples": args.samples,
                                    "allocator": args.allocator, "telemetry": args.telemetry,
-                                   "sessions": sessions, "load": load,
+                                    "sessions": sessions, "load": load,
+                                    "bulk": bulk, "bulk_path": bulk_path if bulk in ("fs", "mixed") else None,
+                                    "bulk_exec_bytes": args.bulk_exec_bytes, "resize_every": args.resize_every,
                                     "bytes": size * 1024 * 1024 if size else 1,
                                     "timeout_ms": min(args.timeout, 30) * 1000,
-                                   "connector_argv": connector if backend in ("agent", "shared") else []}
+                                   "connector_argv": connector if backend in ("agent", "shared") or bulk != "off" else []}
                         try:
                             completed = subprocess.run([str(binary), json.dumps(config)], check=True,
                                                        capture_output=True, text=True, timeout=args.timeout)
@@ -168,7 +221,7 @@ def main() -> None:
                         emit({"kind": "measurement", "run": run, "config": config,
                               "result": result, "stderr": completed.stderr})
                         summary = result.get("latency_ms", result.get("mib_per_second"))
-                        print(f"run={run} {backend} sessions={sessions} load={load} {workload} size_mib={size}: {summary}", flush=True)
+                        print(f"run={run} {backend} sessions={sessions} load={load} bulk={bulk} {workload} size_mib={size}: {summary}", flush=True)
 
 
 if __name__ == "__main__":

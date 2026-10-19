@@ -4,6 +4,14 @@ The design source is `hollow-agent-architecture-plan-v4.md`. Implementation is
 staged; this change does **not** complete the entire plan or switch default pane
 backends. Agent pane attachment requires an explicit development override.
 
+The headless shared experiment now also offers bounded, byte-checked filesystem
+and non-PTY exec interference plus optional foreground resize issuance. Shared
+bulk uses the PTY connection; native/dedicated comparisons use a separate agent.
+See [benchmark methodology](host-agent-benchmarks.md#mixed-filesystemexec-interference).
+No production transport, scheduler, workspace policy or backend defaults change
+in this follow-up; internal queue instrumentation and focus-aware scheduling
+remain future experiments.
+
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and
