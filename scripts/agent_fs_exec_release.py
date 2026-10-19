@@ -76,7 +76,7 @@ def main():
     env = dict(os.environ, LUA=args.lua)
     cleared = []
     for key in list(env):
-        if key.startswith("HOLLOW_AGENT_") or key.startswith("HOLLOW_TEST_") or key == "HOLLOW_EXPERIMENTAL_AGENT_PTY":
+        if key.startswith("HOLLOW_AGENT_") or key.startswith("HOLLOW_TEST_"):
             cleared.append(key)
             del env[key]
     report = dict(schema=1, scope="fs/exec only; no PTY/GUI qualification", checks_passed=False,

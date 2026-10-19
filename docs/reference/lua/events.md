@@ -89,9 +89,10 @@ host. Empty string is a valid environment value. Keys cannot be empty or contain
 fields and edits to shell/domain reject that handler's entire replacement.
 Each handler is validated before the next runs.
 
-SSH and Windows WSL launcher domains currently bypass this pipeline. Their guest
-cwd/environment need domain-aware transformation rather than edits to the host
-launcher. Executable/argv rewriting, cancellation, and environment unsetting
+SSH and Windows WSL launcher domains currently bypass this pipeline, and so do
+agent-backed panes (`domains.<name>.host`, including implicit WSL agent panes).
+Their guest cwd/environment need domain-aware transformation rather than edits
+to the host launcher. Executable/argv rewriting, cancellation, and environment unsetting
 are not supported in this first version.
 
 Each spawn filter has a 50 ms elapsed-time acceptance budget. Late results are
@@ -155,7 +156,7 @@ reloading config does not create it again.
 
 `term:pane_exited` fires once when Hollow observes the pane's child exit, before
 automatic removal. `status` is the process exit code; POSIX signal termination
-uses `128 + signal`. WSL bypass uses the guest exit status. If the OS status is
+uses `128 + signal`. Agent-backed panes report the guest exit status. If the OS status is
 unavailable (for example, a failed transport), `status` is `nil`. This event does
 not require shell integration, and its pane snapshot is no longer busy.
 

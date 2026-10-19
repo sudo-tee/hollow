@@ -2,6 +2,7 @@
 const std = @import("std");
 const transport = @import("transport.zig");
 const native = @import("local.zig");
+pub const deploy = @import("deploy.zig");
 pub const operations = @import("operations.zig");
 
 pub const max_hosts = 8;
@@ -66,6 +67,27 @@ pub const Manager = struct {
     /// Launches exactly one connector subprocess asynchronously. Reconnection
     /// is explicit; pending work from the previous generation is never replayed.
     pub fn connectAgent(self: *Manager, id: []const u8, argv: []const []const u8) !Handle {
+        return self.connectWith(id, .{ .argv = argv });
+    }
+
+    /// Like `connectAgent`, but installs the agent through `connector` first.
+    pub fn connectDeployed(self: *Manager, id: []const u8, connector: deploy.Connector, agent: deploy.Agent) !Handle {
+        return self.connectWith(id, .{ .deployed = .{ .connector = connector, .agent = agent } });
+    }
+
+    const Launch = union(enum) {
+        argv: []const []const u8,
+        deployed: struct { connector: deploy.Connector, agent: deploy.Agent },
+
+        fn create(self: Launch, allocator: std.mem.Allocator, io: std.Io) !*transport.Connection {
+            return switch (self) {
+                .argv => |argv| transport.Connection.create(allocator, io, argv),
+                .deployed => |target| transport.Connection.createDeployed(allocator, io, target.connector, target.agent),
+            };
+        }
+    };
+
+    fn connectWith(self: *Manager, id: []const u8, launch: Launch) !Handle {
         if (id.len == 0 or id.len > 256 or std.mem.indexOfScalar(u8, id, 0) != null) return error.InvalidArgument;
         self.drain();
         var available: ?usize = null;
@@ -78,7 +100,7 @@ pub const Manager = struct {
                 self.drain();
                 // drain() transferred every old result into a generation-tagged
                 // pending slot before destroying its transport allocation owner.
-                const connection = try transport.Connection.create(self.allocator, self.io, argv);
+                const connection = try launch.create(self.allocator, self.io);
                 host.backend.deinit();
                 host.backend = .{ .agent = connection };
                 return .{ .slot = @intCast(index), .generation = connection.generation };
@@ -87,7 +109,7 @@ pub const Manager = struct {
         const index = available orelse return error.ResourceExhausted;
         const owned_id = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned_id);
-        const connection = try transport.Connection.create(self.allocator, self.io, argv);
+        const connection = try launch.create(self.allocator, self.io);
         self.hosts[index] = .{ .id = owned_id, .backend = .{ .agent = connection } };
         return .{ .slot = @intCast(index), .generation = connection.generation };
     }
@@ -125,6 +147,13 @@ pub const Manager = struct {
         return switch ((try self.get(handle)).backend) {
             .agent => |connection| connection.connectionFailure(),
             .native => |value| if (value.closed) @as(?anyerror, error.Disconnected) else null,
+        };
+    }
+
+    pub fn deployFailure(self: *Manager, handle: Handle) !?*const deploy.Failure {
+        return switch ((try self.get(handle)).backend) {
+            .agent => |connection| connection.deployFailure(),
+            .native => null,
         };
     }
 

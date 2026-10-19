@@ -23,7 +23,7 @@ class ReleaseChecksTests(unittest.TestCase):
         self.assertIn("-Dhost-lua-include=/headers", checks["build-and-native"])
         self.assertIn("local-subprocess", checks["local-conformance"])
         for command in checks.values():
-            self.assertFalse(any("agent_pty_bench" in arg or "test-agent-pty" == arg for arg in command))
+            self.assertNotIn("test-agent-pty", command)
 
     def test_requested_profiles_use_real_fixture_and_production_lua(self):
         checks = dict(commands(self.options(["podman", "ssh", "docker", "socket", "wsl"])))

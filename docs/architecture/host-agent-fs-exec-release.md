@@ -75,9 +75,10 @@ remain evidence rather than being overwritten by a new successful report.
 * Trust bundle, native connector executables/configuration and selected target.
   SHA validates transferred bytes, not publisher authenticity or hostile targets.
 * SSH must enforce verified host keys/noninteractive authentication, disable TTY
-  and unintended forwarding/local commands, and use controlled SFTP deployment.
-* Container selection pins immutable ID, preserves configured user, and never
-  starts/removes user containers during normal connector bootstrap.
+  and unintended forwarding/local commands. Deployment streams the agent over
+  the connector's stdin and verifies it with `sha256sum` on the host.
+* Container selection preserves the configured user and never starts/removes
+  user containers. (Immutable-ID pinning was dropped with the Lua bootstrap.)
 * Binary framing/size limits, byte-safe paths/argv, request/job admission, pending
   completion storage, connect/request/cancel watchdogs and owner teardown remain
   bounded. Broken streams fail in-flight work. Reconnect never replays EXEC.
@@ -92,7 +93,7 @@ remain evidence rather than being overwritten by a new successful report.
 
 Release evidence is scoped to actual execution, not to all platforms supported by
 the wire format. Linux x86_64 local/Podman, owned SSH fixture, mock socket and WSL
-interop have current integration evidence; see [validation](host-agent-validation.md).
+interop have current integration evidence.
 
 | Configuration | Fs/exec evidence | Release boundary |
 | --- | --- | --- |
@@ -102,7 +103,7 @@ interop have current integration evidence; see [validation](host-agent-validatio
 | Mock socket, 257-byte relay fragments | 16 common wire cases, production Lua, explicit loss/reconnect and no EXEC replay | Design fixture, not production vsock/hvsock |
 | Linux→Windows launcher→Ubuntu-26.04 | 16 common wire cases, public WSL bootstrap/default and explicit user, both layouts | Explicit Windows-accessible artifact; not native Windows automatic discovery/client execution |
 | Real Docker | Dedicated CI gate configured | Not executed locally: no Docker CLI/daemon available; no Podman substitution accepted |
-| Native Windows client | [Dispatcher smoke](../validation/2026-10-19-windows-fs-exec-smoke.md), [public Lua discovery](../validation/2026-10-19-windows-lua-bootstrap.md), [isolated cold install/repair](../validation/2026-10-19-windows-wsl-cold-deploy.md); [vendored LuaJIT repeat](../validation/2026-10-19-windows-luajit-bootstrap.md): six processes, 12 pass/one skip each, actual compiled JIT traces | Cold cases use test-only HOME launcher; full application runtime/GUI, direct-launcher cold install, teardown cleanup and wider faults/clients remain open |
+| Native Windows client | Dispatcher smoke, public Lua discovery, isolated cold install/repair; vendored LuaJIT repeat: six processes, 12 pass/one skip each, actual compiled JIT traces | Cold cases use test-only HOME launcher; full application runtime/GUI, direct-launcher cold install, teardown cleanup and wider faults/clients remain open |
 | ARM64 | Static Linux-musl bundle/checksum | Cross-build only; runtime qualification still required |
 
 Workspace host loading has seven focused Lua tests plus real >16 KiB paged reads
@@ -132,8 +133,8 @@ musl artifacts and their manifest verify. A separate direct Podman-native host
 probe passes both installed layouts, exercising the same >16 KiB workspace load
 code against a real remote agent as well as native-local workers.
 
-Evidence: [`2026-10-19-fs-exec-release.json.gz`](../validation/2026-10-19-fs-exec-release.json.gz)
-retains all three run reports/logs, containment records, environment/tool versions,
+Evidence archive `2026-10-19-fs-exec-release.json.gz` (no longer kept in the repo)
+retained all three run reports/logs, containment records, environment/tool versions,
 32 direct SIGKILL repeats and direct Podman-host logs. Adjacent `.summary.json`
 lists selected/unverified scope and the preserved failure. `.patch.gz` reconstructs
 all **177** closing source hashes on `e410fb0`; failed-run hashes also reconstruct
@@ -165,7 +166,7 @@ fs/exec checklist and uploads report/logs. A configured job is not proof it pass
 Full native Windows WSL/SSH/Podman qualification and ARM64 execution require their own runner
 or controlled manual record; Linux-musl cross-builds do not qualify execution.
 
-Subsequent [live-work Windows manager teardown checks](../validation/2026-10-19-windows-manager-teardown.md)
+Subsequent live-work Windows manager teardown checks
 pass six processes with all 18 workload/guardian/agent identities gone and stale
 promise rejection verified. Explicit manager deinit is covered; full application
 Runtime/GUI reload, abrupt crash and teardown upload cleanup remain unqualified.

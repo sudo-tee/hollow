@@ -211,16 +211,19 @@ hollow/
 │   ├── native_cli.zig            `hollow cli …` subcommand
 │   ├── platform.zig              platform-specific paths and defaults
 │   ├── lua/                      Lua-side runtime (core, config, ui, theme, ...)
+│   │   └── hollow/host/pty.lua   pane host selection/pool
+│   ├── agent/                    `hollow-agent` (guest-side host agent)
+│   │   ├── pty.zig               agent `pty` mode server
+│   │   └── pty_protocol.zig      pane PTY frame protocol
 │   ├── pty/
-│   │   ├── pty_windows.zig       Windows PTY + WSL bypass logic
+│   │   ├── pty_windows.zig       Windows ConPTY
 │   │   ├── pty_posix.zig         POSIX PTY (partial; Linux build is broken)
-│   │   ├── launch_command.zig    shell launch command builder
-│   │   └── wsl_bypass_protocol.zig  APC frame protocol
+│   │   ├── agent.zig             agent-backed pane PTY client
+│   │   └── launch_command.zig    shell launch command builder
 │   ├── render/                   Sokol + FreeType + HarfBuzz
 │   ├── term/ghostty.zig          libghostty-vt binding
 │   ├── ui/                       UI helpers
 │   ├── htp_pipe.zig, htp_transport.zig
-│   ├── wsl_bypass.zig            Linux-side WSL bypass helper
 │   └── selection.zig, fastmem.zig
 ├── examples/                     example configs, plugins, HTP helpers
 ├── shell-integration/            shell-side HTP helpers

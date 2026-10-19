@@ -116,16 +116,16 @@ out-of-scope notes.
 ### Is Hollow a Linux terminal?
 
 Yes and no Hollow is a Windows app by default with basic Linux support for the moment.
-WSL is one of the shells Hollow can launch; the bypass helper is a
-small Linux-side binary that skips ConPTY.
+WSL is one of the shells Hollow can launch; WSL panes run through the
+bundled Linux `hollow-agent`, which skips ConPTY.
 
-### What if I want the WSL helper to do more?
+### What if I want the WSL agent to do more?
 
-The bypass helper is a small Linux-side binary in
-[`src/wsl_bypass.zig`](../src/wsl_bypass.zig). It speaks a tiny
-APC-based protocol defined in
-[`src/pty/wsl_bypass_protocol.zig`](../src/pty/wsl_bypass_protocol.zig).
-Extending it is feasible but only by writing Zig code and rebuilding
+Pane PTYs are served by `hollow-agent pty`
+([`src/agent/pty.zig`](../src/agent/pty.zig)) over a small framed
+protocol defined in
+[`src/agent/pty_protocol.zig`](../src/agent/pty_protocol.zig).
+Extending it is feasible but only by writing Zig code and rebuilding.
 
 ## See also
 

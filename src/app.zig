@@ -78,7 +78,6 @@ const PTY_RECENT_OUTPUT_NS: i128 = 100 * std.time.ns_per_ms;
 const PTY_READER_HIGH_WATER_BYTES: usize = 4 * 1024 * 1024;
 const PTY_READER_PRESSURE_BYTES: usize = PTY_READER_HIGH_WATER_BYTES * 3 / 4;
 const SYNCHRONIZED_OUTPUT_TIMEOUT_NS: i128 = 1000 * std.time.ns_per_ms;
-threadlocal var g_prefixed_window_title_buf: [256]u8 = undefined;
 
 pub const SplitCommandMode = enum {
     send,
@@ -1065,6 +1064,7 @@ pub const App = struct {
         mux.host_context = self;
         mux.host_wake = .{ .context = self, .callback = signalExternalWake };
         mux.spawn_filter = .{ .context = self, .callback = pane_lifecycle.filterSpawn };
+        mux.pty_host = .{ .context = self, .callback = pane_lifecycle.ptyHost };
         errdefer mux.deinit(runtime);
 
         cmd_ipc.startCommandTransport(self);
@@ -2044,22 +2044,9 @@ pub const App = struct {
 
     pub fn activeTitle(self: *App) []const u8 {
         if (self.activePane()) |pane| {
-            if (pane.usesWslBypass()) {
-                if (pane.title.len > 0) return prefixedWindowTitle("[wsl-bypass] ", pane.title);
-                return prefixedWindowTitle("[wsl-bypass] ", self.config.windowTitle());
-            }
             if (pane.title.len > 0) return pane.title;
         }
         return self.config.windowTitle();
-    }
-
-    fn prefixedWindowTitle(prefix: []const u8, title: []const u8) []const u8 {
-        const prefix_len = @min(prefix.len, g_prefixed_window_title_buf.len);
-        fastmem.copy(u8, g_prefixed_window_title_buf[0..prefix_len], prefix[0..prefix_len]);
-        const room = g_prefixed_window_title_buf.len - prefix_len;
-        const title_len = @min(title.len, room);
-        fastmem.copy(u8, g_prefixed_window_title_buf[prefix_len .. prefix_len + title_len], title[0..title_len]);
-        return g_prefixed_window_title_buf[0 .. prefix_len + title_len];
     }
 
     /// Height in pixels of the shared top bar. 0 when hidden.

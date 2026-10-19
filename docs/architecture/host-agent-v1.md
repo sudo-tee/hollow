@@ -19,9 +19,10 @@ without privilege escalation. Logs go to stderr, never protocol stdout.
 PR0 locks this RFC and reproduces legacy WSL PTY performance baselines before
 any PTY implementation. PR1 implements Linux standalone agent and local
 subprocess conformance. PR2 adds Podman binary deployment and persistent
-`podman exec -i` transport; never allocate a TTY. PTYs remain on existing
-backends (including `hollow-wsl-bypass`) until separate parity, performance,
-backpressure and failure-isolation gates pass.
+`podman exec -i` transport; never allocate a TTY for fs/exec. Pane PTYs now run
+`hollow-agent pty`, one connector process per pane (replacing the former WSL
+bypass helper); a multiplexed shared transport is later work, gated on parity,
+performance, backpressure and failure-isolation measurements.
 
 ## Frame
 
@@ -108,9 +109,10 @@ No PTY, PTY stream ownership, session persistence, daemon, filesystem write,
 PTY flow scheduler, TCP listener, or Lua API is included in PR0–2. Existing PTY
 path stays untouched. Future PTY work requires independent latency/throughput,
 renderer responsiveness, bounded-memory/backpressure, fault-injection and
-failure-isolation gates against reproducible legacy WSL measurements. A failed
-shared multiplexing experiment does not block fs/exec; retain bypass or use
-dedicated PTY transports if measurements require it.
+failure-isolation gates against reproducible legacy WSL measurements. Pane PTYs
+currently use dedicated per-pane `hollow-agent pty` transports. A failed
+shared multiplexing experiment does not block fs/exec; keep dedicated PTY
+transports if measurements require it.
 
 ## Current implementation choices and remaining qualification
 

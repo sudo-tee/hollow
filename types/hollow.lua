@@ -436,6 +436,7 @@
 ---@field wsl_distro? string
 ---@field default_cwd? string
 ---@field env? table<string, string>
+---@field host? false|HollowWorkspaceHostDescriptor|{ path_style?: "posix"|"wsl" } Run panes through `hollow-agent pty` on this host. On Windows, WSL domains use it implicitly (falling back to wsl.exe); `false` opts out
 
 ---@class HollowDomain: HollowDomainConfig
 ---@field name string
@@ -2034,7 +2035,19 @@ local fs = {}
 ---@class HollowHostConnectOpts
 ---@field id string Stable host identifier
 ---@field backend? "agent"|"local" Default agent; local never launches an agent
----@field argv? string[] Required only for agent; exact connector argv, no implicit shell
+---@field argv? string[] Agent already on the host: exact argv that runs `hollow-agent stdio`
+---@field connector? HollowHostConnector Install the agent through this connector, then run it
+---@field agent? HollowHostAgentSource Where the agent comes from (with connector)
+
+---@class HollowHostConnector
+---@field argv string[] Command prefix that runs a command on the host
+---@field remote_shell? boolean The connector joins arguments for a remote shell (ssh)
+
+---@class HollowHostAgentSource
+---@field path? string Absolute preinstalled Linux executable; skips deployment
+---@field dir? string Client-native bundle directory with SHA256SUMS
+---@field artifacts? {x86_64?:HollowAgentArtifact, aarch64?:HollowAgentArtifact}
+---@field timeout_ms? integer Deploy deadline; default 60000, maximum 300000
 
 ---@class HollowAgentArtifact
 ---@field path string Absolute native path to a trusted Linux musl agent artifact
@@ -2072,7 +2085,6 @@ local fs = {}
 ---@field user? string Omitted preserves SSH configuration
 ---@field port? integer 1–65535
 ---@field ssh? string Native OpenSSH executable; default "ssh"
----@field scp? string Native scp executable with forced SFTP support; default "scp"
 ---@field identity_file? string Absolute native private-key path
 ---@field known_hosts? string Absolute native known_hosts path; strict verification always enabled
 ---@field config_file? string Absolute native SSH configuration path

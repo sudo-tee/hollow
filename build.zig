@@ -31,10 +31,6 @@ pub fn build(b: *std.Build) void {
     // main package's GUI dependency manifest on a minimal checkout.
     if (b.option(bool, "agent-only", "Configure only the standalone Linux agent") orelse false) return;
     const emit_pdb = b.option(bool, "pdb", "Emit PDB debug symbols (enables profiling ReleaseFast builds)") orelse false;
-    const wsl_bypass_target = b.resolveTargetQuery(.{
-        .cpu_arch = target.result.cpu.arch,
-        .os_tag = .linux,
-    });
     const ghostty_optimize = ghosttyOptimizeMode(optimize);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -42,10 +38,6 @@ pub fn build(b: *std.Build) void {
         .simd = true,
         .@"emit-lib-vt" = true,
     });
-    if (b.option(bool, "agent-pane-only", "Configure headless agent pane integration tests without GUI dependencies") orelse false) {
-        @import("src/agent/pane_build_steps.zig").add(b, target, optimize, ghostty_dep);
-        return;
-    }
     // fontdeps is lazy because it bundles libpng_upstream (also lazy); on a
     // cold cache the first configure pass can't satisfy that chain, so the
     // vendored build silently returns without installing the freetype/
@@ -333,31 +325,6 @@ pub fn build(b: *std.Build) void {
     const run_renderer_bench_step = b.step("run-renderer-bench", "Run the headless renderer benchmark");
     run_renderer_bench_step.dependOn(&run_renderer_bench_cmd.step);
 
-    const wsl_bypass_module = b.createModule(.{
-        .root_source_file = b.path("src/wsl_bypass.zig"),
-        .target = wsl_bypass_target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const wsl_bypass_options = b.addOptions();
-    addShellIntegrationOptions(wsl_bypass_options);
-    wsl_bypass_module.addOptions("build_options", wsl_bypass_options);
-    if (emit_pdb) wsl_bypass_module.strip = false;
-    const wsl_bypass = b.addExecutable(.{
-        .name = "hollow-wsl-bypass",
-        .root_module = wsl_bypass_module,
-    });
-    const install_wsl_bypass = b.addInstallArtifact(wsl_bypass, .{});
-    const wsl_bypass_step = b.step("wsl-bypass", "Build the WSL PTY bypass helper");
-    wsl_bypass_step.dependOn(&install_wsl_bypass.step);
-    b.getInstallStep().dependOn(&install_wsl_bypass.step);
-
-    const install_wsl_bypass_cmd = b.addSystemCommand(&.{"bash"});
-    install_wsl_bypass_cmd.addFileArg(b.path("scripts/install-wsl-bypass.sh"));
-    install_wsl_bypass_cmd.step.dependOn(&install_wsl_bypass.step);
-    const install_wsl_bypass_step = b.step("install-wsl-bypass", "Install the WSL PTY bypass helper into /usr/local/bin");
-    install_wsl_bypass_step.dependOn(&install_wsl_bypass_cmd.step);
-
     const run_cmd = b.addRunArtifact(run_artifact);
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -369,9 +336,6 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
-    const wsl_bypass_tests = b.addTest(.{ .root_module = wsl_bypass_module });
-    const wsl_bypass_test_cmd = b.addRunArtifact(wsl_bypass_tests);
-    test_step.dependOn(&wsl_bypass_test_cmd.step);
 
     const lua_test_cmd = b.addSystemCommand(&.{"bash"});
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));

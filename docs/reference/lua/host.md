@@ -36,298 +36,143 @@ Native handles are private. `host:status()` reports `connecting`, `ready`, or
 after close it creates a new generation. For another native host ID, use
 `connect({id = "my-local", backend = "local"})` without `argv`.
 
-## Podman configuration
+## Connector hosts
 
-`podman(opts)` bootstraps into an **existing running container**, then returns
-the same host API. It does not create/start/remove containers, allocate a TTY,
-override the container user, or replay commands after a disconnect.
-
-```lua
-hollow.host.podman({
-  id = "build",
-  container = "my-build-container",
-}):next(function(host)
-  host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
-    :next(function(result) print(result.stdout) end)
-  hollow.ui.workspace.configure({ sources = { { host = host, roots = { "/work" } } } })
-end, function(err) print(err.code, err.message) end)
-```
-
-By default, artifacts come from the installed release's `agents/` beside the
-executable. For a `prefix/bin/` executable, a missing adjacent manifest also permits
-`prefix/agents/`. Flat releases never search outside their executable directory.
-There is no CWD, PATH, home-directory or network artifact search. Discovery uses
-asynchronous native-local info/read/stat operations within the bootstrap deadline.
-
-The bundle must contain `SHA256SUMS`, `linux-x86_64/hollow-agent`, and
-`linux-aarch64/hollow-agent`. The manifest is bounded to 4 KiB and must contain
-exactly those two paths, once each, with 64-hex SHA-256 values; traversal, unknown
-paths, duplicates and truncated reads fail closed. A corrupt/unreadable adjacent
-manifest never triggers fallback to another location. Both binaries must be
-nonempty regular files, not symlinks. Transfer verification still checks the
-selected binary's bytes before execution.
-
-Overrides, highest priority first:
-
-* `agent_path = "/opt/bin/hollow-agent"`: caller-trusted preinstalled executable.
-* `artifacts = { x86_64 = { path = "/absolute/hollow-agent", sha256 = "<64 hex digits>" } }`:
-  explicit trusted artifacts; no bundle discovery.
-* `agent_dir = "/absolute/agents"`: exactly one trusted bundle directory;
-  no executable-relative fallback.
-
-Paths on the client are absolute **client-native** paths (including Windows
-paths), but artifacts must be Linux agents. The connector selects
-`x86_64`/`aarch64` using the container's architecture, not the GUI's. SHA-256
-protects transferred bytes; it does not authenticate an untrusted release,
-manifest, container, or Podman executable. Keep the installation/bundle directory
-trusted. Missing assets return `agent_install_unavailable` with override guidance.
-
-The connector resolves the selected name to an immutable container ID, preserves
-its configured user, and verifies cached/uploaded bytes before installing into
-`$HOME/.cache/hollow/agents/linux-<arch>/<sha256>/hollow-agent`. Uploads use unique
-temporary paths and same-directory atomic rename. Bootstrap shell scripts use
-positional arguments for paths, not shell interpolation. Container tooling needed:
-`/bin/sh`, `uname`, `sha256sum`, `mktemp`, `mkdir`, `chmod`, `mv`, `rm`, and a writable,
-executable HOME cache. No dependencies are installed automatically.
-`mv` must support `-T` (GNU/BusyBox) so a destination directory/symlink is not
-silently followed during installation. Bootstrap is not a sandbox against a
-malicious process running as the same container user and changing cache paths.
-
-Restricted containers can instead supply `agent_path = "/opt/bin/hollow-agent"`
-without `artifacts`. This preinstalled executable is caller-trusted; deployment
-and SHA verification are skipped. The ordinary protocol handshake still applies.
-
-Optional `podman` selects the native executable (default `"podman"`).
-`timeout_ms` bounds the complete bootstrap (default 60000, maximum 300000).
-At most four bootstrap promises are active across connectors. `:cancel()` rejects pending bootstrap
-and cancels its current operation; temporary-upload cleanup is best effort after
-that operation finishes. Cancellation does not remove installed agents or stop
-containers. A later connection always inspects and verifies again.
-
-Container restart/recreation requires explicit reconnect. An in-progress bootstrap
-pinned to an old container ID fails instead of silently following a reused name.
-After connection, operations use the persistent agent protocol, not per-operation
-`podman exec`. Native Windows Podman runtime behavior remains unqualified.
-
-### Container hosts through WSL (Windows)
-
-Podman and Docker support an explicit `via` descriptor. Install the container CLI
-inside WSL and select an existing running Linux container:
+`wsl`, `ssh`, `podman` and `docker` connect to a Linux host by running commands
+through a **connector**: a native command prefix such as `wsl.exe`, `ssh` or
+`podman exec -i`. Hollow installs the agent through it (see
+[Agent deployment](#agent-deployment)), then keeps one long-lived
+`<connector> <agent> stdio` process for all RPCs. They resolve to the same host
+API as `connect`.
 
 ```lua
-hollow.host.podman({
-  id = "dev-container",
-  container = "dev",
-  via = { type = "wsl", distro = "Ubuntu-26.04", user = "francis" },
-}):next(function(host)
-  host.fs.list("/work")
-  host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
-end, function(err) print(err.code, err.message) end)
+hollow.host.wsl({ id = "ubuntu", distro = "Ubuntu-26.04" })
+hollow.host.ssh({ id = "build", destination = "build" })
+hollow.host.podman({ id = "dev", container = "dev" })
+hollow.host.docker({ id = "api", container = "api-dev", context = "desktop-linux" })
+  :next(function(host)
+    host:exec({ argv = { "git", "status", "--short" }, cwd = "/work" })
+  end, function(err) print(err.code, err.message) end)
 ```
 
-Use `hollow.host.docker` with the same `via` shape for Docker. Optional `podman`
-or `docker` selects the **Linux** executable inside the distro; `via.wsl` selects
-the native Windows launcher. Optional Docker `context` applies to that Linux CLI.
-Only WSL is supported as a `via`; arbitrary nested hosts are not supported.
-Omitting `via.user` preserves the distro default. For rootless Podman, select the
-WSL user who owns the container; the container's configured user is still preserved.
+| Type | Options | Connector |
+|---|---|---|
+| `wsl` | `distro`, `user?`, `wsl?` (launcher, default `wsl.exe`) | `wsl.exe --distribution <distro> [--user <user>] --cd / --exec` |
+| `ssh` | `destination`, `user?`, `port?`, `identity_file?`, `known_hosts?`, `config_file?`, `ssh?` | `ssh -T -o <policy>... <destination>` |
+| `podman` | `container`, `podman?`, `via?` | `[wsl.exe ... --exec] podman exec -i <container>` |
+| `docker` | `container`, `context?`, `docker?`, `via?` | `[wsl.exe ... --exec] docker [--context <c>] exec -i <container>` |
 
-The bundled agent deploys directly into the container. No intermediate WSL agent,
-manual agent installation, wrapper script, SSH server or exposed API socket is
-needed. Client-native artifact paths are converted by `wslpath -a -u` in the selected
-distro/user before container `cp`; no drive-mount layout is guessed. WSL needs
-`/bin/true`, `wslpath`, and the chosen container CLI. Containers need the same
-bootstrap tools and writable executable HOME cache described above. A preinstalled
-`agent_path` bypasses artifact discovery, path mapping and upload.
+All types also accept the agent options `agent_path`, `agent_dir`, `artifacts`
+and `timeout_ms`.
 
-The existing `launch.sh --install` flow already stages the checksummed Linux-agent
-bundle beside the Windows executable, where default artifact discovery finds it.
-No extra download or install switch is needed.
+- **WSL** never installs, starts or stops distributions and never selects root;
+  omitting `user` keeps the distro default.
+- **SSH** is non-interactive: `BatchMode=yes` and `StrictHostKeyChecking=yes`, so
+  unknown host keys or missing credentials reject instead of prompting. Remote
+  commands, TTYs, forwarding, local commands, escape characters and connection
+  sharing are disabled; `identity_file` adds `IdentitiesOnly=yes`. Trusted SSH
+  config may still supply aliases, users, ports and jump hosts. File options are
+  absolute native paths. SSH hands the command to the remote shell, so Hollow
+  passes it as one POSIX-quoted `exec '...'` word.
+- **Containers** must already be running; Hollow does not create, start, stop
+  or restart them, and preserves the container's configured user. `via =
+  { type = "wsl", distro, user? }` runs the container CLI inside WSL (then
+  `podman`/`docker` name the Linux executable). A restarted container needs an
+  explicit reconnect.
 
-One binary-clean `wsl.exe ... --exec podman exec -i <immutable-id> <agent> stdio`
-process carries subsequent RPCs. No transport TTY or login shell is allocated.
-Deadlines, cancellation, cache verification/repair and best-effort upload cleanup
-are shared with direct container connections. Missing launcher/CLI rejects with
-`connector_unavailable`, failed distro/user launch with `distro_unavailable`, and
-missing/stopped containers with `container_unavailable`. No automatic reconnect
-or container creation/start/stop occurs.
+Connections never replay RPCs after a disconnect; reconnecting gets a new
+`generation`. Deploy failures reject with `connector_unavailable` (connector
+missing or host unreachable), `unsupported_arch`, `checksum_mismatch`, `timeout`
+or `agent_install_unavailable`, with a readable `message`.
 
-Workspace discovery accepts the same descriptor without an explicit `id`:
+`connect` takes the same shape directly:
+`connect({ id, connector = { argv, remote_shell? }, agent? = { path?, dir?, artifacts?, timeout_ms? } })`.
+
+Workspace sources accept a descriptor without `id`:
 
 ```lua
 hollow.ui.workspace.configure({ sources = { {
   name = "Container projects",
-  host = {
-    type = "podman", container = "dev",
-    via = { type = "wsl", distro = "Ubuntu-26.04", user = "francis" },
-  },
-  roots = { "/work" }, -- container-native paths
-  -- domain = "container-shell", -- configure terminal routing separately
+  host = { type = "podman", container = "dev", via = { type = "wsl", distro = "Ubuntu-26.04" } },
+  roots = { "/work" }, -- host paths
 } } })
 ```
 
-**Scope: filesystem/exec and workspace discovery, not agent-backed GUI terminals.**
-Workspace `domain` still controls pane creation independently; this descriptor
-does not automatically route terminals into the container. Configure an appropriate
-terminal domain separately. Production host-to-pane integration is a separate rollout.
+A source's `host` does not route panes; give a terminal domain the same
+descriptor for that (see [Pane PTYs](#pane-ptys)).
 
-## WSL configuration
+## Agent deployment
 
-`wsl(opts)` is an experimental **fs/exec-only** host. Existing terminal panes
-continue using the existing PTY backends, including WSL bypass. This API neither
-implements agent PTYs nor changes a pane's backend.
+Connections and pane PTYs share one native installer (`src/host/deploy.zig`).
+It runs off the UI thread, bounded by `timeout_ms` (default 60000, max 300000):
 
-```lua
-hollow.host.wsl({
-  id = "ubuntu-work",
-  distro = "Ubuntu-26.04", -- explicit existing registered distribution
-  -- user = "alice",      -- optional; omitted preserves distro's default user
-}):next(function(host)
-  host.fs.list("/home/alice/projects")
-  host:exec({ argv = { "git", "status", "--short" }, cwd = "/home/alice/projects/demo" })
-end, function(err) print(err.code, err.message) end)
-```
+1. **Probe:** `<connector> /bin/sh -c ...` reports `uname -m` and whether
+   `$HOME/.cache/hollow/agents/linux-<arch>/<sha256>/hollow-agent` exists with
+   the expected digest.
+2. **Upload** (when missing): the binary streams over the connector's stdin
+   into a temporary file, is checked with `sha256sum`, and renamed into place.
+3. **Run** `<connector> <agent> stdio` (or `pty` for panes).
 
-The connector selects the distro/user through exact `wsl.exe` arguments and
-starts Linux commands with `--cd / --exec`, without a login shell or PTY. Normal
-WSL launch may start the selected distro; the connector does not install, import,
-unregister, terminate or shut down distributions, or silently select root.
-It does not change the configured default distro/user.
+The host needs `/bin/sh`, `uname`, `mkdir`, `mktemp`, `cat`, `sha256sum`,
+`chmod` and `mv`, and a writable, executable `$HOME`. Nothing else is installed
+or copied: no `scp`, `docker cp` or `wslpath`.
 
-Artifact selection, executable-relative bundle discovery, SHA verification,
-versioned atomic installation, cancellation, deadlines and cleanup use the same
-bootstrap engine as Podman. The `artifacts`, `agent_dir`, `agent_path`, and
-`timeout_ms` overrides have the same precedence. Optional `wsl` overrides the
-native launcher executable (default `"wsl.exe"`). WSL additionally needs `wslpath`
-and `cp` inside the selected distro for automatic deployment. Artifact paths must
-be Windows-accessible: `wslpath -a -u` converts the client path inside the selected
-distro, then `cp --` copies it without guessing drive mounts or shell quoting.
-Restricted or inaccessible artifact mounts can use a preinstalled `agent_path`.
+Where the agent comes from, highest priority first:
 
-After bootstrap, one long-lived `wsl.exe --exec <agent> stdio` connection carries
-all common fs/exec RPCs. Linux paths/argv/results remain raw bytes inside the
-protocol; launcher distro/user/client paths use native Windows string semantics.
-RPCs are never replayed after disconnection. Reconnect is explicit and gets a new
-generation. Unlike Podman's immutable container ID, the CLI selects a distro by
-registration name; replacing a registration during bootstrap is not pinned or
-qualified by this slice. Do not replace registrations during active use.
+- `agent_path = "/opt/bin/hollow-agent"`: preinstalled on the host; skips the
+  deploy. Use it for restricted hosts.
+- `artifacts = { x86_64 = { path, sha256 }, aarch64 = { ... } }`: explicit
+  client-native binaries.
+- `agent_dir = "C:\\hollow\\agents"`: one bundle directory.
+- Default: the release bundle in `agents/` beside the executable, or
+  `../agents` when the executable is in `bin/`.
 
-Real launcher tests currently run **Linux → Windows interop → WSL**. They supply
-a Windows UNC artifact override because native Linux bundle paths are not Windows
-paths. This does not qualify automatic discovery in a native Windows client,
-Windows GUI teardown, WSL PTY latency, or the complete fault/security matrix.
-Separate [native Windows dispatcher smoke](../../validation/2026-10-19-windows-fs-exec-smoke.md)
-now executes native-local and preinstalled WSL fs/exec through production native
-HostManager. Follow-up [public Lua WSL bootstrap](../../validation/2026-10-19-windows-lua-bootstrap.md)
-checks cache reuse and automatic bundle discovery from Windows UNC/C: flat and
-prefix layouts, including Unicode parent paths and missing-bundle rejection.
-It uses headless Lua 5.1 C API, not production LuaJIT/GUI. Separate
-[cold install/repair checks](../../validation/2026-10-19-windows-wsl-cold-deploy.md)
-pass with a test-only HOME-isolating launcher across four layouts; direct-launcher
-cold installation, teardown cleanup and wider Windows qualification remain open.
-Pane backend unchanged.
-Follow-up [vendored LuaJIT checks](../../validation/2026-10-19-windows-luajit-bootstrap.md)
-repeat direct bootstrap, isolated cold/repair and missing-bundle cases with actual
-compiled JIT traces. Engine gap narrows; full application runtime/GUI, teardown
-and wider Windows qualification remain separate.
-Separate [live-work teardown checks](../../validation/2026-10-19-windows-manager-teardown.md)
-exercise explicit manager deinit with pending EXEC, stale-promise rejection and
-external workload/guardian/agent disappearance. Actual Runtime/GUI reload and
-immediate-teardown upload cleanup remain unqualified.
+A bundle holds `SHA256SUMS` and `linux-<arch>/hollow-agent`. SHA-256 protects
+the transferred bytes; it does not authenticate the bundle, so keep the
+installation directory trusted. The installer is not a sandbox against other
+processes running as the same host user.
 
-## SSH configuration
+Pane PTYs remember verified installs for the session and skip straight to step
+3; connections always probe.
 
-`ssh(opts)` is an experimental Linux fs/exec connector, not a terminal/session
-backend. It uses the same agent, bootstrap engine, limits and asynchronous API:
+## Pane PTYs
+
+The host descriptors above also drive terminal panes. Set `host` on a domain to
+run each of its panes as `hollow-agent pty` on that host:
 
 ```lua
-hollow.host.ssh({
-  id = "build-server",
-  destination = "build", -- trusted SSH config alias, hostname or IP
-  -- user = "alice", port = 2222,
-  -- identity_file = "/home/alice/.ssh/id_ed25519",
-  -- known_hosts = "/home/alice/.ssh/known_hosts",
-  -- config_file = "/home/alice/.ssh/config",
-}):next(function(host)
-  host:exec({ argv = { "git", "status", "--short" }, cwd = "/srv/project" })
-end, function(err) print(err.code, err.message) end)
+hollow.config.set({
+  domains = {
+    build = { host = { type = "ssh", destination = "build" } },
+    dev   = { host = { type = "podman", container = "dev" } },
+    Ubuntu = { host = { type = "wsl", distro = "Ubuntu", path_style = "wsl" } },
+  },
+})
 ```
 
-Authenticate and trust the server before connecting. Bootstrap forces
-`BatchMode=yes` and `StrictHostKeyChecking=yes`: unknown/changed host keys and
-unavailable noninteractive credentials reject; no password, passphrase or trust
-prompt is shown. Unlocked SSH-agent credentials may authenticate. An explicit
-`identity_file` additionally selects `IdentitiesOnly=yes`. Client file overrides
-must be absolute native paths without control characters. `known_hosts` selects
-the user host-key database; normal system host-key policy still applies.
+`host` accepts `type = "wsl"|"ssh"|"podman"|"docker"` plus that connector's
+options (no `id` needed), and optional `path_style = "posix"|"wsl"`. `"wsl"`
+(default for `type = "wsl"`) converts Windows cwd and path-like environment
+values to WSL paths; other types default to `"posix"`.
 
-Normal trusted SSH configuration may supply aliases, users, ports and ProxyJump
-or ProxyCommand routes. Configuration is trusted executable policy, not a sandbox.
-The connector overrides RemoteCommand, TTY allocation, local commands, forwarding
-(including agent/X11), and interactive escape handling. ControlMaster,
-ControlPath and ControlPersist are disabled: neither deployment nor the live
-transport depends on shared OpenSSH connections. Each bootstrap step can open a
-new authenticated connection; established-agent RPCs share one persistent
-`ssh -T ... 'exec <quoted-agent> stdio'` process. No RPC replay occurs on loss.
-
-Artifact overrides/discovery, SHA-256 verification, versioned atomic installation,
-cancellation, deadlines and best-effort cleanup are shared with Podman/WSL.
-Optional `ssh`/`scp` select native executables. Deployment forces `scp -s -B`
-(SFTP), preserving the same SSH configuration, identity, host-key and port policy.
-It never falls back to legacy remote-shell SCP; an unavailable SFTP subsystem or
-old client requires a preinstalled `agent_path`. The remote also needs the common
-Linux bootstrap utilities and a POSIX-compatible login shell. Shell command
-arguments are explicitly POSIX-quoted; SFTP target paths are literal, not shell
-quoted. Connected paths/argv/results travel as bytes inside the common protocol.
-
-Linux OpenSSH client/server tests cover deployment and common conformance using
-an owned non-root fixture, including quoted/space-containing HOME and client
-paths, unknown/changed host keys and unauthorized credentials. Native Windows
-OpenSSH, jump hosts, network fault injection, and the full security matrix remain
-unqualified. This API does not change existing SSH/WSL PTYs or session ownership.
-
-## Docker configuration
-
-`docker(opts)` selects an **existing running Linux container**, just like Podman:
-
-```lua
-hollow.host.docker({
-  id = "api-dev",
-  container = "api-dev",
-  -- context = "desktop-linux", -- optional explicit Docker context
-}):next(function(host)
-  host.fs.list("/work")
-end, function(err) print(err.code, err.message) end)
-```
-
-Docker and Podman share container selection and bootstrap policy, not only the
-agent handlers. Inspect resolves a full immutable container ID; every subsequent
-probe, upload and persistent `exec -i` transport uses that ID. Neither connector
-creates, starts, stops, removes or restarts containers or overrides the configured
-user. Container replacement/disconnection does not replay EXEC requests.
-
-Optional `docker` selects the native executable (default `"docker"`). Optional
-`context` is copied before asynchronous work and supplied as `--context` on every
-Docker command, including cleanup. Omission preserves Docker's configured
-context/environment selection; users must not change that selection during
-bootstrap. Explicit contexts still rely on trusted Docker client configuration;
-the connector does not pin mutable context definitions or daemon identity.
-
-`artifacts`, `agent_dir`, `agent_path` and `timeout_ms` have the same precedence
-and bounds as Podman. Deployment uses `cp`, then reopens the copied inode and
-recreates the reserved temporary under the configured user (Docker's archive
-copy can assign root ownership). No privileged exec or chown is used. Shared
-SHA-256 verification, mode 0700 and atomic installation follow restaging.
-The copied artifact must be readable by that user; bundled mode-0755 binaries
-meet this requirement. A writable executable cache is required; restricted targets can
-use a preinstalled `agent_path`. Windows containers are unsupported.
-
-Local validation covers Docker-shaped mocks and actual native integration using
-Podman's compatible CLI via an explicit executable override. **No real Docker
-client/daemon was available locally.** This evidence does not qualify Docker
-ownership semantics, Docker Desktop, remote Docker contexts or Windows clients.
-A dedicated CI job is configured for a real Docker/non-root fixture; its result
-has not been observed locally. Docker remains experimental until those gates pass.
+- Lua only describes the connector (`hollow._pty_host`). Hollow installs the
+  agent natively (see [Agent deployment](#agent-deployment)), off the UI
+  thread, while keystrokes are buffered, then runs `<connector> <agent> pty`.
+  If a remembered agent fails to start (container recreated, cache wiped), the
+  pane deploys again once.
+- Each pane runs its own connector process. Multiplexing panes over one
+  connection is future work.
+- The agent spawns the host user's login shell (WSL launcher shells keep their
+  inner command), with full escape-sequence passthrough, shell integration and
+  resize.
+- Explicit hosts are remote: no local PID or cwd tracking. Failures show a red
+  `[hollow] <message>` banner in the pane, which then exits with status 125.
+- On Windows, WSL domains with `wsl_distro`, or a shell like `wsl.exe -d X` /
+  `--distribution X`, use `{ type = "wsl", distro = X }` implicitly. They keep
+  local semantics and silently fall back to a native ConPTY `wsl.exe` launch on
+  failure. `host = false` opts a domain out.
+- [`term:spawn`](events.md) filters do not apply to agent panes.
+- Failures are logged as `agent pty: ...` warnings in `hollow.log`.
 
 ## Operations
 

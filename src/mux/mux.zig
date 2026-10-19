@@ -31,6 +31,7 @@ pub const Mux = struct {
     pane_created: ?*const fn (*anyopaque, *Pane) void = null,
     pane_closing: ?*const fn (*anyopaque, *Pane) void = null,
     spawn_filter: @import("../pty/spawn_spec.zig").Filter = .{},
+    pty_host: @import("../pty/spawn_spec.zig").HostResolver = .{},
     /// Set by removeWorkspace to the name of the workspace that was just removed.
     /// Caller must free and set to null after consuming.
     last_removed_workspace_name: ?[]u8 = null,
@@ -305,6 +306,7 @@ pub const Mux = struct {
         pane.host_context = self.host_context;
         pane.host_wake = self.host_wake;
         pane.spawn_filter = self.spawn_filter;
+        pane.pty_host = self.pty_host;
         errdefer self.allocator.destroy(pane);
         errdefer pane.deinit(runtime);
         try pane.bootstrap(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, inherited_cwd, domain_name, launch_command, workspace_id);

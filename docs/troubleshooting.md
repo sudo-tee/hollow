@@ -127,26 +127,30 @@ your override is missing them, you have to add them back.
 
 Install WSL with `wsl --install` from elevated PowerShell and restart.
 
-### Bypass helper does not activate
+### Agent PTY does not activate
 
-The helper is now auto-deployed by Hollow on first use — no manual
-install is needed.
+WSL panes use the bundled `hollow-agent` automatically; no manual install
+is needed. When bootstrap fails, the pane silently falls back to ConPTY.
 
-Check that `hollow-wsl-bypass` exists alongside the Hollow exe:
+Check that the `agents/` bundle exists alongside the Hollow exe:
 
 ```bash
-ls -la "$(dirname "$(which hollow-native.exe)")/hollow-wsl-bypass"
+ls -la "$(dirname "$(which hollow-native.exe)")/agents"
 ```
 
-During development, `zig build` produces it in `zig-out/bin/` alongside
-the exe.
+During development, `zig build` produces it in `zig-out/agents/`;
+`launch.sh --install` copies it beside the exe.
 
-If the auto-deploy fails, look in `hollow.log` for
-`wsl bootstrap failed` or
-`wsl bypass unavailable, falling back to ConPTY`.
+Look in `hollow.log` for `agent pty: ...` warnings for the failure reason.
+See [WSL → Agent PTY](platforms/wsl.md#agent-pty) for distro requirements.
 
-The old manual install still works as
-a fallback (run `zig build install-wsl-bypass` from a source checkout).
+### Pane shows a red `[hollow]` banner and exits
+
+The domain sets an explicit `host` and the agent could not be bootstrapped
+or connected. Explicit hosts never fall back. Fix the message shown
+(connector missing, distro/container unavailable, SSH auth) or remove
+`host` from the domain. See
+[`hollow.host` → Pane PTYs](reference/lua/host.md#pane-ptys).
 
 ### Wrong WSL distro launches
 

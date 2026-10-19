@@ -46,6 +46,7 @@ hollow.tbl = tbl
 hollow.util = util
 hollow.async = async
 hollow.host = require("hollow.host")
+require("hollow.host.pty").setup(hollow)
 hollow.theme = theme
 hollow.json = json
 hollow.workspace = workspace

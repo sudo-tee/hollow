@@ -215,6 +215,30 @@ hollow.config.set({
 
 See [WSL → WSL workflow patterns](../../platforms/wsl.md#wsl-workflow-patterns).
 
+### Agent hosts
+
+`host` runs each pane of the domain as `hollow-agent pty` on a host
+bootstrapped by [`hollow.host`](host.md):
+
+```lua
+hollow.config.set({
+  domains = {
+    build = { host = { type = "ssh", destination = "build" } },
+    dev   = { host = { type = "podman", container = "dev" } },
+    wsl   = { shell = "wsl.exe", host = false }, -- always ConPTY
+  },
+})
+```
+
+- `type` is `"wsl"`, `"ssh"`, `"podman"` or `"docker"`; other fields are that
+  connector's options. Optional `path_style = "posix"|"wsl"`.
+- An explicit `host` never falls back: failures show a red `[hollow]` banner
+  and the pane exits.
+- On Windows, WSL domains (`wsl_distro` or `wsl.exe -d X`) use the agent
+  implicitly and fall back to ConPTY. `host = false` opts out.
+
+See [`hollow.host` → Pane PTYs](host.md#pane-ptys).
+
 ## Workspace bootstrap
 
 ```lua

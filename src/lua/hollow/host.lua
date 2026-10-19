@@ -175,13 +175,19 @@ function M.connect(opts)
   if opts.backend == "local" then
     if opts.argv ~= nil then error("native-local hosts do not accept connector argv", 2) end
     options.backend = "local"
+  elseif opts.connector ~= nil then
+    -- Native code installs the agent through the connector, then runs it.
+    if type(opts.connector) ~= "table" then error("connector must be a table", 2) end
+    local argv = dense_strings(opts.connector.argv, "connector.argv")
+    if #argv == 0 then error("connector.argv must not be empty", 2) end
+    options.connector = { argv = { unpack(argv) }, remote_shell = opts.connector.remote_shell == true }
+    if opts.agent ~= nil and type(opts.agent) ~= "table" then error("agent must be a table", 2) end
+    options.agent = opts.agent
   else
     if opts.backend ~= nil and opts.backend ~= "agent" then error("unsupported host backend", 2) end
     local argv = dense_strings(opts.argv, "argv")
     if #argv == 0 then error("argv must not be empty", 2) end
-    local copied = {}
-    for i, arg in ipairs(argv) do copied[i] = arg end
-    options.argv = copied
+    options.argv = { unpack(argv) }
   end
   local handle, err = native(host_api.host_connect, options)
   if handle == nil then return reject_later(err) end
@@ -227,24 +233,17 @@ function M.local_host()
   return local_connection
 end
 
-local active_bootstraps = 0
-
--- Connector policy stays in Lua; all post-connect fs/exec uses the common API.
-local function bootstrap_connector(name, opts)
-  if active_bootstraps >= 4 then
-    return reject_later({ code = "resource_exhausted", message = "too many host bootstraps" })
-  end
-  active_bootstraps = active_bootstraps + 1
-  local ok, promise = pcall(function() return require("hollow.host." .. name).connect(M, opts) end)
-  if not ok then active_bootstraps = active_bootstraps - 1; error(promise, 2) end
-  local function completed() active_bootstraps = active_bootstraps - 1 end
-  promise:next(completed, completed)
-  return promise
+-- Hosts reached through a connector; see hollow.host.options.target.
+local function deployed(kind, opts)
+  local target = require("hollow.host.options").target(kind, opts)
+  check_string(opts.id, "id", true)
+  if #opts.id > 256 then error("id must be at most 256 bytes", 2) end
+  return M.connect({ id = opts.id, connector = target.connector, agent = target.agent })
 end
 
-function M.podman(opts) return bootstrap_connector("podman", opts) end
-function M.wsl(opts) return bootstrap_connector("wsl", opts) end
-function M.ssh(opts) return bootstrap_connector("ssh", opts) end
-function M.docker(opts) return bootstrap_connector("docker", opts) end
+function M.podman(opts) return deployed("podman", opts) end
+function M.wsl(opts) return deployed("wsl", opts) end
+function M.ssh(opts) return deployed("ssh", opts) end
+function M.docker(opts) return deployed("docker", opts) end
 
 return M

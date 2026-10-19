@@ -1,7 +1,44 @@
 const std = @import("std");
 
+/// Embeds shell integration without build.zig's options step, so the
+/// standalone agent build stays independent of the GUI build graph.
+fn shellIntegration(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const files = b.addWriteFiles();
+    _ = files.addCopyFile(b.path("shell-integration/bash.sh"), "bash.sh");
+    _ = files.addCopyFile(b.path("shell-integration/zsh.zsh"), "zsh.zsh");
+    _ = files.addCopyFile(b.path("shell-integration/fish.fish"), "fish.fish");
+    _ = files.addCopyFile(b.path("scripts/hollow-cli"), "hollow-cli");
+    const options = files.add("build_options.zig",
+        \\pub const embedded_bash_integration = @embedFile("bash.sh");
+        \\pub const embedded_zsh_integration = @embedFile("zsh.zsh");
+        \\pub const embedded_fish_integration = @embedFile("fish.fish");
+        \\pub const embedded_hollow_cli = @embedFile("hollow-cli");
+        \\
+    );
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/shell_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addImport("build_options", b.createModule(.{ .root_source_file = options }));
+    return module;
+}
+
+fn agentModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/agent/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addImport("shell_integration", shellIntegration(b, target, optimize));
+    // glibc keeps forkpty in libutil; musl has it in libc.
+    if (target.result.abi != .musl) module.linkSystemLibrary("util", .{});
+    return module;
+}
+
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    const profile = b.option(bool, "agent-profile", "Keep symbols and frame pointers in agent/PTY benchmark binaries") orelse false;
     const agent_step = b.step("agent", "Build the standalone Linux musl agent for the selected architecture");
     if (target.result.cpu.arch != .x86_64 and target.result.cpu.arch != .aarch64) {
         agent_step.dependOn(&b.addFail("hollow-agent supports only x86_64 and aarch64 Linux targets").step);
@@ -11,15 +48,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const manifest_file = manifest.addOutputFileArg("SHA256SUMS");
     inline for (.{ std.Target.Cpu.Arch.x86_64, std.Target.Cpu.Arch.aarch64 }) |arch| {
         const agent_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
-        const module = b.createModule(.{
-            .root_source_file = b.path("src/agent/main.zig"),
-            .target = agent_target,
-            .optimize = optimize,
-            .link_libc = true,
-            .strip = if (profile) false else null,
-            .omit_frame_pointer = if (profile) false else null,
-        });
-        const exe = b.addExecutable(.{ .name = "hollow-agent", .root_module = module, .linkage = .static });
+        const exe = b.addExecutable(.{ .name = "hollow-agent", .root_module = agentModule(b, agent_target, optimize), .linkage = .static });
         manifest.addArtifactArg(exe);
         const packaged = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "agents/linux-" ++ @tagName(arch) } } });
         all_step.dependOn(&packaged.step);
@@ -38,14 +67,16 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
     }) });
     const run_tests = b.addRunArtifact(tests);
-    b.step("test-agent", "Run GUI-independent agent protocol tests").dependOn(&run_tests.step);
-    const loop_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("src/agent/main.zig"),
+    const protocol_step = b.step("test-agent", "Run GUI-independent agent protocol tests");
+    protocol_step.dependOn(&run_tests.step);
+    const pty_protocol_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent/pty_protocol.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .link_libc = true,
     }) });
-    b.step("test-agent-loop", "Run agent scheduling regressions without real child processes").dependOn(&b.addRunArtifact(loop_tests).step);
+    protocol_step.dependOn(&b.addRunArtifact(pty_protocol_tests).step);
+    const loop_tests = b.addTest(.{ .root_module = agentModule(b, b.graph.host, optimize) });
+    b.step("test-agent-loop", "Run agent RPC loop and PTY helper unit tests").dependOn(&b.addRunArtifact(loop_tests).step);
     const fs_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/fs.zig"),
         .target = b.graph.host,
@@ -63,13 +94,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const run_host_tests = b.addRunArtifact(host_tests);
     run_host_tests.has_side_effects = true;
     // Tests use the freshly built native agent, never a stale installed binary.
-    const native_module = b.createModule(.{
-        .root_source_file = b.path("src/agent/main.zig"),
-        .target = b.resolveTargetQuery(.{ .cpu_arch = b.graph.host.result.cpu.arch, .os_tag = .linux, .abi = .musl }),
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const native_agent = b.addExecutable(.{ .name = "hollow-agent-test", .root_module = native_module, .linkage = .static });
+    const native_target = b.resolveTargetQuery(.{ .cpu_arch = b.graph.host.result.cpu.arch, .os_tag = .linux, .abi = .musl });
+    const native_agent = b.addExecutable(.{ .name = "hollow-agent-test", .root_module = agentModule(b, native_target, optimize), .linkage = .static });
     const install_test_agent = b.addInstallArtifact(native_agent, .{ .dest_dir = .{ .override = .{ .custom = "host-test" } } });
     run_host_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_host_tests.step.dependOn(&install_test_agent.step);
@@ -80,31 +106,11 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
         .link_libc = true,
     }) });
-    if (b.graph.host.result.os.tag == .linux) pty_tests.root_module.linkSystemLibrary("util", .{});
-    pty_tests.root_module.addImport("build_options", b.createModule(.{ .root_source_file = b.path("src/agent_pty_build_options.zig") }));
     const run_pty_tests = b.addRunArtifact(pty_tests);
     run_pty_tests.has_side_effects = true;
     run_pty_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
-    const pane_agent_config = std.json.Stringify.valueAlloc(b.allocator, .{
-        .connector_argv = &[_][]const u8{ b.getInstallPath(.prefix, "host-test/hollow-agent-test"), "stdio" },
-        .argv = &[_][]const u8{ "/bin/sh", "-c", "printf PANE_ENTRY; exit 4" },
-    }, .{}) catch @panic("out of memory");
-    run_pty_tests.setEnvironmentVariable("HOLLOW_EXPERIMENTAL_AGENT_PTY", pane_agent_config);
     run_pty_tests.step.dependOn(&install_test_agent.step);
-    b.step("test-agent-pty", "Run experimental native streaming PTY and pane-adapter tests").dependOn(&run_pty_tests.step);
-    const pty_bench_module = b.createModule(.{
-        .root_source_file = b.path("src/agent_pty_bench.zig"),
-        .target = b.graph.host,
-        .optimize = optimize,
-        .link_libc = true,
-        .strip = if (profile) false else null,
-        .omit_frame_pointer = if (profile) false else null,
-    });
-    pty_bench_module.addImport("build_options", b.createModule(.{ .root_source_file = b.path("src/agent_pty_build_options.zig") }));
-    if (b.graph.host.result.os.tag == .linux) pty_bench_module.linkSystemLibrary("util", .{});
-    const pty_bench = b.addExecutable(.{ .name = "hollow-agent-pty-bench", .root_module = pty_bench_module });
-    const install_pty_bench = b.addInstallArtifact(pty_bench, .{});
-    b.step("agent-pty-bench", "Build the headless native-versus-agent PTY benchmark").dependOn(&install_pty_bench.step);
+    b.step("test-agent-pty", "Run agent PTY client tests against a native Linux agent").dependOn(&run_pty_tests.step);
     const operation_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/host_operations.zig"),
         .target = b.graph.host,

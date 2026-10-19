@@ -1,13 +1,13 @@
 # WSL
 
 WSL is Hollow's first-class shell domain.
-Hollow itself is a Windows app; the WSL shell is launched from the
-Windows host, optionally through a Linux-side helper that skips
-ConPTY.
+Hollow itself is a Windows app; WSL panes run through the bundled
+Linux `hollow-agent`, which skips ConPTY, with a native `wsl.exe`
+ConPTY launch as fallback.
 
 For the broader Windows setup see [Windows](windows.md).
-For the bypass helper protocol see
-[`src/pty/wsl_bypass_protocol.zig`](../../src/pty/wsl_bypass_protocol.zig).
+For the agent PTY protocol see
+[`src/agent/pty_protocol.zig`](../../src/agent/pty_protocol.zig).
 
 ## How WSL panes launch
 
@@ -15,16 +15,17 @@ When you create a pane in the `wsl` domain (or any `{distro}WSL` domain
 populated by `populate_wsl_domains()`), the runtime picks one of two
 backends:
 
-1. **`wsl_bypass`** — the Linux-side helper, if installed. Spawns
-   `wsl.exe` and a Linux-side PTY relay that talks to Hollow via APC
-   frames. Skips ConPTY entirely.
-2. **ConPTY** — the default fallback. Works on every Windows host that
-   has WSL installed, no helper required.
+1. **Agent PTY** — Hollow bootstraps `hollow-agent` into the distro and
+   runs `wsl.exe --distribution <distro> --cd / --exec <agent> pty`.
+   The agent owns a real Linux PTY. Skips ConPTY entirely.
+2. **ConPTY** — the fallback. Launches the domain's `wsl.exe` shell
+   through ConPTY. Works on every Windows host that has WSL installed.
 
-The runtime tries `wsl_bypass` first and falls back to ConPTY if the
-helper is missing or fails to start. The fallback is silent — you only
-see it as a `wsl bypass unavailable, falling back to ConPTY` line in
-`hollow.log`.
+The agent is used implicitly for domains with `wsl_distro`, or whose
+shell is `wsl.exe -d <distro>` / `--distribution <distro>`. If bootstrap
+or connection fails, Hollow silently falls back to ConPTY — you only see
+`agent pty: ...` warnings in `hollow.log`. Set `host = false` on a domain
+to always use ConPTY. See [Agent PTY](#agent-pty).
 
 ## Configuring the WSL domain
 
@@ -65,44 +66,46 @@ Address a specific distro:
 hollow.term.new_tab({ domain = "UbuntuWSL" })
 ```
 
-## Bypass helper
+## Agent PTY
 
-The bypass helper is a small Linux-side binary (`hollow-wsl-bypass`)
-Hollow deploys inside the WSL distro.
-Without it, WSL still works — it just goes through ConPTY.
-With it, you get lower latency and avoid the extra ConPTY layer.
+The agent PTY runs each pane through the static Linux `hollow-agent`
+shipped in the release `agents/` bundle (see
+[Packaging → Linux agents](../packaging.md#linux-agents)).
+Compared with ConPTY you get full escape-sequence passthrough (images,
+Sixel, Python `hollow-cli` over the tty), shell integration, Windows →
+WSL cwd/path conversion, and resize.
 
-### Auto-deploy (no setup needed)
+- Bootstrap is automatic (see [Pane PTYs](../reference/lua/host.md#pane-ptys)):
+  the bundle is found beside the exe, streamed into the distro user's
+  cache over `wsl.exe` stdin when missing, and verified against
+  `SHA256SUMS`. No manual install step. Later panes reuse the verified
+  install.
+- Each pane runs its own `wsl.exe ... --exec <agent> pty` process.
+  Multiplexing panes over one connection is future work.
+- Implicit WSL panes keep local semantics (PID and cwd tracking).
+- [`term:spawn`](../reference/lua/events.md) filters do not apply.
 
-Starting from a `zig build` (or a release bundle), the helper is always
-built alongside the main exe and placed in the same directory.
+To make the agent explicit (no ConPTY fallback; failures show a red
+`[hollow] <message>` banner and the pane exits), or to pick a user:
 
-On the **first WSL pane opened for a given distro**, Hollow
-automatically copies the binary from the host filesystem to
-`/tmp/hollow-wsl-bypass` inside the WSL distro and launches it.
-Subsequent panes for the same distro skip the copy and exec
-`/tmp/hollow-wsl-bypass` directly.
+```lua
+hollow.config.set({
+  domains = {
+    UbuntuWSL = { host = { type = "wsl", distro = "Ubuntu", user = "me" } },
+  },
+})
+```
 
-The auto-deploy uses the WSL filesystem directly:
-
-- When the exe lives on the Windows filesystem (`C:\...\hollow.exe`),
-  the path is translated to `/mnt/c/.../hollow-wsl-bypass` and copied.
-- When the exe lives in the WSL filesystem
-  (`\\wsl.localhost\Ubuntu\...\hollow.exe`, common during development
-  from WSL), the path stays a native Linux path and the copy is a
-  local file copy.
-
-No manual install step needed during development — `zig build` now
-produces `hollow-wsl-bypass` in `zig-out/bin/` as part of the default
-build.
+During development, `zig build` places the agent bundle in
+`zig-out/agents/`; `launch.sh --install` copies it beside the exe.
 
 ### Requirements
 
-- `/bin/sh` must be available inside the WSL distro (always true)
-- Hollow must launch WSL through `wsl.exe` as usual
-- The distro must have a user Hollow can `wsl.exe -u <user>` into
+- `/bin/sh`, `uname`, `mktemp`, `sha256sum` inside the distro (for automatic deployment)
+- A writable executable cache in the distro user's HOME
+- The bundled `agents/` folder next to `hollow-native.exe`
 
-If you do nothing, WSL panes still work — they just use ConPTY.
+If any of these are missing, implicit WSL panes still work — they just use ConPTY.
 
 ## WSL workflow patterns
 
@@ -221,7 +224,7 @@ If that happens, return to NAT networking and let `hollow-cli` use its OSC fallb
 | Problem                                 | Fix                                                                                                                                                                                                                     |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `wsl.exe not found`                     | Install WSL with `wsl --install` from elevated PowerShell                                                                                                                                                               |
-| Bypass helper does not activate         | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
+| Agent PTY does not activate             | Check `hollow.log` for `agent pty: ...` warnings — the pane fell back to ConPTY. The `agents/` bundle must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/agents/`. |
 | Wrong distro launches                   | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()`                                                                                                         |
 | `cwd` reports a Windows path inside WSL | Use an agent-backed workspace source with Linux roots, or pass a Linux `cwd` to `new_tab`/`split_pane` |
 

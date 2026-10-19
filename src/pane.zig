@@ -141,6 +141,7 @@ pub const Pane = struct {
     host_context: ?*anyopaque = null,
     host_wake: @import("pty/wake.zig").Wake = .{},
     spawn_filter: @import("pty/spawn_spec.zig").Filter = .{},
+    pty_host: @import("pty/spawn_spec.zig").HostResolver = .{},
     pty: ?Pty = null,
     terminal: ?*anyopaque = null,
     terminal_runtime: ?*GhosttyRuntime = null,
@@ -454,6 +455,19 @@ pub const Pane = struct {
         else
             null;
         defer if (home_dir) |h| self.allocator.free(h);
+
+        // Lua decides whether this pane runs on an agent host. It sees the
+        // unfiltered env: local spawn filters do not apply to remote hosts.
+        var agent_pty: ?@import("pty/pty.zig").Pty = try self.requestAgentPty(domain_name, shell, cfg.cols, cfg.rows, inherited_cwd orelse configured_cwd, inherited_cwd orelse configured_cwd orelse home_dir, env_block.items, launch_command);
+        errdefer if (agent_pty) |*candidate| candidate.deinit();
+        // Explicit hosts are not local PIDs/cwd authorities. Implicit WSL
+        // panes keep local semantics, matching their native fallback.
+        if (agent_pty) |*candidate| {
+            if (!candidate.agent.fallbackAllowed()) {
+                is_remote = true;
+                self.is_remote = true;
+            }
+        }
         // SSH cwd belongs to remote shell, not local process launcher.
         var launch_cwd = if (is_remote) null else inherited_cwd orelse configured_cwd orelse home_dir;
         var spawn_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -466,7 +480,7 @@ pub const Pane = struct {
         };
         // Remote cwd and guest environment require domain-aware plumbing.
         // This first producer only transforms native local launch contexts.
-        if (!is_remote and !(is_windows and @import("pty/spawn_spec.zig").isWsl(shell))) {
+        if (agent_pty == null and !is_remote and !(is_windows and @import("pty/spawn_spec.zig").isWsl(shell))) {
             self.spawn_filter.apply(spawn_arena.allocator(), &spawn_spec) catch |err| {
                 std.log.warn("spawn filter failed: {s}", .{@errorName(err)});
             };
@@ -476,7 +490,7 @@ pub const Pane = struct {
 
         var remote_launch_command_owned: ?[]u8 = null;
         defer if (remote_launch_command_owned) |command| self.allocator.free(command);
-        const remote_cwd_via_launch = is_remote and pane_cwd != null;
+        const remote_cwd_via_launch = agent_pty == null and is_remote and pane_cwd != null;
         const effective_launch_command: ?LaunchCommand = if (remote_cwd_via_launch) blk: {
             const cwd = pane_cwd.?;
             const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
@@ -492,11 +506,9 @@ pub const Pane = struct {
             };
         } else launch_command;
 
-        var pty = try @import("pty/pty.zig").spawn(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.host_wake);
+        var pty = agent_pty orelse try @import("pty/pty.zig").spawnNative(self.allocator, shell, cfg.cols, cfg.rows, launch_cwd, spawn_spec.env_block, effective_launch_command, self.host_wake);
+        agent_pty = null;
         errdefer pty.deinit();
-        // Agent sessions are not local PIDs/cwd authorities, even when their
-        // connector happens to launch a local development agent.
-        self.is_remote = self.is_remote or @import("pty/pty.zig").usesAgent(&pty);
 
         self.terminal = terminal;
         self.render_state = render_state;
@@ -1021,7 +1033,7 @@ pub const Pane = struct {
         }
         const maybe_title = runtime.terminalTitle(self.allocator, self.terminal) catch null;
         if (maybe_title) |title| {
-            if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command, self.usesWslBypass())) {
+            if (is_windows and shouldIgnoreWindowsShellTitle(title, shell_command, self.usesAgent())) {
                 self.allocator.free(title);
             } else {
                 self.title = title;
@@ -1033,8 +1045,28 @@ pub const Pane = struct {
         self.title_dirty = false;
     }
 
-    pub fn usesWslBypass(self: *const Pane) bool {
-        if (self.pty) |*pty| return @import("pty/pty.zig").usesWslBypass(pty);
+    fn requestAgentPty(self: *Pane, domain_name: ?[]const u8, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, native_cwd: ?[]const u8, env_block: []const u8, launch_command: ?LaunchCommand) !?@import("pty/pty.zig").Pty {
+        if (!self.pty_host.enabled()) return null;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const host = self.pty_host.resolve(arena.allocator(), domain_name, shell) orelse return null;
+        var candidate = try @import("pty/pty.zig").spawnAgent(self.allocator, .{
+            .shell = shell,
+            .cols = cols,
+            .rows = rows,
+            .cwd = cwd,
+            .native_cwd = native_cwd,
+            .env_block = env_block,
+            .launch_command = launch_command,
+            .host = host,
+        }, self.host_wake);
+        errdefer candidate.deinit();
+        try candidate.agent.start();
+        return candidate;
+    }
+
+    pub fn usesAgent(self: *const Pane) bool {
+        if (self.pty) |*pty| return @import("pty/pty.zig").usesAgent(pty);
         return false;
     }
 
@@ -1049,11 +1081,11 @@ pub const Pane = struct {
         self.cwd_dirty = true;
     }
 
-    fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8, wsl_bypass: bool) bool {
+    fn shouldIgnoreWindowsShellTitle(title: []const u8, shell_command: []const u8, agent_pty: bool) bool {
         const trimmed_title = std.mem.trim(u8, title, " \t\r\n");
         if (trimmed_title.len == 0) return false;
 
-        if (wsl_bypass and isWslUncTitle(trimmed_title)) return true;
+        if (agent_pty and isWslUncTitle(trimmed_title)) return true;
 
         const shell_program = shellProgram(shell_command);
         const shell_name = pathBasenameAny(shell_program);
@@ -1852,7 +1884,7 @@ test "background PTY parses blocked and error after rendering helpers are releas
     defer pane.deinit(&runtime);
     runtime.setTerminalUserdata(pane.terminal, &pane);
     runtime.registerCallbacks(pane.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
-    pane.pty = try @import("pty/pty.zig").spawn(a, "/bin/sh", 80, 24, null, null, .{
+    pane.pty = try @import("pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
         .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
     }, .{});
 

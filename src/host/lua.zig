@@ -32,10 +32,62 @@ fn connectInner(ctx: anytype, state: anytype) !host.Handle {
         }
         if (!std.mem.eql(u8, name, "agent")) return error.InvalidArgument;
     }
+    api.get_field(state, 1, "connector");
+    const deployed = api.value_type(state, -1) != 0;
+    pop(api, state);
+    if (deployed) {
+        var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+        defer arena.deinit();
+        const target = try readTarget(arena.allocator(), api, state, 1);
+        return manager(ctx).connectDeployed(id, target.connector, target.agent);
+    }
     api.get_field(state, 1, "argv");
     const argv = try readArgv(ctx.allocator, api, state, api.get_top(state));
     defer ctx.allocator.free(argv);
     return manager(ctx).connectAgent(id, argv);
+}
+
+pub const Target = struct { connector: host.deploy.Connector, agent: host.deploy.Agent };
+
+/// Reads `{ connector = { argv = {...}, remote_shell? }, agent? = { path?,
+/// dir?, artifacts? = { <arch> = { path, sha256 } }, timeout_ms? } }` at
+/// `index`, copied into `a`.
+pub fn readTarget(a: std.mem.Allocator, api: anytype, state: anytype, index: c_int) !Target {
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    var target: Target = .{ .connector = .{}, .agent = .{} };
+    api.get_field(state, index, "connector");
+    const connector = api.get_top(state);
+    if (api.value_type(state, connector) != table_type) return error.InvalidArgument;
+    api.get_field(state, connector, "argv");
+    target.connector.argv = try readArgv(a, api, state, api.get_top(state));
+    api.get_field(state, connector, "remote_shell");
+    target.connector.remote_shell = api.to_boolean(state, -1) != 0;
+
+    api.get_field(state, index, "agent");
+    const agent = api.get_top(state);
+    if (api.value_type(state, agent) == table_type) {
+        target.agent.path = try stringField(api, state, agent, "path");
+        target.agent.dir = try stringField(api, state, agent, "dir");
+        target.agent.timeout_ms = @intCast(try integerField(api, state, agent, "timeout_ms", 60_000, 300_000));
+        if (target.agent.timeout_ms == 0) return error.InvalidArgument;
+        api.get_field(state, agent, "artifacts");
+        const artifacts = api.get_top(state);
+        if (api.value_type(state, artifacts) == table_type) {
+            for (std.enums.values(host.deploy.Arch)) |arch| {
+                api.get_field(state, artifacts, @tagName(arch));
+                defer pop(api, state);
+                const item = api.get_top(state);
+                if (api.value_type(state, item) == 0) continue;
+                if (api.value_type(state, item) != table_type) return error.InvalidArgument;
+                target.agent.artifacts.set(arch, .{
+                    .path = try requiredStringField(api, state, item, "path"),
+                    .sha256 = try requiredStringField(api, state, item, "sha256"),
+                });
+            }
+        } else if (api.value_type(state, artifacts) != 0) return error.InvalidArgument;
+    } else if (api.value_type(state, agent) != 0) return error.InvalidArgument;
+    return .{ .connector = try target.connector.dupe(a), .agent = try target.agent.dupe(a) };
 }
 
 pub fn status(ctx: anytype, state: anytype) c_int {
@@ -45,7 +97,9 @@ pub fn status(ctx: anytype, state: anytype) c_int {
     ctx.api.push_lstring(state, name.ptr, name.len);
     if (value == .disconnected) {
         const failure: ?anyerror = manager(ctx).failure(handle) catch @as(?anyerror, error.StaleHost);
-        pushError(ctx.api, state, failure orelse error.Disconnected);
+        if (manager(ctx).deployFailure(handle) catch null) |deploy_failure| {
+            pushValue(ctx.api, state, host.operations.Failure{ .code = @tagName(deploy_failure.code), .message = deploy_failure.text() });
+        } else pushError(ctx.api, state, failure orelse error.Disconnected);
         return 2;
     }
     return 1;

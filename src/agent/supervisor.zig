@@ -13,8 +13,6 @@ pub const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("errno.h");
     @cInclude("stdlib.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("termios.h");
 });
 
 pub const Launch = struct {
@@ -25,8 +23,6 @@ pub const Launch = struct {
     candidates: []const [*:0]const u8,
     cwd: ?[:0]const u8,
     inherited_fds: []const c_int,
-    pty_master: c_int = -1,
-    pty_slave: c_int = -1,
 };
 
 /// Called only in a fork child of the single-threaded agent. Launch memory was
@@ -63,10 +59,7 @@ pub fn run(parent: c.pid_t, launch: Launch) noreturn {
     const leader = c.fork();
     if (leader < 0) fail(error_fd, c.__errno_location().*);
     if (leader == 0) {
-        if (launch.pty_slave >= 0) {
-            if (c.setsid() < 0 or c.ioctl(launch.pty_slave, c.TIOCSCTTY, @as(c_int, 0)) < 0)
-                fail(error_fd, c.__errno_location().*);
-        } else _ = c.setpgid(0, 0);
+        _ = c.setpgid(0, 0);
         if (c.prctl(c.PR_SET_PDEATHSIG, @as(c_ulong, c.SIGKILL), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0)
             fail(error_fd, c.__errno_location().*);
         // Guardian death during fork setup must not leave a newly launched job.
@@ -75,11 +68,7 @@ pub fn run(parent: c.pid_t, launch: Launch) noreturn {
         _ = c.sigemptyset(&empty);
         _ = c.sigprocmask(c.SIG_SETMASK, &empty, null);
         _ = c.signal(c.SIGPIPE, null);
-        if (launch.pty_slave >= 0) {
-            for (0..3) |fd| if (c.dup2(launch.pty_slave, @intCast(fd)) < 0) fail(error_fd, c.__errno_location().*);
-            _ = c.close(launch.pty_master);
-            _ = c.close(launch.pty_slave);
-        } else if (c.dup2(launch.pipes[0][1], 1) < 0 or c.dup2(launch.pipes[1][1], 2) < 0)
+        if (c.dup2(launch.pipes[0][1], 1) < 0 or c.dup2(launch.pipes[1][1], 2) < 0)
             fail(error_fd, c.__errno_location().*);
         for (launch.pipes) |pair| _ = c.close(pair[0]);
         if (launch.cwd) |cwd| if (c.chdir(cwd) != 0) fail(error_fd, c.__errno_location().*);
@@ -91,9 +80,7 @@ pub fn run(parent: c.pid_t, launch: Launch) noreturn {
         }
         fail(error_fd, failure);
     }
-    if (launch.pty_slave < 0) _ = c.setpgid(leader, leader);
-    if (launch.pty_master >= 0) _ = c.close(launch.pty_master);
-    if (launch.pty_slave >= 0) _ = c.close(launch.pty_slave);
+    _ = c.setpgid(leader, leader);
     for (launch.pipes) |pair| for (pair) |fd| {
         _ = c.close(fd);
     };

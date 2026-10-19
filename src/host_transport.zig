@@ -143,10 +143,9 @@ test "host transport bounds slots and repeated binary captures" {
     try std.testing.expectEqual(@as(usize, 1048576), output.stdout.len);
     for (output.stdout) |byte| try std.testing.expectEqual(@as(u8, 0), byte);
     // Agent terminal responses do not free owner slots until consumed.
-    const capacity = @min(connection.peer_jobs, connection.peer_requests);
-    for (0..capacity) |_| _ = try connection.request("{\"op\":\"HOST_INFO\"}", 3000);
+    for (0..connection.peer_requests) |_| _ = try connection.request("{\"op\":\"HOST_INFO\"}", 3000);
     try std.testing.expectError(error.ResourceExhausted, connection.request("{\"op\":\"HOST_INFO\"}", 3000));
-    for (0..capacity) |_| {
+    for (0..connection.peer_requests) |_| {
         const result = try awaitCompletion(connection);
         defer connection.freeCompletion(result);
         try std.testing.expect(result.failure == null);

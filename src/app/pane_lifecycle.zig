@@ -6,6 +6,12 @@ pub fn filterSpawn(context: *anyopaque, allocator: @import("std").mem.Allocator,
     if (app.lua) |*lua| try lua.filterSpawn(allocator, spec);
 }
 
+pub fn ptyHost(context: *anyopaque, arena: @import("std").mem.Allocator, domain: ?[]const u8, shell: []const u8) ?@import("../pty/agent.zig").Host {
+    const app: *App = @ptrCast(@alignCast(context));
+    if (app.lua) |*lua| return lua.ptyHost(arena, domain, shell);
+    return null;
+}
+
 pub fn created(context: *anyopaque, pane: *Pane) void {
     const app: *App = @ptrCast(@alignCast(context));
     app.emitLuaBuiltInEvent("term:pane_created", .{ .pane_id = @intFromPtr(pane) });

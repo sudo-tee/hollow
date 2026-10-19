@@ -1,12 +1,12 @@
 # Packaging
 
 This page covers what to ship in a release, the runtime layout
-end-users will see, and how to bundle the WSL bypass helper and the
+end-users will see, and how to bundle the Linux guest agents and the
 Python `hollow-cli` client.
 
 For build flags see [Development](development.md#build-and-run).
-For the WSL bypass helper shipped with Windows releases see
-[WSL → Bypass helper](platforms/wsl.md#bypass-helper).
+For the Linux agents shipped with Windows releases see
+[Linux agents](#linux-agents) and [WSL → Agent PTY](platforms/wsl.md#agent-pty).
 For the Python client see
 [Python `hollow-cli`](reference/cli/hollow-cli.md).
 
@@ -25,19 +25,16 @@ A Windows release zip should contain:
 | `hollow-native.exe`                          | Actual GUI process                           |
 | `hollow-cli` _(optional)_                    | Python HTP client (talks OSC over a tty)     |
 | `conf/init.lua` _(optional)_                 | Editable shipped base config                 |
-| `hollow-wsl-bypass`                           | Linux-side WSL helper binary (auto-deployed) |
 | `agents/SHA256SUMS`                         | Checksums for the bundled guest agents      |
 | `agents/linux-x86_64/hollow-agent`           | Static Linux x86_64 guest agent             |
 | `agents/linux-aarch64/hollow-agent`          | Static Linux aarch64 guest agent            |
-| `scripts/install-wsl-bypass.sh` _(optional)_ | Legacy manual install script                 |
 | `README.md`, `LICENSE`                       | Standard release files                       |
 
-`hollow-wsl-bypass` is auto-deployed by Hollow on first use — copy
-from alongside the exe to `/tmp/hollow-wsl-bypass` inside the WSL
-distro. Without it, WSL panes still work through ConPTY but with
-limitations: no image protocol, no Sixel, and no Python `hollow-cli`
-over a redirected WSL pty.
-See [WSL → Bypass helper](platforms/wsl.md#bypass-helper).
+The `agents/` bundle is auto-deployed by Hollow into WSL distros, SSH
+hosts and containers on first use. Without it, WSL panes still work
+through ConPTY but with limitations: no image protocol, no Sixel, and
+no Python `hollow-cli` over the tty.
+See [Linux agents](#linux-agents).
 
 Without `hollow-cli`, end users can still drive Hollow from outside
 via the native [`hollow cli …`](reference/cli/native.md) subcommand
@@ -109,25 +106,33 @@ Guest connections verify/deploy the selected bundled binary automatically; there
 is no network download. See [`hollow.host`](reference/lua/host.md) for trusted
 bundle overrides, guest prerequisites and platform qualification.
 
-## WSL bypass helper
+## Linux agents
 
-The bypass helper is now built as part of the default build step.
-`zig build` produces `hollow-wsl-bypass` alongside the main exe:
+`hollow-agent` is a static Linux binary that serves both fs/exec RPCs
+(`hollow-agent stdio`) and pane PTYs (`hollow-agent pty`). Releases ship
+one per architecture plus checksums:
 
-```bash
-zig build -Doptimize=ReleaseFast
+```text
+agents/
+  SHA256SUMS
+  linux-x86_64/hollow-agent
+  linux-aarch64/hollow-agent
 ```
 
-At runtime, Hollow auto-deploys it to `/tmp/hollow-wsl-bypass` inside
-the WSL distro on first use. No manual install is required.
+Build the bundle on its own with:
 
-If you ship a release bundle, include `hollow-wsl-bypass` alongside
-`hollow-native.exe` in the same directory. The auto-deploy finds it
-there automatically.
+```bash
+zig build --build-file build-agent.zig agent-all
+```
 
-The legacy manual install (`zig build install-wsl-bypass` →
-`/usr/local/bin/hollow-wsl-bypass`) still works as a fallback.
-See [WSL → Bypass helper](platforms/wsl.md#bypass-helper).
+Normal `zig build` also produces it under `zig-out/agents/`.
+
+Ship the `agents/` folder beside `hollow-native.exe`. At runtime Hollow
+picks the guest's architecture, verifies it against `SHA256SUMS`, and
+installs it into the guest user's cache. WSL panes use it implicitly;
+SSH/Podman/Docker panes use it through `domains.<name>.host`.
+See [WSL → Agent PTY](platforms/wsl.md#agent-pty) and
+[`hollow.host` → Pane PTYs](reference/lua/host.md#pane-ptys).
 
 ## Crash reports
 
@@ -154,5 +159,5 @@ required to interpret a captured crash dump.
 ## See also
 
 - [Development](development.md) — build flags
-- [WSL → Bypass helper](platforms/wsl.md#bypass-helper)
+- [WSL → Agent PTY](platforms/wsl.md#agent-pty)
 - [Troubleshooting](troubleshooting.md)

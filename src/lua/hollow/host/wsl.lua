@@ -1,62 +1,22 @@
--- WSL only selects the Linux environment and opens a binary-clean transport.
--- Filesystem/process RPCs and all PTYs remain independent of this connector.
+-- WSL connector: runs commands in a distro, optionally as a given user.
 local M = {}
-local bootstrap = require("hollow.host.bootstrap")
+local options = require("hollow.host.options")
 
--- Shared by direct WSL hosts and container CLIs running inside WSL. Capture
--- only launcher policy; never inherit a nested agent or bootstrap configuration.
-function M.launcher(options)
-  if type(options) ~= "table" then error("WSL launcher expects an options table", 2) end
-  local opts = { executable = bootstrap.string(options.wsl or "wsl.exe", "wsl") }
-  opts.distro = bootstrap.string(options.distro, "distro")
-  if #opts.distro > 256 or opts.distro:sub(1, 1) == "-" then error("invalid WSL distro name", 2) end
-  if options.user ~= nil then
-    opts.user = bootstrap.string(options.user, "user")
-    if #opts.user > 256 or opts.user:sub(1, 1) == "-" then error("invalid WSL user", 2) end
+--- `wsl.exe --distribution <distro> [--user <user>] --cd / --exec`
+function M.connector(opts)
+  local distro = options.string(opts.distro, "distro")
+  if #distro > 256 or distro:sub(1, 1) == "-" then error("invalid WSL distro name", 2) end
+  local argv = { options.string(opts.wsl or "wsl.exe", "wsl"), "--distribution", distro }
+  if opts.user ~= nil then
+    local user = options.string(opts.user, "user")
+    if #user > 256 or user:sub(1, 1) == "-" then error("invalid WSL user", 2) end
+    argv[#argv + 1] = "--user"
+    argv[#argv + 1] = user
   end
-  local function remote(args)
-    local argv = { "--distribution", opts.distro }
-    if opts.user then argv[#argv + 1] = "--user"; argv[#argv + 1] = opts.user end
-    argv[#argv + 1] = "--cd"; argv[#argv + 1] = "/"
-    argv[#argv + 1] = "--exec"
-    for _, value in ipairs(args) do argv[#argv + 1] = value end
-    return argv
-  end
-  return opts.executable, remote
-end
-
-function M.map_path(ctx, remote, path, done)
-  -- Run in the selected distro/user, not inside the eventual container.
-  ctx.command(remote({ "wslpath", "-a", "-u", path }), "agent_install_unavailable", function(result)
-    local mapped = result.stdout
-    if type(mapped) ~= "string" or mapped:sub(-1) ~= "\n" then
-      ctx.fail("agent_install_unavailable", "invalid wslpath response; configure agent_path"); return
-    end
-    mapped = mapped:sub(1, -2) -- remove only the command's final newline
-    if mapped:sub(1, 1) ~= "/" or mapped:find("\0", 1, true) then
-      ctx.fail("agent_install_unavailable", "artifact path is not accessible in selected distro; configure agent_path"); return
-    end
-    done(mapped)
-  end)
-end
-
-function M.connect(hosts, options)
-  local opts = bootstrap.configuration(options, "wsl", "wsl.exe")
-  local _, remote = M.launcher(options)
-  return bootstrap.connect(hosts, opts, {
-    label = "WSL",
-    unavailable = "distro_unavailable",
-    prepare = function(_, ready) ready() end,
-    remote = remote,
-    transport = function(path) return remote({ path, "stdio" }) end,
-    upload = function(ctx, path, target, done)
-      -- Never guess a /mnt/<drive> layout or quote paths into a shell command.
-      -- wslpath runs inside the selected distro, under the selected user.
-      M.map_path(ctx, remote, path, function(mapped)
-        ctx.command(remote({ "cp", "--", mapped, target }), "agent_install_unavailable", function() done() end)
-      end)
-    end,
-  })
+  argv[#argv + 1] = "--cd"
+  argv[#argv + 1] = "/"
+  argv[#argv + 1] = "--exec"
+  return { argv = argv }
 end
 
 return M

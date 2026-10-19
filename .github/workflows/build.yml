@@ -121,7 +121,6 @@ jobs:
           path: |
             zig-out/bin/hollow
             zig-out/bin/hollow-cli
-            zig-out/bin/hollow-wsl-bypass
             zig-out/agents/
           if-no-files-found: error
           retention-days: 7

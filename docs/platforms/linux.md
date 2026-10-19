@@ -24,8 +24,9 @@
 - Linux support has not received the same breadth of runtime validation as
   Windows/WSL. Report reproducible gaps with compositor, desktop environment,
   GPU driver, and session type.
-- The WSL bypass helper is for Windows-host WSL domains and is not required by
-  native Linux Hollow.
+- Implicit agent PTYs are for Windows-host WSL domains. On native Linux, panes
+  use a local PTY unless a domain sets an explicit `host` (SSH, Podman, Docker);
+  see [`hollow.host` → Pane PTYs](../reference/lua/host.md#pane-ptys).
 
 ## Build dependencies
 
