@@ -172,8 +172,11 @@ hollow.config.set({
 ```
 
 Each domain entry is either a string (the shell) or a table with
-`shell`, `default_cwd`, `wsl_distro`, or an `ssh` sub-table.
+`shell`, `default_cwd`, `wsl_distro`, an `ssh` sub-table, or a `host`
+descriptor.
 SSH-backed domains are described in [domains](reference/lua/config.md#domains).
+`host` runs the domain's panes through `hollow-agent` on a WSL, SSH, Podman
+or Docker host; see [agent hosts](reference/lua/config.md#agent-hosts).
 
 `hollow.config.populate_wsl_domains()` (called by the shipped base config
 on Windows) lists your installed WSL distros and adds a domain for each

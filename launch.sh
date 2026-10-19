@@ -137,7 +137,7 @@ if [[ $INSTALL -eq 1 ]]; then
   echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
   for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" \
     "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" "$GUI_LAUNCHER_PDB_NAME" \
-    hollow-wsl-bypass hollow-cli; do
+    hollow-cli; do
     copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
   done
   mkdir -p "$WINDOWS_APP_DIR/agents/linux-x86_64" "$WINDOWS_APP_DIR/agents/linux-aarch64"

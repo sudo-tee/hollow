@@ -1,9 +1,9 @@
--- Docker reuses existing-container policy and the universal Linux agent.
+-- Docker connector: see hollow.host.container.
 local M = {}
 local container = require("hollow.host.container")
 
-function M.connect(hosts, options)
-  return container.connect(hosts, options, "docker", "Docker")
+function M.connector(opts)
+  return container.connector(opts, "docker")
 end
 
 return M

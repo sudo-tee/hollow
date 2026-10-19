@@ -10,7 +10,7 @@ This page gets you from zero to a running window with your own overrides.
 - A Lua configuration layer; reload the config without restarting
 - A Lua API for UI, events, keymaps, and shell-to-host integration
 - A native `hollow cli …` subcommand for host-side automation
-- An optional WSL PTY bypass helper that skips ConPTY for WSL shells
+- A bundled Linux `hollow-agent` that runs WSL, SSH and container panes without ConPTY
 
 The primary validated target is Windows.
 WSL is a first-class shell domain.
@@ -21,7 +21,7 @@ Linux and macOS are not part of the supported matrix yet; see
 
 The latest release is on GitHub: [Releases](https://github.com/sudo-tee/hollow/releases).
 
-A Windows release contains three executables that belong next to each other:
+A Windows release contains three executables that belong next to each other, plus helpers:
 
 | File | Role |
 | --- | --- |
@@ -29,14 +29,16 @@ A Windows release contains three executables that belong next to each other:
 | `hollow-gui.exe` | Console-less GUI shim |
 | `hollow-native.exe` | Actual GUI process |
 | `hollow-cli` | Python HTP client (optional, OSC over tty) |
-| `wsl/hollow-wsl-bypass` | Linux-side WSL helper (optional) |
+| `agents/linux-<arch>/hollow-agent` | Static Linux guest agent, auto-deployed into WSL/SSH/containers |
+| `agents/SHA256SUMS` | Checksums for the bundled agents |
 
 Debug symbols (`.pdb` files) are not bundled in releases.
 For crash symbolication, see
 [Packaging → Crash reports](packaging.md#crash-reports).
 
-If you want the WSL PTY bypass, also install `hollow-wsl-bypass` inside your
-WSL distro. See [WSL → Bypass helper](platforms/wsl.md#bypass-helper).
+Keep the `agents/` folder next to the executables. Hollow deploys the agent
+into WSL distros automatically; nothing needs installing inside WSL.
+See [WSL → Agent PTY](platforms/wsl.md#agent-pty).
 
 ## Write a personal config
 

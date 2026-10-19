@@ -120,10 +120,10 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.host.podman", .source = @embedFile("lua/hollow/host/podman.lua") },
     .{ .name = "hollow.host.container", .source = @embedFile("lua/hollow/host/container.lua") },
     .{ .name = "hollow.host.docker", .source = @embedFile("lua/hollow/host/docker.lua") },
-    .{ .name = "hollow.host.artifacts", .source = @embedFile("lua/hollow/host/artifacts.lua") },
-    .{ .name = "hollow.host.bootstrap", .source = @embedFile("lua/hollow/host/bootstrap.lua") },
+    .{ .name = "hollow.host.options", .source = @embedFile("lua/hollow/host/options.lua") },
     .{ .name = "hollow.host.wsl", .source = @embedFile("lua/hollow/host/wsl.lua") },
     .{ .name = "hollow.host.ssh", .source = @embedFile("lua/hollow/host/ssh.lua") },
+    .{ .name = "hollow.host.pty", .source = @embedFile("lua/hollow/host/pty.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
     .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
@@ -1122,6 +1122,38 @@ pub const Runtime = struct {
         try block.append(allocator, 0);
         spec.cwd = cwd;
         spec.env_block = block.items;
+    }
+
+    /// Asks `hollow._pty_host(domain, shell)` whether the pane runs on an
+    /// agent host. The descriptor is copied into `arena`.
+    pub fn ptyHost(self: *Runtime, arena: std.mem.Allocator, domain: ?[]const u8, shell: []const u8) ?@import("pty/agent.zig").Host {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return null;
+        api.get_field(self.state, -1, "_pty_host");
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return null;
+        if (domain) |name| api.push_lstring(self.state, name.ptr, name.len) else api.push_nil(self.state);
+        api.push_lstring(self.state, shell.ptr, shell.len);
+        if (api.pcall(self.state, 2, 1, 0) != 0) {
+            logLuaError(api, self.state, "pty host");
+            return null;
+        }
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return null;
+        const idx = absoluteIndex(api, self.state, -1);
+        const mode = luaStringField(api, self.state, idx, "mode") orelse return null;
+        var host: @import("pty/agent.zig").Host = .{};
+        if (std.mem.eql(u8, mode, "implicit")) {
+            host.fallback = true;
+        } else if (!std.mem.eql(u8, mode, "explicit")) return null;
+        parsePtyHost(api, self.state, idx, arena, &host) catch |err| {
+            std.log.warn("invalid pty host descriptor: {s}", .{@errorName(err)});
+            host = .{ .fallback = host.fallback, .error_message = "invalid PTY host descriptor" };
+        };
+        return host;
     }
 
     /// Fire the Lua on_key handler (if registered).
@@ -3504,6 +3536,20 @@ fn l_list_fonts(state: *State) callconv(.c) c_int {
     }
 
     return 1;
+}
+
+/// Copies a `hollow.host.pty` descriptor table into `host`.
+fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, host: *@import("pty/agent.zig").Host) !void {
+    if (luaStringField(api, state, idx, "error")) |text| {
+        host.error_message = try arena.dupe(u8, text);
+        return;
+    }
+    const target = try host_lua.readTarget(arena, api, state, idx);
+    host.connector = target.connector;
+    host.agent = target.agent;
+    if (luaStringField(api, state, idx, "path_style")) |style| {
+        host.path_style = std.meta.stringToEnum(@import("pty/agent.zig").PathStyle, style) orelse return error.InvalidPathStyle;
+    }
 }
 
 fn l_run_child_process(state: *State) callconv(.c) c_int {

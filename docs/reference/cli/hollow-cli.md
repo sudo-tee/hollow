@@ -10,11 +10,11 @@ when you cannot.
 
 ### WSL
 
-Using this script from WSL requires the `hollow-wsl-bypass` helper
-binary in the WSL environment.
-Without it, you can still use the native `hollow.exe cli …`
-subcommand from WSL, but with limitations: no image protocol, no
-Sixel, and no Python `hollow-cli` over a redirected WSL pty.
+Over the tty, this script needs a WSL pane running on the agent PTY
+(the default for WSL domains; see [WSL → Agent PTY](../../platforms/wsl.md#agent-pty)).
+ConPTY-fallback panes do not pass its OSC traffic through; there, use
+WSL mirrored networking (`HOLLOW_COMMAND_ADDR` socket transport) or the
+native `hollow.exe cli …` subcommand.
 The script is faster than calling the `hollow.exe` host command,
 since it does not have to start a Windows process.
 

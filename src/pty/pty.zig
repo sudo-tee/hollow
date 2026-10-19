@@ -8,11 +8,32 @@ const NativePty = switch (builtin.os.tag) {
     .windows => @import("pty_windows.zig").WindowsPty,
     else => @import("pty_posix.zig").PosixPty,
 };
-const AgentPty = @import("agent.zig").AgentPty;
+pub const agent = @import("agent.zig");
+const AgentPty = agent.AgentPty;
 
 pub const Pty = union(enum) {
     native: NativePty,
     agent: AgentPty,
+
+    /// Swap an agent PTY whose implicit host proved unavailable for the
+    /// native launch it replaced. Safe to call every tick.
+    fn settle(self: *Pty) void {
+        if (self.* != .agent) return;
+        const remote = &self.agent;
+        if (!remote.wantsFallback()) return;
+        const spec = remote.fallback_spec;
+        const size = remote.size();
+        var native = spawn(remote.allocator, spec.shell, size.cols, size.rows, spec.cwd, spec.env_block, spec.launch_command, remote.wakeHandle()) catch |err| {
+            std.log.warn("native fallback spawn failed: {s}", .{@errorName(err)});
+            remote.abandonFallback();
+            return;
+        };
+        const queued = remote.takeQueuedInput(remote.allocator) catch null;
+        defer if (queued) |bytes| remote.allocator.free(bytes);
+        if (queued) |bytes| if (bytes.len > 0) native.writeAll(bytes) catch {};
+        remote.deinit();
+        self.* = .{ .native = native };
+    }
 
     pub fn deinit(self: *Pty) void {
         switch (self.*) {
@@ -25,6 +46,7 @@ pub const Pty = union(enum) {
         }
     }
     pub fn isAlive(self: *Pty) bool {
+        self.settle();
         return switch (self.*) {
             inline else => |*p| p.isAlive(),
         };
@@ -40,6 +62,7 @@ pub const Pty = union(enum) {
         };
     }
     pub fn read(self: *Pty, buffer: []u8) !usize {
+        self.settle();
         return switch (self.*) {
             inline else => |*p| p.read(buffer),
         };
@@ -55,6 +78,7 @@ pub const Pty = union(enum) {
         };
     }
     pub fn hasPendingOutputOrExit(self: *Pty) bool {
+        self.settle();
         return switch (self.*) {
             inline else => |*p| p.hasPendingOutputOrExit(),
         };
@@ -76,34 +100,26 @@ pub const Pty = union(enum) {
     }
 };
 
-pub fn usesWslBypass(pty: *const Pty) bool {
-    return switch (pty.*) {
-        .native => |*p| if (builtin.os.tag == .windows) p.usesWslBypass() else false,
-        .agent => false,
-    };
-}
-
 pub fn usesAgent(pty: *const Pty) bool {
     return pty.* == .agent;
 }
 
-pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !Pty {
-    // Deliberately explicit development-only override; absent means identical
-    // native/WSL bypass selection. No automatic deployment, shell inference or
-    // translation of Windows cwd/environment into remote Linux paths.
-    const config_json = @import("../io.zig").getEnvVarOwned(allocator, "HOLLOW_EXPERIMENTAL_AGENT_PTY") catch |err| switch (err) {
-        error.EnvironmentVariableMissing => null,
-        else => return err,
-    };
-    defer if (config_json) |json| allocator.free(json);
-    if (config_json) |json| {
-        if (json.len > 1024 * 1024 or launch_command != null) return error.InvalidArgument;
-        const parsed = try std.json.parseFromSlice(@import("agent.zig").Config, allocator, json, .{});
-        defer parsed.deinit();
-        return .{ .agent = try AgentPty.spawn(allocator, parsed.value, cols, rows, wake) };
-    }
-    return .{ .native = switch (builtin.os.tag) {
+pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !NativePty {
+    return switch (builtin.os.tag) {
         .windows => try NativePty.spawnWithFallbacks(allocator, shell, cols, rows, cwd, env_block, launch_command, platform.windowsShellCandidates(), wake),
         else => try NativePty.spawn(allocator, shell, cols, rows, cwd, env_block, launch_command, wake),
-    } };
+    };
+}
+
+pub fn spawnNative(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !Pty {
+    return .{ .native = try spawn(allocator, shell, cols, rows, cwd, env_block, launch_command, wake) };
+}
+
+/// Resolving agent PTY; hand `pty.agent.id()` to the Lua host resolver.
+pub fn spawnAgent(allocator: std.mem.Allocator, request: agent.Request, wake: Wake) !Pty {
+    return .{ .agent = try AgentPty.init(allocator, request, wake) };
+}
+
+test {
+    _ = agent;
 }

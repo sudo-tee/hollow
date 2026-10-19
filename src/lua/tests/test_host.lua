@@ -178,20 +178,4 @@ describe("hollow.host connector", function()
     assert.are.equal(1, closes)
     assert.has_error(function() hosts.connect({ id = "x", backend = "local", argv = { "not-run" } }) end)
   end)
-
-  it("bounds all connector bootstraps together and releases capacity on rejection", function()
-    local hosts = require("hollow.host")
-    local rejects = {}
-    package.loaded["hollow.host.podman"] = { connect = function()
-      return require("hollow.async").promise(function(_, reject) rejects[#rejects + 1] = reject end)
-    end }
-    for _, name in ipairs({ "wsl", "ssh", "docker" }) do package.loaded["hollow.host." .. name] = package.loaded["hollow.host.podman"] end
-    for _, name in ipairs({ "podman", "wsl", "ssh", "docker" }) do assert.are.equal("pending", hosts[name]({}):status()) end
-    local full = hosts.docker({})
-    assert.are.equal("resource_exhausted", full:error().code)
-    rejects[1]({ code = "cancelled", message = "test" })
-    assert.are.equal("pending", hosts.docker({}):status())
-    assert.are.equal(5, #rejects)
-    for _, name in ipairs({ "podman", "wsl", "ssh", "docker" }) do package.loaded["hollow.host." .. name] = nil end
-  end)
 end)

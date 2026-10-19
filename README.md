@@ -40,7 +40,7 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 - Scrollback, selection, clipboard, hyperlink handling, font discovery, ligature, nerd fonts and emoji support
 - Basic support for Kitty images and Sixel
 - Windows domains for `pwsh`, `powershell`, `cmd`, and `*WSL`, it will populate domains automatically for all wsl distros installed on the system. eg: (`UbuntuWSL`, `DebianWSL`, `AlpineWSL`, `FedoraWSL`, etc.)
-- Optional WSL PTY bypass helper with automatic ConPTY fallback (needed for full escape sequence support)
+- Agent-backed WSL, SSH and container panes via a bundled Linux `hollow-agent` (full escape sequence support; WSL falls back to ConPTY automatically)
 - Cross-platform targets: Windows and WSL (primary); Linux/X11 (basic support); macOS (planned)
 - Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
 - Sensible default UX but fully customizable via Lua config and plugins
@@ -48,8 +48,8 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 ## Quick Start
 
 **Download a release:** [github.com/sudo-tee/hollow/releases](https://github.com/sudo-tee/hollow/releases)
-Windows builds include the optional `hollow-wsl-bypass` helper for WSL domains
-(falls back to ConPTY automatically when the helper is absent). Linux builds
+Windows builds include the Linux `hollow-agent` bundle (`agents/`), auto-deployed
+into WSL for pane PTYs (falls back to ConPTY automatically if unavailable). Linux builds
 require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 
 **Customize:** `%APPDATA%\hollow\init.lua` (Windows) or

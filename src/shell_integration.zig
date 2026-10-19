@@ -1,6 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const io = @import("io.zig");
+pub const io = @import("io.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("sys/stat.h");

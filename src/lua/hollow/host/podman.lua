@@ -1,9 +1,9 @@
--- Podman-specific discovery and transport policy.
+-- Podman connector: see hollow.host.container.
 local M = {}
 local container = require("hollow.host.container")
 
-function M.connect(hosts, options)
-  return container.connect(hosts, options, "podman", "Podman")
+function M.connector(opts)
+  return container.connector(opts, "podman")
 end
 
 return M

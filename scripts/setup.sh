@@ -10,44 +10,32 @@ ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
 BUSTED_VERSION="${BUSTED_VERSION:-2.3.0}"
 GHOSTTY_PACKAGE="ghostty-1.3.2-dev-5UdBCw6JewVSNmU8sj9cx3YZWyIVXgAHBHU8T-xS1Hg0"
-AGENT_PANE_ONLY=false
-case "${1:-}" in
-  "") ;;
-  --agent-pane) AGENT_PANE_ONLY=true ;;
-  *) echo "usage: $0 [--agent-pane]" >&2; exit 1 ;;
-esac
 
 "$SCRIPT_DIR/check-zig-version.sh"
 
 # ── 0. Lua test tooling ───────────────────────────────────────────────────────
-if ! $AGENT_PANE_ONLY; then
-  if command -v busted >/dev/null 2>&1; then
-    echo "[setup] Busted is already installed: $(busted --version)"
-  else
-    if ! command -v luarocks >/dev/null 2>&1; then
-      echo "[setup] LuaRocks is required to install Busted $BUSTED_VERSION" >&2
-      echo "[setup] install LuaRocks, then rerun setup.sh" >&2
-      exit 1
-    fi
-
-    echo "[setup] installing Busted $BUSTED_VERSION..."
-    luarocks --lua-version=5.1 install busted "$BUSTED_VERSION"
+if command -v busted >/dev/null 2>&1; then
+  echo "[setup] Busted is already installed: $(busted --version)"
+else
+  if ! command -v luarocks >/dev/null 2>&1; then
+    echo "[setup] LuaRocks is required to install Busted $BUSTED_VERSION" >&2
+    echo "[setup] install LuaRocks, then rerun setup.sh" >&2
+    exit 1
   fi
 
-  # ── 1. Submodules ────────────────────────────────────────────────────────────
-  echo "[setup] initialising submodules..."
-  git -C "$ROOT" submodule update --init --recursive
+  echo "[setup] installing Busted $BUSTED_VERSION..."
+  luarocks --lua-version=5.1 install busted "$BUSTED_VERSION"
 fi
+
+# ── 1. Submodules ────────────────────────────────────────────────────────────
+echo "[setup] initialising submodules..."
+git -C "$ROOT" submodule update --init --recursive
 
 # ── 2. Zig packages ─────────────────────────────────────────────────────────
 echo "[setup] fetching Zig package dependencies..."
 (
   cd "$ROOT"
-  if $AGENT_PANE_ONLY; then
-    zig build -Dagent-pane-only=true --fetch=needed
-  else
-    zig build --fetch=needed
-  fi
+  zig build --fetch=needed
 )
 
 if [[ "$(<"$ROOT/build.zig.zon")" != *".hash = \"$GHOSTTY_PACKAGE\""* ]]; then
@@ -110,24 +98,22 @@ apply_package_patch() {
   fi
 }
 
-if ! $AGENT_PANE_ONLY; then
-  apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
-  apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-image-region.patch"
+apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-no-vsync.patch"
+apply_patch "third_party/sokol" "$PATCHES_DIR/sokol-image-region.patch"
 
 # `third_party/lua-zluajit` tracks upstream `negrel/zluajit` but Hollow uses a
 # local path dependency for `../luajit-upstream`, Windows cross-build support,
 # and Zig 0.16 build API updates. Keep these as repo-level patches so the
 # submodule flow matches the existing `sokol` model.
-  apply_patch "third_party/lua-zluajit" "$PATCHES_DIR/lua-zluajit-local.patch"
-  apply_patch "third_party/luajit-upstream" "$PATCHES_DIR/luajit-relver.patch"
+apply_patch "third_party/lua-zluajit" "$PATCHES_DIR/lua-zluajit-local.patch"
+apply_patch "third_party/luajit-upstream" "$PATCHES_DIR/luajit-relver.patch"
 
 # `third_party/nightwatch` tracks upstream `neurocyte/nightwatch` master but
 # std.os.linux.inotify_add_watch returns usize; the libc errno()
 # check in the library misses the negative-return encoding, so the subsequent
 # @intCast(wd) panics on a watch failure. Patched locally until upstream ships
 # a fix.
-  apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-inotify-fix.patch"
-fi
+apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-inotify-fix.patch"
 
 # Ghostty is a build.zig.zon package rather than a git submodule. The package
 # name includes the pinned content hash, so dependency updates fail here until

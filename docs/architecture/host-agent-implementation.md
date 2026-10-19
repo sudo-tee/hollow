@@ -1,115 +1,14 @@
 # Universal host runtime implementation
 
 The design source is `hollow-agent-architecture-plan-v4.md`. Implementation is
-staged; this change does **not** complete the entire plan or switch default pane
-backends. Agent pane attachment requires an explicit development override.
+staged; this change does **not** complete the entire plan.
 
-Fs/exec now has its own [release checklist and check command](host-agent-fs-exec-release.md).
-Its release scope is asynchronous host operations, connector bootstrap, read-only
-workspace discovery/loading and packaged agents—not PTY performance qualification.
-Unexecuted native Windows/Docker/ARM64 gates stay explicit and do not invalidate
-Linux evidence or silently become passing results.
-
-The headless shared experiment now also offers bounded, byte-checked filesystem
-and non-PTY exec interference plus optional foreground resize issuance. Shared
-bulk uses the PTY connection; native/dedicated comparisons use a separate agent.
-See [benchmark methodology](host-agent-benchmarks.md#mixed-filesystemexec-interference).
-That mixed-load follow-up changes no production transport, scheduler, workspace
-policy or backend defaults.
-
-The next [diagnostics experiment](../benchmarks/agent-pty/2026-10-18-queue-profile.md)
-adds opt-in agent dispatch/output-span timing and explicit coverage/censoring
-counters. It confirms mixed bulk can queue well beyond the PTY-only batch cap,
-but changes no scheduling policy or defaults. Per-stream ready-to-enqueue timing,
-focus-aware priorities and split-lane comparisons remain future work.
-
-An additional `HOLLOW_AGENT_BOUNDED_BULK` experiment, gated by experimental PTY
-HELLO, rotates whole completed-job frames with PTY quanta instead of immediately
-queueing entire fs/exec captures. It preserves atomic oversized metadata as an
-explicit empty-buffer exception. Completed captures retain job slots but not
-live-child cleanup ownership; already-reaped jobs cannot match a reused PID.
-The flag is ignored for ordinary fs/exec connections. Default scheduling, pane
-selection, resource limits and Lua workspace policy remain unchanged. See
-[methodology](host-agent-benchmarks.md#opt-in-bounded-bulk-scheduling).
-The [306-measurement comparison](../benchmarks/agent-pty/2026-10-18-bounded-bulk.md)
-shows mixed shared p99 improvements at substantial bulk bandwidth cost, remaining
-bulk-free latency failures, and an unresolved candidate default-path throughput
-regression in diagnostics-off old/new comparisons. Keep this research unqualified;
-do not infer default throughput preservation from unchanged scheduling selection.
-Follow-up [source isolation](../benchmarks/agent-pty/2026-10-18-default-source-isolation.md)
-balances native/prior/current ordering and tests CPU/workload context, retaining
-unexplained slow tails. Software CPU samples identify the same overlapping PTY
-queue-copy hot spot in both builds. A narrow
-[`@memmove` experiment](../benchmarks/agent-pty/2026-10-18-pty-compaction.md) changes
-that copy only, with nonuniform-byte/short-credit regression coverage; it does not
-claim to solve the intermittent loss or qualify shared/default PTY rollout.
-
-The next [explicit focus/session baseline](../benchmarks/agent-pty/2026-10-18-focus-scheduler.md)
-adds target-side `HOLLOW_AGENT_FOCUS_SCHEDULER` on bounded-bulk connections, client
-`experimental_focus` negotiation/capability checking, spawn-time logical groups,
-and nonce/sequence-scoped `FOCUS_UPDATE`. Native shared adapters expose explicit
-async updates without GUI/HostManager inference; focus remains control-admitted
-at the existing 16-job ceiling. Fixed-capacity hierarchical weighted round robin
-rotates session then pane visits, retaining credit/batch/metadata constraints.
-This is not byte-fair DRR, live regrouping, control-flood QoS or a split lane.
-157 measurements plus one preserved short-smoke failure show redistribution,
-not a rollout pass; per-update loaded correlation and broader gates remain open.
-
-The [resource/fault follow-up](../benchmarks/agent-pty/2026-10-19-isolation-resources.md)
-adds a Linux process-tree observer and independent native-close/real-wire SIGKILL
-regressions under WRR/DRR, without agent/transport runtime changes. Eighty finite
-on/off measurements expose extra concurrent CPU/threads and observer perturbation;
-they are not sustained/equal-resource qualification. Surviving owner handles focus,
-resize, echo and EXEC, but reconnect/migration/loaded recovery remain unimplemented.
-
-The [static foreground-isolation experiment](../benchmarks/agent-pty/2026-10-19-isolated-foreground.md)
-is benchmark-only: explicit second shared-connection owner for foreground, original
-owner for backgrounds/bulk, same prepared connector and agent. Selected logical
-group spans agents with session-only background focus, not a global scheduler.
-128 total finite checks/measurements show large local foreground improvement but
-background/bulk costs. No agent/transport handler, default route, live migration or
-fault-recovery policy changes. Separately labeled host telemetry is supported;
-ambiguous queue-profile traces are rejected pending connection identity.
-
-The [hierarchical byte-deficit prototype](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md)
-adds fixed-capacity DRR beside weighted visits, requiring an additional target
-flag, HELLO opt-in and ACK capability `experimental.deficit`. Native requested
-clients fail closed without it. Focus/group/sequence ownership stays common;
-scheduled-output eligibility uses next frame size and charging uses actual wire
-bytes. Unready budgets reset, focus cannot refill deficits, metadata accumulation
-and reserved retries survive churn. Immediate control frames are outside these
-budgets. No default policy or transport lane changes.
-
-154 validated measurements preserve DRR's 12/12 local loaded-latency passes,
-mixed throughput/background/bulk tradeoffs and one individual default-throughput
-miss. Fixed-ready byte proportions are not sustained wall-time QoS. Full scale,
-resources/faults, real target switches and native-platform gates remain open.
-
-The [separate bulk-agent probe](../benchmarks/agent-pty/2026-10-19-split-bulk.md)
-adds benchmark-only `--separate-bulk` for shared PTYs with active fs/exec. It uses
-the same prepared connector/binary for an independent ordinary agent connection,
-not same-agent dual lanes or production routing. Per-connection limits remain
-unchanged; explicit placement is validated and cannot silently fall back. Across
-80 ReleaseFast cases, bulk benefits but median foreground echo p99 worsens versus
-co-located counterparts. Two additional ReleaseSafe full-admission profiling cases
-pass. Automatic split routing is not adopted; default/fault/resource/platform
-blockers remain distinct from this finite local result.
-
-[Per-sequence focus diagnostics](../benchmarks/agent-pty/2026-10-19-focus-profile.md)
-now add a separate 64-event fixed profiler inside the already opt-in queue
-profiler allocation. `AGENT_FOCUS_PROFILE` maps accepted sequences to first
-observed credited/captured target readiness, first new DATA payload interval and
-successful stdout payload writes. Repeated terminal snapshots preserve pending,
-superseded, no-stream, release, discard and overflow accounting; no raw payload
-is logged. Aggregate queue schema and scheduling/admission remain unchanged.
-The benchmark's explicit same-target refresh probe separates client ACK RTT from
-echo timing; genuine target switching, ready-from-kernel timestamps, byte-fair
-DRR, split lanes and rollout/resource/platform gates remain open.
+Fs/exec has its own [release checklist and check command](host-agent-fs-exec-release.md).
 
 ## Current scope
 
 * PR 0: [wire and ownership RFC](host-agent-v1.md), legacy benchmark harness and
-  [qualification methodology](host-agent-benchmarks.md). Windows/WSL GUI baseline
+  qualification methodology. Windows/WSL GUI baseline
   qualification remains a prerequisite for a default PTY backend switch.
 * PR 1: GUI-independent Linux agent, bounded read-only filesystem operations and
   non-PTY exec, protocol tests, local-subprocess conformance harness.
@@ -156,48 +55,31 @@ DRR, split lanes and rollout/resource/platform gates remain open.
   relays model future socket establishment without agent/host/Lua operation edits.
   Common conformance and native Lua contracts pass; forced link loss/reconnect
   verifies no EXEC replay. This is not production vsock/hvsock support.
-* Experimental PTY implementation started at the user's explicit direction:
-  HELLO-opted-in controlling terminals, streamed output with byte credits,
-  bounded binary input, resize/SIGWINCH and supervised close/exit. Eleven real
-  PTY tests pass locally, through rootless Podman, and through `wsl.exe` interop.
-  [Wire contract and interactive client](agent-pty-experiment.md).
-* Experimental native PTY adapter: bounded credit-based streaming, queued input
-  with remote-backpressure retries, resize, wakeups and drain-before-exit integrate
-  with the pane PTY interface. `HOLLOW_EXPERIMENTAL_AGENT_PTY` explicitly selects
-  one agent connection per pane, with no automatic deployment or replay. Native
-  Windows GUI execution and baseline/performance rollout gates stay open.
-* Real pane/terminal integration: a terminal-only headless graph now runs actual
-  pane bootstrap, layout, output parsing/render-state updates and teardown. Two
-  cases pass locally, through Podman and through WSL interop, including binary
-  startup input, terminal query/reply, alternate-screen grids and pane isolation.
-  Integration fixes allow partial admission of oversized startup chunks and retain
-  allocation ownership across partial delivery; GPU/window execution stays unqualified.
-* E1 measurement: a shared native client measures dedicated native/agent PTY
-  readiness, prompt round trips and verified 10/100 MiB output. Five-run raw
-  datasets show substantial agent throughput overhead; an attempted host
-  read-ahead optimization was measured, rejected and removed. See the
-  [measurement report](../benchmarks/agent-pty/README.md); defaults stay unchanged.
-* Throughput investigation: scheduling already-buffered PTY output before poll
-  removes credit-restoration stalls; bounded DATA scratch and inline credits remove
-  per-frame allocations. Explicit GUI-matched and original-allocator five-run
-  comparisons now show near-native local median throughput. Fixed-size optional
-  diagnostics, regression tests and [raw evidence](../benchmarks/agent-pty/2026-10-18-throughput-fix.md)
-  ship with the changes; native Windows GUI/multiplexing gates remain open.
-* Initial E2/E3 adapter: explicit owner-thread shared connections support up to
-  16 PTYs with filtered completion delivery, job/control-slot separation,
-  per-session cancellation tombstones and safe owner-first shutdown. Pane
-  selection stays dedicated. The same benchmark now compares native/dedicated/
-  shared transports with idle, noisy and stalled backgrounds; see the
-  [initial shared report](../benchmarks/agent-pty/2026-10-18-shared-pty.md).
+* Pane PTYs: `hollow-agent pty` serves one controlling terminal per process
+  over a small framed protocol (`src/agent/pty_protocol.zig`: hello, spawn,
+  input, output, resize, exit, error, close). The GUI client
+  (`src/pty/agent.zig`) runs one connector process per pane. Lua selects the
+  host: `domains.<name>.host = { type = "wsl"|"ssh"|"podman"|"docker", ... }`
+  is explicit (failures are shown in the pane); on Windows, WSL domains use the
+  agent implicitly and fall back to a native `wsl.exe` ConPTY if bootstrap
+  fails. `host = false` opts a domain out. Lua only returns the deploy target
+  synchronously; the client's worker thread installs the agent and runs
+  `<connector> <agent> pty`. This replaces the former WSL bypass helper.
+  Multiplexing PTYs over one agent connection is a later step.
+* Agent deployment moved from Lua to Zig (`src/host/deploy.zig`), shared by
+  pane PTYs and `hollow.host.*` connections: probe (`uname -m`, cached digest),
+  stdin upload checked by `sha256sum`, atomic rename, one deadline. Lua
+  adapters (`src/lua/hollow/host/{wsl,ssh,container}.lua`) only validate
+  options and build the connector argv. This drops container inspect/ID
+  pinning, `scp`, `docker cp`, `wslpath` and the Lua bootstrap concurrency
+  limit.
 
 These are experimental host components, **not yet a fully qualified production
-GUI host runtime**. Podman, WSL and SSH bootstrap policy lives in Lua; connected
-RPCs use the shared Zig dispatcher. `hollow.host.connect({id, argv})` remains an
+GUI host runtime**. Agent deployment and connected RPCs are native Zig; Lua
+describes connectors. `hollow.host.connect({id, argv})` remains an
 explicit subprocess escape hatch. Native Windows qualification remains open;
-automatic remote pane/bootstrap routing and workspace writes are outside the
-read-only fs/exec release. Existing
-`hollow.process` and default PTY selection retain their behavior.
-See [executed validation and known blockers](host-agent-validation.md).
+workspace writes are outside the read-only fs/exec release. Existing
+`hollow.process` behavior is unchanged.
 
 ## Build and test
 
@@ -207,7 +89,7 @@ does not configure, fetch or link GUI, Ghostty, Sokol or LuaJIT dependencies:
 
 ```sh
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-fs
-zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
+zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport test-agent-pty
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager
 zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-local
 # Optional: requires LuaJIT's Lua 5.1 API headers and library.
@@ -245,12 +127,8 @@ a preinstalled agent; automatic deployment is not promised there.
    its Lua state is destroyed, invalidating old generations.
 3. PR 4–6: finish WSL/SSH/Docker qualification; shared conformance,
    verified deployment, watchdogs, generation handling and release hardening.
-4. PR 7: extract PTY engine without a backend change, only after reproducible
-   legacy WSL measurements exist.
-5. PR 8–9: explicitly execute dedicated/shared/split/hybrid transport and
-   scheduling experiments. Include 40/100/200 PTYs, focus priority, background
-   fairness, stopped consumers and worker/agent fault injection. Keep raw
-   datasets; default-backend rollout requires the numeric v4 gates.
+4. Multiplex pane PTYs over one agent connection per host, with focus
+   priority, background fairness and stopped-consumer handling.
 
 Agent fs/exec success does not imply PTY performance, detach/reattach, persistent
 sessions after agent SIGKILL, Windows GUI parity, SSH portability or WSL support.

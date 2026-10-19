@@ -1,4 +1,5 @@
 const std = @import("std");
+const Host = @import("agent.zig").Host;
 
 pub fn isWsl(shell: []const u8) bool {
     const trimmed = std.mem.trim(u8, shell, " \t");
@@ -29,6 +30,23 @@ pub const Filter = struct {
     pub fn apply(self: Filter, allocator: std.mem.Allocator, spec: *SpawnSpec) !void {
         const context = self.context orelse return;
         if (self.callback) |callback| try callback(context, allocator, spec);
+    }
+};
+
+/// Asks Lua whether a pane runs on an agent host. The returned host is
+/// allocated from `arena`; null runs the pane natively.
+pub const HostResolver = struct {
+    context: ?*anyopaque = null,
+    callback: ?*const fn (*anyopaque, std.mem.Allocator, ?[]const u8, []const u8) ?Host = null,
+
+    pub fn enabled(self: HostResolver) bool {
+        return self.context != null and self.callback != null;
+    }
+
+    pub fn resolve(self: HostResolver, arena: std.mem.Allocator, domain: ?[]const u8, shell: []const u8) ?Host {
+        const context = self.context orelse return null;
+        const callback = self.callback orelse return null;
+        return callback(context, arena, domain, shell);
     }
 };
 

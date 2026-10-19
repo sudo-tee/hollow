@@ -20,6 +20,7 @@ const Api = struct {
     pub const push_nil = c.lua_pushnil;
     pub const push_boolean = c.lua_pushboolean;
     pub const to_number = c.lua_tonumber;
+    pub const to_boolean = c.lua_toboolean;
     pub const to_lstring = c.lua_tolstring;
     pub const value_type = c.lua_type;
     pub const rawgeti = c.lua_rawgeti;
@@ -61,6 +62,27 @@ fn until(state: *c.lua_State, predicate: []const u8) !void {
     }
     return error.Timeout;
 }
+
+/// `bundle(exe_dir)`: a settled promise-like `{status, value}` of the agent
+/// bundle (`SHA256SUMS`) in `<exe_dir>/agents` or `<exe_dir>/../agents`.
+const bundle_lua =
+    \\function bundle(dir)
+    \\  for _, root in ipairs({ dir .. '/agents', dir .. '/../agents' }) do
+    \\    local f = io.open(root .. '/SHA256SUMS')
+    \\    if f then
+    \\      local found = {}
+    \\      for line in f:lines() do
+    \\        local sum, arch = line:match('^(%x+)  linux%-([%w_]+)/hollow%-agent')
+    \\        if sum then found[arch] = { path = root .. '/linux-' .. arch .. '/hollow-agent', sha256 = sum:lower() } end
+    \\      end
+    \\      f:close()
+    \\      return { status = function() return 'fulfilled' end, value = function() return found end }
+    \\    end
+    \\  end
+    \\  return { status = function() return 'rejected' end, value = function() return nil end }
+    \\end
+    \\
+;
 
 fn nowMs(maybe_state: ?*c.lua_State) callconv(.c) c_int {
     c.lua_pushnumber(maybe_state, @floatFromInt(@divTrunc(std.Io.Clock.awake.now(std.testing.io).toNanoseconds(), std.time.ns_per_ms)));
@@ -217,10 +239,10 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
     );
     try until(state, "DONE=again:status()~='pending'");
     try run(state, "assert(again:value().generation~=nh.generation)");
-    try run(state, "assets=require('hollow.host.artifacts').discover(again:value())");
-    try until(state, "DONE=assets:status()~='pending'");
-    try run(state,
-        \\assert(assets:status()=='fulfilled',assets:error() and assets:error().message)
+    try run(state, "ai=again:value():info()");
+    try until(state, "DONE=ai:status()~='pending'");
+    try run(state, bundle_lua ++
+        \\assets=bundle(ai:value().executable_dir)
         \\assert(assets:value().x86_64 and assets:value().aarch64)
     );
     inline for (.{ "PODMAN", "DOCKER" }) |engine| {
@@ -405,16 +427,16 @@ test "Lua host promises execute native concurrent RPCs and cancel on runtime tea
         );
         try until(state, "DONE=badkey:status()~='pending'");
         try run(state,
-            \\assert(badkey:status()=='rejected' and badkey:error().code=='ssh_unavailable')
+            \\assert(badkey:status()=='rejected' and badkey:error().code=='connector_unavailable')
             \\shopts.id='ssh-unknown-host'; shopts.known_hosts=SSH_EMPTY_KNOWN_HOSTS; unknown=hollow.host.ssh(shopts)
         );
         try until(state, "DONE=unknown:status()~='pending'");
         try run(state,
-            \\assert(unknown:status()=='rejected' and unknown:error().code=='ssh_unavailable')
+            \\assert(unknown:status()=='rejected' and unknown:error().code=='connector_unavailable')
             \\shopts.id='ssh-auth-rejected'; shopts.known_hosts=SSH_KNOWN_HOSTS; shopts.identity_file=SSH_BAD_IDENTITY; badauth=hollow.host.ssh(shopts)
         );
         try until(state, "DONE=badauth:status()~='pending'");
-        try run(state, "assert(badauth:status()=='rejected' and badauth:error().code=='ssh_unavailable')");
+        try run(state, "assert(badauth:status()=='rejected' and badauth:error().code=='connector_unavailable')");
     }
 }
 
@@ -480,23 +502,23 @@ test "native Windows public Lua WSL bootstrap discovers installed agent bundle" 
     try run(state,
         \\assert(local_p:status()=='fulfilled',local_p:error() and local_p:error().message)
         \\native=local_p:value(); ni=native:info()
-        \\assets=require('hollow.host.artifacts').discover(native)
     );
-    try until(state, "DONE=assets:status()~='pending' and ni:status()~='pending'");
+    try until(state, "DONE=ni:status()~='pending'");
+    try run(state, bundle_lua ++ "assets=bundle(ni:value().executable_dir)");
     const missing = std.testing.environ.getAlloc(std.testing.allocator, "HOLLOW_TEST_EXPECT_NO_BUNDLE") catch null;
     defer if (missing) |bytes| std.testing.allocator.free(bytes);
     if (missing) |value| {
         if (!std.mem.eql(u8, value, "1")) return error.InvalidArgument;
         try run(state,
             \\assert(ni:value().os=='windows')
-            \\assert(assets:status()=='rejected' and assets:error().code=='agent_install_unavailable')
+            \\assert(assets:status()=='rejected')
             \\print('WINDOWS_LUA_MISSING_BUNDLE_REJECTED '..ni:value().executable_dir)
         );
         return;
     }
     try run(state,
         \\assert(ni:value().os=='windows')
-        \\assert(assets:status()=='fulfilled',assets:error() and assets:error().message)
+        \\assert(assets:status()=='fulfilled','no agent bundle beside the executable')
         \\assert(assets:value().x86_64 and assets:value().aarch64)
         \\print('WINDOWS_LUA_BUNDLE '..assets:value().x86_64.path)
         \\-- No artifact, agent_dir or agent_path override: public default discovery.

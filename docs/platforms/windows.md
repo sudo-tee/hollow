@@ -20,7 +20,7 @@ A release zip contains:
 | `hollow-gui.exe`        | Console-less GUI shim                      |
 | `hollow-native.exe`     | Actual GUI process                         |
 | `hollow-cli`            | Python HTP client (optional, OSC over tty) |
-| `wsl/hollow-wsl-bypass` | Linux-side WSL helper (optional)           |
+| `agents/`               | Static Linux `hollow-agent` + `SHA256SUMS` |
 
 Debug symbols (`.pdb` files) are not bundled in releases.
 For crash symbolication, see
@@ -113,7 +113,7 @@ The most useful Windows-specific flags:
 
 ## See also
 
-- [WSL](wsl.md) — Windows-side WSL setup and the bypass helper
+- [WSL](wsl.md) — Windows-side WSL setup and the agent PTY
 - [Development](../development.md) — build from source
 - [Packaging](../packaging.md) — release artifacts, runtime layout, crash reports
 - [Troubleshooting](../troubleshooting.md) — common Windows issues
