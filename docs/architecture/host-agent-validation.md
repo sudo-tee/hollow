@@ -7,6 +7,14 @@ uses an owned non-root Alpine/OpenSSH fixture, not a production server.
 
 ## Independent fs/exec release closure — 2026-10-19
 
+Follow-up [native Windows dispatcher smoke](../validation/2026-10-19-windows-fs-exec-smoke.md)
+executes an actual Windows x86_64 test process against native-local operations
+and a persistent preinstalled WSL agent: **13/13** in three fresh processes,
+**39 executions including imports**, six Windows-specific integration executions.
+This supersedes cross-compile-only status for that narrow dispatcher scope, not
+public Lua bootstrap/automatic discovery, GUI lifecycle, other Windows connectors
+or full client qualification. Source/OS/binary identities and raw results retained.
+
 The [fs/exec checklist](host-agent-fs-exec-release.md) now closes separately from
 PTY research. Closing run passes **13/13** selected checks across local Linux,
 rootless Podman, owned SSH, mock socket and WSL interop. **177** source hashes

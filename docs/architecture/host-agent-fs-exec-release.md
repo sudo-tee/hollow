@@ -99,7 +99,7 @@ interop have current integration evidence; see [validation](host-agent-validatio
 | Mock socket, 257-byte relay fragments | 16 common wire cases, production Lua, explicit loss/reconnect and no EXEC replay | Design fixture, not production vsock/hvsock |
 | Linux→Windows launcher→Ubuntu-26.04 | 16 common wire cases, public WSL bootstrap/default and explicit user, both layouts | Explicit Windows-accessible artifact; not native Windows automatic discovery/client execution |
 | Real Docker | Dedicated CI gate configured | Not executed locally: no Docker CLI/daemon available; no Podman substitution accepted |
-| Native Windows client | Transport/manager/local/Lua cross-compile checks pass | Runtime qualification still required for that client |
+| Native Windows client | [Native dispatcher/native-local and preinstalled-WSL smoke](../validation/2026-10-19-windows-fs-exec-smoke.md): 13/13 tests per process, three runs | Public Lua/bootstrap, automatic discovery, Unicode native paths and broader client qualification remain open |
 | ARM64 | Static Linux-musl bundle/checksum | Cross-build only; runtime qualification still required |
 
 Workspace host loading has seven focused Lua tests plus real >16 KiB paged reads
@@ -146,9 +146,11 @@ Uncompressed source patch SHA-256:
 
 **Release decision:** fs/exec implementation/checklist is complete for the verified
 Linux/interop scope above, independently of PTY rollout. This is not universal
-client/platform approval. Real Docker, native Windows client and ARM64 execution
-remain explicitly unverified; no PTY performance result blocks the verified
-fs/exec scope. Installed local agent remains ReleaseSafe; native/WSL pane defaults
+client/platform approval. Real Docker, native Windows public-Lua/bootstrap clients
+and ARM64 execution remain explicitly unverified. Subsequent native Windows
+dispatcher smoke is scoped separately above; the original release report retains
+its historical exclusions. No PTY performance result blocks verified fs/exec.
+Installed local agent remains ReleaseSafe; native/WSL pane defaults
 unchanged. No push, tag, release publication or hosted CI success is claimed.
 The initial run preceded final argument/driver-test refinements; only the final
 run is authoritative for final source hashes. Missing system LuaJIT dependencies
