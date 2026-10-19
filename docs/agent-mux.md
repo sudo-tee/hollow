@@ -27,12 +27,15 @@ one pane to completion first.
 
 These are **local Linux transport-only diagnostics**, including the Python
 driver's framing/credit overhead, not GUI rendering or remote connector
-qualification. Echo is measured before bulk traffic, not under output floods.
+qualification. Default `--workload bulk` measures idle echo before bulk traffic;
+`--workload mixed` measures focused echo under sustained output floods, as
+described below (with flood counts and CPU, not the bulk mode's RSS snapshot).
 Agent RSS is a live snapshot, not peak RSS or total shell-tree RSS. CPU covers
 startup, echo, bulk, and teardown, not bulk alone. Use `--build-mode` to record
 the build mode (it is not autodetected);
 OS caches and external host load are uncontrolled. Full peak-memory and
-connection-wide queue accounting, mixed-load echo latency, warm shared-connection spawn measurements, remote
+connection-wide queue accounting, broader mixed-load qualification,
+warm shared-connection spawn measurements, remote
 paths, and agreed numerical release budgets remain outstanding. No parity
 claim follows from these measurements.
 
@@ -222,6 +225,91 @@ multi-pane parity is still not met.** These are idle echo measurements, not
 mixed-load latency qualification. No default changes follow from this table.
 Full data: `/tmp/opencode/hollow-mux-pool-comparison.jsonl`.
 
+### Focused echo under sustained floods
+
+The next investigation added `--workload mixed` to the same client. One raw-mode
+child echoes single-byte keystrokes; all other children continuously write
+64 KiB blocks. The client selects the echo stream as focused, drains for a
+50 ms warmup, then sends one keystroke at a time with 5 ms between completed
+echoes, while continuing to drain floods. Timing starts before input submission
+and ends when the actual echo frame is consumed. Flood bytes are checked and
+counted independently for every background stream; all must make progress.
+Results exclude teardown, terminal parsing/rendering, and real connector paths.
+
+```sh
+HOLLOW_MUX_READ_WORKERS=4 python3 scripts/agent_mux.py \
+  --workload mixed --panes 4 16 32 --samples 100 --runs 3 --build-mode ReleaseFast
+```
+
+The checkpoint's focus hint only doubled byte quantum: focused reads still
+waited behind the background round-robin cursor. With 32 panes this produced
+31.345 ms inline p99 despite sub-millisecond idle echo. Worker offload reduced
+but did not eliminate that scheduling delay.
+
+The scheduler now alternates a focus-first read turn with background byte DRR.
+The priority turn does **not** advance the background cursor. Continuous focused
+output cannot prevent background turns: with full byte quanta, all 31 background
+streams are selected within 62 decisions, even if focus is always ready.
+Partial focused reads do not consume background deficit. Existing per-turn
+time/byte bounds, pool capacity, stream windows, and staging limits are unchanged.
+This is read scheduling priority, not an ability to bypass already staged wire
+bytes or in-flight read jobs. Ready worker results still rotate fairly.
+
+Local WSL2 / ReleaseFast, three-run medians of 100-sample p99 input-to-echo
+latency (milliseconds); variants reversed on alternating runs:
+
+| Panes | Dedicated control, after | Inline before → after | 2 readers before → after | 4 readers before → after |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 0.790 | 11.146 → 0.793 | 1.261 → 0.994 | 0.803 → 0.846 |
+| 16 | 5.177 | 19.240 → 0.967 | 3.279 → 0.811 | 3.547 → 0.791 |
+| 32 | 3.983 | 31.345 → 0.887 | 6.147 → 1.087 | 8.365 → 0.890 |
+
+Background throughput did not collapse to obtain those latencies. At 32 panes,
+median aggregate flood throughput before/after was 88.0/89.4 MiB/s inline,
+118.6/119.7 with two readers, and 186.3/222.2 with four readers. Dedicated
+control measured 266.4/277.0 MiB/s. These are separate before/after passes, not
+paired binaries, and throughput remains noisy; latency change is the strong
+signal. A hundred samples and three runs do not qualify long-tail latency on
+all supported connectors. Numerical release budgets remain undecided.
+
+A follow-up with **1,000 echoes per run**, 32 panes, three runs, and the final
+focus-first binary confirmed the improvement over longer local intervals:
+
+| Backend | Median p50 / p95 / p99 (ms) | Worst individual echo (ms) | Median flood MiB/s |
+| --- | ---: | ---: | ---: |
+| Dedicated | 0.405 / 1.518 / 2.702 | 9.557 | 375.0 |
+| Inline mux | 0.569 / 0.812 / 0.991 | 5.025 | 89.5 |
+| Four-reader mux | 0.411 / 0.733 / 1.006 | 5.127 | 231.5 |
+
+Every background stream progressed in every run; minimum bytes per background
+stream across those runs were 56.2 MiB dedicated, 13.9 MiB inline, and 40.8 MiB
+with four readers. Raw data: `/tmp/opencode/hollow-mux-mixed-longer.jsonl`.
+The individual maxima also show why p99 near 1 ms is not a hard latency bound.
+
+Raw local results: `/tmp/opencode/hollow-mux-mixed-before.jsonl` and
+`/tmp/opencode/hollow-mux-mixed-focus-first.jsonl`. Functional benchmark smoke
+coverage checks actual echoes and every flood's progress without asserting
+machine-dependent latency thresholds. Deterministic scheduler tests assert
+focus/background interleaving, full-round coverage, partial-read accounting,
+and focus-only/idle behavior.
+
+Two controlled follow-up ablations were **not retained**. Both used alternating
+old/new binaries, three runs, 8 MiB/pane, and the focus-first scheduler:
+
+- Increasing background read jobs from 32 to 64 KiB: two-reader throughput
+  improved modestly (32 panes: 123.8 → 131.4 MiB/s), but four-reader results were
+  inconsistent (16 panes: 243.0 → 233.1; 32 panes: 227.7 → 242.1). Mixed-load
+  four-reader p99 rose slightly (1.079 → 1.187 ms). Kept smaller jobs.
+- Borrowing masters with deferred close instead of duplicating each job's FD:
+  most throughput results barely changed (32 panes, four readers:
+  231.4 → 233.2 MiB/s; mixed flood: 230.5 → 230.6). Kept duplicated descriptors
+  and their simpler cancellation/isolation contract; no broad measured benefit
+  justified changing ownership.
+
+Data: `/tmp/opencode/hollow-mux-pool-quantum-ablation.jsonl` and
+`/tmp/opencode/hollow-mux-pool-descriptor-ablation.jsonl`. Single-pane worker
+handoff regression and the multi-pane throughput gap remain unresolved.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:
@@ -254,7 +342,7 @@ before the reply invalidate the connection. Negotiation has a 10-second deadline
 | 6 exit | agent → client | nonzero | Exit code:u32 LE; signal exits use 128 + signal |
 | 7 error | agent → client | nonzero | UTF-8 diagnostic error name |
 | 11 credit | either direction | nonzero | Additional byte credit:u32 LE |
-| 12 focus | client → agent | nonzero | Empty; select this stream for doubled byte quantum |
+| 12 focus | client → agent | nonzero | Empty; select focus-first scheduling and doubled byte quantum |
 
 Spawn IDs must strictly increase, including failed spawns. Never reuse an ID;
 start another connection before u32 exhaustion. Zero is connection-only.
@@ -299,6 +387,9 @@ removes that PTY from read polling, without blocking other streams or control
 traffic. A blocked input consumer fills only its own input window.
 
 Byte deficit round robin uses a 16 KiB quantum, doubled for the focused stream.
+Focus-first selections alternate with background selections without moving the
+background cursor; focused traffic therefore need not wait for a complete
+background round, while background byte progress remains bounded.
 The optional reader pool instead assigns bounded 32/64 KiB byte read jobs and
 rotates their ready results; it is not yet a qualified replacement for the
 inline scheduler's latency behavior.

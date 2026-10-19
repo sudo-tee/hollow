@@ -74,20 +74,39 @@ const Stream = struct {
     }
 };
 
-/// Byte deficit round robin. Focus receives twice the byte quantum; unused
-/// deficit never accumulates beyond one turn. A frame never exceeds max_data.
+/// Background byte DRR with alternating focus-first turns. Focus receives
+/// twice the byte quantum; unused deficit never accumulates beyond one turn.
+/// Priority turns preserve the background cursor. Frames never exceed max_data.
 const Scheduler = struct {
     cursor: usize = 0,
     deficit: [p.max_streams]usize = .{0} ** p.max_streams,
+    focus_pending: bool = true,
+    priority_slot: ?usize = null,
 
     fn choose(self: *Scheduler, ready: [p.max_streams]bool, focused: ?usize) ?usize {
+        self.priority_slot = null;
+        // A focused echo must not wait behind every bulk stream. Alternate a
+        // focus-first turn with normal background DRR; never move the background
+        // cursor for that priority turn, so a flooding focus cannot starve it.
+        if (focused) |i| {
+            if (ready[i] and self.focus_pending) {
+                self.focus_pending = false;
+                self.priority_slot = i;
+                if (self.deficit[i] == 0) self.deficit[i] = p.max_data * 2;
+                return i;
+            }
+        }
+        var background = ready;
+        if (focused) |i| background[i] = false;
+        const has_background = std.mem.indexOfScalar(bool, &background, true) != null;
         for (0..p.max_streams) |_| {
             const i = self.cursor;
-            if (!ready[i]) {
+            if (!ready[i] or (has_background and focused == i)) {
                 self.deficit[i] = 0;
                 self.cursor = (i + 1) % p.max_streams;
                 continue;
             }
+            self.focus_pending = true;
             if (self.deficit[i] == 0) self.deficit[i] = p.max_data * @as(usize, if (focused == i) 2 else 1);
             return i;
         }
@@ -96,6 +115,10 @@ const Scheduler = struct {
 
     fn used(self: *Scheduler, i: usize, count: usize) void {
         self.deficit[i] -= count;
+        if (self.priority_slot == i) {
+            if (count == 0) self.deficit[i] = 0;
+            return;
+        }
         if (self.deficit[i] == 0 or count == 0) {
             self.deficit[i] = 0;
             self.cursor = (i + 1) % p.max_streams;
@@ -620,7 +643,7 @@ test "byte scheduler bounds focused preference and guarantees background progres
     var ready = [_]bool{false} ** p.max_streams;
     ready[0] = true;
     ready[1] = true;
-    const expected = [_]usize{ 0, 0, 1, 0, 0, 1 };
+    const expected = [_]usize{ 0, 1, 0, 1, 0, 1 };
     for (expected) |i| {
         try std.testing.expectEqual(i, scheduler.choose(ready, 0).?);
         scheduler.used(i, p.max_data);
@@ -642,16 +665,46 @@ test "scheduler accounts partial reads by bytes and drops idle deficit" {
     try std.testing.expectEqual(@as(usize, 0), scheduler.deficit[0]);
 }
 
-test "scheduler serves every background stream within one weighted round" {
+test "focus-first turns preserve every background position within bounded round" {
     var scheduler: Scheduler = .{};
     const ready = [_]bool{true} ** p.max_streams;
     var counts = [_]usize{0} ** p.max_streams;
-    for (0..p.max_streams + 1) |_| {
+    for (0..2 * (p.max_streams - 1)) |turn| {
         const i = scheduler.choose(ready, 17).?;
+        if (turn % 2 == 0) try std.testing.expectEqual(@as(usize, 17), i);
         counts[i] += 1;
         scheduler.used(i, p.max_data);
     }
-    for (counts, 0..) |count, i| try std.testing.expectEqual(@as(usize, if (i == 17) 2 else 1), count);
+    for (counts, 0..) |count, i| try std.testing.expectEqual(@as(usize, if (i == 17) p.max_streams - 1 else 1), count);
+}
+
+test "partial focused reads do not move background cursor or spend its deficit" {
+    var scheduler: Scheduler = .{};
+    var ready = [_]bool{false} ** p.max_streams;
+    ready[0] = true;
+    ready[31] = true;
+    try std.testing.expectEqual(@as(usize, 31), scheduler.choose(ready, 31).?);
+    scheduler.used(31, 1);
+    try std.testing.expectEqual(@as(usize, 0), scheduler.cursor);
+    try std.testing.expectEqual(@as(usize, 0), scheduler.choose(ready, 31).?);
+    scheduler.used(0, 123);
+    try std.testing.expectEqual(@as(usize, 31), scheduler.choose(ready, 31).?);
+    scheduler.used(31, 1);
+    try std.testing.expectEqual(@as(usize, p.max_data - 123), scheduler.deficit[0]);
+    try std.testing.expectEqual(@as(usize, 0), scheduler.choose(ready, 31).?);
+}
+
+test "focus-only and no-ready scheduling remain live without background work" {
+    var scheduler: Scheduler = .{};
+    var ready = [_]bool{false} ** p.max_streams;
+    try std.testing.expect(scheduler.choose(ready, 31) == null);
+    ready[31] = true;
+    for (0..8) |_| {
+        try std.testing.expectEqual(@as(usize, 31), scheduler.choose(ready, 31).?);
+        scheduler.used(31, p.max_data);
+    }
+    ready[31] = false;
+    try std.testing.expect(scheduler.choose(ready, 31) == null);
 }
 
 test {

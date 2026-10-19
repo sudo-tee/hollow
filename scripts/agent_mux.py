@@ -264,6 +264,100 @@ def benchmark(command, mode, panes, size, samples, credit_batch=WINDOW // 2):
     return result
 
 
+def mixed_benchmark(command, mode, panes, samples, credit_batch=WINDOW // 2):
+    """One focused echo stream against sustained, independently counted floods.
+
+    Drain throughout warmup and between keystrokes. Measure receipt of each
+    actual echo, including transport backlog, rather than send/enqueue latency.
+    """
+    clients = []
+    client_cpu = time.process_time()
+    child_cpu = resource.getrusage(resource.RUSAGE_CHILDREN)
+    try:
+        clients.append(Client(command, mode, credit_batch))
+        if mode == "pty":
+            for _ in range(panes - 1):
+                clients.append(Client(command, mode, credit_batch))
+        streams = [(clients[0] if mode == "mux" else clients[i], i + 1 if mode == "mux" else 1) for i in range(panes)]
+        focused = streams[-1]
+        floods = streams[:-1]
+        for client, sid in streams:
+            action = (
+                "exec('while True:\\n b=os.read(0,1); os.write(1,b)')"
+                if (client, sid) == focused else
+                "os.read(0,1); data=b'x'*65536; exec('while True:\\n os.write(1,data)')"
+            )
+            client.spawn(sid, ["python3", "-c", "import os,tty; tty.setraw(0); os.write(1,b'READY'); " + action], cols=80, rows=24)
+        pending = {key: bytearray() for key in streams}
+        while pending:
+            client, (kind, sid, body) = pump(clients)
+            if kind == ERROR:
+                raise RuntimeError(body.decode())
+            if kind == OUTPUT:
+                pending[client, sid].extend(body)
+                if pending[client, sid] == b"READY":
+                    del pending[client, sid]
+        if mode == "mux":
+            focused[0].send(FOCUS, focused[1])
+        for client, sid in floods:
+            client.input(sid, b"g")
+        counts = {key: 0 for key in floods}
+        echoes = []
+        started = time.perf_counter()
+        next_send = started + .05  # Drain/warm up sustained floods first.
+        sent = None
+        deadline = started + max(10, samples * .1)
+        while len(echoes) < samples:
+            now = time.perf_counter()
+            if now >= deadline:
+                raise TimeoutError("mixed-load echo deadline exceeded")
+            if sent is None and now >= next_send:
+                sent = time.perf_counter()
+                focused[0].input(focused[1], b"q")
+            # Idle interval also serves the transport. Without floods there is
+            # nothing to pump until the next keystroke is due.
+            if not floods and sent is None:
+                time.sleep(max(0, next_send - now))
+                continue
+            client, (kind, sid, body) = pump(clients, min(5, deadline - now))
+            key = client, sid
+            if kind == ERROR:
+                raise RuntimeError(body.decode())
+            if kind == EXIT:
+                raise RuntimeError("workload exited before measurement finished")
+            if kind == OUTPUT:
+                if key == focused:
+                    assert sent is not None and body == b"q", body
+                    received = time.perf_counter()
+                    echoes.append((received - sent) * 1000)
+                    sent = None
+                    next_send = received + .005
+                else:
+                    assert body == b"x" * len(body)
+                    counts[key] += len(body)
+        elapsed = time.perf_counter() - started
+        assert all(count > 0 for count in counts.values()), counts
+        result = dict(
+            mode=mode, workload="focused echo under sustained floods", panes=panes,
+            mux_read_workers=int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")) if mode == "mux" else 0,
+            samples=len(echoes), seconds=elapsed,
+            echo_ms=dict(p50=statistics.median(echoes), p95=percentile(echoes, .95), p99=percentile(echoes, .99), max=max(echoes)),
+            flood_bytes=list(counts.values()),
+            flood_mib_per_second=sum(counts.values()) / elapsed / 2**20,
+        )
+    finally:
+        # Abort infinite producers via transport EOF. Teardown time is excluded
+        # from the echo/flood interval (but included in CPU accounting).
+        for client in clients:
+            client.close()
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    result["agent_tree_cpu_seconds"] = usage.ru_utime + usage.ru_stime - child_cpu.ru_utime - child_cpu.ru_stime
+    result["client_cpu_seconds"] = time.process_time() - client_cpu
+    if any(client.diagnostics for client in clients):
+        result["mux_diagnostics"] = [client.diagnostics for client in clients]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", default="zig-out/bin/hollow-agent")
@@ -272,6 +366,8 @@ def main():
     parser.add_argument("--bytes", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--samples", type=int, default=25)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--workload", choices=["bulk", "mixed"], default="bulk",
+                        help="mixed measures focused echo while other panes continuously flood")
     parser.add_argument("--build-mode", default="unknown", help="record the agent's build mode in result metadata")
     parser.add_argument("--credit-batch", type=int, default=WINDOW // 2,
                         help="return mux output credit after this many consumed bytes (1 restores per-frame updates)")
@@ -284,7 +380,7 @@ def main():
         platform=platform.platform(), command=[args.agent], terminal=[80, 24],
         scope="local Linux transport only; no GUI parsing/rendering or network",
         build_mode=args.build_mode, state="cold agent per run; OS caches uncontrolled",
-        workload="idle sequential echo, then concurrent bulk output",
+        workload="idle sequential echo, then concurrent bulk output" if args.workload == "bulk" else "focused echo under sustained floods",
         credit_batch=args.credit_batch,
         mux_read_workers=int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")),
     ))), flush=True)
@@ -293,7 +389,10 @@ def main():
         for run in range(args.runs):
             # Alternate order to reduce systematic warm-cache bias.
             for mode in modes[::1 if run % 2 == 0 else -1]:
-                print(json.dumps(dict(run=run, **benchmark([args.agent], mode, panes, args.bytes, args.samples, args.credit_batch))), flush=True)
+                result = (benchmark([args.agent], mode, panes, args.bytes, args.samples, args.credit_batch)
+                          if args.workload == "bulk" else
+                          mixed_benchmark([args.agent], mode, panes, args.samples, args.credit_batch))
+                print(json.dumps(dict(run=run, **result)), flush=True)
 
 
 if __name__ == "__main__":
