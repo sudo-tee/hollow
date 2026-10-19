@@ -164,6 +164,10 @@ It uses headless Lua 5.1 C API, not production LuaJIT/GUI. Separate
 pass with a test-only HOME-isolating launcher across four layouts; direct-launcher
 cold installation, teardown cleanup and wider Windows qualification remain open.
 Pane backend unchanged.
+Follow-up [vendored LuaJIT checks](../../validation/2026-10-19-windows-luajit-bootstrap.md)
+repeat direct bootstrap, isolated cold/repair and missing-bundle cases with actual
+compiled JIT traces. Engine gap narrows; full application runtime/GUI, teardown
+and wider Windows qualification remain separate.
 
 ## SSH configuration
 
