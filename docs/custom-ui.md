@@ -233,11 +233,10 @@ The workspace switcher is a high-level widget built on
 hollow.ui.workspace.configure({
   prompt = "Workspaces",
   sources = {
-    { resolver = "local", roots = { "C:/code" } },
-    { resolver = "wsl",   domain = "UbuntuWSL", roots = { "/home/me/projects" } },
-    { resolver = "ssh",   domain = "tower", roots = { "/home/me/projects" } },
+    { roots = { "C:/code" } },
+    { host = { type = "wsl", distro = "Ubuntu" }, domain = "UbuntuWSL", roots = { "/home/me/projects" } },
+    { host = { type = "ssh", destination = "tower" }, domain = "tower", roots = { "/home/me/projects" } },
   },
-  project_roots = { "C:/code" },
   format_item = function(item)
     return {
       hollow.ui.span(item.is_active and "* " or "  "),
@@ -253,16 +252,11 @@ hollow.ui.workspace.rename()
 hollow.ui.workspace.close()
 ```
 
-Discovery sources:
-
-| Resolver | Behavior                                                   |
-| -------- | ---------------------------------------------------------- |
-| `local`  | Scans `roots` with `hollow.read_dir`                       |
-| `wsl`    | Lists directories through `wsl.exe`                        |
-| `ssh`    | Lists directories through `hollow.term.run_domain_process` |
-
-`cwd_resolver = "wsl_unc"` translates Windows UNC paths like
-`\\wsl$\Ubuntu\home\me\Projects` back to Linux paths before launching.
+Discovery always uses `host.fs.list/stat`. Equivalent host descriptors reuse a
+persistent connection; omitted hosts use native-local operations. Guest roots are
+guest-native paths, not UNC paths. The agent deploys automatically from Hollow's
+installed bundle. Legacy resolvers/UNC settings are converted in memory with a
+migration warning; see [migration details](reference/lua/workspace.md#migrating-legacy-configuration).
 
 ## See also
 

@@ -127,12 +127,22 @@ if [[ $INSTALL -eq 1 ]]; then
       exit 1
     fi
   done
+  for name in SHA256SUMS linux-x86_64/hollow-agent linux-aarch64/hollow-agent; do
+    if [[ ! -f "$SCRIPT_DIR/zig-out/agents/$name" ]]; then
+      echo "[launch] missing agent bundle file $name; run zig build agent-all before installing" >&2
+      exit 1
+    fi
+  done
   mkdir -p "$WINDOWS_APP_DIR"
   echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
   for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" \
     "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" "$GUI_LAUNCHER_PDB_NAME" \
     hollow-wsl-bypass hollow-cli; do
     copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
+  done
+  mkdir -p "$WINDOWS_APP_DIR/agents/linux-x86_64" "$WINDOWS_APP_DIR/agents/linux-aarch64"
+  for name in linux-x86_64/hollow-agent linux-aarch64/hollow-agent SHA256SUMS; do
+    copy_if_exists "$SCRIPT_DIR/zig-out/agents/$name" "$WINDOWS_APP_DIR/agents/$name"
   done
   # Keep on-disk Lua/config overrides available beside the relocated executable.
   mkdir -p "$WINDOWS_APP_DIR/src"

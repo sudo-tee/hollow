@@ -42,6 +42,10 @@ printf 'gui\n' > "$REPO/zig-out/bin/hollow-gui.exe"
 printf 'symbols\n' > "$REPO/zig-out/bin/hollow.pdb"
 printf 'lua\n' > "$REPO/src/lua/init.lua"
 printf 'config\n' > "$REPO/conf/init.lua"
+mkdir -p "$REPO/zig-out/agents/linux-x86_64" "$REPO/zig-out/agents/linux-aarch64"
+printf 'x86_64 agent\n' > "$REPO/zig-out/agents/linux-x86_64/hollow-agent"
+printf 'aarch64 agent\n' > "$REPO/zig-out/agents/linux-aarch64/hollow-agent"
+printf 'manifest\n' > "$REPO/zig-out/agents/SHA256SUMS"
 
 # CI must build without running or invoking Windows tools.
 bash "$REPO/launch.sh" --build-only
@@ -63,6 +67,9 @@ for name in hollow.exe hollow-native.exe hollow-gui.exe hollow.pdb; do
 done
 cmp "$REPO/src/lua/init.lua" "$INSTALL_DEST/src/lua/init.lua"
 cmp "$REPO/conf/init.lua" "$INSTALL_DEST/conf/init.lua"
+for name in SHA256SUMS linux-x86_64/hollow-agent linux-aarch64/hollow-agent; do
+  cmp "$REPO/zig-out/agents/$name" "$INSTALL_DEST/agents/$name"
+done
 ! grep -Eq 'powershell|^run |^build ' "$TEST_LOG"
 
 # Install-and-run uses the installed launcher; optional symbols may be absent.

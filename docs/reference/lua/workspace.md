@@ -36,7 +36,7 @@ HollowUiWorkspaceItem = {
   name = string,
   cwd = string | nil,
   domain = string | nil,
-  source = "open" | "user" | "local" | "wsl" | "ssh",
+  source = "open" | "user" | "host",
   is_active = boolean,
   is_open = boolean,
   has_bell = boolean,
@@ -63,14 +63,13 @@ hollow.ui.workspace.configure({
   theme = { ... },
 
   cache_ttl_ms = 5000,
-  project_roots = { "C:/code" },
 
   known_workspaces = function() return { ... } end,
   sources = {
     { host = connected_host, roots = { "/home/me/projects" } },
-    { resolver = "local", domain = "pwsh", roots = { "C:/code" } },
-    { resolver = "wsl",   domain = "UbuntuWSL",  roots = { "/home/me/projects" } },
-    { resolver = "ssh",   domain = "tower", roots = { "/home/me/projects" } },
+    { domain = "pwsh", roots = { "C:/code" } }, -- native-local host by default
+    { host = { type = "wsl", distro = "Ubuntu" }, domain = "UbuntuWSL", roots = { "/home/me/projects" } },
+    { host = { type = "ssh", destination = "tower" }, domain = "tower", roots = { "/home/me/projects" } },
   },
 
   format_item = function(workspace) return { ... } end,
@@ -93,42 +92,80 @@ directly.
 
 ## Sources
 
-Each source declares how its items are discovered:
+All directory discovery uses asynchronous `host.fs.list/stat`, including local
+sources. The workspace manager does not run `ls`, spawn WSL/SSH commands per scan,
+or probe guest paths through the local filesystem.
 
 ```lua
 {
-  resolver = "local" | "wsl" | "ssh",
-  host = ready_host,                   -- optional hollow.host; overrides resolver
+  host = { type = "wsl", distro = "Ubuntu" }, -- or an already-ready hollow.host
   name = "Ubuntu",                    -- optional
   domain = "UbuntuWSL",                     -- the domain new panes open in
   roots = { "/home/me/projects" },
   items = function() return { ... } end,    -- optional, merged with roots
-  cwd_resolver = "wsl_unc" | function(cwd, item, source) ... end,
   default = false,
 }
 ```
 
-| Resolver | Behavior                                                                         |
-| -------- | -------------------------------------------------------------------------------- |
-| `local`  | Scans `roots` with `hollow.read_dir(...)`                                        |
-| `wsl`    | Runs `wsl.exe` and lists child directories                                       |
-| `ssh`    | Uses `hollow.term.run_domain_process(...)` to list directories on the SSH domain |
-| `host`   | When `host` is supplied, scans through `host.fs.list/stat` asynchronously |
+Descriptors support `type = "local" | "wsl" | "ssh" | "podman" | "docker"`.
+Guest descriptors accept the corresponding [`hollow.host`](host.md) connector
+options, with optional `id` (allocated automatically when omitted). Omitted `host`
+uses the shared native-local host, except when converting legacy guest settings.
+An explicit host takes precedence over legacy resolver/domain inference.
 
-`host` must be a ready `hollow.host` object. Host-backed roots and returned
+Equivalent descriptors share one pending/ready connection across sources and
+refreshes. The manager closes owned guest connections when their last source is
+removed; it never closes caller-supplied ready hosts or the shared native-local
+host. Merely clearing discovery caches does not close a healthy connection.
+Disabled sources (`default = false`) and sources without roots do not connect.
+
+Guest bootstrap automatically deploys the bundled Linux agent into the selected
+guest user's versioned cache, or verifies/reuses an existing copy. The bundle must
+be installed with Hollow; nothing is downloaded. Native-local operations need no
+agent process. WSL distributions and containers must already exist (containers
+must be running), SSH trust/authentication must already be configured, and required
+guest utilities are not installed. Connector/platform qualification remains as
+documented in [`hollow.host`](host.md); making discovery host-first does not
+qualify additional platforms or switch any terminal PTY backend.
+
+Failed connections produce a warning and never fall back to local/shell scanning.
+After fixing configuration/connectivity, `clear_cache()` explicitly retries failed
+or disconnected managed hosts. Polling and force-refresh never silently reconnect
+or replay commands. Caller-owned hosts require caller-managed reconnect.
+
+Host-backed roots and returned
 names are passed through as exact byte strings; they are not trimmed, converted
 from WSL UNC paths, or probed with local filesystem/process APIs. Listing is
 paginated (256 entries per page, at most 4096 entries per root) and directory
 checks are limited to four concurrent `stat` requests. `known_workspaces()`
 and `items()` stay synchronous: while a scan is pending, they return cached
-results and later refresh after completion. `host` takes precedence over
-`resolver`, while resolver settings remain available for sources without a
-host. `cwd_resolver` remains an explicit policy and may still transform a host
-item's cwd when configured.
+results and later refresh after completion, including in an already-open picker.
+The terminal `domain` is independent: it controls where new panes open, not how
+files are accessed. Existing project layout/bootstrap/export APIs are unchanged.
 
-`cwd_resolver = "wsl_unc"` is useful when picker items come from
-Windows UNC paths like `\\wsl$\Ubuntu\home\me\Projects` but the
-launched shell should `cd` to the Linux-side path.
+### Migrating legacy configuration
+
+`resolver`, `cwd_resolver`, and `project_roots` are deprecated. A temporary adapter
+converts unambiguous settings **in memory**, logs a migration warning and shows it
+once per legacy source per runtime. It never rewrites user Lua files. Conversion
+to a guest host may deploy the bundled agent; the warning explicitly says so.
+
+* WSL UNC roots (`\\wsl$\Ubuntu\...` / `\\wsl.localhost\Ubuntu\...`) select
+  that explicit distribution and become Linux paths. Mixed distributions, mixed
+  UNC/native roots, and mismatched domains are rejected; split them into sources.
+* `resolver = "wsl"` uses a structured domain's `wsl_distro`, or the legacy explicit
+  distro in `name`. `resolver = "ssh"` requires a structured native SSH domain with
+  `ssh.alias` or `ssh.host`; it never parses arbitrary shell commands or silently
+  changes a WSL-routed SSH client's credential/trust environment.
+* Legacy sources without an explicit host can use structured guest domain settings;
+  a plain local source uses the native-local host. `project_roots` becomes an implicit
+  source when `known_workspaces` is not supplied.
+* `cwd_resolver = "wsl_unc"` and custom callbacks run only in the compatibility
+  adapter. New configurations should provide host-native paths directly.
+
+Ambiguous sources are disabled with an actionable warning, never guessed. This
+adapter is transitional, not a second discovery backend; update configuration now
+before a future breaking removal.
 
 ## Discovery and caching
 
@@ -234,18 +271,17 @@ hollow.ui.topbar.mount(hollow.ui.topbar.new({
 
 ## Examples
 
-WSL source with UNC paths:
+Persistent WSL source with Linux paths:
 
 ```lua
 hollow.ui.workspace.configure({
   sources = {
     {
       name = "Ubuntu",
-      resolver = "local",   -- not "wsl" if roots are UNC paths
+      host = { type = "wsl", distro = "Ubuntu" },
       domain = "UbuntuWSL",
-      cwd_resolver = "wsl_unc",
       roots = {
-        "\\\\wsl$\\Ubuntu\\home\\me\\Projects",
+        "/home/me/Projects",
       },
     },
   },

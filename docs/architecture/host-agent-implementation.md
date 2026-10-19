@@ -122,9 +122,13 @@ DRR, split lanes and rollout/resource/platform gates remain open.
   `hollow.host` Lua promises for explicit subprocess connectors. Native/Lua
   end-to-end tests run the same contract locally and through rootless Podman.
 * PR 3 continuation: native-local fs/exec workers exposed as
-  `hollow.host.local_host()`, plus opt-in asynchronous workspace directory
-  discovery through `source.host` and bounded, cancellable `workspace.load_host`
-  reads. Legacy resolver aliases and synchronous local loading remain operational.
+  `hollow.host.local_host()`, plus asynchronous workspace directory discovery
+  through `source.host` and bounded, cancellable `workspace.load_host` reads.
+  Discovery is now host-first by default: ready hosts or declarative connector
+  descriptors share persistent connections; local roots also use host operations.
+  Legacy resolver/UNC configuration is converted by a separate compatibility
+  adapter with migration/deployment warnings, not legacy scanning backends.
+  Synchronous local workspace loading remains unchanged.
 * PR 3 Podman continuation: Lua-side production bootstrap for existing containers,
   configured per-architecture artifacts and expected checksums, or a preinstalled
   executable. All remote operations still use the existing persistent transport.

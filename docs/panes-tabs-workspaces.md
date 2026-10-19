@@ -53,7 +53,7 @@ The active workspace is the one your new tabs land in.
 
 The discovery surface is `hollow.ui.workspace.configure(...)`.
 See [Workspace switcher](reference/lua/workspace.md) for picker options
-like `sources`, `project_roots`, `cache_ttl_ms`, `format_item`, and
+like host-backed `sources`, `cache_ttl_ms`, `format_item`, and
 `filter_item`.
 
 ## Tabs

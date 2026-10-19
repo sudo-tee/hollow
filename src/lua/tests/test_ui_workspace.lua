@@ -18,15 +18,24 @@ describe("UI workspace test suite", function()
 
   describe("workspace switcher", function()
     it("configures switcher sources", function()
+      local function resolved(value)
+        return { next = function(_, ok) ok(value) end }
+      end
+      local host = { id = "workspace-test", generation = "g1", fs = {
+        list = function()
+          return resolved({ entries = { { name = "alpha" }, { name = "_scratch" } }, eof = true })
+        end,
+        stat = function() return resolved({ kind = "directory" }) end,
+      } }
       hollow.ui.workspace.configure({
         cache_ttl_ms = 0,
         sources = {
           {
             name = "Ubuntu",
             domain = "main",
-            cwd_resolver = "wsl_unc",
+            host = host,
             roots = {
-              "\\\\wsl$\\Ubuntu\\home\\francis\\Projects",
+              "/home/francis/Projects",
             },
           },
         },
@@ -37,12 +46,14 @@ describe("UI workspace test suite", function()
       })
     end)
 
-    it("includes open workspaces and UNC-scanned roots", function()
-      local workspace_items = hollow.ui.workspace.items(true)
+    it("includes open workspaces and agent-scanned roots", function()
+      hollow.ui.workspace.items(true)
+      env.flush_deferred()
+      local workspace_items = hollow.ui.workspace.items()
       harness.assert_equal(
         #workspace_items,
         2,
-        "workspace switcher should include open workspaces and UNC-scanned roots"
+        "workspace switcher should include open workspaces and agent-scanned roots"
       )
       harness.assert_equal(
         workspace_items[1].name,
@@ -57,12 +68,12 @@ describe("UI workspace test suite", function()
       harness.assert_equal(
         workspace_items[2].name,
         "alpha",
-        "workspace switcher should keep UNC root entries without per-item path stats"
+        "workspace switcher should keep host directory entries"
       )
       harness.assert_equal(
         workspace_items[2].cwd,
         "/home/francis/Projects/alpha",
-        "workspace switcher should still resolve UNC cwd for launch"
+        "workspace switcher should preserve guest-native cwd for launch"
       )
     end)
 

@@ -167,11 +167,10 @@ hollow.ui.workspace.configure({
   sources = {
     {
       name = "Ubuntu",
-      resolver = "local",
+      host = { type = "wsl", distro = "Ubuntu" },
       domain = "UbuntuWSL",
-      cwd_resolver = "wsl_unc",
       roots = {
-        "\\\\wsl$\\Ubuntu\\home\\me\\Projects",
+        "/home/me/Projects",
       },
     },
   },

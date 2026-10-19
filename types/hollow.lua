@@ -1794,14 +1794,35 @@ function select.close() end
 ---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer
 
+---@class HollowWorkspaceLocalHost
+---@field type "local"
+
+---@class HollowWorkspaceWslHost: HollowWslHostOpts
+---@field type "wsl"
+---@field id? string Automatically allocated when omitted
+
+---@class HollowWorkspaceSshHost: HollowSshHostOpts
+---@field type "ssh"
+---@field id? string Automatically allocated when omitted
+
+---@class HollowWorkspacePodmanHost: HollowPodmanHostOpts
+---@field type "podman"
+---@field id? string Automatically allocated when omitted
+
+---@class HollowWorkspaceDockerHost: HollowDockerHostOpts
+---@field type "docker"
+---@field id? string Automatically allocated when omitted
+
+---@alias HollowWorkspaceHostDescriptor HollowWorkspaceLocalHost|HollowWorkspaceWslHost|HollowWorkspaceSshHost|HollowWorkspacePodmanHost|HollowWorkspaceDockerHost
+
 ---@class HollowUiWorkspaceSource
----@field resolver? "local"|"wsl"|"ssh"
----@field host? HollowAgentHost Ready host; async host.fs discovery overrides legacy resolver
+---@field resolver? "local"|"wsl"|"ssh" Deprecated; converted in memory with migration warning
+---@field host? HollowAgentHost|HollowWorkspaceHostDescriptor Persistent discovery host; omitted uses native-local unless migrating an unambiguous legacy guest source
 ---@field name? string
 ---@field domain? string
 ---@field roots? string[]
 ---@field items? fun(): HollowUiWorkspaceItem[]|table[]|nil
----@field cwd_resolver? "wsl_unc"|fun(cwd: string, item: HollowUiWorkspaceItem, source: HollowUiWorkspaceSource): string|nil
+---@field cwd_resolver? "wsl_unc"|fun(cwd: string, item: HollowUiWorkspaceItem, source: HollowUiWorkspaceSource): string|nil Deprecated compatibility transform; use host-native paths
 ---@field default? boolean
 
 ---@class HollowUiWorkspaceSwitcherOptions
@@ -1818,7 +1839,7 @@ function select.close() end
 ---@field filter_item? fun(workspace: HollowUiWorkspaceItem): boolean|nil
 ---@field cache_ttl_ms? integer
 ---@field force_refresh? boolean
----@field project_roots? string[]
+---@field project_roots? string[] Deprecated; use sources[].roots
 ---@field status_column_width? integer
 ---@field name_column_width? integer
 ---@field column_gap? integer

@@ -1,4 +1,5 @@
 local source = require("hollow.ui.workspace.source")
+local project = require("hollow.workspace.project")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -48,37 +49,7 @@ local function send_cwd_to_active_workspace(cwd)
 end
 
 local function bootstrap_project_on_complete(cwd, domain)
-  cwd = trim_string(cwd)
-  if cwd == "" then
-    return nil
-  end
-
-  return function(result)
-    if result == nil or result.success ~= true then
-      return
-    end
-
-    local config = hollow.config.snapshot()
-    local domain_config = (config.domains or {})[domain]
-    local pane = type(domain_config) == "table"
-      and domain_config.wsl_distro ~= nil
-      and hollow.term.current_pane()
-    if not pane then
-      hollow.workspace.bootstrap_project(cwd, domain)
-      return
-    end
-
-    hollow.log("Waiting for WSL cwd resolution before workspace bootstrap: " .. cwd)
-    local handle
-    handle = hollow.events.on("term:cwd_changed", function(event)
-      if event.pane == nil or event.pane.id ~= pane.id then
-        return
-      end
-      hollow.events.off(handle)
-      hollow.log("Bootstrapping workspace from resolved WSL cwd: " .. event.new_cwd)
-      hollow.workspace.bootstrap_project(event.new_cwd, domain)
-    end)
-  end
+  return project.on_complete(trim_string(cwd), domain)
 end
 
 local function open_new_workspace_from_item(item)

@@ -141,28 +141,26 @@ See [`hollow.config` → SSH domains](../reference/lua/config.md#ssh-domains).
 
 ### WSL workspace discovery
 
-If you want the workspace switcher to find projects under a WSL path
-but launch them as Linux-side cwds, use a `wsl_unc` `cwd_resolver`:
+Use a persistent agent host and Linux-native project paths:
 
 ```lua
 hollow.ui.workspace.configure({
   sources = {
     {
       name = "Ubuntu",
-      resolver = "local",   -- not "wsl": we want to read Windows UNC paths
+      host = { type = "wsl", distro = "Ubuntu" },
       domain = "UbuntuWSL",
-      cwd_resolver = "wsl_unc",
       roots = {
-        "\\\\wsl$\\Ubuntu\\home\\me\\Projects",
+        "/home/me/Projects",
       },
     },
   },
 })
 ```
 
-`wsl_unc` translates `\\wsl$\Ubuntu\home\me\Projects\foo` to
-`/home/me/Projects/foo` so the launched shell starts in the right
-place.
+The bundled agent auto-deploys into the selected distro user's cache. Scans reuse
+one connection; terminal panes still use `UbuntuWSL`. Legacy UNC configurations
+are converted in memory with a warning; update them using the example above.
 
 ## Environment propagation
 
@@ -225,7 +223,7 @@ If that happens, return to NAT networking and let `hollow-cli` use its OSC fallb
 | `wsl.exe not found`                     | Install WSL with `wsl --install` from elevated PowerShell                                                                                                                                                               |
 | Bypass helper does not activate         | Check `hollow.log` for `wsl bootstrap failed` — the auto-deploy fell back to ConPTY. The `hollow-wsl-bypass` binary must be alongside `hollow-native.exe`. During development, `zig build` places it in `zig-out/bin/`. |
 | Wrong distro launches                   | Set the `wsl_distro` field on the domain or use the `{distro}WSL` domains populated by `populate_wsl_domains()`                                                                                                         |
-| `cwd` reports a Windows path inside WSL | Use `cwd_resolver = "wsl_unc"` in the workspace source, or pass a Linux `cwd` to `new_tab`/`split_pane`                                                                                                                 |
+| `cwd` reports a Windows path inside WSL | Use an agent-backed workspace source with Linux roots, or pass a Linux `cwd` to `new_tab`/`split_pane` |
 
 ## See also
 
