@@ -36,7 +36,7 @@ pub const SharedConnection = struct {
         return createWithOptions(allocator, argv, wake, .{ .telemetry = telemetry });
     }
 
-    pub const Options = struct { telemetry: bool = false, experimental_focus: bool = false };
+    pub const Options = struct { telemetry: bool = false, experimental_focus: bool = false, experimental_deficit: bool = false };
     pub fn createWithOptions(allocator: std.mem.Allocator, argv: []const []const u8, wake: Wake, options: Options) !*SharedConnection {
         const self = try allocator.create(SharedConnection);
         errdefer allocator.destroy(self);
@@ -46,6 +46,7 @@ pub const SharedConnection = struct {
             .notify = wake.callback,
             .telemetry = options.telemetry,
             .experimental_focus = options.experimental_focus,
+            .experimental_deficit = options.experimental_deficit,
         }) };
         return self;
     }

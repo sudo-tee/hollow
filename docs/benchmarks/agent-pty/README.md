@@ -26,6 +26,10 @@ rollout; default E1 still has failed individual current/prior comparisons.
 The [separate bulk-agent topology](2026-10-19-split-bulk.md) compares flat/focus
 shared PTYs with co-located versus independently connected fs/exec. It spends a
 second agent process/transport, not same-agent priority lanes; defaults stay put.
+The [hierarchical byte-deficit experiment](2026-10-19-deficit-scheduler.md) adds
+independent DRR negotiation and actual scheduled-wire-byte charging alongside
+weighted visits, preserving metadata retries and zero-credit isolation. Byte
+proportions in deterministic tests are not wall-time or native-platform QoS.
 
 **Update:** [profiling and throughput fixes](2026-10-18-throughput-fix.md) bring
 local dedicated-agent throughput to roughly 98% / 101% of native medians at

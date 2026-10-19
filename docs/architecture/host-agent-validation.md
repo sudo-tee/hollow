@@ -180,6 +180,27 @@ native Windows/actual WSL bypass remain untested here. No default E1 repeat is
 claimed for this benchmark-only change; latest failed default pairs remain open.
 No new agent protocol, production routing, DRR or same-agent priority lane exists.
 
+## 2026-10-19 hierarchical byte-deficit prototype
+
+The [DRR report](../benchmarks/agent-pty/2026-10-19-deficit-scheduler.md) preserves
+**154** validated measurements: 96 loaded, 54 default E1 and four smoke cases.
+All **16** final runner source hashes reconstruct on `ef8410c`. DRR passes 12/12
+round-matched local +5 ms pairs, current weighted visits 10/12 and frozen prior
+11/12. DRR stalled/mixed foreground output falls **11.6%** versus current WRR;
+improved EXEC completion is not a free foreground/background benefit. Default E1
+still fails one of 12 current/native throughput pairs (91.98%), and one prior
+pair (83.97%). Failed comparisons remain distinct from untested release gates.
+
+Local ReleaseSafe validation passes **159** standalone native executions, **91**
+opt-in loop/adapter/transport executions, **66** Python unit tests, **six** focus
+wire cases under each scheduler, **11** PTY cases, **16** fs/exec cases and **two**
+real pane/VT cases. Both static musl builds/checksums and Windows adapter/transport
+compile checks pass; adapter compile supplies an empty integration-text build
+option, not GUI runtime. Installed binaries restored to ReleaseSafe. CI adds
+DRR wire and correctness smoke; hosted execution is not claimed. No sustained
+resource/fault/flood/scale, loaded target-switch, ARM64 execution or native GUI /
+actual WSL-bypass qualification follows from these local tests.
+
 ## Legacy benchmark harness checks
 
 Local Linux legacy-helper runs exercised five independent processes with 5,000

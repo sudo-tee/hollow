@@ -14,6 +14,7 @@ const Config = struct {
     allocator: enum { page, smp, debug } = .debug,
     telemetry: bool = false,
     focus_scheduler: bool = false,
+    deficit_scheduler: bool = false,
     focus_every: usize = 0,
     backend: enum { native, agent, shared },
     sessions: usize = 1,
@@ -182,6 +183,7 @@ pub fn main(init: std.process.Init) !void {
     if (cfg.separate_bulk and (cfg.backend != .shared or cfg.bulk == .off)) return error.InvalidArgument;
     if (cfg.backend == .shared and !cfg.separate_bulk and cfg.sessions + bulk_jobs > SharedConnection.max_sessions) return error.InvalidArgument;
     if (cfg.focus_scheduler and cfg.backend != .shared) return error.InvalidArgument;
+    if (cfg.deficit_scheduler and !cfg.focus_scheduler) return error.InvalidArgument;
     if (cfg.focus_every > 100000 or (cfg.focus_every != 0 and !cfg.focus_scheduler)) return error.InvalidArgument;
     const command = switch (cfg.workload) {
         .prompt => "stty raw -echo; printf 'HOLLOW_READY\\n'; while IFS= read -r token; do [ \"$token\" = DONE ] && exit 0; printf '%s\\n' \"$token\"; done",
@@ -190,7 +192,7 @@ pub fn main(init: std.process.Init) !void {
     defer if (cfg.workload == .output) a.free(command);
     var wake: Wake = .{};
     const notification: @import("pty/wake.zig").Wake = .{ .context = &wake, .callback = Wake.signal };
-    const owner = if (cfg.backend == .shared) try SharedConnection.createWithOptions(a, cfg.connector_argv, notification, .{ .telemetry = cfg.telemetry, .experimental_focus = cfg.focus_scheduler }) else null;
+    const owner = if (cfg.backend == .shared) try SharedConnection.createWithOptions(a, cfg.connector_argv, notification, .{ .telemetry = cfg.telemetry, .experimental_focus = cfg.focus_scheduler, .experimental_deficit = cfg.deficit_scheduler }) else null;
     defer if (owner) |shared| shared.destroy();
     var backgrounds: Backgrounds = .{ .config = cfg };
     defer backgrounds.deinit();
@@ -302,6 +304,7 @@ pub fn main(init: std.process.Init) !void {
         .telemetry = if (pty == .agent and cfg.telemetry) pty.agent.connection.metrics() else null,
         .backend = cfg.backend,
         .focus_scheduler = cfg.focus_scheduler,
+        .deficit_scheduler = cfg.deficit_scheduler,
         .focus_ack_ns = focus_ack_ns,
         .focus_every = cfg.focus_every,
         .focus_refreshes = refreshes.items,

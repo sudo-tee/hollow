@@ -76,6 +76,7 @@ const Outbound = struct {
 pub const Options = struct {
     experimental_pty: bool = false,
     experimental_focus: bool = false,
+    experimental_deficit: bool = false,
     telemetry: bool = false,
     context: ?*anyopaque = null,
     notify: ?*const fn (*anyopaque) void = null,
@@ -157,6 +158,7 @@ pub const Connection = struct {
     pub fn createWithOptions(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, options: Options) !*Connection {
         if (argv.len == 0 or argv[0].len == 0 or argv.len > 4096) return error.InvalidArgument;
         if (options.experimental_focus and !options.experimental_pty) return error.InvalidArgument;
+        if (options.experimental_deficit and !options.experimental_focus) return error.InvalidArgument;
         const generation = try newGeneration();
         const self = try allocator.create(Connection);
         errdefer allocator.destroy(self);
@@ -493,7 +495,7 @@ pub const Connection = struct {
     }
 
     fn writeLoop(self: *Connection) !void {
-        try self.writeFrame(.hello, 0, 0, if (self.options.experimental_focus) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"experimental_focus\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else if (self.options.experimental_pty) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
+        try self.writeFrame(.hello, 0, 0, if (self.options.experimental_deficit) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"experimental_focus\":true,\"experimental_deficit\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else if (self.options.experimental_focus) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"experimental_focus\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else if (self.options.experimental_pty) "{\"major\":1,\"minor\":0,\"experimental_pty\":true,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}" else "{\"major\":1,\"minor\":0,\"max_payload\":1048576,\"max_data\":16384,\"max_streams\":64,\"max_in_flight\":32}");
         while (true) {
             try self.mutex.lock(self.io);
             var locked = true;
@@ -600,6 +602,15 @@ pub const Connection = struct {
             if (capabilities != .array) return error.ProtocolMismatch;
             var found = false;
             for (capabilities.array.items) |value| if (value == .string and std.mem.eql(u8, value.string, "experimental.focus")) {
+                found = true;
+            };
+            if (!found) return error.ProtocolMismatch;
+        }
+        if (self.options.experimental_deficit) {
+            const capabilities = object.get("capabilities") orelse return error.ProtocolMismatch;
+            if (capabilities != .array) return error.ProtocolMismatch;
+            var found = false;
+            for (capabilities.array.items) |value| if (value == .string and std.mem.eql(u8, value.string, "experimental.deficit")) {
                 found = true;
             };
             if (!found) return error.ProtocolMismatch;
