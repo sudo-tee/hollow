@@ -1007,6 +1007,105 @@ fixtures. Next: profile read-pool handoff, owner polling, and scheduling; compar
 0/1/2/4 workers and batch 1/2 at fixed load, including latency, before changing
 buffers.
 
+## Read-worker CPU/throughput tradeoff in the GUI
+
+October 20, 2026: follow-up A/Bs used the same installed GUI and isolated fresh
+instance per configuration, with three alternating repeats. Each run had four
+panes: two idle raw echo workers and two dynamic repaint floods, with no echo
+inputs. Inline (`read_workers=0`, `batch_jobs=1`) was compared with pooled
+(`read_workers=4`, `batch_jobs=2`). CPU came from process/procstat samples;
+Linux also sampled per-thread CPU and `/proc/PID/task` context-switch counts.
+No stderr diagnostics were used. Verified topology was one owner thread inline
+and one owner plus four readers pooled; only two readers did CPU work in each
+pooled run, with two parked. These are observations, not a cause attribution.
+
+The first run root, `/tmp/opencode/hollow-gui-worker-ab-20261020-085225`, used
+20-second phases with each flood capped at 20 MiB/s, then uncapped. Capped
+producer rates were 34.452–39.815 MiB/s inline (median 35.948) and
+40.001–40.005 MiB/s pooled (median 40.002). **Delivered loads did not match**;
+this comparison cannot establish CPU regression at 40 MiB/s. Uncapped producer
+medians were 45.714 MiB/s inline and 72.071 pooled (+57.7%); ranges were
+42.024–58.860 and 62.448–72.341. This is descriptive producer-admitted
+throughput, not transport maximum or rendered bytes. All 6 instances and 12
+phases validated with zero errors, and cleanup left no instances.
+
+A lower-rate run at `/tmp/opencode/hollow-gui-worker-ab-20261020-090051`
+provided the matched-load comparison: three 20-second capped phases per mode,
+each flood actually at 10 MiB/s (20 MiB/s aggregate) in both modes. Results:
+
+| Metric (CPU/switch medians; rate/FD ranges) | Inline | Pool |
+| --- | ---: | ---: |
+| Aggregate producer rate, observed range (MiB/s) | 20.000–20.004 | 20.000 |
+| Linux agent CPU (cores) | 0.374 | 0.657 |
+| Windows GUI CPU (cores) | 1.215 | 1.147 |
+| Owner user / system CPU (cores) | 0.029 / 0.348 | 0.039 / 0.391 |
+| Reader user / system CPU (cores) | 0 / 0 | 0.023 / 0.269 |
+| Owner + reader voluntary switches/s | 5,849 | 13,096 |
+| Owner + reader nonvoluntary switches/s | 53.96 | 148.1 |
+| File descriptors | 9 | 14–16 |
+
+Linux agent CPU was about 75.7% higher pooled at matched 20 MiB/s. GUI CPU was
+lower in this run, so it does not establish an overall cross-OS CPU comparison;
+do not add CPU across operating systems. Thread windows covered 23–24 seconds
+while proc windows covered 20, so median components need not sum exactly.
+Mostly-system owner/reader CPU is consistent with overhead on the pooled path
+and warrants syscall-level profiling, but does **not** prove redundant notification reads,
+eventfd, descriptor handoff, or any other specific root cause. The larger
+uncapped pool throughput is why inline is not a justified default fix.
+
+All six lower-run phases passed validation; windows were present, non-minimized,
+and not foreground in recorded samples, and cleanup removed all instances.
+The earlier 20 MiB/s-per-
+flood capped comparison remains an invalid CPU fairness comparison, not discarded
+data. Windows sample gaps reached 0.85–1.02 seconds; RSS maxima are observed
+samples, not true peaks. Neither
+run qualifies startup, leaks, faults, teardown, or release gates; no latency test
+was added. The lower-run historical `summary.jsonl` has a stale hardcoded
+`rate_mib_s=20` per worker; `run.json` and progress records correctly show 10
+per worker and 20 aggregate, and `run-audit-notes.json` documents correction.
+Future helper output is fixed. Raw roots contain `worker-analysis.json`, raw
+resource samples, and thread samples. Local harnesses
+`/tmp/opencode/hollow-gui-worker-ab.py`, `...-summary.py`, and
+`/tmp/opencode/hollow-agent-thread-sample.py` are not fixtures.
+
+Next, profile syscall-level owner/read-worker/notification/FD handoff costs and
+sample mixed-load latency before any candidate change. Do not increase buffers
+or change production defaults; keep `read_workers=4`, `batch_jobs=2` opt-in.
+
+### Eventfd drain cleanup: fewer calls, no demonstrated CPU gain
+
+An isolated five-second syscall capture identified redundant eventfd reads in
+the pooled path: owner reads had 2,708 successes and 2,705 `EAGAIN` results;
+reader threads had 2,710 of each. Non-semaphore eventfd reads clear the whole
+accumulated counter. `drainNotification` now retries only `EINTR`, returning
+after one successful read; later notifications remain readable for the next
+level-triggered poll. A real-eventfd unit test covers aggregated writes, later
+notifications, and empty counters.
+
+A candidate trace confirmed the mechanism: 2,760 successful owner reads and
+2,763 successful reader reads, with **zero eventfd `EAGAIN` reads** in the
+recorded window. These are different traced workloads, not matched timing
+measurements. Ptrace affects scheduling and throughput; syscall durations are
+not CPU-cost evidence. Descriptor duplication, notification writes, polling,
+and per-job close operations remain profiling targets, not proven root causes.
+
+Three alternating fresh-GUI baseline/candidate pairs used four readers, paired
+jobs, and a requested 10 MiB/s per flood. Linux-agent CPU medians were both
+approximately **0.680 cores** (baseline range 0.657–0.714, candidate
+0.665–0.773). Candidate admitted rates were 19.599, 18.664, and 20.000 MiB/s
+against approximately 20.000 for baseline, so these runs do **not** establish
+matched-throughput CPU improvement. No GUI latency qualification was performed.
+The change removes demonstrably redundant calls, not the established pool CPU
+gap. Defaults, buffer bounds, and installed user GUI remain unchanged.
+
+All six GUI phases passed process/window/cleanup validation. Pool unit tests,
+`test-agent-loop`, and all five `test-agent-mux` configurations passed (23
+integration cases each). Baseline agent SHA-256 was `dbd16af…`; candidate was
+`3eb95b…`, supplied only through isolated configs' `agent_path` overrides.
+Raw local artifacts: `/tmp/opencode/hollow-gui-syscall-profile-20261020-091435/`,
+`/tmp/opencode/hollow-gui-eventfd-candidate-trace-20261020/`, and
+`/tmp/opencode/hollow-gui-eventfd-ab-20261020-091925/eventfd-analysis.json`.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:

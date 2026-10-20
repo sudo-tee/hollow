@@ -234,7 +234,9 @@ pub const Pool = struct {
 
 pub fn drainNotification(fd: c_int) void {
     var value: u64 = undefined;
-    while (c.read(fd, &value, @sizeOf(u64)) > 0) {}
+    // These eventfds are not semaphore-mode: one read clears the accumulated
+    // counter. A later notification stays readable for the next poll turn.
+    while (c.read(fd, &value, @sizeOf(u64)) < 0 and c.__errno_location().* == c.EINTR) {}
 }
 
 fn notify(fd: c_int) void {
@@ -246,6 +248,26 @@ fn nowNs() i64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return ts.sec * 1_000_000_000 + ts.nsec;
+}
+
+test "notification read clears aggregated writes and preserves later notifications" {
+    const fd = c.eventfd(0, c.EFD_CLOEXEC | c.EFD_NONBLOCK);
+    try std.testing.expect(fd >= 0);
+    defer _ = c.close(fd);
+    notify(fd);
+    notify(fd);
+    drainNotification(fd);
+    var value: u64 = undefined;
+    try std.testing.expectEqual(@as(isize, -1), c.read(fd, &value, @sizeOf(u64)));
+    try std.testing.expectEqual(c.EAGAIN, c.__errno_location().*);
+
+    notify(fd);
+    var poll_fd: c.struct_pollfd = .{ .fd = fd, .events = c.POLLIN, .revents = 0 };
+    try std.testing.expectEqual(@as(c_int, 1), c.poll(&poll_fd, 1, 0));
+    drainNotification(fd);
+    try std.testing.expectEqual(@as(c_int, 0), c.poll(&poll_fd, 1, 0));
+    // An empty nonblocking counter returns immediately as well.
+    drainNotification(fd);
 }
 
 test "pool count is bounded and zero workers own no descriptors" {
