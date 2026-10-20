@@ -35,6 +35,10 @@ extra call but showed no meaningful CPU gain in five post-meeting GUI pairs
 and was not adopted. The earlier higher-CPU comparison was confounded by a
 reported Teams meeting/screen share; see
 [descriptor-duplication measurements](agent-mux.md#descriptor-duplication-bypass-measured-not-adopted).
+An immediate nonblocking transport-write candidate reduced lifetime polls/MiB
+by about 31% and phase agent CPU medians by about 1.4% in five matched-load GUI
+pairs. This does not qualify latency, uncapped throughput, or pool/dedicated
+parity; see [immediate-write measurements](agent-mux.md#immediate-nonblocking-transport-write-candidate).
 
 ## Goal
 

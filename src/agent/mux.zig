@@ -457,6 +457,40 @@ const Agent = struct {
             }
         }
     }
+
+    /// Try a staged transport write without waiting for poll readiness. Returns
+    /// false only when connection must close. EAGAIN preserves the frame and
+    /// leaves POLLOUT polling responsible for retrying it.
+    fn flushTransport(self: *Agent, fd: c_int) bool {
+        if (self.tx_len == 0) return true;
+        self.counters.transport_writes += 1;
+        const write_started = if (self.diagnostics) nowNs() else 0;
+        const n = c.write(fd, self.tx[self.sent..].ptr, self.tx_len - self.sent);
+        if (self.diagnostics) self.counters.transport_write_ns += @intCast(nowNs() - write_started);
+        if (n > 0) {
+            self.counters.transport_bytes += @intCast(n);
+            self.sent += @intCast(n);
+            self.last_write = nowMs();
+            if (self.sent == self.tx_len) {
+                self.sent = 0;
+                self.tx_len = 0;
+            }
+            return true;
+        }
+        if (n < 0 and (errno() == c.EINTR or errno() == c.EAGAIN)) return true;
+        return false;
+    }
+
+    fn hasReadResults(self: *Agent) bool {
+        const pool = self.pool orelse return false;
+        for (pool.workers[0..pool.count]) |*worker| {
+            if (worker.state.load(.acquire) != .ready) continue;
+            for (worker.jobs[0..worker.job_count]) |*job| {
+                if (!job.released and job.collected and job.offset < job.len) return true;
+            }
+        }
+        return false;
+    }
 };
 
 pub fn run(a: std.mem.Allocator, io: std.Io) !void {
@@ -537,9 +571,16 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
     defer reader.deinit(a);
     try agent.frame(.hello, 0, p.hello);
     const started = nowMs();
+    var write_blocked = false;
     while (true) {
         if (stopping.load(.monotonic)) return;
         agent.stageControl();
+        // A fresh frame gets one immediate nonblocking attempt. After EAGAIN,
+        // do not spin on the same bytes: poll POLLOUT before retrying.
+        if (agent.tx_len > 0 and !write_blocked) {
+            if (!agent.flushTransport(1)) return;
+            if (agent.tx_len > 0) write_blocked = true;
+        }
         const pooled_reads = agent.useReadPool();
         var fds: [3 + p.max_streams * 2]c.struct_pollfd = undefined;
         fds[0] = .{ .fd = 0, .events = c.POLLIN, .revents = 0 };
@@ -558,7 +599,11 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             }
         }
         const poll_started = if (diagnostics) nowNs() else 0;
-        const polled = c.poll(&fds, fds.len, 10);
+        // Staged results are local work, not a transport-readiness event. A
+        // zero-timeout turn drains them without imposing the normal 10 ms idle
+        // wait, while still returning to input dispatch on every owner turn.
+        const timeout: c_int = if (agent.tx_len == 0 and (agent.control.items.len > 0 or agent.hasReadResults())) 0 else 10;
+        const polled = c.poll(&fds, fds.len, timeout);
         if (diagnostics) agent.counters.poll_ns += @intCast(nowNs() - poll_started);
         agent.counters.polls += 1;
         if (polled < 0) {
@@ -568,19 +613,8 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
         if ((fds[2].revents & c.POLLIN) != 0) read_pool.drainNotification(agent.pool.?.completion_fd);
         if ((fds[1].revents & (c.POLLHUP | c.POLLERR)) != 0) return;
         if ((fds[1].revents & c.POLLOUT) != 0) {
-            agent.counters.transport_writes += 1;
-            const write_started = if (diagnostics) nowNs() else 0;
-            const n = c.write(1, agent.tx[agent.sent..].ptr, agent.tx_len - agent.sent);
-            if (diagnostics) agent.counters.transport_write_ns += @intCast(nowNs() - write_started);
-            if (n > 0) {
-                agent.counters.transport_bytes += @intCast(n);
-                agent.sent += @intCast(n);
-                agent.last_write = nowMs();
-                if (agent.sent == agent.tx_len) {
-                    agent.sent = 0;
-                    agent.tx_len = 0;
-                }
-            } else if (n < 0 and errno() != c.EINTR and errno() != c.EAGAIN) return;
+            if (!agent.flushTransport(1)) return;
+            write_blocked = agent.tx_len > 0;
         }
         if (agent.tx_len == 0 and agent.control.items.len == 0) agent.last_write = nowMs();
         if (nowMs() - agent.last_write > 10000) return error.StalledTransport;
@@ -655,6 +689,12 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             if (agent.tx_len == 0 and agent.control.items.len == 0) agent.stageReadResults();
         } else if (agent.tx_len == 0 and agent.control.items.len == 0) {
             agent.stageOutput(&ready);
+        }
+        // Bottom-staged data is fresh; make its first write attempt now rather
+        // than adding a poll interval. EAGAIN is remembered until POLLOUT.
+        if (agent.tx_len > 0 and !write_blocked) {
+            if (!agent.flushTransport(1)) return;
+            if (agent.tx_len > 0) write_blocked = true;
         }
     }
 }
@@ -829,6 +869,59 @@ test "collect skips retired batch member while its partner retains the buffer" {
     try std.testing.expectEqual(read_pool.State.idle, pool.workers[0].state.load(.acquire));
     try std.testing.expectEqual(@as(u64, 1), agent.counters.read_jobs);
     try std.testing.expectEqual(@as(u64, 1), agent.counters.read_batches);
+}
+
+test "transport flush preserves staged control frame across EAGAIN and partial writes" {
+    var fds: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), c.pipe2(&fds, c.O_NONBLOCK | c.O_CLOEXEC));
+    defer _ = c.close(fds[0]);
+    defer _ = c.close(fds[1]);
+    try std.testing.expectEqual(@as(c_int, 4096), c.fcntl(fds[1], c.F_SETPIPE_SZ, @as(c_int, 4096)));
+
+    var fill: [4096]u8 = .{0xaa} ** 4096;
+    while (true) {
+        const n = c.write(fds[1], &fill, fill.len);
+        if (n < 0) {
+            try std.testing.expectEqual(@as(c_int, c.EAGAIN), errno());
+            break;
+        }
+    }
+
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined };
+    defer agent.control.deinit(std.testing.allocator);
+    try agent.frame(.hello, 0, p.hello);
+    agent.stageControl();
+    const staged_len = agent.tx_len;
+    try std.testing.expect(staged_len > 0);
+    try std.testing.expect(agent.flushTransport(fds[1]));
+    try std.testing.expectEqual(staged_len, agent.tx_len);
+    try std.testing.expectEqual(@as(usize, 0), agent.sent);
+
+    var drained: [8192]u8 = undefined;
+    while (c.read(fds[0], &drained, drained.len) > 0) {}
+    const expected_control = try std.testing.allocator.dupe(u8, agent.tx[0..staged_len]);
+    defer std.testing.allocator.free(expected_control);
+    try std.testing.expect(agent.flushTransport(fds[1]));
+    try std.testing.expectEqual(@as(usize, 0), agent.tx_len);
+    try std.testing.expectEqual(@as(isize, @intCast(staged_len)), c.read(fds[0], &drained, drained.len));
+    try std.testing.expectEqualSlices(u8, expected_control, drained[0..staged_len]);
+    // Frame is larger than pipe capacity, forcing a successful partial write.
+    agent.tx_len = 8192;
+    agent.sent = 0;
+    @memset(agent.tx[0..agent.tx_len], 0x5a);
+    try std.testing.expect(agent.flushTransport(fds[1]));
+    try std.testing.expect(agent.sent > 0 and agent.sent < agent.tx_len);
+    const sent = agent.sent;
+    try std.testing.expect(agent.flushTransport(fds[1]));
+    try std.testing.expectEqual(sent, agent.sent); // EAGAIN retains exact offset.
+    try std.testing.expectEqual(@as(isize, @intCast(sent)), c.read(fds[0], &drained, drained.len));
+    for (drained[0..sent]) |byte| try std.testing.expectEqual(@as(u8, 0x5a), byte);
+    try std.testing.expect(agent.flushTransport(fds[1]));
+    try std.testing.expectEqual(@as(usize, 0), agent.tx_len);
+    try std.testing.expectEqual(@as(usize, 0), agent.sent);
+    const remaining = 8192 - sent;
+    try std.testing.expectEqual(@as(isize, @intCast(remaining)), c.read(fds[0], &drained, drained.len));
+    for (drained[0..remaining]) |byte| try std.testing.expectEqual(@as(u8, 0x5a), byte);
 }
 
 test {
