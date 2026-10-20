@@ -244,6 +244,7 @@ def benchmark(command, mode, panes, size, samples, credit_batch=WINDOW // 2):
         result = dict(
             mode=mode, panes=panes, bytes=received, seconds=seconds,
             mux_read_workers=int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")) if mode == "mux" else 0,
+            mux_read_batch_jobs=int(os.environ.get("HOLLOW_MUX_READ_BATCH_JOBS", "1")) if mode == "mux" else 0,
             mib_per_second=received / seconds / 2**20,
             cold_startup_ms=startup_ms,
             spawn_ms=dict(p50=statistics.median(spawn_ms), p95=percentile(spawn_ms, .95)),
@@ -340,6 +341,7 @@ def mixed_benchmark(command, mode, panes, samples, credit_batch=WINDOW // 2):
         result = dict(
             mode=mode, workload="focused echo under sustained floods", panes=panes,
             mux_read_workers=int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")) if mode == "mux" else 0,
+            mux_read_batch_jobs=int(os.environ.get("HOLLOW_MUX_READ_BATCH_JOBS", "1")) if mode == "mux" else 0,
             samples=len(echoes), seconds=elapsed,
             echo_ms=dict(p50=statistics.median(echoes), p95=percentile(echoes, .95), p99=percentile(echoes, .99), max=max(echoes)),
             flood_bytes=list(counts.values()),
@@ -383,6 +385,7 @@ def main():
         workload="idle sequential echo, then concurrent bulk output" if args.workload == "bulk" else "focused echo under sustained floods",
         credit_batch=args.credit_batch,
         mux_read_workers=int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")),
+        mux_read_batch_jobs=int(os.environ.get("HOLLOW_MUX_READ_BATCH_JOBS", "1")),
     ))), flush=True)
     modes = ["pty", "mux"] if args.mode == "both" else [args.mode]
     for panes in args.panes:
