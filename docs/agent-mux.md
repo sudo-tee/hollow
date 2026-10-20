@@ -779,6 +779,163 @@ native diagnostic smoke tests (bulk and backlog, each across dedicated/mux and
 continuous/frame-paced draining). Windows x86_64 ReleaseFast GUI and Linux
 x86_64/aarch64 agents also built successfully.
 
+## Initial Windows GUI / WSL repaint measurements
+
+October 20, 2026: actual Windows Hollow GUI, Ubuntu-26.04 WSL agent-backed
+domains, dedicated versus `pty = { mode = "mux", read_workers = 4,
+batch_jobs = 2 }`. These exercise the connector, pane adapter, and terminal
+parser, unlike the native adapter-only diagnostics above. They are **not
+displayed-frame rates**: repaint completion uses a terminal DSR acknowledgement,
+not confirmation that every generated frame was presented by the renderer.
+
+The user's initial `./bench.sh repaint 1000` samples at 212×62 measured median
+47.8 Mcells/s dedicated (three runs) and 44.6 Mcells/s mux (four runs), about
+6.7% lower mux throughput. Each run lasted only about 0.3 seconds.
+
+A follow-up automated comparison used the running GUI and its Windows command
+CLI. Temporary workspaces left existing panes intact and were closed afterward;
+the original workspace was restored. Workloads wrote directly to their PTYs,
+without a pipe or per-frame log. A temporary copy of `bench.sh` wrote exact JSON
+timings after the existing repaint/drain measurement; rendering and drain logic
+were unchanged. The installed GUI executable matched `zig-out/bin/hollow-native.exe`
+byte-for-byte (SHA-256
+`dcc2b3280f3c586ce05e971fdb99e8a39ed2b6d3ca13a2ef9d36ff365756dc77`).
+The checkout was `c322df9`; binary identity alone does not establish build flags.
+
+Three runs per backend and layout, alternating PTY/mux order between repeats:
+
+| Layout | Frames per pane | Dedicated Mcells/s, median (range) | Mux Mcells/s, median (range) | Mux relative to dedicated |
+| --- | ---: | ---: | ---: | ---: |
+| One pane, 212×62 | 20,000 | 47.40 (47.09–48.92) | 44.72 (44.06–44.80) | −5.6% |
+| Four visible panes, 2×2 grid | 50,000 | 71.19 (64.47–71.53) | 65.32 (63.63–72.85) | −8.2% |
+
+Grid pane sizes were 105/106 columns by 30/31 rows. Workers waited at a shared
+filesystem gate before each run; this is not an exact simultaneous-start
+barrier. Grid throughput is total generated cells divided by the longest
+individual pane's drain-adjusted elapsed time, **not** the sum of independent
+pane rates or an exact first-start-to-last-finish wall-clock rate. All panes
+completed all requested frames and received drain acknowledgements. Individual
+single-pane runs took roughly 5.4–6.0 seconds; grid runs roughly 8–10 seconds.
+
+The single-pane result corroborates the user's short samples. The grid result
+is encouraging but variable: the third mux trial exceeded its dedicated
+counterpart, and individual grid drain acknowledgements ranged up to 172 ms.
+Neither observation establishes focused typing latency or fairness under
+sustained load. Existing user workspaces and live connections remained present;
+connection warmth, OS load, and GUI presentation timing were uncontrolled.
+These are warm GUI/WSL repaint observations, not cold startup, isolated bulk
+transport, process-tree CPU/RSS, SSH/container, teardown-fault, or release
+qualification. Numerical release budgets remain unagreed; defaults and memory
+limits remain unchanged.
+
+Local artifacts (not repository fixtures):
+
+- `/tmp/opencode/hollow-gui-repaint-20261020-074551/results.jsonl`
+- Per-pane exact timing JSON in that directory's `1-pty`, `1-mux`, `4-pty`, and
+  `4-mux` subdirectories.
+- `/tmp/opencode/hollow-gui-repaint-run.py` and
+  `/tmp/opencode/hollow-gui-repaint-worker.sh` (local orchestration), with
+  `/tmp/opencode/hollow-gui-bench.sh` (temporary result-recording copy).
+
+Next GUI measurements should distinguish actual input-to-echo latency from
+terminal-generated DSR round trips, sustain background traffic throughout
+sampling, switch focus between panes, and measure per-pane progress, CPU/RSS,
+startup, and bounded teardown. Do not infer multi-pane transport parity from
+this parser-heavy repaint workload.
+
+## GUI echo observation under sustained sibling floods
+
+October 20, 2026: uncapped experiment in the actual same Windows GUI / Ubuntu
+26.04 WSL domains. A temporary four-pane grid ran raw Python echo workers in
+the top and bottom left panes, with two continuously changing bounded repaint
+floods on the right. Focus switched every 100 samples. Three paired runs
+alternated backend order; each run had 200 idle samples followed by 1,000
+loaded samples. Each sample sent one changing GUID+sequence token with one
+request outstanding, disabled TTY local echo, and required the raw child to
+write `ACK:<token>`. Success required exact token match in current GUI-parsed
+pane text. All loaded runs had nine successful focus moves; focus was validated
+each segment, with no sample-count or token failures.
+
+Timing ran from before `pane_send_text`'s socket request to the first
+`get_pane_text` reply containing the ACK. One long-lived Windows PowerShell
+5.1 process used a fresh TCP connection per command, `NoDelay`, and combined
+header/body writes; process startup was not timed. Focus commands and focus
+validation were excluded, but first sample after each switch was included.
+This is not DSR, physical-keyboard, renderer-presentation, or backend-only
+timing. Loaded sampling took about 34 seconds per run.
+
+Per-run nearest-rank p50/p95/p99, then median across three runs (ms; rounded
+to two decimals):
+
+| Backend | Idle p50 / p95 / p99 | Loaded p50 / p95 / p99 | Worst loaded sample |
+| --- | ---: | ---: | ---: |
+| PTY | 6.92 / 10.94 / 14.41 | 13.64 / 17.16 / 18.92 | 43.81 |
+| Mux | 7.26 / 11.19 / 15.30 | 13.07 / 16.57 / 18.93 | 42.78 |
+
+Flood aggregate producer throughput, admitted bytes divided by run duration:
+PTY runs were 88.96269, 84.56439, and 85.78852 MiB/s (median 85.79);
+mux runs were 67.03508, 67.41727, and 70.29793 MiB/s (median 67.42).
+Counts are bytes accepted by producer `os.write`, including ANSI and queued
+bytes, not exact parsed or rendered bytes. Progress checkpoints were about
+250 ms; both floods progressed throughout. Largest observed update interval
+was about 501 ms mux versus 255 ms PTY; these are observations, not hard fairness
+bounds. Observer send and final-query median components were each about
+4.5–4.8 ms, substantial observer overhead. No parity claim at equal throughput.
+
+Local data: `/tmp/opencode/hollow-gui-loaded-20261020-075432`, with raw
+`idle-N.jsonl` / `loaded-N.jsonl` and progress files under `pty` / `mux`, plus
+`summary.jsonl` at its root. Temporary harness files are
+`/tmp/opencode/hollow-gui-loaded-worker.py`,
+`/tmp/opencode/hollow-gui-loaded-sample.ps1`, and
+`/tmp/opencode/hollow-gui-loaded-run.py`. Native defaults and limits remain
+untouched. Actual focus switching was exercised, but RSS, faults, startup,
+teardown, and release budgets remain unqualified.
+
+### Matched offered load in an isolated GUI instance
+
+To keep testing from disturbing the user's terminal, a second instance used
+separate configuration, `APPDATA`, `LOCALAPPDATA`, and command IPC. Its window
+was placed on a separate 1920×1152 monitor working area and was not foreground
+or minimized at launch. Window state was not sampled continuously. Both
+`max_fps` and `idle_max_fps` were 120, with vsync disabled. This differs from
+the original instance's idle cap of 15; **do not attribute cross-experiment
+latency changes solely to load capping**. Within this comparison both backends
+used the same isolated instance and settings.
+
+The same echo/focus protocol and three-run sample counts were repeated with
+each flood capped at 20 MiB/s. Average-rate pacing resets after pauses or more
+than 100 ms of lag; it is not a strict instantaneous bandwidth guarantee.
+Both workers measured 19.965–19.977 MiB/s in every loaded run, with no repeated
+byte counts in the approximately 250 ms progress snapshots. Largest observed
+progress interval was 256 ms. This verifies observed producer progress, not
+a deterministic fairness bound or exact terminal-rendered throughput.
+
+Median of per-run nearest-rank percentiles (ms):
+
+| Backend | Idle p50 / p95 / p99 | Matched-load p50 / p95 / p99 | Worst loaded sample |
+| --- | ---: | ---: | ---: |
+| PTY | 8.10 / 11.53 / 12.67 | 10.77 / 14.99 / 17.85 | 40.84 |
+| Mux | 8.79 / 11.79 / 15.51 | 10.75 / 14.49 / 16.97 | 39.54 |
+
+All 3,000 loaded echoes per backend and focus transitions completed without
+token or sample-count failures. These observer-limited results show no obvious
+mux latency regression at this offered load; they do not establish a general
+latency bound, keyboard-to-display performance, or throughput parity.
+
+Data: `/tmp/opencode/hollow-gui-loaded-20261020-080757`, with the same raw and
+progress-file structure as above. `run-setup.json` records launcher observations,
+environment isolation, settings, and cleanup. Temporary launch/config files:
+`/tmp/opencode/hollow-gui-isolated-launch.ps1` and
+`/tmp/opencode/hollow-gui-isolated.lua`. Test workspaces and the isolated GUI
+were closed afterward; no workload workers remained, and the original user's
+IPC discovery address stayed unchanged. This successful cleanup is not a
+fault-injection or bounded-teardown qualification.
+
+An earlier matched-load attempt,
+`/tmp/opencode/hollow-gui-loaded-20261020-080144`, was aborted during its first
+idle trial after focus validation failed. The user confirmed interacting with
+that terminal; its 100 partial idle samples and all incomplete data are excluded.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:
