@@ -279,10 +279,13 @@ into an agent host.
   failure domain; dedicated mode remains the default and rollback path.
 
 This remains experimental: headless throughput results are **not** GUI rendering
-or WSL/SSH performance qualification. Wire windows and unread client output are
-64 KiB per stream. Client input admission retains the dedicated backend's bounded
-4 MiB queue for large pastes; transmission still obeys the 64 KiB wire window.
-UI drain cadence and connector latency may limit throughput.
+or WSL/SSH performance qualification. Wire windows remain 64 KiB per stream.
+Bounded off-UI-thread read-ahead permits up to 4 MiB unread output per pane,
+with a 16 MiB connection-wide logical output reservation budget; each slot keeps
+a baseline window so floods cannot steal another pane's refill capacity.
+Client input admission retains the dedicated backend's bounded 4 MiB queue for
+large pastes; transmission still obeys the 64 KiB wire window. UI drain cadence
+and connector latency may limit throughput.
 See [agent mux measurements and limits](../../agent-mux.md).
 
 ## Workspace bootstrap

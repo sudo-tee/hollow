@@ -537,8 +537,9 @@ focus hints. Input and returned output credits alternate when both are pending;
 output grants batch at 32 KiB, or when the receive allowance reaches zero. The
 reader checks headers before payload admission, validates negotiation and
 per-stream credits, and never waits for a consumer while routing siblings.
-Unread output is at most 64 KiB per stream; credits return only as the pane
-consumes bytes. Spawn serialization and receive control payloads each use fixed
+The first adapter limited unread output to 64 KiB and returned credits only on
+pane consumption; the bounded read-ahead correction below supersedes that
+behavior. Spawn serialization and receive control payloads each use fixed
 64 KiB staging. A small bounded failure banner may be appended on termination.
 
 Spawn submission is the no-replay boundary: implicit WSL fallback is possible
@@ -553,8 +554,128 @@ close and spawn errors, stalled consumers, binary output across many windows,
 connector/tuning separation, bounded input, visible loss fanout with no restart,
 fresh connections after failure, and bounded silent-hello/close handling.
 GUI rendering and actual WSL/SSH behavior/performance remain qualification work.
-The 64 KiB consumption-driven receive window can itself limit GUI/remote bulk
-throughput; do not interpret headless tables as end-to-end GUI results.
+The frame-paced diagnostic and correction below address the original
+consumption-driven buffering limit; headless tables still are not end-to-end GUI results.
+
+## Native pane-adapter measurements and bounded read-ahead
+
+The wire client drains continuously; GUI panes consume output on UI turns.
+`src/agent_pane_bench.zig` now exercises **the actual AgentPty adapter**, comparing
+continuous drains with frame-paced queue snapshots without loading VT/rendering:
+
+```sh
+zig build --build-file build-agent.zig agent agent-pane-bench -Doptimize=ReleaseFast
+python3 scripts/agent_pane_bench.py --panes 1 4 16 32 --runs 3 --build-mode ReleaseFast
+zig build --build-file build-agent.zig test-agent-pane-bench
+```
+
+Children run deterministic raw-mode Python, report one ready byte, wait for a
+start byte, emit an exact byte count, and remain alive until closed. Spawns are
+sequential while earlier panes stay alive. `startup_ms[0]` measures a **cold
+connection to a preinstalled agent**, not deployment; subsequent values measure
+warm pane opens. Python interpreter startup is included, user shell profiles are
+not. Each synthetic UI turn drains only the queue's initial snapshot, not bytes
+that arrive during the turn. No VT parser, frame time budget, rendering, actual
+WSL/SSH, or network latency is simulated. CLI `--frame-us 0` selects continuous
+drains; `16667` is approximately 60 Hz. Queue snapshots and drain timing make
+this a diagnostic rather than a complete GUI throughput model.
+
+### Bottleneck and correction
+
+The first config adapter returned credits only as the pane consumed its 64 KiB
+queue. At 60 Hz this creates an approximately **3.75 MiB/s per-pane ceiling**,
+even though the same single-pane adapter measured about 81 MiB/s when drained
+continuously. This is an adapter buffering limitation, not an agent PTY-read
+limit. The original adapter benchmark was saved for paired comparisons.
+
+Experimental mux clients now use bounded reader-thread read-ahead:
+
+- Wire windows stay **64 KiB**, frames stay 16 KiB, and protocol/version do not
+  change. The reader never waits for a stalled pane while routing siblings.
+- Unread protocol output is capped at **4 MiB per pane**, matching dedicated
+  client buffering. Credits replenish from available read-ahead capacity rather
+  than waiting for every GUI frame. Credit updates remain batched.
+- The connection has a **16 MiB logical output reservation budget**. Each of
+  32 slots accounts for `max(64 KiB, queued protocol bytes + outstanding receive
+  credits + pending consumption notices)`. Thus even empty slots and stalled
+  interactive streams retain a baseline window: background floods cannot steal
+  capacity needed by new spawns or by a small stream refilling after consumption.
+- Queued bytes and outstanding credits share the budget; receiving a frame
+  moves, rather than duplicates, its reservation. Reader-discarded abort bytes,
+  UI consumption, and stream retirement release reservations exactly once.
+  Only the owner grants credits. UI consumption notices cross the session lock
+  and are collected under connection ownership; lock order remains unchanged.
+- A stream with final output retains its client slot/budget until those bytes
+  are consumed, unless pane close explicitly aborts it. Error banners remain a
+  small bounded addition outside the protocol ledger. Failed-connection output
+  remains pane-owned until drained/closed. The 16 MiB budget is **not an RSS
+  bound**: allocator capacity, fixed staging, input buffers, and historical
+  pane-owned final output are separate bounded allocations.
+- Client input keeps its existing 4 MiB admission bound. Dedicated buffering,
+  agent defaults, config selection, and filesystem/exec paths are unchanged.
+
+### Results
+
+WSL2 Linux, ReleaseFast, preinstalled local agent, same agent binary and saved
+reference/new adapter binaries, four mux readers with paired jobs, alternating
+variant order, three-run medians. Longer runs use **16 MiB per pane** and a
+16,667-microsecond snapshot-drain cadence:
+
+| Panes | Dedicated adapter | Original mux adapter | Read-ahead mux adapter |
+| --- | ---: | ---: | ---: |
+| 1 | 73.6 | 3.7 | 73.7 |
+| 4 | 293.5 | 15.0 | 211.6 |
+| 16 | 465.0 | 60.0 | 311.0 |
+| 32 | 467.7 | 119.9 | 306.4 |
+
+Values are aggregate MiB/s. The single-pane reference limitation disappears;
+multi-pane throughput remains below dedicated, so **no general parity claim**.
+Read-ahead reservation high-water samples peaked around 7.4 MiB in these bulk
+runs; a separate saturated-consumer regression reaches the 16 MiB cap. Physical
+queue/RSS overhead is not inferred from this logical high-water counter.
+
+Shorter paired runs (4 MiB/pane) also compared continuous drains. Original/new
+mux medians were 80.7/84.5 MiB/s at one pane, 218.1/234.4 at four,
+320.3/327.5 at 16, and 308.6/309.7 at 32. These short-run differences are not
+proof of an additional continuous-drain speedup. Short frame-paced runs are
+especially quantized by the number of UI turns; prefer longer comparisons.
+
+Local warm opens were dominated by roughly 10–12 ms Python spawn/readiness
+cost. With an explicitly **synthetic 50 ms connector startup delay**, four-pane
+three-run medians were 67.5 ms cold / 66.7 ms warm dedicated, versus
+69.2 ms cold / 11.3 ms warm mux; live connector counts were four versus one.
+This verifies elimination of repeated connector startup, not a measured SSH/WSL
+network benefit. Reproduce with `--connector-delay-ms 50 --panes 4 --frame-us 0`.
+
+Raw data:
+
+- `/tmp/opencode/hollow-native-pane-64k-baseline.jsonl`
+- `/tmp/opencode/hollow-native-pane-read-ahead-paired.jsonl`
+- `/tmp/opencode/hollow-native-pane-read-ahead-longer.jsonl`
+- `/tmp/opencode/hollow-native-pane-warm-delay.jsonl`
+
+Regression coverage includes the per-stream and aggregate caps, reserved baseline
+refills under budget exhaustion, exact binary output over many windows, and a
+256 KiB interactive echo while eight unconsumed floods saturate the connection
+budget. This last test deliberately exceeds one wire window so an initial-credit
+burst cannot masquerade as sustained progress. Benchmark smoke tests check ready
+counts, actual bytes, connection reuse, and queue/reservation bounds in both
+continuous and frame-paced modes. Actual GUI/remote tail-latency and sustained
+RSS qualification remain release gates.
+
+The aggregate cap intentionally limits read-ahead when stalled panes occupy the
+shared budget. Baseline windows preserve sibling progress, not full bulk speed
+under every saturated-consumer pattern. Visibility-aware buffering is separate
+follow-up work; no current result qualifies that case for rollout.
+
+Validation passed in Debug and ReleaseFast: 76 Zig tests, all 23 wire integration
+tests in five configurations, and the adapter benchmark smoke test (four
+mode/cadence combinations). Windows ReleaseFast and both Linux agent architectures
+build. An initial Debug run overlapping a Windows compile hit the existing
+wire test's three-second zombie-state expectation in two configurations; a
+standalone rerun and complete serialized Debug/ReleaseFast runs passed. This
+timing sensitivity is not evidence of a new server fix; the agent server is
+unchanged by the read-ahead correction.
 
 ## Experimental v1 wire contract
 

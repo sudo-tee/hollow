@@ -111,6 +111,20 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     run_pty_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     run_pty_tests.step.dependOn(&install_test_agent.step);
     b.step("test-agent-pty", "Run agent PTY client tests against a native Linux agent").dependOn(&run_pty_tests.step);
+    const pane_bench = b.addExecutable(.{ .name = "hollow-agent-pane-bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/agent_pane_bench.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .link_libc = true,
+    }) });
+    b.step("agent-pane-bench", "Build the native pane-adapter startup/frame-drain diagnostic").dependOn(&b.addInstallArtifact(pane_bench, .{}).step);
+    const pane_bench_tests = b.addSystemCommand(&.{ "python3", b.path("scripts/test_agent_pane_bench.py").getPath(b) });
+    pane_bench_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
+    pane_bench_tests.setEnvironmentVariable("HOLLOW_TEST_PANE_BENCH", b.getInstallPath(.bin, "hollow-agent-pane-bench"));
+    pane_bench_tests.step.dependOn(&install_test_agent.step);
+    pane_bench_tests.step.dependOn(&b.addInstallArtifact(pane_bench, .{}).step);
+    pane_bench_tests.has_side_effects = true;
+    b.step("test-agent-pane-bench", "Smoke native pane-adapter startup and frame-drain diagnostics").dependOn(&pane_bench_tests.step);
     const mux_test_step = b.step("test-agent-mux", "Run headless mux tests with inline, 2/4 readers, and single/paired jobs");
     inline for (.{ .{ "0", "1" }, .{ "2", "1" }, .{ "4", "1" }, .{ "2", "2" }, .{ "4", "2" } }) |config| {
         const mux_tests = b.addSystemCommand(&.{ "python3", b.path("scripts/test_agent_mux.py").getPath(b) });
