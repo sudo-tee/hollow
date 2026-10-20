@@ -3,7 +3,7 @@
 const std = @import("std");
 const p = @import("mux_protocol.zig");
 const pty = @import("pty.zig");
-const read_pool = @import("pty_read_pool.zig");
+const pty_readers = @import("pty_readers.zig");
 var stopping: std.atomic.Value(bool) = .init(false);
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
@@ -39,15 +39,11 @@ const Counters = struct {
     user_us: i64 = 0,
     system_us: i64 = 0,
     read_workers: usize = 0,
-    read_pool_reserved_high_water: usize = 0,
-    read_jobs: u64 = 0,
-    read_queue_ns: u64 = 0,
-    read_work_ns: u64 = 0,
-    read_collect_ns: u64 = 0,
-    read_result_ns: u64 = 0,
     inline_reads: u64 = 0,
-    read_batches: u64 = 0,
     read_batch_jobs: usize = 1,
+    reader_wakes: u64 = 0,
+    reader_parks: u64 = 0,
+    owner_wakes: u64 = 0,
 };
 
 const Stream = struct {
@@ -58,7 +54,8 @@ const Stream = struct {
     input: std.ArrayList(u8) = .empty,
     output_credit: u32 = p.window,
     output_uncredited: u32 = 0,
-    read_job: ?usize = null,
+    /// Master is pinned to a reader thread, which owns closing it.
+    attached: bool = false,
     status: ?u32 = null,
     eof: bool = false,
     closing: ?i64 = null,
@@ -142,18 +139,29 @@ const Agent = struct {
     negotiated: bool = false,
     focused: ?usize = null,
     control: std.ArrayList(u8) = .empty,
+    // Transport state: control, tx, sent, and the counters they update are
+    // touched only under `lock`, since reader threads flush, too.
+    lock: pty_readers.Mutex = .{},
     // A partially sent frame is never interrupted by another frame.
     tx: [p.header_len + p.max_data]u8 = undefined,
     tx_len: usize = 0,
     sent: usize = 0,
-    last_write: i64 = 0,
+    out_fd: c_int = 1,
+    shutdown: bool = false,
+    last_write: std.atomic.Value(i64) = .init(0),
+    /// A flusher found the lock taken; the holder retries after unlocking.
+    flush_pending: std.atomic.Value(bool) = .init(false),
+    /// Write hit EAGAIN or was partial: only the owner retries, on POLLOUT.
+    blocked: std.atomic.Value(bool) = .init(false),
+    transport_failed: std.atomic.Value(bool) = .init(false),
     scheduler: Scheduler = .{},
     counters: Counters = .{},
     diagnostics: bool = false,
-    pool: ?*read_pool.Pool = null,
-    batch_jobs: usize = 1,
+    readers: ?*pty_readers.Set = null,
 
     fn frame(self: *Agent, kind: p.pty.Kind, id: u32, payload: []const u8) !void {
+        self.lock.lock();
+        defer self.lock.unlock();
         if (self.control.items.len + p.header_len + payload.len > p.control_limit) return error.ControlQueueFull;
         try self.control.appendSlice(self.a, &(p.Header{ .kind = kind, .stream = id, .len = @intCast(payload.len) }).encode());
         try self.control.appendSlice(self.a, payload);
@@ -211,7 +219,9 @@ const Agent = struct {
             return error.NonblockingFailed;
         };
         self.streams[index] = .{ .id = id, .pid = pid, .master = master, .launch = launch[0], .started = nowMs() };
+        self.lock.lock();
         self.scheduler.deficit[index] = 0;
+        self.lock.unlock();
     }
 
     fn dispatch(self: *Agent, h: p.Header, payload: []const u8) !void {
@@ -248,16 +258,26 @@ const Agent = struct {
                 },
                 .close => {
                     if (payload.len != 0) return error.InvalidClose;
-                    s.stop();
+                    self.stopStream(i);
                 },
                 p.credit => {
                     const amount = try p.amount(payload);
-                    if (amount > s.output_uncredited) return error.InvalidCredit;
-                    s.output_credit = try p.addCredit(s.output_credit, payload);
-                    s.output_uncredited -= amount;
+                    if (s.attached) {
+                        const slot = &self.readers.?.slots[i];
+                        if (amount > slot.uncredited.load(.acquire)) return error.InvalidCredit;
+                        try self.readers.?.grant(i, amount);
+                        _ = slot.uncredited.fetchSub(amount, .release);
+                    } else {
+                        if (amount > s.output_uncredited) return error.InvalidCredit;
+                        s.output_credit = try p.addCredit(s.output_credit, payload);
+                        s.output_uncredited -= amount;
+                    }
                     self.counters.credit_frames += 1;
                 },
-                p.focus => self.focused = i,
+                p.focus => {
+                    self.focused = i;
+                    if (self.readers) |set| set.focused.store(@intCast(i), .monotonic);
+                },
                 else => return error.InvalidKind,
             }
             return;
@@ -323,138 +343,57 @@ const Agent = struct {
         }
     }
 
-    fn useReadPool(self: *Agent) bool {
-        const pool = self.pool orelse return false;
-        // Never cross read paths while any job/result remains owned by a
-        // worker. Once drained, a sole stream needs no parallel kernel reads.
-        for (pool.workers[0..pool.count]) |*worker| {
-            if (worker.state.load(.acquire) != .idle) return true;
+    /// Stop a stream. A reader-pinned master is closed by its reader once
+    /// it acknowledges the detach; the owner stops using it immediately.
+    fn stopStream(self: *Agent, i: usize) void {
+        const s = &self.streams[i].?;
+        if (s.attached) {
+            s.master = -1;
+            // Under the lock, so no flusher frames this stream after close.
+            self.lock.lock();
+            self.readers.?.requestDetach(i);
+            self.lock.unlock();
         }
-        var streams: usize = 0;
-        for (self.streams) |entry| if (entry != null) {
-            streams += 1;
-        };
-        return streams > 1;
+        s.stop();
     }
 
-    fn collectReads(self: *Agent) !void {
-        const pool = self.pool orelse return;
-        for (pool.workers[0..pool.count], 0..) |*worker, index| {
-            if (worker.state.load(.acquire) != .ready) continue;
-            if (!worker.timing_collected) {
-                self.counters.read_batches += 1;
-                if (self.diagnostics) {
-                    self.counters.read_queue_ns += @intCast(worker.started_ns - worker.submitted_ns);
-                    self.counters.read_work_ns += @intCast(worker.completed_ns - worker.started_ns);
-                    self.counters.read_collect_ns += @intCast(nowNs() - worker.completed_ns);
-                }
-                worker.timing_collected = true;
-            }
-            for (worker.jobs[0..worker.job_count], 0..) |*job, member| {
-                // A released member may already have retired/reused its slot
-                // while another result in this worker's batch is still held.
-                if (job.released) continue;
-                const key = index * read_pool.max_jobs + member;
-                const s = &self.streams[job.slot].?;
-                std.debug.assert(s.id == job.stream_id and s.read_job == key);
-                if (!job.collected) {
-                    const unused: u32 = @intCast(job.allowance - job.len);
-                    if (s.output_credit > p.window - unused) return error.InvalidCredit;
-                    s.output_credit += unused;
-                    self.counters.pty_reads += job.reads;
-                    self.counters.pty_read_ns += job.read_ns;
-                    self.counters.read_jobs += 1;
-                    if (job.eof) {
-                        s.eof = true;
-                        s.input.clearRetainingCapacity();
-                    }
-                    job.collected = true;
-                }
-                if (s.closing != null or job.len == 0) {
-                    s.read_job = null;
-                    self.releaseRead(key);
-                }
-            }
+    /// Frame reader ring bytes behind any already staged bytes. Callers
+    /// stage control first, so control frames keep preceding output.
+    /// Alternate focus-first turns with background DRR, retaining the cursor
+    /// across full staging buffers so a flood cannot monopolize the transport.
+    /// Runs under the transport lock on any thread, so it reads only slots.
+    fn stageRings(self: *Agent) void {
+        const set = self.readers.?;
+        const focus = set.focused.load(.monotonic);
+        var ready: [p.max_streams]bool = .{false} ** p.max_streams;
+        for (&set.slots, 0..) |*slot, i| {
+            ready[i] = slot.attached.load(.acquire) and !slot.detach.load(.acquire) and slot.pending() > 0;
         }
-    }
-
-    fn releaseRead(self: *Agent, key: usize) void {
-        const pool = self.pool.?;
-        if (pool.release(key) and self.diagnostics) self.counters.read_result_ns += @intCast(nowNs() - pool.workers[key / read_pool.max_jobs].completed_ns);
-    }
-
-    fn dispatchReads(self: *Agent, ready: *[p.max_streams]bool) !void {
-        const pool = self.pool.?;
-        while (pool.idle()) |index| {
-            const jobs = self.jobsPerBatch(ready.*);
-            pool.begin(index, self.diagnostics);
-            const worker = &pool.workers[index];
-            while (worker.job_count < jobs and worker.reserved < read_pool.max_bytes) {
-                const slot = self.scheduler.choose(ready.*, self.focused) orelse break;
-                const s = &self.streams[slot].?;
-                const quantum = self.scheduler.deficit[slot] * 2;
-                const allowance = @min(read_pool.max_bytes - worker.reserved, @min(quantum, s.output_credit));
-                const key = pool.add(index, s.master, slot, s.id, allowance) catch |err| {
-                    try self.frame(.@"error", s.id, @errorName(err));
-                    s.stop();
-                    ready[slot] = false;
-                    continue;
-                };
-                // Async jobs use bounded byte quanta. Unused quantum is
-                // discarded; only this job may read this stream at a time.
-                self.scheduler.used(slot, self.scheduler.deficit[slot]);
-                s.output_credit -= @intCast(allowance);
-                s.read_job = key;
-                ready[slot] = false;
-            }
-            if (worker.job_count == 0) break;
-            pool.startBatch(index);
-            var reserved: usize = 0;
-            for (pool.workers[0..pool.count]) |*entry| {
-                if (entry.state.load(.acquire) != .idle) reserved += entry.reserved;
-            }
-            self.counters.read_pool_reserved_high_water = @max(self.counters.read_pool_reserved_high_water, reserved);
-        }
-    }
-
-    fn jobsPerBatch(self: *Agent, ready: [p.max_streams]bool) usize {
-        // Spread one job per idle reader before pairing excess ready PTYs.
-        // Otherwise four PTYs could occupy only two of four enabled readers.
-        var count: usize = 0;
-        for (ready) |value| if (value) {
-            count += 1;
-        };
-        var idle: usize = 0;
-        const pool = self.pool.?;
-        for (pool.workers[0..pool.count]) |*worker| {
-            if (worker.state.load(.acquire) == .idle) idle += 1;
-        }
-        return if (count > idle) self.batch_jobs else 1;
-    }
-
-    fn stageReadResults(self: *Agent) void {
-        const pool = self.pool.?;
-        std.debug.assert(self.tx_len == 0);
-        for (0..read_pool.max_workers * read_pool.max_jobs * 2) |_| {
+        while (true) {
             const capacity = self.tx.len - self.tx_len;
-            if (capacity <= p.header_len) break;
-            const index = pool.output() orelse break;
-            const job = pool.job(index);
-            const s = &self.streams[job.slot].?;
-            std.debug.assert(s.id == job.stream_id and s.read_job == index);
-            const count = @min(p.max_data, @min(capacity - p.header_len, job.len - job.offset));
-            @memcpy(self.tx[self.tx_len..][0..p.header_len], &(p.Header{ .kind = .output, .stream = s.id, .len = @intCast(count) }).encode());
-            @memcpy(self.tx[self.tx_len + p.header_len ..][0..count], pool.bytes(index)[job.offset..][0..count]);
+            if (capacity <= p.header_len) return;
+            const i = self.scheduler.choose(ready, if (focus < p.max_streams) focus else null) orelse return;
+            const slot = &set.slots[i];
+            const limit = @min(p.max_data, @min(capacity - p.header_len, self.scheduler.deficit[i]));
+            const body = self.tx[self.tx_len + p.header_len ..];
+            var count: usize = 0;
+            // At most two pieces: up to the ring end, then from its start.
+            for (0..2) |_| {
+                const piece = set.readable(i, limit - count);
+                if (piece.len == 0) break;
+                @memcpy(body[count..][0..piece.len], piece);
+                set.consume(i, @intCast(piece.len));
+                count += piece.len;
+            }
+            self.scheduler.used(i, count);
+            ready[i] = slot.pending() > 0;
+            if (count == 0) continue;
+            @memcpy(self.tx[self.tx_len..][0..p.header_len], &(p.Header{ .kind = .output, .stream = slot.stream_id, .len = @intCast(count) }).encode());
             self.tx_len += p.header_len + count;
-            job.offset += count;
-            s.output_uncredited += @intCast(count);
+            _ = slot.uncredited.fetchAdd(@intCast(count), .release);
             self.counters.output_frames += 1;
             self.counters.output_bytes += count;
             self.counters.tx_high_water = @max(self.counters.tx_high_water, self.tx_len);
-            if (job.offset == job.len) {
-                s.read_job = null;
-                self.releaseRead(index);
-            }
         }
     }
 
@@ -470,7 +409,7 @@ const Agent = struct {
         if (n > 0) {
             self.counters.transport_bytes += @intCast(n);
             self.sent += @intCast(n);
-            self.last_write = nowMs();
+            self.last_write.store(nowMs(), .monotonic);
             if (self.sent == self.tx_len) {
                 self.sent = 0;
                 self.tx_len = 0;
@@ -481,15 +420,49 @@ const Agent = struct {
         return false;
     }
 
-    fn hasReadResults(self: *Agent) bool {
-        const pool = self.pool orelse return false;
-        for (pool.workers[0..pool.count]) |*worker| {
-            if (worker.state.load(.acquire) != .ready) continue;
-            for (worker.jobs[0..worker.job_count]) |*job| {
-                if (!job.released and job.collected and job.offset < job.len) return true;
-            }
+    /// Lock held: stage and write until nothing is staged or the transport
+    /// blocks. A fresh frame gets one immediate nonblocking attempt; after
+    /// EAGAIN or a partial write, only the owner retries, on POLLOUT.
+    /// Terminates: ringed bytes are bounded by every stream's credit.
+    fn pumpLocked(self: *Agent) bool {
+        if (self.shutdown) return true;
+        while (!self.blocked.load(.seq_cst)) {
+            self.stageControl();
+            if (self.readers != null and self.control.items.len == 0) self.stageRings();
+            if (self.tx_len == 0) return true;
+            if (!self.flushTransport(self.out_fd)) return false;
+            if (self.tx_len > 0) self.blocked.store(true, .seq_cst);
         }
-        return false;
+        return true;
+    }
+
+    /// Lock held: pump, unlock, and retake the lock for flushes requested
+    /// while it was held. Returns false when the transport failed.
+    fn pumpAndUnlock(self: *Agent) bool {
+        while (true) {
+            self.flush_pending.store(false, .seq_cst);
+            const ok = self.pumpLocked();
+            self.lock.unlock();
+            if (!ok) {
+                self.transport_failed.store(true, .seq_cst);
+                return false;
+            }
+            if (!self.flush_pending.load(.seq_cst) or !self.lock.tryLock()) return true;
+        }
+    }
+
+    fn pump(self: *Agent) bool {
+        self.lock.lock();
+        return self.pumpAndUnlock();
+    }
+
+    /// Reader callback. Never waits for the lock: a busy holder sees
+    /// `flush_pending` after unlocking and flushes these bytes itself.
+    fn readerFlush(ctx: *anyopaque) bool {
+        const self: *Agent = @ptrCast(@alignCast(ctx));
+        self.flush_pending.store(true, .seq_cst);
+        if (!self.lock.tryLock()) return false;
+        return !self.pumpAndUnlock() or self.blocked.load(.seq_cst);
     }
 };
 
@@ -499,7 +472,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
     _ = c.signal(c.SIGINT, stopSignal);
     try nonblocking(0);
     try nonblocking(1);
-    var agent = Agent{ .a = a, .io = io, .last_write = nowMs() };
+    var agent = Agent{ .a = a, .io = io, .last_write = .init(nowMs()) };
     const diagnostics = c.getenv("HOLLOW_MUX_DIAGNOSTICS") != null;
     agent.diagnostics = diagnostics;
     defer if (diagnostics) {
@@ -541,57 +514,64 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
         for (&agent.streams) |*entry| if (entry.*) |*s| s.deinit(a);
         agent.control.deinit(a);
     }
-    // Explicit experiment only; zero retains the inline implementation for A/B
-    // runs. Spawn preparation stays on the owner/forked child, never workers.
+    // Zero keeps every PTY read on the owner. Nonzero pins each stream to one
+    // of that many persistent reader threads. Spawn preparation stays on the
+    // owner/forked child, never readers.
     const worker_count = if (c.getenv("HOLLOW_MUX_READ_WORKERS")) |value| try std.fmt.parseInt(usize, std.mem.span(value), 10) else 0;
-    if (worker_count > read_pool.max_workers) return error.InvalidWorkerCount;
-    agent.batch_jobs = if (c.getenv("HOLLOW_MUX_READ_BATCH_JOBS")) |value| try std.fmt.parseInt(usize, std.mem.span(value), 10) else 1;
-    if (agent.batch_jobs == 0 or agent.batch_jobs > read_pool.max_jobs) return error.InvalidBatchSize;
-    agent.counters.read_batch_jobs = agent.batch_jobs;
+    if (worker_count > pty_readers.max_readers) return error.InvalidWorkerCount;
+    // Accepted for configuration compatibility; persistent readers have no
+    // job batches, so the value no longer changes scheduling.
+    const batch_jobs = if (c.getenv("HOLLOW_MUX_READ_BATCH_JOBS")) |value| try std.fmt.parseInt(usize, std.mem.span(value), 10) else 1;
+    if (batch_jobs == 0 or batch_jobs > 2) return error.InvalidBatchSize;
+    agent.counters.read_batch_jobs = batch_jobs;
     if (worker_count > 0) {
-        const pool = try a.create(read_pool.Pool);
-        pool.* = .{};
-        pool.start(worker_count) catch |err| {
-            a.destroy(pool);
+        const set = try a.create(pty_readers.Set);
+        set.* = .{ .flush = Agent.readerFlush, .flush_ctx = &agent };
+        set.start(worker_count, diagnostics) catch |err| {
+            a.destroy(set);
             return err;
         };
-        agent.pool = pool;
+        agent.readers = set;
     }
-    defer if (agent.pool) |pool| {
-        // Join before stream teardown; no worker references streams. Inline
-        // mode never allocates/touches the worker buffers or thread stacks.
-        pool.deinit();
-        for (&agent.streams) |*entry| if (entry.*) |*s| {
-            s.read_job = null; // Joined jobs are discarded by connection abort.
+    defer if (agent.readers) |set| {
+        agent.lock.lock();
+        agent.shutdown = true;
+        agent.lock.unlock();
+        // Join before stream teardown. Joined readers released nothing, so
+        // the set closes descriptors of still-attached streams itself.
+        set.deinit();
+        for (&agent.streams) |*entry| if (entry.*) |*s| if (s.attached) {
+            s.master = -1;
+            s.attached = false;
         };
-        a.destroy(pool);
+        set.freeRings(a);
+        agent.counters.pty_reads += set.final.reads;
+        agent.counters.pty_read_ns += set.final.read_ns;
+        agent.counters.reader_wakes = set.final.wakes;
+        agent.counters.reader_parks = set.final.parks;
+        agent.counters.owner_wakes = set.final.owner_wakes;
+        a.destroy(set);
     };
     agent.counters.read_workers = worker_count;
     var reader: p.Reader = .{};
     defer reader.deinit(a);
     try agent.frame(.hello, 0, p.hello);
     const started = nowMs();
-    var write_blocked = false;
     while (true) {
         if (stopping.load(.monotonic)) return;
-        agent.stageControl();
-        // A fresh frame gets one immediate nonblocking attempt. After EAGAIN,
-        // do not spin on the same bytes: poll POLLOUT before retrying.
-        if (agent.tx_len > 0 and !write_blocked) {
-            if (!agent.flushTransport(1)) return;
-            if (agent.tx_len > 0) write_blocked = true;
-        }
-        const pooled_reads = agent.useReadPool();
+        if (!agent.pump()) return;
+        const write_blocked = agent.blocked.load(.seq_cst);
         var fds: [3 + p.max_streams * 2]c.struct_pollfd = undefined;
         fds[0] = .{ .fd = 0, .events = c.POLLIN, .revents = 0 };
-        fds[1] = .{ .fd = 1, .events = if (agent.tx_len > 0) c.POLLOUT else 0, .revents = 0 };
-        fds[2] = .{ .fd = if (agent.pool) |pool| pool.completion_fd else -1, .events = c.POLLIN, .revents = 0 };
-        const can_read = if (pooled_reads) agent.pool.?.idle() != null else agent.tx_len == 0 and agent.control.items.len == 0;
+        fds[1] = .{ .fd = 1, .events = if (write_blocked) c.POLLOUT else 0, .revents = 0 };
+        fds[2] = .{ .fd = if (agent.readers) |set| set.wake_fd else -1, .events = c.POLLIN, .revents = 0 };
+        // Inline only: no other thread touches the transport.
+        const can_read = agent.readers == null and !write_blocked;
         for (agent.streams, 0..) |entry, i| {
             fds[3 + i * 2] = .{ .fd = if (entry) |s| s.master else -1, .events = 0, .revents = 0 };
             fds[4 + i * 2] = .{ .fd = if (entry) |s| s.launch else -1, .events = c.POLLIN, .revents = 0 };
             if (entry) |s| {
-                if (!s.eof and s.launch < 0 and s.output_credit > 0 and s.read_job == null and can_read) fds[3 + i * 2].events |= c.POLLIN;
+                if (!s.eof and s.launch < 0 and s.output_credit > 0 and can_read) fds[3 + i * 2].events |= c.POLLIN;
                 if (s.input.items.len > 0) fds[3 + i * 2].events |= c.POLLOUT;
                 // HUP ignores events: remove blocked/EOF descriptors to avoid
                 // a busy loop when a stopped consumer exhausts its window.
@@ -599,25 +579,33 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             }
         }
         const poll_started = if (diagnostics) nowNs() else 0;
-        // Staged results are local work, not a transport-readiness event. A
-        // zero-timeout turn drains them without imposing the normal 10 ms idle
-        // wait, while still returning to input dispatch on every owner turn.
-        const timeout: c_int = if (agent.tx_len == 0 and (agent.control.items.len > 0 or agent.hasReadResults())) 0 else 10;
+        // Pumping leaves control queued only behind a blocked transport. With
+        // readers, announce the sleep so EOF, detach, or a reader that blocks
+        // the transport wakes us; while blocked, POLLOUT is the wakeup.
+        var timeout: c_int = 10;
+        if (agent.readers) |set| {
+            if (!write_blocked and (!set.prepareSleep() or agent.flush_pending.load(.seq_cst) or agent.blocked.load(.seq_cst))) {
+                set.awake();
+                timeout = 0;
+            }
+        }
         const polled = c.poll(&fds, fds.len, timeout);
+        if (agent.readers) |set| set.awake();
         if (diagnostics) agent.counters.poll_ns += @intCast(nowNs() - poll_started);
         agent.counters.polls += 1;
         if (polled < 0) {
             if (errno() == c.EINTR) continue;
             return error.PollFailed;
         }
-        if ((fds[2].revents & c.POLLIN) != 0) read_pool.drainNotification(agent.pool.?.completion_fd);
+        if ((fds[2].revents & c.POLLIN) != 0) agent.readers.?.drainWake();
         if ((fds[1].revents & (c.POLLHUP | c.POLLERR)) != 0) return;
+        if (agent.transport_failed.load(.seq_cst)) return;
         if ((fds[1].revents & c.POLLOUT) != 0) {
-            if (!agent.flushTransport(1)) return;
-            write_blocked = agent.tx_len > 0;
+            agent.blocked.store(false, .seq_cst);
+            if (!agent.pump()) return;
         }
-        if (agent.tx_len == 0 and agent.control.items.len == 0) agent.last_write = nowMs();
-        if (nowMs() - agent.last_write > 10000) return error.StalledTransport;
+        if (!agent.blocked.load(.seq_cst)) agent.last_write.store(nowMs(), .monotonic);
+        if (nowMs() - agent.last_write.load(.monotonic) > 10000) return error.StalledTransport;
         if (!agent.negotiated and nowMs() - started > 10000) return error.NegotiationTimeout;
         if ((fds[0].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0) {
             var bytes: [8192]u8 = undefined;
@@ -637,9 +625,19 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             const frame = (try reader.next()) orelse break;
             try agent.dispatch(frame.header, frame.payload);
         }
-        try agent.collectReads();
         var ready: [p.max_streams]bool = .{false} ** p.max_streams;
         for (&agent.streams, 0..) |*entry, i| if (entry.*) |*s| {
+            if (s.attached) {
+                const set = agent.readers.?;
+                // Reader EOF counts once every ringed byte has been framed.
+                if (!s.eof and set.slots[i].eof.load(.acquire) and set.slots[i].pending() == 0) {
+                    s.eof = true;
+                    s.input.clearRetainingCapacity();
+                    s.master = -1;
+                    set.requestDetach(i);
+                }
+                if (s.eof and set.released(i)) s.attached = false;
+            }
             reap(s);
             if (s.closing) |start| {
                 if (s.status == null and nowMs() - start >= 1500) signalGroup(s.pid, c.SIGKILL);
@@ -659,7 +657,21 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
                         try agent.frame(.@"error", s.id, message[0..@intCast(n)]);
                         s.failed = true;
                         s.stop();
-                    } else if (s.closing == null) try agent.number(p.spawned, s.id, p.window);
+                    } else if (s.closing == null) {
+                        try agent.number(p.spawned, s.id, p.window);
+                        if (agent.readers) |set| {
+                            agent.lock.lock();
+                            const attached = set.attach(a, i, s.id, s.master, s.output_credit);
+                            agent.lock.unlock();
+                            if (attached) {
+                                s.attached = true;
+                            } else |err| {
+                                try agent.frame(.@"error", s.id, @errorName(err));
+                                s.failed = true;
+                                s.stop();
+                            }
+                        }
+                    }
                 }
             }
             if (s.input.items.len > 0 and (fds[3 + i * 2].revents & c.POLLOUT) != 0) {
@@ -671,31 +683,26 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
                     try agent.number(p.credit, s.id, @intCast(count));
                 } else if (n < 0 and errno() != c.EINTR and errno() != c.EAGAIN) {
                     try agent.frame(.@"error", s.id, "PtyInputFailed");
-                    s.stop();
+                    agent.stopStream(i);
                 }
             }
-            ready[i] = !s.eof and s.launch < 0 and s.output_credit > 0 and s.read_job == null and (fds[3 + i * 2].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0;
-            if (s.status != null and s.eof and s.launch < 0 and s.read_job == null) {
-                // The one staged data frame precedes these queued exit bytes.
+            ready[i] = !s.eof and s.launch < 0 and s.output_credit > 0 and (fds[3 + i * 2].revents & (c.POLLIN | c.POLLHUP | c.POLLERR)) != 0;
+            if (s.status != null and s.eof and s.launch < 0 and !s.attached) {
+                // Every framed output byte of this stream precedes the exit.
                 if (!s.failed) try agent.number(.exit, s.id, s.status.?);
                 s.deinit(a);
                 entry.* = null;
                 ready[i] = false;
-                if (agent.focused == i) agent.focused = null;
+                if (agent.focused == i) {
+                    agent.focused = null;
+                    if (agent.readers) |set| set.focused.store(pty_readers.Set.no_focus, .monotonic);
+                }
             }
         };
-        if (pooled_reads) {
-            try agent.dispatchReads(&ready);
-            if (agent.tx_len == 0 and agent.control.items.len == 0) agent.stageReadResults();
-        } else if (agent.tx_len == 0 and agent.control.items.len == 0) {
-            agent.stageOutput(&ready);
-        }
+        if (agent.readers == null and agent.tx_len == 0 and agent.control.items.len == 0) agent.stageOutput(&ready);
         // Bottom-staged data is fresh; make its first write attempt now rather
         // than adding a poll interval. EAGAIN is remembered until POLLOUT.
-        if (agent.tx_len > 0 and !write_blocked) {
-            if (!agent.flushTransport(1)) return;
-            if (agent.tx_len > 0) write_blocked = true;
-        }
+        if (!agent.pump()) return;
     }
 }
 
@@ -709,7 +716,7 @@ fn validateSpawn(spawn: p.Spawn) !void {
 }
 
 fn reap(s: *Stream) void {
-    if (s.status != null or !s.eof or s.read_job != null) return;
+    if (s.status != null or !s.eof) return;
     // Keep the zombie's PID reserved until output drains (or close aborts it).
     // Otherwise a stopped consumer could retain a reaped PID long enough for
     // a later process-group signal to hit an unrelated, recycled process ID.
@@ -818,59 +825,6 @@ test "focus-only and no-ready scheduling remain live without background work" {
     try std.testing.expect(scheduler.choose(ready, 31) == null);
 }
 
-test "single-stream inline selection waits for all worker jobs and results" {
-    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined };
-    var pool: read_pool.Pool = .{ .count = 2 };
-    agent.pool = &pool;
-    const stream: Stream = .{ .id = 1, .pid = 0, .master = -1, .launch = -1, .started = 0 };
-    try std.testing.expect(!agent.useReadPool());
-    agent.streams[0] = stream;
-    try std.testing.expect(!agent.useReadPool());
-    agent.streams[1] = stream;
-    try std.testing.expect(agent.useReadPool());
-    agent.streams[1] = null;
-    pool.workers[0].state.store(.running, .release);
-    try std.testing.expect(agent.useReadPool());
-    pool.workers[0].state.store(.ready, .release);
-    try std.testing.expect(agent.useReadPool());
-    pool.workers[0].state.store(.idle, .release);
-    try std.testing.expect(!agent.useReadPool());
-}
-
-test "paired jobs do not leave idle readers when ready streams are scarce" {
-    var pool: read_pool.Pool = .{ .count = 4 };
-    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .pool = &pool, .batch_jobs = 2 };
-    var ready = [_]bool{false} ** p.max_streams;
-    @memset(ready[0..4], true);
-    try std.testing.expectEqual(@as(usize, 1), agent.jobsPerBatch(ready));
-    ready[4] = true;
-    try std.testing.expectEqual(@as(usize, 2), agent.jobsPerBatch(ready));
-    ready[4] = false;
-    pool.workers[0].state.store(.running, .release);
-    try std.testing.expectEqual(@as(usize, 2), agent.jobsPerBatch(ready));
-    agent.batch_jobs = 1;
-    try std.testing.expectEqual(@as(usize, 1), agent.jobsPerBatch(ready));
-}
-
-test "collect skips retired batch member while its partner retains the buffer" {
-    var pool: read_pool.Pool = .{ .count = 1 };
-    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .pool = &pool };
-    pool.workers[0].job_count = 2;
-    pool.workers[0].jobs[0] = .{ .slot = 31, .stream_id = 17, .released = true };
-    pool.workers[0].jobs[1] = .{ .slot = 0, .stream_id = 23, .allowance = 1, .len = 1, .released = false };
-    pool.workers[0].state.store(.ready, .release);
-    // Slot 31 is already retired: dereferencing it would be stale/invalid.
-    agent.streams[0] = .{ .id = 23, .pid = 0, .master = -1, .launch = -1, .started = 0, .read_job = 1 };
-    try agent.collectReads();
-    try std.testing.expectEqual(read_pool.State.ready, pool.workers[0].state.load(.acquire));
-    agent.streams[0].?.closing = 0;
-    try agent.collectReads();
-    try std.testing.expect(agent.streams[0].?.read_job == null);
-    try std.testing.expectEqual(read_pool.State.idle, pool.workers[0].state.load(.acquire));
-    try std.testing.expectEqual(@as(u64, 1), agent.counters.read_jobs);
-    try std.testing.expectEqual(@as(u64, 1), agent.counters.read_batches);
-}
-
 test "transport flush preserves staged control frame across EAGAIN and partial writes" {
     var fds: [2]c_int = undefined;
     try std.testing.expectEqual(@as(c_int, 0), c.pipe2(&fds, c.O_NONBLOCK | c.O_CLOEXEC));
@@ -924,7 +878,47 @@ test "transport flush preserves staged control frame across EAGAIN and partial w
     for (drained[0..remaining]) |byte| try std.testing.expectEqual(@as(u8, 0x5a), byte);
 }
 
+test "reader rings rotate full frames across staging buffers" {
+    var set: pty_readers.Set = .{};
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .readers = &set };
+    var rings: [3][pty_readers.ring_size]u8 = .{.{0} ** pty_readers.ring_size} ** 3;
+    for (&rings, 0..) |*ring, i| {
+        set.slots[i].ring = ring;
+        set.slots[i].stream_id = @intCast(i + 1);
+        set.slots[i].head.raw = p.window;
+        set.slots[i].attached.raw = true;
+    }
+    for ([_]u32{ 1, 2, 3, 1, 2, 3 }) |id| {
+        agent.stageRings();
+        const header = try p.Header.decode(agent.tx[0..p.header_len]);
+        try std.testing.expectEqual(id, header.stream);
+        try std.testing.expectEqual(p.max_data, header.len);
+        try std.testing.expectEqual(agent.tx.len, agent.tx_len);
+        agent.tx_len = 0; // Simulate a complete transport write.
+    }
+}
+
+test "focused reader flood alternates with rotating background frames" {
+    var set: pty_readers.Set = .{};
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .readers = &set };
+    var rings: [3][pty_readers.ring_size]u8 = .{.{0} ** pty_readers.ring_size} ** 3;
+    for (&rings, 0..) |*ring, i| {
+        set.slots[i].ring = ring;
+        set.slots[i].stream_id = @intCast(i + 1);
+        set.slots[i].head.raw = p.window;
+        set.slots[i].attached.raw = true;
+    }
+    set.focused.raw = 2;
+    for ([_]u32{ 3, 1, 3, 2, 3, 1, 3, 2 }) |id| {
+        agent.stageRings();
+        const header = try p.Header.decode(agent.tx[0..p.header_len]);
+        try std.testing.expectEqual(id, header.stream);
+        try std.testing.expectEqual(p.max_data, header.len);
+        agent.tx_len = 0;
+    }
+}
+
 test {
     _ = p;
-    _ = read_pool;
+    _ = pty_readers;
 }

@@ -158,6 +158,16 @@ def pump(clients, timeout=5):
     return client, client.recv(timeout)
 
 
+def agent_cpu(process):
+    """Agent's own user+system seconds (all threads, not reaped children)."""
+    try:
+        with open(f"/proc/{process.pid}/stat") as stat:
+            fields = stat.read().rsplit(")", 1)[1].split()
+    except OSError:
+        return 0.0
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
 def percentile(values, p):
     values = sorted(values)
     return values[min(len(values) - 1, int((len(values) - 1) * p))]
@@ -226,6 +236,7 @@ def benchmark(command, mode, panes, size, samples, credit_batch=WINDOW // 2):
             client.input(sid, b"g")
         remaining = set(streams)
         received = 0
+        own_cpu = 0.0
         while remaining:
             client, (kind, sid, body) = pump(clients)
             if kind == OUTPUT:
@@ -235,11 +246,14 @@ def benchmark(command, mode, panes, size, samples, credit_batch=WINDOW // 2):
                 assert struct.unpack("<I", body)[0] == 0
                 remaining.remove((client, sid))
                 if mode == "pty":
+                    own_cpu += agent_cpu(client.process)
                     clients.remove(client)
                     client.close()
             elif kind == ERROR:
                 raise RuntimeError(body.decode())
         seconds = time.perf_counter() - before
+        if mode == "mux":
+            own_cpu = agent_cpu(clients[0].process)
         assert received == panes * size, (received, panes * size)
         result = dict(
             mode=mode, panes=panes, bytes=received, seconds=seconds,
@@ -251,6 +265,8 @@ def benchmark(command, mode, panes, size, samples, credit_batch=WINDOW // 2):
             echo_ms=dict(p50=statistics.median(echo_ms), p95=percentile(echo_ms, .95), p99=percentile(echo_ms, .99)),
             live_agent_rss_kib=rss_kib, agent_processes=1 if mode == "mux" else panes,
             live_agent_threads=threads,
+            # Agent processes only, through bulk completion (includes startup/echo).
+            agent_cpu_seconds=own_cpu,
             output_frames=sum(c.output_frames for c in owners),
             mean_output_frame_bytes=sum(c.output_bytes for c in owners) / sum(c.output_frames for c in owners),
         )

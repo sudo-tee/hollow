@@ -101,11 +101,12 @@ class MuxTests(unittest.TestCase):
                 if kind == EXIT and sid == 1:
                     self.assertEqual(struct.unpack("<I", body)[0], 0)
                     break
-        self.assertGreater(client.diagnostics["inline_reads"], 0)
         if int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")):
-            self.assertGreater(client.diagnostics["read_jobs"], 0)
-        for key in ("read_queue_ns", "read_work_ns", "read_collect_ns", "read_result_ns"):
-            self.assertGreaterEqual(client.diagnostics[key], 0)
+            # Persistent readers handle every attached stream.
+            self.assertEqual(client.diagnostics["inline_reads"], 0)
+            self.assertGreater(client.diagnostics["pty_reads"], 0)
+        else:
+            self.assertGreater(client.diagnostics["inline_reads"], 0)
 
     def test_independent_environment_cwd_exit_and_spawn_failure(self):
         self.client.spawn(1, ["/bin/sh", "-c", "printf '%s:%s' \"$MUX_TEST\" \"$PWD\"; exit 7"],
@@ -265,9 +266,7 @@ class MuxTests(unittest.TestCase):
         workers = int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0"))
         self.assertEqual(client.diagnostics["read_workers"], workers)
         self.assertEqual(client.diagnostics["read_batch_jobs"], int(os.environ.get("HOLLOW_MUX_READ_BATCH_JOBS", "1")))
-        self.assertLessEqual(client.diagnostics["read_batches"], client.diagnostics["read_jobs"])
-        self.assertLessEqual(client.diagnostics["read_jobs"], client.diagnostics["read_batches"] * 2)
-        self.assertLessEqual(client.diagnostics["read_pool_reserved_high_water"], workers * WINDOW)
+        self.assertGreater(client.diagnostics["pty_reads"], 0)
 
     def test_focused_echo_and_background_progress_with_output_flood(self):
         self.client.spawn(1, ["/bin/sh", "-c", "exec yes x"])
