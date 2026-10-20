@@ -179,6 +179,9 @@ HOLLOW_MUX_READ_WORKERS=4 python3 scripts/agent_mux.py --mode mux --build-mode R
 Accepted worker counts are 0–4. Nonzero counts add exactly that many reader
 threads, independent of pane count. The default remains **0** because the
 prototype is not performance-qualified. `pty` and `stdio` ignore this setting.
+With a nonzero count, a sole stream now uses the inline fast path once all
+worker jobs/results have drained. Threads remain allocated and parked; adding
+another stream returns to pooled reads without changing wire or credit state.
 The benchmark records the selected count; `test-agent-mux` runs its full suite
 with 0, 2, and 4 readers.
 
@@ -220,7 +223,7 @@ samples per pane, three runs with variant order reversed on alternating runs
 
 At 32 panes, dedicated agents had 32 threads versus 5 for four-reader mux.
 Idle echo p99 medians were 0.337 ms dedicated, 0.349 ms inline, and 0.470 ms
-with four readers. **Single-pane throughput regresses with worker handoff;
+with four readers. **At this checkpoint, single-pane throughput regressed with worker handoff;
 multi-pane parity is still not met.** These are idle echo measurements, not
 mixed-load latency qualification. No default changes follow from this table.
 Full data: `/tmp/opencode/hollow-mux-pool-comparison.jsonl`.
@@ -307,8 +310,97 @@ old/new binaries, three runs, 8 MiB/pane, and the focus-first scheduler:
   justified changing ownership.
 
 Data: `/tmp/opencode/hollow-mux-pool-quantum-ablation.jsonl` and
-`/tmp/opencode/hollow-mux-pool-descriptor-ablation.jsonl`. Single-pane worker
-handoff regression and the multi-pane throughput gap remain unresolved.
+`/tmp/opencode/hollow-mux-pool-descriptor-ablation.jsonl`. Subsequent work below
+avoids the single-pane handoff; the multi-pane throughput gap remains unresolved.
+
+### Worker phases, PTY read rotation, and the single-pane fast path
+
+Opt-in diagnostics now include job phase timings, summed across workers:
+
+- `read_jobs`: completed jobs collected by the owner.
+- `read_queue_ns`: job publication to reader start (including wake/scheduling).
+- `read_work_ns`: reader start to result publication (reads, loop, FD close).
+- `read_collect_ns`: result publication to owner collection.
+- `read_result_ns`: result publication to buffer release, **including** collection
+  wait; do not add it to `read_collect_ns` as if they were disjoint.
+- `inline_reads`: read attempts served by the inline path, even with an enabled pool.
+
+These are monotonic wall times, not per-thread CPU time; totals may exceed
+connection elapsed time. Timings cover startup/echo as well as bulk and are
+disabled unless `HOLLOW_MUX_DIAGNOSTICS` is set. Jobs abandoned by connection
+abort need not appear in collected/released totals.
+
+For 16 panes × 32 MiB, two readers took 3.822 seconds bulk elapsed: 5.778 seconds
+aggregate read work, 0.559 queue wait, 0.511 collection wait, and 1.034 result
+hold. Four readers took 2.024 seconds: 5.746 work, 0.634 queue wait, 0.535
+collection wait, and 1.381 result hold. These suggest roughly 71–76% of worker
+capacity spent in read work, not a pure transport-handoff bottleneck. The
+estimate uses bulk elapsed against whole-connection counters, so it is not an
+exact utilization measurement. Data: `/tmp/opencode/hollow-mux-worker-phases-two.jsonl`
+and `/tmp/opencode/hollow-mux-worker-phases-four.jsonl`.
+
+One hypothesis was PTY migration between readers. A controlled stable
+`stream slot % reader count` assignment did not improve the two-reader ceiling
+(32 panes: 125.2 MiB/s both ways) and increased four-reader mixed p99
+(0.850 → 1.717 ms). It was **discarded**; dynamic assignment remains. Data:
+`/tmp/opencode/hollow-mux-worker-affinity-ablation.jsonl`.
+
+Raw PTY control instead exposed the cost of repeatedly reading the **same**
+PTY before rotating. The diagnostic now supports:
+
+```sh
+python3 scripts/agent_pty_read_bench.py --panes 16 --workers 2 \
+  --batch-reads 1 2 4 8 --runs 3
+```
+
+With identical producers, no transport/credits/framing, three-run medians on
+this WSL2 kernel were:
+
+| Attempts per ready PTY before rotation | MiB/s | Mean wall time per counted read (µs) |
+| --- | ---: | ---: |
+| 1 | 261.2 | 25.9 |
+| 2 | 226.2 | 35.4 |
+| 4 | 194.1 | 44.8 |
+| 8 | 184.1 | 49.4 |
+
+This isolates an important workload/scheduling effect below Hollow's transport;
+it does **not** identify the exact kernel mechanism, prove transport parity, or
+show that one-read jobs would win after owner handoff costs. Rotating several
+credit-reserved PTYs inside a bounded worker batch is a candidate for future
+measurement, not an implemented design. Data:
+`/tmp/opencode/hollow-raw-read-batching-cli.jsonl`.
+
+The retained small optimization addresses the already-known single-pane cost:
+when exactly one stream remains and **every** worker state is idle, read on
+the owner using the existing bounded inline path. Running jobs and ready results
+keep the pooled path active until drained; read ownership never overlaps, and
+staged bytes/credit accounting remain unchanged. A newly spawned second stream
+resumes pooling on the next scheduling turn. Stream count is conservative: an
+idle second stream still selects pooling. No utilization heuristic, batching
+timer, new queue, or production default is introduced.
+
+Paired old/new binaries, ReleaseFast, 8 MiB/stream, 25 idle echoes, three runs
+with variant order alternated, single-pane medians:
+
+| Backend | Before MiB/s | After MiB/s |
+| --- | ---: | ---: |
+| Dedicated control | — | 75.2 |
+| Inline control | — | 75.5 |
+| Pool selected, 2 readers | 63.3 | 74.8 |
+| Pool selected, 4 readers | 63.3 | 77.9 |
+
+At 32 panes, four-reader bulk was 231.0/228.4 MiB/s before/after; mixed p99
+was 0.983/0.887 ms. An apparent four-pane drop in short runs was checked with
+32 MiB/pane over five paired runs: 234.6/232.2 MiB/s medians, overlapping ranges
+(210.5–235.7 and 230.8–240.7). Treat small multi-pane differences as noisy rather
+than claim a throughput gain. Data: `/tmp/opencode/hollow-mux-single-fastpath-comparison.jsonl`
+and `/tmp/opencode/hollow-mux-fastpath-four-longer.jsonl`.
+
+Regression coverage exercises binary output across single→multi→single stream
+transitions and deterministic selection with running/ready jobs. The stalled
+final-output/PID-retention test keeps a second idle stream live so the worker
+result lifecycle remains covered rather than silently testing only the fast
+path. Numerical release budgets and broader connector qualification remain open.
 
 ## Experimental v1 wire contract
 

@@ -19,7 +19,7 @@ import time
 import tty
 
 
-def drain(fds):
+def drain(fds, batch_reads=1):
     fds = list(fds)
     count = reads = read_ns = 0
     cpu = time.thread_time()
@@ -28,25 +28,27 @@ def drain(fds):
         if not ready:
             raise TimeoutError("PTY made no progress")
         for fd in ready:
-            started = time.perf_counter_ns()
-            try:
-                data = os.read(fd, 65536)
-            except BlockingIOError:
-                continue
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                data = b""
-            read_ns += time.perf_counter_ns() - started
-            reads += 1
-            count += len(data)
-            if not data:
-                fds.remove(fd)
+            for _ in range(batch_reads):
+                started = time.perf_counter_ns()
+                try:
+                    data = os.read(fd, 65536)
+                except BlockingIOError:
+                    break
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    data = b""
+                read_ns += time.perf_counter_ns() - started
+                reads += 1
+                count += len(data)
+                if not data:
+                    fds.remove(fd)
+                    break
     return dict(bytes=count, reads=reads, read_seconds=read_ns / 1e9,
                 cpu_seconds=time.thread_time() - cpu)
 
 
-def benchmark(panes, workers, size):
+def benchmark(panes, workers, size, batch_reads=1):
     children, masters = [], []
     code = (
         "import os; os.write(1,b'READY'); os.read(0,1); "
@@ -75,7 +77,7 @@ def benchmark(panes, workers, size):
                 ready.extend(chunk)
             assert ready == b"READY"
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            jobs = [pool.submit(drain, masters[i::workers]) for i in range(workers)]
+            jobs = [pool.submit(drain, masters[i::workers], batch_reads) for i in range(workers)]
             started = time.perf_counter()
             for master in masters:
                 os.write(master, b"g")
@@ -84,7 +86,7 @@ def benchmark(panes, workers, size):
         assert sum(r["bytes"] for r in results) == panes * size
         for child in children:
             assert child.wait(timeout=3) == 0
-        return dict(panes=panes, workers=workers, bytes=panes * size, seconds=elapsed,
+        return dict(panes=panes, workers=workers, batch_reads=batch_reads, bytes=panes * size, seconds=elapsed,
                     mib_per_second=panes * size / 2**20 / elapsed,
                     reader_cpu_seconds=sum(r["cpu_seconds"] for r in results),
                     reads=sum(r["reads"] for r in results),
@@ -104,8 +106,10 @@ def main():
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 4])
     parser.add_argument("--bytes", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--batch-reads", type=int, nargs="+", default=[1],
+                        help="read attempts per ready PTY before rotating; diagnostic only")
     args = parser.parse_args()
-    if min(*args.panes, *args.workers, args.bytes, args.runs) < 1:
+    if min(*args.panes, *args.workers, *args.batch_reads, args.bytes, args.runs) < 1:
         parser.error("all counts must be positive")
     print(json.dumps(dict(metadata=dict(platform=platform.platform(), python=sys.version,
           logical_cpus=os.cpu_count(),
@@ -113,7 +117,8 @@ def main():
     for panes in args.panes:
         for run in range(args.runs):
             for workers in args.workers[::1 if run % 2 == 0 else -1]:
-                print(json.dumps(dict(run=run, **benchmark(panes, workers, args.bytes))), flush=True)
+                for batch_reads in args.batch_reads[::1 if run % 2 == 0 else -1]:
+                    print(json.dumps(dict(run=run, **benchmark(panes, workers, args.bytes, batch_reads))), flush=True)
 
 
 if __name__ == "__main__":

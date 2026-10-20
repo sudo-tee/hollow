@@ -40,6 +40,12 @@ const Counters = struct {
     system_us: i64 = 0,
     read_workers: usize = 0,
     read_pool_reserved_high_water: usize = 0,
+    read_jobs: u64 = 0,
+    read_queue_ns: u64 = 0,
+    read_work_ns: u64 = 0,
+    read_collect_ns: u64 = 0,
+    read_result_ns: u64 = 0,
+    inline_reads: u64 = 0,
 };
 
 const Stream = struct {
@@ -291,6 +297,7 @@ const Agent = struct {
             const n = c.read(s.master, self.tx[self.tx_len + p.header_len ..].ptr, limit);
             if (self.diagnostics) self.counters.pty_read_ns += @intCast(nowNs() - before);
             self.counters.pty_reads += 1;
+            self.counters.inline_reads += 1;
             if (n > 0) {
                 const count: usize = @intCast(n);
                 @memcpy(self.tx[self.tx_len..][0..p.header_len], &(p.Header{ .kind = .output, .stream = s.id, .len = @intCast(count) }).encode());
@@ -313,6 +320,20 @@ const Agent = struct {
         }
     }
 
+    fn useReadPool(self: *Agent) bool {
+        const pool = self.pool orelse return false;
+        // Never cross read paths while any job/result remains owned by a
+        // worker. Once drained, a sole stream needs no parallel kernel reads.
+        for (pool.workers[0..pool.count]) |*worker| {
+            if (worker.state.load(.acquire) != .idle) return true;
+        }
+        var streams: usize = 0;
+        for (self.streams) |entry| if (entry != null) {
+            streams += 1;
+        };
+        return streams > 1;
+    }
+
     fn collectReads(self: *Agent) !void {
         const pool = self.pool orelse return;
         for (pool.workers[0..pool.count], 0..) |*worker, index| {
@@ -325,6 +346,12 @@ const Agent = struct {
                 s.output_credit += unused;
                 self.counters.pty_reads += worker.reads;
                 self.counters.pty_read_ns += worker.read_ns;
+                self.counters.read_jobs += 1;
+                if (self.diagnostics) {
+                    self.counters.read_queue_ns += @intCast(worker.started_ns - worker.submitted_ns);
+                    self.counters.read_work_ns += @intCast(worker.completed_ns - worker.started_ns);
+                    self.counters.read_collect_ns += @intCast(nowNs() - worker.completed_ns);
+                }
                 if (worker.eof) {
                     s.eof = true;
                     s.input.clearRetainingCapacity();
@@ -333,9 +360,15 @@ const Agent = struct {
             }
             if (s.closing != null or worker.len == 0) {
                 s.read_job = null;
-                pool.release(index);
+                self.releaseRead(index);
             }
         }
+    }
+
+    fn releaseRead(self: *Agent, index: usize) void {
+        const pool = self.pool.?;
+        if (self.diagnostics) self.counters.read_result_ns += @intCast(nowNs() - pool.workers[index].completed_ns);
+        pool.release(index);
     }
 
     fn dispatchReads(self: *Agent, ready: *[p.max_streams]bool) !void {
@@ -386,7 +419,7 @@ const Agent = struct {
             self.counters.tx_high_water = @max(self.counters.tx_high_water, self.tx_len);
             if (worker.offset == worker.len) {
                 s.read_job = null;
-                pool.release(index);
+                self.releaseRead(index);
             }
         }
     }
@@ -407,7 +440,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             agent.counters.user_us = usage.ru_utime.tv_sec * 1_000_000 + usage.ru_utime.tv_usec;
             agent.counters.system_us = usage.ru_stime.tv_sec * 1_000_000 + usage.ru_stime.tv_usec;
         }
-        var buf: [1024]u8 = undefined;
+        var buf: [2048]u8 = undefined;
         const text = std.fmt.bufPrint(&buf, "mux diagnostics: {f}\n", .{std.json.fmt(agent.counters, .{})}) catch "mux diagnostics: formatting failed\n";
         _ = c.write(2, text.ptr, text.len);
     };
@@ -470,11 +503,12 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
     while (true) {
         if (stopping.load(.monotonic)) return;
         agent.stageControl();
+        const pooled_reads = agent.useReadPool();
         var fds: [3 + p.max_streams * 2]c.struct_pollfd = undefined;
         fds[0] = .{ .fd = 0, .events = c.POLLIN, .revents = 0 };
         fds[1] = .{ .fd = 1, .events = if (agent.tx_len > 0) c.POLLOUT else 0, .revents = 0 };
         fds[2] = .{ .fd = if (agent.pool) |pool| pool.completion_fd else -1, .events = c.POLLIN, .revents = 0 };
-        const can_read = if (agent.pool) |pool| pool.idle() != null else agent.tx_len == 0 and agent.control.items.len == 0;
+        const can_read = if (pooled_reads) agent.pool.?.idle() != null else agent.tx_len == 0 and agent.control.items.len == 0;
         for (agent.streams, 0..) |entry, i| {
             fds[3 + i * 2] = .{ .fd = if (entry) |s| s.master else -1, .events = 0, .revents = 0 };
             fds[4 + i * 2] = .{ .fd = if (entry) |s| s.launch else -1, .events = c.POLLIN, .revents = 0 };
@@ -579,7 +613,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
                 if (agent.focused == i) agent.focused = null;
             }
         };
-        if (agent.pool != null) {
+        if (pooled_reads) {
             try agent.dispatchReads(&ready);
             if (agent.tx_len == 0 and agent.control.items.len == 0) agent.stageReadResults();
         } else if (agent.tx_len == 0 and agent.control.items.len == 0) {
@@ -705,6 +739,25 @@ test "focus-only and no-ready scheduling remain live without background work" {
     }
     ready[31] = false;
     try std.testing.expect(scheduler.choose(ready, 31) == null);
+}
+
+test "single-stream inline selection waits for all worker jobs and results" {
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined };
+    var pool: read_pool.Pool = .{ .count = 2 };
+    agent.pool = &pool;
+    const stream: Stream = .{ .id = 1, .pid = 0, .master = -1, .launch = -1, .started = 0 };
+    try std.testing.expect(!agent.useReadPool());
+    agent.streams[0] = stream;
+    try std.testing.expect(!agent.useReadPool());
+    agent.streams[1] = stream;
+    try std.testing.expect(agent.useReadPool());
+    agent.streams[1] = null;
+    pool.workers[0].state.store(.running, .release);
+    try std.testing.expect(agent.useReadPool());
+    pool.workers[0].state.store(.ready, .release);
+    try std.testing.expect(agent.useReadPool());
+    pool.workers[0].state.store(.idle, .release);
+    try std.testing.expect(!agent.useReadPool());
 }
 
 test {
