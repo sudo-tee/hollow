@@ -2,6 +2,21 @@
 
 Status: experimental `hollow-agent mux` and user-approved per-domain GUI config opt-in are implemented. Dedicated `pty`, RPC `stdio`, and GUI backend defaults remain unchanged. See [current wire contract, limits, tests, and A/B benchmark](agent-mux.md). Actual GUI/WSL/SSH performance and lifecycle qualification remain outstanding.
 
+Initial actual Windows GUI/WSL repaint comparisons now cover one pane and a
+four-pane visible grid. Longer three-run medians put mux 5.6% and 8.2% behind
+dedicated respectively, with substantial grid variability. These parser/drain
+measurements do not qualify displayed FPS, loaded input latency, multi-pane
+transport parity, startup, memory, or lifecycle; see
+[measurement details and limitations](agent-mux.md#initial-windows-gui--wsl-repaint-measurements).
+
+GUI echo-observation diagnostics now also exercise focus switching during two
+sustained sibling floods. In an isolated Windows/WSL instance with matched
+20 MiB/s-per-flood offered load, three-run median p95/p99 were 14.99/17.85 ms
+dedicated and 14.49/16.97 ms mux, with 3,000 successful loaded echoes per backend.
+These include command/query observer overhead, not physical keyboard-to-display
+timing; broad latency, throughput, RSS, startup, and fault qualification remain
+open. See [loaded GUI diagnostics](agent-mux.md#gui-echo-observation-under-sustained-sibling-floods).
+
 ## Goal
 
 Allow multiple Hollow panes on the same host to share one connector process and one agent connection, reducing process count and repeated startup overhead without materially degrading interactive latency or throughput.
