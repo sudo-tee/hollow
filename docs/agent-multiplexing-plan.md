@@ -25,6 +25,11 @@ varied and was lower for mux in this sample, not a transport maximum. The result
 does not qualify leak behavior, startup, or release gates; defaults remain
 unchanged and gates unchecked. See [isolated GUI / WSL resource observations](agent-mux.md#isolated-gui--wsl-cpu-and-memory-observations).
 
+Follow-up GUI A/Bs found the 20 MiB/s-per-flood cap did not deliver matched load;
+at matched 20 MiB/s aggregate, pooled Linux-agent CPU was 75.7% higher, while
+uncapped pool throughput was substantially higher. This supports further syscall-
+level profiling, not an inline-default change; see [worker CPU/throughput tradeoff](agent-mux.md#read-worker-cputhroughput-tradeoff-in-the-gui).
+
 ## Goal
 
 Allow multiple Hollow panes on the same host to share one connector process and one agent connection, reducing process count and repeated startup overhead without materially degrading interactive latency or throughput.
