@@ -2884,6 +2884,44 @@ test "initial pane callbacks retain the App-owned runtime after initialization r
     try std.testing.expectEqual(@as(u16, 1), runtime.cursorPos(pane.render_state).?.x);
 }
 
+test "closePaneById synchronizes surviving focus without accessing the destroyed pane" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+    const runtime = try app.initTerminalRuntime();
+    app.config.shell = try app.allocator.dupe(u8, "/bin/sh");
+    // Unmap destroyed pane storage immediately: the old focus path must not
+    // silently write into freed storage still mapped by a small-object allocator.
+    app.mux = Mux.init(std.heap.page_allocator);
+    const mux = &app.mux.?;
+    const callbacks = terminal_callbacks.terminalCallbacks();
+    try mux.bootstrapSingle(runtime, callbacks, app.config, 8, 16, 800, 600);
+    const survivor = mux.activePane().?;
+    for (0..3) |_| {
+        _ = try mux.splitActivePane(runtime, callbacks, app.config, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+        const closing = mux.activePane().?;
+        closing.program_status.setFocused(true);
+        survivor.program_status.setFocused(false);
+        survivor.has_bell_attention = true;
+        mux_ops.closePaneById(app, @intFromPtr(closing));
+        try std.testing.expectEqual(survivor, mux.activePane().?);
+        try std.testing.expect(survivor.program_status.focused);
+        try std.testing.expect(!survivor.has_bell_attention);
+    }
+    // A background close must still synchronize the surviving active pane.
+    _ = try mux.splitActivePane(runtime, callbacks, app.config, 8, 16, 800, 600, .vertical, 0.5, null, null, false, null);
+    const background = mux.activePane().?;
+    try std.testing.expect(mux.focusPaneById(@intFromPtr(survivor)));
+    survivor.program_status.setFocused(true);
+    mux_ops.closePaneById(app, @intFromPtr(background));
+    try std.testing.expectEqual(survivor, mux.activePane().?);
+    try std.testing.expect(survivor.program_status.focused);
+    mux_ops.closePaneById(app, 0);
+    try std.testing.expectEqual(survivor, mux.activePane().?);
+}
+
 test "viewport iterator row mapping follows platform row order" {
     if (builtin.os.tag == .linux) {
         try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(0, 5));

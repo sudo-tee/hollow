@@ -167,7 +167,10 @@ Local observer source/log: `/tmp/opencode/tern-probe.c` and
 `/tmp/opencode/tern-probe-p_52ubzq/probe.log`. Observations support offloading
 reads; they do not prove that multiplexing must use one thread per pane.
 
-Hollow's prototype lives in `src/agent/pty_read_pool.zig`. Select it explicitly:
+Hollow's prototype lived in `src/agent/pty_read_pool.zig`; it has since been
+replaced by persistent readers in `src/agent/pty_readers.zig` (see
+[Persistent readers with reader-side transport flush](#persistent-readers-with-reader-side-transport-flush)).
+The selection knobs are unchanged:
 
 ```sh
 # Inline reference (also the default).
@@ -1239,6 +1242,641 @@ and validated analysis are under
 `/tmp/opencode/hollow-gui-write-ab.py` and `hollow-gui-write-summary.py`.
 The installed user GUI remains unchanged; only isolated instances used candidate
 agents through explicit `agent_path` wrappers.
+
+### Immediate-write follow-up: throughput and loaded GUI echo
+
+After committing immediate writes as `fc9685a`, qualification compared the same
+pre-write (`3eb95b…`) and immediate-write (`833d69…`) agent binaries in fresh
+isolated GUIs, with four readers and batch size two. Unlike the diagnostic run
+above, these agents had diagnostics **disabled**. Defaults, buffer bounds, and
+the installed user GUI remained unchanged.
+
+The resource harness completed four pairs, each with 20-second capped and
+uncapped phases and no echo-input observer. The cap was 5 MiB/s per flood
+(approximately 10 MiB/s aggregate). An outer-command timeout interrupted the
+fifth trial: its isolated GUI was explicitly closed, all tracked identities
+were subsequently verified gone, and all trial-five data is excluded. One
+candidate uncapped phase in trial two had a foreground-window sample; the
+entire pair is excluded from the primary uncapped comparison, not silently
+treated as an equally isolated run. Earlier complete data is retained.
+
+For the three valid uncapped pairs (trials 1, 3, 4), baseline producer-admitted
+throughput median was **62.945 MiB/s** (56.416–68.215), versus **63.227 MiB/s**
+(62.210–68.463). Candidate paired changes were +10.269%, +0.364%, and +0.449%:
+a noisy small-sample result, not strong evidence of a transport-throughput win.
+These rates count admitted producer bytes, not rendered pixels or a transport
+maximum. Uncapped agent CPU medians were 0.898 versus 0.932 cores, but different
+delivered rates prevent treating this as a matched-load CPU comparison.
+
+All four complete capped pairs delivered approximately 10.000 MiB/s aggregate.
+Without diagnostics, agent CPU medians were **0.391 baseline versus 0.390
+candidate cores**, with ranges 0.363–0.413 and 0.353–0.420. Paired CPU changes
+ranged from −14.508% to +15.838% (median −0.189%). Thus the earlier approximately
+1.4% diagnostic-run reduction was not reproduced as a robust CPU advantage.
+The demonstrated reduction in poll calls remains, but ordinary matched-load
+CPU benefit is unresolved. Windows/Linux CPU scopes remain separate.
+
+Loaded echo was measured separately in three fresh-GUI pairs with 1,000 echoes
+per run and target switching every 100 samples between two echo panes while
+two flood siblings each requested 5 MiB/s. The existing PowerShell/socket
+observer checked ACK tokens in GUI-parsed text. Its latency includes command
+IPC, PowerShell parsing, and text queries: it is **not keyboard-to-display
+latency**, transport-only latency, or a comparison against dedicated PTYs.
+These echo runs did not sample OS foreground state continuously; only pane
+focus and the isolated launch location were validated.
+
+All six echo runs passed validation: 3,000 unique, successful echoes per
+variant, correct alternating target panes, completed observer metadata, and
+cleanup of all tracked identities. Each flood made positive byte progress at
+every recorded checkpoint interval, approximately 5 MiB/s per worker.
+
+| GUI echo observation latency (ms) | Baseline | Immediate write |
+| --- | ---: | ---: |
+| Pooled 3,000-sample p50 | 10.05 | 9.86 |
+| Pooled p95 | 14.63 | 14.14 |
+| Pooled p99 | 17.30 | 16.42 |
+| Pooled maximum | 43.59 | 37.69 |
+| Median of three run p95 values | 14.61 | 14.22 |
+| Median of three run p99 values | 17.44 | 16.24 |
+
+This sample showed no echo-tail regression; it does not establish significance
+or latency parity with dedicated PTYs. Pooled percentiles and median per-run
+percentiles are different summaries, not interchangeable. Raw send-call and
+final-query timings and poll counts remain in `echo-analysis.json` to expose
+observer overhead rather than subtracting it as if it were a constant.
+
+Raw data and validation are retained under
+`/tmp/opencode/hollow-gui-write-throughput-20261020/` and
+`/tmp/opencode/hollow-gui-write-echo-20261020/`. All experiments used explicit
+isolated command endpoints; the original GUI was left running.
+
+### Opus follow-up: config-only pairing pilots
+
+An Opus 5.5 follow-up review recommended testing one reader with batch size two
+against four readers with batch size two before writing an adaptive scheduler
+or changing wakeup primitives. Both arms used the same immediate-write agent
+(`833d69…`); only isolated test configuration changed. Two paired 20-second
+diagnostic trials were attempted at each aggregate target, 10 and 20 MiB/s.
+All counter ratios below cover agent lifetime, including startup/cleanup, not
+exactly the resource sampling phase. These are mechanism pilots, not CPU or
+latency qualification.
+
+| Aggregate rate / summary | Four readers | One reader |
+| --- | ---: | ---: |
+| 10 MiB/s, two-pair median jobs/batch | 1.000 | 1.131 |
+| 10 MiB/s, batches/output MiB | 302.13 | 261.30 |
+| 10 MiB/s, jobs/output MiB | 302.13 | 295.66 |
+| 20 MiB/s, valid pair jobs/batch | 1.000 | 1.295 |
+| 20 MiB/s, batches/output MiB | 289.07 | 221.73 |
+| 20 MiB/s, owner polls/output MiB | 453.62 | 462.90 |
+
+Both arms delivered the requested aggregate rates. Pairing increased with load,
+but owner turns did not decrease at 20 MiB/s. The second 20 MiB/s pair lacked
+the four-reader shutdown diagnostic record; both runs of that pair are excluded
+from primary paired counter comparisons. The single-reader record from that
+pair showed 1.299 jobs/batch but is not substituted into a synthetic pair.
+The two 10 MiB/s pairs passed validation; the 20 MiB/s pilot records one explicit
+missing-diagnostics issue. All tracked processes were cleaned up.
+
+The exploratory screen proposed after the first pilot required at least 25%
+fewer batches/MiB and 10% fewer owner polls/MiB in both higher-load pairs before
+a larger CPU/echo sweep. Available results do not meet that screen. No adaptive
+in-flight limit, worker-count default, futex wakeup, or descriptor-lifetime
+change was implemented. Limited diagnostic evidence does not rule out benefits
+under other workloads, and fewer batches alone do not demonstrate CPU savings.
+
+The review also corrected two reasoning errors: pairing primarily changes
+**batches/MiB**, not necessarily jobs/MiB; submission/collection timing counters
+are elapsed time including blocked scheduling, not attribution of kernel CPU.
+The earlier hypothesis that handoff elapsed time proves dominant CPU cost is
+not supported. In a subsequent review, Opus also withdrew owner-poll reduction
+as a necessary gate: fewer batches could save worker-wake CPU even if owner
+turns stay flat. The pilot therefore leaves CPU benefit unmeasured, not disproven.
+Any future inline/pool adaptation needs actual matched-load CPU,
+echo-tail, uncapped-throughput, and lifecycle validation before adoption.
+
+Local artifacts: `/tmp/opencode/hollow-gui-pairing-pilot-20261020/` and
+`/tmp/opencode/hollow-gui-pairing-pilot20-20261020/`, each with
+`pairing-analysis.json`. Legacy directory slot names are explicitly mapped in
+analysis: `inline` means four-reader baseline and `pool4` means one-reader arm;
+use `run.json.read_workers`, not these names, to identify configuration.
+
+### Current-binary inline versus pooled reads
+
+The next config-only comparison used the same immediate-write agent
+(`833d69…`, corresponding to committed `fc9685a`) with zero versus four read
+workers. Batch size stayed two in both configurations; it is inert with no
+workers. Diagnostics were disabled. Four alternating pairs (inline/pool,
+pool/inline, inline/pool, pool/inline) each used fresh isolated GUIs with two
+idle echo panes and two repaint floods. Each variant ran a 20-second phase
+capped at 5 MiB/s per flood (10 MiB/s aggregate), followed by 20 seconds uncapped.
+There was no echo-input observer during resource measurements.
+
+Per-process CPU and producer progress use their respective actual timestamps.
+Normalizing agent cores by admitted MiB/s is an approximate cost comparison,
+not precisely matched CPU-window byte accounting. Thread sampling spans a
+slightly different window from process CPU and is descriptive attribution only;
+Windows GUI CPU remains a separate scope, not added to Linux CPU. Uncapped
+producer-admitted throughput is neither rendered-pixel throughput nor a proven
+transport maximum. No production code, user configuration, or defaults changed.
+
+All eight runs completed both phases. All 16 phase validations passed, windows
+were present/non-minimized/non-foreground in recorded samples, all tracked
+identities disappeared after cleanup, and no paired data was excluded. Capped
+actual rates matched within 1% in every pair (one pooled run measured 9.957
+MiB/s; others approximately 10.000).
+
+| Median metric | Inline (0 readers) | Pool (4 readers) |
+| --- | ---: | ---: |
+| Capped Linux agent CPU cores | 0.1925 | 0.3697 |
+| Capped Windows GUI CPU cores | 1.0966 | 1.0557 |
+| Capped Linux workload-worker CPU cores | 0.4505 | 0.4177 |
+| Uncapped admitted throughput, MiB/s | 49.277 | 69.429 |
+| Uncapped Linux agent CPU cores | 0.5770 | 0.9017 |
+| Uncapped Windows GUI CPU cores | 1.4221 | 1.2602 |
+
+Inline agent CPU was lower at matched capped load in all four pairs. The median
+paired ratio of approximate agent CPU cost per admitted MiB was 0.521
+(inline/pool), or approximately 48% less inline agent CPU per byte. Capped
+agent CPU ranges were 0.1720–0.2205 inline and 0.3615–0.3810 pooled. However,
+GUI CPU was higher inline in every capped pair; these separate measurements
+do not establish net machine CPU savings.
+
+Pooled uncapped throughput was higher in all four pairs, with broad observed
+ranges: 37.043–70.177 MiB/s inline and 47.881–72.649 pooled. The ratio of
+throughput medians was 0.710 (inline/pool), so inline did not meet the proposed
+within-5% throughput screen. Uncapped CPU values are not matched-load comparisons.
+These repeated observations support a low-load agent-CPU versus bulk-throughput
+tradeoff, not statistical significance, a kernel root cause, or choosing inline
+as the universally better path.
+
+Thread counters describe where CPU was accumulated, not why: at capped load,
+median owner user/system cores were 0.0151/0.1768 inline versus 0.0247/0.2220
+pooled, plus 0.0117/0.1135 pooled reader cores. The separate timing windows and
+medians must not be summed as an exact reconciliation to process CPU. Most
+measured thread CPU was system time, but syscall/kernel attribution remains
+unavailable. No echo-latency comparison between zero and four readers was run.
+Adaptive inline/pool selection would require a separately designed candidate
+and loaded-echo, switching/fairness, backlog, and shutdown validation; this
+experiment does not implement or approve that change.
+
+Raw resource/thread samples, launch/config/binary identities, validation, and
+analysis are retained under
+`/tmp/opencode/hollow-gui-inline-current-20261020/`. Harness:
+`/tmp/opencode/hollow-gui-inline-current.py`; analyzer:
+`/tmp/opencode/hollow-gui-inline-current-summary.py`, producing
+`inline-analysis.json` in the artifact directory.
+
+### Persistent readers with reader-side transport flush
+
+The per-job pool (`pty_read_pool.zig`) paid, per roughly 4 KiB PTY read, a
+descriptor duplicate, an eventfd wake, a worker poll, a result handoff, and an
+owner wakeup. PTY master reads are capped near 4 KiB by the kernel line
+discipline (about 250 reads/MiB in both modes), so that fixed overhead per read
+was the gap to dedicated `pty`, which costs one poll, one read, and one write
+per chunk. `src/agent/pty_readers.zig` replaces the pool when
+`HOLLOW_MUX_READ_WORKERS=1..4`; zero keeps the inline owner path unchanged.
+
+Design:
+
+- Each stream is pinned on spawn to the least-loaded of N persistent reader
+  threads. A reader owns an epoll set (level-triggered, one read per readiness,
+  focused stream first) and reads straight into a per-stream 64 KiB SPSC ring,
+  never more than the stream's remaining output credit. Credit plus ringed
+  plus unacknowledged bytes never exceed the wire window, so a ring cannot
+  overflow. Readers debit credit before publishing ring bytes, so another
+  flusher can send them and the owner can accept their ACK immediately.
+  A stream without credit leaves epoll (`parked`) until a grant;
+  whichever side clears `parked` re-adds it, so no grant is lost.
+- After a read, the reader frames ring bytes onto stdout itself under a futex
+  transport lock (control first, then alternating focus-first and background
+  byte-DRR turns, within the unchanged 16 KiB staging bound). Scheduler state
+  survives full staging buffers, so a flooding focus or low-index stream
+  cannot drain its whole window ahead of ready siblings. It never waits for the
+  lock: a busy holder sees `flush_pending` after unlocking and flushes for it.
+  After EAGAIN or a partial write the transport is `blocked` and only the owner
+  retries, on POLLOUT; readers keep ringing until credit runs out.
+- The owner still parses input, dispatches credit/close/focus, spawns, reaps,
+  and emits control. It appends control and attaches/detaches slots under the
+  transport lock, so `spawned` precedes a stream's output, no output is framed
+  after `close`, and `exit` follows every framed byte (EOF counts only once the
+  ring is empty). It wakes only for client input, EOF, detach acknowledgement,
+  or a blocked/failed transport; steady output needs no owner wakeup.
+- Detach is a reader command (eventfd); the reader closes the master. Epoll
+  data carries a slot generation so stale events after reuse are ignored.
+  `HOLLOW_MUX_READ_BATCH_JOBS` is still validated (1..2) but no longer changes
+  behavior. Pool counters (`read_jobs`, `read_batches`, phase timings,
+  `read_pool_reserved_high_water`) were removed; `reader_wakes`,
+  `reader_parks`, and `owner_wakes` were added.
+
+Per-MiB diagnostics (16 MiB/pane, four readers):
+
+| Panes | owner polls | PTY reads | transport writes | reader wakes | owner wakes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1, owner-framed intermediate | 152 | 246 | 166 | 246 | 138 |
+| 1, reader flush | 30 | 246 | 250 | 247 | 0.1 |
+| 4, reader flush | 28 | 236 | 200 | 236 | 2.8 |
+| 32, reader flush | 30 | 254 | 86 | 87 | 0.3 |
+
+Remaining owner polls are client credit frames (half-window batches).
+
+Local bulk results, `scripts/agent_mux.py --mode both --runs 3 --bytes
+16777216 --samples 5`, ReleaseFast, four readers, batch two, WSL2 with six
+CPUs. `agent_cpu_seconds` is the agent process alone (utime+stime from
+`/proc`, excluding children); the tree figure also counts Python producers.
+
+| Panes | pty MiB/s | mux MiB/s | pty agent CPU s | mux agent CPU s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 75.9 | 74.8 | 0.150 | 0.150 |
+| 4 | 289.3 | 293.6 | 0.360 | 0.380 |
+| 16 | 331.1 | 358.2 | 1.340 | 1.290 |
+| 32 | 252.5 | 388.9 | 3.190 | 2.500 |
+
+For reference, the previous pool binary (`fc9685a`, same settings) measured
+mux 81/233/305/310 MiB/s against pty 75/295/367/280, and the owner-framed
+persistent-reader intermediate spent 0.215 s agent CPU at one pane. Client CPU
+is also lower with mux at 16–32 panes (one connection instead of N). Mixed
+workload (`--workload mixed --runs 2 --samples 100`) focused-echo p99, mux
+versus pty: 0.73/0.62 ms at 4 panes, 1.59/3.69 at 16, 2.98/4.64 at 32. The host
+was shared and noisy; single runs varied by up to ±30%, so treat these as
+parity-level observations, not significance. The isolated GUI capped-load
+scenario was still unmeasured at that point; see the post-review measurements
+below. Remote/SSH paths remain unmeasured.
+
+`test_focused_echo_and_background_progress_with_output_flood` can fail under
+heavy parallel host load (background `yes` makes no progress during eight fast
+echoes). Under the same 12-way parallel stress it failed 5/48 on the previous
+binary and 1/48 on this one; it passes in serial runs of all five configs.
+
+Review follow-up fixed credit publication ordering and scheduling across full
+staging buffers. Regression tests cover concurrent ACKs, background rotation,
+and focused-flood alternation. The measurements above predate these fixes.
+
+### Post-review persistent-reader measurements
+
+The corrected ReleaseFast agent (`dfabad2a65ce…`) was remeasured with four
+readers and batch two (accepted but inert). Headless bulk used 16 MiB per pane,
+three runs, five startup echo samples, and alternating dedicated/mux order.
+Values below are medians; the host was shared, with no CPU pinning or
+statistical-significance claim. Agent CPU is process user+system time through
+bulk completion, including startup/echo but excluding children, measured with
+procfs clock-tick granularity.
+
+| Panes | pty MiB/s | mux MiB/s | pty agent CPU s | mux agent CPU s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 77.4 | 75.7 | 0.150 | 0.160 |
+| 4 | 293.2 | 299.4 | 0.350 | 0.400 |
+| 16 | 355.3 | 393.7 | 1.330 | 1.220 |
+| 32 | 276.1 | 402.4 | 3.130 | 2.570 |
+
+Thus the fixes retain the observed multi-pane throughput benefit, but these
+runs show higher mux agent CPU at 1–4 panes and lower CPU at 16–32; do not
+carry forward the earlier 1–4-pane CPU parity claim unchanged.
+
+Headless loaded echo used three runs and 100 echoes per run with sustained
+floods in every other pane. Median **per-run p99** was 0.72/1.06 ms mux/pty
+at four panes, 1.83/4.63 ms at 16, and 1.93/3.29 ms at 32. These are not pooled
+percentiles, GUI observation timings, or keyboard-to-display measurements.
+Every flood made positive byte progress.
+
+Raw repetitions, summary, source snapshots, binary/GUI hashes, and provenance:
+`/tmp/opencode/hollow-mux-fixed-20261020/` (`bulk.jsonl`, `mixed.jsonl`,
+`headless-analysis.json`, `provenance.json`). Capped-load GUI and GUI echo
+measurements are separate experiments; headless results do not qualify them.
+
+#### Fixed-reader GUI resource comparison
+
+Four alternating inline/readers pairs used the same corrected agent, with
+diagnostics disabled, in fresh isolated native Windows GUIs and WSL2 workers.
+The four-pane layout had two idle echo panes and two repaint floods, each
+capped at 5 MiB/s for 20 seconds, followed by 20 seconds uncapped. The installed
+user GUI and defaults were left unchanged. `pool4` in artifact names is a
+legacy label for **four persistent readers**, not the deleted per-job pool.
+
+All eight runs and 16 phases passed resource, process/thread identity, Lua
+configuration, binary identity, window, and cleanup checks. Recorded windows
+were present, non-minimized, and non-foreground. All tracked workers and agents
+were verified gone after each run. No pair was excluded. Capped admitted rates
+matched within 1% in every pair (both variants approximately 10.000 MiB/s).
+
+| Median GUI experiment metric | Inline (0 readers) | Persistent readers (4) |
+| --- | ---: | ---: |
+| Capped Linux agent CPU cores | 0.1790 | 0.1717 |
+| Capped Windows GUI CPU cores | 1.0491 | 1.0574 |
+| Uncapped producer-admitted throughput, MiB/s | 69.78 | 81.46 |
+| Uncapped Linux agent CPU cores | 0.6242 | 0.8160 |
+| Uncapped Windows GUI CPU cores | 1.4792 | 1.6490 |
+
+At matched capped load, readers used less agent CPU in every pair: reductions
+were 3.63%, 4.20%, 5.59%, and 5.69% (median paired reduction 4.89%). Agent CPU
+ranges were 0.1785–0.1845 inline and 0.1690–0.1740 reader cores. The earlier
+pool's roughly doubled capped-load CPU did not recur in this same-binary
+inline/readers comparison; that historical pool series was not rerun here.
+GUI CPU showed no consistent paired advantage at capped load. Windows and
+Linux CPU remain separate measurements, not summed as machine CPU.
+
+Uncapped reader throughput improved in three pairs (+17.52%, +17.66%, +15.96%)
+and regressed in the fourth (−19.78%): **54.43 versus 67.85 MiB/s**. This valid
+slow run is retained, not discarded as noise. Both floods slowed together
+(27.12 and 27.31 MiB/s), with no observed per-pane starvation. Reader throughput
+ranged 54.43–82.97 MiB/s versus inline 67.85–70.52. The 16.74% ratio-of-medians
+gain is therefore not a universal win or statistical-significance claim.
+Higher uncapped CPU is not a matched-throughput comparison. Admitted producer
+bytes are not rendered pixels or a proven transport maximum; CPU and producer
+progress use slightly different sampling windows.
+
+Artifacts: `/tmp/opencode/hollow-gui-readers-fixed-20261020/`, including
+`inline-analysis.json`. Reproducible wrappers:
+`/tmp/opencode/hollow-gui-readers-fixed.py` and
+`/tmp/opencode/hollow-gui-readers-fixed-summary.py`. Loaded echo was measured
+separately below. Dedicated-versus-mux GUI qualification remains separate;
+defaults remain unchanged.
+
+#### Fixed-reader loaded GUI echo
+
+Three alternating fresh-GUI pairs compared zero versus four readers using the
+same corrected agent and two 5 MiB/s repaint floods. Each run completed 1,000
+unique echoes, switching focus between the two echo panes every 100 samples.
+All six runs passed validation: complete ordered tokens and metadata, correct
+pane/focus targets, positive flood progress in every checkpoint interval, actual
+per-flood rates within 1% of 5 MiB/s, and cleanup of all tracked identities.
+The original user GUI remained running with its original process identity.
+
+| GUI echo observation latency (ms) | Inline (0 readers) | Persistent readers (4) |
+| --- | ---: | ---: |
+| Pooled 3,000-sample p50 | 12.11 | 11.83 |
+| Pooled p95 | 17.01 | 16.63 |
+| Pooled p99 | 19.76 | 19.70 |
+| Pooled maximum | 65.31 | 54.75 |
+| Median of three run p99 values | 19.46 | 19.69 |
+
+Individual reader/inline p99 pairs were 19.69/19.32, 18.92/19.46, and
+20.72/20.25 ms. Tail directions are mixed and pooled p99 is nearly identical;
+this sample establishes neither a clear tail improvement nor regression.
+Pooled percentiles and median per-run percentiles are different summaries.
+
+The observer measures GUI command IPC and PowerShell parsing/text-query time
+from `pane_send_text` through an ACK visible in parsed pane text. It is **not
+keyboard-to-display latency**, isolated PTY latency, or a dedicated-PTY
+comparison. Raw send/query/poll timings are retained, not subtracted as a
+constant. The isolated GUI launched on DISPLAY2 while the user's foreground
+screen was DISPLAY1; unlike the resource runs, these echo runs did not sample
+OS foreground/window state continuously.
+
+Artifacts: `/tmp/opencode/hollow-gui-readers-fixed-echo-20261020/`, including
+`echo-analysis.json`; wrappers:
+`/tmp/opencode/hollow-gui-readers-fixed-echo.py` and
+`/tmp/opencode/hollow-gui-readers-fixed-echo-summary.py`. Legacy directory names
+`baseline` and `candidate` mean inline and four readers of the **same binary**.
+Defaults remain unchanged; remote/SSH and dedicated-versus-mux GUI results are
+still not qualified.
+
+### Fixed mux versus dedicated PTYs in the GUI
+
+The next experiment compared **dedicated `pty` versus mux with four persistent
+readers**, using the same corrected ReleaseFast agent (`dfabad2a65ce…`) and the
+same installed native Windows GUI. Both domain definitions explicitly selected
+that agent; startup checks verified each live agent executable's SHA-256,
+command, process topology, and thread count. Dedicated used four one-thread
+agents; mux used one five-thread agent. Diagnostics were disabled.
+
+Four fresh-GUI pairs alternated dedicated/mux order (AB, BA, AB, BA). Each
+four-pane layout had two echo panes and two repaint floods: 20 seconds capped
+at 5 MiB/s per flood, then 20 seconds uncapped. All eight runs and 16 phases
+passed process identity, rate, sampling, non-minimized/non-foreground window,
+and cleanup checks. Every capped pair matched actual admitted throughput within
+1%. No completed pair was excluded.
+
+| Median resource metric | Dedicated `pty` | Fixed mux (4 readers) |
+| --- | ---: | ---: |
+| Capped admitted throughput, MiB/s | 10.000 | 10.000 |
+| Capped Linux agent CPU cores | 0.1717 | 0.2024 |
+| Capped Linux workload CPU cores | 0.4192 | 0.5017 |
+| Capped Windows GUI CPU cores | 1.0082 | 1.1075 |
+| Uncapped admitted throughput, MiB/s | 68.57 | 65.40 |
+| Uncapped Linux agent CPU cores | 0.8279 | 0.8211 |
+| Uncapped Windows GUI CPU cores | 1.2341 | 1.6516 |
+| Capped sampled peak summed agent RSS, MiB | 3.375 | 0.719 |
+| Capped sampled peak GUI working set, MiB | 167.58 | 153.68 |
+
+At matched capped load, mux GUI CPU was higher in all four pairs (+10.53%,
++14.74%, +6.43%, +5.63%). Agent CPU directions were mixed (+22.84%, +23.63%,
+−0.47%, −1.42%), as were workload CPU directions. Therefore the earlier
+reader-versus-inline CPU improvement does **not** establish dedicated-versus-mux
+GUI CPU parity or an overall CPU win. Linux and Windows scopes remain separate.
+
+Uncapped mux throughput changes were −31.79%, −2.80%, +22.45%, and +9.82%:
+two wins and two losses, with ranges 56.38–84.31 MiB/s mux and 58.01–83.39
+dedicated. All runs are retained. The ratio of throughput medians is about
+4.62% lower for mux; this noisy sample is not a general parity result. Uncapped
+CPU is not matched-load CPU, and admitted producer bytes are not rendered pixels
+or a transport maximum. CPU and producer progress windows differ slightly.
+
+Sampled summed agent RSS was about 78.7% lower with mux, with 75% fewer agent
+processes. These are short-run RSS snapshots, potentially double-counting
+shared pages in the dedicated sum, not a long-term leak or machine-memory claim.
+
+An earlier dedicated-only pilot is retained separately under
+`/tmp/opencode/hollow-gui-dedicated-mux-fixed-20261020/`. Its two phases completed,
+but the harness incorrectly treated PowerShell's "process already absent"
+exit status as a cleanup failure after the GUI had closed. All tracked Linux
+identities were gone. The checker was corrected and the entire paired series
+restarted fresh; the pilot is excluded from primary results.
+
+Primary artifacts: `/tmp/opencode/hollow-gui-dedicated-mux-fixed-20261020-v2/`
+(`analysis.json`); wrappers:
+`/tmp/opencode/hollow-gui-dedicated-mux-fixed.py` and
+`/tmp/opencode/hollow-gui-dedicated-mux-fixed-summary.py`. Loaded echo and soak
+are separate experiments. Defaults remain unchanged.
+
+#### Dedicated-versus-mux loaded GUI echo
+
+Three alternating fresh-GUI pairs used the same fixed agent in dedicated and
+mux modes, with two independent 5 MiB/s repaint floods and 1,000 echoes per
+run. Focus switched between the two echo panes every 100 samples. All six runs
+passed validation: 3,000 ordered, unique successful echoes per mode, correct
+pane targets, complete observer metadata, positive progress at every flood
+checkpoint interval, actual per-flood rates within 1% of the cap, and cleanup
+of all tracked identities. Agent command/topology/thread counts matched each
+mode; both domain configurations selected the same explicit agent binary.
+
+| GUI echo observation latency (ms) | Dedicated `pty` | Fixed mux (4 readers) |
+| --- | ---: | ---: |
+| Pooled 3,000-sample p50 | 9.98 | 9.60 |
+| Pooled p95 | 14.85 | 13.89 |
+| Pooled p99 | 18.82 | 16.31 |
+| Pooled maximum | 38.67 | 55.37 |
+| Median of three run p99 values | 18.89 | 15.69 |
+
+Per-run mux/dedicated p99 pairs were 15.26/17.02, 15.69/18.89, and
+19.61/19.31 ms. The pooled p99 is about 13.3% lower with mux, but the third
+pair's p99 and the pooled maximum were higher. This descriptive sample is not
+a universal tail-latency win or statistical-significance claim, and does not
+erase the separate matched-load GUI CPU cost.
+
+Timings include GUI command IPC and PowerShell parsing/text observation through
+an ACK visible in pane text, **not keyboard-to-display or isolated PTY latency**.
+Raw send/query/poll timings are retained. GUI panes/focus were validated, but
+OS foreground/window state was not continuously sampled during these echo
+runs; the stricter window checks apply to the resource experiment above.
+
+Artifacts: `/tmp/opencode/hollow-gui-dedicated-mux-fixed-echo-20261020/`, including
+`echo-analysis.json`; wrappers:
+`/tmp/opencode/hollow-gui-dedicated-mux-fixed-echo.py` and
+`/tmp/opencode/hollow-gui-dedicated-mux-fixed-echo-summary.py`. Legacy directory
+labels `baseline`/`inline` mean dedicated PTYs and `candidate`/`pool4` mean
+four-reader mux in this experiment; use `run.json.mode`, not those labels.
+
+#### GUI soak blocked by focused-pane close use-after-free
+
+The planned 600-second GUI soak **did not complete**. It was intended to keep
+two repaint floods at 5 MiB/s each while checking ACKs, switching focus,
+requesting resizes, and repeatedly creating/closing temporary panes, with
+process, RSS, descriptor, and Windows memory telemetry. Do not treat the A/B
+resource snapshots or subsequent agent-only tests as a passed GUI soak.
+
+The first attempt stopped after about 38 seconds at a temporary worker
+readiness timeout; original floods still progressed and tracked processes were
+cleaned up. A file-backed churn worker removed inline Python/shell quoting
+from the protocol. Follow-up preflight attempts reached temporary-pane output
+but lost the GUI when closing that focused pane. Capturing the GUI's actual
+stderr and exit status confirmed **exit code 3 / segmentation fault**, not a
+mere focus-readiness delay:
+
+```text
+src/term/program_status.zig:116  State.setFocused
+src/app.zig:1518                syncActivePaneChange
+src/app/session_controller.zig:305  closePaneById
+```
+
+Current source confirms a stale-pointer path: `closePaneById` saves
+`mux.activePane()` as `previous`, calls `mux.closePaneById` (which reaches
+`Tab.closePane`, deinitializing and destroying that pane), then calls
+`syncActivePaneChange(previous, mux.activePane())`. That function dereferences
+the freed previous pane in `program_status.setFocused(false)` and also in
+render-cache invalidation. The installed GUI and current source agree on the
+failing path. No GUI source fix was made during this measurement task.
+
+A simple dedicated control closing an original pane did not crash. A matched
+**dedicated-mode** control with focus changes, resize requests, a temporary
+split, and focused close reproduced the same stack and exit code 3. Thus this
+is a shared GUI lifecycle defect, not unique to mux readers; failure depends
+on the exercised lifetime/allocation sequence. It blocks lifecycle
+qualification until fixed and retested.
+
+Artifacts:
+
+- Initial incomplete run: `/tmp/opencode/hollow-gui-mux-fixed-soak-20261020/`.
+- Preflights: `/tmp/opencode/hollow-gui-mux-fixed-soak-preflight-20261020/` and
+  `/tmp/opencode/hollow-gui-mux-fixed-soak-preflight-20261020-v2/`; the latter
+  retains `gui/gui-stderr.log`, `gui/gui-exit.json`, and pre-close pane state.
+- Matched dedicated reproduction:
+  `/tmp/opencode/hollow-gui-focused-close-dedicated-churn-control-20261020/`.
+- Protocol and runner: `/tmp/opencode/hollow-gui-mux-fixed-soak-protocol.json`
+  and `/tmp/opencode/hollow-gui-mux-fixed-soak.py`; file-backed worker and
+  stderr-capturing launcher are alongside them.
+
+Tracked test workers/agents were verified gone, and only the original user GUI
+remained, with its unchanged process identity. Because the GUI soak was blocked,
+the agent-only fault/lifecycle suites were run **separately**, serially: ten
+repetitions at each reader count 0, 1, 2, 3, and 4, batch two, against the same
+fixed agent. All **50 suites / 1,150 test invocations passed**, covering stopped
+consumers, blocked child input, close/slot reuse, final output, malformed
+credits, and disconnect cleanup. Logs and summary:
+`/tmp/opencode/hollow-mux-fixed-serial-faults-20261020/`.
+
+Those passes do not qualify GUI pane teardown, SSH/container faults, ARM64,
+long-term leaks, or the failed 600-second soak. Defaults remain unchanged.
+
+#### Pane-close lifetime correction
+
+The follow-up fix in `src/app/session_controller.zig` prevents the stale pointer
+from reaching focus synchronization: when the close target is the active pane,
+`previous` is set to null **before** `mux.closePaneById` destroys it. A surviving
+previous pane is still retained when closing a background pane. The new active
+pane still receives program-status focus, attention clearing, render-cache
+invalidation, and terminal callback registration through the existing helper.
+
+An App-level regression exercises three focused split/close cycles, a background
+close, and an invalid ID using a real terminal runtime. App allocations use the
+testing allocator; mux/pane allocations use the page allocator so closing a pane
+immediately unmaps its storage. The initial small-object-allocator version also
+passed with old code because the freed storage stayed mapped; it was strengthened
+to expose the invalid access rather than depend on incidental heap layout.
+The strengthened regression passes with the fix and crashes at the original
+`State.setFocused` access when only the old close implementation is restored in
+an isolated source copy. That negative control recorded 331 passes and one
+crash; it is an expected regression-test failure, not a failure of fixed code.
+Logs: `/tmp/opencode/hollow-pane-close-tests-guarded.log` and
+`/tmp/opencode/hollow-pane-close-regression-old-guarded.log`.
+It checks surviving focus and attention acknowledgement, rather than merely
+testing pointer selection in isolation. The native Debug test graph passed all
+332 tests (238 main tests plus renderer/dependency tests); the final strengthened
+test also passed the ReleaseFast graph's 332 tests. This machine needed
+existing Nix library/header search prefixes; earlier missing-library/header
+attempts were build-environment failures, not test failures. The helper is
+`/tmp/opencode/hollow-pane-close-native-tests.py`, with successful output in
+`/tmp/opencode/hollow-pane-close-tests-nix-complete.log`.
+
+A new ReleaseFast/PDB Windows GUI was built under
+`/tmp/opencode/hollow-pane-close-fixed-20261020/`, without replacing the installed
+GUI. Its SHA-256 is `abd4166e0c691a66bb11f3218e34fb12877da42e93694e2b321fbf018a1a8c6f`.
+The mux agent remains the previously measured fixed binary (`dfabad2a65ce…`).
+The isolated mux preflight and matched dedicated temporary-pane control both
+completed the previously crashing sequence and closed cleanly; all tracked
+process identities were gone. Artifacts:
+`/tmp/opencode/hollow-gui-pane-close-fixed-preflight-20261020/` and
+`/tmp/opencode/hollow-gui-pane-close-fixed-dedicated-control-20261020/`.
+The first fixed-GUI soak ran for 603.47 seconds without a GUI crash, with 12
+successful lifecycle cycles and a clean exit. Agent descriptors returned to 18
+after each close (sampled maximum 19), and warm/late median agent RSS was
+884,736 bytes in both windows. However, it **failed its coverage gate** of at
+least 13 cycles: serial CLI/PowerShell calls plus an extra 15-second idle delay
+limited cycle density. That failed-gate run is retained under
+`/tmp/opencode/hollow-gui-pane-close-fixed-soak-20261020/`; its post-GUI fault
+phase did not run. Removing the extra post-cycle idle delay increases churn
+without lowering the original gate. Passing short controls or the first run's
+runtime alone is not a passed full protocol.
+
+The denser rerun **passed the full protocol**: 604.03 seconds, 1,206 Linux
+samples, **18 successful split/close lifecycle cycles**, 36 unique echo ACK
+checks, and 36 resize requests. Every temporary worker was verified gone after
+close, focus returned to the original echo pane, and the agent descriptor count
+returned to its baseline of 18 after every cycle (sampled peak 19). Five agent
+threads remained live. Both floods progressed throughout, averaging 4.9957 and
+4.9967 MiB/s, within the unchanged 1% cap tolerance.
+
+Warm and late median agent RSS were both **753,664 bytes** (zero delta). Windows
+telemetry recorded 352 GUI samples, all with a present, non-minimized window and
+none foreground. GUI working set changed from 150.20 to 161.43 MiB, private
+bytes from 340.78 to 358.42 MiB, and handles from 1,091 to 1,089. These are
+recorded observations, **not proof of no GUI leak**: no post-hoc GUI memory
+threshold was imposed, and ten minutes does not establish long-term stability.
+The requested Windows sampling cadence was one second, but per-sample process
+enumeration made actual intervals longer; these are sampled values, not
+continuous memory or window-state observations. Resize commands were issued;
+exact terminal dimensions remain covered by separate integration tests.
+
+The isolated GUI exited with code zero, with no new crash in stderr, and all
+tracked workers/agents were verified gone. The subsequent serial fault phase
+passed **50 suites / 1,150 test invocations**: ten repetitions at each reader
+count 0–4 with batch two. The original installed GUI remained running with its
+unchanged PID/start identity. No installed binary or backend default changed.
+
+Successful-run artifacts:
+`/tmp/opencode/hollow-gui-pane-close-fixed-soak-20261020-v2/` (`result.json`,
+`gui/lifecycle-events.json`, Linux/Windows samples, GUI exit/stderr, cleanup, and
+`faults/` logs). Native final test logs:
+`/tmp/opencode/hollow-pane-close-tests-guarded.log` and
+`/tmp/opencode/hollow-pane-close-tests-releasefast-final.log`. Source/binary
+hashes and the fix patch are under
+`/tmp/opencode/hollow-pane-close-validation-20261020/`. Only the regression
+test's allocator was strengthened after the isolated GUI build; production fix
+and measured agent were unchanged.
+
+This closes the focused-pane crash and the measured ten-minute WSL GUI soak
+gate, not the outstanding SSH/container, ARM64, extended soak/fault, tooling
+reproducibility, or performance/default-rollout gates.
 
 ## Experimental v1 wire contract
 

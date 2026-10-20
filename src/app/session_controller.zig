@@ -295,7 +295,12 @@ pub fn movePaneToWorkspace(self: *App, pane_id: usize, workspace_index: usize) v
 pub fn closePaneById(self: *App, pane_id: usize) void {
     var mux = if (self.mux) |*value| value else return;
     const runtime = if (self.ghostty) |*value| value else return;
-    const previous = mux.activePane();
+    // Closing the focused pane destroys it before focus synchronization. Only
+    // retain the previous pane when it will survive the close operation.
+    const previous = if (mux.activePane()) |pane|
+        (if (@intFromPtr(pane) != pane_id) pane else null)
+    else
+        null;
     const should_quit = mux.closePaneById(runtime, pane_id);
     if (should_quit) {
         quitOnWorkspaceRemoved(self, mux, "app: last pane closed via close_pane_by_id, quitting");
