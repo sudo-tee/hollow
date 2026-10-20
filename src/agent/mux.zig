@@ -46,6 +46,8 @@ const Counters = struct {
     read_collect_ns: u64 = 0,
     read_result_ns: u64 = 0,
     inline_reads: u64 = 0,
+    read_batches: u64 = 0,
+    read_batch_jobs: usize = 1,
 };
 
 const Stream = struct {
@@ -149,6 +151,7 @@ const Agent = struct {
     counters: Counters = .{},
     diagnostics: bool = false,
     pool: ?*read_pool.Pool = null,
+    batch_jobs: usize = 1,
 
     fn frame(self: *Agent, kind: p.pty.Kind, id: u32, payload: []const u8) !void {
         if (self.control.items.len + p.header_len + payload.len > p.control_limit) return error.ControlQueueFull;
@@ -338,86 +341,117 @@ const Agent = struct {
         const pool = self.pool orelse return;
         for (pool.workers[0..pool.count], 0..) |*worker, index| {
             if (worker.state.load(.acquire) != .ready) continue;
-            const s = &self.streams[worker.slot].?;
-            std.debug.assert(s.id == worker.stream_id and s.read_job == index);
-            if (!worker.collected) {
-                const unused: u32 = @intCast(worker.allowance - worker.len);
-                if (s.output_credit > p.window - unused) return error.InvalidCredit;
-                s.output_credit += unused;
-                self.counters.pty_reads += worker.reads;
-                self.counters.pty_read_ns += worker.read_ns;
-                self.counters.read_jobs += 1;
+            if (!worker.timing_collected) {
+                self.counters.read_batches += 1;
                 if (self.diagnostics) {
                     self.counters.read_queue_ns += @intCast(worker.started_ns - worker.submitted_ns);
                     self.counters.read_work_ns += @intCast(worker.completed_ns - worker.started_ns);
                     self.counters.read_collect_ns += @intCast(nowNs() - worker.completed_ns);
                 }
-                if (worker.eof) {
-                    s.eof = true;
-                    s.input.clearRetainingCapacity();
-                }
-                worker.collected = true;
+                worker.timing_collected = true;
             }
-            if (s.closing != null or worker.len == 0) {
-                s.read_job = null;
-                self.releaseRead(index);
+            for (worker.jobs[0..worker.job_count], 0..) |*job, member| {
+                // A released member may already have retired/reused its slot
+                // while another result in this worker's batch is still held.
+                if (job.released) continue;
+                const key = index * read_pool.max_jobs + member;
+                const s = &self.streams[job.slot].?;
+                std.debug.assert(s.id == job.stream_id and s.read_job == key);
+                if (!job.collected) {
+                    const unused: u32 = @intCast(job.allowance - job.len);
+                    if (s.output_credit > p.window - unused) return error.InvalidCredit;
+                    s.output_credit += unused;
+                    self.counters.pty_reads += job.reads;
+                    self.counters.pty_read_ns += job.read_ns;
+                    self.counters.read_jobs += 1;
+                    if (job.eof) {
+                        s.eof = true;
+                        s.input.clearRetainingCapacity();
+                    }
+                    job.collected = true;
+                }
+                if (s.closing != null or job.len == 0) {
+                    s.read_job = null;
+                    self.releaseRead(key);
+                }
             }
         }
     }
 
-    fn releaseRead(self: *Agent, index: usize) void {
+    fn releaseRead(self: *Agent, key: usize) void {
         const pool = self.pool.?;
-        if (self.diagnostics) self.counters.read_result_ns += @intCast(nowNs() - pool.workers[index].completed_ns);
-        pool.release(index);
+        if (pool.release(key) and self.diagnostics) self.counters.read_result_ns += @intCast(nowNs() - pool.workers[key / read_pool.max_jobs].completed_ns);
     }
 
     fn dispatchReads(self: *Agent, ready: *[p.max_streams]bool) !void {
         const pool = self.pool.?;
         while (pool.idle()) |index| {
-            const slot = self.scheduler.choose(ready.*, self.focused) orelse break;
-            const s = &self.streams[slot].?;
-            const quantum = self.scheduler.deficit[slot] * 2;
-            const allowance = @min(quantum, s.output_credit);
-            pool.submit(index, s.master, slot, s.id, allowance, self.diagnostics) catch |err| {
-                try self.frame(.@"error", s.id, @errorName(err));
-                s.stop();
+            const jobs = self.jobsPerBatch(ready.*);
+            pool.begin(index, self.diagnostics);
+            const worker = &pool.workers[index];
+            while (worker.job_count < jobs and worker.reserved < read_pool.max_bytes) {
+                const slot = self.scheduler.choose(ready.*, self.focused) orelse break;
+                const s = &self.streams[slot].?;
+                const quantum = self.scheduler.deficit[slot] * 2;
+                const allowance = @min(read_pool.max_bytes - worker.reserved, @min(quantum, s.output_credit));
+                const key = pool.add(index, s.master, slot, s.id, allowance) catch |err| {
+                    try self.frame(.@"error", s.id, @errorName(err));
+                    s.stop();
+                    ready[slot] = false;
+                    continue;
+                };
+                // Async jobs use bounded byte quanta. Unused quantum is
+                // discarded; only this job may read this stream at a time.
+                self.scheduler.used(slot, self.scheduler.deficit[slot]);
+                s.output_credit -= @intCast(allowance);
+                s.read_job = key;
                 ready[slot] = false;
-                continue;
-            };
-            // Async jobs use bounded byte-quantum round robin: focus has twice
-            // the read allowance. Short reads discard unused quantum instead
-            // of accumulating it; only this job may read this stream at a time.
-            self.scheduler.used(slot, self.scheduler.deficit[slot]);
-            s.output_credit -= @intCast(allowance);
-            s.read_job = index;
-            ready[slot] = false;
+            }
+            if (worker.job_count == 0) break;
+            pool.startBatch(index);
             var reserved: usize = 0;
-            for (pool.workers[0..pool.count]) |*worker| {
-                if (worker.state.load(.acquire) != .idle) reserved += worker.allowance;
+            for (pool.workers[0..pool.count]) |*entry| {
+                if (entry.state.load(.acquire) != .idle) reserved += entry.reserved;
             }
             self.counters.read_pool_reserved_high_water = @max(self.counters.read_pool_reserved_high_water, reserved);
         }
     }
 
+    fn jobsPerBatch(self: *Agent, ready: [p.max_streams]bool) usize {
+        // Spread one job per idle reader before pairing excess ready PTYs.
+        // Otherwise four PTYs could occupy only two of four enabled readers.
+        var count: usize = 0;
+        for (ready) |value| if (value) {
+            count += 1;
+        };
+        var idle: usize = 0;
+        const pool = self.pool.?;
+        for (pool.workers[0..pool.count]) |*worker| {
+            if (worker.state.load(.acquire) == .idle) idle += 1;
+        }
+        return if (count > idle) self.batch_jobs else 1;
+    }
+
     fn stageReadResults(self: *Agent) void {
         const pool = self.pool.?;
         std.debug.assert(self.tx_len == 0);
-        for (0..read_pool.max_workers * 2) |_| {
+        for (0..read_pool.max_workers * read_pool.max_jobs * 2) |_| {
             const capacity = self.tx.len - self.tx_len;
             if (capacity <= p.header_len) break;
             const index = pool.output() orelse break;
-            const worker = &pool.workers[index];
-            const s = &self.streams[worker.slot].?;
-            const count = @min(p.max_data, @min(capacity - p.header_len, worker.len - worker.offset));
+            const job = pool.job(index);
+            const s = &self.streams[job.slot].?;
+            std.debug.assert(s.id == job.stream_id and s.read_job == index);
+            const count = @min(p.max_data, @min(capacity - p.header_len, job.len - job.offset));
             @memcpy(self.tx[self.tx_len..][0..p.header_len], &(p.Header{ .kind = .output, .stream = s.id, .len = @intCast(count) }).encode());
-            @memcpy(self.tx[self.tx_len + p.header_len ..][0..count], worker.buffer[worker.offset..][0..count]);
+            @memcpy(self.tx[self.tx_len + p.header_len ..][0..count], pool.bytes(index)[job.offset..][0..count]);
             self.tx_len += p.header_len + count;
-            worker.offset += count;
+            job.offset += count;
             s.output_uncredited += @intCast(count);
             self.counters.output_frames += 1;
             self.counters.output_bytes += count;
             self.counters.tx_high_water = @max(self.counters.tx_high_water, self.tx_len);
-            if (worker.offset == worker.len) {
+            if (job.offset == job.len) {
                 s.read_job = null;
                 self.releaseRead(index);
             }
@@ -477,6 +511,9 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
     // runs. Spawn preparation stays on the owner/forked child, never workers.
     const worker_count = if (c.getenv("HOLLOW_MUX_READ_WORKERS")) |value| try std.fmt.parseInt(usize, std.mem.span(value), 10) else 0;
     if (worker_count > read_pool.max_workers) return error.InvalidWorkerCount;
+    agent.batch_jobs = if (c.getenv("HOLLOW_MUX_READ_BATCH_JOBS")) |value| try std.fmt.parseInt(usize, std.mem.span(value), 10) else 1;
+    if (agent.batch_jobs == 0 or agent.batch_jobs > read_pool.max_jobs) return error.InvalidBatchSize;
+    agent.counters.read_batch_jobs = agent.batch_jobs;
     if (worker_count > 0) {
         const pool = try a.create(read_pool.Pool);
         pool.* = .{};
@@ -758,6 +795,40 @@ test "single-stream inline selection waits for all worker jobs and results" {
     try std.testing.expect(agent.useReadPool());
     pool.workers[0].state.store(.idle, .release);
     try std.testing.expect(!agent.useReadPool());
+}
+
+test "paired jobs do not leave idle readers when ready streams are scarce" {
+    var pool: read_pool.Pool = .{ .count = 4 };
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .pool = &pool, .batch_jobs = 2 };
+    var ready = [_]bool{false} ** p.max_streams;
+    @memset(ready[0..4], true);
+    try std.testing.expectEqual(@as(usize, 1), agent.jobsPerBatch(ready));
+    ready[4] = true;
+    try std.testing.expectEqual(@as(usize, 2), agent.jobsPerBatch(ready));
+    ready[4] = false;
+    pool.workers[0].state.store(.running, .release);
+    try std.testing.expectEqual(@as(usize, 2), agent.jobsPerBatch(ready));
+    agent.batch_jobs = 1;
+    try std.testing.expectEqual(@as(usize, 1), agent.jobsPerBatch(ready));
+}
+
+test "collect skips retired batch member while its partner retains the buffer" {
+    var pool: read_pool.Pool = .{ .count = 1 };
+    var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .pool = &pool };
+    pool.workers[0].job_count = 2;
+    pool.workers[0].jobs[0] = .{ .slot = 31, .stream_id = 17, .released = true };
+    pool.workers[0].jobs[1] = .{ .slot = 0, .stream_id = 23, .allowance = 1, .len = 1, .released = false };
+    pool.workers[0].state.store(.ready, .release);
+    // Slot 31 is already retired: dereferencing it would be stale/invalid.
+    agent.streams[0] = .{ .id = 23, .pid = 0, .master = -1, .launch = -1, .started = 0, .read_job = 1 };
+    try agent.collectReads();
+    try std.testing.expectEqual(read_pool.State.ready, pool.workers[0].state.load(.acquire));
+    agent.streams[0].?.closing = 0;
+    try agent.collectReads();
+    try std.testing.expect(agent.streams[0].?.read_job == null);
+    try std.testing.expectEqual(read_pool.State.idle, pool.workers[0].state.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 1), agent.counters.read_jobs);
+    try std.testing.expectEqual(@as(u64, 1), agent.counters.read_batches);
 }
 
 test {

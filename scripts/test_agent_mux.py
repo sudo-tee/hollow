@@ -47,6 +47,17 @@ class MuxTests(unittest.TestCase):
             self.assertEqual(result["batch_reads"], batch)
             self.assertGreater(result["reads"], 0)
 
+    def test_invalid_reader_batch_size_rejected_before_hello(self):
+        import subprocess
+        for value in ("0", "3"):
+            result = subprocess.run(
+                [AGENT, "mux"], input=b"", capture_output=True, timeout=3,
+                env=dict(os.environ, HOLLOW_MUX_READ_WORKERS="2", HOLLOW_MUX_READ_BATCH_JOBS=value),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(b"InvalidBatchSize", result.stderr)
+
     def test_single_multi_single_read_path_switches_preserve_binary_order(self):
         with Client([AGENT], env=dict(os.environ, HOLLOW_MUX_DIAGNOSTICS="1")) as client:
             count = 128 * 1024
@@ -227,7 +238,7 @@ class MuxTests(unittest.TestCase):
         with Client([AGENT], env=env) as client:
             expected = {}
             received = {}
-            for sid in range(1, 5):
+            for sid in range(1, 9):
                 expected[sid] = bytes(range(256)) * 1024 + bytes([sid])
                 received[sid] = bytearray()
                 code = (
@@ -237,7 +248,7 @@ class MuxTests(unittest.TestCase):
                 )
                 client.spawn(sid, ["python3", "-c", code])
             exited = set()
-            while len(exited) < 4:
+            while len(exited) < len(expected):
                 kind, sid, body = client.recv()
                 if kind == OUTPUT:
                     self.assertNotIn(sid, exited)
@@ -253,6 +264,9 @@ class MuxTests(unittest.TestCase):
         self.assertEqual(client.diagnostics["output_bytes"], sum(map(len, expected.values())))
         workers = int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0"))
         self.assertEqual(client.diagnostics["read_workers"], workers)
+        self.assertEqual(client.diagnostics["read_batch_jobs"], int(os.environ.get("HOLLOW_MUX_READ_BATCH_JOBS", "1")))
+        self.assertLessEqual(client.diagnostics["read_batches"], client.diagnostics["read_jobs"])
+        self.assertLessEqual(client.diagnostics["read_jobs"], client.diagnostics["read_batches"] * 2)
         self.assertLessEqual(client.diagnostics["read_pool_reserved_high_water"], workers * WINDOW)
 
     def test_focused_echo_and_background_progress_with_output_flood(self):
@@ -273,6 +287,53 @@ class MuxTests(unittest.TestCase):
         self.assertGreater(background_bytes, 0)
         self.client.send(CLOSE, 1)
         self.until(lambda k, s, _: k == EXIT and s == 1)
+
+    def test_stopped_batch_member_leaves_many_floods_and_focused_echo_live(self):
+        # More floods than readers forces paired mode to exercise independent
+        # credits/results, not merely the single-job fallback for scarce work.
+        self.client.stopped.add(1)
+        for sid in range(1, 9):
+            self.client.spawn(sid, ["/bin/sh", "-c", "exec yes x"])
+        code = (
+            "import os,tty; tty.setraw(0); os.write(1,b'READY'); "
+            "exec('for _ in range(8):\\n os.write(1,os.read(0,1))')"
+        )
+        self.client.spawn(9, ["python3", "-c", code])
+        counts = {sid: 0 for sid in range(1, 9)}
+        deadline = time.monotonic() + 5
+
+        def recv():
+            remaining = deadline - time.monotonic()
+            self.assertGreater(remaining, 0, "flood/echo progress deadline exceeded")
+            kind, sid, body = self.client.recv(remaining)
+            if kind == ERROR:
+                self.fail(body.decode())
+            if kind == OUTPUT and sid in counts:
+                counts[sid] += len(body)
+            return kind, sid, body
+
+        ready = False
+        while not ready or counts[1] < WINDOW or not all(counts.values()):
+            kind, sid, body = recv()
+            if kind == OUTPUT and sid == 9:
+                self.assertEqual(body, b"READY")
+                ready = True
+        self.client.send(FOCUS, 9)
+        for _ in range(8):
+            self.client.input(9, b"q")
+            while True:
+                kind, sid, body = recv()
+                if kind == OUTPUT and sid == 9:
+                    self.assertEqual(body, b"q")
+                    break
+        for sid in range(1, 9):
+            self.client.send(CLOSE, sid)
+        exited = set()
+        while len(exited) < 9:
+            kind, sid, _ = recv()
+            if kind == EXIT:
+                exited.add(sid)
+        self.assertEqual(counts[1], WINDOW)
 
     def test_inflight_close_slot_reuse_and_fixed_thread_fd_counts(self):
         root = f"/proc/{self.client.process.pid}"

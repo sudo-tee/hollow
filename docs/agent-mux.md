@@ -182,8 +182,9 @@ prototype is not performance-qualified. `pty` and `stdio` ignore this setting.
 With a nonzero count, a sole stream now uses the inline fast path once all
 worker jobs/results have drained. Threads remain allocated and parked; adding
 another stream returns to pooled reads without changing wire or credit state.
-The benchmark records the selected count; `test-agent-mux` runs its full suite
-with 0, 2, and 4 readers.
+The benchmark records the selected count and batch setting; `test-agent-mux`
+runs its full suite with inline reads, 2/4 readers with single jobs, and 2/4
+readers with paired jobs.
 
 Ownership and bounds:
 
@@ -196,9 +197,10 @@ Ownership and bounds:
   publishing a result. Closing a pane cannot recycle that descriptor underneath
   a read. A slot cannot be freed/reused until its read job has been collected
   and its result staged or explicitly aborted.
-- Jobs have a 32 KiB byte quantum (64 KiB focused), capped by the stream's
-  existing 64 KiB window. Unused quantum is discarded. Each job performs at
-  most 32 nonblocking read attempts, checking a 750-microsecond budget between
+- Jobs have a 32 KiB byte quantum (up to 64 KiB focused), capped by the stream's
+  existing 64 KiB window and remaining worker batch capacity. Unused quantum is
+  discarded. Each worker batch performs at most 32 nonblocking read attempts,
+  checking a 750-microsecond budget between
   calls, with no wait to fill the result. The owner continues input/control
   service while reads run.
 - The fixed pool has capacity for four 64 KiB result buffers, allocated only
@@ -317,7 +319,10 @@ avoids the single-pane handoff; the multi-pane throughput gap remains unresolved
 
 Opt-in diagnostics now include job phase timings, summed across workers:
 
-- `read_jobs`: completed jobs collected by the owner.
+- `read_jobs`: completed per-PTY jobs collected by the owner.
+- `read_batches`: completed worker batches collected by the owner (one or two
+  jobs); phase timings below are per batch, not counted twice for a pair.
+- `read_batch_jobs`: selected maximum jobs per batch (1/default or 2).
 - `read_queue_ns`: job publication to reader start (including wake/scheduling).
 - `read_work_ns`: reader start to result publication (reads, loop, FD close).
 - `read_collect_ns`: result publication to owner collection.
@@ -365,9 +370,9 @@ this WSL2 kernel were:
 
 This isolates an important workload/scheduling effect below Hollow's transport;
 it does **not** identify the exact kernel mechanism, prove transport parity, or
-show that one-read jobs would win after owner handoff costs. Rotating several
-credit-reserved PTYs inside a bounded worker batch is a candidate for future
-measurement, not an implemented design. Data:
+show that one-read jobs would win after owner handoff costs. At this stage,
+rotating several credit-reserved PTYs inside a bounded worker batch was a
+candidate for further measurement. The opt-in implementation is described below. Data:
 `/tmp/opencode/hollow-raw-read-batching-cli.jsonl`.
 
 The retained small optimization addresses the already-known single-pane cost:
@@ -401,6 +406,102 @@ transitions and deterministic selection with running/ready jobs. The stalled
 final-output/PID-retention test keeps a second idle stream live so the worker
 result lifecycle remains covered rather than silently testing only the fast
 path. Numerical release budgets and broader connector qualification remain open.
+
+### Opt-in paired PTY read batches
+
+`HOLLOW_MUX_READ_BATCH_JOBS=2` selects a bounded two-PTY worker batch; default
+**1** retains single-job mode for comparison. It only affects mux with nonzero
+read workers. Dedicated `pty`, `stdio`, and GUI defaults are unchanged. No wire,
+version, or capability changes are needed.
+
+```sh
+HOLLOW_MUX_READ_WORKERS=4 HOLLOW_MUX_READ_BATCH_JOBS=2 \
+  python3 scripts/agent_mux.py --panes 1 4 16 32 --runs 3 --build-mode ReleaseFast
+HOLLOW_MUX_READ_WORKERS=4 HOLLOW_MUX_READ_BATCH_JOBS=2 \
+  python3 scripts/agent_mux.py --workload mixed --panes 32 \
+  --samples 1000 --runs 3 --build-mode ReleaseFast
+```
+
+Implementation and bounds:
+
+- A batch rotates individual nonblocking read attempts between up to two
+  independently credit-reserved PTYs. EAGAIN/EOF stops only that member; others
+  continue. Each batch retains the 32-attempt, 750-microsecond between-calls
+  budget, with no wait to fill a result.
+- Jobs share **one existing 64 KiB worker buffer**, partitioned by reserved
+  allowances. Two ordinary jobs reserve up to 32 KiB each; focus may reserve up
+  to 64 KiB when selected first, leaving no partner capacity. Payload capacity
+  remains four × 64 KiB, reservations at most `workers × 64 KiB`, transport
+  staging 16,393 bytes, and data frames at most 16 KiB. Job metadata adds a
+  small bounded overhead; there is no additional payload queue.
+- Each job owns its own close-on-exec master duplicate: at most two per worker,
+  rather than one. All close before batch publication, or after joining an
+  abandoned batch on shutdown.
+- The owner assigns separate job keys, returns unused reservation once per
+  member, and rotates ready results for delivery. A member may abort/retire/reuse
+  its stream slot while its partner's result is held. Collection skips released
+  members **before** looking up their old slot. The buffer is reusable only
+  after **all** members release it.
+- Pair only when ready PTYs outnumber idle readers. Scarce work gets one job per
+  reader first, avoiding four PTYs occupying only two of four readers.
+  Focus-first decisions still alternate with background turns; the single-pane
+  inline path still waits for all batches/results to drain.
+
+An initial 16-pane × 32 MiB diagnostic showed timed PTY reads dropping from
+roughly 45 to 30 microseconds with rotation. An original single-job binary was
+saved for reference; the new binary also retains single-job mode to separate
+refactor effects from rotation effects. Counters:
+`/tmp/opencode/hollow-mux-rotating-first.jsonl`.
+
+Local WSL2, ReleaseFast, 8 MiB per pane, 25 idle echoes, three-run median MiB/s;
+variant order reversed on alternating runs; syscall diagnostics disabled:
+
+| Panes | Dedicated | Inline | 2 readers, single | 2 readers, paired | 4 readers, single | 4 readers, paired |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 74.8 | 79.0 | 77.5 | 79.4 | 78.4 | 77.4 |
+| 4 | 279.8 | 89.8 | 126.2 | 176.8 | 213.4 | 215.3 |
+| 16 | 387.5 | 90.9 | 128.1 | 199.1 | 240.3 | 317.6 |
+| 32 | 396.4 | 89.3 | 125.0 | 198.0 | 234.7 | 322.5 |
+
+Longer bulk runs (32 MiB/pane, three-run medians) confirmed the gain and checked
+the original binary against the refactored single-job path:
+
+| Panes | Dedicated | Original single-job, 4 readers | Refactored single-job, 4 readers | Paired, 4 readers |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 300.6 | 232.3 | 238.1 | 234.2 |
+| 16 | 370.7 | 245.1 | 247.2 | 345.1 |
+| 32 | 404.7 | 235.5 | 238.1 | 329.9 |
+
+At 32 panes, single/paired agent-tree CPU medians were 10.764/8.892 seconds and
+client CPU 1.609/1.280 seconds. Tree CPU includes children/startup/teardown, not
+just reads. Four-reader modes both use five agent threads, versus 32 dedicated.
+Data: `/tmp/opencode/hollow-mux-rotating-bulk.jsonl` and
+`/tmp/opencode/hollow-mux-rotating-bulk-longer.jsonl`.
+
+Focused echo under 31 sustained floods, 1,000 actual echoes/run, three-run
+medians, same final binary and alternating order:
+
+| Backend | p50 / p95 / p99 (ms) | Worst individual echo (ms) | Flood MiB/s |
+| --- | ---: | ---: | ---: |
+| Dedicated | 0.374 / 1.482 / 2.893 | 11.744 | 377.2 |
+| Four readers, single jobs | 0.410 / 0.715 / 0.979 | 3.364 | 234.5 |
+| Four readers, paired jobs | 0.490 / 0.937 / 1.283 | 3.118 | 329.5 |
+
+Every flood progressed; minimum per-stream volume was 56.5 MiB dedicated,
+41.4 MiB single-job, and 59.0 MiB paired across those runs. Pair publication
+waits for the bounded batch, so latency may rise even as throughput improves.
+This is an explicit throughput/latency experiment, **not** parity or rollout
+approval. Bulk still trails dedicated; numerical budgets, remote connectors,
+and GUI qualification remain open. Data:
+`/tmp/opencode/hollow-mux-rotating-mixed.jsonl` (100-sample 4/16/32-pane runs) and
+`/tmp/opencode/hollow-mux-rotating-mixed-longer.jsonl` (the table above).
+
+Tests run all five inline/worker/batch configurations. Deterministic tests cover
+rotation, exhausted/empty members, shared buffer bounds, independent release,
+stale released slots, and reader parallelism with scarce work. Real-agent tests
+cover eight binary streams, an exhausted consumer alongside many floods and
+focused echo, close/reuse, ordering, descriptor hygiene, teardown, and invalid
+batch sizes rejected before hello.
 
 ## Experimental v1 wire contract
 
