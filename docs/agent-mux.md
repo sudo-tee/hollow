@@ -936,6 +936,77 @@ An earlier matched-load attempt,
 idle trial after focus validation failed. The user confirmed interacting with
 that terminal; its 100 partial idle samples and all incomplete data are excluded.
 
+## Isolated GUI / WSL CPU and memory observations
+
+October 20, 2026: three paired trials in a fresh, isolated actual-GUI instance,
+alternating backend order and launching a fresh GUI per backend each time to
+avoid retained memory crossing backends. Separate config, `APPDATA`,
+`LOCALAPPDATA`, and command IPC kept the instance isolated; its window stayed
+visible, unfocused, and on another monitor in recorded samples. Both backends
+used max/idle FPS 120, vsync off, and Rec Mono Duotone at size 14.5. Each run used
+four panes: two raw idle echo workers plus two dynamic repaint floods. Unlike
+the echo-observer experiment above, no echo inputs
+or observer-poll loop ran here. Phases were idle, capped at 20 MiB/s per flood,
+and uncapped, each for 20 seconds; sampling warmed for one second after load
+changes.
+
+Median across paired trials:
+
+| Phase / metric | Dedicated PTY | Mux |
+| --- | ---: | ---: |
+| Capped producer rate (MiB/s) | 40.00 | 40.00 |
+| Capped Linux agent average cores | 0.532 | 0.881 |
+| Capped Linux Python workers average cores | 1.158 | 1.242 |
+| Capped Windows GUI average cores | 1.139 | 1.230 |
+| Capped Linux agent sampled max RSS (MiB) | 3.42 | 1.23 |
+| Capped Linux agent + workers sampled max RSS (MiB) | 62.62 | 60.54 |
+| Capped Windows GUI sampled max working set (MiB) | 169.19 | 154.41 |
+| Capped Windows GUI sampled max private bytes (MiB) | 438.45 | 346.13 |
+| Capped Windows descendant working-set sampled max sum (MiB) | 209.55 | 52.44 |
+
+CPU is core-seconds divided by elapsed seconds, not percent of whole machine.
+At matched 40 MiB/s, mux Linux-agent CPU was about 65.7% higher and GUI CPU
+about 8.0% higher: **no overall CPU win**. These observations do not identify a
+root cause. Do not add CPU or RSS across Linux/Windows, or interpret summed
+working sets/RSS as unique physical memory: shared pages may be counted more
+than once. Linux totals use sampled `/proc` RSS, whose accounting is
+approximate; Windows working sets are coarse sampled maxima and private bytes
+are commit, not RSS. Maximum per-trial Windows sampling gaps were 1.03–1.10 s for PTY and
+0.80–0.83 s for mux despite a nominal 250 ms cadence. CPU uses actual timestamps
+from each OS in separate windows with startup offsets; phase workloads remained
+stable through both windows.
+
+Topology was four PTY agents/four Python workers versus one mux agent with five
+threads/four workers. Windows descendant maxima were 20 versus 5 and include
+WSL/WSLHost/conhost; they are not strict connector process counts. These
+20-second phases are **not** sustained-leak or RSS qualification. Major-fault
+delta was zero; this was not a fault test.
+Uncapped producer medians were 84.23 MiB/s PTY (70.59–87.07) and 72.17 MiB/s
+mux (52.30–73.09). Host and producer-workload variation affect these rates;
+they are not transport maxima, and CPU comparisons at different throughput are
+not fair.
+
+All 18 phase validations passed; tracked Linux worker/agent identities were
+verified gone after all six runs, and isolated GUIs closed. An aborted
+metadata-file publication race occurred before trial 2's
+workload; it was excluded. Atomic publication was fixed and the first paired
+trial preserved on resume; this was harness recovery, not agent failure. The
+original GUI and configuration were untouched. Launch-to-IPC/window placement
+took 0.35–0.66 s for PTY and about 0.37 s for mux. CLI-to-Python-ready averages
+were 2.34–2.52 s PTY and 2.17–2.56 s mux, dominated by native PowerShell CLI and
+polling; this is not cold-shell startup. Mux's initial default pane was already
+warm; no startup gate is qualified. Existing GUI stderr handling also means
+agent stderr diagnostics are not observable through the GUI; no implementation
+change is implied.
+
+Raw analysis: `/tmp/opencode/hollow-gui-resource-20261020-082658/analysis.json`.
+Harness files `/tmp/opencode/hollow-gui-resource-{run.py,launch.ps1,config.lua,summary.py}`
+and samplers `/tmp/opencode/hollow-gui-proc-sample.py` and
+`/tmp/opencode/hollow-gui-win-sample.ps1` are local artifacts, not repository
+fixtures. Next: profile read-pool handoff, owner polling, and scheduling; compare
+0/1/2/4 workers and batch 1/2 at fixed load, including latency, before changing
+buffers.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:
