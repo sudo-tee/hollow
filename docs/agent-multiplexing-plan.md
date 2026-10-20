@@ -17,6 +17,14 @@ These include command/query observer overhead, not physical keyboard-to-display
 timing; broad latency, throughput, RSS, startup, and fault qualification remain
 open. See [loaded GUI diagnostics](agent-mux.md#gui-echo-observation-under-sustained-sibling-floods).
 
+An isolated actual-GUI/WSL resource comparison now adds three paired trials at
+matched 40 MiB/s offered load. Mux used more Linux-agent CPU (+65.7%) and GUI CPU
+(+8.0%) than dedicated, so results show no overall CPU win; sampled memory
+metrics are not directly additive or qualification-grade. Uncapped throughput
+varied and was lower for mux in this sample, not a transport maximum. The result
+does not qualify leak behavior, startup, or release gates; defaults remain
+unchanged and gates unchecked. See [isolated GUI / WSL resource observations](agent-mux.md#isolated-gui--wsl-cpu-and-memory-observations).
+
 ## Goal
 
 Allow multiple Hollow panes on the same host to share one connector process and one agent connection, reducing process count and repeated startup overhead without materially degrading interactive latency or throughput.
