@@ -1106,6 +1106,85 @@ Raw local artifacts: `/tmp/opencode/hollow-gui-syscall-profile-20261020-091435/`
 `/tmp/opencode/hollow-gui-eventfd-candidate-trace-20261020/`, and
 `/tmp/opencode/hollow-gui-eventfd-ab-20261020-091925/eventfd-analysis.json`.
 
+### Descriptor-duplication bypass: measured, not adopted
+
+The pooled trace also showed one `F_SETFD(FD_CLOEXEC)` immediately after each
+successful `F_DUPFD_CLOEXEC`. Bundled musl's compatibility implementation issues
+both calls. A candidate replaced only this duplication call with the direct
+Linux syscall, preserving atomic CLOEXEC and independent descriptor ownership.
+A five-second candidate trace recorded 2,950 successful owner-thread
+`F_DUPFD_CLOEXEC` calls and no `F_SETFD` calls in its scoped window; the earlier
+eventfd-cleanup trace had 2,763 of each. This confirms removal of a call, not a
+CPU benefit; traced workloads and scheduling differ.
+
+Three alternating fresh-GUI pairs compared the eventfd-cleanup baseline with
+this candidate, both using four readers and paired jobs. Each flood requested
+5 MiB/s; observed aggregate rates were approximately 10 MiB/s (baseline range
+9.957–10.000, candidate 9.979–10.000). Twenty-second process CPU measurements:
+
+| Median CPU cores | Baseline | Direct-syscall candidate |
+| --- | ---: | ---: |
+| Linux agent | 0.421 | 0.581 |
+| Linux workload workers | 0.528 | 0.751 |
+| Windows GUI | 1.070 | 1.133 |
+
+Candidate agent and GUI CPU were higher in all three pairs. Agent ranges were
+0.380–0.562 and 0.419–0.584 cores respectively. Three pairs do not establish
+significance or root cause; the concurrent worker/GUI changes also prevent
+attributing this difference solely to the duplication implementation. These
+separate OS/process scopes must not be added into a machine CPU total.
+The user subsequently reported that a Teams meeting with screen sharing was
+active during these measurements. Treat this first comparison as confounded,
+not evidence that the candidate caused the CPU increase.
+
+After the meeting ended, five fresh-GUI pairs repeated the same binaries,
+four-reader/paired-job settings, 20-second phases, and 5 MiB/s cap per flood.
+Both variants delivered approximately 10.000 MiB/s in every phase; all ten
+phases passed identity/window/cleanup validation. Results were substantially
+more stable:
+
+| Post-meeting median CPU cores | Baseline | Direct-syscall candidate |
+| --- | ---: | ---: |
+| Linux agent | 0.3775 | 0.3770 |
+| Linux workload workers | 0.4245 | 0.4235 |
+| Windows GUI | 1.0431 | 1.0439 |
+
+Agent ranges were 0.3725–0.3885 and 0.3370–0.3860 cores. Candidate agent CPU
+was lower in four of five pairs, but medians differ by only about 0.13%; this
+does not demonstrate a meaningful gain. The earlier increase did not reproduce.
+Meeting activity is a reported confound, not an experimentally isolated cause;
+other background activity was not controlled. Post-meeting raw data and all
+five paired comparisons are in
+`/tmp/opencode/hollow-gui-dup-post-meeting-20261020/dup-analysis.json`.
+
+The direct-syscall production change was **not adopted**: removing this call
+has no demonstrated performance benefit, rather than a proven CPU regression.
+Existing libc duplication remains.
+New unit tests retain coverage for CLOEXEC, shared nonblocking flags, duplicate
+usability after source close, and failure leaving batch accounting unchanged.
+Candidate unit/integration tests and Linux x86_64/aarch64 cross-builds passed;
+all six GUI phases passed identity/window/cleanup checks. No GUI latency or
+uncapped-throughput qualification was performed for this candidate.
+
+Raw local artifacts and rejected candidate patch are retained under
+`/tmp/opencode/hollow-gui-dup-ab-20261020/` (`dup-analysis.json`,
+`candidate.patch`); syscall captures are under
+`/tmp/opencode/hollow-gui-dup-candidate-trace-20261020/`. Defaults, buffer bounds,
+and installed user GUI remain unchanged. Next investigation should distinguish
+notification/scheduling work from producer/host variation rather than infer
+CPU savings from syscall counts alone.
+
+An Opus 5.5 read-only review recommended untraced diagnostics (jobs, batches,
+reads, polls, and writes per MiB) plus process-scoped kernel profiling before
+larger changes. Its lowest-risk proposed experiment is an immediate nonblocking
+transport write after staging, retaining POLLOUT polling for backpressure.
+Futex worker wakeups, conditional completion notifications, and delayed master
+close to avoid per-job duplicates require dedicated lost-wakeup/lifecycle tests.
+These remain hypotheses, not implemented or demonstrated optimizations. In the
+existing traced two-flood/four-reader case, lifetime diagnostics had equal job
+and batch counts, so configured batch size two did not imply actual pairing;
+untraced measurements must establish bytes and jobs per handoff.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:
