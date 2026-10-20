@@ -77,6 +77,9 @@ pub const Session = struct {
 
     output: std.ArrayList(u8) = .empty,
     output_start: usize = 0,
+    reader_compacted_bytes: u64 = 0,
+    consumer_compacted_bytes: u64 = 0,
+    empty_reads: u64 = 0,
     hello: bool = false,
     reader_done: bool = false,
     exit_status: ?u32 = null,
@@ -262,21 +265,29 @@ pub const AgentPty = struct {
     pub fn read(self: *AgentPty, buffer: []u8) !usize {
         if (self.closed or buffer.len == 0) return 0;
         const s = self.session;
-        defer mux.notify(s);
+        var signal_mux = false;
+        defer if (signal_mux) mux.notify(s);
         s.mutex.lock();
         defer s.mutex.unlock();
         const pending = s.pendingOutputLocked();
         const count = @min(buffer.len, pending);
-        if (count == 0) return 0;
+        if (count == 0) {
+            s.empty_reads += 1;
+            return 0;
+        }
         @memcpy(buffer[0..count], s.output.items[s.output_start..][0..count]);
         s.output_start += count;
-        if (s.mux_connection != null) s.mux_state.consumed(count);
+        if (s.mux_connection != null) {
+            signal_mux = !s.mux_state.reservation_released;
+            s.mux_state.consumed(count);
+        }
         if (s.output_start == s.output.items.len) {
             s.output.clearRetainingCapacity();
             s.output_start = 0;
         } else if (s.output_start >= 65536 and s.output_start * 2 >= s.output.items.len) {
             const rest = s.output.items.len - s.output_start;
             std.mem.copyForwards(u8, s.output.items[0..rest], s.output.items[s.output_start..]);
+            s.consumer_compacted_bytes += rest;
             s.output.items.len = rest;
             s.output_start = 0;
         }
@@ -689,6 +700,7 @@ fn acceptFrame(s: *Session, kind: wire.Kind, payload: []const u8) bool {
             if (s.output_start > 0 and s.output.capacity - s.output.items.len < payload.len) {
                 const rest = s.pendingOutputLocked();
                 std.mem.copyForwards(u8, s.output.items[0..rest], s.output.items[s.output_start..]);
+                s.reader_compacted_bytes += rest;
                 s.output.items.len = rest;
                 s.output_start = 0;
             }

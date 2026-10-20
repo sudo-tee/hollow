@@ -117,7 +117,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
         .link_libc = true,
     }) });
-    b.step("agent-pane-bench", "Build the native pane-adapter startup/frame-drain diagnostic").dependOn(&b.addInstallArtifact(pane_bench, .{}).step);
+    b.step("agent-pane-bench", "Build native pane-adapter startup, frame-drain, and backlog diagnostics").dependOn(&b.addInstallArtifact(pane_bench, .{}).step);
     const pane_bench_tests = b.addSystemCommand(&.{ "python3", b.path("scripts/test_agent_pane_bench.py").getPath(b) });
     pane_bench_tests.setEnvironmentVariable("HOLLOW_TEST_AGENT", b.getInstallPath(.prefix, "host-test/hollow-agent-test"));
     pane_bench_tests.setEnvironmentVariable("HOLLOW_TEST_PANE_BENCH", b.getInstallPath(.bin, "hollow-agent-pane-bench"));
