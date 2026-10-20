@@ -39,6 +39,63 @@ class MuxTests(unittest.TestCase):
             self.assertTrue(all(n > 0 for n in result["flood_bytes"]))
             self.assertGreater(result["echo_ms"]["p50"], 0)
 
+    def test_raw_reader_batch_diagnostic_counts_all_bytes(self):
+        from agent_pty_read_bench import benchmark
+        for workers, batch in ((1, 1), (2, 8)):
+            result = benchmark(2, workers, 65536, batch)
+            self.assertEqual(result["bytes"], 2 * 65536)
+            self.assertEqual(result["batch_reads"], batch)
+            self.assertGreater(result["reads"], 0)
+
+    def test_single_multi_single_read_path_switches_preserve_binary_order(self):
+        with Client([AGENT], env=dict(os.environ, HOLLOW_MUX_DIAGNOSTICS="1")) as client:
+            count = 128 * 1024
+            code = (
+                "import os,tty; tty.setraw(0); os.write(1,b'READY'); "
+                f"exec('for _ in range(3):\\n b=os.read(0,1); left={count}\\n while left:\\n  n=os.write(1,b*min(left,65536)); left-=n')"
+            )
+            client.spawn(1, ["python3", "-c", code])
+
+            def output(sid, expected):
+                got = bytearray()
+                while len(got) < len(expected):
+                    kind, stream, body = client.recv()
+                    if kind == ERROR:
+                        self.fail(body.decode())
+                    if kind == OUTPUT:
+                        self.assertEqual(stream, sid)
+                        got.extend(body)
+                self.assertEqual(got, expected)
+
+            output(1, b"READY")
+            client.input(1, b"\x00")
+            output(1, b"\x00" * count)
+            client.spawn(2, ["python3", "-c", "import os,tty; tty.setraw(0); os.write(1,b'READY'); os.read(0,1)"])
+            output(2, b"READY")
+            client.input(1, b"\xff")
+            output(1, b"\xff" * count)
+            client.send(CLOSE, 2)
+            while True:
+                kind, sid, body = client.recv()
+                if kind == ERROR:
+                    self.fail(body.decode())
+                if kind == EXIT and sid == 2:
+                    break
+            client.input(1, b"\x80")
+            output(1, b"\x80" * count)
+            while True:
+                kind, sid, body = client.recv()
+                if kind == ERROR:
+                    self.fail(body.decode())
+                if kind == EXIT and sid == 1:
+                    self.assertEqual(struct.unpack("<I", body)[0], 0)
+                    break
+        self.assertGreater(client.diagnostics["inline_reads"], 0)
+        if int(os.environ.get("HOLLOW_MUX_READ_WORKERS", "0")):
+            self.assertGreater(client.diagnostics["read_jobs"], 0)
+        for key in ("read_queue_ns", "read_work_ns", "read_collect_ns", "read_result_ns"):
+            self.assertGreaterEqual(client.diagnostics[key], 0)
+
     def test_independent_environment_cwd_exit_and_spawn_failure(self):
         self.client.spawn(1, ["/bin/sh", "-c", "printf '%s:%s' \"$MUX_TEST\" \"$PWD\"; exit 7"],
                           cwd="/", env=[dict(key="MUX_TEST", value="one")])
@@ -267,6 +324,10 @@ class MuxTests(unittest.TestCase):
         import tempfile
         # Force a partial transport frame while a completed read result still
         # contains final output. Its exited PID must not be reaped/recycled yet.
+        # Keep two streams live so enabled workers, not the single-pane fast
+        # path, exercise the retained-result lifecycle.
+        self.client.spawn(1, ["/bin/sleep", "60"])
+        self.until(lambda k, s, _: k == SPAWNED and s == 1)
         fcntl.fcntl(self.client.process.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4096)
         parent = "/tmp/opencode" if os.path.isdir("/tmp/opencode") else None
         with tempfile.TemporaryDirectory(dir=parent) as directory:
@@ -277,8 +338,8 @@ class MuxTests(unittest.TestCase):
                 "data=b'x'*24000; "
                 "exec('while data:\\n n=os.write(1,data); data=data[n:]'); os._exit(0)"
             )
-            self.client.spawn(1, ["python3", "-c", code])
-            self.until(lambda k, s, _: k == SPAWNED and s == 1)
+            self.client.spawn(2, ["python3", "-c", code])
+            self.until(lambda k, s, _: k == SPAWNED and s == 2)
             deadline = time.monotonic() + 3
             pid = None
             state = None
@@ -297,8 +358,8 @@ class MuxTests(unittest.TestCase):
             self.assertEqual(state, "Z")
             time.sleep(.05)
             self.assertTrue(os.path.exists(f"/proc/{pid}"))
-            self.client.send(CLOSE, 1)
-            self.until(lambda k, s, _: k == EXIT and s == 1)
+            self.client.send(CLOSE, 2)
+            self.until(lambda k, s, _: k == EXIT and s == 2)
             self.assertFalse(os.path.exists(f"/proc/{pid}"))
 
     def test_shell_integration_preparation_after_fork_stays_isolated(self):

@@ -33,6 +33,9 @@ pub const Worker = struct {
     eof: bool = false,
     reads: u64 = 0,
     read_ns: u64 = 0,
+    submitted_ns: i64 = 0,
+    started_ns: i64 = 0,
+    completed_ns: i64 = 0,
     // Owner-only fields: result collected, and bytes already staged to wire.
     collected: bool = false,
     offset: usize = 0,
@@ -45,9 +48,11 @@ pub const Worker = struct {
             drainNotification(self.wake_fd);
             if (self.stopping.load(.acquire)) return;
             if (self.state.load(.acquire) != .running) continue;
+            if (self.diagnostics) self.started_ns = nowNs();
             self.readJob();
             _ = c.close(self.fd);
             self.fd = -1;
+            if (self.diagnostics) self.completed_ns = nowNs();
             self.state.store(.ready, .release);
             notify(self.notify_fd);
         }
@@ -141,6 +146,7 @@ pub const Pool = struct {
         worker.reads = 0;
         worker.read_ns = 0;
         worker.collected = false;
+        if (diagnostics) worker.submitted_ns = nowNs();
         worker.state.store(.running, .release);
         notify(worker.wake_fd);
     }
