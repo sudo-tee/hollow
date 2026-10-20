@@ -14,6 +14,18 @@ SYNC_UPDATES="${4:-4}"
 CHUNK_BYTES="${5:-128}"
 WRITE_DELAY_MS="${6:-0}"
 
+# Wrap a complete benchmark (including multi-pane coordinators) in one
+# Windows + WSL CPU sampling window. Do not run a sampler in every pane.
+if [[ "$MODE" == "cpu" ]]; then
+  shift
+  if (( $# == 0 )); then
+    echo 'usage: ./bench.sh cpu COMMAND [ARGS...]' >&2
+    exit 2
+  fi
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  exec python3 "$script_dir/scripts/bench_cpu.py" -- "$@"
+fi
+
 run_blocking_child() {
   local result_path="$2"
   local ready_path="$3"
