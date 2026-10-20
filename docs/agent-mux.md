@@ -1180,10 +1180,65 @@ larger changes. Its lowest-risk proposed experiment is an immediate nonblocking
 transport write after staging, retaining POLLOUT polling for backpressure.
 Futex worker wakeups, conditional completion notifications, and delayed master
 close to avoid per-job duplicates require dedicated lost-wakeup/lifecycle tests.
-These remain hypotheses, not implemented or demonstrated optimizations. In the
+The immediate-write candidate is evaluated below; the higher-risk changes remain
+hypotheses, not implemented or demonstrated optimizations. In the
 existing traced two-flood/four-reader case, lifetime diagnostics had equal job
 and batch counts, so configured batch size two did not imply actual pairing;
 untraced measurements must establish bytes and jobs per handoff.
+
+### Immediate nonblocking transport write candidate
+
+The next candidate attempts one nonblocking write when bytes are freshly
+staged, instead of first polling for POLLOUT. Partial writes, EINTR, and EAGAIN
+retain the exact offset; subsequent attempts wait for POLLOUT. Control staging
+still precedes new output, input is serviced every owner turn, and queued local
+control/read results force a zero-timeout turn rather than a 10 ms idle wait.
+No buffers, worker settings, flow-control bounds, or defaults changed.
+
+Five alternating fresh-GUI pairs compared the eventfd-cleanup baseline
+(`3eb95b…`) with this candidate (`833d69…`), four readers and paired-job
+configuration, two idle echo panes and two repaint floods. Each 20-second phase
+requested 5 MiB/s per flood; all phases delivered approximately 10.000 MiB/s
+aggregate. Both variants enabled `HOLLOW_MUX_DIAGNOSTICS` through isolated
+agent wrappers, redirecting stderr to per-run files without ptrace. Reported
+process CPU uses the resource phase, while normalized diagnostic counters cover
+the **whole agent lifetime**, including startup and teardown, not exactly the
+same time window.
+
+| Median metric | Baseline | Immediate write |
+| --- | ---: | ---: |
+| Linux agent CPU cores | 0.3670 | 0.3620 |
+| Linux workload-worker CPU cores | 0.4065 | 0.4070 |
+| Windows GUI CPU cores | 1.0537 | 1.0548 |
+| Owner polls / output MiB | 802.46 | 556.64 |
+| Transport write attempts / output MiB | 291.46 | 290.48 |
+| PTY read attempts / output MiB | 639.92 | 638.49 |
+| Read jobs / output MiB | 305.15 | 304.85 |
+
+Agent CPU was lower in all five pairs; median reduction was approximately
+1.4%, while polls/MiB fell approximately 30.6%. Agent CPU ranges were
+0.3630–0.3740 and 0.3330–0.3670 cores. These small-sample results support fewer
+poll calls, not a large CPU win, statistical significance, or pool/dedicated
+parity. GUI and Linux measurements are separate scopes, not additive. Diagnostic
+instrumentation itself may affect execution. Jobs equaled batches in each run,
+confirming that batch size two did not produce actual pairing for this topology;
+untraced jobs were much smaller than in the earlier ptrace capture.
+
+All ten phases passed identity/resource/cleanup validation. Tests covered a full
+nonblocking pipe, retained offsets on EAGAIN, successful partial writes and
+completion, and control bytes before later bytes; `test-agent-loop` and all five
+`test-agent-mux` configurations passed (23 integration cases each). Linux
+x86_64/aarch64 cross-builds passed; ARM64 runtime remains untested. Read-only code
+review found no actionable correctness issue. GUI echo latency and uncapped
+throughput remain unqualified for this candidate. Kernel profiling was attempted
+but blocked by `perf_event_paranoid=2`; no system settings were changed.
+
+Raw local data, lifetime diagnostics, process/thread samples, binary hashes,
+and validated analysis are under
+`/tmp/opencode/hollow-gui-write-ab-20261020/write-analysis.json`. Harnesses are
+`/tmp/opencode/hollow-gui-write-ab.py` and `hollow-gui-write-summary.py`.
+The installed user GUI remains unchanged; only isolated instances used candidate
+agents through explicit `agent_path` wrappers.
 
 ## Experimental v1 wire contract
 
