@@ -270,7 +270,7 @@ pub const AgentPty = struct {
         if (count == 0) return 0;
         @memcpy(buffer[0..count], s.output.items[s.output_start..][0..count]);
         s.output_start += count;
-        if (s.mux_connection != null and s.phase != .ended) s.mux_state.grant_pending += @intCast(count);
+        if (s.mux_connection != null) s.mux_state.consumed(count);
         if (s.output_start == s.output.items.len) {
             s.output.clearRetainingCapacity();
             s.output_start = 0;

@@ -9,6 +9,8 @@ const deploy = @import("../host/deploy.zig");
 const p = @import("../agent/mux_protocol.zig");
 const gpa = std.heap.smp_allocator;
 pub const window = p.window;
+pub const output_limit = 4 * 1024 * 1024;
+pub const output_budget = 16 * 1024 * 1024;
 const grace = 3 * std.time.ns_per_s;
 const max_connections = 16;
 var registry_mutex: io.Mutex = .{};
@@ -23,10 +25,20 @@ pub const Stream = struct {
     closed_at: i128 = 0,
     input_credit: u32 = 0,
     output_credit: u32 = window,
-    grant_pending: u32 = 0,
+    consumed_pending: u32 = 0,
+    queued_bytes: u32 = 0,
+    reservation_released: bool = false,
     focused: bool = false,
     focus_pending: bool = false,
     prefer_input: bool = false,
+
+    pub fn consumed(self: *Stream, count: usize) void {
+        if (self.reservation_released) return;
+        // Terminal failure banners are outside the wire-credit ledger.
+        const protocol_bytes: u32 = @intCast(@min(count, self.queued_bytes));
+        self.queued_bytes -= protocol_bytes;
+        self.consumed_pending += protocol_bytes;
+    }
 };
 
 pub const Connection = struct {
@@ -48,6 +60,11 @@ pub const Connection = struct {
     reader_done: bool = false,
     writing_since: ?i128 = null,
     started: i128 = 0,
+    // Sum max(window, queued bytes + grants + pending consumption) per slot.
+    // Every slot keeps a baseline window: floods cannot steal a sibling's
+    // refill capacity, nor initial credits needed by newly attached panes.
+    output_reserved: usize = p.max_streams * window,
+    output_high_water: usize = p.max_streams * window,
 
     pub fn unref(self: *Connection) void {
         if (self.refs.fetchSub(1, .acq_rel) != 1) return;
@@ -338,15 +355,21 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
     var count: usize = 0;
     for (&c.sessions) |*slot| if (slot.*) |s| {
         s.mutex.lock();
-        const retire = s.phase == .ended or (s.closing and !s.mux_state.submitted);
+        collectConsumption(c, &s.mux_state);
+        if (s.mux_state.failed and !s.mux_state.close_sent) {
+            s.mux_state.close_sent = true;
+            f.* = .{ .kind = .close, .id = s.mux_state.id };
+            s.mutex.unlock();
+            return true;
+        }
+        // Final output still belongs to this connection's budget. Hold the
+        // slot until consumed, or explicitly abort it when the pane closes.
+        const retire = (s.phase == .ended and (s.mux_state.queued_bytes == 0 or s.closing)) or (s.closing and !s.mux_state.submitted);
         if (retire) {
-            if (s.mux_state.failed and !s.mux_state.close_sent) {
-                s.mux_state.close_sent = true;
-                f.* = .{ .kind = .close, .id = s.mux_state.id };
-                s.mutex.unlock();
-                return true;
-            }
             s.endLocked(null);
+            c.output_reserved -= reservation(&s.mux_state);
+            c.output_reserved += window; // Restore the empty slot's reserve.
+            s.mux_state.reservation_released = true;
             s.reader_done = true;
             s.changed.broadcast();
             s.wake.signal();
@@ -395,7 +418,10 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
         s.mutex.lock();
         defer s.mutex.unlock();
         const m = &s.mux_state;
+        collectConsumption(c, m);
+        if (s.phase == .ended) continue;
         const input_ready = m.input_credit > 0 and s.input_start < s.input.items.len;
+        const grant = grantAvailable(c, m);
         f.id = m.id;
         f.len = 0;
         if (s.closing) {
@@ -413,11 +439,13 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
             f.kind = .resize;
             f.len = 4;
             f.bytes[0..4].* = p.pty.encodeResize(s.cols, s.rows);
-        } else if (m.grant_pending > 0 and (!input_ready or !m.prefer_input) and (m.grant_pending >= window / 2 or m.output_credit == 0)) {
-            const grant = m.grant_pending;
-            m.grant_pending = 0;
+        } else if (grant > 0 and (!input_ready or !m.prefer_input) and (grant >= window / 2 or m.output_credit == 0)) {
             if (m.output_credit > window - grant) return error.InvalidCredit;
+            const before = reservation(m);
             m.output_credit += grant;
+            c.output_reserved += reservation(m) - before;
+            c.output_high_water = @max(c.output_high_water, c.output_reserved);
+            std.debug.assert(c.output_reserved <= output_budget);
             m.prefer_input = true;
             f.kind = p.credit;
             f.len = 4;
@@ -437,6 +465,27 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
         return true;
     }
     return false;
+}
+
+fn grantAvailable(c: *const Connection, m: *const Stream) u32 {
+    std.debug.assert(c.output_reserved <= output_budget);
+    std.debug.assert(m.consumed_pending == 0);
+    std.debug.assert(m.queued_bytes + m.output_credit <= output_limit);
+    const baseline_free: usize = window - @min(window, m.queued_bytes + m.output_credit);
+    return @intCast(@min(window - m.output_credit, @min(
+        output_limit - m.queued_bytes - m.output_credit,
+        baseline_free + output_budget - c.output_reserved,
+    )));
+}
+
+fn reservation(m: *const Stream) usize {
+    return @max(window, @as(usize, m.queued_bytes) + m.output_credit + m.consumed_pending);
+}
+
+fn collectConsumption(c: *Connection, m: *Stream) void {
+    const before = reservation(m);
+    m.consumed_pending = 0;
+    c.output_reserved -= before - reservation(m);
 }
 
 fn reader(c: *Connection, file: std.Io.File) void {
@@ -518,18 +567,20 @@ fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
             },
             .output => {
                 if (!m.spawned or bytes.len > m.output_credit) return error.OutputWindowExceeded;
+                const before = reservation(m);
                 m.output_credit -= @intCast(bytes.len);
                 if (!s.closing) {
                     const pending = s.pendingOutputLocked();
-                    if (bytes.len > window - pending) return error.OutputWindowExceeded;
+                    if (bytes.len > output_limit - pending) return error.OutputWindowExceeded;
                     if (s.output_start > 0) {
                         std.mem.copyForwards(u8, s.output.items[0..pending], s.output.items[s.output_start..]);
                         s.output.items.len = pending;
                         s.output_start = 0;
                     }
                     try s.output.appendSlice(gpa, bytes);
+                    m.queued_bytes += @intCast(bytes.len);
                     s.wake.signal();
-                }
+                } else c.output_reserved -= before - reservation(m);
             },
             .exit => {
                 if (bytes.len != 4) return error.InvalidExit;
@@ -578,4 +629,66 @@ test "error followed by exit before owner collection does not fail siblings" {
     try std.testing.expect(s.mux_state.failed);
     try std.testing.expect(!c.reader_done);
     try std.testing.expectEqual(@as(?u32, agent.failure_status), pty.exitStatus());
+}
+
+test "read-ahead cap preserves a baseline refill for every stream" {
+    var c: Connection = .{ .arena = .init(std.testing.allocator), .key = "test", .host = .{}, .output_reserved = output_budget };
+    defer c.arena.deinit();
+    var focused: Stream = .{ .output_credit = 0 };
+    try std.testing.expectEqual(@as(u32, window), grantAvailable(&c, &focused));
+    var flooded: Stream = .{ .queued_bytes = 2 * 1024 * 1024, .output_credit = 0 };
+    try std.testing.expectEqual(@as(u32, 0), grantAvailable(&c, &flooded));
+    flooded.consumed(window);
+    collectConsumption(&c, &flooded);
+    try std.testing.expectEqual(@as(usize, output_budget - window), c.output_reserved);
+    try std.testing.expectEqual(@as(u32, window), grantAvailable(&c, &flooded));
+    focused = .{ .queued_bytes = window / 2, .output_credit = 0, .consumed_pending = window / 2 };
+    const before = c.output_reserved;
+    collectConsumption(&c, &focused);
+    try std.testing.expectEqual(before, c.output_reserved);
+    try std.testing.expectEqual(@as(u32, window / 2), window - @min(window, focused.queued_bytes + focused.output_credit));
+    focused.queued_bytes = output_limit;
+    try std.testing.expectEqual(@as(u32, 0), grantAvailable(&c, &focused));
+}
+
+test "final output retains slot and budget until consumed" {
+    var pty = try agent.AgentPty.init(std.testing.allocator, .{
+        .shell = "/bin/sh",
+        .cols = 80,
+        .rows = 24,
+        .cwd = null,
+        .env_block = null,
+        .launch_command = null,
+        .host = .{},
+    }, .{});
+    // The test acts as the worker holding init's second session reference.
+    pty.started = true;
+    defer pty.closeAndJoin();
+    const s = pty.session;
+    s.hello = true;
+    s.mux_state = .{ .id = 1, .submitted = true, .spawned = true, .output_credit = 0, .queued_bytes = 2 * window };
+    try s.output.appendNTimes(gpa, 'x', 2 * window);
+    var c: Connection = .{ .arena = .init(std.testing.allocator), .key = "test", .host = .{}, .hello = true };
+    defer c.arena.deinit();
+    c.sessions[0] = s;
+    c.output_reserved += window;
+    var status: [4]u8 = undefined;
+    std.mem.writeInt(u32, &status, 7, .little);
+    try accept(&c, .{ .kind = .exit, .stream = 1, .len = 4 }, &status);
+    var frame: Frame = undefined;
+    try std.testing.expect(!try nextFrame(&c, &frame));
+    try std.testing.expect(c.sessions[0] != null);
+    try std.testing.expect(!c.dead);
+    var bytes: [window]u8 = undefined;
+    const first = try pty.read(&bytes);
+    s.mux_state.consumed(first); // No real connection pointer in this fixture.
+    try std.testing.expect(!try nextFrame(&c, &frame));
+    try std.testing.expectEqual(@as(usize, p.max_streams * window), c.output_reserved);
+    try std.testing.expect(c.sessions[0] != null);
+    const second = try pty.read(&bytes);
+    s.mux_state.consumed(second);
+    try std.testing.expect(!try nextFrame(&c, &frame));
+    try std.testing.expect(c.sessions[0] == null);
+    try std.testing.expect(c.dead);
+    try std.testing.expectEqual(@as(?u32, 7), pty.exitStatus());
 }

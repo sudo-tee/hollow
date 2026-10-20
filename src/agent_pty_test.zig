@@ -71,7 +71,7 @@ test "mux blocked output consumer never blocks a sibling and bounds unread bytes
     defer echo.closeAndJoin();
     try echo.start();
     const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
-    while (flood.pendingOutputBytes() < 65536) {
+    while (flood.pendingOutputBytes() < @import("pty/agent_mux.zig").output_limit) {
         if (io.nanoTimestamp() > deadline) return error.Timeout;
         try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
     }
@@ -80,7 +80,7 @@ test "mux blocked output consumer never blocks a sibling and bounds unread bytes
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
     try readUntil(&echo, &out, "independent\r\n");
-    try std.testing.expectEqual(@as(usize, 65536), flood.pendingOutputBytes());
+    try std.testing.expectEqual(@as(usize, @import("pty/agent_mux.zig").output_limit), flood.pendingOutputBytes());
     try std.testing.expectEqual(@as(?u32, 0), try waitExit(&echo));
 }
 
@@ -199,6 +199,57 @@ test "mux binary output crosses many credit windows without loss" {
     }
     try std.testing.expectEqual(@as(usize, 1024 * 1024), offset);
     try std.testing.expectEqual(@as(?u32, 0), pty.exitStatus());
+}
+
+test "mux full read-ahead budget cannot steal an interactive sibling window" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var floods: [8]agent.AgentPty = undefined;
+    var initialized: usize = 0;
+    defer @import("pty/agent_mux.zig").shutdown();
+    defer for (floods[0..initialized]) |*pane| pane.close();
+    for (&floods) |*pane| {
+        const req = request("wsl.exe --exec /usr/bin/yes flood", multiplex(path));
+        pane.* = try agent.AgentPty.init(std.testing.allocator, req, .{});
+        initialized += 1;
+        try pane.start();
+    }
+    const req = request("wsl.exe --exec python3 -c \"import os,tty;tty.setraw(0);os.write(1,b'R');exec('while True:\\n data=os.read(0,4096)\\n os.write(1,data)')\"", multiplex(path));
+    var echo = try agent.AgentPty.init(std.testing.allocator, req, .{});
+    defer echo.closeAndJoin();
+    try echo.start();
+    var ready: std.ArrayList(u8) = .empty;
+    defer ready.deinit(std.testing.allocator);
+    try readUntil(&echo, &ready, "R");
+    echo.setFocused(true);
+    const c = echo.session.mux_connection.?;
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (true) {
+        c.mutex.lock();
+        const reserved = c.output_reserved;
+        c.mutex.unlock();
+        if (reserved == @import("pty/agent_mux.zig").output_budget) break;
+        if (io.nanoTimestamp() > deadline) return error.Timeout;
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    const bytes = try std.testing.allocator.alloc(u8, 256 * 1024);
+    defer std.testing.allocator.free(bytes);
+    @memset(bytes, 'q');
+    try echo.writeAll(bytes);
+    var received: usize = 0;
+    var buf: [8192]u8 = undefined;
+    while (received < bytes.len) {
+        if (io.nanoTimestamp() > deadline) return error.Timeout;
+        const n = try echo.read(&buf);
+        for (buf[0..n]) |byte| try std.testing.expectEqual(@as(u8, 'q'), byte);
+        received += n;
+        if (n == 0) try std.Io.sleep(io.get(), .fromMilliseconds(1), .awake);
+    }
+    c.mutex.lock();
+    const high = c.output_high_water;
+    c.mutex.unlock();
+    try std.testing.expect(high <= @import("pty/agent_mux.zig").output_budget);
+    try std.testing.expectEqual(bytes.len, received);
 }
 
 test "mux spills at 32 streams and application shutdown drains shared workers" {
