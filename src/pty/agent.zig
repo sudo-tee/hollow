@@ -1,15 +1,16 @@
 //! Pane PTY served by `hollow-agent pty` behind a connector process (wsl.exe,
 //! ssh, docker/podman exec, ...). Lua only describes the connector; the
 //! worker thread installs the agent (`host/deploy.zig`) and then runs it.
-//! Until the agent says hello, input and resizes are buffered. One connector
-//! process per pane for now; the wire format already carries a stream id for
-//! multiplexing later.
+//! Until the agent says hello, input and resizes are buffered. Dedicated mode
+//! owns one connector per pane. Explicit mux hosts delegate connection ownership
+//! to agent_mux.zig, retaining the same pane API and pre-spawn fallback rules.
 const std = @import("std");
 const io = @import("../io.zig");
 const deploy = @import("../host/deploy.zig");
 const wire = @import("../agent/pty_protocol.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
+const mux = @import("agent_mux.zig");
 
 pub const PathStyle = wire.PathStyle;
 
@@ -26,6 +27,8 @@ const Phase = enum { bootstrapping, running, ended };
 
 /// How to reach the agent on a host; built by Lua (`hollow.host.pty`).
 pub const Host = struct {
+    pub const Multiplex = struct { read_workers: u8 = 4, batch_jobs: u8 = 2 };
+    multiplex: ?Multiplex = null,
     connector: deploy.Connector = .{},
     agent: deploy.Agent = .{},
     path_style: PathStyle = .posix,
@@ -35,7 +38,7 @@ pub const Host = struct {
     /// Lua could not describe the host; reported in the pane.
     error_message: ?[]const u8 = null,
 
-    fn dupe(self: Host, a: std.mem.Allocator) !Host {
+    pub fn dupe(self: Host, a: std.mem.Allocator) !Host {
         var copy = self;
         copy.connector = try self.connector.dupe(a);
         copy.agent = try self.agent.dupe(a);
@@ -46,7 +49,9 @@ pub const Host = struct {
 
 /// Shared between the pane (owner), the worker thread and the reader thread.
 /// Freed by whichever drops the last reference.
-const Session = struct {
+pub const Session = struct {
+    mux_connection: ?*mux.Connection = null,
+    mux_state: mux.Stream = .{},
     arena: std.heap.ArenaAllocator,
     wake: Wake,
     mutex: io.Mutex = .{},
@@ -83,7 +88,7 @@ const Session = struct {
     input_start: usize = 0,
     resize_pending: bool = false,
 
-    fn unref(self: *Session) void {
+    pub fn unref(self: *Session) void {
         self.mutex.lock();
         self.refs -= 1;
         const last = self.refs == 0;
@@ -91,6 +96,7 @@ const Session = struct {
         if (!last) return;
         self.output.deinit(gpa);
         self.input.deinit(gpa);
+        if (self.mux_connection) |connection| connection.unref();
         self.arena.deinit();
         gpa.destroy(self);
     }
@@ -101,12 +107,12 @@ const Session = struct {
         return self.closing;
     }
 
-    fn pendingOutputLocked(self: *const Session) usize {
+    pub fn pendingOutputLocked(self: *const Session) usize {
         return self.output.items.len - self.output_start;
     }
 
     /// Ends the session before or after start. Caller holds the mutex.
-    fn endLocked(self: *Session, message: ?[]const u8) void {
+    pub fn endLocked(self: *Session, message: ?[]const u8) void {
         if (self.phase == .ended) return;
         const started = self.hello;
         self.phase = .ended;
@@ -209,8 +215,10 @@ pub const AgentPty = struct {
 
     /// Bootstraps and runs the agent in the background.
     pub fn start(self: *AgentPty) !void {
-        std.debug.assert(self.worker == null and !self.closed);
-        self.worker = try std.Thread.spawn(.{}, workerMain, .{self.session});
+        std.debug.assert(!self.started and self.worker == null and !self.closed);
+        if (self.session.host.multiplex != null and self.session.host.error_message == null) {
+            try mux.attach(self.session);
+        } else self.worker = try std.Thread.spawn(.{}, workerMain, .{self.session});
         self.started = true;
     }
 
@@ -254,6 +262,7 @@ pub const AgentPty = struct {
     pub fn read(self: *AgentPty, buffer: []u8) !usize {
         if (self.closed or buffer.len == 0) return 0;
         const s = self.session;
+        defer mux.notify(s);
         s.mutex.lock();
         defer s.mutex.unlock();
         const pending = s.pendingOutputLocked();
@@ -261,6 +270,7 @@ pub const AgentPty = struct {
         if (count == 0) return 0;
         @memcpy(buffer[0..count], s.output.items[s.output_start..][0..count]);
         s.output_start += count;
+        if (s.mux_connection != null and s.phase != .ended) s.mux_state.grant_pending += @intCast(count);
         if (s.output_start == s.output.items.len) {
             s.output.clearRetainingCapacity();
             s.output_start = 0;
@@ -313,6 +323,7 @@ pub const AgentPty = struct {
     pub fn writeAll(self: *AgentPty, bytes: []const u8) !void {
         if (self.closed) return error.WriteFailed;
         const s = self.session;
+        defer mux.notify(s);
         s.mutex.lock();
         defer s.mutex.unlock();
         if (s.closing or (s.phase == .ended and !s.fallback)) return error.WriteFailed;
@@ -339,6 +350,7 @@ pub const AgentPty = struct {
     pub fn resize(self: *AgentPty, cols: u16, rows: u16) void {
         if (self.closed or cols == 0 or rows == 0) return;
         const s = self.session;
+        defer mux.notify(s);
         s.mutex.lock();
         defer s.mutex.unlock();
         s.cols = cols;
@@ -354,6 +366,19 @@ pub const AgentPty = struct {
         return 0;
     }
 
+    pub fn setFocused(self: *AgentPty, focused: bool) void {
+        if (self.closed or self.session.mux_connection == null) return;
+        const s = self.session;
+        s.mutex.lock();
+        const changed = s.mux_state.focused != focused;
+        if (changed) {
+            s.mux_state.focused = focused;
+            s.mux_state.focus_pending = focused;
+        }
+        s.mutex.unlock();
+        if (changed) mux.notify(s);
+    }
+
     /// Non-blocking: the worker finishes a graceful shutdown (close frame,
     /// bounded wait, then kill) in the background and frees the session.
     pub fn close(self: *AgentPty) void {
@@ -362,12 +387,14 @@ pub const AgentPty = struct {
         const s = self.session;
         s.mutex.lock();
         s.closing = true;
+        if (s.mux_connection != null) s.wake = .{};
         // A deploy or a write blocked on a stalled host cannot observe
         // `closing`.
         if (s.phase == .bootstrapping) s.deploy.cancel(io.get());
         if (s.writing) if (s.child_id) |child| deploy.terminate(child);
         s.changed.broadcast();
         s.mutex.unlock();
+        mux.notify(s);
         if (self.worker) |thread| thread.detach();
         self.worker = null;
         // The worker's reference was never handed out.
@@ -379,6 +406,18 @@ pub const AgentPty = struct {
     /// Test helper: close and wait until the background shutdown completes.
     pub fn closeAndJoin(self: *AgentPty) void {
         if (self.closed) return;
+        if (self.session.mux_connection != null) {
+            const s = self.session;
+            s.mutex.lock();
+            s.refs += 1;
+            s.mutex.unlock();
+            self.close();
+            s.mutex.lock();
+            while (!s.reader_done) s.changed.wait(&s.mutex);
+            s.mutex.unlock();
+            s.unref();
+            return;
+        }
         const worker = self.worker;
         self.worker = null;
         self.close();

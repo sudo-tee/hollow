@@ -958,6 +958,8 @@ pub const App = struct {
             self.ghostty = null;
         }
 
+        @import("pty/agent_mux.zig").shutdown();
+
         if (self.lua) |*lua| {
             lua.deinit();
             self.lua = null;
@@ -2355,6 +2357,7 @@ pub const App = struct {
                 pane.synchronized_output_enabled = self.config.synchronized_output;
                 if (!self.config.synchronized_output) pane.synchronized_output_active = false;
                 const poll_start_ns = io.nanoTimestamp();
+                if (pane.pty) |*pty| pty.setFocused(pane_is_active);
                 const pty_bytes_read = pane.pollPty(runtime, pty_read_loops, pty_read_bytes, pty_budget_ns, pty_parse_chunk_bytes, self.config.debug_overlay) catch |err| result: {
                     std.log.err("pane pollPty error: {s}", .{@errorName(err)});
                     break :result 0;

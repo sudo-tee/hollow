@@ -61,6 +61,10 @@ pub const Pty = union(enum) {
             inline else => |*p| p.childPid(),
         };
     }
+
+    pub fn setFocused(self: *Pty, focused: bool) void {
+        if (self.* == .agent) self.agent.setFocused(focused);
+    }
     pub fn read(self: *Pty, buffer: []u8) !usize {
         self.settle();
         return switch (self.*) {

@@ -430,13 +430,19 @@
 ---@field auto_bootstrap? "always"|"never"
 ---@field default_layout? string
 
+---@class HollowDomainPtyConfig
+---@field mode? "dedicated"|"mux" Dedicated by default; mux shares a connector across matching live panes
+---@field read_workers? integer Mux readers 0–4 (default 4); 0 uses inline reads
+---@field batch_jobs? 1|2 Mux jobs per reader batch (default 2); 1 favors loaded latency
+
 ---@class HollowDomainConfig
+---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
 ---@field shell? string
 ---@field ssh? HollowSshDomainConfig
 ---@field wsl_distro? string
 ---@field default_cwd? string
 ---@field env? table<string, string>
----@field host? false|HollowWorkspaceHostDescriptor|{ path_style?: "posix"|"wsl" } Run panes through `hollow-agent pty` on this host. On Windows, WSL domains use it implicitly (falling back to wsl.exe); `false` opts out
+---@field host? false|HollowWorkspaceHostDescriptor|{ path_style?: "posix"|"wsl" } Agent terminal host (dedicated by default). On Windows, WSL domains use it implicitly (falling back to wsl.exe); `false` opts out
 
 ---@class HollowDomain: HollowDomainConfig
 ---@field name string

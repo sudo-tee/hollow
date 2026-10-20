@@ -86,4 +86,31 @@ describe("hollow.host.pty", function()
     env.hollow.platform = { is_windows = false }
     assert.is_nil(pty.request(nil, "/bin/zsh"))
   end)
+
+  it("keeps dedicated default and exposes explicit mux settings", function()
+    domains.box = { host = { type = "ssh", destination = "box" } }
+    assert.is_nil(pty.request("box", "sh").multiplex)
+    domains.box.pty = { mode = "mux" }
+    assert.are.same({ read_workers = 4, batch_jobs = 2 }, pty.request("box", "sh").multiplex)
+    domains.box.pty = { mode = "mux", read_workers = 0, batch_jobs = 1 }
+    assert.are.same({ read_workers = 0, batch_jobs = 1 }, pty.request("box", "sh").multiplex)
+    domains.box.pty.mode = "dedicated"
+    assert.is_nil(pty.request("box", "sh").multiplex)
+  end)
+
+  it("supports implicit WSL mux and reports invalid tuning rather than silently falling back", function()
+    domains.ubuntu = { wsl_distro = "Ubuntu", pty = { mode = "mux" } }
+    assert.are.same({ read_workers = 4, batch_jobs = 2 }, pty.request("ubuntu", "wsl.exe").multiplex)
+    for _, opts in ipairs({
+      false, { mode = "bad" }, { mode = "mux", read_workers = -1 },
+      { mode = "mux", read_workers = 5 }, { mode = "mux", read_workers = 1.5 },
+      { mode = "mux", read_workers = "2" }, { mode = "mux", batch_jobs = 0 },
+    }) do
+      domains.ubuntu.pty = opts
+      local host = pty.request("ubuntu", "wsl.exe")
+      assert.are.equal("explicit", host.mode)
+      assert.truthy(host.error)
+      assert.is_nil(host.multiplex)
+    end
+  end)
 end)

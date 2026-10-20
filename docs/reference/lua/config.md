@@ -239,6 +239,52 @@ hollow.config.set({
 
 See [`hollow.host` → Pane PTYs](host.md#pane-ptys).
 
+### Experimental shared terminal connections
+
+Agent-backed domains can explicitly select multiplexing:
+
+```lua
+hollow.config.set({
+  domains = {
+    Ubuntu = {
+      wsl_distro = "Ubuntu", -- implicit WSL agent on Windows
+      pty = { mode = "mux", read_workers = 4, batch_jobs = 2 },
+    },
+    build = {
+      host = { type = "ssh", destination = "build" },
+      pty = { mode = "mux", read_workers = 4, batch_jobs = 2 },
+    },
+  },
+})
+```
+
+Add `pty` to your existing domain; leave its shell, host, and environment intact.
+Omitting `pty`, or setting `pty.mode = "dedicated"`, preserves the default
+one-connector-per-pane backend. These options affect **new panes** only.
+`host = false` still selects native PTYs; `pty` does not turn a native domain
+into an agent host.
+
+- `read_workers`: integer 0–4, default 4 when mux is selected; 0 uses inline
+  reads. This is passed to the remote agent, not read from GUI environment.
+- `batch_jobs`: 1 or 2, default 2 when mux is selected. Pairing improves measured
+  headless bulk throughput; 1 had lower loaded echo latency in local tests.
+- Matching connector argv/quoting, deployment/artifacts, and tuning share one
+  terminal connection, including concurrent bootstrap. Cwd, environment, command,
+  size, and close remain per pane. Up to 32 streams share a connection; overflow
+  creates another, with a process-wide cap of 16 live terminal connections.
+- Last live stream closes the connection; no idle connection retention. A failed
+  connection visibly fails its remaining panes. Shells are never automatically
+  restarted or input replayed after spawn submission. A new pane can reconnect.
+- Filesystem/exec traffic remains separate. Connection failure now has a shared
+  failure domain; dedicated mode remains the default and rollback path.
+
+This remains experimental: headless throughput results are **not** GUI rendering
+or WSL/SSH performance qualification. Wire windows and unread client output are
+64 KiB per stream. Client input admission retains the dedicated backend's bounded
+4 MiB queue for large pastes; transmission still obeys the 64 KiB wire window.
+UI drain cadence and connector latency may limit throughput.
+See [agent mux measurements and limits](../../agent-mux.md).
+
 ## Workspace bootstrap
 
 ```lua

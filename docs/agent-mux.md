@@ -2,11 +2,11 @@
 
 `hollow-agent mux` serves independent PTYs over one stdin/stdout connection.
 It is a separate, opt-in mode: `hollow-agent pty` still serves one dedicated
-PTY, and `hollow-agent stdio` still serves filesystem/exec RPC. Neither GUI
-backend selection nor production defaults change.
+PTY, and `hollow-agent stdio` still serves filesystem/exec RPC. Dedicated remains
+the GUI default; agent-backed domains can explicitly opt into shared transport.
 
-This is the headless agent slice of [the multiplexing plan](agent-multiplexing-plan.md),
-not completed GUI connection sharing or a performance-qualified release.
+This implements the headless agent and experimental config integration from
+[the multiplexing plan](agent-multiplexing-plan.md), not a performance-qualified release.
 
 ## Build, test, compare
 
@@ -502,6 +502,59 @@ stale released slots, and reader parallelism with scarce work. Real-agent tests
 cover eight binary streams, an exhausted consumer alongside many floods and
 focused echo, close/reuse, ordering, descriptor hygiene, teardown, and invalid
 batch sizes rejected before hello.
+
+## Experimental config integration
+
+Agent-backed domains now accept `pty = { mode = "mux", read_workers = 4,
+batch_jobs = 2 }`; omitted settings retain dedicated mode. See
+[config reference](reference/lua/config.md#experimental-shared-terminal-connections)
+for WSL/SSH examples and rollback. Existing GUI environment flags do not select
+the backend; config sends tuning explicitly through the connector to the agent.
+
+`src/pty/agent_mux.zig` pools only terminal connections. Effective host identity
+is a canonical serialization of connector argv/remote-shell quoting, agent
+path/install directory/artifact paths and digests/timeout, path style/fallback
+policy, and tuning. Different spawn cwd/env/argv/commands/sizes share transport
+but not child state. Identity is conservative: different policies may create
+separate connections even when they reach the same machine. New panes adopt
+current config; existing connections retain their snapshot across reloads.
+
+The process-wide registry allows 16 live connections, each with at most 32
+stream handles; full connections spill into another connection. One writer,
+reader, and watchdog serve a connection, independent of its pane count. The
+first pane launches one deployment/connector; concurrently attached panes wait
+for that same negotiation. No pane API performs blocking transport IO. Last
+stream retirement closes stdin, waits a bounded grace, and kills a stalled
+connector if needed. There is no idle connection cache or reconnect/replay of
+existing shells. Protocol or connector failure ends all remaining streams
+visibly; a new pane can establish a fresh connection.
+
+Client input admission retains the dedicated backend's all-or-nothing 4 MiB
+per-stream bound, avoiding a new large-paste admission regression. Only 64 KiB
+may be outstanding on the wire per stream. The writer uses
+16 KiB data frames, input credits, fair per-stream turns, coalesced resizes and
+focus hints. Input and returned output credits alternate when both are pending;
+output grants batch at 32 KiB, or when the receive allowance reaches zero. The
+reader checks headers before payload admission, validates negotiation and
+per-stream credits, and never waits for a consumer while routing siblings.
+Unread output is at most 64 KiB per stream; credits return only as the pane
+consumes bytes. Spawn serialization and receive control payloads each use fixed
+64 KiB staging. A small bounded failure banner may be appended on termination.
+
+Spawn submission is the no-replay boundary: implicit WSL fallback is possible
+only before a spawn is sent. Closing one pane sends only its stream close; a
+stalled shared transport/close timeout may still require killing the connector
+and failing siblings. Three-second write/close grace and host hello timeout are
+checked by the watchdog; deployment cancellation affects the shared bootstrap
+only when no interested pane remains. Filesystem/exec connections are untouched.
+
+Real-agent client tests cover reuse, per-spawn env/resize/input/exit, isolated
+close and spawn errors, stalled consumers, binary output across many windows,
+connector/tuning separation, bounded input, visible loss fanout with no restart,
+fresh connections after failure, and bounded silent-hello/close handling.
+GUI rendering and actual WSL/SSH behavior/performance remain qualification work.
+The 64 KiB consumption-driven receive window can itself limit GUI/remote bulk
+throughput; do not interpret headless tables as end-to-end GUI results.
 
 ## Experimental v1 wire contract
 
