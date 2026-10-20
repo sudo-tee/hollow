@@ -1,6 +1,6 @@
 -- Pane PTY host selection. Native code asks `hollow._pty_host` whether a new
 -- pane runs on an agent host and gets back a deploy target; it then installs
--- `hollow-agent` and runs `hollow-agent pty` itself, off the UI thread.
+-- `hollow-agent` and runs dedicated `pty` or opt-in shared `mux` off the UI thread.
 local M = {}
 local options = require("hollow.host.options")
 
@@ -67,6 +67,23 @@ local function path_style(spec)
   return spec.type == "wsl" and "wsl" or "posix"
 end
 
+local function terminal_options(domain)
+  local get = _G.hollow.config.get
+  local config = (get("domains") or {})[domain or get("default_domain")] or {}
+  local pty = config.pty
+  if pty == nil then return nil end
+  if type(pty) ~= "table" then error("domain.pty must be a table", 0) end
+  if pty.mode == nil or pty.mode == "dedicated" then return nil end
+  if pty.mode ~= "mux" then error("domain.pty.mode must be dedicated or mux", 0) end
+  local workers = pty.read_workers == nil and 4 or pty.read_workers
+  local jobs = pty.batch_jobs == nil and 2 or pty.batch_jobs
+  if type(workers) ~= "number" or workers % 1 ~= 0 or workers < 0 or workers > 4 then
+    error("domain.pty.read_workers must be an integer from 0 to 4", 0)
+  end
+  if jobs ~= 1 and jobs ~= 2 then error("domain.pty.batch_jobs must be 1 or 2", 0) end
+  return { read_workers = workers, batch_jobs = jobs }
+end
+
 --- PTY host for a new pane, or nil to run it natively: the deploy target
 --- (`hollow.host.options.target`) plus `mode` and `path_style`, or
 --- `{ mode, error }` when the host config is invalid (reported in the pane).
@@ -79,6 +96,9 @@ function M.request(domain, shell)
   if not spec then return nil end
   local built, host = pcall(options.target, spec.type, spec)
   if not built then return { mode = mode, error = message(host) } end
+  local valid, multiplex = pcall(terminal_options, domain)
+  if not valid then return { mode = "explicit", error = message(multiplex) } end
+  host.multiplex = multiplex
   host.mode = mode
   host.path_style = path_style(spec)
   return host

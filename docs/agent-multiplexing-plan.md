@@ -1,6 +1,6 @@
 # Agent PTY multiplexing plan
 
-Status: implementation started with an opt-in, headless `hollow-agent mux` mode. Dedicated `pty`, RPC `stdio`, and GUI backend defaults remain unchanged. See [current wire contract, limits, tests, and A/B benchmark](agent-mux.md). GUI connection sharing and performance qualification remain outstanding.
+Status: experimental `hollow-agent mux` and user-approved per-domain GUI config opt-in are implemented. Dedicated `pty`, RPC `stdio`, and GUI backend defaults remain unchanged. See [current wire contract, limits, tests, and A/B benchmark](agent-mux.md). Actual GUI/WSL/SSH performance and lifecycle qualification remain outstanding.
 
 ## Goal
 
@@ -33,6 +33,7 @@ Not included in the first version:
 - `src/agent/mux.zig` adds a separate nonblocking multi-PTY poll loop; `src/agent/mux_protocol.zig` defines experimental negotiation, limits, and credit handling. Spawn preparation is shared with dedicated mode but runs after fork in mux mode.
 - `src/agent/pty_read_pool.zig` adds a fixed-size read-worker experiment, selected only with `HOLLOW_MUX_READ_WORKERS=1..4`; zero/default retains inline reads. All transport, credits, and lifecycle remain owner-thread responsibilities. A sole remaining stream uses inline reads only after all jobs/results drain, avoiding single-pane handoff loss in local measurements. Multi-pane parity and broader qualification remain outstanding, so the pool stays opt-in.
 - `HOLLOW_MUX_READ_BATCH_JOBS=2` optionally rotates two credit-reserved PTYs within a worker's existing 64 KiB buffer and bounded turn; default 1 retains single-job A/B mode. Local multi-pane throughput improves substantially, with a small observed loaded-latency tradeoff. Dedicated/GUI defaults and qualification gates remain unchanged.
+- User-approved experimental config integration now accepts per-domain `pty = { mode = "mux", read_workers = 4, batch_jobs = 2 }` for agent-backed panes. Effective connector/deployment identities reuse a terminal connection across live panes; spawn state and filesystem/exec remain isolated. Closing the last stream tears it down; failures visibly end siblings without replaying shells. Dedicated remains default, and real GUI/WSL/SSH throughput and latency qualification still gates rollout.
 - Focus-first read turns now alternate with background byte DRR without advancing its cursor. `scripts/agent_mux.py --workload mixed` measures actual focused echoes under sustained floods and verifies every background stream progresses. Local tail latency improved substantially; supported-connector qualification and numerical release budgets remain outstanding.
 - `src/agent/pty_protocol.zig` has a binary frame header containing kind, stream ID, and payload length. The current implementation uses one fixed stream.
 - Spawn metadata is JSON; terminal input and output are raw byte payloads inside binary frames.
@@ -134,11 +135,11 @@ Exit criterion: stream isolation, bounded memory, and transport-level benchmark 
 
 ### 4. Integrate Hollow connection sharing
 
-- [ ] Add a shared terminal connection owner and effective-host connection pool.
-- [ ] Adapt pane PTY handles to independent streams while retaining dedicated mode.
-- [ ] Support concurrent bootstrap requests, cancellation, and pane closure during deployment/spawn.
-- [ ] Connect focus/visibility hints to transport scheduling.
-- [ ] Define last-stream cleanup, idle expiry, connection failure fan-out, and application teardown.
+- [x] Add a shared terminal connection owner and effective-host connection pool (experimental opt-in).
+- [x] Adapt pane PTY handles to independent streams while retaining dedicated mode.
+- [x] Support concurrent bootstrap requests, cancellation, and pane closure during deployment/spawn (headless real-agent coverage; connector qualification pending).
+- [ ] Connect focus/visibility hints to transport scheduling (focus wired; visibility classes remain deferred).
+- [x] Define last-stream cleanup, idle expiry, connection failure fan-out, and application teardown (no idle retention; bounded write/close grace).
 - [ ] Add opt-in shared mode and diagnostic counters; leave production defaults unchanged.
 
 Exit criterion: headless pane integration and GUI lifecycle tests pass without blocking the GUI thread.

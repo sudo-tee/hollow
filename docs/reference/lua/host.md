@@ -171,8 +171,9 @@ values to WSL paths; other types default to `"posix"`.
   thread, while keystrokes are buffered, then runs `<connector> <agent> pty`.
   If a remembered agent fails to start (container recreated, cache wiped), the
   pane deploys again once.
-- Each pane runs its own connector process. Multiplexing panes over one
-  connection is future work.
+- Each pane runs its own connector process by default. Experimental
+  [per-domain `pty.mode = "mux"`](config.md#experimental-shared-terminal-connections)
+  reuses a terminal connection across matching live panes.
 - The agent spawns the host user's login shell (WSL launcher shells keep their
   inner command), with full escape-sequence passthrough, shell integration and
   resize.

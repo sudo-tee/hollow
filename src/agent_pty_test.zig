@@ -27,6 +27,199 @@ fn local(path: []const u8) agent.Host {
     return .{ .agent = .{ .path = path } };
 }
 
+fn multiplex(path: []const u8) agent.Host {
+    return .{ .agent = .{ .path = path }, .multiplex = .{} };
+}
+
+test "mux panes reuse a connector and isolate env resize input exit and close" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var first = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer first.closeAndJoin();
+    try first.start();
+    var second_request = request("/bin/sh", multiplex(path));
+    second_request.env_block = "HOLLOW_TEST_VALUE=second\x00\x00";
+    var second = try agent.AgentPty.init(std.testing.allocator, second_request, .{});
+    defer second.closeAndJoin();
+    try second.writeAll("stty size; echo v=$HOLLOW_TEST_VALUE\n");
+    second.resize(123, 45);
+    try second.start();
+    try std.testing.expect(first.session.mux_connection == second.session.mux_connection);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try readUntil(&second, &out, "45 123");
+    try readUntil(&second, &out, "v=second");
+    try first.writeAll("echo v=$HOLLOW_TEST_VALUE\n");
+    out.clearRetainingCapacity();
+    try readUntil(&first, &out, "v=from-client");
+    first.closeAndJoin();
+    try second.writeAll("echo survivor; exit 7\n");
+    out.clearRetainingCapacity();
+    try readUntil(&second, &out, "survivor\r\n");
+    try std.testing.expectEqual(@as(?u32, 7), try waitExit(&second));
+}
+
+test "mux blocked output consumer never blocks a sibling and bounds unread bytes" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var flood_request = request("/bin/sh", multiplex(path));
+    flood_request.launch_command = .{ .command = "exec yes flood" };
+    var flood = try agent.AgentPty.init(std.testing.allocator, flood_request, .{});
+    defer flood.closeAndJoin();
+    try flood.start();
+    var echo = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer echo.closeAndJoin();
+    try echo.start();
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    while (flood.pendingOutputBytes() < 65536) {
+        if (io.nanoTimestamp() > deadline) return error.Timeout;
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    echo.setFocused(true);
+    try echo.writeAll("echo independent; exit\n");
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try readUntil(&echo, &out, "independent\r\n");
+    try std.testing.expectEqual(@as(usize, 65536), flood.pendingOutputBytes());
+    try std.testing.expectEqual(@as(?u32, 0), try waitExit(&echo));
+}
+
+test "mux spawn error stays isolated and a later pane reuses live connection" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var survivor = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer survivor.closeAndJoin();
+    try survivor.start();
+    const bad_request = request("wsl.exe --exec /nonexistent/hollow-test-shell", multiplex(path));
+    var bad = try agent.AgentPty.init(std.testing.allocator, bad_request, .{});
+    defer bad.closeAndJoin();
+    try bad.start();
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&bad));
+    bad.closeAndJoin();
+    var later = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer later.closeAndJoin();
+    try later.start();
+    try std.testing.expect(survivor.session.mux_connection == later.session.mux_connection);
+    try survivor.writeAll("echo still-alive; exit\n");
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try readUntil(&survivor, &out, "still-alive\r\n");
+}
+
+test "mux connection loss fails siblings without restarting shells" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var first = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer first.closeAndJoin();
+    try first.start();
+    var second = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer second.closeAndJoin();
+    try second.start();
+    try second.writeAll("echo READY\n");
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try readUntil(&second, &out, "READY\r\n");
+    const connection = first.session.mux_connection.?;
+    connection.mutex.lock();
+    @import("host/deploy.zig").terminate(connection.child.?);
+    connection.mutex.unlock();
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&first));
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&second));
+    try std.testing.expect(!first.wantsFallback());
+    try std.testing.expect(!second.wantsFallback());
+    var replacement = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer replacement.closeAndJoin();
+    try replacement.start();
+    try std.testing.expect(replacement.session.mux_connection != connection);
+}
+
+test "mux identity separates connectors and tuning and bounds input admission" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var first = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer first.closeAndJoin();
+    try first.start();
+    var host = multiplex(path);
+    host.connector.argv = &.{ "env", "HOLLOW_TEST_VALUE=connector" };
+    var second = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+    defer second.closeAndJoin();
+    try second.start();
+    try std.testing.expect(first.session.mux_connection != second.session.mux_connection);
+    host = multiplex(path);
+    host.multiplex.?.batch_jobs = 1;
+    var third = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+    defer third.closeAndJoin();
+    try third.start();
+    try std.testing.expect(first.session.mux_connection != third.session.mux_connection);
+    var queued = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+    defer queued.closeAndJoin();
+    const bytes = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(bytes);
+    @memset(bytes, 'x');
+    try queued.writeAll(bytes);
+    try std.testing.expectError(error.InputQueueFull, queued.writeAll("x"));
+}
+
+test "mux silent hello and close during bootstrap are bounded" {
+    var host: agent.Host = .{
+        .connector = .{ .argv = &.{ "/bin/sh", "-c", "exec sleep 30", "x" } },
+        .agent = .{ .path = "/agent", .timeout_ms = 150 },
+        .multiplex = .{},
+    };
+    var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+    defer pty.closeAndJoin();
+    try pty.start();
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&pty));
+    host.agent.timeout_ms = 60000;
+    var closing = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+    try closing.start();
+    const started = io.nanoTimestamp();
+    closing.closeAndJoin();
+    try std.testing.expect(io.nanoTimestamp() - started < 4 * std.time.ns_per_s);
+}
+
+test "mux binary output crosses many credit windows without loss" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    const req = request("wsl.exe --exec python3 -c 'import os,tty; tty.setraw(0); os.write(1,bytes(range(256))*4096)'", multiplex(path));
+    var pty = try agent.AgentPty.init(std.testing.allocator, req, .{});
+    defer pty.closeAndJoin();
+    try pty.start();
+    const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;
+    var offset: usize = 0;
+    var bytes: [8192]u8 = undefined;
+    while (pty.isAlive()) {
+        if (io.nanoTimestamp() > deadline) return error.Timeout;
+        const n = try pty.read(&bytes);
+        for (bytes[0..n]) |byte| {
+            try std.testing.expectEqual(@as(u8, @truncate(offset)), byte);
+            offset += 1;
+        }
+        if (n == 0) try std.Io.sleep(io.get(), .fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), offset);
+    try std.testing.expectEqual(@as(?u32, 0), pty.exitStatus());
+}
+
+test "mux spills at 32 streams and application shutdown drains shared workers" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var panes: [33]agent.AgentPty = undefined;
+    var initialized: usize = 0;
+    defer for (panes[0..initialized]) |*pty| pty.closeAndJoin();
+    for (&panes) |*pty| {
+        pty.* = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+        initialized += 1;
+        try pty.start();
+    }
+    try std.testing.expect(panes[0].session.mux_connection == panes[31].session.mux_connection);
+    try std.testing.expect(panes[0].session.mux_connection != panes[32].session.mux_connection);
+    const started = io.nanoTimestamp();
+    @import("pty/agent_mux.zig").shutdown();
+    try std.testing.expect(io.nanoTimestamp() - started < 4 * std.time.ns_per_s);
+    for (&panes) |*pty| try std.testing.expectEqual(@as(?u32, agent.failure_status), pty.exitStatus());
+}
+
 /// Reads until `needle` appears or the session ends; returns everything read.
 fn readUntil(pty: *agent.AgentPty, out: *std.ArrayList(u8), needle: []const u8) !void {
     const deadline = io.nanoTimestamp() + 10 * std.time.ns_per_s;

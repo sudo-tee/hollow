@@ -3547,6 +3547,24 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
     const target = try host_lua.readTarget(arena, api, state, idx);
     host.connector = target.connector;
     host.agent = target.agent;
+    api.get_field(state, idx, "multiplex");
+    defer pop(api, state, 1);
+    const multiplex_type: LuaType = @enumFromInt(api.value_type(state, -1));
+    if (multiplex_type != .nil_type) {
+        if (multiplex_type != .table) return error.InvalidMuxSettings;
+        const multiplex_idx = absoluteIndex(api, state, -1);
+        var tuning: @import("pty/agent.zig").Host.Multiplex = .{};
+        inline for (.{ "read_workers", "batch_jobs" }) |field| {
+            api.get_field(state, multiplex_idx, field);
+            defer pop(api, state, 1);
+            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return error.InvalidMuxSettings;
+            const value = api.to_number(state, -1);
+            if (!std.math.isFinite(value) or @floor(value) != value) return error.InvalidMuxSettings;
+            @field(tuning, field) = try asInt(u8, value);
+        }
+        if (tuning.read_workers > 4 or tuning.batch_jobs < 1 or tuning.batch_jobs > 2) return error.InvalidMuxSettings;
+        host.multiplex = tuning;
+    }
     if (luaStringField(api, state, idx, "path_style")) |style| {
         host.path_style = std.meta.stringToEnum(@import("pty/agent.zig").PathStyle, style) orelse return error.InvalidPathStyle;
     }
