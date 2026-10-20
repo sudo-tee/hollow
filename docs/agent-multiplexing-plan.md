@@ -29,6 +29,12 @@ Follow-up GUI A/Bs found the 20 MiB/s-per-flood cap did not deliver matched load
 at matched 20 MiB/s aggregate, pooled Linux-agent CPU was 75.7% higher, while
 uncapped pool throughput was substantially higher. This supports further syscall-
 level profiling, not an inline-default change; see [worker CPU/throughput tradeoff](agent-mux.md#read-worker-cputhroughput-tradeoff-in-the-gui).
+Eventfd drain cleanup removed redundant reads without a demonstrated GUI CPU
+gain. A subsequent direct-syscall descriptor-duplication candidate removed an
+extra call but showed no meaningful CPU gain in five post-meeting GUI pairs
+and was not adopted. The earlier higher-CPU comparison was confounded by a
+reported Teams meeting/screen share; see
+[descriptor-duplication measurements](agent-mux.md#descriptor-duplication-bypass-measured-not-adopted).
 
 ## Goal
 

@@ -250,6 +250,38 @@ fn nowNs() i64 {
     return ts.sec * 1_000_000_000 + ts.nsec;
 }
 
+test "read job duplicate preserves CLOEXEC nonblocking and ownership after source close" {
+    var pool: Pool = .{};
+    var master = c.eventfd(7, c.EFD_CLOEXEC | c.EFD_NONBLOCK);
+    try std.testing.expect(master >= 0);
+    defer if (master >= 0) {
+        _ = c.close(master);
+    };
+    pool.begin(0, false);
+    const key = try pool.add(0, master, 0, 1, 8);
+    const duplicate = pool.workers[0].jobs[key].fd;
+    defer _ = c.close(duplicate);
+    try std.testing.expect(duplicate >= 3 and duplicate != master);
+    try std.testing.expectEqual(@as(c_int, c.FD_CLOEXEC), c.fcntl(duplicate, c.F_GETFD));
+    const status_flags = c.fcntl(duplicate, c.F_GETFL);
+    try std.testing.expect(status_flags >= 0 and status_flags & c.O_NONBLOCK != 0);
+    _ = c.close(master);
+    master = -1;
+    var value: u64 = undefined;
+    try std.testing.expectEqual(@as(isize, 8), c.read(duplicate, &value, 8));
+    try std.testing.expectEqual(@as(u64, 7), value);
+    try std.testing.expectEqual(@as(isize, -1), c.read(duplicate, &value, 8));
+    try std.testing.expectEqual(c.EAGAIN, c.__errno_location().*);
+}
+
+test "read job duplication failure leaves batch unchanged" {
+    var pool: Pool = .{};
+    pool.begin(0, false);
+    try std.testing.expectError(error.ReadDescriptorFailed, pool.add(0, -1, 0, 1, 8));
+    try std.testing.expectEqual(@as(usize, 0), pool.workers[0].job_count);
+    try std.testing.expectEqual(@as(usize, 0), pool.workers[0].reserved);
+}
+
 test "notification read clears aggregated writes and preserves later notifications" {
     const fd = c.eventfd(0, c.EFD_CLOEXEC | c.EFD_NONBLOCK);
     try std.testing.expect(fd >= 0);
