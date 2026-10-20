@@ -677,6 +677,108 @@ standalone rerun and complete serialized Debug/ReleaseFast runs passed. This
 timing sensitivity is not evidence of a new server fix; the agent server is
 unchanged by the read-ahead correction.
 
+## Native backlog latency and avoidable owner work
+
+The native adapter diagnostic also measures actual focused echoes while other
+panes keep output queues backlogged:
+
+```sh
+python3 scripts/agent_pane_bench.py --panes 4 32 --frame-us 16667 \
+  --echo-samples 1000 --drain-bytes 16384 --read-chunk 65536 \
+  --runs 3 --build-mode ReleaseFast
+```
+
+This uses raw Python children with one focused echo stream and `panes - 1`
+sustained floods. Background panes drain at most the selected byte quota per
+frame turn; every flood must make measurable progress. The focused adapter is
+polled independently every 100 microseconds, with a 100 ms warmup and 5 ms idle
+interval between echoes. A sample starts before input admission and ends after
+the matching byte is read back; there is never more than one outstanding echo.
+Returned bytes are checked, including changing binary echo tokens. Reported
+percentiles use nearest rank; tables below are medians of per-run percentiles.
+
+This deliberately measures **adapter/driver latency under backlog**, not GUI
+keyboard/event/VT/render latency. Background byte quotas are diagnostic controls,
+not a reproduction of the app's complete visible/hidden parsing scheduler.
+It also does not qualify focus switching, remote connectors, or release budgets.
+
+### Queue-copy investigation
+
+Mux originally compacted the entire remaining queue after any partial read.
+Copy counters showed a one-pane, 16 MiB, 60 Hz diagnostic with 4 KiB reads moving
+about **12 times the payload** in reader compactions. Matching dedicated's
+append-space policy (compact only when append space is exhausted) reduced that
+reader-copy ratio to approximately zero; consumer compactions remained around
+one payload. A deterministic regression checks both the no-copy append path
+and compaction when required, including binary ordering across the consumed
+prefix.
+
+Three-run median bulk throughput in that 4 KiB-read case rose 63.8 → 72.0 MiB/s;
+64 KiB reads measured 73.6 → 79.4 MiB/s. These short frame-paced runs are
+quantized and **not proof of a broad throughput gain**. Four/32-pane throughput
+was largely unchanged. The cleanup removes unnecessary lock-held copies without
+changing queue bounds, credits, allocation policy, or dedicated behavior.
+`reader_compacted_bytes` and `consumer_compacted_bytes` now report the respective
+copy work for both adapters. Data:
+`/tmp/opencode/hollow-native-compaction-first.jsonl` and
+`/tmp/opencode/hollow-native-compaction-paired.jsonl`.
+
+### Empty polling was waking the shared owner
+
+Profiling the backlog workload exposed a larger avoidable cost: every empty
+`AgentPty.read()` notified the mux connection. A focused adapter polled every
+100 microseconds could wake the writer/watchdog thousands of times per second,
+even though no queue capacity or control state had changed. Each writer turn
+scanned the stream table and acquired session locks unnecessarily.
+
+Empty reads now remain silent. Reads that consume output still notify after
+releasing the session lock, including final-output consumption needed for slot
+retirement. Close/input/resize/focus notifications are unchanged. A deterministic
+test asserts zero notifications for an empty poll and exactly one for consuming
+protocol output. Diagnostics distinguish empty reads, UI `notify` calls, and
+owner turns; these are not kernel wakeup or context-switch counts.
+
+Local WSL2 Linux, ReleaseFast, same agent, saved counter-instrumented reference
+and updated adapters; four mux readers with pairs, 1,000 echoes per run, three
+runs in alternating variant order, 16,667 µs background cadence, 16 KiB per-pane
+drain quota, and 64 KiB read buffer:
+
+| Panes | Variant | p50 / p95 / p99 (ms) | Process-tree CPU (s) | UI notifications | Owner turns |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4 | Dedicated | 0.416 / 0.607 / 0.713 | 1.202 | — | — |
+| 4 | Mux, empty polls notify | 0.515 / 0.720 / 0.933 | 2.968 | 27,527 | 30,423 |
+| 4 | Mux, quiet empty polls | 0.525 / 0.737 / 0.849 | 1.637 | 3,034 | 7,545 |
+| 32 | Dedicated | 0.415 / 0.728 / 1.429 | 5.351 | — | — |
+| 32 | Mux, empty polls notify | 0.518 / 0.841 / 2.227 | 5.621 | 36,207 | 42,453 |
+| 32 | Mux, quiet empty polls | 0.520 / 0.753 / 2.032 | 4.332 | 12,759 | 20,900 |
+
+CPU includes the native driver, agents, workload children, startup and teardown,
+not just the transport owner. Thus this demonstrates a reduction in observed
+**process-tree CPU**, not a measured percentage of GUI CPU saved. The driver
+continued making roughly 29,000 empty reads per run; avoiding their notifications
+cut futile owner work rather than changing the polling workload or frame budget.
+Background consumption stayed around 2.8 MiB/s at four panes and 28.8–28.9 MiB/s
+at 32, intentionally limited by quotas. Every background stream progressed.
+
+Tail samples remain noisy: worst individual old/new mux echoes were
+4.935/1.920 ms at four panes and 4.109/4.418 ms at 32. Do not infer a hard latency
+bound or general tail improvement from these medians. Queue/reservation caps,
+protocol, reader count, connection lifetime, and production defaults are unchanged.
+Full comparative records: `/tmp/opencode/hollow-native-empty-notify-paired.jsonl`.
+Initial backlog diagnostic: `/tmp/opencode/hollow-native-backlog-initial.jsonl`.
+
+Benchmark smoke coverage now includes exact echo counts, progress of every
+flood, queue bounds, diagnostic notification bounds, and continuous/frame-paced
+background draining. Larger persistent queues can still require compaction when
+append space really runs out; those costs and remaining multi-pane transport
+overhead require further profiling rather than bigger buffers or default changes.
+
+Validation after these changes passed serialized Debug and ReleaseFast suites:
+78 Zig tests, 23 wire integration tests across five configurations, and both
+native diagnostic smoke tests (bulk and backlog, each across dedicated/mux and
+continuous/frame-paced draining). Windows x86_64 ReleaseFast GUI and Linux
+x86_64/aarch64 agents also built successfully.
+
 ## Experimental v1 wire contract
 
 The frame envelope matches dedicated PTY's nine-byte layout:

@@ -65,6 +65,8 @@ pub const Connection = struct {
     // refill capacity, nor initial credits needed by newly attached panes.
     output_reserved: usize = p.max_streams * window,
     output_high_water: usize = p.max_streams * window,
+    ui_notifications: u64 = 0,
+    owner_turns: u64 = 0,
 
     pub fn unref(self: *Connection) void {
         if (self.refs.fetchSub(1, .acq_rel) != 1) return;
@@ -136,6 +138,7 @@ fn register(c: *Connection, slot: *?*agent.Session, s: *agent.Session) void {
 pub fn notify(s: *agent.Session) void {
     const c = s.mux_connection orelse return;
     c.mutex.lock();
+    c.ui_notifications += 1;
     c.changed.broadcast();
     c.mutex.unlock();
 }
@@ -330,6 +333,7 @@ fn sendLoop(c: *Connection, file: std.Io.File) !void {
     var frame: Frame = undefined;
     while (true) {
         c.mutex.lock();
+        c.owner_turns += 1;
         const available = nextFrame(c, &frame) catch |err| {
             c.mutex.unlock();
             return err;
@@ -572,8 +576,12 @@ fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
                 if (!s.closing) {
                     const pending = s.pendingOutputLocked();
                     if (bytes.len > output_limit - pending) return error.OutputWindowExceeded;
-                    if (s.output_start > 0) {
+                    // Preserve the consumed prefix until append space is
+                    // exhausted. Eager compaction moves the entire backlog
+                    // while holding both connection and session locks.
+                    if (s.output_start > 0 and s.output.capacity - s.output.items.len < bytes.len) {
                         std.mem.copyForwards(u8, s.output.items[0..pending], s.output.items[s.output_start..]);
+                        s.reader_compacted_bytes += pending;
                         s.output.items.len = pending;
                         s.output_start = 0;
                     }
@@ -691,4 +699,69 @@ test "final output retains slot and budget until consumed" {
     try std.testing.expect(c.sessions[0] == null);
     try std.testing.expect(c.dead);
     try std.testing.expectEqual(@as(?u32, 7), pty.exitStatus());
+}
+
+test "output compacts only when append space is exhausted" {
+    var pty = try agent.AgentPty.init(std.testing.allocator, .{
+        .shell = "/bin/sh",
+        .cols = 80,
+        .rows = 24,
+        .cwd = null,
+        .env_block = null,
+        .launch_command = null,
+        .host = .{},
+    }, .{});
+    defer pty.closeAndJoin();
+    const s = pty.session;
+    s.hello = true;
+    s.phase = .running;
+    try s.output.ensureTotalCapacity(gpa, 128 * 1024);
+    const original = s.output.capacity - 16;
+    try s.output.appendNTimes(gpa, 'x', original);
+    s.mux_state = .{ .id = 1, .submitted = true, .spawned = true, .queued_bytes = @intCast(original) };
+    var c: Connection = .{ .arena = .init(std.testing.allocator), .key = "test", .host = .{}, .hello = true };
+    defer c.arena.deinit();
+    c.sessions[0] = s;
+    c.output_reserved += original;
+    var prefix: [4096]u8 = undefined;
+    try std.testing.expectEqual(prefix.len, try pty.read(&prefix));
+    s.mux_state.consumed(prefix.len); // Fixture has no real connection pointer.
+    try accept(&c, .{ .kind = .output, .stream = 1, .len = 8 }, "12345678");
+    try std.testing.expectEqual(@as(usize, 4096), s.output_start);
+    try std.testing.expectEqual(@as(u64, 0), s.reader_compacted_bytes);
+    const pending = s.pendingOutputLocked();
+    const binary = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 128, 129, 250, 251, 252, 253, 254, 255 };
+    try accept(&c, .{ .kind = .output, .stream = 1, .len = binary.len }, &binary);
+    try std.testing.expectEqual(@as(usize, 0), s.output_start);
+    try std.testing.expectEqual(@as(u64, pending), s.reader_compacted_bytes);
+    try std.testing.expectEqualSlices(u8, "12345678", s.output.items[original - prefix.len ..][0..8]);
+    try std.testing.expectEqualSlices(u8, &binary, s.output.items[pending..]);
+    try std.testing.expectEqual(s.pendingOutputLocked(), s.mux_state.queued_bytes);
+}
+
+test "empty reads do not notify the shared owner but consumption does" {
+    var pty = try agent.AgentPty.init(std.testing.allocator, .{
+        .shell = "/bin/sh",
+        .cols = 80,
+        .rows = 24,
+        .cwd = null,
+        .env_block = null,
+        .launch_command = null,
+        .host = .{},
+    }, .{});
+    defer pty.closeAndJoin();
+    var c: Connection = .{ .arena = .init(std.testing.allocator), .key = "test", .host = .{} };
+    defer c.arena.deinit();
+    const s = pty.session;
+    s.mux_connection = &c;
+    defer s.mux_connection = null; // Stack fixture has no owning connection ref.
+    var bytes: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try pty.read(&bytes));
+    try std.testing.expectEqual(@as(u64, 0), c.ui_notifications);
+    try s.output.appendSlice(gpa, "q");
+    s.mux_state.queued_bytes = 1;
+    try std.testing.expectEqual(@as(usize, 1), try pty.read(&bytes));
+    try std.testing.expectEqual(@as(u64, 1), c.ui_notifications);
+    try std.testing.expectEqual(@as(u32, 1), s.mux_state.consumed_pending);
+    try std.testing.expectEqual(@as(u64, 1), s.empty_reads);
 }
