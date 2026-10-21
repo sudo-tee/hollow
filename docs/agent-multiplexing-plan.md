@@ -1,13 +1,43 @@
 # Agent PTY multiplexing plan
 
-Status: experimental `hollow-agent mux` and user-approved per-domain GUI config opt-in are implemented. Dedicated `pty`, RPC `stdio`, and GUI backend defaults remain unchanged. See [current wire contract, limits, tests, and A/B benchmark](agent-mux.md). Actual GUI/WSL/SSH performance and lifecycle qualification remain outstanding.
+Status: experimental `hollow-agent mux` and per-domain GUI config opt-in are
+implemented. Dedicated `pty`, RPC `stdio`, and GUI defaults remain unchanged.
+See the [user guide](agent-mux.md) and
+[wire contract, limits, and experiment history](agent-mux-development.md).
+
+## Current qualification status
+
+The October 21 same-binary Windows/WSL head-to-head supports mux as a practical
+option for the measured four-pane workload: similar throughput and captured
+Windows-group CPU, 78.7% less Linux-helper RSS, and no consistent loaded ACK
+latency penalty. Four idle, four uncapped, and four echo pairs passed; one
+unmatched capped pair was excluded, leaving three qualified capped pairs.
+The watchdog and buffer-first client fixes are retained. See the
+[current report](windows-mux-cpu.md#current-mux-versus-dedicated-pty-head-to-head-october-21-2026)
+for paired variation, occasional higher maxima, and explicit exclusions.
+
+A separate ten-minute WSL GUI lifecycle soak passed 18 split/close cycles after
+the focused-pane lifetime fix, followed by 50 serial fault suites. These are
+bounded workload checks, not proof of long-term leak freedom. SSH/container,
+other architectures, and broader rollout qualification remain open. Existing
+test results were reused for the performance report; no full suite was rerun.
+
+The product goal is a solid optional transport, not exact numerical equality
+with dedicated PTYs. Normal variation is expected; material regressions still
+need investigation. Session persistence is future motivation, not implemented
+scope: detach/reattach and crash recovery require separate design and validation.
+
+## Historical investigation checkpoints
+
+The following checkpoints describe older implementations and their outstanding
+gates at that time. They do not supersede the current status above.
 
 Initial actual Windows GUI/WSL repaint comparisons now cover one pane and a
 four-pane visible grid. Longer three-run medians put mux 5.6% and 8.2% behind
 dedicated respectively, with substantial grid variability. These parser/drain
 measurements do not qualify displayed FPS, loaded input latency, multi-pane
 transport parity, startup, memory, or lifecycle; see
-[measurement details and limitations](agent-mux.md#initial-windows-gui--wsl-repaint-measurements).
+[measurement details and limitations](agent-mux-development.md#initial-windows-gui--wsl-repaint-measurements).
 
 GUI echo-observation diagnostics now also exercise focus switching during two
 sustained sibling floods. In an isolated Windows/WSL instance with matched
@@ -15,7 +45,7 @@ sustained sibling floods. In an isolated Windows/WSL instance with matched
 dedicated and 14.49/16.97 ms mux, with 3,000 successful loaded echoes per backend.
 These include command/query observer overhead, not physical keyboard-to-display
 timing; broad latency, throughput, RSS, startup, and fault qualification remain
-open. See [loaded GUI diagnostics](agent-mux.md#gui-echo-observation-under-sustained-sibling-floods).
+open. See [loaded GUI diagnostics](agent-mux-development.md#gui-echo-observation-under-sustained-sibling-floods).
 
 An isolated actual-GUI/WSL resource comparison now adds three paired trials at
 matched 40 MiB/s offered load. Mux used more Linux-agent CPU (+65.7%) and GUI CPU
@@ -23,33 +53,33 @@ matched 40 MiB/s offered load. Mux used more Linux-agent CPU (+65.7%) and GUI CP
 metrics are not directly additive or qualification-grade. Uncapped throughput
 varied and was lower for mux in this sample, not a transport maximum. The result
 does not qualify leak behavior, startup, or release gates; defaults remain
-unchanged and gates unchecked. See [isolated GUI / WSL resource observations](agent-mux.md#isolated-gui--wsl-cpu-and-memory-observations).
+unchanged and gates unchecked. See [isolated GUI / WSL resource observations](agent-mux-development.md#isolated-gui--wsl-cpu-and-memory-observations).
 
 Follow-up GUI A/Bs found the 20 MiB/s-per-flood cap did not deliver matched load;
 at matched 20 MiB/s aggregate, pooled Linux-agent CPU was 75.7% higher, while
 uncapped pool throughput was substantially higher. This supports further syscall-
-level profiling, not an inline-default change; see [worker CPU/throughput tradeoff](agent-mux.md#read-worker-cputhroughput-tradeoff-in-the-gui).
+level profiling, not an inline-default change; see [worker CPU/throughput tradeoff](agent-mux-development.md#read-worker-cputhroughput-tradeoff-in-the-gui).
 Eventfd drain cleanup removed redundant reads without a demonstrated GUI CPU
 gain. A subsequent direct-syscall descriptor-duplication candidate removed an
 extra call but showed no meaningful CPU gain in five post-meeting GUI pairs
 and was not adopted. The earlier higher-CPU comparison was confounded by a
 reported Teams meeting/screen share; see
-[descriptor-duplication measurements](agent-mux.md#descriptor-duplication-bypass-measured-not-adopted).
+[descriptor-duplication measurements](agent-mux-development.md#descriptor-duplication-bypass-measured-not-adopted).
 An immediate nonblocking transport-write candidate reduced lifetime polls/MiB
 by about 31% and phase agent CPU medians by about 1.4% in five matched-load GUI
 pairs. This does not qualify latency, uncapped throughput, or pool/dedicated
-parity; see [immediate-write measurements](agent-mux.md#immediate-nonblocking-transport-write-candidate).
+parity; see [immediate-write measurements](agent-mux-development.md#immediate-nonblocking-transport-write-candidate).
 A follow-up without diagnostics found no robust matched-load CPU advantage or
 strong uncapped-throughput win. Three loaded-echo pairs completed 3,000 echoes
 per variant with pooled p95/p99 14.63/17.30 ms before versus 14.14/16.42 ms after;
 this is GUI IPC/text-observation latency, not keyboard-to-display latency.
-See [follow-up qualification and exclusions](agent-mux.md#immediate-write-follow-up-throughput-and-loaded-gui-echo).
+See [follow-up qualification and exclusions](agent-mux-development.md#immediate-write-follow-up-throughput-and-loaded-gui-echo).
 Opus-guided config-only one-reader pairing pilots increased actual pairing but
 did not meet the exploratory reduction screen for batches and owner polls.
 No adaptive scheduler or wakeup patch was made; see
-[pairing pilot evidence and exclusions](agent-mux.md#opus-follow-up-config-only-pairing-pilots).
+[pairing pilot evidence and exclusions](agent-mux-development.md#opus-follow-up-config-only-pairing-pilots).
 A same-binary, diagnostics-off inline-versus-pool comparison follows those
-pilots; see [current-binary comparison](agent-mux.md#current-binary-inline-versus-pooled-reads).
+pilots; see [current-binary comparison](agent-mux-development.md#current-binary-inline-versus-pooled-reads).
 All four pairs passed validation: inline used less agent CPU at matched
 10 MiB/s (medians 0.1925 versus 0.3697 cores), while pooled uncapped throughput
 was higher (69.429 versus 49.277 MiB/s). Inline GUI CPU was higher. This supports
@@ -60,7 +90,10 @@ zero-versus-four-reader GUI echo latency remains unqualified.
 
 Allow multiple Hollow panes on the same host to share one connector process and one agent connection, reducing process count and repeated startup overhead without materially degrading interactive latency or throughput.
 
-Performance parity is a release gate, not an assumption. Retain the dedicated-connection backend until shared mode passes comparative measurements.
+Use comparative measurements to assess material CPU, throughput, memory, and
+interactive-latency tradeoffs, rather than requiring exact parity. Keep the
+dedicated backend as the default and rollback path; changing defaults requires
+broader platform and lifecycle qualification.
 
 ## Scope
 
@@ -85,15 +118,15 @@ Not included in the first version:
 - `src/pty/agent.zig` owns a dedicated connector and session for each agent-backed pane.
 - `src/agent/pty.zig` serves one PTY using a poll loop and synchronous framed output writes.
 - `src/agent/mux.zig` adds a separate nonblocking multi-PTY poll loop; `src/agent/mux_protocol.zig` defines experimental negotiation, limits, and credit handling. Spawn preparation is shared with dedicated mode but runs after fork in mux mode.
-- `src/agent/pty_readers.zig` provides persistent PTY reader threads, selected only with `HOLLOW_MUX_READ_WORKERS=1..4`; zero/default retains inline reads. Each stream is pinned to one reader's epoll set and read into a credit-bounded 64 KiB ring; readers frame and write output themselves under a transport lock, so steady output costs epoll/read/write per chunk with no owner wakeup. The owner keeps input parsing, credits, control frames, and lifecycle, and alone retries a blocked transport. This replaced the earlier per-job pool (`pty_read_pool.zig`). Review fixes debit credit before publishing bytes and preserve focus/background scheduling across full staging buffers. Post-fix local bulk throughput was near dedicated at one pane and higher at 4–32; agent CPU was higher at 1–4 and lower at 16–32. Four same-binary GUI pairs found lower reader agent CPU at matched 10 MiB/s in every pair (median paired reduction 4.89%); uncapped throughput improved in three pairs and regressed in one retained pair. See [post-review measurements](agent-mux.md#post-review-persistent-reader-measurements). Dedicated-versus-mux GUI and remote qualification remain outstanding, so readers stay opt-in.
+- `src/agent/pty_readers.zig` provides persistent PTY reader threads. Direct `hollow-agent mux` invocation defaults to zero/inline readers; the GUI sends four by default when a domain selects mux, with `pty.read_workers = 0` retaining inline mux. Each stream is pinned to one reader's epoll set and read into a credit-bounded 64 KiB ring; readers frame and write output under a transport lock. The owner keeps input parsing, credits, control frames, lifecycle, and blocked-write retry. This replaced the per-job pool (`pty_read_pool.zig`); old pool measurements remain historical. See [persistent readers](agent-mux-development.md#persistent-readers-with-reader-side-transport-flush) and the current WSL report above. Other-connector qualification remains open.
 - `HOLLOW_MUX_READ_BATCH_JOBS` is still validated (1..2) for configuration compatibility but has no effect with persistent readers. Dedicated/GUI defaults and qualification gates remain unchanged.
-- The post-fix GUI echo comparison completed three zero/four-reader pairs, with 3,000 echoes per variant under two 5 MiB/s floods. Pooled p99 was 19.76 ms inline versus 19.70 ms readers, with mixed per-run p99 directions: no clear tail difference. These are GUI IPC/PowerShell text-observation timings, not keyboard-to-display latency or dedicated-versus-mux GUI parity; see [loaded GUI echo](agent-mux.md#fixed-reader-loaded-gui-echo).
-- A subsequent same-agent dedicated-versus-mux GUI resource comparison completed four alternating pairs and 16 validated phases. At matched 10 MiB/s, mux GUI CPU was higher in every pair (+5.63% to +14.74%); agent CPU directions were mixed. Uncapped throughput had two wins and two losses, with medians 65.40 MiB/s mux versus 68.57 dedicated. Sampled summed agent RSS was 0.719 versus 3.375 MiB, not a leak qualification. These observations do not establish CPU/performance parity or justify changing defaults; see [dedicated-versus-mux GUI measurements](agent-mux.md#fixed-mux-versus-dedicated-ptys-in-the-gui).
-- Dedicated-versus-mux loaded GUI echo then completed three validated pairs (3,000 echoes per mode). Pooled p99 was 18.82 ms dedicated versus 16.31 mux, but the third pair's p99 and pooled maximum were worse with mux (maximum 55.37 versus 38.67 ms). These IPC/PowerShell text-observation timings support a mixed tradeoff, not a blanket latency win or keyboard-to-display qualification; see [dedicated-versus-mux GUI echo](agent-mux.md#dedicated-versus-mux-loaded-gui-echo).
-- The initial planned 600-second GUI churn soak was **blocked**, not passed: closing a focused temporary pane segfaulted in `program_status.setFocused` through `syncActivePaneChange` and `closePaneById`. A matched dedicated-mode control reproduced the same crash; the close path retained a pane pointer across destruction and then dereferenced it. Separately, 50 serial agent suites (ten repetitions at each reader count 0–4) passed all 1,150 test invocations; see [initial soak blocker and evidence](agent-mux.md#gui-soak-blocked-by-focused-pane-close-use-after-free).
-- The follow-up pane-close fix drops a closing active pane from `previous` before destruction, while retaining surviving previous panes for focus synchronization. A page-allocator App regression passes with the fix and reproduces the original segfault when old close code is restored in an isolated copy. Debug and ReleaseFast native test graphs pass all 332 tests, and a separately built Windows GUI passes both mux and matched dedicated crash controls; see [pane-close correction](agent-mux.md#pane-close-lifetime-correction).
+- The post-fix GUI echo comparison completed three zero/four-reader pairs, with 3,000 echoes per variant under two 5 MiB/s floods. Pooled p99 was 19.76 ms inline versus 19.70 ms readers, with mixed per-run p99 directions: no clear tail difference. These are GUI IPC/PowerShell text-observation timings, not keyboard-to-display latency or dedicated-versus-mux GUI parity; see [loaded GUI echo](agent-mux-development.md#fixed-reader-loaded-gui-echo).
+- A subsequent same-agent dedicated-versus-mux GUI resource comparison completed four alternating pairs and 16 validated phases. At matched 10 MiB/s, mux GUI CPU was higher in every pair (+5.63% to +14.74%); agent CPU directions were mixed. Uncapped throughput had two wins and two losses, with medians 65.40 MiB/s mux versus 68.57 dedicated. Sampled summed agent RSS was 0.719 versus 3.375 MiB, not a leak qualification. These observations do not establish CPU/performance parity or justify changing defaults; see [dedicated-versus-mux GUI measurements](agent-mux-development.md#fixed-mux-versus-dedicated-ptys-in-the-gui).
+- Dedicated-versus-mux loaded GUI echo then completed three validated pairs (3,000 echoes per mode). Pooled p99 was 18.82 ms dedicated versus 16.31 mux, but the third pair's p99 and pooled maximum were worse with mux (maximum 55.37 versus 38.67 ms). These IPC/PowerShell text-observation timings support a mixed tradeoff, not a blanket latency win or keyboard-to-display qualification; see [dedicated-versus-mux GUI echo](agent-mux-development.md#dedicated-versus-mux-loaded-gui-echo).
+- The initial planned 600-second GUI churn soak was **blocked**, not passed: closing a focused temporary pane segfaulted in `program_status.setFocused` through `syncActivePaneChange` and `closePaneById`. A matched dedicated-mode control reproduced the same crash; the close path retained a pane pointer across destruction and then dereferenced it. Separately, 50 serial agent suites (ten repetitions at each reader count 0–4) passed all 1,150 test invocations; see [initial soak blocker and evidence](agent-mux-development.md#gui-soak-blocked-by-focused-pane-close-use-after-free).
+- The follow-up pane-close fix drops a closing active pane from `previous` before destruction, while retaining surviving previous panes for focus synchronization. A page-allocator App regression passes with the fix and reproduces the original segfault when old close code is restored in an isolated copy. Debug and ReleaseFast native test graphs pass all 332 tests, and a separately built Windows GUI passes both mux and matched dedicated crash controls; see [pane-close correction](agent-mux-development.md#pane-close-lifetime-correction).
 - The fixed-GUI ten-minute WSL soak then passed: 604 seconds, 18 successful split/close cycles, 36 ACK checks, both floods near 5 MiB/s, unchanged warm/late agent RSS, descriptors returning to baseline, and clean GUI/process teardown. Its subsequent 50 serial fault suites passed all 1,150 test invocations. The earlier fixed-GUI run is retained as a failed coverage-gate run (12 cycles versus 13 required), not silently excluded. This qualifies only the measured short WSL GUI workload, not long-term GUI leaks, SSH/container faults, ARM64, or default-rollout performance parity.
-- User-approved experimental config integration now accepts per-domain `pty = { mode = "mux", read_workers = 4, batch_jobs = 2 }` for agent-backed panes. Effective connector/deployment identities reuse a terminal connection across live panes; spawn state and filesystem/exec remain isolated. Closing the last stream tears it down; failures visibly end siblings without replaying shells. Dedicated remains default, and real GUI/WSL/SSH throughput and latency qualification still gates rollout.
+- Experimental config integration accepts per-domain `pty = { mode = "mux" }` for agent-backed panes. Four readers are selected by default; `batch_jobs` remains accepted but inert. Effective connector/deployment identities reuse a terminal connection across live panes; spawn state and filesystem/exec remain isolated. Closing the last stream tears it down; failures visibly end siblings without replaying shells. Dedicated remains default. Current four-pane Windows/WSL results do not qualify all connectors or default rollout.
 - Native `AgentPty` startup/frame-drain diagnostics (`agent-pane-bench`, `scripts/agent_pane_bench.py`) exposed a roughly 3.75 MiB/s-per-pane ceiling at 60 Hz in the initial consumption-driven adapter. Bounded reader-thread read-ahead now retains 64 KiB wire windows while permitting 4 MiB per-pane output and a 16 MiB logical connection reservation budget, including baseline capacity reserved for every stream. Local frame-paced single-pane throughput recovered to dedicated levels; multi-pane parity and real GUI/remote qualification remain unmet. Synthetic connector delay verifies warm connection reuse without claiming network measurements.
 - Native backlog diagnostics now measure focused echoes while background queues drain under explicit frame/byte quotas. Profiling removed eager output compactions and shared-owner notifications from empty polls; a three-run, 1,000-echo comparison reduced measured process-tree CPU from 2.97 to 1.64 s at four panes and 5.62 to 4.33 s at 32 without changing buffer/credit bounds. This does not qualify actual GUI CPU, focus switching, remote paths, or general latency/throughput parity.
 - Focus-first read turns now alternate with background byte DRR without advancing its cursor. `scripts/agent_mux.py --workload mixed` measures actual focused echoes under sustained floods and verifies every background stream progresses. Local tail latency improved substantially; supported-connector qualification and numerical release budgets remain outstanding.
@@ -202,16 +235,17 @@ Exit criterion: stream isolation, bounded memory, and transport-level benchmark 
 - [x] Support concurrent bootstrap requests, cancellation, and pane closure during deployment/spawn (headless real-agent coverage; connector qualification pending).
 - [ ] Connect focus/visibility hints to transport scheduling (focus wired; visibility classes remain deferred).
 - [x] Define last-stream cleanup, idle expiry, connection failure fan-out, and application teardown (no idle retention; bounded write/close grace).
-- [ ] Add opt-in shared mode and diagnostic counters; leave production defaults unchanged.
+- [x] Add opt-in shared mode and diagnostic counters; leave production defaults unchanged.
 
 Exit criterion: headless pane integration and GUI lifecycle tests pass without blocking the GUI thread.
 
 ### 5. Qualify and roll out
 
 - [ ] Compare dedicated and shared mode on WSL, SSH, and supported container connectors.
+  - [x] Current four-pane Windows/WSL performance comparison; other connectors remain open.
 - [ ] Validate supported guest architectures and connector teardown behavior.
 - [ ] Run sustained-load and fault-injection tests.
-- [ ] Publish comparative results and identify any platform-specific regressions.
+- [x] Publish measured comparisons, variation, exclusions, and outstanding platform coverage.
 - [ ] Change defaults only after release gates pass; retain an explicit dedicated-mode escape hatch.
 
 Exit criterion: agreed performance budgets and correctness gates pass on supported targets.

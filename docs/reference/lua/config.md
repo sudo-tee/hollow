@@ -27,37 +27,37 @@ in the shipped base config.
 
 ## Top-level keys
 
-| Key                                                                               | Type                           | Notes                                                      |
-| --------------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------- |
-| `fonts`                                                                           | table                          | Font family, size, hinting, smoothing, embolden, fallbacks |
-| `theme`                                                                           | string or table                | Built-in theme name or inline spec                         |
-| `scrollback`                                                                      | integer                        | Lines of history                                           |
-| `cols`, `rows`                                                                    | integer                        | Initial grid size                                          |
-| `padding`                                                                         | integer                        | Cell padding in pixels                                     |
-| `window_title`, `window_width`, `window_height`                                   | string, integer                | Window geometry                                            |
-| `window_titlebar_show`                                                            | boolean                        | Show the OS title bar                                      |
-| `top_bar_mode`                                                                    | `"always"` \| `"tabs"`         | When to show the top bar                                   |
-| `top_bar_height`, `top_bar_bg`                                                    | integer, color                 | Top bar geometry                                           |
-| `bottom_bar_show`, `bottom_bar_height`, `bottom_bar_bg`, `bottom_bar_draw_status` | mixed                          | Bottom bar                                                 |
-| `scrollbar`                                                                       | table                          | Scrollbar config                                           |
-| `hyperlinks`                                                                      | table                          | OSC 8 hyperlink config                                     |
-| `cursor`                                                                          | table                          | Cursor style, blink                                        |
-| `unfocused_pane`                                                                  | table                          | Cursor and dim style for unfocused panes                   |
-| `shell`                                                                           | string or string[]             | Default shell (when no domain is set)                      |
-| `default_domain`                                                                  | string                         | Domain used for new tabs / panes                           |
-| `domains`                                                                         | table<string, string or table> | Domain table                                               |
-| `env`                                                                             | table<string, string>          | Extra env vars injected into guests                        |
-| `workspace`                                                                       | table                          | `auto_bootstrap`, `default_layout`                         |
-| `max_fps`, `idle_max_fps`                                                         | integer                        | Renderer framerate cap                                     |
-| `vsync`                                                                           | boolean                        | Renderer vsync                                             |
-| `synchronized_output`                                                             | boolean                        | Hold last frame during DEC mode 2026 (default `true`)      |
-| `alternate_screen_resize_nudge`                                                    | boolean                        | Delayed resize cycle on alternate-screen entry (default `true`) |
-| `hide_mouse_cursor_when_typing`                                                   | boolean                        | Hide OS mouse cursor during keyboard input                |
-| `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                       |
-| `command_timing`                                                                  | boolean                        | On-screen command timing overlay                           |
-| `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                  |
-| `debug_overlay`, `debug_terminal_trace`                                           | boolean                        | Debug overlays                                             |
-| `bell`                                                                            | table                          | Visual bell config                                         |
+| Key                                                                               | Type                           | Notes                                                           |
+| --------------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------- |
+| `fonts`                                                                           | table                          | Font family, size, hinting, smoothing, embolden, fallbacks      |
+| `theme`                                                                           | string or table                | Built-in theme name or inline spec                              |
+| `scrollback`                                                                      | integer                        | Lines of history                                                |
+| `cols`, `rows`                                                                    | integer                        | Initial grid size                                               |
+| `padding`                                                                         | integer                        | Cell padding in pixels                                          |
+| `window_title`, `window_width`, `window_height`                                   | string, integer                | Window geometry                                                 |
+| `window_titlebar_show`                                                            | boolean                        | Show the OS title bar                                           |
+| `top_bar_mode`                                                                    | `"always"` \| `"tabs"`         | When to show the top bar                                        |
+| `top_bar_height`, `top_bar_bg`                                                    | integer, color                 | Top bar geometry                                                |
+| `bottom_bar_show`, `bottom_bar_height`, `bottom_bar_bg`, `bottom_bar_draw_status` | mixed                          | Bottom bar                                                      |
+| `scrollbar`                                                                       | table                          | Scrollbar config                                                |
+| `hyperlinks`                                                                      | table                          | OSC 8 hyperlink config                                          |
+| `cursor`                                                                          | table                          | Cursor style, blink                                             |
+| `unfocused_pane`                                                                  | table                          | Cursor and dim style for unfocused panes                        |
+| `shell`                                                                           | string or string[]             | Default shell (when no domain is set)                           |
+| `default_domain`                                                                  | string                         | Domain used for new tabs / panes                                |
+| `domains`                                                                         | table<string, string or table> | Domain table                                                    |
+| `env`                                                                             | table<string, string>          | Extra env vars injected into guests                             |
+| `workspace`                                                                       | table                          | `auto_bootstrap`, `default_layout`                              |
+| `max_fps`, `idle_max_fps`                                                         | integer                        | Renderer framerate cap                                          |
+| `vsync`                                                                           | boolean                        | Renderer vsync                                                  |
+| `synchronized_output`                                                             | boolean                        | Hold last frame during DEC mode 2026 (default `true`)           |
+| `alternate_screen_resize_nudge`                                                   | boolean                        | Delayed resize cycle on alternate-screen entry (default `true`) |
+| `hide_mouse_cursor_when_typing`                                                   | boolean                        | Hide OS mouse cursor during keyboard input                      |
+| `backend`                                                                         | string                         | Primary renderer backend (`"sokol"`)                            |
+| `command_timing`                                                                  | boolean                        | On-screen command timing overlay                                |
+| `load_default_keymaps`                                                            | boolean                        | Register shipped keymaps (default `true`)                       |
+| `debug_overlay`, `debug_terminal_trace`                                           | boolean                        | Debug overlays                                                  |
+| `bell`                                                                            | table                          | Visual bell config                                              |
 
 ### Fonts
 
@@ -217,7 +217,7 @@ See [WSL → WSL workflow patterns](../../platforms/wsl.md#wsl-workflow-patterns
 
 ### Agent hosts
 
-`host` runs each pane of the domain as `hollow-agent pty` on a host
+By default, `host` runs each pane of the domain as `hollow-agent pty` on a host
 bootstrapped by [`hollow.host`](host.md):
 
 ```lua
@@ -248,11 +248,11 @@ hollow.config.set({
   domains = {
     Ubuntu = {
       wsl_distro = "Ubuntu", -- implicit WSL agent on Windows
-      pty = { mode = "mux", read_workers = 4, batch_jobs = 2 },
+      pty = { mode = "mux" },
     },
     build = {
       host = { type = "ssh", destination = "build" },
-      pty = { mode = "mux", read_workers = 4, batch_jobs = 2 },
+      pty = { mode = "mux" },
     },
   },
 })
@@ -264,10 +264,16 @@ one-connector-per-pane backend. These options affect **new panes** only.
 `host = false` still selects native PTYs; `pty` does not turn a native domain
 into an agent host.
 
-- `read_workers`: integer 0–4, default 4 when mux is selected; 0 uses inline
-  reads. This is passed to the remote agent, not read from GUI environment.
-- `batch_jobs`: 1 or 2, default 2 when mux is selected. Pairing improves measured
-  headless bulk throughput; 1 had lower loaded echo latency in local tests.
+- `read_workers`: integer 0–4, default 4 when mux is selected. Values 1–4 select
+  persistent reader threads in the shared agent, not one thread per pane. Each
+  pane's PTY is assigned to one reader; readers send output directly over the
+  shared transport. Set `read_workers = 0` for inline reads on the agent's main
+  thread; this still uses mux, not dedicated connections. The setting is passed
+  to the target agent, not read from the GUI process environment.
+- `batch_jobs`: 1 or 2, default 2. Retained for compatibility with existing
+  configurations; it has **no scheduling or performance effect** with persistent
+  readers. New configurations can omit it; old batch-tuning advice no longer
+  applies.
 - Matching connector argv/quoting, deployment/artifacts, and tuning share one
   terminal connection, including concurrent bootstrap. Cwd, environment, command,
   size, and close remain per pane. Up to 32 streams share a connection; overflow
@@ -278,15 +284,49 @@ into an agent host.
 - Filesystem/exec traffic remains separate. Connection failure now has a shared
   failure domain; dedicated mode remains the default and rollback path.
 
-This remains experimental: headless throughput results are **not** GUI rendering
-or WSL/SSH performance qualification. Wire windows remain 64 KiB per stream.
+To roll back, set `pty = { mode = "dedicated" }`, reload the config, and open
+new panes. Existing panes retain their current connection. This is different
+from `read_workers = 0`, which only changes how a mux agent reads PTYs.
+
+#### What difference does mux make?
+
+In the October 21 four-pane Windows/WSL head-to-head, current mux had similar
+throughput and helper-inclusive Windows CPU with substantially lower helper RSS:
+
+| Measurement | Dedicated (default) | Mux |
+| --- | ---: | ---: |
+| Agent helper processes | 4 | 1 |
+| Sampled agent memory | 3.38 MiB | 0.72 MiB |
+| Uncapped producer-admitted output (median) | 41.27 MiB/s | 42.08 MiB/s |
+| Loaded Windows CPU, including captured helpers | 1.251 cores | 1.232 cores |
+| Loaded ACK observation p99 | 17.55 ms | 15.79 ms |
+
+Both sustained 10 MiB/s in three qualified capped pairs; one capped pair was
+excluded for unmatched producer rate. Four uncapped and four echo pairs passed.
+Memory covers Linux agent helpers, not the whole app; Windows CPU includes
+captured helpers but excludes shared WSL/VM services and Linux processes. Output
+speed is not screen refresh rate, and ACK observation includes IPC/text-query
+overhead rather than physical keyboard-to-display latency. Paired variation and
+occasional higher mux maxima remain visible in the
+[current report](../../windows-mux-cpu.md#current-mux-versus-dedicated-pty-head-to-head-october-21-2026).
+
+A ten-minute WSL test with repeated pane opening and closing passed. Mux still
+remains experimental: keep dedicated mode if you prefer the default, or try mux
+and compare it with your own workload. This supports mux as a practical option
+for the measured WSL workload, not universal performance equivalence or broad
+SSH/container qualification. Shared connections do not provide session
+persistence or detach/reattach; closing the last pane shuts the connection down.
+See the [development history](../../agent-mux-development.md) for earlier tests.
+
+Wire windows remain 64 KiB per stream.
 Bounded off-UI-thread read-ahead permits up to 4 MiB unread output per pane,
 with a 16 MiB connection-wide logical output reservation budget; each slot keeps
 a baseline window so floods cannot steal another pane's refill capacity.
 Client input admission retains the dedicated backend's bounded 4 MiB queue for
 large pastes; transmission still obeys the 64 KiB wire window. UI drain cadence
 and connector latency may limit throughput.
-See [agent mux measurements and limits](../../agent-mux.md).
+See [the mux guide](../../agent-mux.md) or
+[technical limits](../../agent-mux-development.md#bounds-and-scheduling).
 
 ## Workspace bootstrap
 
