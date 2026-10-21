@@ -141,7 +141,7 @@ normal Busted options such as `--filter`, `--list`, and `--output=junit`.
 Run the workload inside a Hollow pane:
 
 ```bash
-./bench.sh sync-output 120 60 4
+bench.sh sync-output 120 60 4
 ```
 
 Arguments are synchronized batches, target batches per second, and updates

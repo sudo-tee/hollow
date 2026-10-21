@@ -834,7 +834,7 @@ parser, unlike the native adapter-only diagnostics above. They are **not
 displayed-frame rates**: repaint completion uses a terminal DSR acknowledgement,
 not confirmation that every generated frame was presented by the renderer.
 
-The user's initial `./bench.sh repaint 1000` samples at 212×62 measured median
+The user's initial `bench.sh repaint 1000` samples at 212×62 measured median
 47.8 Mcells/s dedicated (three runs) and 44.6 Mcells/s mux (four runs), about
 6.7% lower mux throughput. Each run lasted only about 0.3 seconds.
 
