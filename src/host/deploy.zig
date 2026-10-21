@@ -11,6 +11,10 @@
 //! skip straight to step 3.
 const std = @import("std");
 const builtin = @import("builtin");
+const posix = if (builtin.os.tag == .windows) struct {} else @cImport({
+    @cInclude("sys/wait.h");
+    @cInclude("errno.h");
+});
 
 const gpa = std.heap.smp_allocator;
 
@@ -234,8 +238,11 @@ const Deployer = struct {
         };
         var output: Output = .{};
         const collected = output.collect(self.a, io, &child, input);
+        // Pipe EOF is not process exit. Keep cancellation/deadline tracking
+        // alive until exit is observed, but clear it before wait() reaps the PID.
+        const exited = if (!std.meta.isError(collected)) awaitExit(io, child.id.?) else {};
         // Nobody drains its pipes any more; `wait` would hang on a blocked child.
-        const outcome = self.untrack(if (std.meta.isError(collected)) child.id.? else null);
+        const outcome = self.untrack(if (std.meta.isError(collected) or std.meta.isError(exited)) child.id.? else null);
         watchdog.join();
         const term = child.wait(io) catch |err| {
             child.kill(io);
@@ -243,6 +250,7 @@ const Deployer = struct {
         };
         if (outcome.cancelled) return error.DeployCancelled;
         if (outcome.timed_out) return failure.setCode(.timeout, "host agent deploy timed out", .{});
+        exited catch |err| return failure.setCode(.connector_unavailable, "{s}: {s}", .{ argv[0], @errorName(err) });
         collected catch |err| return switch (err) {
             error.StreamTooLong => failure.setCode(.connector_unavailable, "{s} printed too much output (shell startup files?)", .{argv[0]}),
             else => failure.setCode(.connector_unavailable, "{s}: {s}", .{ argv[0], @errorName(err) }),
@@ -446,6 +454,26 @@ pub fn forget(key: []const u8) void {
 }
 
 extern "kernel32" fn TerminateProcess(hProcess: std.os.windows.HANDLE, uExitCode: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn WaitForSingleObject(hHandle: std.os.windows.HANDLE, dwMilliseconds: u32) callconv(.winapi) u32;
+
+/// Observe exit without releasing the PID/handle while a watchdog can signal it.
+fn awaitExit(io: std.Io, child: std.process.Child.Id) !void {
+    while (true) {
+        if (builtin.os.tag == .windows) {
+            switch (WaitForSingleObject(child, 0)) {
+                0 => return,
+                258 => {}, // WAIT_TIMEOUT
+                else => return error.WaitFailed,
+            }
+        } else {
+            var info = std.mem.zeroes(posix.siginfo_t);
+            if (posix.waitid(posix.P_PID, @intCast(child), &info, posix.WEXITED | posix.WNOHANG | posix.WNOWAIT) == 0) {
+                if (info.si_signo != 0) return;
+            } else if (std.c._errno().* != posix.EINTR) return error.WaitFailed;
+        }
+        try std.Io.sleep(io, .fromMilliseconds(5), .awake);
+    }
+}
 
 pub fn terminate(child: std.process.Child.Id) void {
     if (builtin.os.tag == .windows) {
@@ -485,4 +513,55 @@ test "probe output" {
     try std.testing.expect(!probe.installed);
     try std.testing.expectEqualStrings("/home/me two/.cache/hollow-agent", probe.path);
     try std.testing.expectError(error.DeployFailed, parseProbe("Welcome!\n", &failure));
+}
+
+test "deploy deadline remains active after stdout and stderr EOF" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var control: Control = .{};
+    var failure: Failure = .{};
+    var agent: Agent = .{ .timeout_ms = 100 };
+    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = "a" ** 64 });
+    const started = now(std.testing.io);
+    try std.testing.expectError(error.DeployFailed, install(std.testing.io, arena.allocator(), &control, .{
+        .argv = &.{ "/bin/sh", "-c", "printf 'ok x86_64 /unused\\n'; exec 1>&- 2>&-; exec sleep 30" },
+    }, agent, &failure, .{ .use_cache = false }));
+    try std.testing.expectEqual(Failure.Code.timeout, failure.code);
+    try std.testing.expect(now(std.testing.io) - started < 3 * std.time.ns_per_s);
+}
+
+test "deploy cancellation remains active after pipe EOF" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var control: Control = .{};
+    var failure: Failure = .{};
+    var agent: Agent = .{};
+    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = "a" ** 64 });
+    const Cancel = struct {
+        fn run(value: *Control) void {
+            std.Io.sleep(std.testing.io, .fromMilliseconds(150), .awake) catch return;
+            value.cancel(std.testing.io);
+        }
+    };
+    const thread = try std.Thread.spawn(.{}, Cancel.run, .{&control});
+    defer thread.join();
+    const started = now(std.testing.io);
+    try std.testing.expectError(error.DeployCancelled, install(std.testing.io, arena.allocator(), &control, .{
+        .argv = &.{ "/bin/sh", "-c", "printf 'ok x86_64 /unused\\n'; exec 1>&- 2>&-; exec sleep 30" },
+    }, agent, &failure, .{ .use_cache = false }));
+    try std.testing.expect(now(std.testing.io) - started < 3 * std.time.ns_per_s);
+}
+
+test "exit observation leaves child status available for the owner" {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ "cmd.exe", "/d", "/c", "exit /b 7" }
+    else
+        &.{ "/bin/sh", "-c", "exit 7" };
+    var child = try std.process.spawn(std.testing.io, .{ .argv = argv, .create_no_window = true });
+    defer child.kill(std.testing.io);
+    try awaitExit(std.testing.io, child.id.?);
+    const term = try child.wait(std.testing.io);
+    try std.testing.expectEqual(@as(u8, 7), term.exited);
 }

@@ -153,3 +153,20 @@ test "manager bounds hosts and pending work and deinit frees unconsumed completi
     try std.testing.expectError(error.ResourceExhausted, manager.request(hosts[0], .{ .info = {} }, 10000));
     // Teardown owns pending requests and any completions already received.
 }
+
+test "closed agent hosts recycle capacity across workspace retry IDs" {
+    const path = try agentPath(std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    var manager = Manager.init(std.testing.allocator, std.testing.io);
+    defer manager.deinit();
+    for (0..manager_mod.max_hosts * 2) |i| {
+        var buffer: [32]u8 = undefined;
+        const handle = try connect(&manager, try std.fmt.bufPrint(&buffer, "workspace-host-{d}", .{i}), path);
+        try manager.close(handle);
+        const deadline = std.Io.Clock.awake.now(std.testing.io).toNanoseconds() + 5000 * std.time.ns_per_ms;
+        while (try manager.status(handle) != .disconnected) {
+            if (std.Io.Clock.awake.now(std.testing.io).toNanoseconds() >= deadline) return error.Timeout;
+            try std.Io.sleep(std.testing.io, .fromMilliseconds(2), .awake);
+        }
+    }
+}

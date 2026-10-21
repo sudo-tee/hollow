@@ -186,9 +186,11 @@ values to WSL paths; other types default to `"posix"`.
 - Explicit hosts are remote: no local PID or cwd tracking. Failures show a red
   `[hollow] <message>` banner in the pane, which then exits with status 125.
 - On Windows, WSL domains with `wsl_distro`, or a shell like `wsl.exe -d X` /
-  `--distribution X`, use `{ type = "wsl", distro = X }` implicitly. They keep
-  local semantics and silently fall back to a native ConPTY `wsl.exe` launch on
-  failure. `host = false` opts a domain out.
+  `--distribution X`, use a WSL host implicitly, preserving the launcher's
+  executable and `--user`/`-u` selection. They keep local semantics and silently
+  fall back to the native ConPTY launch only before a spawn is submitted.
+  Once submitted, a lost response ends the pane without replaying its command.
+  `host = false` opts a domain out.
 - [`term:spawn`](events.md) filters do not apply to agent panes.
 - Failures are logged as `agent pty: ...` warnings in `hollow.log`.
 

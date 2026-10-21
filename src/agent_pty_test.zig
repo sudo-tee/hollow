@@ -496,3 +496,67 @@ test "a silent connector is killed once the host timeout passes" {
     try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&pty));
     try std.testing.expect(io.nanoTimestamp() - started < 5 * std.time.ns_per_s);
 }
+
+test "dedicated spawn waits for hello and never falls back after submission" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io.get(), ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const script =
+        \\import pathlib,select,struct,sys
+        \\marker=pathlib.Path(sys.argv[1])/'spawn-state'
+        \\if select.select([sys.stdin],[],[],0.15)[0]:
+        \\ marker.write_text('early')
+        \\ sys.exit(0)
+        \\hello=b'{"version":1}'
+        \\sys.stdout.buffer.write(struct.pack('<BII',1,1,len(hello))+hello)
+        \\sys.stdout.buffer.flush()
+        \\def exact(n):
+        \\ data=b''
+        \\ while len(data)<n:
+        \\  part=sys.stdin.buffer.read(n-len(data))
+        \\  if not part: raise EOFError()
+        \\  data+=part
+        \\ return data
+        \\kind,stream,size=struct.unpack('<BII',exact(9))
+        \\assert kind==2 and stream==1
+        \\exact(size)
+        \\marker.write_text('submitted')
+        \\# Lose all responses after receiving the spawn request.
+    ;
+    var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", .{
+        .fallback = true,
+        .connector = .{ .argv = &.{ "python3", "-c", script, directory } },
+        .agent = .{ .path = "/unused", .timeout_ms = 3000 },
+    }), .{});
+    defer pty.closeAndJoin();
+    try pty.writeAll("queued before startup");
+    try pty.start();
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), try waitExit(&pty));
+    try std.testing.expect(!pty.wantsFallback());
+    const marker = try tmp.dir.readFileAlloc(io.get(), "spawn-state", std.testing.allocator, .limited(32));
+    defer std.testing.allocator.free(marker);
+    try std.testing.expectEqualStrings("submitted", marker);
+}
+
+test "connector EOF terminates a live dedicated wrapper and permits safe fallback" {
+    var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", .{
+        .fallback = true,
+        .connector = .{ .argv = &.{ "/bin/sh", "-c", "exec 1>&-; exec sleep 30" } },
+        .agent = .{ .path = "/unused", .timeout_ms = 100 },
+    }), .{});
+    defer pty.closeAndJoin();
+    try pty.writeAll("retain me");
+    const started = io.nanoTimestamp();
+    try pty.start();
+    while (pty.exitStatus() == null) {
+        if (io.nanoTimestamp() - started >= 3 * std.time.ns_per_s) return error.Timeout;
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    try std.testing.expectEqual(@as(?u32, agent.failure_status), pty.exitStatus());
+    try std.testing.expect(io.nanoTimestamp() - started < 3 * std.time.ns_per_s);
+    try std.testing.expect(pty.wantsFallback());
+    const queued = try pty.takeQueuedInput(std.testing.allocator);
+    defer std.testing.allocator.free(queued);
+    try std.testing.expectEqualStrings("retain me", queued);
+}
