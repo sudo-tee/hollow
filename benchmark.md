@@ -395,7 +395,7 @@ Generate corpora in Zig. Do not check in multi-megabyte generated files.
 
 ### Repaint
 
-Match ` bench.sh:223-250`:
+Match `scripts/bench_workloads.py` `run_repaint`:
 
 ```text
 alternate screen

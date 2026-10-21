@@ -6,8 +6,8 @@ once for the whole run rather than being counted separately by each pane.
 Windows and guest CPU are kept separate to avoid WSL VM double-counting.
 
 Usage:
-    ./bench.sh cpu ./bench.sh repaint 20000
-    HOLLOW_BENCH_GUI_PID=1234 ./bench.sh cpu python3 multi_pane_bench.py
+    bench.sh cpu bench.sh repaint 20000
+    HOLLOW_BENCH_GUI_PID=1234 bench.sh cpu python3 multi_pane_bench.py
 """
 import json
 import os
@@ -139,7 +139,8 @@ def main():
     if command and command[0] == "--":
         command = command[1:]
     if not command:
-        print("usage: ./bench.sh cpu COMMAND [ARGS...]", file=sys.stderr)
+        prog = os.environ.get("HOLLOW_BENCH_PROG", "bench.sh")
+        print(f"usage: {prog} cpu COMMAND [ARGS...]", file=sys.stderr)
         return 2
     if not sys.platform.startswith("linux") or "WSL_INTEROP" not in os.environ and "WSL_DISTRO_NAME" not in os.environ:
         print("bench CPU sampling requires WSL with Windows interop", file=sys.stderr)
