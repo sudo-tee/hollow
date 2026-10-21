@@ -182,6 +182,34 @@ or Docker host; see [agent hosts](reference/lua/config.md#agent-hosts).
 on Windows) lists your installed WSL distros and adds a domain for each
 one in the form `{distro}WSL`.
 
+#### Experimental shared agent connections
+
+Agent-backed domains use a dedicated connection per pane by default. To let
+matching live panes share one agent connector, add `pty` to an existing domain:
+
+```lua
+hollow.config.set({
+  domains = {
+    UbuntuWSL = { pty = { mode = "mux" } },
+  },
+})
+```
+
+This example assumes the base config populated `UbuntuWSL`; use your domain's
+name. Mux uses four persistent reader threads by default. Each pane keeps its
+own shell and terminal state, but connection failure can affect sibling panes.
+Filesystem/exec traffic remains separate. This option does not enable agent
+support for native domains such as PowerShell or domains with `host = false`.
+
+Reload and open new panes to apply the change. To roll back, set
+`pty = { mode = "dedicated" }` and reload; existing panes are not migrated.
+Mux remains experimental. Current Windows/WSL comparisons support it as a
+practical option with fewer helpers and similar performance, not a guaranteed
+speedup. It does not provide session persistence or detach/reattach.
+See the [current performance report](windows-mux-cpu.md).
+See [shared terminal connection settings](reference/lua/config.md#experimental-shared-terminal-connections)
+for reader tuning, compatibility options, limits, and tradeoffs.
+
 ### Bell
 
 ```lua

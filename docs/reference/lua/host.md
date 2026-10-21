@@ -1,9 +1,9 @@
 # `hollow.host`
 
 Asynchronous connector API for executing commands and accessing files on a host
-managed by Hollow's native host bridge. Fs/exec release checks are independent
-of experimental PTY rollout; see the [release checklist](../../architecture/host-agent-fs-exec-release.md)
-for verified scope and outstanding platform qualification.
+managed by Hollow's native host bridge. Filesystem/exec release checks are
+independent of experimental PTY rollout; mux measurements do not qualify
+filesystem/exec operations or all host connectors.
 
 ```lua
 local connecting = hollow.host.connect({
@@ -168,12 +168,18 @@ values to WSL paths; other types default to `"posix"`.
 
 - Lua only describes the connector (`hollow._pty_host`). Hollow installs the
   agent natively (see [Agent deployment](#agent-deployment)), off the UI
-  thread, while keystrokes are buffered, then runs `<connector> <agent> pty`.
+  thread, while keystrokes are buffered, then runs `<connector> <agent> pty`
+  by default, or `<connector> <agent> mux` when the domain opts into mux.
   If a remembered agent fails to start (container recreated, cache wiped), the
   pane deploys again once.
 - Each pane runs its own connector process by default. Experimental
   [per-domain `pty.mode = "mux"`](config.md#experimental-shared-terminal-connections)
-  reuses a terminal connection across matching live panes.
+  reuses a terminal connection across matching live panes. Mux uses persistent
+  reader threads (four by default); the connection closes with its last pane.
+  Connection loss ends affected panes without shell replay. Filesystem/exec
+  connections stay separate, and dedicated mode remains the default. This is
+  connection sharing, not session persistence or detach/reattach; current
+  performance measurements cover Windows/WSL, not all host connectors.
 - The agent spawns the host user's login shell (WSL launcher shells keep their
   inner command), with full escape-sequence passthrough, shell integration and
   resize.

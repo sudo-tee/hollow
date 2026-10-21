@@ -16,14 +16,16 @@ populated by `populate_wsl_domains()`), the runtime picks one of two
 backends:
 
 1. **Agent PTY** — Hollow bootstraps `hollow-agent` into the distro and
-   runs `wsl.exe --distribution <distro> --cd / --exec <agent> pty`.
-   The agent owns a real Linux PTY. Skips ConPTY entirely.
+   by default runs `wsl.exe --distribution <distro> --cd / --exec <agent> pty`
+   for each pane. Opt-in mux mode runs `<agent> mux` over a shared connector.
+   Each pane still has its own real Linux PTY. Both modes skip ConPTY entirely.
 2. **ConPTY** — the fallback. Launches the domain's `wsl.exe` shell
    through ConPTY. Works on every Windows host that has WSL installed.
 
 The agent is used implicitly for domains with `wsl_distro`, or whose
 shell is `wsl.exe -d <distro>` / `--distribution <distro>`. If bootstrap
-or connection fails, Hollow silently falls back to ConPTY — you only see
+or initial connection setup fails before shell submission, Hollow falls back
+to ConPTY — you only see
 `agent pty: ...` warnings in `hollow.log`. Set `host = false` on a domain
 to always use ConPTY. See [Agent PTY](#agent-pty).
 
@@ -80,8 +82,9 @@ WSL cwd/path conversion, and resize.
   cache over `wsl.exe` stdin when missing, and verified against
   `SHA256SUMS`. No manual install step. Later panes reuse the verified
   install.
-- Each pane runs its own `wsl.exe ... --exec <agent> pty` process.
-  Multiplexing panes over one connection is future work.
+- Each pane runs its own `wsl.exe ... --exec <agent> pty` process by default.
+  Experimental [shared terminal connections](#shared-terminal-connections)
+  let matching panes share an agent connector instead.
 - Implicit WSL panes keep local semantics (PID and cwd tracking).
 - [`term:spawn`](../reference/lua/events.md) filters do not apply.
 
@@ -106,6 +109,37 @@ During development, `zig build` places the agent bundle in
 - The bundled `agents/` folder next to `hollow-native.exe`
 
 If any of these are missing, implicit WSL panes still work — they just use ConPTY.
+
+## Shared terminal connections
+
+To try mux on an existing WSL domain, add `pty` in your personal config:
+
+```lua
+hollow.config.set({
+  domains = {
+    UbuntuWSL = {
+      wsl_distro = "Ubuntu", -- replace with your installed distro
+      pty = { mode = "mux" },
+    },
+  },
+})
+```
+
+Reload your config, then open new panes in that domain. Panes can share one
+background helper instead of starting a helper for each pane. Each pane still
+has its own shell, working folder, and running programs.
+
+If the shared helper disconnects, several panes may close together. Open new
+panes to reconnect; Hollow will not restart your commands automatically.
+
+Mux is experimental. The current four-pane Windows/WSL comparison found similar
+throughput and helper-inclusive Windows CPU with about 79% lower Linux-helper
+RSS; it is not a universal speedup. See the [current performance report](../windows-mux-cpu.md)
+for variation and exclusions. Sharing does not keep sessions alive after Hollow
+closes or provide detach/reattach. To switch back, set
+`pty = { mode = "dedicated" }`, reload, and open new panes. Already-open panes
+are unchanged. For settings and measured results, see
+[the configuration reference](../reference/lua/config.md#experimental-shared-terminal-connections).
 
 ## WSL workflow patterns
 
@@ -234,4 +268,4 @@ If that happens, return to NAT networking and let `hollow-cli` use its OSC fallb
 - [`hollow.config` → WSL domains](../reference/lua/config.md#wsl-domains)
 - [`hollow.ui.workspace`](../reference/lua/workspace.md) — workspace
   discovery, including `wsl_unc`
-- [HTP and WSL](../shell-integration.md#wsl-environment-propagation)
+- [HTP and WSL](../htp-protocol.md#wsl-environment-propagation)

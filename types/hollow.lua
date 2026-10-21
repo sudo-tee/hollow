@@ -432,8 +432,8 @@
 
 ---@class HollowDomainPtyConfig
 ---@field mode? "dedicated"|"mux" Dedicated by default; mux shares a connector across matching live panes
----@field read_workers? integer Mux readers 0–4 (default 4); 0 uses inline reads
----@field batch_jobs? 1|2 Mux jobs per reader batch (default 2); 1 favors loaded latency
+---@field read_workers? integer Persistent mux reader threads 0–4 (default 4); 0 uses inline reads, not dedicated mode
+---@field batch_jobs? 1|2 Compatibility setting (default 2); no effect with persistent mux readers
 
 ---@class HollowDomainConfig
 ---@field pty? HollowDomainPtyConfig Experimental agent terminal transport; applies only to agent-backed domains
