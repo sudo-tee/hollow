@@ -39,6 +39,14 @@ class ReleaseChecksTests(unittest.TestCase):
             self.assertIn("test-host-lua", checks[name])
             self.assertIn("test-host-lua-flat", checks[name])
 
+    def test_all_release_runner_scripts_exist(self):
+        checks = commands(self.options(list(release.PROFILES)))
+        for name, command in checks:
+            for argument in command:
+                if argument.startswith("scripts/") and Path(argument).suffix in (".py", ".sh"):
+                    with self.subTest(check=name, script=argument):
+                        self.assertTrue((release.ROOT / argument).is_file(), argument)
+
     def test_failed_or_unavailable_requested_check_never_passes_report(self):
         with tempfile.TemporaryDirectory(dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None) as directory:
             output = Path(directory) / "report"
