@@ -18,6 +18,9 @@ jobs:
         run: |
           zig test src/host_windows_test.zig -lc -OReleaseSafe 2>&1 | Tee-Object -FilePath fs-exec-windows-native.log
           exit $LASTEXITCODE
+      - name: Benchmark window invariant checks (no live windows modified)
+        shell: pwsh
+        run: ./scripts/test_windows_bench_window.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -63,6 +66,12 @@ jobs:
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-transport
       - name: Agent pane PTY client and server
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pty
+      - name: Mux protocol, credits, isolation and reader lifecycle
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-mux -j1
+      - name: Native pane adapter benchmark smoke tests
+        run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-agent-pane-bench
+      - name: Saved Windows process-group accounting tests
+        run: python3 scripts/test_windows_process_group.py -v
       - name: Typed operations and HostManager lifecycle
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-operations test-host-manager test-host-local
       - name: Windows host transport compile check
