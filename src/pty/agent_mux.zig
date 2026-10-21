@@ -521,23 +521,29 @@ fn reader(c: *Connection, file: std.Io.File) void {
 fn readLoop(c: *Connection, file: std.Io.File) !void {
     var read_buffer: [64 * 1024]u8 = undefined;
     var buffered = file.readerStreaming(io.get(), &read_buffer);
-    var header_bytes: [p.header_len]u8 = undefined;
-    var payload: [p.max_spawn]u8 = undefined;
     while (true) {
-        try buffered.interface.readSliceAll(&header_bytes);
-        const h = try p.Header.decode(&header_bytes);
-        // Validate before reading payload. Dedicated Reader's 1 MiB cap is
-        // deliberately not used for experimental mux control/data admission.
-        const limit: u32 = switch (h.kind) {
-            .hello, .@"error" => p.control_limit,
-            .output => p.max_data,
-            .exit, p.spawned, p.credit => 4,
-            else => return error.InvalidKind,
-        };
-        if (h.len > limit) return error.PayloadTooLarge;
-        try buffered.interface.readSliceAll(payload[0..h.len]);
-        try accept(c, h, payload[0..h.len]);
+        const frame = try readReceivedFrame(&buffered.interface);
+        // accept() copies retained data before the next read invalidates it.
+        try accept(c, frame.header, frame.payload);
     }
+}
+
+const ReceivedFrame = struct { header: p.Header, payload: []const u8 };
+
+/// Payload is borrowed until the reader's next fill/take. Buffer capacity must
+/// accommodate control_limit. Windows reads only the first vector slice:
+/// readSliceAll's direct destinations would bypass the read-ahead buffer.
+fn readReceivedFrame(buffered: *std.Io.Reader) !ReceivedFrame {
+    const h = try p.Header.decode(try buffered.takeArray(p.header_len));
+    // Validate before requesting the payload, retaining the mux-specific caps.
+    const limit: u32 = switch (h.kind) {
+        .hello, .@"error" => p.control_limit,
+        .output => p.max_data,
+        .exit, p.spawned, p.credit => 4,
+        else => return error.InvalidKind,
+    };
+    if (h.len > limit) return error.PayloadTooLarge;
+    return .{ .header = h, .payload = try buffered.take(h.len) };
 }
 
 fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
@@ -635,6 +641,103 @@ fn wakesWatchdog(kind: p.pty.Kind) bool {
         .output, p.spawned, p.credit => false,
         else => true,
     };
+}
+
+/// Models Windows' first-slice-only streaming read, including short reads.
+const FirstSliceReader = struct {
+    source: []const u8,
+    offset: usize = 0,
+    max_chunk: usize = std.math.maxInt(usize),
+    calls: usize = 0,
+    first_request: usize = 0,
+    interface: std.Io.Reader,
+
+    fn init(source: []const u8, buffer: []u8) FirstSliceReader {
+        return .{ .source = source, .interface = .{
+            .vtable = &.{ .stream = stream, .readVec = readVec },
+            .buffer = buffer,
+            .seek = 0,
+            .end = 0,
+        } };
+    }
+
+    fn stream(_: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        return error.ReadFailed;
+    }
+
+    fn readVec(r: *std.Io.Reader, data: [][]u8) std.Io.Reader.Error!usize {
+        const self: *FirstSliceReader = @alignCast(@fieldParentPtr("interface", r));
+        var vectors: [16][]u8 = undefined;
+        const count, const direct_size = try r.writableVector(&vectors, data);
+        std.debug.assert(count > 0);
+        self.calls += 1;
+        if (self.calls == 1) self.first_request = vectors[0].len;
+        if (self.offset == self.source.len) return error.EndOfStream;
+        const n = @min(vectors[0].len, self.source.len - self.offset, self.max_chunk);
+        @memcpy(vectors[0][0..n], self.source[self.offset..][0..n]);
+        self.offset += n;
+        if (n > direct_size) r.end += n - direct_size;
+        return @min(n, direct_size);
+    }
+};
+
+test "mux frame reads fill the buffer on first-slice-only backends" {
+    const first = (p.Header{ .kind = .output, .stream = 1, .len = 3 }).encode();
+    const second = (p.Header{ .kind = p.credit, .stream = 2, .len = 4 }).encode();
+    const wire = first ++ "a\x00b" ++ second ++ "\x01\x00\x00\x00";
+    var buffer: [64 * 1024]u8 = undefined;
+    var source = FirstSliceReader.init(wire, &buffer);
+    const a = try readReceivedFrame(&source.interface);
+    try std.testing.expectEqualSlices(u8, "a\x00b", a.payload);
+    const b = try readReceivedFrame(&source.interface);
+    try std.testing.expectEqual(p.credit, b.header.kind);
+    try std.testing.expectEqual(@as(u32, 2), b.header.stream);
+    try std.testing.expectEqualSlices(u8, "\x01\x00\x00\x00", b.payload);
+    try std.testing.expectEqual(@as(usize, 1), source.calls);
+    try std.testing.expectEqual(buffer.len, source.first_request);
+    try std.testing.expectError(error.EndOfStream, readReceivedFrame(&source.interface));
+}
+
+test "mux buffered frames tolerate fragmented headers and payloads" {
+    const header = (p.Header{ .kind = .output, .stream = 3, .len = 6 }).encode();
+    const wire = header ++ "\x00\xffabcd";
+    for ([_]usize{ 1, 4, 9, 13 }) |chunk| {
+        var buffer: [64 * 1024]u8 = undefined;
+        var source = FirstSliceReader.init(wire, &buffer);
+        source.max_chunk = chunk;
+        const frame = try readReceivedFrame(&source.interface);
+        try std.testing.expectEqualSlices(u8, "\x00\xffabcd", frame.payload);
+        try std.testing.expectEqual(@as(u32, 3), frame.header.stream);
+    }
+    for (0..wire.len) |end| {
+        var fixed = std.Io.Reader.fixed(wire[0..end]);
+        try std.testing.expectError(error.EndOfStream, readReceivedFrame(&fixed));
+    }
+}
+
+test "mux buffered frame limits checked before payload reads" {
+    const oversized = (p.Header{ .kind = .output, .len = p.max_data + 1 }).encode();
+    var buffer: [64 * 1024]u8 = undefined;
+    var source = FirstSliceReader.init(&oversized, &buffer);
+    try std.testing.expectError(error.PayloadTooLarge, readReceivedFrame(&source.interface));
+    try std.testing.expectEqual(@as(usize, 1), source.calls);
+    const unknown = (p.Header{ .kind = @enumFromInt(250), .len = 0 }).encode();
+    var fixed = std.Io.Reader.fixed(&unknown);
+    try std.testing.expectError(error.InvalidKind, readReceivedFrame(&fixed));
+}
+
+test "mux buffered frame admits full control payload after buffer rebase" {
+    const header = (p.Header{ .kind = .@"error", .stream = 1, .len = p.control_limit }).encode();
+    const wire = try std.testing.allocator.alloc(u8, header.len + p.control_limit);
+    defer std.testing.allocator.free(wire);
+    @memcpy(wire[0..header.len], &header);
+    @memset(wire[header.len..], 0xa5);
+    var buffer: [64 * 1024]u8 = undefined;
+    var source = FirstSliceReader.init(wire, &buffer);
+    const frame = try readReceivedFrame(&source.interface);
+    try std.testing.expectEqual(@as(usize, p.control_limit), frame.payload.len);
+    try std.testing.expect(std.mem.allEqual(u8, frame.payload, 0xa5));
+    try std.testing.expectEqual(@as(usize, 2), source.calls);
 }
 
 test "per-frame data and credit traffic does not wake the watchdog" {
