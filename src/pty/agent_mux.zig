@@ -48,6 +48,8 @@ pub const Connection = struct {
     refs: std.atomic.Value(usize) = .init(1), // worker plus attached sessions
     mutex: io.Mutex = .{},
     changed: io.Condition = .{},
+    // Watchdog-only wakeups: lifecycle changes, never per-output frames.
+    watch: io.Condition = .{},
     sessions: [p.max_streams]?*agent.Session = .{null} ** p.max_streams,
     next_id: u32 = 1,
     cursor: usize = 0,
@@ -133,6 +135,7 @@ fn register(c: *Connection, slot: *?*agent.Session, s: *agent.Session) void {
     c.next_id += 1;
     slot.* = s;
     c.changed.broadcast();
+    c.watch.broadcast();
 }
 
 pub fn notify(s: *agent.Session) void {
@@ -140,6 +143,16 @@ pub fn notify(s: *agent.Session) void {
     c.mutex.lock();
     c.ui_notifications += 1;
     c.changed.broadcast();
+    c.mutex.unlock();
+}
+
+/// Pane close also starts the watchdog's close grace period.
+pub fn notifyClose(s: *agent.Session) void {
+    const c = s.mux_connection orelse return;
+    c.mutex.lock();
+    c.ui_notifications += 1;
+    c.changed.broadcast();
+    c.watch.broadcast();
     c.mutex.unlock();
 }
 
@@ -177,6 +190,7 @@ fn finish(c: *Connection, message: ?[]const u8) void {
         s.unref();
     };
     c.changed.broadcast();
+    c.watch.broadcast();
 }
 
 fn unregister(c: *Connection) void {
@@ -205,6 +219,7 @@ pub fn shutdown() void {
         c.control.cancel(io.get());
         if (c.child) |child| deploy.terminate(child);
         c.changed.broadcast();
+        c.watch.broadcast();
         c.mutex.unlock();
     };
     registry_mutex.unlock();
@@ -239,7 +254,7 @@ fn watchdog(c: *Connection) void {
                 if (timed_out or stalled or overdue) deploy.terminate(child);
             }
         }
-        io.waitTimeout(&c.changed.inner, &c.mutex.inner, 50 * std.time.ns_per_ms) catch {};
+        io.waitTimeout(&c.watch.inner, &c.mutex.inner, 50 * std.time.ns_per_ms) catch {};
     }
 }
 
@@ -529,6 +544,9 @@ fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
     c.mutex.lock();
     defer c.mutex.unlock();
     defer c.changed.broadcast();
+    // Output, credit and spawn acks only concern the writer; the watchdog's
+    // decisions change on hello, exit and error.
+    defer if (wakesWatchdog(h.kind)) c.watch.broadcast();
     if (!c.hello) {
         if (h.kind != .hello or h.stream != 0) return error.InvalidHello;
         const Hello = struct { protocol: []const u8, version: u32, max_streams: u32, window: u32, max_data: u32, max_spawn: u32, capabilities: []const []const u8 };
@@ -610,6 +628,22 @@ fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
     };
     if (h.stream >= c.next_id) return error.UnknownStream;
     // Ignore only late frames for retired IDs, never reuse a stream ID.
+}
+
+fn wakesWatchdog(kind: p.pty.Kind) bool {
+    return switch (kind) {
+        .output, p.spawned, p.credit => false,
+        else => true,
+    };
+}
+
+test "per-frame data and credit traffic does not wake the watchdog" {
+    try std.testing.expect(!wakesWatchdog(.output));
+    try std.testing.expect(!wakesWatchdog(p.spawned));
+    try std.testing.expect(!wakesWatchdog(p.credit));
+    try std.testing.expect(wakesWatchdog(.hello));
+    try std.testing.expect(wakesWatchdog(.exit));
+    try std.testing.expect(wakesWatchdog(.@"error"));
 }
 
 test "error followed by exit before owner collection does not fail siblings" {

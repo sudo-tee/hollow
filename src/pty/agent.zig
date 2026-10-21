@@ -405,7 +405,7 @@ pub const AgentPty = struct {
         if (s.writing) if (s.child_id) |child| deploy.terminate(child);
         s.changed.broadcast();
         s.mutex.unlock();
-        mux.notify(s);
+        mux.notifyClose(s);
         if (self.worker) |thread| thread.detach();
         self.worker = null;
         // The worker's reference was never handed out.
