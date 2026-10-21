@@ -106,7 +106,7 @@ pub const Manager = struct {
                 return .{ .slot = @intCast(index), .generation = connection.generation };
             } else if (available == null) available = index;
         }
-        const index = available orelse return error.ResourceExhausted;
+        const index = available orelse try self.reclaimSlot();
         const owned_id = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned_id);
         const connection = try launch.create(self.allocator, self.io);
@@ -131,7 +131,7 @@ pub const Manager = struct {
                 return .{ .slot = @intCast(index), .generation = generation };
             } else if (available == null) available = index;
         }
-        const index = available orelse return error.ResourceExhausted;
+        const index = available orelse try self.reclaimSlot();
         const owned_id = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned_id);
         const generation = try transport.newGeneration();
@@ -141,6 +141,23 @@ pub const Manager = struct {
 
     pub fn status(self: *Manager, handle: Handle) !transport.State {
         return (try self.get(handle)).backend.status();
+    }
+
+    /// At capacity, recycle only disconnected hosts with no retained tickets
+    /// from any generation. Fresh generations keep old handles safely stale.
+    fn reclaimSlot(self: *Manager) !usize {
+        for (self.hosts, 0..) |entry, index| {
+            const host = entry orelse continue;
+            if (host.backend.status() != .disconnected) continue;
+            var retained = false;
+            for (self.pending) |pending| if (pending) |value| {
+                if (value.ticket.host.slot == index) retained = true;
+            };
+            if (retained) continue;
+            try self.forget(.{ .slot = @intCast(index), .generation = host.backend.generation() });
+            return index;
+        }
+        return error.ResourceExhausted;
     }
 
     pub fn failure(self: *Manager, handle: Handle) !?anyerror {

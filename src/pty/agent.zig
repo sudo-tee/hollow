@@ -81,6 +81,7 @@ pub const Session = struct {
     consumer_compacted_bytes: u64 = 0,
     empty_reads: u64 = 0,
     hello: bool = false,
+    spawn_submitted: bool = false,
     reader_done: bool = false,
     exit_status: ?u32 = null,
     /// Set when the host could not be reached before anything ran and the
@@ -117,7 +118,7 @@ pub const Session = struct {
     /// Ends the session before or after start. Caller holds the mutex.
     pub fn endLocked(self: *Session, message: ?[]const u8) void {
         if (self.phase == .ended) return;
-        const started = self.hello;
+        const started = self.spawn_submitted or self.mux_state.submitted;
         self.phase = .ended;
         if (!started and self.fallback_allowed and !self.closing) {
             self.fallback = true;
@@ -527,7 +528,15 @@ fn run(s: *Session, argv: []const []const u8) !bool {
         return err;
     };
     const hello_deadline = io.nanoTimestamp() + @as(i128, s.host.agent.timeout_ms) * std.time.ns_per_ms;
-    const watchdog = std.Thread.spawn(.{}, helloWatchdog, .{ s, hello_deadline }) catch null;
+    const watchdog = std.Thread.spawn(.{}, helloWatchdog, .{ s, hello_deadline }) catch |err| {
+        s.mutex.lock();
+        terminate(child.id.?);
+        s.child_id = null;
+        s.mutex.unlock();
+        reader.join();
+        child.kill(runtime);
+        return err;
+    };
 
     sendLoop(s, child.stdin.?) catch {};
     child.stdin.?.close(runtime);
@@ -546,7 +555,7 @@ fn run(s: *Session, argv: []const []const u8) !bool {
         s.child_id = null;
     }
     reader.join();
-    if (watchdog) |thread| thread.join();
+    watchdog.join();
     _ = child.wait(runtime) catch child.kill(runtime);
 
     s.mutex.lock();
@@ -559,6 +568,10 @@ fn sendLoop(s: *Session, stdin: std.Io.File) !void {
     const payload = blk: {
         s.mutex.lock();
         defer s.mutex.unlock();
+        // A spawn can execute even if its reply is lost. Never submit one
+        // before hello, and irrevocably disable fallback before the write.
+        while (!s.hello and !s.reader_done and !s.closing) s.changed.wait(&s.mutex);
+        if (s.reader_done or s.closing) return;
         const spawn: wire.Spawn = .{
             .cols = s.cols,
             .rows = s.rows,
@@ -573,6 +586,11 @@ fn sendLoop(s: *Session, stdin: std.Io.File) !void {
     };
     defer gpa.free(payload);
     s.mutex.lock();
+    if (s.closing or s.reader_done) {
+        s.mutex.unlock();
+        return;
+    }
+    s.spawn_submitted = true;
     s.writing = true;
     s.mutex.unlock();
     const sent = writeFrame(runtime, stdin, .spawn, payload);
@@ -654,16 +672,9 @@ fn readerMain(s: *Session, stdout: std.Io.File) void {
     var frames: wire.Reader = .{};
     defer frames.deinit(gpa);
     var buf: [64 * 1024]u8 = undefined;
-    var eof = false;
     outer: while (true) {
-        const n = stdout.readStreaming(runtime, &.{&buf}) catch |err| {
-            eof = err == error.EndOfStream;
-            break;
-        };
-        if (n == 0) {
-            eof = true;
-            break;
-        }
+        const n = stdout.readStreaming(runtime, &.{&buf}) catch break;
+        if (n == 0) break;
         frames.push(gpa, buf[0..n]) catch break;
         while (true) {
             const frame = (frames.next() catch break :outer) orelse break;
@@ -673,7 +684,9 @@ fn readerMain(s: *Session, stdout: std.Io.File) void {
     s.mutex.lock();
     // Nobody drains stdout any more; kill the connector so the worker's wait
     // cannot hang on a child blocked writing to it.
-    if (!eof) if (s.child_id) |child| terminate(child);
+    // EOF also ends transport ownership: a wrapper may close stdout while
+    // remaining alive forever. Kill before publishing completion or reaping.
+    if (s.child_id) |child| terminate(child);
     s.reader_done = true;
     s.changed.broadcast();
     s.mutex.unlock();

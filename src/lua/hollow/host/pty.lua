@@ -28,21 +28,36 @@ local function words(command)
   return result
 end
 
---- Distro named by a `wsl.exe -d X ...` launcher, if any.
-function M.wsl_distro(shell)
+local function wsl_launcher(shell)
   if type(shell) ~= "string" then return nil end
   local argv = words(shell)
   local program = (argv[1] or ""):match("[^/\\]*$"):lower()
   if program ~= "wsl" and program ~= "wsl.exe" then return nil end
+  local result = { type = "wsl" }
+  if argv[1] ~= "wsl.exe" then result.wsl = argv[1] end
   local i = 2
   while argv[i] do
     local arg = argv[i]
-    if arg == "-d" or arg == "--distribution" then return argv[i + 1] ~= "" and argv[i + 1] or nil end
-    if arg ~= "~" and (arg == "-e" or arg == "--exec" or arg == "--" or arg:sub(1, 1) ~= "-") then return nil end
-    if arg == "-u" or arg == "--user" or arg == "--cd" or arg == "--shell-type" then i = i + 1 end
+    if arg ~= "~" and (arg == "-e" or arg == "--exec" or arg == "--" or arg:sub(1, 1) ~= "-") then break end
+    if arg == "-d" or arg == "--distribution" or arg == "-u" or arg == "--user" then
+      local value = argv[i + 1]
+      if not value or value == "" then return nil end
+      result[(arg == "-d" or arg == "--distribution") and "distro" or "user"] = value
+      i = i + 1
+    elseif arg:match("^%-%-distribution=") then
+      result.distro = arg:sub(16)
+    elseif arg:match("^%-%-user=") then
+      result.user = arg:sub(8)
+    elseif arg == "--cd" or arg == "--shell-type" then i = i + 1 end
     i = i + 1
   end
-  return nil
+  return result
+end
+
+--- Distro named by a `wsl.exe -d X ...` launcher, if any.
+function M.wsl_distro(shell)
+  local launcher = wsl_launcher(shell)
+  return launcher and launcher.distro
 end
 
 --- Host descriptor and mode ("explicit" | "implicit") for a new pane, or nil
@@ -56,9 +71,14 @@ function M.descriptor(domain, shell)
   if config.host == false then return nil end
   if type(config.host) == "table" and config.host.type ~= nil then return config.host, "explicit" end
   if not (_G.hollow.platform or {}).is_windows then return nil end
+  local launcher = wsl_launcher(shell)
   local distro = type(config.wsl_distro) == "string" and config.wsl_distro ~= "" and config.wsl_distro
-    or M.wsl_distro(shell)
-  if distro then return { type = "wsl", distro = distro }, "implicit" end
+    or (launcher and launcher.distro)
+  if distro then
+    local spec = launcher or { type = "wsl" }
+    spec.distro = distro
+    return spec, "implicit"
+  end
   return nil
 end
 

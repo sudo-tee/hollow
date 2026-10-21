@@ -49,6 +49,28 @@ describe("hollow.host.pty", function()
     }, host)
   end)
 
+  it("preserves implicit WSL users before and after distro options", function()
+    for _, shell in ipairs({
+      "wsl.exe -d Ubuntu --user alice --exec sh",
+      "wsl.exe -u alice --distribution Ubuntu --exec sh --user root",
+      "wsl.exe --distribution=Ubuntu --user=alice --exec sh",
+    }) do
+      local host = pty.request(nil, shell)
+      assert.are.same({ "wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" }, host.connector.argv)
+    end
+    local root = pty.request(nil, "wsl.exe -d Ubuntu -u root")
+    local alice = pty.request(nil, "wsl.exe -d Ubuntu -u alice")
+    assert.are_not.same(root.connector, alice.connector)
+  end)
+
+  it("preserves launcher executable and user with domain distro metadata", function()
+    domains.ubuntu = { wsl_distro = "Ubuntu", pty = { mode = "mux" } }
+    local host = pty.request("ubuntu", '"C:\\custom\\wsl.exe" --user alice')
+    assert.are.same({ "C:\\custom\\wsl.exe", "--distribution", "Ubuntu", "--user", "alice", "--cd", "/", "--exec" }, host.connector.argv)
+    assert.are.equal("implicit", host.mode)
+    assert.truthy(host.multiplex)
+  end)
+
   it("describes SSH as a remote shell connector", function()
     domains.ssh = { host = { type = "ssh", destination = "box", user = "me", port = 2222 } }
     local host = pty.request("ssh", "sh")
