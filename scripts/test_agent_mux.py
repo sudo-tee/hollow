@@ -388,27 +388,43 @@ class MuxTests(unittest.TestCase):
         # path, exercise the retained-result lifecycle.
         self.client.spawn(1, ["/bin/sleep", "60"])
         self.until(lambda k, s, _: k == SPAWNED and s == 1)
-        fcntl.fcntl(self.client.process.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4096)
+        pipe_capacity = fcntl.fcntl(self.client.process.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4096)
         parent = "/tmp/opencode" if os.path.isdir("/tmp/opencode") else None
         with tempfile.TemporaryDirectory(dir=parent) as directory:
             pid_path = directory + "/pid"
+            # PTY capacity varies across kernels. A blocking producer can fill
+            # it before exiting when inline reads stop behind the full pipe.
+            # Stop at EAGAIN instead: exercise an exited child with retained
+            # output, not a live child legitimately blocked by backpressure.
             code = (
-                "import os,tty; tty.setraw(0); "
-                f"open({pid_path!r},'w').write(str(os.getpid())); "
-                "data=b'x'*24000; "
-                "exec('while data:\\n n=os.write(1,data); data=data[n:]'); os._exit(0)"
+                "import os,tty\n"
+                "tty.setraw(0)\n"
+                "os.set_blocking(1,False)\n"
+                "data=b'x'*(1024*1024)\n"
+                "written=0\n"
+                "while data:\n"
+                " try:\n"
+                "  n=os.write(1,data)\n"
+                " except BlockingIOError:\n"
+                "  break\n"
+                " written+=n\n"
+                " data=data[n:]\n"
+                f"with open({pid_path!r},'w') as file:\n"
+                " file.write(f'{os.getpid()} {written}')\n"
+                "os._exit(0)\n"
             )
             self.client.spawn(2, ["python3", "-c", code])
             self.until(lambda k, s, _: k == SPAWNED and s == 2)
             deadline = time.monotonic() + 3
             pid = None
             state = None
+            written = 0
             while time.monotonic() < deadline:
                 if os.path.exists(pid_path):
                     with open(pid_path) as file:
                         text = file.read()
-                    if text:
-                        pid = int(text)
+                    if len(text.split()) == 2:
+                        pid, written = map(int, text.split())
                         self.assertTrue(os.path.exists(f"/proc/{pid}"), "child PID reaped before output drained")
                         with open(f"/proc/{pid}/stat") as file:
                             state = file.read().split(")", 1)[1].split()[0]
@@ -416,6 +432,9 @@ class MuxTests(unittest.TestCase):
                             break
                 time.sleep(.01)
             self.assertEqual(state, "Z")
+            # recv(SPAWNED) may have prefetched output. Require more bytes than
+            # both that buffer and the pipe can hold, so transport really stalls.
+            self.assertGreater(written, pipe_capacity + len(self.client.buffer))
             time.sleep(.05)
             self.assertTrue(os.path.exists(f"/proc/{pid}"))
             self.client.send(CLOSE, 2)
