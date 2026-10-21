@@ -5,9 +5,96 @@ frame parsing use the existing 64 KiB read-ahead buffer. Protocol credits,
 buffer capacity, writer scheduling, deployment defaults, and the installed
 application remain unchanged.
 
-## Performance overview from existing measurements
+## Current mux versus dedicated PTY head-to-head (October 21, 2026)
 
-These are saved Windows/WSL four-pane results, not fresh tests. The historical
+**Practical conclusion:** current mux is a solid opt-in option for the measured
+four-pane Windows/WSL workload. Throughput and helper-inclusive Windows CPU are
+similar, Linux helper memory is substantially lower, and loaded ACK observations
+show no consistent responsiveness penalty. Exact equality is not the goal, and
+these few runs do not prove statistical equivalence or a universal speedup.
+
+Both arms used the same uninstrumented Windows ReleaseFast executable from the
+buffer-first qualification (`59cc049` source) and the same explicit Linux agent
+(`dfabad2a65ce6c4d17964d62f8e1768bcee358870a896922be0afe02669759e7`). Only
+dedicated/mux mode differed. Four alternating resource pairs measured idle
+(10 seconds), capped output (30 seconds, two 5 MiB/s producers), and uncapped
+output (30 seconds). Four separate alternating echo pairs used two 5 MiB/s
+producers, 1,000 unique ACKs per run, and target-pane switching every 100 ACKs.
+All runs used a verified 1280x800 physical client window on DISPLAY1, DPI 120,
+outer bounds (-1600,170)-(-320,970), with sampled geometry/focus drift rejection.
+Mux used four persistent read workers and two batch jobs.
+
+| Metric, median across qualified runs | Dedicated PTY | Current mux |
+| --- | ---: | ---: |
+| Linux PTY helper processes for four panes | 4 | 1 |
+| Aggregate sampled helper RSS | 3.375 MiB | 0.719 MiB |
+| Capped producer-admitted throughput (3 pairs) | 10.00 MiB/s | 10.00 MiB/s |
+| Captured Windows-group CPU at capped load (3 pairs) | 1.251 cores | 1.232 cores |
+| Hollow-only CPU at capped load (3 pairs) | 1.023 cores | 1.048 cores |
+| Linux helper CPU at capped load (3 pairs, separate scope) | 0.388 cores | 0.334 cores |
+| Sampled Hollow working-set peak at capped load (3 pairs) | 183.1 MiB | 171.4 MiB |
+| Uncapped producer-admitted throughput (4 pairs) | 41.27 MiB/s | 42.08 MiB/s |
+| Captured Windows-group CPU while idle (4 pairs) | 0.090 cores | 0.086 cores |
+| Loaded ACK observer p50 (4 pairs) | 9.32 ms | 9.05 ms |
+| Loaded ACK observer p99 (4 pairs) | 17.55 ms | 15.79 ms |
+
+The RSS saving is 78.7% for Linux PTY helpers, not whole-application memory.
+The captured Windows group includes Hollow and recorded Windows descendants,
+not shared WSL/VM services or Linux processes. Windows and Linux CPU/RSS must
+not be summed as a machine total. A core value of 1.0 means one fully occupied
+logical CPU on average, not 100% of the entire machine.
+
+Paired results retain normal variation rather than demanding exact equality:
+
+- Capped Windows-group CPU changed -2.76%, -2.31%, and +7.12% for mux: median
+  paired change -2.31%. Hollow-only median paired change was +1.70%; Linux
+  helper CPU median paired change was -14.71%, with one +41.44% pair. The ratios
+  of group medians in the table are different summaries, not paired effects.
+- Uncapped throughput changed -16.80%, +3.88%, +0.98%, and +0.06%: median paired
+  change +0.52%. Keep the slower first mux pair visible; this is a mixed result,
+  not proof mux is faster. Throughput is producer-admitted bytes, not rendered
+  pixels or an isolated transport maximum. Uncapped CPU has unequal throughput.
+- Echo p50 paired shifts were -0.271, -2.115, +0.307, and -0.010 ms; median
+  -0.140 ms. Echo p99 shifts were -2.001, -13.795, -0.273, and -0.322 ms;
+  median -1.162 ms. All four p99 pairs favored mux, but one unusually slow PTY
+  pair contributes strongly to that spread. Maximum latency shifts were +5.463,
+  -0.356, +2.268, and +2.298 ms; median +2.283 ms. Occasional mux maxima were
+  higher despite lower p99. This is GUI IPC/PowerShell ACK observation, not
+  physical keyboard-to-display latency; 8,000 ACKs are not 8,000 independent runs.
+- Idle Windows CPU varied widely (paired changes -62.38% to +13.34%). Mux Linux
+  helper idle CPU had a median ~0.004 cores versus dedicated's counter-resolution
+  zero. Ten-second idle phases are not a power-efficiency or long-term leak test.
+
+Qualification: all 16 isolated resource/echo sessions verified tracked Linux
+process cleanup. All four idle and uncapped pairs and all four echo pairs passed.
+The first capped PTY run admitted 9.843 MiB/s, outside the analysis's 10 MiB/s
+±1% matched-load tolerance; the entire capped phase pair is excluded, leaving
+three capped pairs. That rate shortfall remains recorded, not treated as a
+missing run or a product crash. Overall report is therefore **PARTIAL with an
+explicit capped-pair exclusion**, not an unconditional all-attempts PASS.
+
+An external generated echo wrapper initially had a syntax error before launching
+any echo session. Correcting the wrapper allowed all four echo pairs to complete;
+resource captures were not repeated. Original execution status and correction
+are preserved in `execution.json` and `echo-recovery.json`.
+
+No application source change, full test-suite rerun, installed-app update, or
+default change was needed. Previous parser tests/build qualification still
+applies. These measurements support using mux as an option and continuing toward
+session persistence; detach/reconnect, agent lifetime independent of GUI, crash
+recovery, cross-connector behavior, and long-duration reliability still require
+their own design and validation. Persistence is not implemented by this work.
+
+Artifacts: `/tmp/opencode/hollow-current-head-to-head-20261021/analysis.json`,
+raw `resources/` and `echo/` captures, `provenance.json`, and recovery audit.
+Runner and read-only analyzer are
+`/tmp/opencode/hollow-current-head-to-head.py` and
+`/tmp/opencode/hollow-current-head-to-head-summary.py`.
+
+## Historical overview before the current head-to-head
+
+This section preserves the earlier saved-data overview; the new head-to-head
+above supersedes its lack of a current direct comparison. The historical
 dedicated/mux comparison predates the Windows watchdog/read-ahead fixes; the
 latest read-ahead qualification compares new mux against watchdog-only mux,
 not against dedicated PTYs. Do not combine percentage changes across different
@@ -21,7 +108,7 @@ window geometries to manufacture an updated head-to-head result.
 | Uncapped producer-admitted throughput, group median | 68.6 MiB/s | 65.4 MiB/s | Wide, mixed paired outcomes; no stable throughput winner established. |
 | Linux helper CPU at capped load, group median | 0.172 cores | 0.202 cores | Historical mux helper CPU was higher; not updated by current client-only qualification. |
 
-The most recent untraced helper-inclusive direct Windows comparison, before buffer-first
+The earlier untraced helper-inclusive direct Windows comparison, before buffer-first
 parsing, measured 0.89254 dedicated versus 0.91174 mux cores by group medians.
 Its two paired differences were +15.97% and -8.84%, so the +2.15% ratio of
 medians did not establish parity or a precise residual penalty.
@@ -31,8 +118,8 @@ watchdog-only mux: -34.82% transport CPU, -5.91% Hollow process CPU, -6.59%
 captured Windows-group CPU (median paired changes), and 64.92% fewer read
 operations/MiB in a separate diagnostic. Three loaded-echo pairs were mixed,
 with median paired observer shifts +0.423 ms p50 and +1.458 ms p99; latency
-equivalence is unproven. Current mux-versus-dedicated throughput, CPU and latency
-rankings cannot be inferred precisely without a new matched head-to-head run.
+equivalence is unproven. At that stage, updated mux-versus-dedicated throughput,
+CPU and latency rankings could not be inferred without the new matched run above.
 
 Bottom line: mux has demonstrated process/helper-memory savings and now lower
 Windows overhead than earlier mux. Dedicated PTYs remain the conservative
