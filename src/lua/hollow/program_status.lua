@@ -1,12 +1,24 @@
 local M = {}
 
-local priority = { idle = 1, done = 2, working = 3, blocked = 4, error = 5 }
-local labels =
-  { idle = "idle", done = "done", working = "working", blocked = "needs input", error = "error" }
-local block_labels = { permission = "permission", question = "question", auth = "auth" }
+local priority = { done = 2, working = 3, blocked = 4, error = 5 }
+local icons = { done = "✓", blocked = "!", error = "✗" }
+local block_icons = { permission = "󰒃", question = "?", auth = "󰌾" }
+local spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local frame_ms = 100
+
+function M.color(state)
+  local palette = require("hollow.theme").current().palette
+  return ({
+    working = palette.bright_blue,
+    blocked = palette.bright_yellow,
+    done = palette.bright_green,
+    error = palette.bright_red,
+  })[state]
+end
 
 -- Labels only: never interpret program-provided text as UI markup.
-function M.badge(panes)
+-- Returns text, state, and the next animation deadline (working only).
+function M.badge(panes, now_ms)
   local selected
   for _, pane in ipairs(panes or {}) do
     for _, record in ipairs(pane.program_status or {}) do
@@ -21,14 +33,22 @@ function M.badge(panes)
   if not selected then
     return nil
   end
-  local label = labels[selected.state]
+  local label = icons[selected.state]
+  local deadline
+  if selected.state == "working" then
+    local util = require("hollow.util")
+    local now = now_ms or util.host_now_ms(require("hollow.state").get().host_api)
+    local frame = math.floor(now / frame_ms)
+    label = spinner[frame % #spinner + 1]
+    deadline = (frame + 1) * frame_ms
+  end
   if selected.state == "blocked" then
-    label = block_labels[selected.kind] or label
+    label = block_icons[selected.kind] or label
   end
   if selected.progress ~= nil then
     label = label .. " " .. selected.progress .. "%"
   end
-  return "[" .. label .. "] "
+  return label .. " ", selected.state, deadline
 end
 
 function M.workspace_badge(workspace)

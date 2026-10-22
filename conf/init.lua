@@ -159,9 +159,14 @@ hollow.ui.topbar.configure({
         }),
       }
 
-      local status = require("hollow.program_status").badge(tab.panes or { pane })
+      local program_status = require("hollow.program_status")
+      local status, state = program_status.badge(tab.panes or { pane })
       if status then
-        table.insert(spans, 2, hollow.ui.span(status, { bold = true }))
+        table.insert(
+          spans,
+          2,
+          hollow.ui.span(status, { fg = program_status.color(state), bold = true })
+        )
       end
 
       if tab_bell() then

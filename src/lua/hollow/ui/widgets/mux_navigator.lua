@@ -91,6 +91,7 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
 
     if #visible_tabs > 0 then
       local workspace_key = "workspace:" .. workspace.id
+      local workspace_badge, workspace_state = program_status.workspace_badge(workspace)
       rows[#rows + 1] = {
         kind = "workspace",
         key = workspace_key,
@@ -98,30 +99,35 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
         depth = 0,
         count = #workspace_panes,
         panes = workspace_panes,
-        status_badge = program_status.workspace_badge(workspace),
+        status_badge = workspace_badge,
+        status_state = workspace_state,
       }
       if searching or not collapsed[workspace_key] then
         for _, visible_tab in ipairs(visible_tabs) do
           local tab = visible_tab.tab
           local tab_key = "tab:" .. tab.id
+          local tab_badge, tab_state = program_status.badge(tab.panes)
           rows[#rows + 1] = {
             kind = "tab",
             key = tab_key,
             item = tab,
             depth = 1,
             panes = visible_tab.panes,
-            status_badge = program_status.badge(tab.panes),
+            status_badge = tab_badge,
+            status_state = tab_state,
           }
           if searching or not collapsed[tab_key] then
             for _, visible_pane in ipairs(visible_tab.panes) do
               local pane = visible_pane.pane
+              local pane_badge, pane_state = program_status.badge({ pane })
               rows[#rows + 1] = {
                 kind = "pane",
                 key = "pane:" .. pane.id,
                 item = pane,
                 index = visible_pane.index,
                 depth = 2,
-                status_badge = program_status.badge({ pane }),
+                status_badge = pane_badge,
+                status_state = pane_state,
               }
             end
           end
@@ -335,7 +341,7 @@ function ui.mux_navigator.open(opts)
             }
             if row.status_badge then
               row_nodes[#row_nodes + 1] = ui.text(" " .. row.status_badge, {
-                fg = theme.notify_levels.warn,
+                fg = program_status.color(row.status_state),
                 bold = true,
               })
             end

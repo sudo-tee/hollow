@@ -82,7 +82,7 @@ local function default_format_item(workspace, domain_width)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local badge = workspace.program_status_badge or ""
-  local badge_width = #badge
+  local badge_width = util.utf8_len(badge)
   domain_width = domain_width or 0
   local cwd_width = math.max(
     12,
@@ -119,7 +119,11 @@ local function default_format_item(workspace, domain_width)
       style = { fg = name_color, bold = workspace.is_active },
     },
     { text = "", width = gap_width, style = { fg = palette.subtle } },
-    { text = badge, width = badge_width, style = { fg = palette.bell, bold = true } },
+    {
+      text = badge,
+      width = badge_width,
+      style = { fg = program_status.color(workspace.program_status_state), bold = true },
+    },
     { text = cwd_text, width = cwd_width, style = { fg = palette.subtle, bold = false } },
   })
   if domain and domain_width > 0 then
@@ -272,15 +276,17 @@ function ui.workspace.open_switcher(opts)
       end
       -- Read live status without rescanning local/remote discovery sources.
       local badges = {}
+      local states = {}
       local attention = {}
       local attention_levels = {}
       for _, workspace in ipairs(hollow.term.mux_tree()) do
-        badges[workspace.id] = program_status.workspace_badge(workspace)
+        badges[workspace.id], states[workspace.id] = program_status.workspace_badge(workspace)
         attention[workspace.id] = program_status.workspace_needs_attention(workspace)
         attention_levels[workspace.id] = program_status.workspace_attention_level(workspace)
       end
       for _, item in ipairs(items) do
         item.program_status_badge = badges[item.workspace_id]
+        item.program_status_state = states[item.workspace_id]
         item.program_status_attention = attention[item.workspace_id]
         item.program_status_attention_level = attention_levels[item.workspace_id]
       end

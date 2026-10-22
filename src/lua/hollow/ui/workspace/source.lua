@@ -616,6 +616,7 @@ local function open_workspace_items()
     ensure_last_opened(workspace.name)
     remember_workspace_cwd(workspace.name, cwd, domain)
 
+    local badge, status_state = program_status.workspace_badge(workspace)
     local item = {
       id = id,
       workspace_id = workspace.id,
@@ -625,7 +626,8 @@ local function open_workspace_items()
       source = "open",
       is_active = workspace.is_active == true,
       is_open = true,
-      program_status_badge = program_status.workspace_badge(workspace),
+      program_status_badge = badge,
+      program_status_state = status_state,
       program_status_attention = program_status.workspace_needs_attention(workspace),
       program_status_attention_level = program_status.workspace_attention_level(workspace),
       has_bell = hollow.tbl(workspace.tabs):some(function(tab)

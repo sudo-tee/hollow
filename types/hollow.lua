@@ -1796,6 +1796,7 @@ function select.close() end
 ---@field is_open boolean
 ---@field has_bell boolean Any pane in this workspace has bell attention
 ---@field program_status_badge? string Aggregated OSC 7501 badge for open workspaces, including trailing space.
+---@field program_status_state? string State of the aggregated visible OSC 7501 indicator; idle is hidden.
 ---@field program_status_attention? boolean True when any pane in an open workspace has unread blocked/error attention; independent of OSC bell state.
 ---@field open_index? integer
 ---@field open_index? integer Used only for switching to an already-open workspace

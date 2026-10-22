@@ -72,6 +72,78 @@ describe("program status in navigation overlays", function()
     assert.same({ levels.warn, levels.warn }, bell_colors(hollow))
   end)
 
+  it("animates workspace indicators without rediscovery and uses state colors", function()
+    tree[1].tabs[2].panes = {}
+    local discoveries = 0
+    hollow.ui.workspace.open_switcher({
+      known_workspaces = function()
+        discoveries = discoveries + 1
+        return {}
+      end,
+    })
+    local initial = discoveries
+    assert.is_truthy(overlay_text(hollow):find("⠹ 25%", 1, true))
+    local palette = hollow.theme.current().palette
+    local function indicator_color(text)
+      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+        for _, segment in ipairs(row.segments or {}) do
+          if segment.text == text then
+            return segment.fg
+          end
+        end
+      end
+    end
+    assert.equals(palette.bright_blue, indicator_color("⠹ 25% "))
+    env.recorded.now_ms = env.recorded.now_ms + 100
+    assert.is_truthy(overlay_text(hollow):find("⠸ 25%", 1, true))
+    assert.equals(initial, discoveries)
+    working[1] = { state = "done" }
+    assert.equals(palette.bright_green, indicator_color("✓ "))
+    working[1] = { state = "error" }
+    assert.equals(palette.bright_red, indicator_color("✗ "))
+    working[1] = { state = "blocked", kind = "auth" }
+    assert.equals(palette.bright_yellow, indicator_color("󰌾 "))
+    working[1] = { state = "idle" }
+    assert.is_nil(overlay_text(hollow):find("󰌾", 1, true))
+  end)
+
+  it("expires the tab cache only while a working indicator is visible", function()
+    local status = require("hollow.program_status")
+    local records = { { state = "working" } }
+    env.host_api.get_pane_program_status = function()
+      return records
+    end
+    hollow.config.set({ top_bar_mode = "always" })
+    hollow.ui.topbar.mount(hollow.ui.topbar.new({
+      render = function()
+        return {
+          hollow.ui.bar.tabs({
+            format = function(tab)
+              local badge, state = status.badge(tab.panes)
+              return hollow.ui.span((badge or "") .. tab.title, { fg = status.color(state) })
+            end,
+          }),
+        }
+      end,
+    }))
+    local first = hollow.ui._topbar_state()
+    assert.equals("⠹ shell", first.items[1].tabs[1].text)
+    local state = require("hollow.state").get()
+    assert.equals(1300, state.ui.topbar_cache_expires_at)
+    env.recorded.now_ms = 1299
+    assert.equals(first, hollow.ui._topbar_state())
+    env.recorded.now_ms = 1300
+    assert.equals("⠸ shell", hollow.ui._topbar_state().items[1].tabs[1].text)
+    records = { { state = "done" } }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
+    assert.equals("✓ shell", hollow.ui._topbar_state().items[1].tabs[1].text)
+    assert.is_nil(state.ui.topbar_cache_expires_at)
+    records = { { state = "idle" } }
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
+    assert.equals("shell", hollow.ui._topbar_state().items[1].tabs[1].text)
+    assert.is_nil(state.ui.topbar_cache_expires_at)
+  end)
+
   it("refreshes aggregate workspace bell color without reopening", function()
     local levels = require("hollow.theme").resolve_widget("select").notify_levels
     hollow.ui.workspace.open_switcher()
@@ -97,14 +169,14 @@ describe("program status in navigation overlays", function()
   it("shows pane badges and aggregate tab/workspace badges, including collapsed rows", function()
     hollow.ui.mux_navigator.open({ max_height = 20 })
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("main [error]", 1, true))
-    assert.is_truthy(text:find("Tab 1 [working 25%] : build", 1, true))
-    assert.is_truthy(text:find("Tab 2 [error] : tests", 1, true))
-    assert.is_truthy(text:find("Pane 1 [permission] : shell", 1, true))
-    assert.is_truthy(text:find("Pane 2 [error] : shell", 1, true))
+    assert.is_truthy(text:find("main ✗", 1, true))
+    assert.is_truthy(text:find("Tab 1 ⠹ 25% : build", 1, true))
+    assert.is_truthy(text:find("Tab 2 ✗ : tests", 1, true))
+    assert.is_truthy(text:find("Pane 1 󰒃 : shell", 1, true))
+    assert.is_truthy(text:find("Pane 2 ✗ : shell", 1, true))
     env.get_key_handler()("h", 0)
     text = overlay_text(hollow)
-    assert.is_truthy(text:find("main [error]", 1, true))
+    assert.is_truthy(text:find("main ✗", 1, true))
     assert.is_nil(text:find("Tab 1", 1, true))
   end)
 
@@ -116,9 +188,9 @@ describe("program status in navigation overlays", function()
     tree[1].tabs[2].panes[2].program_status = {}
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("main [working 80%]", 1, true))
-    assert.is_nil(text:find("[error]", 1, true))
-    assert.is_nil(text:find("[permission]", 1, true))
+    assert.is_truthy(text:find("main ⠹ 80%", 1, true))
+    assert.is_nil(text:find("✗", 1, true))
+    assert.is_nil(text:find("󰒃", 1, true))
     assert.is_truthy(text:find("/ main", 1, true))
     assert.equals(1, hollow.ui.overlay.depth())
   end)
@@ -131,12 +203,12 @@ describe("program status in navigation overlays", function()
       end,
     })
     local items = hollow.ui.workspace.items()
-    assert.equals("[error] ", items[1].program_status_badge)
+    assert.equals("✗ ", items[1].program_status_badge)
     assert.is_true(items[1].has_bell)
     assert.is_nil(items[2].program_status_badge)
     hollow.ui.workspace.open_switcher()
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("[error]", 1, true))
+    assert.is_truthy(text:find("✗", 1, true))
     assert.is_truthy(text:find("󰂚", 1, true))
   end)
 
@@ -158,13 +230,13 @@ describe("program status in navigation overlays", function()
     working[1].progress = 90
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("[working 90%]", 1, true))
-    assert.is_nil(text:find("[error]", 1, true))
+    assert.is_truthy(text:find("⠹ 90%", 1, true))
+    assert.is_nil(text:find("✗", 1, true))
     assert.is_truthy(text:find("Filter: m", 1, true))
     assert.is_nil(text:find("known", 1, true))
     tree[1].tabs[1].panes[1].program_status = {}
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
-    assert.is_nil(overlay_text(hollow):find("[working", 1, true))
+    assert.is_nil(overlay_text(hollow):find("⠹", 1, true))
     assert.equals(initial_discoveries, discoveries)
     assert.equals(1, hollow.ui.overlay.depth())
   end)
@@ -178,31 +250,31 @@ describe("program status in navigation overlays", function()
       end,
     })
     overlay_text(hollow)
-    assert.equals("[error] ", seen)
+    assert.equals("✗ ", seen)
     tree[1].tabs[2].panes[2].program_status = {}
     overlay_text(hollow)
-    assert.equals("[permission] ", seen)
+    assert.equals("󰒃 ", seen)
   end)
 
   it(
     "acknowledges picker bells without losing badges, preserves real bells, and re-arms",
     function()
       hollow.ui.mux_navigator.open({ max_height = 20 })
-      assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 [permission]", 1, true))
+      assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 󰒃", 1, true))
       blocked[1].attention = false
       failed[1].attention = false
       hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
       local text = overlay_text(hollow)
       assert.is_nil(text:find("󰂚", 1, true))
-      assert.is_truthy(text:find("○ Pane 1 [permission]", 1, true))
-      assert.is_truthy(text:find("○ Pane 2 [error]", 1, true))
-      assert.is_truthy(text:find("[permission]", 1, true))
-      assert.is_truthy(text:find("[error]", 1, true))
+      assert.is_truthy(text:find("○ Pane 1 󰒃", 1, true))
+      assert.is_truthy(text:find("○ Pane 2 ✗", 1, true))
+      assert.is_truthy(text:find("󰒃", 1, true))
+      assert.is_truthy(text:find("✗", 1, true))
       hollow.ui.overlay.clear()
       hollow.ui.workspace.open_switcher()
       text = overlay_text(hollow)
       assert.is_nil(text:find("󰂚", 1, true))
-      assert.is_truthy(text:find("[error]", 1, true))
+      assert.is_truthy(text:find("✗", 1, true))
       blocked[1].attention = true
       hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
       assert.is_truthy(overlay_text(hollow):find("󰂚", 1, true))
@@ -224,16 +296,16 @@ describe("program status in navigation overlays", function()
     assert.equals("󰂚 ", button.render().text) -- Both sources still render one icon.
     button.on_click()
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("[permission]", 1, true))
-    assert.is_truthy(text:find("[error]", 1, true))
-    assert.is_nil(text:find("[working", 1, true))
+    assert.is_truthy(text:find("󰒃", 1, true))
+    assert.is_truthy(text:find("✗", 1, true))
+    assert.is_nil(text:find("⠹", 1, true))
     hollow.ui.overlay.clear()
     blocked[1].attention = false
     failed[1].attention = false
     assert.equals("󰂚 ", button.render().text) -- OSC bell remains independently pending.
     tree[1].tabs[2].panes[1].has_bell = false
     assert.is_nil(button.render())
-    assert.equals("[error] ", require("hollow.program_status").workspace_badge(tree[1]))
+    assert.equals("✗ ", require("hollow.program_status").workspace_badge(tree[1]))
     failed[1].attention = true
     assert.equals("󰂚 ", button.render().text)
     for _, span in ipairs(hollow.ui.workspace.topbar_button()) do
@@ -304,18 +376,18 @@ describe("program status in navigation overlays", function()
     assert.is_false(snapshots[2].is_active)
     assert.equals("blocked", snapshots[2].tabs[1].panes[1].program_status[1].state)
     hollow.ui.mux_navigator.open({ max_height = 20 })
-    assert.is_truthy(overlay_text(hollow):find("background [permission]", 1, true))
-    assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 [permission]", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("background 󰒃", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("󰂚 Pane 1 󰒃", 1, true))
     blocked[1] = { state = "working", progress = 80 }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
-    assert.is_truthy(overlay_text(hollow):find("background [working 80%]", 1, true))
-    assert.is_nil(overlay_text(hollow):find("󰂚 Pane 1 [working", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("background ⠹ 80%", 1, true))
+    assert.is_nil(overlay_text(hollow):find("󰂚 Pane 1 ⠹", 1, true))
     hollow.ui.overlay.clear()
     hollow.ui.workspace.open_switcher()
-    assert.is_truthy(overlay_text(hollow):find("[working 80%]", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("⠹ 80%", 1, true))
     blocked[1] = { state = "blocked", kind = "auth", attention = true }
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
-    assert.is_truthy(overlay_text(hollow):find("[auth]", 1, true))
+    assert.is_truthy(overlay_text(hollow):find("󰌾", 1, true))
     assert.is_truthy(overlay_text(hollow):find("󰂚", 1, true))
     local items = hollow.ui.workspace.items()
     for _, item in ipairs(items) do
@@ -326,7 +398,7 @@ describe("program status in navigation overlays", function()
     end
     blocked[1] = nil
     hollow._emit_builtin_event("term:program_status_changed", { pane_id = 102 })
-    assert.is_nil(overlay_text(hollow):find("[auth]", 1, true))
+    assert.is_nil(overlay_text(hollow):find("󰌾", 1, true))
     assert.is_nil(overlay_text(hollow):find("󰂚", 1, true))
   end)
 end)

@@ -343,6 +343,7 @@ local function serialize_tabs(surface, node, ctx, handlers)
   if #tabs_list <= 1 and hollow.config.get("top_bar_mode") ~= "always" then
     return nil
   end
+  local expires_at
   local tabs = tbl(tabs_list)
     :map(function(tab)
       local tab_state = {
@@ -370,6 +371,9 @@ local function serialize_tabs(surface, node, ctx, handlers)
         end
       end
 
+      local _, _, deadline = require("hollow.program_status").badge(tab_state.panes)
+      expires_at = min_expiry(expires_at, deadline)
+
       if type(label) == "table" then
         register_bar_events(label, handlers, next_bar_auto_id)
       end
@@ -388,7 +392,8 @@ local function serialize_tabs(surface, node, ctx, handlers)
     max_width = type(node.max_width) == "number" and node.max_width or nil,
     style = serialize_bar_style(resolve_bar_hover_style(surface, node.style)),
     tabs = tabs,
-  }
+  },
+    expires_at
 end
 
 local function serialize_workspace(surface, node, ctx, handlers)
@@ -526,7 +531,7 @@ local function serialize_bar_item(surface, node, ctx, handlers)
   end
 
   if node._type == "bar_tabs" then
-    return serialize_tabs(surface, node, ctx, handlers), nil
+    return serialize_tabs(surface, node, ctx, handlers)
   end
   if node._type == "bar_workspace" then
     return serialize_workspace(surface, node, ctx, handlers), nil

@@ -238,4 +238,25 @@ test "socket and OSC queries share state, pane targeting, and validation without
     try std.testing.expect(clear.success);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     try std.testing.expect(!pane.program_status.needsAttention());
+
+    // Only terminal-directed key/char events dismiss completion, not API
+    // writes, focus events, or key releases (including picker key releases).
+    app.mux.?.active_workspace = &workspace;
+    var completed = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"done\"}", .{});
+    defer completed.deinit();
+    var done = try execute(app, @intFromPtr(&pane), "program_status_set", completed.value);
+    defer done.deinit(a);
+    try std.testing.expect(@import("session_controller.zig").sendTextToPane(app, @intFromPtr(&pane), "script input"));
+    pane.program_status.setFocused(true);
+    try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .release, false));
+    app.processInputQueue();
+    try std.testing.expectEqual(@as(usize, 1), pane.program_status.records.items.len);
+    try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .press, false));
+    app.processInputQueue();
+    try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
+    var done_again = try execute(app, @intFromPtr(&pane), "program_status_set", completed.value);
+    defer done_again.deinit(a);
+    try std.testing.expect(app.enqueueChar("x"));
+    app.processInputQueue();
+    try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
 }

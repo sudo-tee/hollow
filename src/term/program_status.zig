@@ -92,22 +92,26 @@ pub const State = struct {
         return best;
     }
 
-    /// Prompt return ends transient activity, not outstanding attention.
-    /// Blocked reports must remain discoverable from other workspaces until
-    /// the program replaces/clears them or the child exits.
+    /// OSC 7501: prompt return drops transient activity, including blocked work.
     pub fn endCommand(self: *State, allocator: std.mem.Allocator) void {
         var i: usize = 0;
         while (i < self.records.items.len) {
             const state = self.records.items[i].state;
-            if (state == .working or state == .idle) self.remove(allocator, i) else i += 1;
+            if (state == .working or state == .blocked or state == .idle) self.remove(allocator, i) else i += 1;
         }
     }
 
     pub fn childExited(self: *State, allocator: std.mem.Allocator) void {
         self.endCommand(allocator);
+    }
+
+    /// Only terminal-directed user input dismisses completed results, not focus
+    /// changes, picker navigation, programmatic writes, or terminal replies.
+    pub fn acknowledgeCompletion(self: *State, allocator: std.mem.Allocator) void {
         var i: usize = 0;
         while (i < self.records.items.len) {
-            if (self.records.items[i].state == .blocked) self.remove(allocator, i) else i += 1;
+            const state = self.records.items[i].state;
+            if (state == .done or state == .failure) self.remove(allocator, i) else i += 1;
         }
     }
 
@@ -198,10 +202,10 @@ test "program status lifecycle and untrusted labels" {
     try std.testing.expectEqualStrings("tool", state.records.items[0].app);
     try std.testing.expectEqual(BlockKind.permission, state.records.items[0].kind);
     state.endCommand(a);
-    try std.testing.expectEqual(@as(usize, 3), state.records.items.len);
+    try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
     state.setFocused(true);
-    try std.testing.expectEqual(@as(usize, 3), state.records.items.len);
-    try std.testing.expectEqual(StateKind.blocked, state.records.items[0].state);
+    try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
+    try std.testing.expectEqual(StateKind.done, state.records.items[0].state);
     try std.testing.expect(!state.needsAttention());
     state.childExited(a);
     try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
@@ -240,7 +244,7 @@ test "attention is independent of records and re-arms only on inactive reports" 
     try std.testing.expect(!state.needsAttention());
 }
 
-test "prompt return preserves blocked and error attention until explicit replacement or clear" {
+test "prompt return clears transient records but preserves completed results" {
     const a = std.testing.allocator;
     var state: State = .{};
     defer state.deinit(a);
@@ -248,15 +252,54 @@ test "prompt return preserves blocked and error attention until explicit replace
     try state.apply(a, &testReport("idle", 0, ""));
     try state.apply(a, &testReport("permission", 3, ""));
     try state.apply(a, &testReport("error", 4, ""));
+    try state.apply(a, &testReport("done", 2, ""));
     state.endCommand(a);
-    state.endCommand(a); // Prompt redraws must not dismiss attention either.
+    state.endCommand(a); // Prompt redraws must not dismiss completed results.
     try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
-    try std.testing.expectEqual(StateKind.blocked, state.records.items[0].state);
-    try std.testing.expectEqual(StateKind.failure, state.records.items[1].state);
-    try state.apply(a, &testReport("permission", 2, ""));
+    try std.testing.expectEqual(StateKind.failure, state.records.items[0].state);
     try std.testing.expectEqual(StateKind.done, state.records.items[1].state);
+    try state.apply(a, &testReport("permission", 2, ""));
+    try std.testing.expectEqual(StateKind.done, state.records.items[2].state);
     try state.apply(a, &testReport("", 5, ""));
     try std.testing.expectEqual(@as(usize, 0), state.records.items.len);
+}
+
+test "pane input dismisses only completion records and focus alone preserves them" {
+    const a = std.testing.allocator;
+    var state: State = .{};
+    defer state.deinit(a);
+    var other: State = .{};
+    defer other.deinit(a);
+    try state.apply(a, &testReport("", 2, ""));
+    try state.apply(a, &testReport("worker", 3, ""));
+    try state.apply(a, &testReport("failed", 4, ""));
+    try state.apply(a, &testReport("running", 1, ""));
+    try other.apply(a, &testReport("", 2, ""));
+    state.setFocused(true);
+    try std.testing.expectEqual(@as(usize, 4), state.records.items.len);
+    state.acknowledgeCompletion(a);
+    try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
+    try std.testing.expectEqual(StateKind.blocked, state.records.items[0].state);
+    try std.testing.expectEqual(StateKind.working, state.records.items[1].state);
+    try std.testing.expectEqual(@as(usize, 1), other.records.items.len);
+    state.dirty = false;
+    state.acknowledgeCompletion(a);
+    try std.testing.expect(!state.dirty);
+}
+
+test "child exit removes idle working and blocked but retains done and error" {
+    const a = std.testing.allocator;
+    var state: State = .{};
+    defer state.deinit(a);
+    try state.apply(a, &testReport("idle", 0, ""));
+    try state.apply(a, &testReport("working", 1, ""));
+    try state.apply(a, &testReport("blocked", 3, ""));
+    try state.apply(a, &testReport("done", 2, ""));
+    try state.apply(a, &testReport("error", 4, ""));
+    state.childExited(a);
+    try std.testing.expectEqual(@as(usize, 2), state.records.items.len);
+    try std.testing.expectEqual(StateKind.done, state.records.items[0].state);
+    try std.testing.expectEqual(StateKind.failure, state.records.items[1].state);
 }
 
 test "program status evicts least recently updated record" {

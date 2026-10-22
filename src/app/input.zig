@@ -438,14 +438,24 @@ pub fn processInputQueue(self: *App) void {
                 }
 
                 const printable_fallback = text_helpers.legacyPrintableKeyText(k.key, k.mods, &fallback_buf);
-                if (!(self.sendKey(k.key, k.mods, k.action, text, k.altgr) catch false)) {
+                var delivered = self.sendKey(k.key, k.mods, k.action, text, k.altgr) catch false;
+                if (!delivered) {
                     if (printable_fallback == null) {
-                        if (text) |bytes| mux_ops.sendText(self, bytes);
+                        if (text) |bytes| {
+                            mux_ops.sendText(self, bytes);
+                            delivered = bytes.len > 0;
+                        }
                     }
+                }
+                if (delivered and k.action != .release) {
+                    if (self.activePane()) |pane| pane.program_status.acknowledgeCompletion(pane.allocator);
                 }
             },
             .char => |ch| {
-                if (ch.len > 0) mux_ops.sendText(self, ch.bytes[0..ch.len]);
+                if (ch.len > 0) {
+                    mux_ops.sendText(self, ch.bytes[0..ch.len]);
+                    if (self.activePane()) |pane| pane.program_status.acknowledgeCompletion(pane.allocator);
+                }
             },
             .selection_begin => |sel| {
                 selection_mod.selectionBegin(self, sel.pane, sel.point, sel.extend);

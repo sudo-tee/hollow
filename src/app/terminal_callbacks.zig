@@ -247,9 +247,11 @@ test "semantic prompt and full reset clear the appropriate program status" {
     try std.testing.expectEqual(@as(usize, 4), pane.program_status.records.items.len);
     try std.testing.expectEqualStrings("build", pane.program_status.records.items[0].app);
     runtime.terminalWrite(pane.terminal, "\x1b]133;A\x07");
-    try std.testing.expectEqual(@as(usize, 3), pane.program_status.records.items.len);
-    try std.testing.expectEqualStrings("blocked", pane.program_status.records.items[1].stateName());
-    try std.testing.expectEqualStrings("error", pane.program_status.records.items[2].stateName());
+    try std.testing.expectEqual(@as(usize, 2), pane.program_status.records.items.len);
+    try std.testing.expectEqualStrings("done", pane.program_status.records.items[0].stateName());
+    try std.testing.expectEqualStrings("error", pane.program_status.records.items[1].stateName());
+    runtime.terminalWrite(pane.terminal, "\x1b[?1049h\x1b[?1049l\x1b[!p");
+    try std.testing.expectEqual(@as(usize, 2), pane.program_status.records.items.len);
     runtime.terminalWrite(pane.terminal, "\x1bc");
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     try std.testing.expect(pane.title_dirty);

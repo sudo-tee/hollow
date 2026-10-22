@@ -25,14 +25,14 @@ describe("program status", function()
 
   it("prioritizes errors and blocked work across panes", function()
     assert.equals(
-      "[permission] ",
+      "󰒃 ",
       status.badge({
         { program_status = { { state = "working", progress = 30 } } },
         { program_status = { { state = "blocked", kind = "permission" } } },
       })
     )
     assert.equals(
-      "[error] ",
+      "✗ ",
       status.badge({
         {
           program_status = {
@@ -46,15 +46,45 @@ describe("program status", function()
 
   it("formats progress without rendering program-provided markup", function()
     assert.equals(
-      "[working 0%] ",
+      "⠋ 0% ",
       status.badge({
         {
           program_status = {
             { state = "working", progress = 0, title = "<fake>", message = "<script>" },
           },
         },
-      })
+      }, 0)
     )
+  end)
+
+  it("hides idle and animates working without new reports", function()
+    assert.is_nil(status.badge({ { program_status = { { state = "idle" } } } }))
+    local panes = { { program_status = { { state = "working" } } } }
+    local first, state, deadline = status.badge(panes, 0)
+    assert.equals("⠋ ", first)
+    assert.equals("working", state)
+    assert.equals(100, deadline)
+    assert.equals(first, status.badge(panes, 99))
+    assert.equals("⠙ ", status.badge(panes, 100))
+    assert.equals(first, status.badge(panes, 1000))
+    local done, _, expiry = status.badge({ { program_status = { { state = "done" } } } }, 0)
+    assert.equals("✓ ", done)
+    assert.is_nil(expiry)
+  end)
+
+  it("uses distinct blocked kinds and state colors", function()
+    local env = harness.boot()
+    local palette = env.hollow.theme.current().palette
+    assert.equals(palette.bright_blue, status.color("working"))
+    assert.equals(palette.bright_green, status.color("done"))
+    assert.equals(palette.bright_red, status.color("error"))
+    assert.equals(palette.bright_yellow, status.color("blocked"))
+    for kind, icon in pairs({ permission = "󰒃", question = "?", auth = "󰌾" }) do
+      assert.equals(
+        icon .. " ",
+        status.badge({ { program_status = { { state = "blocked", kind = kind } } } })
+      )
+    end
   end)
 
   it("adapts host status changes and invalidates bars", function()

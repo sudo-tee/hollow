@@ -37,7 +37,9 @@ and limited to 128 records per pane. Display strings are bounded and stripped
 of control and invisible formatting characters; still treat them as untrusted
 plain text, not markup, and identify their source pane when displaying them.
 
-The default tab bar, mux navigator, and workspace switcher show task-state badges.
+The default tab bar, mux navigator, and workspace switcher show colored status icons:
+an animated blue working spinner (with percentage when reported), amber blocked-kind
+icons, a green completion check, and a red error cross. Idle has no indicator.
 Mux navigator pane rows show their own status; tab/workspace rows aggregate all
 their panes, even when collapsed. Open overlays read live status on each render.
 Custom bars can inspect records:
@@ -51,12 +53,14 @@ end)
 ```
 
 Changes within one host tick are coalesced into one event with the final state.
-Prompt start removes idle/working records, but retains blocked attention until
-replaced/cleared or the child exits. Child exit removes idle/working/blocked
-records. Focusing a pane acknowledges its unread blocked/error attention without
-removing any status records. New blocked/error reports set `attention = true`
+Prompt start (OSC 133 A) and child exit remove idle/working/blocked records.
+Done/error survive both events. Focusing a pane acknowledges its unread
+blocked/error attention without removing any status records. New blocked/error reports set `attention = true`
 only while the pane is inactive; leaving the pane does not re-arm old reports.
-Done/error records persist until replaced/cleared; full reset clears all records.
+The first keypress delivered to the source pane dismisses its done/error records;
+picker navigation, focus changes, and programmatic writes do not. Blocked records
+remain until replaced/cleared, prompt start, or exit. Full reset clears all records;
+soft reset and alternate-screen changes do not. No timeout or heartbeat is used.
 Unread status shares the existing OSC bell attention indicator, including the
 global top-bar bell and its attention-filtered navigator, from any workspace.
 Tabs and navigator panes reuse their existing markers rather than adding another
