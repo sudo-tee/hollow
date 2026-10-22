@@ -337,6 +337,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
 
+    const command_test_module = b.createModule(.{
+        .root_source_file = b.path("src/command_test.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    const command_tests = b.addTest(.{ .root_module = command_test_module });
+    const command_test_run = b.addRunArtifact(command_tests);
+    const command_test_step = b.step("test-command", "Run headless command contracts, CLI, and socket tests");
+    command_test_step.dependOn(&command_test_run.step);
+    test_step.dependOn(&command_test_run.step);
+
     const lua_test_cmd = b.addSystemCommand(&.{"bash"});
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));
     const lua_test_step = b.step("test-lua", "Run Lua tests with Busted");

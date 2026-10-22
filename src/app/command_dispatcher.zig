@@ -146,19 +146,19 @@ pub fn drainPendingCommand(self: *App) void {
     const pending = self.pending_command orelse return;
     if (pending.done) return;
 
-    if (pending.request.kind == .pane_screenshot or pending.request.kind == .tab_screenshot) {
+    if (pending.request.kind() == .pane_screenshot or pending.request.kind() == .tab_screenshot) {
         self.pending_screenshot = pending;
         return;
     }
 
     const timing_enabled = self.config.command_timing;
     const start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
-    pending.response = switch (commandExecutionMode(pending.request.kind)) {
+    pending.response = switch (commandExecutionMode(pending.request.kind())) {
         .sync => executeCommand(self, pending.request) catch |err| command_mod.Response.fail("internal", @errorName(err)),
         .deferred => enqueueDeferredCommand(self, pending.request),
     };
     if (timing_enabled) {
-        std.log.info("command-ipc: dispatch_ms={d:.3} kind={s}", .{ elapsedMs(start_ns), @tagName(pending.request.kind) });
+        std.log.info("command-ipc: dispatch_ms={d:.3} kind={s}", .{ elapsedMs(start_ns), @tagName(pending.request.kind()) });
     }
     pending.done = true;
     self.command_done.broadcast(io.get());
@@ -215,22 +215,26 @@ pub fn finishScreenshot(self: *App, pixels: ?[]const u8, frame_width: usize, fra
 }
 
 fn exportScreenshot(self: *App, request: command_mod.Request, pixels: []const u8, frame_width: usize, frame_height: usize) !command_mod.Response {
-    const path = request.path orelse return command_mod.Response.fail("invalid_args", "missing screenshot path");
+    const args = switch (request.data) {
+        .pane_screenshot, .tab_screenshot => |args| args,
+        else => unreachable,
+    };
+    const path = args.path;
     if (path.len == 0) return command_mod.Response.fail("invalid_args", "empty screenshot path");
     const tab = self.activeTab() orelse return command_mod.Response.fail("not_visible", "no active tab");
     var x: usize = 0;
     var y: usize = 0;
     var width = frame_width;
     var height = frame_height;
-    if (request.kind == .tab_screenshot) {
-        if (request.id) |id| {
+    if (request.kind() == .tab_screenshot) {
+        if (args.id) |id| {
             if (tab.id != id) return command_mod.Response.fail("not_visible", "tab is not visible");
         }
     } else {
-        const pane = if (request.id) |id|
+        const pane = if (args.id) |id|
             self.findPaneById(id)
-        else if (request.pane_id != 0)
-            self.findPaneById(request.pane_id)
+        else if (request.ctx.pane_id != 0)
+            self.findPaneById(request.ctx.pane_id)
         else
             self.activePane() orelse return command_mod.Response.fail("not_visible", "no active pane");
         const target = pane orelse return command_mod.Response.fail("not_found", "pane not found");
@@ -261,36 +265,14 @@ fn elapsedMs(start_ns: i128) f64 {
 }
 
 fn commandExecutionMode(kind: command_mod.Kind) CommandExecutionMode {
-    return switch (kind) {
-        .get_pane,
-        .get_pane_text,
-        .get_screen,
-        .pane_screenshot,
-        .tab_screenshot,
-        .get_ui_nodes,
-        .get_revision,
-        .get_current_pane,
-        .get_tab,
-        .get_current_tab,
-        .get_tabs,
-        .get_panes,
-        .get_workspace,
-        .get_current_workspace,
-        .get_workspaces,
-        .get_mux_tree,
-        .get_domain,
-        .get_htp,
-        .ui_click,
-        => .sync,
-        else => .deferred,
-    };
+    return if (command_mod.contract.isDeferred(kind)) .deferred else .sync;
 }
 
 fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    switch (request.kind) {
-        .workspace_new => return enqueueWorkspaceNewCommand(self, request),
-        .workspace_close => {
-            if (!self.enqueueMouse(.{ .close_workspace = request.id })) return command_mod.Response.fail("error", "command queue full");
+    switch (request.data) {
+        .workspace_new => |args| return enqueueWorkspaceNewCommand(self, args),
+        .workspace_close => |args| {
+            if (!self.enqueueMouse(.{ .close_workspace = args.id })) return command_mod.Response.fail("error", "command queue full");
             return okNull();
         },
         .workspace_next => {
@@ -301,14 +283,14 @@ fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.
             if (!self.enqueueMouse(.prev_workspace)) return command_mod.Response.fail("error", "command queue full");
             return okNull();
         },
-        .workspace_select => {
-            const index = request.index orelse return command_mod.Response.fail("invalid_args", "missing workspace index");
+        .workspace_select => |args| {
+            const index = args.index;
             if (!self.enqueueMouse(.{ .switch_workspace = index -| 1 })) return command_mod.Response.fail("error", "command queue full");
             return okNull();
         },
-        .workspace_rename => return enqueueWorkspaceRenameCommand(self, request),
-        .tab_new => return enqueueTabNewCommand(self, request),
-        .tab_close => return enqueueTabCloseCommand(self, request),
+        .workspace_rename => |args| return enqueueWorkspaceRenameCommand(self, args),
+        .tab_new => |args| return enqueueTabNewCommand(self, args),
+        .tab_close => |args| return enqueueTabCloseCommand(self, args),
         .tab_next => {
             if (!self.enqueueMouse(.next_tab)) return command_mod.Response.fail("error", "command queue full");
             return okNull();
@@ -317,28 +299,28 @@ fn enqueueDeferredCommand(self: *App, request: command_mod.Request) command_mod.
             if (!self.enqueueMouse(.prev_tab)) return command_mod.Response.fail("error", "command queue full");
             return okNull();
         },
-        .tab_select => return enqueueTabSelectCommand(self, request),
+        .tab_select => |args| return enqueueTabSelectCommand(self, args),
         .tab_rename => return enqueueCommandRequest(self, request),
-        .pane_split => return enqueuePaneSplitCommand(self, request),
-        .pane_popup => return enqueuePanePopupCommand(self, request),
+        .pane_split => |args| return enqueuePaneSplitCommand(self, args),
+        .pane_popup => |args| return enqueuePanePopupCommand(self, args),
         .pane_close => return enqueueCommandRequest(self, request),
-        .pane_zoom => return enqueuePaneZoomCommand(self, request),
-        .pane_float => return enqueuePaneFloatingCommand(self, request, true),
-        .pane_tile => return enqueuePaneFloatingCommand(self, request, false),
-        .pane_move => return enqueuePaneMoveCommand(self, request),
-        .pane_resize => return enqueuePaneResizeCommand(self, request),
+        .pane_zoom => |args| return enqueuePaneZoomCommand(self, args),
+        .pane_float => |args| return enqueuePaneFloatingCommand(self, args, true),
+        .pane_tile => |args| return enqueuePaneFloatingCommand(self, args, false),
+        .pane_move => |args| return enqueuePaneMoveCommand(self, args),
+        .pane_resize => |args| return enqueuePaneResizeCommand(self, args),
         .pane_send_text, .pane_bell, .send_keys => return enqueueCommandRequest(self, request),
         .pane_set_tag => return enqueueCommandRequest(self, request),
         .pane_remove_tag => return enqueueCommandRequest(self, request),
         .pane_set_tags => return enqueueCommandRequest(self, request),
-        .focus => return enqueueFocusCommand(self, request),
-        .scroll => return enqueueScrollCommand(self, request),
+        .focus => |args| return enqueueFocusCommand(self, args),
+        .scroll => |args| return enqueueScrollCommand(self, args),
         .config_reload => {
             if (!self.enqueueMouse(.reload_config)) return command_mod.Response.fail("error", "command queue full");
             return okNull();
         },
         .config_theme => return enqueueCommandRequest(self, request),
-        .run => return enqueueTabNewCommand(self, request),
+        .run => |args| return enqueueTabNewCommand(self, .{ .cmd = args.cmd, .cwd = args.cwd, .domain = args.domain }),
         .emit => return enqueueCommandRequest(self, request),
         else => return enqueueCommandRequest(self, request),
     }
@@ -354,63 +336,11 @@ fn enqueueCommandRequest(self: *App, request: command_mod.Request) command_mod.R
     return okNull();
 }
 
-fn cloneOwnedOptionalString(self: *App, value: ?[]const u8) !?[]u8 {
-    return if (value) |text| try self.allocator.dupe(u8, text) else null;
-}
-
-fn cloneOwnedOptionalJson(self: *App, value: ?std.json.Value) !?std.json.Value {
-    return if (value) |json| try command_mod.cloneJsonValue(self.allocator, json) else null;
-}
-
-fn cloneOwnedOptionalStringSlice(self: *App, value: ?[]const []const u8) !?[]const []const u8 {
-    const items = value orelse return null;
-    var out = try self.allocator.alloc([]const u8, items.len);
-    var initialized_len: usize = 0;
-    errdefer {
-        for (out[0..initialized_len]) |item| self.allocator.free(item);
-        self.allocator.free(out);
-    }
-    for (items, 0..) |item, index| {
-        out[index] = try self.allocator.dupe(u8, item);
-        initialized_len += 1;
-    }
-    return out;
-}
-
 fn cloneCommandRequest(self: *App, request: command_mod.Request) !command_mod.Request {
-    return .{
-        .kind = request.kind,
-        .pane_id = request.pane_id,
-        .id = request.id,
-        .index = request.index,
-        .name = try cloneOwnedOptionalString(self, request.name),
-        .cmd = try cloneOwnedOptionalString(self, request.cmd),
-        .cwd = try cloneOwnedOptionalString(self, request.cwd),
-        .domain = try cloneOwnedOptionalString(self, request.domain),
-        .direction = try cloneOwnedOptionalString(self, request.direction),
-        .amount = request.amount,
-        .ratio = request.ratio,
-        .x = request.x,
-        .y = request.y,
-        .width = request.width,
-        .height = request.height,
-        .text = try cloneOwnedOptionalString(self, request.text),
-        .level = try cloneOwnedOptionalString(self, request.level),
-        .color = try cloneOwnedOptionalString(self, request.color),
-        .tag = try cloneOwnedOptionalString(self, request.tag),
-        .tags = try cloneOwnedOptionalStringSlice(self, request.tags),
-        .channel = try cloneOwnedOptionalString(self, request.channel),
-        .surface = try cloneOwnedOptionalString(self, request.surface),
-        .node_id = try cloneOwnedOptionalString(self, request.node_id),
-        .generation = request.generation,
-        .revision = request.revision,
-        .timeout_ms = request.timeout_ms,
-        .params = try cloneOwnedOptionalJson(self, request.params),
-        .payload = try cloneOwnedOptionalJson(self, request.payload),
-    };
+    return request.clone(self.allocator);
 }
 
-fn enqueueTabNewCommand(self: *App, request: command_mod.Request) command_mod.Response {
+fn enqueueTabNewCommand(self: *App, request: command_mod.Launch) command_mod.Response {
     const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_cwd) |value| self.allocator.free(value);
     const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
@@ -426,7 +356,7 @@ fn enqueueTabNewCommand(self: *App, request: command_mod.Request) command_mod.Re
     return okNull();
 }
 
-fn enqueueWorkspaceNewCommand(self: *App, request: command_mod.Request) command_mod.Response {
+fn enqueueWorkspaceNewCommand(self: *App, request: command_mod.WorkspaceNew) command_mod.Response {
     const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_cwd) |value| self.allocator.free(value);
     const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
@@ -445,8 +375,8 @@ fn enqueueWorkspaceNewCommand(self: *App, request: command_mod.Request) command_
     return okNull();
 }
 
-fn enqueueWorkspaceRenameCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing workspace name");
+fn enqueueWorkspaceRenameCommand(self: *App, request: command_mod.Rename) command_mod.Response {
+    const name = request.name;
     if (request.id) |workspace_id| {
         const active_id = self.currentWorkspaceIdValue() orelse return command_mod.Response.fail("invalid_args", "no active workspace");
         if (active_id != workspace_id) return command_mod.Response.fail("invalid_args", "workspace rename only supports the active workspace");
@@ -459,7 +389,7 @@ fn enqueueWorkspaceRenameCommand(self: *App, request: command_mod.Request) comma
     return okNull();
 }
 
-fn enqueueTabCloseCommand(self: *App, request: command_mod.Request) command_mod.Response {
+fn enqueueTabCloseCommand(self: *App, request: command_mod.Id) command_mod.Response {
     if (request.id) |tab_id| {
         const index = mux_ops.tabIndexById(self, tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
         if (!self.enqueueMouse(.{ .close_tab_at = index })) return command_mod.Response.fail("error", "command queue full");
@@ -469,15 +399,15 @@ fn enqueueTabCloseCommand(self: *App, request: command_mod.Request) command_mod.
     return okNull();
 }
 
-fn enqueueTabSelectCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+fn enqueueTabSelectCommand(self: *App, request: command_mod.RequiredId) command_mod.Response {
+    const tab_id = request.id;
     const index = mux_ops.tabIndexById(self, tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
     if (!self.enqueueMouse(.{ .switch_tab = index })) return command_mod.Response.fail("error", "command queue full");
     return okNull();
 }
 
-fn enqueuePaneSplitCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction_text = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn enqueuePaneSplitCommand(self: *App, request: command_mod.Split) command_mod.Response {
+    const direction_text = request.direction;
     const direction = parseSplitDirection(direction_text) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_domain) |value| self.allocator.free(value);
@@ -509,8 +439,8 @@ fn enqueuePaneSplitCommand(self: *App, request: command_mod.Request) command_mod
     return okNull();
 }
 
-fn enqueuePanePopupCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const cmd = request.cmd orelse return command_mod.Response.fail("invalid_args", "missing popup command");
+fn enqueuePanePopupCommand(self: *App, request: command_mod.PanePopup) command_mod.Response {
+    const cmd = request.cmd;
     const owned_domain = if (request.domain) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
     errdefer if (owned_domain) |value| self.allocator.free(value);
     const owned_cwd = if (request.cwd) |value| self.allocator.dupe(u8, value) catch return command_mod.Response.fail("internal", "oom") else null;
@@ -541,28 +471,28 @@ fn enqueuePanePopupCommand(self: *App, request: command_mod.Request) command_mod
     return okNull();
 }
 
-fn enqueuePaneZoomCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn enqueuePaneZoomCommand(self: *App, request: command_mod.RequiredId) command_mod.Response {
+    const pane_id = request.id;
     if (!self.enqueueMouse(.{ .toggle_pane_maximized = .{ .pane_id = pane_id, .show_background = false } })) return command_mod.Response.fail("error", "command queue full");
     return okNull();
 }
 
-fn enqueuePaneFloatingCommand(self: *App, request: command_mod.Request, floating: bool) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn enqueuePaneFloatingCommand(self: *App, request: command_mod.RequiredId, floating: bool) command_mod.Response {
+    const pane_id = request.id;
     if (!self.enqueueMouse(.{ .set_pane_floating = .{ .pane_id = pane_id, .floating = floating } })) return command_mod.Response.fail("error", "command queue full");
     return okNull();
 }
 
-fn enqueuePaneMoveCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn enqueuePaneMoveCommand(self: *App, request: command_mod.PaneMove) command_mod.Response {
+    const pane_id = request.id;
+    const direction = request.direction;
     const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     if (!self.enqueueMouse(.{ .move_pane = .{ .pane_id = pane_id, .direction = focus_direction, .amount = @floatCast(request.amount orelse 0.08) } })) return command_mod.Response.fail("error", "command queue full");
     return okNull();
 }
 
-fn enqueuePaneResizeCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn enqueuePaneResizeCommand(self: *App, request: command_mod.Move) command_mod.Response {
+    const direction = request.direction;
     const split_direction = parseSplitDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     const amount = @as(f32, @floatCast(request.amount orelse 0));
     const delta: f32 = if (std.mem.eql(u8, direction, "left") or std.mem.eql(u8, direction, "up")) -@abs(amount) else @abs(amount);
@@ -570,15 +500,15 @@ fn enqueuePaneResizeCommand(self: *App, request: command_mod.Request) command_mo
     return okNull();
 }
 
-fn enqueueFocusCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing focus direction");
+fn enqueueFocusCommand(self: *App, request: command_mod.Direction) command_mod.Response {
+    const direction = request.direction;
     const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid focus direction");
     if (!self.enqueueMouse(.{ .focus_pane = focus_direction })) return command_mod.Response.fail("error", "command queue full");
     return okNull();
 }
 
-fn enqueueScrollCommand(self: *App, request: command_mod.Request) command_mod.Response {
-    const target = request.direction orelse return command_mod.Response.fail("invalid_args", "missing scroll target");
+fn enqueueScrollCommand(self: *App, request: command_mod.Direction) command_mod.Response {
+    const target = request.direction;
     if (std.mem.eql(u8, target, "top")) {
         if (!self.enqueueMouse(.scroll_active_top)) return command_mod.Response.fail("error", "command queue full");
     } else if (std.mem.eql(u8, target, "bottom")) {
@@ -675,63 +605,70 @@ pub fn deinitPaneTags(self: *App) void {
 }
 
 pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Response {
-    return switch (request.kind) {
-        .get_pane => .ok(try self.snapshotPaneValue(request.id orelse request.pane_id)),
-        .get_pane_text => .ok(try self.paneTextValue(request.id orelse request.pane_id)),
-        .get_screen => .ok(try self.paneScreenValue(request.id orelse request.pane_id)),
+    try command_mod.validate(request.data);
+    return switch (request.data) {
+        .get_pane => |args| .ok(try self.snapshotPaneValue(args.id orelse request.ctx.pane_id)),
+        .get_pane_text => |args| .ok(try self.paneTextValue(args.id orelse request.ctx.pane_id)),
+        .get_screen => |args| .ok(try self.paneScreenValue(args.id orelse request.ctx.pane_id)),
         .pane_screenshot, .tab_screenshot => command_mod.Response.fail("internal", "screenshot dispatched outside render frame"),
         .get_ui_nodes => .ok(try self.uiNodesValue()),
         .get_revision => revisionResponse(self),
         .get_current_pane => .ok(try self.currentPaneValue()),
-        .get_tab => .ok(try self.snapshotTabValue(request.id)),
+        .get_tab => |args| .ok(try self.snapshotTabValue(args.id)),
         .get_current_tab => .ok(try self.currentTabValue()),
         .get_tabs => .ok(try self.tabsValue()),
-        .get_panes => .ok(try self.panesValue(request.tag)),
-        .get_workspace => .ok(try self.snapshotWorkspaceValue(request.id)),
+        .get_panes => |args| .ok(try self.panesValue(args.tag)),
+        .get_workspace => |args| .ok(try self.snapshotWorkspaceValue(args.id)),
         .get_current_workspace => .ok(try self.currentWorkspaceValue()),
         .get_workspaces => .ok(try self.workspacesValue()),
         .get_mux_tree => .ok(try self.muxTreeValue()),
         .get_domain => .ok(try self.currentDomainValue()),
-        .workspace_new => execWorkspaceNew(self, request),
-        .workspace_close => execWorkspaceClose(self, request),
+        .workspace_new => |args| execWorkspaceNew(self, args),
+        .workspace_close => |args| execWorkspaceClose(self, args),
         .workspace_next => execWorkspaceNext(self),
         .workspace_prev => execWorkspacePrev(self),
-        .workspace_select => execWorkspaceSelect(self, request),
-        .workspace_rename => execWorkspaceRename(self, request),
-        .tab_new => execTabNew(self, request),
-        .tab_close => execTabClose(self, request),
+        .workspace_select => |args| execWorkspaceSelect(self, args),
+        .workspace_rename => |args| execWorkspaceRename(self, args),
+        .tab_new => |args| execTabNew(self, args),
+        .tab_close => |args| execTabClose(self, args),
         .tab_next => execTabNext(self),
         .tab_prev => execTabPrev(self),
-        .tab_select => execTabSelect(self, request),
-        .tab_rename => execTabRename(self, request),
-        .pane_split => execPaneSplit(self, request),
-        .pane_popup => execPanePopup(self, request),
-        .pane_close => execPaneClose(self, request),
-        .pane_zoom => execPaneZoom(self, request),
-        .pane_float => execPaneFloating(self, request, true),
-        .pane_tile => execPaneFloating(self, request, false),
-        .pane_move => execPaneMove(self, request),
-        .pane_resize => execPaneResize(self, request),
-        .pane_send_text, .send_keys => execPaneSendText(self, request),
-        .pane_bell => execPaneBell(self, request),
-        .pane_set_tag => execPaneSetTag(self, request),
-        .pane_remove_tag => execPaneRemoveTag(self, request),
-        .pane_set_tags => execPaneSetTags(self, request),
-        .ui_click => execUiClick(self, request),
+        .tab_select => |args| execTabSelect(self, args),
+        .tab_rename => |args| execTabRename(self, args),
+        .pane_split => |args| execPaneSplit(self, args),
+        .pane_popup => |args| execPanePopup(self, args),
+        .pane_close => |args| execPaneClose(self, args),
+        .pane_zoom => |args| execPaneZoom(self, args),
+        .pane_float => |args| execPaneFloating(self, args, true),
+        .pane_tile => |args| execPaneFloating(self, args, false),
+        .pane_move => |args| execPaneMove(self, args),
+        .pane_resize => |args| execPaneResize(self, args),
+        .pane_send_text, .send_keys => |args| execPaneSendText(self, args),
+        .pane_bell => |args| execPaneBell(self, args),
+        .pane_set_tag => |args| execPaneSetTag(self, args),
+        .pane_remove_tag => |args| execPaneRemoveTag(self, args),
+        .pane_set_tags => |args| execPaneSetTags(self, args),
+        .ui_click => |args| execUiClick(self, args),
         .wait_revision => command_mod.Response.fail("internal", "wait_revision dispatched on frame thread"),
-        .focus => execFocus(self, request),
-        .scroll => execScroll(self, request),
-        .get_htp => execGetHtp(self, request),
+        .focus => |args| execFocus(self, args),
+        .scroll => |args| execScroll(self, args),
+        .get_htp => |args| execGetHtp(self, request.ctx, args),
         .config_reload => execConfigReload(self),
-        .config_theme => execConfigTheme(self, request),
-        .run => execRun(self, request),
-        .emit => execEmit(self, request),
+        .config_theme => |args| execConfigTheme(self, args),
+        .run => |args| execRun(self, args),
+        .emit => |args| execEmit(self, request.ctx, args),
+        .api_list => .ok(try command_mod.contract.listValue(self.allocator)),
+        .api_describe => |args| blk: {
+            const kind = command_mod.parseKind(args.name) catch break :blk command_mod.Response.fail("method_not_found", "unknown command name");
+            break :blk .ok(try command_mod.contract.describeValue(self.allocator, kind));
+        },
+        .capabilities => .ok(try command_mod.contract.capabilitiesValue(self.allocator)),
     };
 }
 
 fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_mod.Response {
     const app: *App = @ptrCast(@alignCast(app_ptr));
-    if (request.kind == .wait_revision) return execWaitRevision(app, request);
+    if (request.kind() == .wait_revision) return execWaitRevision(app, request.data.wait_revision);
     return runCommandSync(app, request);
 }
 
@@ -745,8 +682,8 @@ fn revisionResponse(self: *App) command_mod.Response {
     return .ok(.{ .object = object });
 }
 
-fn execWaitRevision(self: *App, request: command_mod.Request) command_mod.Response {
-    const revision = request.revision orelse return command_mod.Response.fail("invalid_args", "missing revision");
+fn execWaitRevision(self: *App, request: command_mod.Args(.wait_revision)) command_mod.Response {
+    const revision = request.revision;
     const timeout_ms = @min(request.timeout_ms orelse 250, 250);
     return switch (self.waitForAutomationRevision(revision, timeout_ms)) {
         .changed => revisionResponse(self),
@@ -755,8 +692,8 @@ fn execWaitRevision(self: *App, request: command_mod.Request) command_mod.Respon
     };
 }
 
-fn execUiClick(self: *App, request: command_mod.Request) command_mod.Response {
-    const node_id = request.node_id orelse return command_mod.Response.fail("invalid_args", "missing UI node id");
+fn execUiClick(self: *App, request: command_mod.Args(.ui_click)) command_mod.Response {
+    const node_id = request.node_id;
     const surface = if (request.surface) |value|
         ui_semantics.Surface.parse(value) orelse return command_mod.Response.fail("invalid_args", "invalid UI surface")
     else
@@ -771,12 +708,12 @@ fn execUiClick(self: *App, request: command_mod.Request) command_mod.Response {
     };
 }
 
-fn execWorkspaceNew(self: *App, request: command_mod.Request) command_mod.Response {
+fn execWorkspaceNew(self: *App, request: command_mod.WorkspaceNew) command_mod.Response {
     mux_ops.newWorkspace(self, request.cwd, request.domain, request.cmd, request.name, LUA_NOREF);
     return okNull();
 }
 
-fn execWorkspaceClose(self: *App, request: command_mod.Request) command_mod.Response {
+fn execWorkspaceClose(self: *App, request: command_mod.Id) command_mod.Response {
     mux_ops.closeWorkspace(self, request.id);
     return okNull();
 }
@@ -795,14 +732,14 @@ fn execWorkspacePrev(self: *App) command_mod.Response {
     return okNull();
 }
 
-fn execWorkspaceSelect(self: *App, request: command_mod.Request) command_mod.Response {
-    const index = request.index orelse return command_mod.Response.fail("invalid_args", "missing workspace index");
+fn execWorkspaceSelect(self: *App, request: command_mod.Args(.workspace_select)) command_mod.Response {
+    const index = request.index;
     mux_ops.switchWorkspace(self, index -| 1);
     return okNull();
 }
 
-fn execWorkspaceRename(self: *App, request: command_mod.Request) command_mod.Response {
-    const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing workspace name");
+fn execWorkspaceRename(self: *App, request: command_mod.Rename) command_mod.Response {
+    const name = request.name;
     if (request.id) |workspace_id| {
         const active_id = self.currentWorkspaceIdValue() orelse return command_mod.Response.fail("invalid_args", "no active workspace");
         if (active_id != workspace_id) return command_mod.Response.fail("invalid_args", "workspace rename only supports the active workspace");
@@ -811,12 +748,12 @@ fn execWorkspaceRename(self: *App, request: command_mod.Request) command_mod.Res
     return okNull();
 }
 
-fn execTabNew(self: *App, request: command_mod.Request) command_mod.Response {
+fn execTabNew(self: *App, request: command_mod.Launch) command_mod.Response {
     mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF, false);
     return okNull();
 }
 
-fn execTabClose(self: *App, request: command_mod.Request) command_mod.Response {
+fn execTabClose(self: *App, request: command_mod.Id) command_mod.Response {
     if (request.id) |tab_id| {
         const index = mux_ops.tabIndexById(self, tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
         mux_ops.closeTabAt(self, index);
@@ -842,29 +779,29 @@ fn execTabPrev(self: *App) command_mod.Response {
     return okNull();
 }
 
-fn execTabSelect(self: *App, request: command_mod.Request) command_mod.Response {
-    const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+fn execTabSelect(self: *App, request: command_mod.RequiredId) command_mod.Response {
+    const tab_id = request.id;
     const index = mux_ops.tabIndexById(self, tab_id) orelse return command_mod.Response.fail("invalid_args", "unknown tab id");
     mux_ops.switchTab(self, index);
     return okNull();
 }
 
-fn execTabRename(self: *App, request: command_mod.Request) command_mod.Response {
-    const title = request.name orelse return command_mod.Response.fail("invalid_args", "missing tab title");
-    const tab_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing tab id");
+fn execTabRename(self: *App, request: command_mod.Args(.tab_rename)) command_mod.Response {
+    const title = request.name;
+    const tab_id = request.id;
     if (!mux_ops.setTabTitleById(self, tab_id, title)) return command_mod.Response.fail("invalid_args", "unknown tab id");
     return okNull();
 }
 
-fn execPaneClose(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn execPaneClose(self: *App, request: command_mod.RequiredId) command_mod.Response {
+    const pane_id = request.id;
     mux_ops.closePaneById(self, pane_id);
     clearPaneTags(self, pane_id);
     return okNull();
 }
 
-fn execPaneSplit(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction_text = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn execPaneSplit(self: *App, request: command_mod.Split) command_mod.Response {
+    const direction_text = request.direction;
     const direction = parseSplitDirection(direction_text) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     mux_ops.splitPane(
         self,
@@ -886,8 +823,8 @@ fn execPaneSplit(self: *App, request: command_mod.Request) command_mod.Response 
     return okNull();
 }
 
-fn execPanePopup(self: *App, request: command_mod.Request) command_mod.Response {
-    const cmd = request.cmd orelse return command_mod.Response.fail("invalid_args", "missing popup command");
+fn execPanePopup(self: *App, request: command_mod.PanePopup) command_mod.Response {
+    const cmd = request.cmd;
     mux_ops.splitPane(
         self,
         .vertical,
@@ -908,28 +845,28 @@ fn execPanePopup(self: *App, request: command_mod.Request) command_mod.Response 
     return okNull();
 }
 
-fn execPaneZoom(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn execPaneZoom(self: *App, request: command_mod.RequiredId) command_mod.Response {
+    const pane_id = request.id;
     mux_ops.togglePaneMaximizedById(self, pane_id, false);
     return okNull();
 }
 
-fn execPaneFloating(self: *App, request: command_mod.Request, floating: bool) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn execPaneFloating(self: *App, request: command_mod.RequiredId, floating: bool) command_mod.Response {
+    const pane_id = request.id;
     mux_ops.setPaneFloatingById(self, pane_id, floating);
     return okNull();
 }
 
-fn execPaneMove(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn execPaneMove(self: *App, request: command_mod.PaneMove) command_mod.Response {
+    const pane_id = request.id;
+    const direction = request.direction;
     const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     mux_ops.movePaneById(self, pane_id, focus_direction, @floatCast(request.amount orelse 0.08));
     return okNull();
 }
 
-fn execPaneResize(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing pane direction");
+fn execPaneResize(self: *App, request: command_mod.Move) command_mod.Response {
+    const direction = request.direction;
     const split_direction = parseSplitDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid pane direction");
     const amount = @as(f32, @floatCast(request.amount orelse 0));
     const delta: f32 = if (std.mem.eql(u8, direction, "left") or std.mem.eql(u8, direction, "up")) -@abs(amount) else @abs(amount);
@@ -937,14 +874,14 @@ fn execPaneResize(self: *App, request: command_mod.Request) command_mod.Response
     return okNull();
 }
 
-fn execPaneSendText(self: *App, request: command_mod.Request) command_mod.Response {
-    const text = request.text orelse return command_mod.Response.fail("invalid_args", "missing pane text");
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
+fn execPaneSendText(self: *App, request: command_mod.Text) command_mod.Response {
+    const text = request.text;
+    const pane_id = request.id;
     if (!mux_ops.sendTextToPane(self, pane_id, text)) return command_mod.Response.fail("invalid_args", "unknown pane id");
     return okNull();
 }
 
-fn execPaneBell(self: *App, request: command_mod.Request) command_mod.Response {
+fn execPaneBell(self: *App, request: command_mod.Args(.pane_bell)) command_mod.Response {
     const pane_id = request.id orelse self.currentPaneIdValue();
     if (pane_id == 0) return command_mod.Response.fail("invalid_args", "no active pane");
     const level = if (request.level) |value| notification.Level.parse(value) orelse return command_mod.Response.fail("invalid_args", "invalid bell level") else null;
@@ -953,35 +890,35 @@ fn execPaneBell(self: *App, request: command_mod.Request) command_mod.Response {
     return okNull();
 }
 
-fn execPaneSetTag(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
-    const tag = request.tag orelse return command_mod.Response.fail("invalid_args", "missing pane tag");
+fn execPaneSetTag(self: *App, request: command_mod.Tag) command_mod.Response {
+    const pane_id = request.id;
+    const tag = request.tag;
     addPaneTag(self, pane_id, tag) catch return command_mod.Response.fail("internal", "failed to add pane tag");
     return okNull();
 }
 
-fn execPaneRemoveTag(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
-    const tag = request.tag orelse return command_mod.Response.fail("invalid_args", "missing pane tag");
+fn execPaneRemoveTag(self: *App, request: command_mod.Tag) command_mod.Response {
+    const pane_id = request.id;
+    const tag = request.tag;
     removePaneTag(self, pane_id, tag);
     return okNull();
 }
 
-fn execPaneSetTags(self: *App, request: command_mod.Request) command_mod.Response {
-    const pane_id = request.id orelse return command_mod.Response.fail("invalid_args", "missing pane id");
-    setPaneTags(self, pane_id, request.tags orelse &.{}) catch return command_mod.Response.fail("internal", "failed to set pane tags");
+fn execPaneSetTags(self: *App, request: command_mod.Args(.pane_set_tags)) command_mod.Response {
+    const pane_id = request.id;
+    setPaneTags(self, pane_id, request.tags) catch return command_mod.Response.fail("internal", "failed to set pane tags");
     return okNull();
 }
 
-fn execFocus(self: *App, request: command_mod.Request) command_mod.Response {
-    const direction = request.direction orelse return command_mod.Response.fail("invalid_args", "missing focus direction");
+fn execFocus(self: *App, request: command_mod.Direction) command_mod.Response {
+    const direction = request.direction;
     const focus_direction = parseFocusDirection(direction) orelse return command_mod.Response.fail("invalid_args", "invalid focus direction");
     mux_ops.focusPane(self, focus_direction);
     return okNull();
 }
 
-fn execScroll(self: *App, request: command_mod.Request) command_mod.Response {
-    const target = request.direction orelse return command_mod.Response.fail("invalid_args", "missing scroll target");
+fn execScroll(self: *App, request: command_mod.Direction) command_mod.Response {
+    const target = request.direction;
     if (std.mem.eql(u8, target, "top")) {
         mux_ops.scrollActiveViewportTop(
             self,
@@ -1005,8 +942,8 @@ fn execConfigReload(self: *App) command_mod.Response {
     return okNull();
 }
 
-fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Response {
-    const name = request.name orelse return command_mod.Response.fail("invalid_args", "missing theme name");
+fn execConfigTheme(self: *App, request: command_mod.Args(.config_theme)) command_mod.Response {
+    const name = request.name;
     const theme_payload = std.json.Value{ .object = blk: {
         var object: std.json.ObjectMap = .{};
         errdefer app_mod.deinitJsonValue(self.allocator, .{ .object = object });
@@ -1023,14 +960,14 @@ fn execConfigTheme(self: *App, request: command_mod.Request) command_mod.Respons
     return okNull();
 }
 
-fn execRun(self: *App, request: command_mod.Request) command_mod.Response {
+fn execRun(self: *App, request: command_mod.Run) command_mod.Response {
     mux_ops.newTab(self, request.cwd, request.domain, request.cmd, LUA_NOREF, false);
     return okNull();
 }
 
-fn execGetHtp(self: *App, request: command_mod.Request) command_mod.Response {
-    const channel = request.channel orelse return command_mod.Response.fail("invalid_args", "missing htp channel");
-    const pane_id = request.id orelse request.pane_id;
+fn execGetHtp(self: *App, ctx: command_mod.Context, request: command_mod.Args(.get_htp)) command_mod.Response {
+    const channel = request.channel;
+    const pane_id = request.id orelse ctx.pane_id;
     const program_status = @import("program_status_commands.zig");
     if (program_status.handles(channel)) return program_status.execute(self, pane_id, channel, request.params) catch |err| command_mod.Response.fail("internal", @errorName(err));
     const result = htp.dispatchHtpQuerySync(self, pane_id, channel, request.params) catch |err| {
@@ -1045,9 +982,9 @@ fn execGetHtp(self: *App, request: command_mod.Request) command_mod.Response {
     return .ok(null);
 }
 
-fn execEmit(self: *App, request: command_mod.Request) command_mod.Response {
-    const channel = request.channel orelse return command_mod.Response.fail("invalid_args", "missing emit channel");
-    const pane_id = request.id orelse request.pane_id;
+fn execEmit(self: *App, ctx: command_mod.Context, request: command_mod.Args(.emit)) command_mod.Response {
+    const channel = request.channel;
+    const pane_id = request.id orelse ctx.pane_id;
     const result = htp.dispatchHtpEventSync(self, pane_id, channel, request.payload) catch |err| {
         return command_mod.Response.fail("internal", @errorName(err));
     };
@@ -1078,7 +1015,7 @@ test "shutdown releases commands waiting for the frame thread" {
     defer app.deinit();
     const Waiter = struct {
         fn run(target: *App) void {
-            var response = runCommandSync(target, .{ .kind = .get_revision });
+            var response = runCommandSync(target, .{ .data = .{ .get_revision = .{} } });
             defer response.deinit(target.allocator);
             std.debug.assert(!response.success);
             std.debug.assert(std.mem.eql(u8, response.status, "shutting_down"));
@@ -1095,4 +1032,28 @@ test "shutdown releases commands waiting for the frame thread" {
         }
     }
     // The defer order cancels the pending request before joining the worker.
+}
+
+test "discovery and empty snapshots obey their structural result contracts" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    inline for ([_]command_mod.Kind{
+        .get_pane,         .get_pane_text,         .get_screen,      .get_ui_nodes, .get_revision,
+        .get_current_pane, .get_tab,               .get_current_tab, .get_tabs,     .get_panes,
+        .get_workspace,    .get_current_workspace, .get_workspaces,  .get_mux_tree, .get_domain,
+        .api_list,         .capabilities,
+    }) |kind| {
+        var response = try executeCommand(app, .{ .data = @unionInit(command_mod.Command, @tagName(kind), .{}) });
+        defer response.deinit(a);
+        try std.testing.expect(response.success);
+        var result = try std.json.parseFromValue(command_mod.contract.Result(kind), a, response.payload orelse .null, .{ .ignore_unknown_fields = true });
+        defer result.deinit();
+    }
+    var unknown = try executeCommand(app, .{ .data = .{ .api_describe = .{ .name = "does_not_exist" } } });
+    defer unknown.deinit(a);
+    try std.testing.expect(!unknown.success);
+    try std.testing.expectEqualStrings("method_not_found", unknown.status);
 }

@@ -181,12 +181,10 @@ test "socket and OSC queries share state, pane targeting, and validation without
     app.mux.?.active_workspace = &workspace;
     var params = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"working\",\"progress\":40}", .{});
     defer params.deinit();
-    var set = try @import("command_dispatcher.zig").executeCommand(app, .{
-        .kind = .get_htp,
-        .pane_id = @intFromPtr(&pane),
+    var set = try @import("command_dispatcher.zig").executeCommand(app, .{ .ctx = .{ .pane_id = @intFromPtr(&pane) }, .data = .{ .get_htp = .{
         .channel = "program_status_set",
         .params = params.value,
-    });
+    } } });
     defer set.deinit(a);
     try std.testing.expect(set.success);
     var get = try @import("htp.zig").dispatchHtpQuerySync(app, @intFromPtr(&pane), "program_status_get", null);

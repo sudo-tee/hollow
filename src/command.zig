@@ -53,6 +53,9 @@ pub const Kind = enum {
     config_theme,
     run,
     emit,
+    api_list,
+    api_describe,
+    capabilities,
 };
 
 pub const Target = struct {
@@ -70,58 +73,120 @@ pub const PanePopup = struct {
     height: ?f64 = null,
 };
 
-pub const Request = struct {
-    kind: Kind,
+/// Invocation metadata, never an explicit target or an authorization credential.
+pub const Context = struct {
     pane_id: usize = 0,
+    origin: enum { cli, api, internal } = .internal,
+};
 
-    id: ?usize = null,
-    index: ?usize = null,
-    name: ?[]const u8 = null,
-    cmd: ?[]const u8 = null,
-    cwd: ?[]const u8 = null,
-    domain: ?[]const u8 = null,
-    direction: ?[]const u8 = null,
-    amount: ?f64 = null,
-    ratio: ?f64 = null,
-    x: ?f64 = null,
-    y: ?f64 = null,
-    width: ?f64 = null,
-    height: ?f64 = null,
-    text: ?[]const u8 = null,
-    level: ?[]const u8 = null,
-    color: ?[]const u8 = null,
-    path: ?[]const u8 = null,
-    tag: ?[]const u8 = null,
-    tags: ?[]const []const u8 = null,
-    channel: ?[]const u8 = null,
-    surface: ?[]const u8 = null,
-    node_id: ?[]const u8 = null,
-    generation: ?u64 = null,
-    revision: ?u64 = null,
-    timeout_ms: ?u64 = null,
-    params: ?std.json.Value = null,
-    payload: ?std.json.Value = null,
+pub const Empty = struct {};
+pub const Id = struct { id: ?usize = null };
+pub const RequiredId = struct { id: usize };
+pub const Rename = struct { id: ?usize = null, name: []const u8 };
+pub const Launch = struct { cmd: ?[]const u8 = null, cwd: ?[]const u8 = null, domain: ?[]const u8 = null };
+pub const Run = struct { cmd: []const u8, cwd: ?[]const u8 = null, domain: ?[]const u8 = null };
+pub const WorkspaceNew = struct { cmd: ?[]const u8 = null, cwd: ?[]const u8 = null, domain: ?[]const u8 = null, name: ?[]const u8 = null };
+pub const Screenshot = struct { id: ?usize = null, path: []const u8 };
+pub const Split = struct { direction: []const u8, cmd: ?[]const u8 = null, cwd: ?[]const u8 = null, domain: ?[]const u8 = null, ratio: ?f64 = null };
+pub const Move = struct { id: ?usize = null, direction: []const u8, amount: ?f64 = null };
+pub const PaneMove = struct { id: usize, direction: []const u8, amount: ?f64 = null };
+pub const Text = struct { id: usize, text: []const u8 };
+pub const Tag = struct { id: usize, tag: []const u8 };
+pub const Direction = struct { direction: []const u8 };
+
+/// Only fields belonging to the selected command can be represented.
+pub const Command = union(Kind) {
+    get_pane: Id,
+    get_pane_text: Id,
+    get_screen: Id,
+    pane_screenshot: Screenshot,
+    tab_screenshot: Screenshot,
+    get_ui_nodes: Empty,
+    get_revision: Empty,
+    get_current_pane: Empty,
+    get_tab: Id,
+    get_current_tab: Empty,
+    get_tabs: Empty,
+    get_panes: struct { tag: ?[]const u8 = null },
+    get_workspace: Id,
+    get_current_workspace: Empty,
+    get_workspaces: Empty,
+    get_mux_tree: Empty,
+    get_domain: Empty,
+    get_htp: struct { id: ?usize = null, channel: []const u8, params: ?std.json.Value = null },
+    workspace_new: WorkspaceNew,
+    workspace_close: Id,
+    workspace_next: Empty,
+    workspace_prev: Empty,
+    workspace_select: struct { index: usize },
+    workspace_rename: Rename,
+    tab_new: Launch,
+    tab_close: Id,
+    tab_next: Empty,
+    tab_prev: Empty,
+    tab_select: RequiredId,
+    tab_rename: struct { id: usize, name: []const u8 },
+    pane_split: Split,
+    pane_popup: PanePopup,
+    pane_close: RequiredId,
+    pane_zoom: RequiredId,
+    pane_float: RequiredId,
+    pane_tile: RequiredId,
+    pane_move: PaneMove,
+    pane_resize: Move,
+    pane_send_text: Text,
+    pane_bell: struct { id: ?usize = null, level: ?[]const u8 = null, color: ?[]const u8 = null },
+    pane_set_tag: Tag,
+    pane_remove_tag: Tag,
+    pane_set_tags: struct { id: usize, tags: []const []const u8 = &.{} },
+    send_keys: Text,
+    ui_click: struct { node_id: []const u8, surface: ?[]const u8 = null, generation: ?u64 = null },
+    wait_revision: struct { revision: u64, timeout_ms: ?u64 = null },
+    focus: Direction,
+    scroll: Direction,
+    config_reload: Empty,
+    config_theme: struct { name: []const u8 },
+    run: Run,
+    emit: struct { id: ?usize = null, channel: []const u8, payload: ?std.json.Value = null },
+    api_list: Empty,
+    api_describe: struct { name: []const u8 },
+    capabilities: Empty,
+};
+
+pub fn Args(comptime kind: Kind) type {
+    return @FieldType(Command, @tagName(kind));
+}
+
+pub const Request = struct {
+    ctx: Context = .{},
+    data: Command,
+    // Constructed requests borrow arguments. Parsed/cloned requests own an arena.
+    arena: ?*std.heap.ArenaAllocator = null,
+
+    pub fn kind(self: Request) Kind {
+        return std.meta.activeTag(self.data);
+    }
 
     pub fn deinit(self: *Request, allocator: std.mem.Allocator) void {
-        if (self.name) |value| allocator.free(value);
-        if (self.cmd) |value| allocator.free(value);
-        if (self.cwd) |value| allocator.free(value);
-        if (self.domain) |value| allocator.free(value);
-        if (self.direction) |value| allocator.free(value);
-        if (self.text) |value| allocator.free(value);
-        if (self.level) |value| allocator.free(value);
-        if (self.color) |value| allocator.free(value);
-        if (self.path) |value| allocator.free(value);
-        if (self.tag) |value| allocator.free(value);
-        if (self.channel) |value| allocator.free(value);
-        if (self.surface) |value| allocator.free(value);
-        if (self.node_id) |value| allocator.free(value);
-        if (self.tags) |values| {
-            for (values) |value| allocator.free(value);
-            allocator.free(values);
+        if (self.arena) |arena| {
+            arena.deinit();
+            allocator.destroy(arena);
+            self.arena = null;
         }
-        if (self.params) |value| deinitJsonValue(allocator, value);
-        if (self.payload) |value| deinitJsonValue(allocator, value);
+    }
+
+    pub fn clone(self: Request, allocator: std.mem.Allocator) !Request {
+        const text = try encodeRequest(allocator, self);
+        defer allocator.free(text);
+        return (try parseEnvelope(allocator, text)).request;
+    }
+
+    pub fn setTargetId(self: *Request, id: usize) void {
+        switch (self.data) {
+            inline else => |*args| if (@hasField(@TypeOf(args.*), "id")) {
+                args.id = id;
+            },
+        }
     }
 };
 
@@ -159,24 +224,80 @@ pub const Response = struct {
 };
 
 pub fn parseEnvelope(allocator: std.mem.Allocator, text: []const u8) !ParsedEnvelope {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const root = switch (parsed.value) {
-        .object => |obj| obj,
-        else => return error.InvalidCommandEnvelope,
-    };
-
-    const kind_text = jsonObjectString(root, "kind") orelse return error.MissingCommandKind;
-    const request = try requestFromObject(allocator, root, kind_text);
+    const arena = try allocator.create(std.heap.ArenaAllocator);
+    arena.* = .init(allocator);
     errdefer {
-        var cleanup = request;
-        cleanup.deinit(allocator);
+        arena.deinit();
+        allocator.destroy(arena);
     }
-
-    return .{
-        .request = request,
+    const a = arena.allocator();
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{ .allocate = .alloc_always });
+    if (root != .object) return error.InvalidCommandEnvelope;
+    var object = root.object;
+    const kind_value = object.get("kind") orelse return error.MissingCommandKind;
+    if (kind_value != .string) return error.InvalidCommandEnvelope;
+    const kind = try parseKind(kind_value.string);
+    _ = object.swapRemove("kind");
+    var ctx: Context = .{};
+    if (object.fetchSwapRemove("ctx")) |entry| {
+        try contract.validateJson(Context, entry.value);
+        ctx = try std.json.parseFromValueLeaky(Context, a, entry.value, .{});
+    }
+    // Legacy flat caller metadata remains accepted at the transport boundary.
+    if (object.fetchSwapRemove("pane_id")) |entry| {
+        if (ctx.pane_id != 0) return error.ConflictingContext;
+        try contract.validateJson(usize, entry.value);
+        ctx.pane_id = try std.json.parseFromValueLeaky(usize, a, entry.value, .{});
+    }
+    if (object.fetchSwapRemove("command")) |entry| {
+        if (object.contains("cmd")) return error.ConflictingCommandAlias;
+        try object.put(a, "cmd", entry.value);
+    }
+    // Older native clients serialized unrelated optional fields as null. Ignore
+    // only those nulls; non-null unknown fields are always rejected.
+    var i: usize = 0;
+    while (i < object.count()) {
+        if (object.values()[i] == .null and isLegacyField(object.keys()[i])) {
+            _ = object.swapRemove(object.keys()[i]);
+        } else i += 1;
+    }
+    const data: Command = switch (kind) {
+        inline else => |tag| blk: {
+            try contract.validateJson(Args(tag), .{ .object = object });
+            break :blk @unionInit(Command, @tagName(tag), try std.json.parseFromValueLeaky(Args(tag), a, .{ .object = object }, .{}));
+        },
     };
+    try validate(data);
+    return .{ .request = .{ .ctx = ctx, .data = data, .arena = arena } };
+}
+
+/// Keep the established flat wire names while encoding only this command's args.
+pub fn encodeRequest(allocator: std.mem.Allocator, request: Request) ![]u8 {
+    var writer: std.Io.Writer.Allocating = .init(allocator);
+    defer writer.deinit();
+    try writer.writer.writeAll("{\"kind\":");
+    try std.json.Stringify.value(@tagName(request.kind()), .{}, &writer.writer);
+    try writer.writer.writeAll(",\"ctx\":");
+    try std.json.Stringify.value(request.ctx, .{}, &writer.writer);
+    const args_json = switch (request.data) {
+        inline else => |args| try std.json.Stringify.valueAlloc(allocator, args, .{ .emit_null_optional_fields = false }),
+    };
+    defer allocator.free(args_json);
+    if (args_json.len > 2) {
+        try writer.writer.writeByte(',');
+        try writer.writer.writeAll(args_json[1 .. args_json.len - 1]);
+    }
+    try writer.writer.writeByte('}');
+    return allocator.dupe(u8, writer.written());
+}
+
+fn isLegacyField(name: []const u8) bool {
+    inline for (std.meta.fields(Command)) |variant| {
+        inline for (std.meta.fields(variant.type)) |field| {
+            if (std.mem.eql(u8, name, field.name)) return true;
+        }
+    }
+    return false;
 }
 
 pub fn writeResultJson(allocator: std.mem.Allocator, response: Response) ![]u8 {
@@ -213,7 +334,11 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.
                 for (out.items) |item| deinitJsonValue(allocator, item);
                 out.deinit();
             }
-            for (arr.items) |item| try out.append(try cloneJsonValue(allocator, item));
+            for (arr.items) |item| {
+                const value_copy = try cloneJsonValue(allocator, item);
+                errdefer deinitJsonValue(allocator, value_copy);
+                try out.append(value_copy);
+            }
             return .{ .array = out };
         },
         .object => |obj| {
@@ -228,7 +353,11 @@ pub fn cloneJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !std.
             }
             var it = obj.iterator();
             while (it.next()) |entry| {
-                try out.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), try cloneJsonValue(allocator, entry.value_ptr.*));
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(key);
+                const value_copy = try cloneJsonValue(allocator, entry.value_ptr.*);
+                errdefer deinitJsonValue(allocator, value_copy);
+                try out.put(allocator, key, value_copy);
             }
             return .{ .object = out };
         },
@@ -256,155 +385,13 @@ pub fn deinitJsonValue(allocator: std.mem.Allocator, value: std.json.Value) void
     }
 }
 
-fn requestFromObject(allocator: std.mem.Allocator, root: std.json.ObjectMap, kind_text: []const u8) !Request {
-    var request = Request{ .kind = try parseKind(kind_text) };
-    errdefer request.deinit(allocator);
-    request.pane_id = jsonObjectIndex(root, "pane_id") orelse 0;
-    request.id = jsonObjectIndex(root, "id");
-    request.index = jsonObjectIndex(root, "index");
-    request.name = try jsonObjectStringOwned(allocator, root, "name");
-    request.cmd = try jsonObjectStringOwned(allocator, root, "cmd");
-    if (request.cmd == null) request.cmd = try jsonObjectStringOwned(allocator, root, "command");
-    request.cwd = try jsonObjectStringOwned(allocator, root, "cwd");
-    request.domain = try jsonObjectStringOwned(allocator, root, "domain");
-    request.direction = try jsonObjectStringOwned(allocator, root, "direction");
-    request.amount = jsonObjectFloat(root, "amount");
-    request.ratio = jsonObjectFloat(root, "ratio");
-    request.x = jsonObjectFloat(root, "x");
-    request.y = jsonObjectFloat(root, "y");
-    request.width = jsonObjectFloat(root, "width");
-    request.height = jsonObjectFloat(root, "height");
-    request.text = try jsonObjectStringOwned(allocator, root, "text");
-    request.level = try jsonObjectStringOwned(allocator, root, "level");
-    request.color = try jsonObjectStringOwned(allocator, root, "color");
-    request.path = try jsonObjectStringOwned(allocator, root, "path");
-    request.tag = try jsonObjectStringOwned(allocator, root, "tag");
-    request.channel = try jsonObjectStringOwned(allocator, root, "channel");
-    request.surface = try jsonObjectStringOwned(allocator, root, "surface");
-    request.node_id = try jsonObjectStringOwned(allocator, root, "node_id");
-    request.generation = try jsonObjectU64(root, "generation");
-    request.revision = try jsonObjectU64(root, "revision");
-    request.timeout_ms = try jsonObjectU64(root, "timeout_ms");
-    request.params = try jsonObjectValueClone(allocator, root, "params");
-    request.payload = try jsonObjectValueClone(allocator, root, "payload");
-    request.tags = try jsonObjectStringArrayClone(allocator, root, "tags");
-    return request;
+pub fn parseKind(text: []const u8) !Kind {
+    return std.meta.stringToEnum(Kind, text) orelse error.UnknownCommandKind;
 }
 
-fn parseKind(text: []const u8) !Kind {
-    inline for (std.meta.fields(Kind)) |field| {
-        if (std.mem.eql(u8, text, field.name)) return @field(Kind, field.name);
-    }
-    return error.UnknownCommandKind;
-}
+pub const contract = @import("command/contract.zig");
+pub const validate = contract.validate;
 
-fn jsonObjectString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = object.get(key) orelse return null;
-    return switch (value) {
-        .string => |text| text,
-        else => null,
-    };
-}
-
-fn jsonObjectStringOwned(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?[]u8 {
-    const value = jsonObjectString(object, key) orelse return null;
-    return try allocator.dupe(u8, value);
-}
-
-fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?std.json.Value {
-    const value = object.get(key) orelse return null;
-    return try cloneJsonValue(allocator, value);
-}
-
-fn jsonObjectStringArrayClone(allocator: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?[]const []const u8 {
-    const value = object.get(key) orelse return null;
-    const items = switch (value) {
-        .array => |arr| arr.items,
-        else => return null,
-    };
-
-    var out = try allocator.alloc([]const u8, items.len);
-    var initialized_len: usize = 0;
-    errdefer {
-        for (out[0..initialized_len]) |item| allocator.free(item);
-        allocator.free(out);
-    }
-
-    for (items, 0..) |item, index| {
-        switch (item) {
-            .string => |text| {
-                out[index] = try allocator.dupe(u8, text);
-                initialized_len += 1;
-            },
-            else => return error.InvalidCommandEnvelope,
-        }
-    }
-    return out;
-}
-
-fn jsonObjectIndex(object: std.json.ObjectMap, key: []const u8) ?usize {
-    const value = object.get(key) orelse return null;
-    return switch (value) {
-        .integer => |n| if (n >= 0) @intCast(n) else null,
-        .float => |n| if (n >= 0 and std.math.floor(n) == n) @intFromFloat(n) else null,
-        else => null,
-    };
-}
-
-fn jsonObjectU64(object: std.json.ObjectMap, key: []const u8) !?u64 {
-    const value = object.get(key) orelse return null;
-    return switch (value) {
-        .null => null,
-        .integer => |n| if (n >= 0) @intCast(n) else error.InvalidCommandEnvelope,
-        else => error.InvalidCommandEnvelope,
-    };
-}
-
-fn jsonObjectFloat(object: std.json.ObjectMap, key: []const u8) ?f64 {
-    const value = object.get(key) orelse return null;
-    return switch (value) {
-        .integer => |n| @floatFromInt(n),
-        .float => |n| n,
-        else => null,
-    };
-}
-
-test "parseEnvelope loads command envelope" {
-    const text =
-        "{" ++
-        "\"kind\":\"pane_send_text\"," ++
-        "\"pane_id\":7," ++
-        "\"text\":\"ls\\n\"" ++
-        "}";
-    var parsed = try parseEnvelope(std.testing.allocator, text);
-    defer parsed.deinit(std.testing.allocator);
-    try std.testing.expectEqual(.pane_send_text, parsed.request.kind);
-    try std.testing.expectEqual(@as(usize, 7), parsed.request.pane_id);
-    try std.testing.expectEqualStrings("ls\n", parsed.request.text.?);
-}
-
-test "parseEnvelope loads pane bell command" {
-    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"pane_bell\",\"id\":7,\"level\":\"error\",\"color\":\"#ff0000\"}");
-    defer parsed.deinit(std.testing.allocator);
-    try std.testing.expectEqual(.pane_bell, parsed.request.kind);
-    try std.testing.expectEqual(@as(usize, 7), parsed.request.id.?);
-    try std.testing.expectEqualStrings("error", parsed.request.level.?);
-    try std.testing.expectEqualStrings("#ff0000", parsed.request.color.?);
-}
-
-test "parseEnvelope rejects mixed tags without invalid cleanup" {
-    const text = "{\"kind\":\"pane_set_tags\",\"tags\":[\"one\",1]}";
-    try std.testing.expectError(error.InvalidCommandEnvelope, parseEnvelope(std.testing.allocator, text));
-}
-
-test "parseEnvelope requires integer automation fields" {
-    try std.testing.expectError(error.InvalidCommandEnvelope, parseEnvelope(std.testing.allocator, "{\"kind\":\"wait_revision\",\"revision\":1.0,\"timeout_ms\":100}"));
-}
-
-test "parseEnvelope accepts null optional automation fields" {
-    var parsed = try parseEnvelope(std.testing.allocator, "{\"kind\":\"get_revision\",\"revision\":null,\"generation\":null,\"timeout_ms\":null}");
-    defer parsed.deinit(std.testing.allocator);
-    try std.testing.expect(parsed.request.revision == null);
-    try std.testing.expect(parsed.request.generation == null);
-    try std.testing.expect(parsed.request.timeout_ms == null);
+test {
+    _ = contract;
 }

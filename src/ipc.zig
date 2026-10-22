@@ -211,7 +211,14 @@ pub const Server = struct {
 
         const frame = try readFrame(self.allocator, stream);
         defer self.allocator.free(frame);
-        var parsed = try command.parseEnvelope(self.allocator, frame);
+        var parsed = command.parseEnvelope(self.allocator, frame) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            const invalid = command.Response.fail("invalid_args", @errorName(err));
+            const reply = try command.writeResultJson(self.allocator, invalid);
+            defer self.allocator.free(reply);
+            try writeFrame(stream, reply);
+            return;
+        };
         defer parsed.deinit(self.allocator);
 
         var response = self.handler(self.app, parsed.request);
@@ -266,22 +273,27 @@ fn resolveAddress(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn send(allocator: std.mem.Allocator, request: command.Request, timeout_ms: u64) !command.Response {
-    const timing_enabled = commandTimingEnabled();
-    const total_start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
+    const stream = try connect(allocator);
+    defer stream.close(io.get());
+    return sendConnected(allocator, stream, request, timeout_ms);
+}
+
+/// Establish transport before writing anything; auto clients may fall back only
+/// when this fails. Once connected, a request is never replayed elsewhere.
+pub fn connect(allocator: std.mem.Allocator) !std.Io.net.Stream {
     const addr_text = try resolveAddress(allocator);
     defer allocator.free(addr_text);
+    if (std.mem.startsWith(u8, addr_text, "unix:")) {
+        const address = try std.Io.net.UnixAddress.init(addr_text[5..]);
+        return address.connect(io.get());
+    }
+    const address = try std.Io.net.IpAddress.parseLiteral(addr_text);
+    return address.connect(io.get(), .{ .mode = .stream, .protocol = .tcp });
+}
 
-    const connect_start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
-    const remote_addr = try std.Io.net.IpAddress.parseLiteral(addr_text);
-    const stream = try remote_addr.connect(io.get(), .{
-        .mode = .stream,
-        .protocol = .tcp,
-        // Zig 0.16 Threaded panics for non-none connect timeouts on both
-        // POSIX and Windows. SocketDeadline below bounds the frame exchange.
-        // Connection establishment uses the OS timeout until Zig supports this.
-    });
-    defer stream.close(io.get());
-    if (timing_enabled) clientTraceFmt("connect_ms={d:.3}", .{elapsedMs(connect_start_ns)});
+pub fn sendConnected(allocator: std.mem.Allocator, stream: std.Io.net.Stream, request: command.Request, timeout_ms: u64) !command.Response {
+    const timing_enabled = commandTimingEnabled();
+    const total_start_ns = if (timing_enabled) io.nanoTimestamp() else 0;
 
     var deadline = SocketDeadline{ .stream = stream, .timeout_ms = timeout_ms };
     try deadline.start();
@@ -342,43 +354,10 @@ fn clientTraceFmt(comptime fmt: []const u8, args: anytype) void {
 }
 
 fn encodeRequest(allocator: std.mem.Allocator, request: command.Request) ![]u8 {
-    var writer: std.Io.Writer.Allocating = .init(allocator);
-    defer writer.deinit();
-
-    try std.json.Stringify.value(.{
-        .kind = @tagName(request.kind),
-        .pane_id = request.pane_id,
-        .id = request.id,
-        .index = request.index,
-        .name = request.name,
-        .cmd = request.cmd,
-        .cwd = request.cwd,
-        .domain = request.domain,
-        .direction = request.direction,
-        .amount = request.amount,
-        .ratio = request.ratio,
-        .x = request.x,
-        .y = request.y,
-        .width = request.width,
-        .height = request.height,
-        .text = request.text,
-        .level = request.level,
-        .color = request.color,
-        .tag = request.tag,
-        .tags = request.tags,
-        .channel = request.channel,
-        .surface = request.surface,
-        .node_id = request.node_id,
-        .generation = request.generation,
-        .revision = request.revision,
-        .timeout_ms = request.timeout_ms,
-        .params = request.params,
-        .payload = request.payload,
-    }, .{}, &writer.writer);
-    return try allocator.dupe(u8, writer.written());
+    return command.encodeRequest(allocator, request);
 }
 
-fn decodeResponse(allocator: std.mem.Allocator, text: []const u8) !command.Response {
+pub fn decodeResponse(allocator: std.mem.Allocator, text: []const u8) !command.Response {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
@@ -389,20 +368,23 @@ fn decodeResponse(allocator: std.mem.Allocator, text: []const u8) !command.Respo
     const kind = jsonObjectString(root, "kind") orelse return error.InvalidCommandEnvelope;
     const status = jsonObjectString(root, "status") orelse "ok";
 
-    if (std.mem.eql(u8, kind, "error")) {
+    if (std.mem.eql(u8, kind, "error") or (std.mem.eql(u8, kind, "result") and !std.mem.eql(u8, status, "ok"))) {
+        const owned_status = try allocator.dupe(u8, status);
+        errdefer allocator.free(owned_status);
         return .{
             .success = false,
-            .status = try allocator.dupe(u8, status),
+            .status = owned_status,
             .error_message = try allocator.dupe(u8, jsonObjectString(root, "error") orelse "command failed"),
             .owns_status = true,
             .owns_error_message = true,
         };
     }
     if (!std.mem.eql(u8, kind, "result")) return error.InvalidCommandEnvelope;
-
+    const owned_status = try allocator.dupe(u8, status);
+    errdefer allocator.free(owned_status);
     return .{
         .success = true,
-        .status = try allocator.dupe(u8, status),
+        .status = owned_status,
         .payload = try jsonObjectValueClone(allocator, root, "payload"),
         .owns_status = true,
     };
@@ -512,29 +494,27 @@ fn jsonObjectValueClone(allocator: std.mem.Allocator, object: std.json.ObjectMap
 }
 
 test "encoded request round trips absent automation fields" {
-    const payload = try encodeRequest(std.testing.allocator, .{ .kind = .get_revision });
+    const payload = try encodeRequest(std.testing.allocator, .{ .data = .{ .get_revision = .{} } });
     defer std.testing.allocator.free(payload);
     var parsed = try command.parseEnvelope(std.testing.allocator, payload);
     defer parsed.deinit(std.testing.allocator);
-    try std.testing.expectEqual(command.Kind.get_revision, parsed.request.kind);
-    try std.testing.expect(parsed.request.revision == null);
-    try std.testing.expect(parsed.request.generation == null);
+    try std.testing.expectEqual(command.Kind.get_revision, parsed.request.kind());
+    try std.testing.expect(std.mem.indexOf(u8, payload, "generation") == null);
 }
 
 test "encoded pane bell request preserves color and level" {
-    const payload = try encodeRequest(std.testing.allocator, .{
-        .kind = .pane_bell,
+    const payload = try encodeRequest(std.testing.allocator, .{ .data = .{ .pane_bell = .{
         .id = 42,
         .level = "error",
         .color = "#ff00aa",
-    });
+    } } });
     defer std.testing.allocator.free(payload);
     var parsed = try command.parseEnvelope(std.testing.allocator, payload);
     defer parsed.deinit(std.testing.allocator);
-    try std.testing.expectEqual(command.Kind.pane_bell, parsed.request.kind);
-    try std.testing.expectEqual(@as(usize, 42), parsed.request.id.?);
-    try std.testing.expectEqualStrings("error", parsed.request.level.?);
-    try std.testing.expectEqualStrings("#ff00aa", parsed.request.color.?);
+    try std.testing.expectEqual(command.Kind.pane_bell, parsed.request.kind());
+    try std.testing.expectEqual(@as(usize, 42), parsed.request.data.pane_bell.id.?);
+    try std.testing.expectEqualStrings("error", parsed.request.data.pane_bell.level.?);
+    try std.testing.expectEqualStrings("#ff00aa", parsed.request.data.pane_bell.color.?);
 }
 
 fn isLoopback(address: std.Io.net.IpAddress) bool {
@@ -577,6 +557,35 @@ test "idle IPC client does not block another request" {
     var result = try decodeResponse(std.testing.allocator, reply);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(result.success);
+}
+
+test "invalid socket requests return errors without invoking the handler" {
+    const a = std.testing.allocator;
+    const Probe = struct {
+        fn handler(_: *anyopaque, _: command.Request) command.Response {
+            return command.Response.fail("handler_called", "validation should have rejected this");
+        }
+    };
+    var context: u8 = 0;
+    var server = Server.init(a, &context, Probe.handler);
+    const listener = try (std.Io.net.IpAddress{ .ip4 = .loopback(0) }).listen(io.get(), .{});
+    server.listen_address = listener.socket.address;
+    server.thread = try std.Thread.spawn(.{}, Server.acceptLoop, .{ &server, listener });
+    server.started = true;
+    defer server.deinit();
+    const client = try server.listen_address.?.connect(io.get(), .{ .mode = .stream });
+    defer client.close(io.get());
+    var deadline = SocketDeadline{ .stream = client, .timeout_ms = 1000 };
+    try deadline.start();
+    defer deadline.finish();
+    try writeFrame(client, "{\"kind\":\"pane_split\",\"direction\":\"vertical\",\"ratio\":2}");
+    const text = try readFrame(a, client);
+    defer a.free(text);
+    var response = try decodeResponse(a, text);
+    defer response.deinit(a);
+    try std.testing.expect(!response.success);
+    try std.testing.expectEqualStrings("invalid_args", response.status);
+    try std.testing.expectEqualStrings("InvalidArgumentValue", response.error_message.?);
 }
 
 test "socket deadline interrupts an incomplete frame" {
