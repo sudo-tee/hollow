@@ -100,6 +100,20 @@ local function workspace_identity(name, cwd, domain)
 end
 
 local function first_pane_cwd(workspace)
+  local pane = type(workspace) == "table" and workspace.pane or nil
+  local cwd = trim_string(type(pane) == "table" and pane.cwd)
+  if cwd ~= "" then return cwd end
+  -- mux_tree nests panes under tabs, not directly under the workspace.
+  for _, tab in ipairs(workspace.tabs or {}) do
+    if tab.is_active then
+      local active_cwd = first_pane_cwd(tab)
+      if active_cwd then return active_cwd end
+    end
+  end
+  for _, tab in ipairs(workspace.tabs or {}) do
+    local cwd = first_pane_cwd(tab)
+    if cwd then return cwd end
+  end
   local panes = type(workspace) == "table" and workspace.panes or nil
   if type(panes) == "table" then
     for _, pane in ipairs(panes) do
@@ -110,9 +124,7 @@ local function first_pane_cwd(workspace)
     end
   end
 
-  local pane = type(workspace) == "table" and workspace.pane or nil
-  local cwd = trim_string(type(pane) == "table" and pane.cwd)
-  return cwd ~= "" and cwd or nil
+  return nil
 end
 
 local function workspace_name_key(name, domain)

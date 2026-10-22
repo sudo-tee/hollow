@@ -63,7 +63,7 @@ local function derived_palette()
   }
 end
 
-local function default_format_item(workspace)
+local function default_format_item(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local palette = derived_palette()
@@ -83,8 +83,11 @@ local function default_format_item(workspace)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local badge = workspace.program_status_badge or ""
   local badge_width = #badge
-  local cwd_width =
-    math.max(12, total_width - status_width - name_width - badge_width - (gap_width * 2) - 10)
+  domain_width = domain_width or 0
+  local cwd_width = math.max(
+    12,
+    total_width - status_width - name_width - badge_width - domain_width - (gap_width * 2) - 10
+  )
 
   local cwd_text = source.trim_string(workspace.cwd)
   if cwd_text == "" then
@@ -98,12 +101,9 @@ local function default_format_item(workspace)
   end
 
   local domain = source.normalize_domain(workspace.domain)
-  local current_domain = source.normalize_domain(source.current_domain_name())
-  if domain ~= nil and domain ~= current_domain then
-    cwd_text = "[" .. domain .. "] " .. cwd_text
-  end
+  local domain_colors = workspace_name_color(domain or "default")
 
-  return format.columns({
+  local columns = format.columns({
     {
       text = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
       width = status_width,
@@ -122,10 +122,32 @@ local function default_format_item(workspace)
     { text = badge, width = badge_width, style = { fg = palette.bell, bold = true } },
     { text = cwd_text, width = cwd_width, style = { fg = palette.subtle, bold = false } },
   })
+  if domain and domain_width > 0 then
+    columns[#columns + 1] = ui.spacer()
+    columns[#columns + 1] = ui.span(" " .. util.truncate_end(domain, domain_width - 3) .. " ", {
+      fg = domain_colors.fg,
+      bg = domain_colors.bg,
+      radius = 4,
+    })
+  end
+  return columns
 end
 
-local function item_formatter()
-  return switcher_state().format_item or default_format_item
+local function domain_column_width(items)
+  local width = 0
+  local domains = {}
+  local count = 0
+  for _, workspace in ipairs(items) do
+    local domain = source.normalize_domain(workspace.domain)
+    if domain then
+      if not domains[domain] then
+        domains[domain] = true
+        count = count + 1
+      end
+      width = math.max(width, math.min(23, #domain + 3))
+    end
+  end
+  return count > 1 and width or 0
 end
 
 local function workspace_parts(prefix, suffix)
@@ -145,12 +167,11 @@ local function search_text_for_item(workspace)
   local cwd = source.trim_string(workspace.cwd)
   local basename = source.trim_string(cwd ~= "" and util.basename(cwd) or nil)
   local domain = source.normalize_domain(workspace.domain)
-  local current_domain = source.normalize_domain(source.current_domain_name())
   return hollow
     .tbl({ workspace.name })
     :concat(
       basename ~= "" and basename ~= workspace.name and { basename } or {},
-      domain ~= nil and domain ~= current_domain and { domain } or {}
+      domain ~= nil and { domain } or {}
     )
     :join("\n")
 end
@@ -237,6 +258,7 @@ function ui.workspace.open_switcher(opts)
   end
 
   local items = source.items(force_refresh)
+  local domain_width = domain_column_width(items)
   local switcher = switcher_state()
   local host_revision = switcher.host_scan_revision or 0
   ui.select.open({
@@ -245,6 +267,7 @@ function ui.workspace.open_switcher(opts)
       local current_revision = switcher_state().host_scan_revision or 0
       if current_revision ~= host_revision then
         items = source.items()
+        domain_width = domain_column_width(items)
         host_revision = current_revision
       end
       -- Read live status without rescanning local/remote discovery sources.
@@ -271,7 +294,10 @@ function ui.workspace.open_switcher(opts)
     chrome = switcher.chrome,
     theme = switcher.theme,
     label = function(item)
-      return item_formatter()(item)
+      if switcher_state().format_item then
+        return switcher_state().format_item(item)
+      end
+      return default_format_item(item, domain_width)
     end,
     search_text = search_text_for_item,
     actions = switcher_actions(),

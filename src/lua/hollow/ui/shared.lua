@@ -438,37 +438,42 @@ function M.highlight_inline_nodes(nodes, query, match_style)
   local highlighted = {}
   local text_offset = 0
   for _, node in ipairs(normalized) do
-    local node_text = node.text or ""
-    local chunk_start = 1
-    local chunk_highlighted = matched_positions[text_offset + 1] == true
+    if node._type == "spacer" then
+      -- Layout nodes have no searchable text and must survive highlighting.
+      highlighted[#highlighted + 1] = node
+    else
+      local node_text = node.text or ""
+      local chunk_start = 1
+      local chunk_highlighted = matched_positions[text_offset + 1] == true
 
-    local function append_chunk(end_index)
-      if end_index < chunk_start then
-        return
+      local function append_chunk(end_index)
+        if end_index < chunk_start then
+          return
+        end
+
+        local chunk_style = node.style
+        if chunk_highlighted then
+          chunk_style =
+            M.merge_style_tables(type(node.style) == "table" and node.style or {}, match_style)
+        end
+        highlighted[#highlighted + 1] = {
+          _type = "span",
+          text = node_text:sub(chunk_start, end_index),
+          style = chunk_style,
+        }
       end
 
-      local chunk_style = node.style
-      if chunk_highlighted then
-        chunk_style =
-          M.merge_style_tables(type(node.style) == "table" and node.style or {}, match_style)
+      for index = 1, #node_text do
+        local is_highlighted = matched_positions[text_offset + index] == true
+        if is_highlighted ~= chunk_highlighted then
+          append_chunk(index - 1)
+          chunk_start = index
+          chunk_highlighted = is_highlighted
+        end
       end
-      highlighted[#highlighted + 1] = {
-        _type = "span",
-        text = node_text:sub(chunk_start, end_index),
-        style = chunk_style,
-      }
+      append_chunk(#node_text)
+      text_offset = text_offset + #node_text
     end
-
-    for index = 1, #node_text do
-      local is_highlighted = matched_positions[text_offset + index] == true
-      if is_highlighted ~= chunk_highlighted then
-        append_chunk(index - 1)
-        chunk_start = index
-        chunk_highlighted = is_highlighted
-      end
-    end
-    append_chunk(#node_text)
-    text_offset = text_offset + #node_text
   end
 
   return highlighted

@@ -260,6 +260,127 @@ describe("UI workspace test suite", function()
   end)
 end)
 
+describe("Workspace switcher cross-domain metadata", function()
+  local hollow
+  local env
+
+  before_each(function()
+    env = harness.boot()
+    hollow = env.hollow
+    env.host_api.split_pane({ domain = "UbuntuWSL", cwd = "/srv/remote" })
+    env.host_api.get_workspace_count = function() return 2 end
+    env.host_api.get_workspace_name = function(index) return index == 0 and "main" or "remote" end
+    env.host_api.get_workspace_id = function(index) return index + 41 end
+    env.host_api.get_workspace_tab_count = function() return 1 end
+    env.host_api.get_workspace_tab_id_at = function(index) return index == 0 and 201 or 202 end
+    env.host_api.get_tab_active_pane_id = function(tab_id)
+      return tab_id == 202 and 102 or 101
+    end
+    local pane_domain = env.host_api.get_pane_domain
+    env.host_api.get_pane_domain = function(pane_id)
+      return pane_id == 102 and "UbuntuWSL" or pane_domain(pane_id)
+    end
+    local pane_cwd = env.host_api.get_pane_cwd
+    env.host_api.get_pane_cwd = function(pane_id)
+      return pane_id == 102 and "/srv/remote" or pane_cwd(pane_id)
+    end
+    env.host_api.get_tab_pane_count = function() return 1 end
+    env.host_api.get_tab_pane_id_at = function(tab_id) return tab_id == 202 and 102 or 101 end
+  end)
+
+  it("snapshots each workspace's own domain", function()
+    local workspaces = hollow.term.workspaces()
+    assert.equal("main", workspaces[1].domain)
+    assert.equal("UbuntuWSL", workspaces[2].domain)
+  end)
+
+  it("keeps nested pane paths and domains when focus changes", function()
+    local function remote_item()
+      for _, item in ipairs(hollow.ui.workspace.items()) do
+        if item.name == "remote" then return item end
+      end
+    end
+    assert.equal("/srv/remote", remote_item().cwd)
+    assert.equal("UbuntuWSL", remote_item().domain)
+    env.host_api.get_active_workspace_index = function() return 1 end
+    env.host_api.current_tab_id = function() return 202 end
+    assert.equal("/srv/remote", remote_item().cwd)
+    assert.equal("UbuntuWSL", remote_item().domain)
+  end)
+
+  it("renders compact rounded domain badges at the right edge after paths", function()
+    hollow.ui.workspace.open_switcher()
+    local found_domain, found_path = false, false
+    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+      local saw_path, saw_spacer = false, false
+      for _, segment in ipairs(row.segments or {}) do
+        local text = segment.text or ""
+        if segment.spacer then saw_spacer = true end
+        if text:find("UbuntuWSL", 1, true) then
+          found_domain = true
+          assert.is_not_nil(segment.bg)
+          assert.equal(4, segment.radius)
+          assert.equal(" UbuntuWSL ", text)
+          assert.is_true(saw_path)
+          assert.is_true(saw_spacer)
+          assert.equal(segment, row.segments[#row.segments])
+          assert.is_nil(text:find("[UbuntuWSL]", 1, true))
+          assert.is_nil(text:find("/srv/remote", 1, true))
+        end
+        if text:find("/srv/remote", 1, true) then
+          found_path = true
+          saw_path = true
+        end
+        assert.is_nil(text:find("Open workspace", 1, true))
+      end
+    end
+    assert.is_true(found_domain)
+    assert.is_true(found_path)
+  end)
+
+  it("preserves right-alignment spacers while filtering", function()
+    hollow.ui.workspace.open_switcher()
+    assert.is_true(env.get_key_handler()("r", 0))
+    local found_domain = false
+    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+      local saw_spacer = false
+      for _, segment in ipairs(row.segments or {}) do
+        if segment.spacer then saw_spacer = true end
+        if (segment.text or ""):find("UbuntuWSL", 1, true) then
+          found_domain = true
+          assert.is_true(saw_spacer)
+          assert.equal(segment, row.segments[#row.segments])
+        end
+      end
+    end
+    assert.is_true(found_domain)
+  end)
+
+  it("hides domain pills and reclaims path width for a single domain", function()
+    local function path_width()
+      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+        for _, segment in ipairs(row.segments or {}) do
+          if (segment.text or ""):find("/srv/remote", 1, true) then
+            return #segment.text
+          end
+        end
+      end
+    end
+    hollow.ui.workspace.open_switcher()
+    local multi_domain_width = path_width()
+    hollow.ui.select.close()
+    env.host_api.get_pane_domain = function() return "UbuntuWSL" end
+    hollow.ui.workspace.open_switcher()
+    assert.is_true(path_width() > multi_domain_width)
+    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+      for _, segment in ipairs(row.segments or {}) do
+        assert.is_nil((segment.text or ""):find("UbuntuWSL", 1, true))
+        assert.is_nil(segment.radius)
+      end
+    end
+  end)
+end)
+
 describe("Workspace switcher bell attention", function()
   local hollow
   local tree

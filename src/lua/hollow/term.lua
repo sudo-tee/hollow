@@ -202,15 +202,21 @@ function M.setup(hollow, host_api)
     if type(index) ~= "number" or index < 0 or index >= count then
       return nil
     end
-    local pane = pane_snapshot(host_api.current_pane_id())
+    -- Inactive workspaces must not inherit the focused workspace's domain.
+    local is_active = index
+      == (host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0)
+    local tab_id = host_api.get_workspace_tab_id_at(index, 0)
+    if is_active then
+      tab_id = host_api.current_tab_id()
+    end
+    local pane = tab_id and pane_snapshot(host_api.get_tab_active_pane_id(tab_id)) or nil
     return {
       id = host_api.get_workspace_id and host_api.get_workspace_id(index) or (index + 1),
       index = index + 1,
       name = host_api.get_workspace_name and host_api.get_workspace_name(index)
         or ("ws " .. tostring(index + 1)),
       domain = pane and pane.domain or nil,
-      is_active = index
-        == (host_api.get_active_workspace_index and host_api.get_active_workspace_index() or 0),
+      is_active = is_active,
     }
   end
 
