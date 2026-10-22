@@ -19,6 +19,7 @@ hollow.workspace.project_local_path(dir?)             -- path to .hollow/workspa
 hollow.workspace.resolve_auto_bootstrap_path()        -- for the active cwd
 hollow.workspace.auto_bootstrap()                      -- run auto-bootstrap
 hollow.workspace.bootstrap_project(dir?, domain?)      -- load project-local layout
+hollow.workspace.bootstrap_project_async(dir?, domain?) -- promise: host-native project/default layout
 ```
 
 ## Bootstrap spec
@@ -138,6 +139,18 @@ hollow.workspace.auto_bootstrap()
 
 The lookup order is the project-local `.hollow/workspace.json` rooted
 at the active pane cwd, then `config.workspace.default_layout`.
+
+Workspace-switcher opens use `bootstrap_project_async`: project layouts are read
+through the terminal domain's configured host using guest-native paths, without
+WSL UNC conversion. The domain defaults to the active pane's domain. Connections
+are shared with workspace discovery when descriptors match. Global default layouts
+are read through the client-local filesystem worker only after the project layout
+is absent; host connection failures do not fall back to local project paths.
+The promise resolves `true` after starting bootstrap, or `false` if
+neither layout exists or the active workspace/pane changed before loading finished.
+Invalid layouts and I/O errors reject. WSL opens still wait for shell cwd resolution
+where configured. The older synchronous `bootstrap_project` and startup/export
+helpers remain unchanged; use the asynchronous API for host-backed project loading.
 
 ## See also
 

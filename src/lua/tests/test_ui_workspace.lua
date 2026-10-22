@@ -80,10 +80,11 @@ describe("UI workspace test suite", function()
     it("bootstraps project layouts with source cwd and domain", function()
       local bootstrapped_dir
       local bootstrapped_domain
-      local original_bootstrap_project = hollow.workspace.bootstrap_project
-      hollow.workspace.bootstrap_project = function(dir, domain)
+      local original_bootstrap_project = hollow.workspace.bootstrap_project_async
+      hollow.workspace.bootstrap_project_async = function(dir, domain)
         bootstrapped_dir = dir
         bootstrapped_domain = domain
+        return hollow.async.promise(function(resolve) resolve(true) end)
       end
 
       workspace_actions.switch_to_workspace({
@@ -94,25 +95,23 @@ describe("UI workspace test suite", function()
         is_open = false,
       })
 
-      hollow.workspace.bootstrap_project = original_bootstrap_project
+      hollow.workspace.bootstrap_project_async = original_bootstrap_project
       harness.assert_equal(
         bootstrapped_dir,
         "/home/francis/dots",
         "opening a known workspace should bootstrap its project cwd"
       )
-      harness.assert_equal(
-        bootstrapped_domain,
-        "unix",
-        "opening a known workspace should preserve its domain for path resolution"
-      )
+      harness.assert_equal(recorded.new_workspace.domain, "unix", "preserve launch domain")
+      harness.assert_equal(bootstrapped_domain, "unix", "preserve bootstrap host domain")
     end)
 
     it("waits for canonical WSL cwd before bootstrapping project layouts", function()
       hollow.config.set({ domains = { UbuntuWSL = { wsl_distro = "Ubuntu" } } })
       local bootstrapped_dir
-      local original_bootstrap_project = hollow.workspace.bootstrap_project
-      hollow.workspace.bootstrap_project = function(dir)
+      local original_bootstrap_project = hollow.workspace.bootstrap_project_async
+      hollow.workspace.bootstrap_project_async = function(dir)
         bootstrapped_dir = dir
+        return hollow.async.promise(function(resolve) resolve(true) end)
       end
 
       workspace_actions.switch_to_workspace({
@@ -133,7 +132,7 @@ describe("UI workspace test suite", function()
         old_cwd = "/home/francis/Projects/dotfiles",
         new_cwd = "/home/francis/dots",
       })
-      hollow.workspace.bootstrap_project = original_bootstrap_project
+      hollow.workspace.bootstrap_project_async = original_bootstrap_project
       harness.assert_equal(
         bootstrapped_dir,
         "/home/francis/dots",

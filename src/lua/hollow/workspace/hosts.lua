@@ -88,6 +88,7 @@ function M.prepare(sources)
         used[key] = true
         local entry = pool[key]
         if not entry then entry = connect(spec); pool[key] = entry end
+        entry.used = true
         source.host = entry.host or false
         source._host_pending = entry.host == nil
       else
@@ -96,9 +97,42 @@ function M.prepare(sources)
     end
   end
   for key, entry in pairs(pool) do
-    if not used[key] then retire(entry); pool[key] = nil end
+    entry.used = used[key] == true
+    if not entry.used and (entry.borrowers or 0) == 0 then retire(entry); pool[key] = nil end
   end
   return sources
+end
+
+-- Bootstrap borrows discovery connections without taking ownership. A host
+-- opened only for bootstrap is released after the read, including failures.
+function M.acquire(spec)
+  if type(spec) == "table" and type(spec.fs) == "table" then
+    return _G.hollow.async.promise(function(resolve) resolve(spec) end), function() end
+  end
+  if spec == nil or spec.type == "local" then
+    return _G.hollow.host.local_host(), function() end
+  end
+  local key = encode(spec)
+  local entry = pool[key]
+  if not entry then entry = connect(spec); pool[key] = entry end
+  entry.borrowers = (entry.borrowers or 0) + 1
+  local released = false
+  local function release()
+    if released then return end
+    released = true
+    entry.borrowers = entry.borrowers - 1
+    if entry.borrowers == 0 and not entry.used then
+      retire(entry)
+      if pool[key] == entry then pool[key] = nil end
+    end
+  end
+  local promise = entry.promise
+  if entry.error or not promise then
+    promise = _G.hollow.async.promise(function(_, reject)
+      reject(entry.error or { code = "not_ready", message = "workspace host unavailable" })
+    end)
+  end
+  return promise, release
 end
 
 -- Explicit retry only. Never reconnect/replay work just because a picker polls.

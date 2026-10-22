@@ -1317,6 +1317,12 @@ function workspace_api.auto_bootstrap() end
 ---@return boolean
 function workspace_api.bootstrap_project(dir) end
 
+---Load project/default layout off the UI thread; skip if the active pane changes.
+---@param dir? string
+---@param domain? string Terminal domain; defaults to the active pane's domain.
+---@return HollowPromise<boolean>
+function workspace_api.bootstrap_project_async(dir, domain) end
+
 ---@class HollowTermNamespace
 local term = {}
 

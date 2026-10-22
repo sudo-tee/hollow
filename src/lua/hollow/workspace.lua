@@ -497,7 +497,10 @@ function M.project_local_path(dir)
     local config = hollow.config.snapshot()
     local domains = type(config.domains) == "table" and config.domains or {}
     local domain_cfg = domains[domain_name]
-    local distro = (type(domain_cfg) == "table" and domain_cfg.wsl_distro) or domain_name
+    local host = type(domain_cfg) == "table" and domain_cfg.host
+    local distro = (type(host) == "table" and host.type == "wsl" and host.distro)
+      or (type(domain_cfg) == "table" and domain_cfg.wsl_distro)
+      or domain_name
     if distro then
       return util.linux_to_wsl_unc_path(path, distro) or path
     end
@@ -566,6 +569,65 @@ end
 function M.auto_bootstrap_deferred()
   host_api.defer(function()
     M.auto_bootstrap()
+  end)
+end
+
+local function active_pane_guard()
+  local workspace = hollow.term.current_workspace()
+  local pane = hollow.term.current_pane()
+  return function()
+    local current_workspace = hollow.term.current_workspace()
+    local current_pane = hollow.term.current_pane()
+    return workspace and current_workspace and workspace.id == current_workspace.id
+      and pane and current_pane and pane.id == current_pane.id
+  end
+end
+
+local function read_bootstrap_layout(path, descriptor, still_current)
+  if path == nil or not still_current() then return nil end
+  local connection, release = require("hollow.workspace.hosts").acquire(descriptor)
+  local connected, host = pcall(connection.await, connection)
+  if not connected then release(); error(host) end
+
+  local ok, layout = pcall(function()
+    if still_current() then return M.load_host(host, path):await() end
+  end)
+  release()
+  if ok then return layout end
+  if type(layout) == "table" and layout.code == "not_found" then return nil end
+  error(layout)
+end
+
+-- Guest project paths belong to the terminal domain's host, never the client.
+function M.bootstrap_project_async(dir, domain)
+  local pane = hollow.term.current_pane()
+  local config = hollow.config.snapshot()
+  domain = domain or (pane and pane.domain) or config.default_domain
+  local domain_cfg = (config.domains or {})[domain] or {}
+  local descriptor = require("hollow.host.pty").descriptor(domain, domain_cfg.shell or config.shell)
+  dir = trim_string(dir)
+  if dir == "" then dir = trim_string(pane and pane.cwd) end
+  local project_path = dir ~= "" and util.join_path(dir, ".hollow", "workspace.json") or nil
+  local still_current = active_pane_guard()
+
+  return async.promise(function(resolve, reject)
+    async.run(function()
+      local ok, result = pcall(function()
+        local path = project_path
+        local layout = read_bootstrap_layout(path, descriptor, still_current)
+        if layout == nil then
+          path = default_layout_path((config.workspace or {}).default_layout)
+          layout = read_bootstrap_layout(path, nil, still_current)
+        end
+        if layout == nil or not still_current() then return false end
+        M.bootstrap(layout, {
+          base_dir = normalize_base_dir(util.basepath(path)),
+          replace_current = false,
+        })
+        return true
+      end)
+      if ok then resolve(result) else reject(result) end
+    end)
   end)
 end
 

@@ -2,7 +2,7 @@ local program_status = require("hollow.program_status")
 local state = require("hollow.state").get()
 local util = require("hollow.util")
 local compat = require("hollow.ui.workspace.compat")
-local hosts = require("hollow.ui.workspace.hosts")
+local hosts = require("hollow.workspace.hosts")
 
 ---@type Hollow
 local hollow = _G.hollow
