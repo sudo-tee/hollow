@@ -25,7 +25,7 @@ The is the main entry point for Hollow's documentation.
 - [Shell integration recipes](shell-integration-recipes.md) — bash, zsh, fish, PowerShell helpers
 - [Development](development.md) — build from source, project layout, running tests
 - [Renderer benchmark history](renderer-bench-history.md) — record snapshots and compare regressions
-- [Packaging](packaging.md) — release artifacts, runtime layout, Linux agents, Python client
+- [Packaging](packaging.md) — release artifacts, runtime layout, Linux agents and Zig CLI
 - [Troubleshooting](troubleshooting.md) — common failure modes and fixes
 - [FAQ](faq.md) — short, opinionated answers to recurring questions
 
@@ -64,12 +64,15 @@ Per-OS notes for the targets Hollow actually supports or works on today.
 - **CLI**
   - [CLI index](reference/cli/README.md)
   - [Native `hollow cli …`](reference/cli/native.md)
-  - [Python `hollow-cli`](reference/cli/hollow-cli.md)
+  - [Standalone Zig `hollow-cli`](reference/cli/standalone.md)
+  - [Legacy Python client](reference/cli/hollow-cli.md)
 - [Built-in keymap actions](reference/actions.md)
 
 ## Examples
 
 Runnable recipes and small, complete snippets.
+
+Design reference: [Rex comparison and borrowing priorities](architecture/rex-comparison.md).
 
 - [Config snippets](examples/config-snippets.md)
 - [UI recipes](examples/ui-recipes.md)

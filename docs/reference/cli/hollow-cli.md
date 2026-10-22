@@ -1,4 +1,10 @@
-# Python `hollow-cli`
+# Legacy Python `hollow-cli`
+
+New installations use the [standalone Zig CLI](standalone.md), sharing its
+implementation with `hollow cli`. This page documents the retained Python
+compatibility client at `scripts/hollow-cli` (released as `hollow-cli.py`).
+Invoke it explicitly with Python when needed; it is no longer the guest agent's
+default CLI.
 
 A Python client that talks HTP over the active tty.
 Useful for shell-built-in use cases where no host-side executable is

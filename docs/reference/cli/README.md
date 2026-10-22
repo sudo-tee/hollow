@@ -1,38 +1,33 @@
 # CLI
 
-Two CLI surfaces ship with Hollow. They are not redundant — each one
-fits a different use case.
+Hollow has one Zig CLI implementation with two entry points:
 
-| Tool | Talks to | Needs tty | Best for |
-| --- | --- | --- | --- |
-| [`hollow cli …`](native.md) | host command socket | no | scripts, CI, automation |
-| [`hollow-cli`](hollow-cli.md) | OSC over tty | yes | prompt hooks, in-shell UI |
+| Entry point | Implementation | Best for |
+| --- | --- | --- |
+| [`hollow cli …`](native.md) | Shared Zig CLI inside Hollow | Host-side scripts and automation |
+| [`hollow-cli …`](standalone.md) | Same CLI in a standalone binary | WSL, SSH, containers, shell hooks |
 
-Both are documented individually:
+Both share friendly command syntax, generic API calls, validation, targeting,
+key decoding, and JSON output. Socket and file transports do not need a tty;
+OSC requires a readable POSIX terminal. Both default to `--transport auto`.
 
-- [Native `hollow cli …`](native.md) — the recommended path
-- [Python `hollow-cli`](hollow-cli.md) — OSC transport client
+- [Command reference](native.md)
+- [Standalone CLI, transports, and guest packaging](standalone.md)
+- [Legacy Python client](hollow-cli.md) — retained for older hosts and compatibility
 
-The native subcommand wins on every axis that matters for scripts:
-it does not need a tty, it does not need shell integration sourced,
-and it is the fastest option when a Hollow window is already
-running. Use it for any host-side automation.
-
-The Python client exists for shell-built-in use cases that have no
-host-side executable available (some WSL, SSH, and PowerShell flows).
-See [Shell integration](../../shell-integration.md) for the higher-level
-overview and [HTP protocol](../../htp-protocol.md) for the wire format.
+Guest agents embed an architecture-matched Zig CLI in their shell-integration
+bundle; no Python or GUI dependencies are needed on the guest.
 
 ## Choosing between them
 
 | Scenario | Use |
 | --- | --- |
 | A Python or PowerShell script in CI | `hollow cli …` |
-| A bash script running inside Hollow | `hollow-cli` (OSC) or `hollow cli` |
+| A bash script running inside Hollow | `hollow-cli` or `hollow cli` |
 | A prompt hook that reports cwd | `hollow-cli` (or the shipped `shell-integration/` snippets) |
 | A Lua plugin that drives Hollow | the [`hollow.term`](../lua/term.md) API directly |
 | An automated test that talks to Hollow | `hollow cli …` |
-| SSH from a remote box into the host | neither — neither is reachable |
+| A remote SSH shell running inside Hollow | `hollow-cli` via OSC, or a forwarded command socket |
 
 ## See also
 

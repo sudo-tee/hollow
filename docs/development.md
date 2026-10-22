@@ -1,5 +1,13 @@
 # Development
 
+Build the standalone CLI without GUI dependencies with
+`zig build --build-file build-agent.zig cli cli-all`. Run its shared command and
+transport checks with `zig build --build-file build-agent.zig test-cli`.
+
+Command API checks can run without GUI libraries: `zig build test-command`.
+This covers command contracts/examples, native CLI parsing, and real loopback
+socket validation. `zig build test` also includes these checks.
+
 This page covers building Hollow from source, running tests, and the
 project layout you'll touch when contributing.
 
