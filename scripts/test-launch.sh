@@ -39,6 +39,7 @@ chmod +x "$TEST_DIR/bin/"* "$REPO/zig-out/bin/hollow.exe"
 export PATH="$TEST_DIR/bin:$PATH"
 printf 'native\n' > "$REPO/zig-out/bin/hollow-native.exe"
 printf 'gui\n' > "$REPO/zig-out/bin/hollow-gui.exe"
+printf 'cli\n' > "$REPO/zig-out/bin/hollow-cli.exe"
 printf 'symbols\n' > "$REPO/zig-out/bin/hollow.pdb"
 printf 'lua\n' > "$REPO/src/lua/init.lua"
 printf 'config\n' > "$REPO/conf/init.lua"
@@ -46,6 +47,10 @@ mkdir -p "$REPO/zig-out/agents/linux-x86_64" "$REPO/zig-out/agents/linux-aarch64
 printf 'x86_64 agent\n' > "$REPO/zig-out/agents/linux-x86_64/hollow-agent"
 printf 'aarch64 agent\n' > "$REPO/zig-out/agents/linux-aarch64/hollow-agent"
 printf 'manifest\n' > "$REPO/zig-out/agents/SHA256SUMS"
+mkdir -p "$REPO/zig-out/cli/linux-x86_64" "$REPO/zig-out/cli/linux-aarch64"
+printf 'x86_64 cli\n' > "$REPO/zig-out/cli/linux-x86_64/hollow-cli"
+printf 'aarch64 cli\n' > "$REPO/zig-out/cli/linux-aarch64/hollow-cli"
+printf 'cli manifest\n' > "$REPO/zig-out/cli/SHA256SUMS"
 
 # CI must build without running or invoking Windows tools.
 bash "$REPO/launch.sh" --build-only
@@ -62,8 +67,11 @@ grep -Fxq "run $REPO/zig-out/bin/hollow.exe hello world" "$TEST_LOG"
 # Installation remains possible without building or running.
 : > "$TEST_LOG"
 bash "$REPO/launch.sh" --install --no-build --build-only
-for name in hollow.exe hollow-native.exe hollow-gui.exe hollow.pdb; do
+for name in hollow.exe hollow-native.exe hollow-gui.exe hollow-cli.exe hollow.pdb; do
   cmp "$REPO/zig-out/bin/$name" "$INSTALL_DEST/$name"
+done
+for name in SHA256SUMS linux-x86_64/hollow-cli linux-aarch64/hollow-cli; do
+  cmp "$REPO/zig-out/cli/$name" "$INSTALL_DEST/cli/$name"
 done
 cmp "$REPO/src/lua/init.lua" "$INSTALL_DEST/src/lua/init.lua"
 cmp "$REPO/conf/init.lua" "$INSTALL_DEST/conf/init.lua"
