@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const command = @import("command.zig");
-const command_ipc = @import("ipc.zig");
+const transport = @import("cli/transport.zig");
 const io = @import("io.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
@@ -24,6 +24,7 @@ const CommonOptions = struct {
     quiet: bool = false,
     envelope: bool = false,
     timeout_ms: u64 = 1500,
+    transport: transport.Mode = .auto,
 };
 
 const CliError = struct {
@@ -190,9 +191,7 @@ const Runner = struct {
             if (std.mem.eql(u8, arg, "--transport")) {
                 i += 1;
                 if (i >= self.argv.len) return self.fail("missing transport value", "invalid_args", 2);
-                if (!std.mem.eql(u8, self.argv[i], "auto")) {
-                    return self.fail("native cli currently supports only auto transport", "invalid_args", 2);
-                }
+                self.options.transport = std.meta.stringToEnum(transport.Mode, self.argv[i]) orelse return self.fail("transport must be auto, socket, file, or osc", "invalid_args", 2);
                 continue;
             }
             if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -774,7 +773,7 @@ const Runner = struct {
         command.validate(request.data) catch |err| return self.failFmt("invalid command: {s}", .{@errorName(err)}, "invalid_args", 2);
         var contextual = request;
         if (contextual.ctx.origin == .internal) contextual.ctx.origin = .cli;
-        return command_ipc.send(self.allocator, contextual, self.options.timeout_ms) catch |err| switch (err) {
+        return transport.send(self.allocator, contextual, self.options.transport, self.options.timeout_ms) catch |err| switch (err) {
             error.CommandAddrUnavailable => return self.fail("no running Hollow instance found", "transport_error", 1),
             error.Timeout => return self.fail("timed out waiting for command reply", "timeout", 1),
             else => return self.failFmt("command transport failed: {s}", .{@errorName(err)}, "transport_error", 1),
@@ -1260,7 +1259,8 @@ test "program status CLI builds owned shared commands and validates arguments" {
 }
 
 fn helpText() []const u8 {
-    return "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
+    return "usage: hollow-cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto|socket|file|osc] <command>\n" ++
+        "       hollow cli <same options and commands>\n" ++
         "commands: api, capabilities, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++

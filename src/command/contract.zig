@@ -258,6 +258,11 @@ fn writeDescription(comptime kind: Kind, writer: *std.Io.Writer) !void {
     try results.schema(Result(kind), writer);
     try writer.writeAll(",\"completion\":");
     try std.json.Stringify.value(if (isDeferred(kind)) "queued" else "completed", .{}, writer);
+    try writer.writeAll(",\"transports\":");
+    try std.json.Stringify.value(switch (kind) {
+        .pane_screenshot, .tab_screenshot, .wait_revision => @as([]const []const u8, &.{"socket"}),
+        else => @as([]const []const u8, &.{ "socket", "file", "osc" }),
+    }, .{}, writer);
     try writer.writeAll(",\"validation_notes\":\"Input schema describes command arguments, excluding kind and ctx. The legacy field command is an alias for cmd; both together are rejected. Known legacy null fields are ignored. Snapshots are extensible; HTP channels define their own nested contracts. Queued success means accepted, not completed. Context is metadata, not authorization.\",\"request_example\":");
     try writeExample(kind, writer);
     try writer.writeByte('}');
@@ -325,10 +330,10 @@ pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
         .api_version = version,
         .platform = @tagName(@import("builtin").os.tag),
         .methods = names,
-        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context" },
+        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge" },
         .context = .{ .pane_id = "Caller pane id; 0 means unknown. Not a target or credential.", .origin = "cli | api | internal; advisory, supplied by caller." },
         .context_schema = context.value,
-        .transport = "existing command socket; no new listener or arbitrary code execution",
+        .transport = "command socket and HTP command_api bridge; file requires an external consumer; no new listener or arbitrary code execution",
     }, .{});
     defer allocator.free(text);
     return jsonValue(allocator, text);

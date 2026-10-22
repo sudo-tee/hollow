@@ -41,6 +41,12 @@ class AgentManifestTests(unittest.TestCase):
         )
         self.assertEqual(self.output.read_text(encoding="ascii"), expected)
 
+    def test_cli_manifest_keeps_agent_manifest_format_and_separate_names(self):
+        module.write_manifest(self.output, (self.x86, self.arm), "hollow-cli")
+        self.assertEqual(self.output.read_text(encoding="ascii"),
+                         f"{hashlib.sha256(self.x86.read_bytes()).hexdigest()}  linux-x86_64/hollow-cli\n"
+                         f"{hashlib.sha256(self.arm.read_bytes()).hexdigest()}  linux-aarch64/hollow-cli\n")
+
     def test_rejects_swapped_architectures_without_replacing_output(self):
         self.output.parent.mkdir()
         self.output.write_text("previous manifest\n", encoding="ascii")

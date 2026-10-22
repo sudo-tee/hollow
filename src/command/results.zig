@@ -36,6 +36,7 @@ pub const Method = struct {
     input_schema: std.json.Value,
     output_schema: std.json.Value,
     completion: []const u8,
+    transports: []const []const u8,
     validation_notes: []const u8,
     request_example: std.json.Value,
 };

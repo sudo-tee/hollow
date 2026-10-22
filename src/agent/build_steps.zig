@@ -7,12 +7,16 @@ fn shellIntegration(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     _ = files.addCopyFile(b.path("shell-integration/bash.sh"), "bash.sh");
     _ = files.addCopyFile(b.path("shell-integration/zsh.zsh"), "zsh.zsh");
     _ = files.addCopyFile(b.path("shell-integration/fish.fish"), "fish.fish");
-    _ = files.addCopyFile(b.path("scripts/hollow-cli"), "hollow-cli");
+    const cli = @import("../cli_build_steps.zig").executable(b, target, optimize);
+    _ = files.addCopyFile(cli.getEmittedBin(), "hollow-cli");
+    _ = files.addCopyFile(b.path("scripts/hollow-cli"), "hollow-cli.py");
     const options = files.add("build_options.zig",
         \\pub const embedded_bash_integration = @embedFile("bash.sh");
         \\pub const embedded_zsh_integration = @embedFile("zsh.zsh");
         \\pub const embedded_fish_integration = @embedFile("fish.fish");
         \\pub const embedded_hollow_cli = @embedFile("hollow-cli");
+        \\pub const embedded_hollow_cli_python = @embedFile("hollow-cli.py");
+        \\pub const native_cli_required = true;
         \\
     );
     const module = b.createModule(.{
@@ -69,6 +73,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const run_tests = b.addRunArtifact(tests);
     const protocol_step = b.step("test-agent", "Run GUI-independent agent protocol tests");
     protocol_step.dependOn(&run_tests.step);
+    const cli_bundle_tests = b.addTest(.{ .root_module = shellIntegration(b, b.graph.host, optimize) });
+    b.step("test-cli-bundle", "Verify architecture-matched native CLI embedding in agent shell bundles").dependOn(&b.addRunArtifact(cli_bundle_tests).step);
     const pty_protocol_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/agent/pty_protocol.zig"),
         .target = b.graph.host,

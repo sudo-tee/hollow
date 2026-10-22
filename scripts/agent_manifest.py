@@ -39,7 +39,7 @@ def _digest_linux_elf(path, architecture, machine):
         raise ValueError(f"{path}: {error.strerror}") from None
 
 
-def write_manifest(output, artifacts):
+def write_manifest(output, artifacts, name="hollow-agent"):
     output = Path(output)
     artifacts = tuple(Path(artifact) for artifact in artifacts)
     if len(artifacts) != 2:
@@ -48,7 +48,7 @@ def write_manifest(output, artifacts):
     records = []
     for architecture, machine, artifact in zip(("x86_64", "aarch64"), EXPECTED_MACHINES, artifacts):
         digest = _digest_linux_elf(artifact, architecture, machine)
-        records.append(f"{digest}  linux-{architecture}/hollow-agent\n")
+        records.append(f"{digest}  linux-{architecture}/{name}\n")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -64,11 +64,12 @@ def write_manifest(output, artifacts):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--name", choices=("hollow-agent", "hollow-cli"), default="hollow-agent")
     parser.add_argument("output", type=Path)
     parser.add_argument("artifacts", nargs=2, type=Path)
     args = parser.parse_args()
     try:
-        write_manifest(args.output, args.artifacts)
+        write_manifest(args.output, args.artifacts, args.name)
     except ValueError as error:
         parser.error(str(error))
 

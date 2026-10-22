@@ -666,6 +666,18 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
     };
 }
 
+/// Called on the frame thread by the HTP/file compatibility bridge. Never wait
+/// for this same frame thread, and never perform render-time screenshot work.
+pub fn executeTransportCommand(self: *App, request: command_mod.Request) !command_mod.Response {
+    try command_mod.validate(request.data);
+    switch (request.data) {
+        .pane_screenshot, .tab_screenshot, .wait_revision => return .fail("unsupported_transport", "this command requires socket transport"),
+        .get_htp => |args| if (std.mem.eql(u8, args.channel, "command_api")) return .fail("invalid_args", "recursive command bridge is not supported"),
+        else => {},
+    }
+    return if (command_mod.contract.isDeferred(request.kind())) enqueueDeferredCommand(self, request) else try executeCommand(self, request);
+}
+
 fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_mod.Response {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     if (request.kind() == .wait_revision) return execWaitRevision(app, request.data.wait_revision);

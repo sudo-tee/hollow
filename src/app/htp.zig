@@ -280,6 +280,20 @@ fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id
 }
 
 pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
+    if (std.mem.eql(u8, channel, "command_api")) {
+        const command = @import("../command.zig");
+        const text = try std.json.Stringify.valueAlloc(self.allocator, params orelse .null, .{});
+        defer self.allocator.free(text);
+        var parsed = command.parseEnvelope(self.allocator, text) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return commandBridgeResult(self, command.Response.fail("invalid_args", @errorName(err)));
+        };
+        defer parsed.deinit(self.allocator);
+        // OSC identifies its actual source pane; caller metadata is not a target.
+        if (pane_id != 0) parsed.request.ctx.pane_id = pane_id;
+        const response = try @import("command_dispatcher.zig").executeTransportCommand(self, parsed.request);
+        return commandBridgeResult(self, response);
+    }
     const program_status = @import("program_status_commands.zig");
     if (program_status.handles(channel)) {
         var response = try program_status.execute(self, pane_id, channel, params);
@@ -294,6 +308,17 @@ pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, par
     }
     const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
     return try lua.dispatchHtpQuery(pane_id, channel, params);
+}
+
+fn commandBridgeResult(self: *App, response_value: @import("../command.zig").Response) !HtpQueryResult {
+    const command = @import("../command.zig");
+    var response = response_value;
+    defer response.deinit(self.allocator);
+    const text = try command.writeResultJson(self.allocator, response);
+    defer self.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+    defer parsed.deinit();
+    return .{ .success = true, .value = try command.cloneJsonValue(self.allocator, parsed.value) };
 }
 
 pub fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!lua_mod.HtpDispatchResult {
