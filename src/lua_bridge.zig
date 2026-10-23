@@ -125,6 +125,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.host.ssh", .source = @embedFile("lua/hollow/host/ssh.lua") },
     .{ .name = "hollow.host.pty", .source = @embedFile("lua/hollow/host/pty.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
+    .{ .name = "hollow.shape", .source = @embedFile("lua/hollow/shape.lua") },
     .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
     .{ .name = "hollow.themes.catppuccin-mocha", .source = @embedFile("lua/hollow/themes/catppuccin-mocha.lua") },

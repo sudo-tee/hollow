@@ -94,6 +94,7 @@ function providers.actions()
           }
         local ok, available = pcall(a.available, {
           name = a.name,
+          origin = "palette",
           args = { n = 0 },
           pane = snapshots.pane,
           tab = snapshots.tab,
@@ -124,7 +125,12 @@ function providers.actions()
         desc = a.desc or "",
         category = category,
         chords = chords,
-        run = a.run,
+        run = function()
+          local result = hollow.action.invoke(a.name, nil, { origin = "palette" })
+          if not result.success then
+            hollow.ui.notify.error(result.error)
+          end
+        end,
         workspace_targetable = a.workspace_targetable or false,
         searchable = util.words(a.name, a.desc, category_label(category), category),
       })

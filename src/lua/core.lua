@@ -44,6 +44,7 @@ local workspace = require("hollow.workspace")
 
 hollow.tbl = tbl
 hollow.util = util
+hollow.shape = require("hollow.shape")
 hollow.async = async
 hollow.host = require("hollow.host")
 require("hollow.host.pty").setup(hollow)

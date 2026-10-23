@@ -159,6 +159,90 @@ The spec accepts these fields:
 | `workspace_targetable` | `boolean?` | `false` | If `true`, the command palette prompts for a target workspace before running |
 | `available` | `fun(ctx: HollowActionContext): boolean` | always available | Fast, synchronous context check; unavailable actions are hidden from the palette |
 | `keys` | `string[]?` | `{}` | Default chords for this action; explicit user bindings take precedence |
+| `arguments` | `HollowShapeSchema?` | none | Opt-in schema for named arguments; see below |
+
+### Typed arguments and invocation results
+
+Actions can opt into a named argument table without changing their callback
+signature or registration namespace:
+
+```lua
+local z = hollow.shape
+
+hollow.action.register("project_message", {
+  desc = "Show project message",
+  category = "user",
+  arguments = z.strict_object({
+    text = z.string():default("Project ready"),
+    count = z.integer():min(1):default(1),
+  }),
+  run = function(args)
+    local ctx = hollow.action.context()
+    hollow.ui.notify.info(args.text)
+    return { origin = ctx.origin, count = args.count }
+  end,
+})
+
+hollow.keymap.set("<leader>p", "project_message", {
+  args = { text = "Build ready", count = 2 },
+})
+
+local result = hollow.action.invoke("project_message", { text = "Ready" }, {
+  origin = "lua",
+  caller = { pane_id = 101 },
+})
+-- result.success == true; result.status == "ok"
+-- result.value == { origin = "lua", count = 1 }
+```
+
+[`hollow.shape`](lua/shape.md) provides composable schemas: primitives, nested
+objects, arrays, enums, unions, constraints, optional fields, defaults, and
+transforms. Fields are required unless marked `:optional()` or given a
+`:default(value)`. Use `strict_object` to reject unknown fields; `object` allows
+them. `z.strict_object({})` rejects all fields.
+
+Validation and transforms run once per invocation, before overrides or callbacks.
+Input is copied first so transforms and callbacks cannot mutate the caller's
+argument table. Validation errors include the failing field path. Registered
+schemas retain their identity, metatables, and parser closures; `action.list()`
+returns the same schema reference, not a serialized or deep-copied contract.
+Treat schemas and their captured specification tables as immutable after
+registration.
+
+Typed actions receive exactly one parsed value (normally an argument table).
+Omitted arguments are parsed as `{}`. A schema can transform that table into
+another value. Named key bindings support `args` in either their
+options or `{ action = "name", args = { ... } }` form, including sequences and
+leader bindings. The palette invokes actions with defaults; required arguments
+without defaults currently produce a validation notification rather than an
+argument prompt.
+
+`hollow.action.invoke(name, args?, ctx?)` catches errors and returns:
+
+- `{ success = true, status = "ok", value = ... }` with the first callback return
+  value (possibly nil).
+- `{ success = false, status = ..., error = "..." }` with `unknown_action`,
+  `invalid_arguments`, `invalid_context`, or `action_failed`.
+
+Success means the synchronous callback returned, **not** that a process or
+promise completed. Values are Lua values, not guaranteed JSON-serializable.
+Overrides retain their existing truthy-means-handled behavior; a handled action
+returns success without a callback value.
+
+`hollow.action.context()` returns an independent snapshot during callbacks and
+overrides, or nil outside invocation. It contains `name`, positional `args`,
+current `pane`/`tab`/`workspace` snapshots, `origin` (`lua`, `key`, or `palette` for
+built-in callers), and optional `caller` metadata. Nested invocations have their
+own context; the previous context is restored even after errors. Callback
+signatures are unchanged. Caller metadata does not select targets, switch focus,
+or grant authorization. Existing palette availability checks also receive
+`origin = "palette"`.
+
+Actions without a contract keep their existing positional arguments and return
+values through `hollow.action[name](...)`; direct calls still raise errors.
+Direct calls to typed actions validate too. The structured invocation API accepts
+one optional table, not positional varargs. CLI discovery/invocation of registered
+Lua actions is not exposed yet; it will need explicit exposure controls.
 
 `available(ctx)` runs while building the palette entries, not on each render. It
 receives `name`, `args` (empty for this check), and current `pane`, `tab`, and
