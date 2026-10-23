@@ -1894,38 +1894,46 @@ test "background PTY parses blocked and error after rendering helpers are releas
     runtime.setTerminalUserdata(pane.terminal, &pane);
     runtime.registerCallbacks(pane.terminal, @import("app/terminal_callbacks.zig").terminalCallbacks());
     pane.pty = try @import("pty/pty.zig").spawnNative(a, "/bin/sh", 80, 24, null, null, .{
-        .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
+        .command = "printf '\\033]7501;state=working\\007'; read -r reply; printf '\\033]7501;state=blocked:kind=permission\\007'; read -r reply; printf '\\033]133;A\\007'; read -r reply; printf '\\033]7501;state=error\\007\\033]133;A\\007\\033[?1049h'; read -r reply",
     }, .{});
 
     const Wait = struct {
-        fn poll(p: *Pane, rt: *GhosttyRuntime, expected: ?@import("term/program_status.zig").StateKind) !void {
+        const Expected = union(enum) { startup, state: @import("term/program_status.zig").StateKind, cleared };
+
+        fn poll(p: *Pane, rt: *GhosttyRuntime, expected: Expected) !void {
             const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
             while (io.nanoTimestamp() < deadline) {
                 _ = try p.pollPty(rt, 8, 64 * 1024, 10 * std.time.ns_per_ms, 4096, false);
-                if (expected) |state| {
-                    if (p.program_status.records.items.len == 1 and p.program_status.records.items[0].state == state) return;
-                } else if (p.boot_output.items.len > 0) return;
+                switch (expected) {
+                    .state => |state| if (p.program_status.records.items.len == 1 and p.program_status.records.items[0].state == state) return,
+                    .startup => if (p.boot_output.items.len > 0) return,
+                    .cleared => if (p.program_status.records.items.len == 0) return,
+                }
                 try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
             }
             return error.TestUnexpectedResult;
         }
     };
     // Preserve startup deferral until the initial layout completes.
-    try Wait.poll(&pane, &runtime, null);
+    try Wait.poll(&pane, &runtime, .startup);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     pane.recreateRenderHelpers(&runtime);
     pane.render_state_ready = true;
     pane.terminal_output_ready = true;
-    try Wait.poll(&pane, &runtime, .working);
+    try Wait.poll(&pane, &runtime, .{ .state = .working });
 
     // This is the resource transition used when switching tabs/workspaces.
     pane.releaseRenderHelpers(&runtime);
     try std.testing.expect(!pane.render_state_ready);
     pane.sendText("\n");
-    try Wait.poll(&pane, &runtime, .blocked);
+    try Wait.poll(&pane, &runtime, .{ .state = .blocked });
     try std.testing.expectEqual(@import("term/program_status.zig").BlockKind.permission, pane.program_status.records.items[0].kind);
+    // Prompt return clears transient blocked state. Observe that separately
+    // rather than racing it against the blocked report in the same PTY chunk.
     pane.sendText("\n");
-    try Wait.poll(&pane, &runtime, .failure);
+    try Wait.poll(&pane, &runtime, .cleared);
+    pane.sendText("\n");
+    try Wait.poll(&pane, &runtime, .{ .state = .failure });
     try std.testing.expectEqual(@intFromEnum(ghostty.TerminalScreen.alternate), pane.active_screen);
     try std.testing.expect(!pane.hasRenderHelpers());
     try std.testing.expectEqual(@as(usize, 0), pane.boot_output.items.len);
