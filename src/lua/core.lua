@@ -56,6 +56,7 @@ hollow.plugins = plugins
 
 config.setup(hollow, host_api, state)
 local term_helpers = term.setup(hollow, host_api)
+require("hollow.term.jobs").setup(hollow, host_api)
 local ui_exports = require("hollow.ui")
 for name, value in pairs(ui_exports) do
   hollow.ui[name] = value

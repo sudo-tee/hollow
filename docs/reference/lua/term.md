@@ -108,6 +108,69 @@ inherits the active pane's cwd only when the domains match.
 
 ## Pane operations
 
+### Owned background jobs
+
+`hollow.term.jobs.spawn(opts)` creates a retained, no-focus terminal job using the
+same backend as [`job spawn`](../cli/jobs.md). It does not invoke the CLI.
+
+```lua
+local job = hollow.term.jobs.spawn({
+  argv = { "make", "test" }, -- or cmd = "make test && make build"
+  cwd = "/work/project",
+  -- domain = "UbuntuWSL",
+  user_shell = true,
+})
+
+hollow.async.run(function()
+  local result = job:wait({ timeout_ms = 120000 }):await()
+  if result.status == 0 then
+    job:cleanup():await()
+  else
+    local output = job:output():await()
+    -- output.data is base64 raw PTY bytes; inspect without replaying escapes.
+    -- Keep failed pane available for user inspection.
+    print("Tests failed in pane " .. result.pane_id)
+  end
+end)
+```
+
+Spawn returns immediately with a job object. Native operations run through the
+frame queue, never through blocking socket reads. Every operation below except
+`handle()` returns a `hollow.async` promise; use `:next()` / `:catch()` or
+`:await()` inside `hollow.async.run`.
+
+| Method | Result |
+| --- | --- |
+| `job:ready()` | Creation metadata: `pane_id`, `tab_id`, `workspace_id`, ownership `token`, pre-launch `cursor` |
+| `job:handle()` | Copy of creation metadata, or `nil` while creation is pending |
+| `job:get()` | Current running/exited state, nullable process `status`, cursor and output loss indicators |
+| `job:output()` | `{encoding="base64", data=..., truncated=..., incomplete=..., capacity_bytes=...}` |
+| `job:wait({timeout_ms=?, auto_close=?})` | Completion state/status plus resource IDs and ownership token |
+| `job:cleanup()` | `true` after closing the matching exited pane; rejects running jobs |
+
+Methods can be called before creation finishes; they queue behind `ready()`.
+Supply exactly one of literal `argv` or shell `cmd`, plus optional `cwd`, `domain`,
+and `user_shell`. Unknown options and malformed arguments are rejected.
+`user_shell` loads target interactive-shell configuration, not a live pane's
+temporary environment. Defaults and resource/output limits match the CLI.
+
+`wait()` polls retained job state with deferred, nonblocking reads. A nonzero
+process exit fulfills the promise; inspect `result.status`. Missing status means
+unknown, not success. Without `timeout_ms`, waiting has no deadline. Timeout
+rejects with `{code="timeout", message=..., handle=...}` and leaves the job intact;
+you can call `wait()` again. Other request failures reject with `{code, message}`.
+
+`auto_close=true` closes after **any** observed exit, including failure, and adds
+`closed=true`. Closing discards retained output; timeout never auto-closes.
+Wrong ownership, manual pane closure, and cleanup races return backend errors.
+Dropping the Lua object or reloading Lua does not clean up the pane automatically;
+save the handle if you need to inspect/clean it through the CLI later. There is
+no kill/cancel method: cleanup is not cancellation.
+
+This differs from `hollow.process.spawn`: terminal jobs create visible panes on
+the selected terminal host, rather than a pane-less process with separate
+stdout/stderr. Existing `hollow.term.run` instead drives an existing shell pane.
+
 ### Create and split
 
 ```lua

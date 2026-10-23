@@ -71,6 +71,7 @@ pub const PendingInputEvent = union(enum) {
         callback_ref: c_int,
         insert_at_end: bool = false,
     },
+    lua_job_request: struct { request: @import("../command.zig").Request, callback_ref: c_int },
     close_tab,
     close_pane,
     close_pane_by_id: usize,
@@ -245,6 +246,7 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
             if (payload.command) |value| allocator.free(value);
         },
         .command_request => |*request| request.deinit(allocator),
+        .lua_job_request => |*payload| payload.request.deinit(allocator),
         .new_workspace => |payload| {
             if (payload.cwd) |value| allocator.free(value);
             if (payload.domain_name) |value| allocator.free(value);
@@ -271,6 +273,7 @@ pub fn deinitInputQueue(self: *App) void {
             .new_tab => |payload| lua.discardOperationCallback(payload.callback_ref),
             .new_workspace => |payload| lua.discardOperationCallback(payload.callback_ref),
             .split_pane => |payload| lua.discardOperationCallback(payload.callback_ref),
+            .lua_job_request => |payload| lua.discardOperationCallback(payload.callback_ref),
             else => {},
         };
         deinitPendingInputEvent(self.allocator, &event);
@@ -288,6 +291,19 @@ pub fn processInputQueue(self: *App) void {
 
         switch (ev) {
             .none => {},
+            .lua_job_request => |payload| {
+                const jobs = @import("background_jobs.zig");
+                const command = @import("../command.zig");
+                var response = switch (payload.request.data) {
+                    .job_spawn => |args| jobs.spawn(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
+                    .job_get => |args| jobs.get(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
+                    .job_output => |args| jobs.output(self, args) catch |err| command.Response.fail("job_error", @errorName(err)),
+                    .job_cleanup => |args| jobs.cleanup(self, args),
+                    else => command.Response.fail("invalid_args", "unsupported job operation"),
+                };
+                defer response.deinit(self.allocator);
+                if (self.lua) |*lua| lua.invokeJobCallback(payload.callback_ref, response);
+            },
             .button => |b| {
                 recordPointerState(self, b.x, b.y, b.mods);
                 _ = sendMouse(self, b.action, b.button, b.x, b.y, b.mods) catch false;

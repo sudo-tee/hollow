@@ -1102,6 +1102,7 @@ pub const App = struct {
 
     fn registerLuaCallbacks(self: *App, lua: *LuaRuntime) void {
         lua.registerAppCallbacks(.{
+            .job_request = lua_callbacks.luaJobRequestCallback,
             .app = self,
             .refresh_live_config = lua_callbacks.luaRefreshLiveConfigCallback,
             .split_pane = lua_callbacks.luaSplitPaneCallback,
@@ -2939,6 +2940,63 @@ test "viewport iterator row mapping follows platform row order" {
         try std.testing.expectEqual(@as(?usize, 4), viewportIteratorRowIndex(4, 5));
     }
     try std.testing.expectEqual(@as(?usize, null), viewportIteratorRowIndex(5, 5));
+}
+
+test "Lua terminal jobs queue shared backend operations without focus changes" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.deinit();
+    const runtime = try app.initTerminalRuntime();
+    app.config.shell = try a.dupe(u8, "/bin/sh");
+    app.mux = Mux.init(a);
+    try app.mux.?.bootstrapSingle(runtime, terminal_callbacks.terminalCallbacks(), app.config, 8, 16, 800, 600);
+    const original = app.mux.?.activePane().?;
+    app.lua = try LuaRuntime.init(a, &app.config);
+    app.registerLuaCallbacks(&app.lua.?);
+    try app.lua.?.runString(@embedFile("lua/core.lua"));
+    try app.lua.?.runString(
+        \\job = hollow.term.jobs.spawn({cmd = "printf 'lua-job\\n'; exit 7"})
+        \\assert(job:handle() == nil)
+        \\job:ready():next(function(value) spawned = value end)
+    );
+    try std.testing.expectEqual(@as(usize, 1), app.mux.?.activeWorkspace().?.tabs.items.len);
+    input.processInputQueue(app);
+    try app.lua.?.runString("assert(spawned.pane_id and spawned.token); assert(job:handle().pane_id == spawned.pane_id)");
+    try std.testing.expect(app.mux.?.activePane() == original);
+    var owned: ?*pane_mod.Pane = null;
+    var panes = app.mux.?.paneIterator();
+    while (panes.next()) |pane| if (pane.automation_token != null) {
+        owned = pane;
+    };
+    const pane = owned orelse return error.MissingJobPane;
+    const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+    while (pane.hasLiveChild() or pane.pty.?.jobOutputPending()) {
+        _ = try pane.pollPty(runtime, 16, 256 * 1024, 10 * std.time.ns_per_ms, 4096, false);
+        if (io.nanoTimestamp() > deadline) return error.Timeout;
+        try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+    }
+    try app.lua.?.runString(
+        \\job:output():next(function(value) output = value end)
+        \\job:wait({auto_close = true}):next(function(value) completed = value end)
+    );
+    input.processInputQueue(app);
+    try app.lua.?.runString(
+        \\assert(output.encoding == 'base64' and output.data == 'bHVhLWpvYg0K')
+        \\assert(completed.state == 'exited' and completed.status == 7 and completed.closed)
+        \\assert(completed.token == spawned.token)
+        \\local queued, err = host_api.term_job_request({kind='close_pane'}, function() error('must not execute') end)
+        \\assert(not queued and err == 'UnsupportedJobOperation')
+        \\job:get():catch(function(err) missing = err.code end)
+    );
+    input.processInputQueue(app);
+    try app.lua.?.runString("assert(missing == 'job_not_found')");
+    try std.testing.expect(app.mux.?.activePane() == original);
+    try std.testing.expectEqual(@as(usize, 1), app.mux.?.activeWorkspace().?.tabs.items.len);
+    // Pending callback references and owned requests are released on shutdown.
+    try app.lua.?.runString("job:get()");
 }
 
 test "PTY budget adapts to interaction, backlog, pressure, and slow frames" {

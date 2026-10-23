@@ -19,6 +19,9 @@ hollow-cli --timeout 120 job spawn --user-shell --wait --auto-close \
 Both `hollow-cli` and `hollow cli` expose the same commands. Rebuild/restart Hollow
 to expose the `background_jobs` capability.
 
+Lua integrations can use [`hollow.term.jobs.spawn`](../lua/term.md#owned-background-jobs)
+and its async `wait`, `output`, and `cleanup` methods over the same backend.
+
 ## Full workflow
 
 ```bash

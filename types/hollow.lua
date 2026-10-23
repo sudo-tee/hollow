@@ -1399,7 +1399,76 @@ function workspace_api.bootstrap_project(dir) end
 function workspace_api.bootstrap_project_async(dir, domain) end
 
 ---@class HollowTermNamespace
+---@field jobs HollowTermJobs
 local term = {}
+
+---@class HollowTermJobOptions
+---@field argv? string[] Literal arguments; exactly one of argv or cmd is required.
+---@field cmd? string Explicit shell command.
+---@field cwd? string
+---@field domain? string
+---@field user_shell? boolean Load target shell's interactive startup configuration.
+
+---@class HollowTermJobHandle
+---@field pane_id integer
+---@field tab_id integer
+---@field workspace_id integer
+---@field token string Ownership token; not socket authentication.
+---@field cursor integer Pre-launch event cursor.
+
+---@class HollowTermJobState
+---@field pane_id integer
+---@field state "running"|"exited"
+---@field status? integer Process exit status; nil means unknown.
+---@field cursor integer
+---@field output_bytes integer
+---@field output_truncated boolean
+---@field output_incomplete boolean
+
+---@class HollowTermJobResult: HollowTermJobState
+---@field tab_id integer
+---@field workspace_id integer
+---@field token string
+---@field closed? boolean True only after successful auto cleanup.
+
+---@class HollowTermJobOutput
+---@field encoding "base64"
+---@field data string Bounded raw PTY tail, base64 encoded; not viewport text.
+---@field truncated boolean
+---@field incomplete boolean
+---@field capacity_bytes integer
+
+---@class HollowTermJobError
+---@field code string
+---@field message string
+---@field handle? HollowTermJobHandle Included on wait timeout; job is not canceled.
+
+---@class HollowTermJobWaitOptions
+---@field timeout_ms? integer Nonnegative timeout; omitted means no deadline. Does not cancel job.
+---@field auto_close? boolean Close after observed exit, including failure; discards retained output.
+
+---@class HollowTermJob
+local term_job = {}
+---@return HollowPromise<HollowTermJobHandle>
+function term_job:ready() end
+---@return HollowTermJobHandle|nil Snapshot once creation completes.
+function term_job:handle() end
+---@return HollowPromise<HollowTermJobState>
+function term_job:get() end
+---@return HollowPromise<HollowTermJobOutput>
+function term_job:output() end
+---@param opts? HollowTermJobWaitOptions
+---@return HollowPromise<HollowTermJobResult> Nonzero workload status fulfills; infrastructure errors reject.
+function term_job:wait(opts) end
+---@return HollowPromise<boolean> Rejects running jobs or mismatched ownership.
+function term_job:cleanup() end
+
+---@class HollowTermJobs
+local term_jobs = {}
+---Create a retained background pane without focus. Methods queue until creation completes.
+---@param opts HollowTermJobOptions
+---@return HollowTermJob
+function term_jobs.spawn(opts) end
 
 ---@return HollowTabSnapshot|nil
 function term.current_tab() end
@@ -2305,6 +2374,7 @@ function plugins.sync() end
 ---@field default_shell string
 
 ---@class HollowHostBridge
+---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
 ---@field list_fonts fun(): HollowFontInfo[]
 ---@field new_tab fun(opts?: table)

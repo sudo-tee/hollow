@@ -14,6 +14,15 @@ const mux_ops = @import("session_controller.zig");
 const input = @import("input.zig");
 const quick_select = @import("quick_select.zig");
 
+pub fn luaJobRequestCallback(app_ptr: *anyopaque, request: @import("../command.zig").Request, callback_ref: c_int) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    const owned = request.clone(app.allocator) catch return false;
+    var event: input.PendingInputEvent = .{ .lua_job_request = .{ .request = owned, .callback_ref = callback_ref } };
+    const queued = app.enqueueMouse(event);
+    if (!queued) input.deinitPendingInputEvent(app.allocator, &event);
+    return queued;
+}
+
 pub fn luaSplitPaneCallback(app_ptr: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     const dir: SplitDirection = if (std.mem.eql(u8, direction, "horizontal")) .horizontal else .vertical;
