@@ -32,7 +32,8 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     inline for (.{ std.Target.Cpu.Arch.x86_64, std.Target.Cpu.Arch.aarch64 }) |arch| {
         const guest = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
         const exe = executable(b, guest, optimize);
-        manifest.addArtifactArg(exe);
+        // Manifest inputs must not depend on installation order.
+        manifest.addFileArg(exe.getEmittedBin());
         const packaged = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "cli/linux-" ++ @tagName(arch) } } });
         all.dependOn(&packaged.step);
     }

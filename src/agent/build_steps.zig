@@ -53,7 +53,9 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     inline for (.{ std.Target.Cpu.Arch.x86_64, std.Target.Cpu.Arch.aarch64 }) |arch| {
         const agent_target = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
         const exe = b.addExecutable(.{ .name = "hollow-agent", .root_module = agentModule(b, agent_target, optimize), .linkage = .static });
-        manifest.addArtifactArg(exe);
+        // Hash immutable compiler output, not an installed path selected by
+        // addArtifactArg while parallel install steps are still running.
+        manifest.addFileArg(exe.getEmittedBin());
         const packaged = b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "agents/linux-" ++ @tagName(arch) } } });
         all_step.dependOn(&packaged.step);
         if (target.result.cpu.arch == arch) {
