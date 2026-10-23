@@ -50,7 +50,7 @@ pub fn schema(comptime T: type, writer: *std.Io.Writer) anyerror!void {
     switch (@typeInfo(T)) {
         .void => try writer.writeAll("{\"type\":\"null\"}"),
         .bool => try writer.writeAll("{\"type\":\"boolean\"}"),
-        .int => try writer.writeAll("{\"type\":\"integer\",\"minimum\":0}"),
+        .int => |info| try writer.writeAll(if (info.signedness == .signed) "{\"type\":\"integer\"}" else "{\"type\":\"integer\",\"minimum\":0}"),
         .float => try writer.writeAll("{\"type\":\"number\"}"),
         .optional => |info| {
             try writer.writeAll("{\"anyOf\":[");

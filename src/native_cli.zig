@@ -214,6 +214,7 @@ const Runner = struct {
         const command_name = filtered.items[0];
         const args = filtered.items[1..];
         if (std.mem.eql(u8, command_name, "api")) return try self.executeApi(args);
+        if (std.mem.eql(u8, command_name, "events")) return try self.executeEvents(args, false);
         if (std.mem.eql(u8, command_name, "capabilities")) {
             if (args.len != 0) return self.fail("capabilities takes no arguments", "invalid_args", 2);
             return self.printQuery(.{ .data = .{ .capabilities = .{} } });
@@ -713,6 +714,7 @@ const Runner = struct {
     }
 
     fn executeWait(self: *Runner, args: []const []const u8) !void {
+        if (args.len > 0 and isOneOf(args[0], &.{ "command", "process-exit", "status-change" })) return self.executeEvents(args, true);
         if (args.len != 1) return self.fail("usage: cli wait <revision>", "invalid_args", 2);
         const revision = try std.fmt.parseInt(u64, args[0], 10);
         const deadline = io.nanoTimestamp() + @as(i128, @intCast(self.options.timeout_ms *| std.time.ns_per_ms));
@@ -729,6 +731,60 @@ const Runner = struct {
             if (!std.mem.eql(u8, reply.status, "timeout")) {
                 return self.failFmt("{s}", .{reply.error_message orelse "revision wait failed"}, "wait_error", 1);
             }
+        }
+    }
+
+    fn executeEvents(self: *Runner, args: []const []const u8, wait: bool) !void {
+        if (!wait and args.len == 1 and std.mem.eql(u8, args[0], "subscribe")) return self.printQuery(.{ .data = .{ .events_subscribe = .{} } });
+        if (args.len == 0 or (!wait and !isOneOf(args[0], &.{ "read", "watch" }))) return self.fail("usage: events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]", "invalid_args", 2);
+        var after: ?u64 = null;
+        var id: ?usize = null;
+        var event: ?[]const u8 = if (!wait) null else if (std.mem.eql(u8, args[0], "command")) "command_finished" else if (std.mem.eql(u8, args[0], "process-exit")) "process_exited" else "status_changed";
+        var command_id: ?u64 = null;
+        var i: usize = 1;
+        while (i < args.len) : (i += 2) {
+            if (i + 1 >= args.len) return self.fail("missing event option value", "invalid_args", 2);
+            const option = args[i];
+            const value = args[i + 1];
+            if (std.mem.eql(u8, option, "--after")) {
+                after = try std.fmt.parseInt(u64, value, 10);
+            } else if (std.mem.eql(u8, option, "--pane")) {
+                id = try std.fmt.parseInt(usize, value, 10);
+            } else if (std.mem.eql(u8, option, "--command-id")) {
+                command_id = try std.fmt.parseInt(u64, value, 10);
+            } else if (!wait and std.mem.eql(u8, option, "--event")) {
+                event = value;
+            } else return self.fail("unknown event option", "invalid_args", 2);
+        }
+        var cursor = after orelse return self.fail("--after cursor required; subscribe before launching work", "invalid_args", 2);
+        if (wait and id == null) return self.fail("completion waits require --pane ID", "invalid_args", 2);
+        const watch = !wait and std.mem.eql(u8, args[0], "watch");
+        if (watch and (self.options.pretty or self.options.envelope)) return self.fail("watch emits NDJSON; --pretty and --envelope are unsupported", "invalid_args", 2);
+        const deadline = io.nanoTimestamp() + @as(i128, self.options.timeout_ms *| std.time.ns_per_ms);
+        while (true) {
+            // A watch can run indefinitely: reclaim every transport/JSON allocation.
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const now = io.nanoTimestamp();
+            const remaining: u64 = if (watch) 250 else if (now >= deadline) 0 else @intCast(@max(1, @divFloor(deadline - now, std.time.ns_per_ms)));
+            const request: command.Request = .{ .ctx = .{ .origin = .cli }, .data = .{ .events_read = .{ .after = cursor, .id = id, .event = event, .command_id = command_id, .timeout_ms = @min(remaining, 250) } } };
+            command.validate(request.data) catch return self.fail("invalid event arguments", "invalid_args", 2);
+            var reply = try transport.send(a, request, self.options.transport, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(a);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "event read failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            const items = payload.object.get("events").?.array.items;
+            cursor = @intCast(payload.object.get("cursor").?.integer);
+            if (!watch and !wait) return self.emitOutput(&reply, true);
+            for (items) |item| {
+                if (wait) {
+                    var result = command.Response.ok(item);
+                    return self.emitOutput(&result, true);
+                }
+                if (!self.options.quiet) try writeJsonValue(item, false, false);
+            }
+            if (!watch and io.nanoTimestamp() >= deadline) return self.fail("timed out waiting for event", "timeout", 1);
         }
     }
 
@@ -1261,8 +1317,10 @@ test "program status CLI builds owned shared commands and validates arguments" {
 fn helpText() []const u8 {
     return "usage: hollow-cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto|socket|file|osc] <command>\n" ++
         "       hollow cli <same options and commands>\n" ++
-        "commands: api, capabilities, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+        "commands: api, capabilities, events, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
+        "events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]\n" ++
+        "wait <revision> | command|process-exit|status-change --after N --pane ID [--command-id N]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
         "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";
 }

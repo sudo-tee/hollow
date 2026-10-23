@@ -14,6 +14,7 @@ pub fn choices(kind: Kind, field: []const u8) ?[]const []const u8 {
     };
     if (std.mem.eql(u8, field, "level")) return &.{ "info", "warn", "error", "success" };
     if (std.mem.eql(u8, field, "surface")) return &.{ "topbar", "bottombar", "overlay" };
+    if (std.mem.eql(u8, field, "event")) return &.{ "command_started", "command_finished", "process_exited", "status_changed", "pane_closed" };
     return null;
 }
 
@@ -140,6 +141,8 @@ pub fn description(kind: Kind) []const u8 {
         .send_keys => "Queue sending decoded key bytes to a pane; text is bytes, not key notation.",
         .ui_click => "Activate a semantic UI node, optionally guarded by generation.",
         .wait_revision => "Wait for revision to increase; server caps each wait at 250 ms.",
+        .events_subscribe => "Capture an event cursor before launching work; no historical events are included.",
+        .events_read => "Read events after cursor, optionally filtered by pane/event/command; capped at 250 ms. Overflow is an error, never completion.",
         .focus => "Queue focusing a neighboring pane.",
         .scroll => "Queue scrolling the active pane.",
         .config_reload => "Queue reloading configuration.",
@@ -154,6 +157,7 @@ pub fn description(kind: Kind) []const u8 {
 
 pub fn isDeferred(kind: Kind) bool {
     return switch (kind) {
+        .events_subscribe, .events_read => false,
         .get_pane, .get_pane_text, .get_screen, .pane_screenshot, .tab_screenshot, .get_ui_nodes, .get_revision, .get_current_pane, .get_tab, .get_current_tab, .get_tabs, .get_panes, .get_workspace, .get_current_workspace, .get_workspaces, .get_mux_tree, .get_domain, .get_htp, .ui_click, .wait_revision, .api_list, .api_describe, .capabilities => false,
         else => true,
     };
@@ -260,7 +264,7 @@ fn writeDescription(comptime kind: Kind, writer: *std.Io.Writer) !void {
     try std.json.Stringify.value(if (isDeferred(kind)) "queued" else "completed", .{}, writer);
     try writer.writeAll(",\"transports\":");
     try std.json.Stringify.value(switch (kind) {
-        .pane_screenshot, .tab_screenshot, .wait_revision => @as([]const []const u8, &.{"socket"}),
+        .pane_screenshot, .tab_screenshot, .wait_revision, .events_read => @as([]const []const u8, &.{"socket"}),
         else => @as([]const []const u8, &.{ "socket", "file", "osc" }),
     }, .{}, writer);
     try writer.writeAll(",\"validation_notes\":\"Input schema describes command arguments, excluding kind and ctx. The legacy field command is an alias for cmd; both together are rejected. Known legacy null fields are ignored. Snapshots are extensible; HTP channels define their own nested contracts. Queued success means accepted, not completed. Context is metadata, not authorization.\",\"request_example\":");
@@ -278,6 +282,8 @@ pub fn Result(comptime kind: Kind) type {
         .get_mux_tree => []const results.TreeWorkspace,
         .api_list => []const results.Method,
         .get_revision, .wait_revision, .ui_click => results.Revision,
+        .events_subscribe => struct { cursor: u64, capacity: usize },
+        .events_read => struct { cursor: u64, events: []const @import("../automation_events.zig").Event },
         .pane_screenshot, .tab_screenshot => results.Screenshot,
         .get_ui_nodes => results.UiNodes,
         .api_describe => results.Method,
@@ -330,7 +336,7 @@ pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
         .api_version = version,
         .platform = @tagName(@import("builtin").os.tag),
         .methods = names,
-        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge" },
+        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge", "external_events", "completion_waits" },
         .context = .{ .pane_id = "Caller pane id; 0 means unknown. Not a target or credential.", .origin = "cli | api | internal; advisory, supplied by caller." },
         .context_schema = context.value,
         .transport = "command socket and HTP command_api bridge; file requires an external consumer; no new listener or arbitrary code execution",

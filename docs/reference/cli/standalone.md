@@ -14,6 +14,9 @@ hollow-cli --pretty capabilities
 Friendly syntax remains the normal human-facing interface. Generic `api call`
 is an additional automation interface, not a replacement.
 
+[External events and completion waits](events.md) provide pane-scoped event reads,
+NDJSON watches, and command/process/status waits through the same CLI.
+
 ## Build and install
 
 ```sh
@@ -72,7 +75,8 @@ requests. Native results/errors are nested inside the HTP result and unwrapped
 by the client. This requires a host built with the bridge; older hosts should use
 socket transport or the retained Python client.
 
-Screenshot exports and blocking `wait_revision` calls require socket transport.
+Screenshot exports, event reads/watches, completion waits, and blocking
+`wait_revision` calls require socket transport.
 The bridge returns `unsupported_transport` rather than blocking the frame thread
 or claiming unsupported work succeeded. Queued mutations acknowledge acceptance,
 not operation or shell-command completion.

@@ -42,6 +42,12 @@ on success; pass `--envelope` to see the full reply.
 
 ## Commands
 
+### External events and completion
+
+See [external events and completion waits](events.md) for NDJSON watches,
+pane-scoped events, and waits for command completion, process exit, or status
+changes. Subscribe before launching work; revision changes are not completion.
+
 ### Discovering the command API
 
 ```sh

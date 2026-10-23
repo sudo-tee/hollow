@@ -393,6 +393,7 @@ pub const App = struct {
     automation_mutex: std.Io.Mutex = .init,
     automation_changed: std.Io.Condition = .init,
     automation_revision: u64 = 1,
+    automation_events: @import("automation_events.zig").Journal = .{},
     automation_shutting_down: bool = false,
     ui_semantic_mutex: std.Io.Mutex = .init,
     ui_semantic_store: ui_semantics.Store = .{},
@@ -928,6 +929,7 @@ pub const App = struct {
     }
 
     pub fn shutdownRuntime(self: *App) void {
+        self.automation_events.stop();
         if (!self.lifecycle.beginRuntimeShutdown()) return;
         defer self.lifecycle.finishRuntimeShutdown();
         std.log.info("App.shutdownRuntime begin", .{});
@@ -2392,6 +2394,7 @@ pub const App = struct {
                     automation_changed = true;
                     self.topbar_cache_dirty = true;
                     self.emitLuaBuiltInEvent("term:program_status_changed", .{ .pane_id = @intFromPtr(pane) });
+                    _ = self.automation_events.publish(.{ .kind = "status_changed", .pane_id = @intFromPtr(pane) });
                 }
                 const had_pty_output_this_tick = pane.pty_received_data;
                 const had_notifications = pane.osc99_notifications.hasNotifications();

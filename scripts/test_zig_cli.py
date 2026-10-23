@@ -44,23 +44,24 @@ class CliTests(unittest.TestCase):
 
             def serve():
                 try:
-                    with listener.accept()[0] as client:
-                        client.settimeout(3)
-                        def read(n):
-                            data = b""
-                            while len(data) < n:
-                                chunk = client.recv(n - len(data))
-                                if not chunk:
-                                    raise EOFError()
-                                data += chunk
-                            return data
-                        size, = struct.unpack("<I", read(4))
-                        seen.append(json.loads(read(size)))
-                        if isinstance(response, bytes):
-                            client.sendall(response)
-                        elif response is not None:
-                            payload = json.dumps(response).encode()
-                            client.sendall(struct.pack("<I", len(payload)) + payload)
+                    for reply in response if isinstance(response, list) else [response]:
+                        with listener.accept()[0] as client:
+                            client.settimeout(3)
+                            def read(n):
+                                data = b""
+                                while len(data) < n:
+                                    chunk = client.recv(n - len(data))
+                                    if not chunk:
+                                        raise EOFError()
+                                    data += chunk
+                                return data
+                            size, = struct.unpack("<I", read(4))
+                            seen.append(json.loads(read(size)))
+                            if isinstance(reply, bytes):
+                                client.sendall(reply)
+                            elif reply is not None:
+                                payload = json.dumps(reply).encode()
+                                client.sendall(struct.pack("<I", len(payload)) + payload)
                 except Exception as error:
                     errors.append(error)
 
@@ -97,6 +98,64 @@ class CliTests(unittest.TestCase):
                                      {"kind": "error", "status": "method_not_found", "error": "unknown command"})
         self.assertNotEqual(process.returncode, 0)
         self.assertEqual(json.loads(process.stderr)["code"], "method_not_found")
+
+    def test_event_subscription_and_filtered_read(self):
+        process, seen = self.socket_call(("events", "subscribe"), result({"cursor": 9, "capacity": 512}))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout)["cursor"], 9)
+        self.assertEqual(seen[0]["kind"], "events_subscribe")
+        payload = {"cursor": 12, "events": []}
+        process, seen = self.socket_call(("events", "read", "--after", "9", "--pane", "42", "--event", "status_changed"), result(payload))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout), payload)
+        self.assertEqual(seen[0]["after"], 9)
+        self.assertEqual(seen[0]["id"], 42)
+        self.assertEqual(seen[0]["event"], "status_changed")
+
+    def test_completion_wait_returns_actual_event_including_failure_exit(self):
+        event = {"sequence": 12, "kind": "command_finished", "pane_id": 42, "command_id": 10, "status": 7}
+        process, seen = self.socket_call(("wait", "command", "--after", "9", "--pane", "42", "--command-id", "10"), result({"cursor": 12, "events": [event]}))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout), event)
+        self.assertEqual(seen[0]["command_id"], 10)
+        self.assertEqual(seen[0]["event"], "command_finished")
+
+    def test_event_overflow_is_not_completion(self):
+        process, _ = self.socket_call(("wait", "process-exit", "--after", "0", "--pane", "42"),
+                                     {"kind": "error", "status": "event_overflow", "error": "events lost"})
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stderr)["code"], "event_overflow")
+        self.assertEqual(process.stdout, "")
+
+    def test_event_wait_requires_barrier_and_explicit_pane(self):
+        for args in (("wait", "command", "--pane", "42"), ("wait", "command", "--after", "0"),
+                     ("events", "watch", "--after", "0", "--pretty")):
+            process = self.run_cli(*args)
+            self.assertEqual(process.returncode, 2, process.stderr)
+
+    def test_watch_emits_ndjson_and_resumes_from_returned_cursor(self):
+        first = {"sequence": 11, "kind": "status_changed", "pane_id": 42}
+        second = {"sequence": 12, "kind": "process_exited", "pane_id": 42, "status": 0}
+        process, seen = self.socket_call(("events", "watch", "--after", "9", "--pane", "42"), [
+            result({"cursor": 10, "events": []}),
+            result({"cursor": 12, "events": [first, second]}),
+            {"kind": "error", "status": "shutting_down", "error": "stopped"},
+        ])
+        self.assertEqual([json.loads(line) for line in process.stdout.splitlines()], [first, second])
+        self.assertEqual([request["after"] for request in seen], [9, 10, 12])
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stderr)["code"], "shutting_down")
+
+    def test_wait_retries_empty_reads_without_using_revision(self):
+        event = {"sequence": 12, "kind": "status_changed", "pane_id": 42}
+        process, seen = self.socket_call(("wait", "status-change", "--after", "9", "--pane", "42"), [
+            result({"cursor": 10, "events": []}),
+            result({"cursor": 12, "events": [event]}),
+        ])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout), event)
+        self.assertEqual([request["after"] for request in seen], [9, 10])
+        self.assertTrue(all(request["kind"] == "events_read" for request in seen))
 
     def test_auto_falls_back_before_send_to_file_bridge_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as root:

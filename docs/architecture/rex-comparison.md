@@ -21,7 +21,7 @@ semantic UI nodes, revision waits, and OSC 7501 program status.
 3. **Consistent caller-relative targeting.** Keep explicit targets distinct from
    caller metadata and UI focus. Explicit targets win; document fallback behavior.
    Preserve deliberate tag broadcasting; reject ambiguous single-target matches.
-4. **External events and completion waits.** Export scoped NDJSON events and waits
+4. **[External events and completion waits](../reference/cli/events.md).** Export scoped NDJSON events and waits
    for process exit, shell-command completion, and status changes. Subscribe before
    launching work; bound queues and report overflow. Revision changes do not mean
    command completion.

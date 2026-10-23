@@ -21,6 +21,7 @@ pub fn exited(app: *App, pane: *Pane) void {
     if (pane.exit_event_emitted or pane.hasLiveChild()) return;
     pane.exit_event_emitted = true;
     const status = if (pane.pty) |*pty| pty.exitStatus() else null;
+    _ = app.automation_events.publish(.{ .kind = "process_exited", .pane_id = @intFromPtr(pane), .status = if (status) |value| @intCast(value) else null });
     app.emitLuaBuiltInEvent("term:pane_exited", .{ .pane_exited = .{
         .pane_id = @intFromPtr(pane),
         .status = status,
@@ -31,6 +32,7 @@ pub fn closing(context: *anyopaque, pane: *Pane) void {
     const app: *App = @ptrCast(@alignCast(context));
     // A user close may reach an exited child before the next cleanup tick.
     exited(app, pane);
+    _ = app.automation_events.publish(.{ .kind = "pane_closed", .pane_id = @intFromPtr(pane) });
     app.emitLuaBuiltInEvent("term:pane_closed", .{ .pane_id = @intFromPtr(pane) });
 }
 
@@ -74,4 +76,9 @@ test "pane lifecycle emits observed exit once before closing across Lua reloads"
     try app.lua.?.runString(
         \\assert(#received == 1 and received[1] == "term:pane_closed")
     );
+    const batch = try app.automation_events.read(0, .{ .id = @intFromPtr(&pane) }, 0);
+    try std.testing.expectEqual(@as(usize, 2), batch.count);
+    try std.testing.expectEqualStrings("process_exited", batch.events[0].kind);
+    try std.testing.expectEqual(@as(?i64, null), batch.events[0].status);
+    try std.testing.expectEqualStrings("pane_closed", batch.events[1].kind);
 }

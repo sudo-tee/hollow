@@ -256,6 +256,7 @@ pub const Pane = struct {
     compression_deadline_ns: i128 = 0,
     child_alive_cached: bool = true,
     exit_event_emitted: bool = false,
+    automation_command_id: ?u64 = null,
     last_child_alive_check_ns: i128 = 0,
     scrollbar_total: u64 = 0,
     scrollbar_offset: u64 = 0,

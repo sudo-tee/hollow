@@ -650,6 +650,8 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .pane_set_tags => |args| execPaneSetTags(self, args),
         .ui_click => |args| execUiClick(self, args),
         .wait_revision => command_mod.Response.fail("internal", "wait_revision dispatched on frame thread"),
+        .events_subscribe => try eventsValue(self, .{ .cursor = self.automation_events.subscribe(), .capacity = @import("../automation_events.zig").max_events }),
+        .events_read => command_mod.Response.fail("internal", "events_read dispatched on frame thread"),
         .focus => |args| execFocus(self, args),
         .scroll => |args| execScroll(self, args),
         .get_htp => |args| execGetHtp(self, request.ctx, args),
@@ -671,7 +673,7 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
 pub fn executeTransportCommand(self: *App, request: command_mod.Request) !command_mod.Response {
     try command_mod.validate(request.data);
     switch (request.data) {
-        .pane_screenshot, .tab_screenshot, .wait_revision => return .fail("unsupported_transport", "this command requires socket transport"),
+        .pane_screenshot, .tab_screenshot, .wait_revision, .events_read => return .fail("unsupported_transport", "this command requires socket transport"),
         .get_htp => |args| if (std.mem.eql(u8, args.channel, "command_api")) return .fail("invalid_args", "recursive command bridge is not supported"),
         else => {},
     }
@@ -681,7 +683,25 @@ pub fn executeTransportCommand(self: *App, request: command_mod.Request) !comman
 fn commandIpcHandler(app_ptr: *anyopaque, request: command_mod.Request) command_mod.Response {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     if (request.kind() == .wait_revision) return execWaitRevision(app, request.data.wait_revision);
+    if (request.kind() == .events_read) return execEventsRead(app, request.data.events_read);
     return runCommandSync(app, request);
+}
+
+fn eventsValue(self: *App, value: anytype) !command_mod.Response {
+    const text = try std.json.Stringify.valueAlloc(self.allocator, value, .{});
+    defer self.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+    defer parsed.deinit();
+    return .ok(try command_mod.cloneJsonValue(self.allocator, parsed.value));
+}
+
+fn execEventsRead(self: *App, args: command_mod.Args(.events_read)) command_mod.Response {
+    const batch = self.automation_events.read(args.after, .{ .id = args.id, .event = args.event, .command_id = args.command_id }, @min(args.timeout_ms orelse 250, 250)) catch |err| return switch (err) {
+        error.EventOverflow => .fail("event_overflow", "event cursor expired; events were lost; subscribe again before launching new work"),
+        error.InvalidCursor => .fail("invalid_cursor", "cursor is ahead of this host's event journal"),
+        else => .fail("shutting_down", "Hollow is shutting down"),
+    };
+    return eventsValue(self, .{ .cursor = batch.cursor, .events = batch.events[0..batch.count] }) catch .fail("internal", "oom");
 }
 
 fn revisionResponse(self: *App) command_mod.Response {
