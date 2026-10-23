@@ -170,6 +170,10 @@ const Runner = struct {
         var i: usize = 0;
         while (i < self.argv.len) : (i += 1) {
             const arg = self.argv[i];
+            if (std.mem.eql(u8, arg, "--")) {
+                try filtered.appendSlice(self.allocator, self.argv[i..]);
+                break;
+            }
             if (std.mem.eql(u8, arg, "--pretty")) {
                 self.options.pretty = true;
                 continue;
@@ -215,6 +219,7 @@ const Runner = struct {
         const args = filtered.items[1..];
         if (std.mem.eql(u8, command_name, "api")) return try self.executeApi(args);
         if (std.mem.eql(u8, command_name, "events")) return try self.executeEvents(args, false);
+        if (std.mem.eql(u8, command_name, "job")) return try self.executeJob(args);
         if (std.mem.eql(u8, command_name, "capabilities")) {
             if (args.len != 0) return self.fail("capabilities takes no arguments", "invalid_args", 2);
             return self.printQuery(.{ .data = .{ .capabilities = .{} } });
@@ -264,6 +269,127 @@ const Runner = struct {
             return self.printQuery(request);
         }
         return self.fail("usage: cli api list | describe <name> | call <name> [args-json]", "invalid_args", 2);
+    }
+
+    fn executeJob(self: *Runner, args: []const []const u8) !void {
+        if (args.len == 0) return self.fail("usage: job spawn|get|output|wait|cleanup", "invalid_args", 2);
+        if (std.mem.eql(u8, args[0], "spawn")) {
+            var launch: command.JobSpawn = .{};
+            var wait = false;
+            var auto_close = false;
+            var i: usize = 1;
+            while (i < args.len) {
+                if (std.mem.eql(u8, args[i], "--")) {
+                    launch.argv = args[i + 1 ..];
+                    break;
+                }
+                if (std.mem.eql(u8, args[i], "--user-shell")) {
+                    launch.user_shell = true;
+                    i += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, args[i], "--wait")) {
+                    wait = true;
+                    i += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, args[i], "--auto-close")) {
+                    auto_close = true;
+                    i += 1;
+                    continue;
+                }
+                if (i + 1 >= args.len) return self.fail("missing job spawn option value", "invalid_args", 2);
+                if (std.mem.eql(u8, args[i], "--shell")) {
+                    launch.cmd = args[i + 1];
+                } else if (std.mem.eql(u8, args[i], "--cwd")) {
+                    launch.cwd = args[i + 1];
+                } else if (std.mem.eql(u8, args[i], "--domain")) {
+                    launch.domain = args[i + 1];
+                } else return self.fail("usage: job spawn [--user-shell] [--wait] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND", "invalid_args", 2);
+                i += 2;
+            }
+            command.validate(.{ .job_spawn = launch }) catch return self.fail("job spawn requires exactly one of -- ARGV... or --shell COMMAND", "invalid_args", 2);
+            if (auto_close and !wait) return self.fail("job spawn --auto-close requires --wait", "invalid_args", 2);
+            if (!wait) return self.printQuery(.{ .data = .{ .job_spawn = launch } });
+            // Reject unsupported transports before launching any work.
+            if (self.options.transport != .socket and self.options.transport != .auto) return self.fail("job spawn --wait requires socket transport", "unsupported_transport", 2);
+            var reply = try transport.send(self.allocator, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_spawn = launch } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(self.allocator);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "job spawn failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            const handle: command.JobHandle = .{ .id = @intCast(payload.object.get("pane_id").?.integer), .token = payload.object.get("token").?.string };
+            self.waitJob(handle, payload, auto_close) catch |err| {
+                // Timeout/transport failure must not lose the only recovery
+                // handle. Emit the spawn result on stdout, error on stderr.
+                try self.emitOutput(&reply, true);
+                return err;
+            };
+            return;
+        }
+        var id: ?usize = null;
+        var token: ?[]const u8 = null;
+        var auto_close = false;
+        var i: usize = 1;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--auto-close") and std.mem.eql(u8, args[0], "wait")) {
+                auto_close = true;
+                i += 1;
+                continue;
+            }
+            if (i + 1 >= args.len) return self.fail("missing job handle option value", "invalid_args", 2);
+            if (std.mem.eql(u8, args[i], "--id")) {
+                id = try std.fmt.parseInt(usize, args[i + 1], 10);
+            } else if (std.mem.eql(u8, args[i], "--token")) {
+                token = args[i + 1];
+            } else return self.fail("expected --id ID --token TOKEN", "invalid_args", 2);
+            i += 2;
+        }
+        const handle: command.JobHandle = .{ .id = id orelse return self.fail("--id required", "invalid_args", 2), .token = token orelse return self.fail("--token required", "invalid_args", 2) };
+        const kind: command.Kind = if (std.mem.eql(u8, args[0], "get") or std.mem.eql(u8, args[0], "wait")) .job_get else if (std.mem.eql(u8, args[0], "output")) .job_output else if (std.mem.eql(u8, args[0], "cleanup")) .job_cleanup else return self.fail("unknown job command", "invalid_args", 2);
+        command.validate(.{ .job_get = handle }) catch return self.fail("invalid job handle", "invalid_args", 2);
+        if (std.mem.eql(u8, args[0], "wait")) return self.waitJob(handle, null, auto_close);
+        const request: command.Request = .{ .data = switch (kind) {
+            .job_get => .{ .job_get = handle },
+            .job_output => .{ .job_output = handle },
+            .job_cleanup => .{ .job_cleanup = handle },
+            else => unreachable,
+        } };
+        return self.printQuery(request);
+    }
+
+    fn waitJob(self: *Runner, handle: command.JobHandle, spawn: ?std.json.Value, auto_close: bool) !void {
+        if (self.options.transport != .socket and self.options.transport != .auto) return self.fail("job wait requires socket transport", "unsupported_transport", 2);
+        const deadline = io.nanoTimestamp() + @as(i128, self.options.timeout_ms *| std.time.ns_per_ms);
+        while (true) {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var reply = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_get = handle } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(a);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "job query failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            if (std.mem.eql(u8, payload.object.get("state").?.string, "exited")) {
+                if (spawn) |metadata| {
+                    inline for (.{ "tab_id", "workspace_id", "token" }) |key| {
+                        try reply.payload.?.object.put(a, try a.dupe(u8, key), try command.cloneJsonValue(a, metadata.object.get(key).?));
+                    }
+                }
+                if (auto_close) {
+                    var closed = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_cleanup = handle } }, .socket, @max(self.options.timeout_ms, 1000));
+                    defer closed.deinit(a);
+                    if (!closed.success) return self.failFmt("{s}: {s}", .{ closed.status, closed.error_message orelse "job cleanup failed" }, closed.status, 1);
+                    try reply.payload.?.object.put(a, try a.dupe(u8, "closed"), .{ .bool = true });
+                }
+                return self.emitOutput(&reply, true);
+            }
+            const now = io.nanoTimestamp();
+            if (now >= deadline) return self.fail("timed out waiting for job; job retained", "timeout", 1);
+            const remaining_ms: u64 = @intCast(@max(1, @divFloor(deadline - now, std.time.ns_per_ms)));
+            var events = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .events_read = .{ .after = @intCast(payload.object.get("cursor").?.integer), .id = handle.id, .event = "process_exited", .timeout_ms = @min(remaining_ms, 250) } } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer events.deinit(a);
+            // Retained process state is authoritative even if journal replay expired.
+            if (!events.success and !std.mem.eql(u8, events.status, "event_overflow")) return self.failFmt("{s}", .{events.error_message orelse "job wait failed"}, events.status, 1);
+        }
     }
 
     fn executeGet(self: *Runner, args: []const []const u8) !void {
@@ -1317,9 +1443,12 @@ test "program status CLI builds owned shared commands and validates arguments" {
 fn helpText() []const u8 {
     return "usage: hollow-cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto|socket|file|osc] <command>\n" ++
         "       hollow cli <same options and commands>\n" ++
-        "commands: api, capabilities, events, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+        "commands: api, capabilities, events, job, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
         "events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]\n" ++
+        "job spawn [--user-shell] [--wait [--auto-close]] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND\n" ++
+        "job get|output|wait|cleanup --id ID --token TOKEN\n" ++
+        "job wait --id ID --token TOKEN [--auto-close]\n" ++
         "wait <revision> | command|process-exit|status-change --after N --pane ID [--command-id N]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
         "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";

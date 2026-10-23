@@ -48,6 +48,12 @@ See [external events and completion waits](events.md) for NDJSON watches,
 pane-scoped events, and waits for command completion, process exit, or status
 changes. Subscribe before launching work; revision changes are not completion.
 
+### Background jobs
+
+See [background execution jobs](jobs.md) for `job spawn/get/output/wait/cleanup`:
+no-focus creation, returned resource IDs, explicit argv/shell modes, retained
+output, and cleanup restricted to matching automation-owned panes.
+
 ### Discovering the command API
 
 ```sh

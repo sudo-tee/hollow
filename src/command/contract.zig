@@ -26,6 +26,7 @@ pub fn validateJson(comptime T: type, value: std.json.Value) !void {
             try validateJson(info.child, value);
         },
         .int => if (value != .integer) return error.InvalidArgumentType,
+        .bool => if (value != .bool) return error.InvalidArgumentType,
         .float => if (value != .integer and value != .float) return error.InvalidArgumentType,
         .@"struct" => |info| {
             if (value != .object) return error.InvalidArgumentType;
@@ -46,6 +47,30 @@ pub fn validateJson(comptime T: type, value: std.json.Value) !void {
 }
 
 pub fn validate(data: command.Command) !void {
+    if (data == .job_spawn) {
+        const args = data.job_spawn;
+        if ((args.argv == null) == (args.cmd == null)) return error.InvalidArgumentValue;
+        if (args.argv) |argv| {
+            if (argv.len == 0 or argv.len > 256 or argv[0].len == 0) return error.InvalidArgumentValue;
+            var bytes: usize = 0;
+            for (argv) |arg| {
+                if (std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidArgumentValue;
+                bytes += arg.len;
+            }
+            if (bytes > 128 * 1024) return error.InvalidArgumentValue;
+        }
+        inline for (.{ "cmd", "cwd", "domain" }) |field| if (@field(args, field)) |text| {
+            if (std.mem.indexOfScalar(u8, text, 0) != null) return error.InvalidArgumentValue;
+        };
+    }
+    if (data == .job_get or data == .job_output or data == .job_cleanup) {
+        const token = switch (data) {
+            .job_get, .job_output, .job_cleanup => |args| args.token,
+            else => unreachable,
+        };
+        if (token.len != 32) return error.InvalidArgumentValue;
+        for (token) |c| if (!std.ascii.isHex(c)) return error.InvalidArgumentValue;
+    }
     switch (data) {
         inline else => |args, kind| {
             inline for (std.meta.fields(@TypeOf(args))) |field| {
@@ -143,6 +168,10 @@ pub fn description(kind: Kind) []const u8 {
         .wait_revision => "Wait for revision to increase; server caps each wait at 250 ms.",
         .events_subscribe => "Capture an event cursor before launching work; no historical events are included.",
         .events_read => "Read events after cursor, optionally filtered by pane/event/command; capped at 250 ms. Overflow is an error, never completion.",
+        .job_spawn => "Create a retained background tab without focus; exactly one of argv (literal executable arguments) or cmd (shell command) is required. user_shell opts into interactive target-shell startup. Return resource IDs, ownership token and pre-launch event cursor.",
+        .job_get => "Read an owned job's retained running/exited state and process status.",
+        .job_output => "Read an owned job's bounded raw PTY output tail as base64; truncation/allocation loss is explicit.",
+        .job_cleanup => "Close only the matching automation-owned pane after exit; reject running jobs or wrong ownership tokens.",
         .focus => "Queue focusing a neighboring pane.",
         .scroll => "Queue scrolling the active pane.",
         .config_reload => "Queue reloading configuration.",
@@ -157,7 +186,7 @@ pub fn description(kind: Kind) []const u8 {
 
 pub fn isDeferred(kind: Kind) bool {
     return switch (kind) {
-        .events_subscribe, .events_read => false,
+        .events_subscribe, .events_read, .job_spawn, .job_get, .job_output, .job_cleanup => false,
         .get_pane, .get_pane_text, .get_screen, .pane_screenshot, .tab_screenshot, .get_ui_nodes, .get_revision, .get_current_pane, .get_tab, .get_current_tab, .get_tabs, .get_panes, .get_workspace, .get_current_workspace, .get_workspaces, .get_mux_tree, .get_domain, .get_htp, .ui_click, .wait_revision, .api_list, .api_describe, .capabilities => false,
         else => true,
     };
@@ -175,6 +204,7 @@ fn schema(comptime T: type, kind: Kind, comptime name: []const u8, writer: *std.
         return;
     }
     switch (@typeInfo(T)) {
+        .bool => try writer.writeAll("{\"type\":\"boolean\"}"),
         .@"enum" => |info| {
             try writer.writeAll("{\"type\":\"string\",\"enum\":[");
             inline for (info.fields, 0..) |field, i| {
@@ -200,7 +230,9 @@ fn schema(comptime T: type, kind: Kind, comptime name: []const u8, writer: *std.
                     try std.json.Stringify.value(field.name, .{}, writer);
                 }
             }
-            try writer.writeAll("]}");
+            try writer.writeAll("]");
+            if (T == command.JobSpawn) try writer.writeAll(",\"oneOf\":[{\"required\":[\"argv\"],\"properties\":{\"argv\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":256},\"cmd\":{\"type\":\"null\"}}},{\"required\":[\"cmd\"],\"properties\":{\"cmd\":{\"type\":\"string\",\"minLength\":1},\"argv\":{\"type\":\"null\"}}}]");
+            try writer.writeByte('}');
         },
         .int => {
             try writer.writeAll("{\"type\":\"integer\",\"minimum\":");
@@ -213,7 +245,9 @@ fn schema(comptime T: type, kind: Kind, comptime name: []const u8, writer: *std.
         .pointer => |info| {
             if (info.child == u8) {
                 try writer.writeAll("{\"type\":\"string\"");
-                if (!std.mem.eql(u8, name, "text")) try writer.writeAll(",\"minLength\":1");
+                if (std.mem.eql(u8, name, "token")) {
+                    try writer.writeAll(",\"minLength\":32,\"maxLength\":32,\"pattern\":\"^[0-9a-fA-F]{32}$\"");
+                } else if (!std.mem.eql(u8, name, "text")) try writer.writeAll(",\"minLength\":1");
                 if (choices(kind, name)) |values| {
                     try writer.writeAll(",\"enum\":");
                     try std.json.Stringify.value(values, .{}, writer);
@@ -231,6 +265,10 @@ fn schema(comptime T: type, kind: Kind, comptime name: []const u8, writer: *std.
 }
 
 fn writeExample(comptime kind: Kind, writer: *std.Io.Writer) !void {
+    if (kind == .job_spawn) {
+        try writer.writeAll("{\"kind\":\"job_spawn\",\"argv\":[\"echo\",\"hello\"]}");
+        return;
+    }
     try writer.writeAll("{\"kind\":");
     try std.json.Stringify.value(@tagName(kind), .{}, writer);
     inline for (std.meta.fields(command.Args(kind))) |field| {
@@ -241,7 +279,7 @@ fn writeExample(comptime kind: Kind, writer: *std.Io.Writer) !void {
             switch (@typeInfo(field.type)) {
                 .int => try writer.writeAll(if (std.mem.eql(u8, field.name, "revision")) "0" else "1"),
                 .pointer => {
-                    const value = if (choices(kind, field.name)) |values| values[0] else if (std.mem.eql(u8, field.name, "path")) "hollow.png" else if (std.mem.eql(u8, field.name, "name") and kind == .api_describe) "get_screen" else "example";
+                    const value = if (choices(kind, field.name)) |values| values[0] else if (std.mem.eql(u8, field.name, "token")) "0123456789abcdef0123456789abcdef" else if (std.mem.eql(u8, field.name, "path")) "hollow.png" else if (std.mem.eql(u8, field.name, "name") and kind == .api_describe) "get_screen" else "example";
                     try std.json.Stringify.value(value, .{}, writer);
                 },
                 else => unreachable,
@@ -284,6 +322,9 @@ pub fn Result(comptime kind: Kind) type {
         .get_revision, .wait_revision, .ui_click => results.Revision,
         .events_subscribe => struct { cursor: u64, capacity: usize },
         .events_read => struct { cursor: u64, events: []const @import("../automation_events.zig").Event },
+        .job_spawn => struct { pane_id: usize, tab_id: usize, workspace_id: usize, token: []const u8, cursor: u64 },
+        .job_get => struct { pane_id: usize, state: []const u8, status: ?u32, cursor: u64, output_bytes: usize, output_truncated: bool, output_incomplete: bool },
+        .job_output => struct { encoding: []const u8, data: []const u8, truncated: bool, incomplete: bool, capacity_bytes: usize },
         .pane_screenshot, .tab_screenshot => results.Screenshot,
         .get_ui_nodes => results.UiNodes,
         .api_describe => results.Method,
@@ -336,7 +377,7 @@ pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
         .api_version = version,
         .platform = @tagName(@import("builtin").os.tag),
         .methods = names,
-        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge", "external_events", "completion_waits" },
+        .features = .{ "command_discovery", "typed_arguments", "strict_validation", "invocation_context", "htp_command_bridge", "external_events", "completion_waits", "background_jobs" },
         .context = .{ .pane_id = "Caller pane id; 0 means unknown. Not a target or credential.", .origin = "cli | api | internal; advisory, supplied by caller." },
         .context_schema = context.value,
         .transport = "command socket and HTP command_api bridge; file requires an external consumer; no new listener or arbitrary code execution",

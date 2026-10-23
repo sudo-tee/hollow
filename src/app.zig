@@ -2610,7 +2610,10 @@ pub const App = struct {
                 {
                     next_idle_render_poll_ns = pane.compression_deadline_ns;
                 }
-                if (!pane.hasLiveChild()) has_dead = true;
+                if (!pane.hasLiveChild()) {
+                    pane_lifecycle.exited(self, pane);
+                    if (!pane.retain_on_exit) has_dead = true;
+                }
                 pane_idx += 1;
             }
             debug_timing.setTickDetailTimes(

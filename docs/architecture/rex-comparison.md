@@ -25,7 +25,7 @@ semantic UI nodes, revision waits, and OSC 7501 program status.
    for process exit, shell-command completion, and status changes. Subscribe before
    launching work; bound queues and report overflow. Revision changes do not mean
    command completion.
-5. **Background execution workflows.** Combine no-focus creation, returned resource
+5. **[Background execution workflows](../reference/cli/jobs.md).** Combine no-focus creation, returned resource
    IDs, explicit argv versus shell input, completion waits, retained failure output,
    and cleanup limited to automation-owned resources.
 6. **Config/keymap diagnostics.** Add headless checking, source provenance,

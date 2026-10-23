@@ -17,6 +17,9 @@ is an additional automation interface, not a replacement.
 [External events and completion waits](events.md) provide pane-scoped event reads,
 NDJSON watches, and command/process/status waits through the same CLI.
 
+[Background jobs](jobs.md) combine no-focus launch, returned IDs, process waits,
+bounded retained output, and ownership-checked cleanup.
+
 ## Build and install
 
 ```sh

@@ -342,6 +342,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
 
+    const background_module = b.createModule(.{
+        .root_source_file = b.path("src/background_pane_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const background_options = b.addOptions();
+    background_options.addOption(bool, "headless", true);
+    background_module.addOptions("build_options", background_options);
+    addShellIntegrationOptions(b, target, optimize, background_options, background_module);
+    background_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    const background_tests = b.addTest(.{ .root_module = background_module, .filters = &.{"background jobs:"} });
+    const background_run = b.addRunArtifact(background_tests);
+    b.step("test-background", "Run headless background pane, mux, and native PTY tests").dependOn(&background_run.step);
+    test_step.dependOn(&background_run.step);
+
     const command_test_module = b.createModule(.{
         .root_source_file = b.path("src/command_test.zig"),
         .target = target,

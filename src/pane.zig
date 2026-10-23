@@ -257,6 +257,9 @@ pub const Pane = struct {
     child_alive_cached: bool = true,
     exit_event_emitted: bool = false,
     automation_command_id: ?u64 = null,
+    automation_token: ?[32]u8 = null,
+    retain_on_exit: bool = false,
+    job_output: @import("job_output.zig").Capture = .{},
     last_child_alive_check_ns: i128 = 0,
     scrollbar_total: u64 = 0,
     scrollbar_offset: u64 = 0,
@@ -301,6 +304,7 @@ pub const Pane = struct {
     }
 
     pub fn deinit(self: *Pane, runtime: *GhosttyRuntime) void {
+        self.job_output.deinit(self.allocator);
         self.program_status.deinit(self.allocator);
         if (self.pending_cwd) |value| self.allocator.free(value);
         self.boot_output.deinit(self.allocator);
@@ -492,6 +496,9 @@ pub const Pane = struct {
         var remote_launch_command_owned: ?[]u8 = null;
         defer if (remote_launch_command_owned) |command| self.allocator.free(command);
         const remote_cwd_via_launch = agent_pty == null and is_remote and pane_cwd != null;
+        if (agent_pty == null and is_remote) {
+            if (launch_command) |cmd| if (cmd.argv != null or cmd.one_shot) return error.BackgroundRequiresAgent;
+        }
         const effective_launch_command: ?LaunchCommand = if (remote_cwd_via_launch) blk: {
             const cwd = pane_cwd.?;
             const quoted_cwd = try shellQuoteSingle(self.allocator, cwd);
@@ -601,6 +608,7 @@ pub const Pane = struct {
                 };
                 if (debug_overlay) self.last_pty_read_ns += io.nanoTimestamp() - read_start_ns;
                 if (count == 0) break;
+                if (self.automation_token != null) self.job_output.append(self.allocator, self.read_buf[0..count]);
                 read_loops += 1;
                 total_read += count;
                 if (!self.logged_first_pty_read) {

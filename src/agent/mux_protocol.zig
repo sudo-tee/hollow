@@ -11,7 +11,7 @@ pub const window = 64 * 1024;
 pub const max_data = 16 * 1024;
 pub const max_spawn = 64 * 1024;
 pub const control_limit = 64 * 1024;
-pub const hello = "{\"protocol\":\"hollow-mux\",\"version\":1,\"capabilities\":[\"multi-pty\",\"windows\"],\"max_streams\":32,\"window\":65536,\"max_data\":16384,\"max_spawn\":65536}";
+pub const hello = "{\"protocol\":\"hollow-mux\",\"version\":1,\"capabilities\":[\"multi-pty\",\"windows\",\"one-shot\",\"user-shell\"],\"max_streams\":32,\"window\":65536,\"max_data\":16384,\"max_spawn\":65536}";
 pub const hello_ack = "{\"protocol\":\"hollow-mux\",\"version\":1}";
 
 // Additional kinds are intentionally not added to the dedicated PTY enum.

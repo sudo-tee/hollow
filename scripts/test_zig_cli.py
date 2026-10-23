@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the built CLI against fake socket/file/PTY hosts, without a GUI."""
 import json
+import base64
 import os
 import select
 from pathlib import Path
@@ -132,6 +133,133 @@ class CliTests(unittest.TestCase):
                      ("events", "watch", "--after", "0", "--pretty")):
             process = self.run_cli(*args)
             self.assertEqual(process.returncode, 2, process.stderr)
+
+    def test_background_spawn_distinguishes_shell_from_literal_argv(self):
+        handle = {"pane_id": 42, "tab_id": 5, "workspace_id": 1,
+                  "token": "0123456789abcdef0123456789abcdef", "cursor": 9}
+        argv = ["demo", "--pretty", "--timeout", "--quiet", "--wait", "--auto-close", "--user-shell", "$HOME; & *", ""]
+        process, seen = self.socket_call(("job", "spawn", "--cwd", "/work", "--", *argv), result(handle))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout), handle)
+        self.assertEqual(seen[0]["argv"], argv)
+        self.assertEqual(seen[0]["kind"], "job_spawn")
+        self.assertEqual(seen[0]["cwd"], "/work")
+        self.assertIsNone(seen[0].get("cmd"))
+        process, seen = self.socket_call(("job", "spawn", "--domain", "linux", "--shell", "build && test"), result(handle))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(seen[0]["cmd"], "build && test")
+        self.assertEqual(seen[0]["domain"], "linux")
+        self.assertIsNone(seen[0].get("argv"))
+
+    def test_spawn_user_shell_wait_returns_handle_and_completion(self):
+        handle = {"pane_id": 42, "tab_id": 5, "workspace_id": 1,
+                  "token": "0123456789abcdef0123456789abcdef", "cursor": 9}
+        process, seen = self.socket_call(("job", "spawn", "--user-shell", "--wait", "--", "make", "test"), [
+            result(handle), result({"pane_id": 42, "state": "exited", "status": 7, "cursor": 10}),
+        ])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        payload = json.loads(process.stdout)
+        self.assertEqual(payload["token"], handle["token"])
+        self.assertEqual(payload["tab_id"], 5)
+        self.assertEqual(payload["status"], 7)
+        self.assertEqual(payload["cursor"], 10)
+        self.assertTrue(seen[0]["user_shell"])
+        self.assertEqual(seen[0]["argv"], ["make", "test"])
+        self.assertEqual([r["kind"] for r in seen], ["job_spawn", "job_get"])
+
+    def test_spawn_wait_timeout_keeps_handle_and_never_closes(self):
+        handle = {"pane_id": 42, "tab_id": 5, "workspace_id": 1,
+                  "token": "0123456789abcdef0123456789abcdef", "cursor": 9}
+        process, seen = self.socket_call(("--timeout", "0", "job", "spawn", "--wait", "--auto-close", "--", "make", "test"), [
+            result(handle), result({"pane_id": 42, "state": "running", "cursor": 10}),
+        ])
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stderr)["code"], "timeout")
+        self.assertEqual(json.loads(process.stdout), handle)
+        self.assertEqual([r["kind"] for r in seen], ["job_spawn", "job_get"])
+
+    def test_spawn_wait_cleanup_failure_preserves_recovery_handle(self):
+        handle = {"pane_id": 42, "tab_id": 5, "workspace_id": 1,
+                  "token": "0123456789abcdef0123456789abcdef", "cursor": 9}
+        process, seen = self.socket_call(("job", "spawn", "--wait", "--auto-close", "--", "true"), [
+            result(handle), result({"pane_id": 42, "state": "exited", "status": 0, "cursor": 10}),
+            {"kind": "error", "status": "job_running", "error": "output still draining"},
+        ])
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stdout), handle)
+        self.assertEqual(json.loads(process.stderr)["code"], "job_running")
+        self.assertEqual(seen[-1]["kind"], "job_cleanup")
+
+    def test_auto_close_only_after_completion_for_spawn_and_wait(self):
+        handle = {"pane_id": 42, "tab_id": 5, "workspace_id": 1,
+                  "token": "0123456789abcdef0123456789abcdef", "cursor": 9}
+        completed = result({"pane_id": 42, "state": "exited", "status": 7, "cursor": 10})
+        for args, responses in [
+            (("job", "spawn", "--wait", "--auto-close", "--", "false"), [result(handle), completed, result()]),
+            (("job", "wait", "--auto-close", "--id", "42", "--token", handle["token"]), [completed, result()]),
+        ]:
+            process, seen = self.socket_call(args, responses)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertTrue(json.loads(process.stdout)["closed"])
+            self.assertEqual(json.loads(process.stdout)["status"], 7)
+            self.assertEqual(seen[-1]["kind"], "job_cleanup")
+            self.assertEqual(seen[-1]["token"], handle["token"])
+
+    def test_wait_flags_validate_before_launch(self):
+        for args in [
+            ("job", "spawn", "--auto-close", "--", "make"),
+            ("--transport", "htp", "job", "spawn", "--wait", "--", "make"),
+        ]:
+            process = self.run_cli(*args)
+            self.assertEqual(process.returncode, 2, process.stderr)
+        process = self.run_cli("api", "call", "job_spawn", json.dumps({"argv": ["make"], "user_shell": "true"}))
+        self.assertEqual(process.returncode, 2, process.stderr)
+
+    def test_invalid_job_launches_rejected_without_host(self):
+        for payload in ({}, {"argv": []}, {"argv": [""]}, {"argv": ["echo"], "cmd": "echo"},
+                        {"argv": ["echo", "\x00"]}, {"cmd": "echo\x00"}, {"argv": ["echo"] * 257}):
+            process = self.run_cli("api", "call", "job_spawn", json.dumps(payload))
+            self.assertEqual(process.returncode, 2, process.stderr)
+        for args in (("job", "spawn"), ("job", "spawn", "--"), ("job", "cleanup", "--id", "42")):
+            process = self.run_cli(*args)
+            self.assertEqual(process.returncode, 2, process.stderr)
+
+    def test_job_wait_uses_retained_status_after_event_overflow(self):
+        token = "0123456789abcdef0123456789abcdef"
+        completed = {"pane_id": 42, "state": "exited", "status": 7, "cursor": 1000}
+        process, seen = self.socket_call(("job", "wait", "--id", "42", "--token", token), [
+            result({"pane_id": 42, "state": "running", "status": None, "cursor": 9}),
+            {"kind": "error", "status": "event_overflow", "error": "lost"},
+            result(completed),
+        ])
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(json.loads(process.stdout), completed)
+        self.assertEqual([request["kind"] for request in seen], ["job_get", "events_read", "job_get"])
+        self.assertEqual(seen[0]["token"], token)
+        self.assertEqual(seen[1]["id"], 42)
+        self.assertEqual(seen[1]["event"], "process_exited")
+
+    def test_job_timeout_never_cleans_up_or_relaunches(self):
+        token = "0123456789abcdef0123456789abcdef"
+        process, seen = self.socket_call(("--timeout", "0", "job", "wait", "--auto-close", "--id", "42", "--token", token),
+                                         result({"pane_id": 42, "state": "running", "cursor": 9}))
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stderr)["code"], "timeout")
+        self.assertEqual([request["kind"] for request in seen], ["job_get"])
+
+    def test_job_output_preserves_binary_bytes_and_cleanup_reports_errors(self):
+        token = "0123456789abcdef0123456789abcdef"
+        raw = b"\xfffailure\x1b[31m\r\n"
+        process, seen = self.socket_call(("job", "output", "--id", "42", "--token", token),
+                                         result({"encoding": "base64", "data": base64.b64encode(raw).decode(), "truncated": True, "incomplete": False, "capacity_bytes": 1048576}))
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(base64.b64decode(json.loads(process.stdout)["data"]), raw)
+        self.assertEqual(seen[0]["kind"], "job_output")
+        process, seen = self.socket_call(("job", "cleanup", "--id", "42", "--token", token),
+                                         {"kind": "error", "status": "job_running", "error": "still running"})
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stderr)["code"], "job_running")
+        self.assertEqual(seen[0]["token"], token)
 
     def test_watch_emits_ndjson_and_resumes_from_returned_cursor(self):
         first = {"sequence": 11, "kind": "status_changed", "pane_id": 42}

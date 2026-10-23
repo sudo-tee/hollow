@@ -49,6 +49,10 @@ pub const Kind = enum {
     wait_revision,
     events_subscribe,
     events_read,
+    job_spawn,
+    job_get,
+    job_output,
+    job_cleanup,
     focus,
     scroll,
     config_reload,
@@ -95,6 +99,8 @@ pub const PaneMove = struct { id: usize, direction: []const u8, amount: ?f64 = n
 pub const Text = struct { id: usize, text: []const u8 };
 pub const Tag = struct { id: usize, tag: []const u8 };
 pub const Direction = struct { direction: []const u8 };
+pub const JobSpawn = struct { argv: ?[]const []const u8 = null, cmd: ?[]const u8 = null, cwd: ?[]const u8 = null, domain: ?[]const u8 = null, user_shell: bool = false };
+pub const JobHandle = struct { id: usize, token: []const u8 };
 
 /// Only fields belonging to the selected command can be represented.
 pub const Command = union(Kind) {
@@ -146,6 +152,10 @@ pub const Command = union(Kind) {
     wait_revision: struct { revision: u64, timeout_ms: ?u64 = null },
     events_subscribe: Empty,
     events_read: struct { after: u64, id: ?usize = null, event: ?[]const u8 = null, command_id: ?u64 = null, timeout_ms: ?u64 = null },
+    job_spawn: JobSpawn,
+    job_get: JobHandle,
+    job_output: JobHandle,
+    job_cleanup: JobHandle,
     focus: Direction,
     scroll: Direction,
     config_reload: Empty,

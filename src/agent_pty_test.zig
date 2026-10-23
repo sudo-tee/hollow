@@ -31,6 +31,61 @@ fn multiplex(path: []const u8) agent.Host {
     return .{ .agent = .{ .path = path }, .multiplex = .{} };
 }
 
+test "background one-shot shell preserves failures and direct argv bypasses expansion on both agent transports" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    for ([_]agent.Host{ local(path), multiplex(path) }) |host| {
+        var shell_request = request("/bin/sh", host);
+        shell_request.launch_command = .{ .command = "printf 'job-failed\\n'; exit 7", .one_shot = true };
+        var shell = try agent.AgentPty.init(std.testing.allocator, shell_request, .{});
+        defer shell.closeAndJoin();
+        try std.testing.expect(!shell.fallbackAllowed());
+        try shell.start();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(std.testing.allocator);
+        try readUntil(&shell, &out, "job-failed\r\n");
+        try std.testing.expectEqual(@as(?u32, 7), try waitExit(&shell));
+        var direct_request = request("/bin/sh", host);
+        direct_request.launch_command = .{ .argv = &.{ "/usr/bin/printf", "<%s>\\n", "$HOME; & *", "" } };
+        var direct = try agent.AgentPty.init(std.testing.allocator, direct_request, .{});
+        defer direct.closeAndJoin();
+        try direct.start();
+        out.clearRetainingCapacity();
+        try readUntil(&direct, &out, "<$HOME; & *>\r\n<>\r\n");
+        try std.testing.expectEqual(@as(?u32, 0), try waitExit(&direct));
+    }
+}
+
+test "user shell jobs load startup and preserve argv on dedicated and mux agents" {
+    const a = std.testing.allocator;
+    const path = try agentPath();
+    defer a.free(path);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io.get(), .{ .sub_path = ".bashrc", .data = "export HOLLOW_JOB_STARTUP=loaded\n" });
+    const home = try tmp.dir.realPathFileAlloc(io.get(), ".", a);
+    defer a.free(home);
+    const env = try std.fmt.allocPrint(a, "HOME={s}\x00\x00", .{home});
+    defer a.free(env);
+    for ([_]agent.Host{ local(path), multiplex(path) }) |host| {
+        // Explicit WSL inner shell selection also works in this local fixture.
+        var req = request("wsl.exe --exec /bin/bash", host);
+        req.env_block = env;
+        req.launch_command = .{
+            .argv = &.{ "/bin/sh", "-c", "printf '<%s>\\n' \"$HOLLOW_JOB_STARTUP\" \"$@\"; exit 7", "job", "$HOME; & *", "quote'\\tail", "" },
+            .one_shot = true,
+            .user_shell = true,
+        };
+        var pty = try agent.AgentPty.init(a, req, .{});
+        defer pty.closeAndJoin();
+        try pty.start();
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(a);
+        try readUntil(&pty, &output, "<loaded>\r\n<$HOME; & *>\r\n<quote'\\tail>\r\n<>\r\n");
+        try std.testing.expectEqual(@as(?u32, 7), try waitExit(&pty));
+    }
+}
+
 test "mux panes reuse a connector and isolate env resize input exit and close" {
     const path = try agentPath();
     defer std.testing.allocator.free(path);
