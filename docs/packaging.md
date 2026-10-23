@@ -2,13 +2,12 @@
 
 This page covers what to ship in a release, the runtime layout
 end-users will see, and how to bundle the Linux guest agents and the
-Python `hollow-cli` client.
+standalone Zig `hollow-cli` client (plus the retained Python fallback).
 
 For build flags see [Development](development.md#build-and-run).
 For the Linux agents shipped with Windows releases see
 [Linux agents](#linux-agents) and [WSL → Agent PTY](platforms/wsl.md#agent-pty).
-For the Python client see
-[Python `hollow-cli`](reference/cli/hollow-cli.md).
+For CLI packaging and transports see [Standalone Zig CLI](reference/cli/standalone.md).
 
 Debug symbols (`.pdb` files) are deliberately not bundled in releases.
 See [Crash reports](#crash-reports) below for how to symbolicate
@@ -23,7 +22,11 @@ A Windows release zip should contain:
 | `hollow.exe`                                 | Console launcher and `hollow cli …` host     |
 | `hollow-gui.exe`                             | Console-less GUI shim                        |
 | `hollow-native.exe`                          | Actual GUI process                           |
-| `hollow-cli` _(optional)_                    | Python HTP client (talks OSC over a tty)     |
+| `hollow-cli.exe`                             | Standalone shared Zig CLI                   |
+| `hollow-cli.py` _(optional)_                 | Legacy Python compatibility client          |
+| `cli/SHA256SUMS`                             | Checksums for standalone guest CLIs         |
+| `cli/linux-x86_64/hollow-cli`                | Static Linux x86_64 CLI                     |
+| `cli/linux-aarch64/hollow-cli`               | Static Linux aarch64 CLI                    |
 | `conf/init.lua` _(optional)_                 | Editable shipped base config                 |
 | `agents/SHA256SUMS`                         | Checksums for the bundled guest agents      |
 | `agents/linux-x86_64/hollow-agent`           | Static Linux x86_64 guest agent             |
@@ -33,14 +36,13 @@ A Windows release zip should contain:
 The `agents/` bundle is auto-deployed by Hollow into WSL distros, SSH
 hosts and containers on first use. Without it, WSL panes still work
 through ConPTY but with limitations: no image protocol, no Sixel, and
-no Python `hollow-cli` over the tty.
+no OSC CLI traffic over the tty.
 See [Linux agents](#linux-agents).
 
-Without `hollow-cli`, end users can still drive Hollow from outside
-via the native [`hollow cli …`](reference/cli/native.md) subcommand
-that talks to the host command socket. The Python client is for
-shell-side and PowerShell-side use cases where no host-side
-executable is reachable.
+`hollow-cli` and [`hollow cli …`](reference/cli/native.md) share one parser and
+typed command implementation. Linux agents embed an architecture-matched CLI
+and install it in their shell bundle, without a guest Python dependency. The
+separate `cli/` binaries are useful for manual SSH/WSL installation.
 
 ## Default runtime layout
 
@@ -51,7 +53,12 @@ After a user unpacks a release and runs `hollow.exe` once:
   hollow.exe
   hollow-gui.exe
   hollow-native.exe
-  hollow-cli                  # Python client, if shipped
+  hollow-cli.exe              # standalone Zig CLI
+  hollow-cli.py               # Python compatibility fallback
+  cli/
+    SHA256SUMS
+    linux-x86_64/hollow-cli
+    linux-aarch64/hollow-cli
   agents/
     SHA256SUMS
     linux-x86_64/hollow-agent
@@ -98,8 +105,9 @@ zig build -Doptimize=ReleaseFast
 `launch.sh` is the dev loop; `zig build -Doptimize=ReleaseFast` is the
 shape of a CI release build.
 
-Normal `zig build` also installs both Linux agent architectures and `SHA256SUMS`
-under `zig-out/agents/`. `launch.sh --install` copies the complete bundle beside
+Normal `zig build` also installs the selected-target CLI, both Linux agent
+architectures under `zig-out/agents/`, and both Linux CLIs under `zig-out/cli/`,
+with separate `SHA256SUMS` manifests. `launch.sh --install` copies both complete bundles beside
 the Windows executable. With `--no-build`, a missing bundle fails installation
 with build guidance rather than installing an app unable to deploy guest agents.
 Guest connections verify/deploy the selected bundled binary automatically; there
@@ -123,6 +131,7 @@ Build the bundle on its own with:
 
 ```bash
 zig build --build-file build-agent.zig agent-all
+zig build --build-file build-agent.zig cli-all
 ```
 
 Normal `zig build` also produces it under `zig-out/agents/`.

@@ -181,12 +181,10 @@ test "socket and OSC queries share state, pane targeting, and validation without
     app.mux.?.active_workspace = &workspace;
     var params = try std.json.parseFromSlice(std.json.Value, a, "{\"state\":\"working\",\"progress\":40}", .{});
     defer params.deinit();
-    var set = try @import("command_dispatcher.zig").executeCommand(app, .{
-        .kind = .get_htp,
-        .pane_id = @intFromPtr(&pane),
+    var set = try @import("command_dispatcher.zig").executeCommand(app, .{ .ctx = .{ .pane_id = @intFromPtr(&pane) }, .data = .{ .get_htp = .{
         .channel = "program_status_set",
         .params = params.value,
-    });
+    } } });
     defer set.deinit(a);
     try std.testing.expect(set.success);
     var get = try @import("htp.zig").dispatchHtpQuerySync(app, @intFromPtr(&pane), "program_status_get", null);
@@ -249,14 +247,14 @@ test "socket and OSC queries share state, pane targeting, and validation without
     try std.testing.expect(@import("session_controller.zig").sendTextToPane(app, @intFromPtr(&pane), "script input"));
     pane.program_status.setFocused(true);
     try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .release, false));
-    app.processInputQueue();
+    @import("input.zig").processInputQueue(app);
     try std.testing.expectEqual(@as(usize, 1), pane.program_status.records.items.len);
     try std.testing.expect(app.enqueueKey(.escape, ghostty.Mods.none, .press, false));
-    app.processInputQueue();
+    @import("input.zig").processInputQueue(app);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
     var done_again = try execute(app, @intFromPtr(&pane), "program_status_set", completed.value);
     defer done_again.deinit(a);
     try std.testing.expect(app.enqueueChar("x"));
-    app.processInputQueue();
+    @import("input.zig").processInputQueue(app);
     try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
 }

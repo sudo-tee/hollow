@@ -1,10 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const command = @import("command.zig");
-const command_ipc = @import("ipc.zig");
-const platform = @import("platform.zig");
+const transport = @import("cli/transport.zig");
 const io = @import("io.zig");
-const notification = @import("notification.zig");
 
 const win32 = if (builtin.os.tag == .windows) struct {
     const BOOL = i32;
@@ -26,6 +24,7 @@ const CommonOptions = struct {
     quiet: bool = false,
     envelope: bool = false,
     timeout_ms: u64 = 1500,
+    transport: transport.Mode = .auto,
 };
 
 const CliError = struct {
@@ -33,6 +32,7 @@ const CliError = struct {
     code: []const u8,
     status: u8,
     owned_message: bool = false,
+    owned_code: bool = false,
 };
 
 const Reply = command.Response;
@@ -120,7 +120,9 @@ const JsonObjectBuilder = struct {
 };
 
 pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) u8 {
-    var runner = Runner.init(allocator, argv);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var runner = Runner.init(arena.allocator(), argv);
     defer runner.deinit();
 
     runner.execute() catch |err| switch (err) {
@@ -168,6 +170,10 @@ const Runner = struct {
         var i: usize = 0;
         while (i < self.argv.len) : (i += 1) {
             const arg = self.argv[i];
+            if (std.mem.eql(u8, arg, "--")) {
+                try filtered.appendSlice(self.allocator, self.argv[i..]);
+                break;
+            }
             if (std.mem.eql(u8, arg, "--pretty")) {
                 self.options.pretty = true;
                 continue;
@@ -189,9 +195,7 @@ const Runner = struct {
             if (std.mem.eql(u8, arg, "--transport")) {
                 i += 1;
                 if (i >= self.argv.len) return self.fail("missing transport value", "invalid_args", 2);
-                if (!std.mem.eql(u8, self.argv[i], "auto")) {
-                    return self.fail("native cli currently supports only auto transport", "invalid_args", 2);
-                }
+                self.options.transport = std.meta.stringToEnum(transport.Mode, self.argv[i]) orelse return self.fail("transport must be auto, socket, file, or osc", "invalid_args", 2);
                 continue;
             }
             if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -213,6 +217,13 @@ const Runner = struct {
 
         const command_name = filtered.items[0];
         const args = filtered.items[1..];
+        if (std.mem.eql(u8, command_name, "api")) return try self.executeApi(args);
+        if (std.mem.eql(u8, command_name, "events")) return try self.executeEvents(args, false);
+        if (std.mem.eql(u8, command_name, "job")) return try self.executeJob(args);
+        if (std.mem.eql(u8, command_name, "capabilities")) {
+            if (args.len != 0) return self.fail("capabilities takes no arguments", "invalid_args", 2);
+            return self.printQuery(.{ .data = .{ .capabilities = .{} } });
+        }
         if (std.mem.eql(u8, command_name, "get")) return try self.executeGet(args);
         if (std.mem.eql(u8, command_name, "workspace")) return try self.executeWorkspace(args);
         if (std.mem.eql(u8, command_name, "tab")) return try self.executeTab(args);
@@ -232,7 +243,7 @@ const Runner = struct {
             defer request.deinit(self.allocator);
             const source_pane = io.getEnvVarOwned(self.allocator, "HOLLOW_PANE_ID") catch null;
             defer if (source_pane) |value| self.allocator.free(value);
-            if (source_pane) |value| request.pane_id = std.fmt.parseInt(usize, value, 10) catch return self.fail("invalid HOLLOW_PANE_ID", "invalid_args", 2);
+            if (source_pane) |value| request.ctx.pane_id = std.fmt.parseInt(usize, value, 10) catch return self.fail("invalid HOLLOW_PANE_ID", "invalid_args", 2);
             var reply = try self.sendRequest(request);
             defer reply.deinit(self.allocator);
             if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "program status command failed" }, "program_status_error", 1);
@@ -243,6 +254,144 @@ const Runner = struct {
         return self.failFmt("unknown command: {s}", .{command_name}, "invalid_args", 2);
     }
 
+    fn executeApi(self: *Runner, args: []const []const u8) !void {
+        if (args.len == 1 and std.mem.eql(u8, args[0], "list")) {
+            return self.printQuery(.{ .data = .{ .api_list = .{} } });
+        }
+        if (args.len == 2 and std.mem.eql(u8, args[0], "describe")) {
+            return self.printQuery(.{ .data = .{ .api_describe = .{ .name = args[1] } } });
+        }
+        if ((args.len == 2 or args.len == 3) and std.mem.eql(u8, args[0], "call")) {
+            var request = parseApiCall(self.allocator, args[1], if (args.len == 3) args[2] else "{}") catch |err| {
+                return self.failFmt("invalid API call: {s}", .{@errorName(err)}, "invalid_args", 2);
+            };
+            defer request.deinit(self.allocator);
+            return self.printQuery(request);
+        }
+        return self.fail("usage: cli api list | describe <name> | call <name> [args-json]", "invalid_args", 2);
+    }
+
+    fn executeJob(self: *Runner, args: []const []const u8) !void {
+        if (args.len == 0) return self.fail("usage: job spawn|get|output|wait|cleanup", "invalid_args", 2);
+        if (std.mem.eql(u8, args[0], "spawn")) {
+            var launch: command.JobSpawn = .{};
+            var wait = false;
+            var auto_close = false;
+            var i: usize = 1;
+            while (i < args.len) {
+                if (std.mem.eql(u8, args[i], "--")) {
+                    launch.argv = args[i + 1 ..];
+                    break;
+                }
+                if (std.mem.eql(u8, args[i], "--user-shell")) {
+                    launch.user_shell = true;
+                    i += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, args[i], "--wait")) {
+                    wait = true;
+                    i += 1;
+                    continue;
+                }
+                if (std.mem.eql(u8, args[i], "--auto-close")) {
+                    auto_close = true;
+                    i += 1;
+                    continue;
+                }
+                if (i + 1 >= args.len) return self.fail("missing job spawn option value", "invalid_args", 2);
+                if (std.mem.eql(u8, args[i], "--shell")) {
+                    launch.cmd = args[i + 1];
+                } else if (std.mem.eql(u8, args[i], "--cwd")) {
+                    launch.cwd = args[i + 1];
+                } else if (std.mem.eql(u8, args[i], "--domain")) {
+                    launch.domain = args[i + 1];
+                } else return self.fail("usage: job spawn [--user-shell] [--wait] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND", "invalid_args", 2);
+                i += 2;
+            }
+            command.validate(.{ .job_spawn = launch }) catch return self.fail("job spawn requires exactly one of -- ARGV... or --shell COMMAND", "invalid_args", 2);
+            if (auto_close and !wait) return self.fail("job spawn --auto-close requires --wait", "invalid_args", 2);
+            if (!wait) return self.printQuery(.{ .data = .{ .job_spawn = launch } });
+            // Reject unsupported transports before launching any work.
+            if (self.options.transport != .socket and self.options.transport != .auto) return self.fail("job spawn --wait requires socket transport", "unsupported_transport", 2);
+            var reply = try transport.send(self.allocator, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_spawn = launch } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(self.allocator);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "job spawn failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            const handle: command.JobHandle = .{ .id = @intCast(payload.object.get("pane_id").?.integer), .token = payload.object.get("token").?.string };
+            self.waitJob(handle, payload, auto_close) catch |err| {
+                // Timeout/transport failure must not lose the only recovery
+                // handle. Emit the spawn result on stdout, error on stderr.
+                try self.emitOutput(&reply, true);
+                return err;
+            };
+            return;
+        }
+        var id: ?usize = null;
+        var token: ?[]const u8 = null;
+        var auto_close = false;
+        var i: usize = 1;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "--auto-close") and std.mem.eql(u8, args[0], "wait")) {
+                auto_close = true;
+                i += 1;
+                continue;
+            }
+            if (i + 1 >= args.len) return self.fail("missing job handle option value", "invalid_args", 2);
+            if (std.mem.eql(u8, args[i], "--id")) {
+                id = try std.fmt.parseInt(usize, args[i + 1], 10);
+            } else if (std.mem.eql(u8, args[i], "--token")) {
+                token = args[i + 1];
+            } else return self.fail("expected --id ID --token TOKEN", "invalid_args", 2);
+            i += 2;
+        }
+        const handle: command.JobHandle = .{ .id = id orelse return self.fail("--id required", "invalid_args", 2), .token = token orelse return self.fail("--token required", "invalid_args", 2) };
+        const kind: command.Kind = if (std.mem.eql(u8, args[0], "get") or std.mem.eql(u8, args[0], "wait")) .job_get else if (std.mem.eql(u8, args[0], "output")) .job_output else if (std.mem.eql(u8, args[0], "cleanup")) .job_cleanup else return self.fail("unknown job command", "invalid_args", 2);
+        command.validate(.{ .job_get = handle }) catch return self.fail("invalid job handle", "invalid_args", 2);
+        if (std.mem.eql(u8, args[0], "wait")) return self.waitJob(handle, null, auto_close);
+        const request: command.Request = .{ .data = switch (kind) {
+            .job_get => .{ .job_get = handle },
+            .job_output => .{ .job_output = handle },
+            .job_cleanup => .{ .job_cleanup = handle },
+            else => unreachable,
+        } };
+        return self.printQuery(request);
+    }
+
+    fn waitJob(self: *Runner, handle: command.JobHandle, spawn: ?std.json.Value, auto_close: bool) !void {
+        if (self.options.transport != .socket and self.options.transport != .auto) return self.fail("job wait requires socket transport", "unsupported_transport", 2);
+        const deadline = io.nanoTimestamp() + @as(i128, self.options.timeout_ms *| std.time.ns_per_ms);
+        while (true) {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var reply = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_get = handle } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(a);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "job query failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            if (std.mem.eql(u8, payload.object.get("state").?.string, "exited")) {
+                if (spawn) |metadata| {
+                    inline for (.{ "tab_id", "workspace_id", "token" }) |key| {
+                        try reply.payload.?.object.put(a, try a.dupe(u8, key), try command.cloneJsonValue(a, metadata.object.get(key).?));
+                    }
+                }
+                if (auto_close) {
+                    var closed = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .job_cleanup = handle } }, .socket, @max(self.options.timeout_ms, 1000));
+                    defer closed.deinit(a);
+                    if (!closed.success) return self.failFmt("{s}: {s}", .{ closed.status, closed.error_message orelse "job cleanup failed" }, closed.status, 1);
+                    try reply.payload.?.object.put(a, try a.dupe(u8, "closed"), .{ .bool = true });
+                }
+                return self.emitOutput(&reply, true);
+            }
+            const now = io.nanoTimestamp();
+            if (now >= deadline) return self.fail("timed out waiting for job; job retained", "timeout", 1);
+            const remaining_ms: u64 = @intCast(@max(1, @divFloor(deadline - now, std.time.ns_per_ms)));
+            var events = try transport.send(a, .{ .ctx = .{ .origin = .cli }, .data = .{ .events_read = .{ .after = @intCast(payload.object.get("cursor").?.integer), .id = handle.id, .event = "process_exited", .timeout_ms = @min(remaining_ms, 250) } } }, .socket, @max(self.options.timeout_ms, 1000));
+            defer events.deinit(a);
+            // Retained process state is authoritative even if journal replay expired.
+            if (!events.success and !std.mem.eql(u8, events.status, "event_overflow")) return self.failFmt("{s}", .{events.error_message orelse "job wait failed"}, events.status, 1);
+        }
+    }
+
     fn executeGet(self: *Runner, args: []const []const u8) !void {
         if (args.len == 0) return self.fail("missing get command", "invalid_args", 2);
         const sub = args[0];
@@ -251,76 +400,76 @@ const Runner = struct {
         if (std.mem.eql(u8, sub, "pane")) {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
-            return try self.printQuery(.{ .kind = .get_pane, .id = id });
+            return try self.printQuery(.{ .data = .{ .get_pane = .{ .id = id } } });
         }
         if (std.mem.eql(u8, sub, "pane-text")) {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
-            return try self.printQuery(.{ .kind = .get_pane_text, .id = id });
+            return try self.printQuery(.{ .data = .{ .get_pane_text = .{ .id = id } } });
         }
         if (std.mem.eql(u8, sub, "screen")) {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
-            return try self.printQuery(.{ .kind = .get_screen, .id = id });
+            return try self.printQuery(.{ .data = .{ .get_screen = .{ .id = id } } });
         }
         if (std.mem.eql(u8, sub, "ui-nodes")) {
             if (rest.len != 0) return self.fail("ui-nodes takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_ui_nodes });
+            return try self.printQuery(.{ .data = .{ .get_ui_nodes = .{} } });
         }
         if (std.mem.eql(u8, sub, "revision")) {
             if (rest.len != 0) return self.fail("revision takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_revision });
+            return try self.printQuery(.{ .data = .{ .get_revision = .{} } });
         }
         if (std.mem.eql(u8, sub, "current-pane")) {
             if (rest.len != 0) return self.fail("current-pane takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_current_pane });
+            return try self.printQuery(.{ .data = .{ .get_current_pane = .{} } });
         }
         if (std.mem.eql(u8, sub, "tab")) {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
-            return try self.printQuery(.{ .kind = .get_tab, .id = id });
+            return try self.printQuery(.{ .data = .{ .get_tab = .{ .id = id } } });
         }
         if (std.mem.eql(u8, sub, "current-tab")) {
             if (rest.len != 0) return self.fail("current-tab takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_current_tab });
+            return try self.printQuery(.{ .data = .{ .get_current_tab = .{} } });
         }
         if (std.mem.eql(u8, sub, "tabs")) {
             if (rest.len != 0) return self.fail("tabs takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_tabs });
+            return try self.printQuery(.{ .data = .{ .get_tabs = .{} } });
         }
         if (std.mem.eql(u8, sub, "panes")) {
             var tag: ?[]const u8 = null;
             try self.parseOnlyTag(rest, &tag);
-            return try self.printQuery(.{ .kind = .get_panes, .tag = tag });
+            return try self.printQuery(.{ .data = .{ .get_panes = .{ .tag = tag } } });
         }
         if (std.mem.eql(u8, sub, "workspace")) {
             var id: ?usize = null;
             var index: ?usize = null;
             try self.parseIdIndex(rest, &id, &index);
             const workspace_id = id orelse try self.resolveIndex(.get_workspaces, index);
-            return try self.printQuery(.{ .kind = .get_workspace, .id = workspace_id });
+            return try self.printQuery(.{ .data = .{ .get_workspace = .{ .id = workspace_id } } });
         }
         if (std.mem.eql(u8, sub, "current-workspace")) {
             if (rest.len != 0) return self.fail("current-workspace takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_current_workspace });
+            return try self.printQuery(.{ .data = .{ .get_current_workspace = .{} } });
         }
         if (std.mem.eql(u8, sub, "workspaces")) {
             if (rest.len != 0) return self.fail("workspaces takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_workspaces });
+            return try self.printQuery(.{ .data = .{ .get_workspaces = .{} } });
         }
         if (std.mem.eql(u8, sub, "mux-tree")) {
             if (rest.len != 0) return self.fail("mux-tree takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_mux_tree });
+            return try self.printQuery(.{ .data = .{ .get_mux_tree = .{} } });
         }
         if (std.mem.eql(u8, sub, "domain")) {
             if (rest.len != 0) return self.fail("domain takes no arguments", "invalid_args", 2);
-            return try self.printQuery(.{ .kind = .get_domain });
+            return try self.printQuery(.{ .data = .{ .get_domain = .{} } });
         }
         if (std.mem.eql(u8, sub, "htp")) {
             if (rest.len == 0 or rest.len > 2) return self.fail("usage: cli get htp <channel> [params-json]", "invalid_args", 2);
             const params = if (rest.len == 2) rest[1] else "{}";
             const parsed_params = try parseJsonObjectArg(self.allocator, params, "params");
-            return try self.printQuery(.{ .kind = .get_htp, .channel = try self.allocator.dupe(u8, rest[0]), .params = parsed_params });
+            return try self.printQuery(.{ .data = .{ .get_htp = .{ .channel = rest[0], .params = parsed_params } } });
         }
 
         return self.failFmt("unknown get command: {s}", .{sub}, "invalid_args", 2);
@@ -337,26 +486,26 @@ const Runner = struct {
             var cmd: ?[]const u8 = null;
             var name: ?[]const u8 = null;
             try self.parseWorkspaceNewFlags(rest, &cwd, &domain, &cmd, &name);
-            return try self.printEvent(.{ .kind = .workspace_new, .cwd = if (cwd) |v| try self.allocator.dupe(u8, v) else null, .domain = if (domain) |v| try self.allocator.dupe(u8, v) else null, .cmd = if (cmd) |v| try self.allocator.dupe(u8, v) else null, .name = if (name) |v| try self.allocator.dupe(u8, v) else null });
+            return try self.printEvent(.{ .data = .{ .workspace_new = .{ .cwd = cwd, .domain = domain, .cmd = cmd, .name = name } } });
         }
         if (std.mem.eql(u8, sub, "close")) {
             var id: ?usize = null;
             var index: ?usize = null;
             try self.parseIdIndex(rest, &id, &index);
             const workspace_id = id orelse try self.resolveIndex(.get_workspaces, index);
-            return try self.printEvent(.{ .kind = .workspace_close, .id = workspace_id });
+            return try self.printEvent(.{ .data = .{ .workspace_close = .{ .id = workspace_id } } });
         }
         if (std.mem.eql(u8, sub, "next")) {
             if (rest.len != 0) return self.fail("workspace next takes no arguments", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .workspace_next });
+            return try self.printEvent(.{ .data = .{ .workspace_next = .{} } });
         }
         if (std.mem.eql(u8, sub, "prev")) {
             if (rest.len != 0) return self.fail("workspace prev takes no arguments", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .workspace_prev });
+            return try self.printEvent(.{ .data = .{ .workspace_prev = .{} } });
         }
         if (std.mem.eql(u8, sub, "select")) {
             if (rest.len != 1) return self.fail("usage: cli workspace select <index>", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .workspace_select, .index = try parseIndex(rest[0]) });
+            return try self.printEvent(.{ .data = .{ .workspace_select = .{ .index = try parseIndex(rest[0]) } } });
         }
         if (std.mem.eql(u8, sub, "rename")) {
             if (rest.len == 0) return self.fail("usage: cli workspace rename <name> [--id ID|--index N]", "invalid_args", 2);
@@ -364,7 +513,7 @@ const Runner = struct {
             var index: ?usize = null;
             try self.parseIdIndex(rest[1..], &id, &index);
             const workspace_id = id orelse try self.resolveIndex(.get_workspaces, index);
-            return try self.printEvent(.{ .kind = .workspace_rename, .id = workspace_id, .name = try self.allocator.dupe(u8, rest[0]) });
+            return try self.printEvent(.{ .data = .{ .workspace_rename = .{ .id = workspace_id, .name = rest[0] } } });
         }
 
         return self.failFmt("unknown workspace command: {s}", .{sub}, "invalid_args", 2);
@@ -380,27 +529,27 @@ const Runner = struct {
             var domain: ?[]const u8 = null;
             var cwd: ?[]const u8 = null;
             try self.parseTabNewFlags(rest, &cmd, &domain, &cwd);
-            return try self.printEvent(.{ .kind = .tab_new, .cmd = if (cmd) |v| try self.allocator.dupe(u8, v) else null, .domain = if (domain) |v| try self.allocator.dupe(u8, v) else null, .cwd = if (cwd) |v| try self.allocator.dupe(u8, v) else null });
+            return try self.printEvent(.{ .data = .{ .tab_new = .{ .cmd = cmd, .domain = domain, .cwd = cwd } } });
         }
         if (std.mem.eql(u8, sub, "close")) {
             var id: ?usize = null;
             var index: ?usize = null;
             try self.parseIdIndex(rest, &id, &index);
             const tab_id = id orelse try self.resolveIndex(.get_tabs, index);
-            return try self.printEvent(.{ .kind = .tab_close, .id = tab_id });
+            return try self.printEvent(.{ .data = .{ .tab_close = .{ .id = tab_id } } });
         }
         if (std.mem.eql(u8, sub, "next")) {
             if (rest.len != 0) return self.fail("tab next takes no arguments", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .tab_next });
+            return try self.printEvent(.{ .data = .{ .tab_next = .{} } });
         }
         if (std.mem.eql(u8, sub, "prev")) {
             if (rest.len != 0) return self.fail("tab prev takes no arguments", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .tab_prev });
+            return try self.printEvent(.{ .data = .{ .tab_prev = .{} } });
         }
         if (std.mem.eql(u8, sub, "select")) {
             if (rest.len != 1) return self.fail("usage: cli tab select <index>", "invalid_args", 2);
             const tab_id = (try self.resolveIndex(.get_tabs, try parseIndex(rest[0]))).?;
-            return try self.printEvent(.{ .kind = .tab_select, .id = tab_id });
+            return try self.printEvent(.{ .data = .{ .tab_select = .{ .id = tab_id } } });
         }
         if (std.mem.eql(u8, sub, "rename")) {
             if (rest.len == 0) return self.fail("usage: cli tab rename <name> [--id ID|--index N]", "invalid_args", 2);
@@ -408,14 +557,14 @@ const Runner = struct {
             var index: ?usize = null;
             try self.parseIdIndex(rest[1..], &id, &index);
             const tab_id = id orelse try self.resolveIndex(.get_tabs, index);
-            return try self.printEvent(.{ .kind = .tab_rename, .id = tab_id, .name = try self.allocator.dupe(u8, rest[0]) });
+            return try self.printEvent(.{ .data = .{ .tab_rename = .{ .id = tab_id orelse try self.activeTabId(), .name = rest[0] } } });
         }
         if (std.mem.eql(u8, sub, "screenshot")) {
             if (rest.len == 0) return self.fail("usage: cli tab screenshot <path.png> [--id ID|--index N]", "invalid_args", 2);
             var id: ?usize = null;
             var index: ?usize = null;
             try self.parseIdIndex(rest[1..], &id, &index);
-            return try self.printScreenshot(.{ .kind = .tab_screenshot, .id = id orelse try self.resolveIndex(.get_tabs, index), .path = try self.allocator.dupe(u8, rest[0]) });
+            return try self.printScreenshot(.{ .data = .{ .tab_screenshot = .{ .id = id orelse try self.resolveIndex(.get_tabs, index), .path = rest[0] } } });
         }
 
         return self.failFmt("unknown tab command: {s}", .{sub}, "invalid_args", 2);
@@ -430,7 +579,7 @@ const Runner = struct {
             if (rest.len == 0) return self.fail("usage: cli pane screenshot <path.png> [--id ID]", "invalid_args", 2);
             var id: ?usize = null;
             try self.parseOnlyId(rest[1..], &id);
-            return try self.printScreenshot(.{ .kind = .pane_screenshot, .id = id, .path = try self.allocator.dupe(u8, rest[0]) });
+            return try self.printScreenshot(.{ .data = .{ .pane_screenshot = .{ .id = id, .path = rest[0] } } });
         }
 
         if (std.mem.eql(u8, sub, "split")) {
@@ -441,14 +590,13 @@ const Runner = struct {
             var domain: ?[]const u8 = null;
             var ratio: ?f64 = null;
             try self.parsePaneSplitFlags(rest[1..], &cmd, &cwd, &domain, &ratio);
-            return try self.printEvent(.{
-                .kind = .pane_split,
-                .direction = try self.allocator.dupe(u8, rest[0]),
+            return try self.printEvent(.{ .data = .{ .pane_split = .{
+                .direction = rest[0],
                 .cmd = if (cmd) |value| try self.allocator.dupe(u8, value) else null,
                 .cwd = if (cwd) |value| try self.allocator.dupe(u8, value) else null,
                 .domain = if (domain) |value| try self.allocator.dupe(u8, value) else null,
                 .ratio = ratio,
-            });
+            } } });
         }
         if (std.mem.eql(u8, sub, "popup")) {
             if (rest.len == 0) return self.fail("usage: cli pane popup <cmd> [options]", "invalid_args", 2);
@@ -459,8 +607,7 @@ const Runner = struct {
             var width: ?f64 = null;
             var height: ?f64 = null;
             try self.parsePanePopupFlags(rest[1..], &cwd, &domain, &x, &y, &width, &height);
-            return try self.printEvent(.{
-                .kind = .pane_popup,
+            return try self.printEvent(.{ .data = .{ .pane_popup = .{
                 .cmd = try self.allocator.dupe(u8, rest[0]),
                 .cwd = if (cwd) |value| try self.allocator.dupe(u8, value) else null,
                 .domain = if (domain) |value| try self.allocator.dupe(u8, value) else null,
@@ -468,31 +615,31 @@ const Runner = struct {
                 .y = y,
                 .width = width,
                 .height = height,
-            });
+            } } });
         }
         if (std.mem.eql(u8, sub, "close")) {
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest, &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_close }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_close = .{ .id = 0 } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "zoom")) {
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest, &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_zoom }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_zoom = .{ .id = 0 } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "float")) {
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest, &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_float }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_float = .{ .id = 0 } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "tile")) {
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest, &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_tile }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_tile = .{ .id = 0 } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "move")) {
             if (rest.len == 0) return self.fail("usage: cli pane move <left|right|up|down> [options]", "invalid_args", 2);
@@ -501,11 +648,11 @@ const Runner = struct {
             var tag: ?[]const u8 = null;
             var amount: ?f64 = null;
             try self.parseIdTagAmount(rest[1..], &id, &tag, &amount);
-            return try self.emitToMatchingPanes(.{
-                .kind = .pane_move,
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_move = .{
+                .id = 0,
                 .direction = try self.allocator.dupe(u8, rest[0]),
                 .amount = amount,
-            }, id, tag);
+            } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "resize")) {
             if (rest.len == 0) return self.fail("usage: cli pane resize <left|right|up|down> [options]", "invalid_args", 2);
@@ -514,11 +661,10 @@ const Runner = struct {
             var tag: ?[]const u8 = null;
             var amount: ?f64 = 5.0;
             try self.parseIdTagAmount(rest[1..], &id, &tag, &amount);
-            return try self.emitToMatchingPanes(.{
-                .kind = .pane_resize,
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_resize = .{
                 .direction = try self.allocator.dupe(u8, rest[0]),
                 .amount = resizeDelta(rest[0], amount.?),
-            }, id, tag);
+            } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "bell")) {
             var id: ?usize = null;
@@ -526,35 +672,35 @@ const Runner = struct {
             var level: ?[]const u8 = null;
             var color: ?[]const u8 = null;
             try self.parsePaneBellFlags(rest, &id, &tag, &level, &color);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_bell, .level = level, .color = color }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_bell = .{ .level = level, .color = color } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "send-text")) {
             if (rest.len == 0) return self.fail("usage: cli pane send-text <text> [--id ID|--tag TAG]", "invalid_args", 2);
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest[1..], &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_send_text, .text = try self.allocator.dupe(u8, rest[0]) }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_send_text = .{ .id = 0, .text = rest[0] } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "set-tag")) {
             if (rest.len == 0) return self.fail("usage: cli pane set-tag <tag> [--id ID|--tag TAG]", "invalid_args", 2);
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest[1..], &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_set_tag, .tag = try self.allocator.dupe(u8, rest[0]) }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_set_tag = .{ .id = 0, .tag = rest[0] } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "remove-tag")) {
             if (rest.len == 0) return self.fail("usage: cli pane remove-tag <tag> [--id ID|--tag TAG]", "invalid_args", 2);
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest[1..], &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_remove_tag, .tag = try self.allocator.dupe(u8, rest[0]) }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_remove_tag = .{ .id = 0, .tag = rest[0] } } }, id, tag);
         }
         if (std.mem.eql(u8, sub, "set-tags")) {
             const split_index = firstOptionIndex(rest);
             var id: ?usize = null;
             var tag: ?[]const u8 = null;
             try self.parseIdTag(rest[split_index..], &id, &tag);
-            return try self.emitToMatchingPanes(.{ .kind = .pane_set_tags, .tags = try dupArgs(self.allocator, rest[0..split_index]) }, id, tag);
+            return try self.emitToMatchingPanes(.{ .data = .{ .pane_set_tags = .{ .id = 0, .tags = rest[0..split_index] } } }, id, tag);
         }
 
         return self.failFmt("unknown pane command: {s}", .{sub}, "invalid_args", 2);
@@ -563,24 +709,24 @@ const Runner = struct {
     fn executeFocus(self: *Runner, args: []const []const u8) !void {
         if (args.len != 1) return self.fail("usage: cli focus <left|right|up|down>", "invalid_args", 2);
         if (!isOneOf(args[0], &.{ "left", "right", "up", "down" })) return self.fail("focus direction must be left, right, up, or down", "invalid_args", 2);
-        return try self.printEvent(.{ .kind = .focus, .direction = try self.allocator.dupe(u8, args[0]) });
+        return try self.printEvent(.{ .data = .{ .focus = .{ .direction = args[0] } } });
     }
 
     fn executeScroll(self: *Runner, args: []const []const u8) !void {
         if (args.len != 1) return self.fail("usage: cli scroll <top|bottom|page-up|page-down>", "invalid_args", 2);
         if (!isOneOf(args[0], &.{ "top", "bottom", "page-up", "page-down" })) return self.fail("scroll target must be top, bottom, page-up, or page-down", "invalid_args", 2);
-        return try self.printEvent(.{ .kind = .scroll, .direction = try self.allocator.dupe(u8, args[0]) });
+        return try self.printEvent(.{ .data = .{ .scroll = .{ .direction = args[0] } } });
     }
 
     fn executeConfig(self: *Runner, args: []const []const u8) !void {
         if (args.len == 0) return self.fail("missing config command", "invalid_args", 2);
         if (std.mem.eql(u8, args[0], "reload")) {
             if (args.len != 1) return self.fail("config reload takes no arguments", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .config_reload });
+            return try self.printEvent(.{ .data = .{ .config_reload = .{} } });
         }
         if (std.mem.eql(u8, args[0], "theme")) {
             if (args.len != 2) return self.fail("usage: cli config theme <name>", "invalid_args", 2);
-            return try self.printEvent(.{ .kind = .config_theme, .name = try self.allocator.dupe(u8, args[1]) });
+            return try self.printEvent(.{ .data = .{ .config_theme = .{ .name = args[1] } } });
         }
         return self.failFmt("unknown config command: {s}", .{args[0]}, "invalid_args", 2);
     }
@@ -589,7 +735,7 @@ const Runner = struct {
         if (args.len == 0) return self.fail("usage: cli run <cmd> [--domain NAME]", "invalid_args", 2);
         var domain: ?[]const u8 = null;
         try self.parseRunFlags(args[1..], &domain);
-        return try self.printEvent(.{ .kind = .run, .cmd = try self.allocator.dupe(u8, args[0]), .domain = if (domain) |value| try self.allocator.dupe(u8, value) else null });
+        return try self.printEvent(.{ .data = .{ .run = .{ .cmd = args[0], .domain = domain } } });
     }
 
     fn executeSendKeys(self: *Runner, args: []const []const u8) !void {
@@ -599,13 +745,13 @@ const Runner = struct {
         var id: ?usize = null;
         var tag: ?[]const u8 = null;
         try self.parseIdTag(args[1..], &id, &tag);
-        return try self.emitToMatchingPanes(.{ .kind = .send_keys, .text = try self.allocator.dupe(u8, text) }, id, tag);
+        return try self.emitToMatchingPanes(.{ .data = .{ .send_keys = .{ .id = 0, .text = text } } }, id, tag);
     }
 
     fn executeEmit(self: *Runner, args: []const []const u8) !void {
         if (args.len == 0 or args.len > 2) return self.fail("usage: cli emit <channel> [payload-json]", "invalid_args", 2);
         const payload = if (args.len == 2) args[1] else "{}";
-        return try self.printEvent(.{ .kind = .emit, .channel = try self.allocator.dupe(u8, args[0]), .payload = try parseJsonObjectArg(self.allocator, payload, "payload") });
+        return try self.printEvent(.{ .data = .{ .emit = .{ .channel = args[0], .payload = try parseJsonObjectArg(self.allocator, payload, "payload") } } });
     }
 
     fn executeNotify(self: *Runner, args: []const []const u8) !void {
@@ -656,11 +802,10 @@ const Runner = struct {
             try payload.put(self.allocator, "ttl", .{ .integer = @intCast(t) });
         }
 
-        return try self.printEvent(.{
-            .kind = .emit,
+        return try self.printEvent(.{ .data = .{ .emit = .{
             .channel = try self.allocator.dupe(u8, "notify"),
             .payload = .{ .object = payload },
-        });
+        } } });
     }
 
     fn executeUi(self: *Runner, args: []const []const u8) !void {
@@ -687,15 +832,15 @@ const Runner = struct {
             return self.failFmt("unknown ui click option: {s}", .{args[i]}, "invalid_args", 2);
         }
 
-        return try self.printEvent(.{
-            .kind = .ui_click,
+        return try self.printEvent(.{ .data = .{ .ui_click = .{
             .node_id = try self.allocator.dupe(u8, args[1]),
             .surface = if (surface) |value| try self.allocator.dupe(u8, value) else null,
             .generation = generation,
-        });
+        } } });
     }
 
     fn executeWait(self: *Runner, args: []const []const u8) !void {
+        if (args.len > 0 and isOneOf(args[0], &.{ "command", "process-exit", "status-change" })) return self.executeEvents(args, true);
         if (args.len != 1) return self.fail("usage: cli wait <revision>", "invalid_args", 2);
         const revision = try std.fmt.parseInt(u64, args[0], 10);
         const deadline = io.nanoTimestamp() + @as(i128, @intCast(self.options.timeout_ms *| std.time.ns_per_ms));
@@ -703,11 +848,10 @@ const Runner = struct {
             const now = io.nanoTimestamp();
             if (now >= deadline) return self.fail("timed out waiting for revision change", "timeout", 1);
             const remaining_ms: u64 = @intCast(@max(@as(i128, 1), @divFloor(deadline - now, std.time.ns_per_ms)));
-            var reply = try self.sendRequest(.{
-                .kind = .wait_revision,
+            var reply = try self.sendRequest(.{ .data = .{ .wait_revision = .{
                 .revision = revision,
                 .timeout_ms = @min(remaining_ms, 250),
-            });
+            } } });
             defer reply.deinit(self.allocator);
             if (reply.success) return try self.emitOutput(&reply, true);
             if (!std.mem.eql(u8, reply.status, "timeout")) {
@@ -716,9 +860,64 @@ const Runner = struct {
         }
     }
 
+    fn executeEvents(self: *Runner, args: []const []const u8, wait: bool) !void {
+        if (!wait and args.len == 1 and std.mem.eql(u8, args[0], "subscribe")) return self.printQuery(.{ .data = .{ .events_subscribe = .{} } });
+        if (args.len == 0 or (!wait and !isOneOf(args[0], &.{ "read", "watch" }))) return self.fail("usage: events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]", "invalid_args", 2);
+        var after: ?u64 = null;
+        var id: ?usize = null;
+        var event: ?[]const u8 = if (!wait) null else if (std.mem.eql(u8, args[0], "command")) "command_finished" else if (std.mem.eql(u8, args[0], "process-exit")) "process_exited" else "status_changed";
+        var command_id: ?u64 = null;
+        var i: usize = 1;
+        while (i < args.len) : (i += 2) {
+            if (i + 1 >= args.len) return self.fail("missing event option value", "invalid_args", 2);
+            const option = args[i];
+            const value = args[i + 1];
+            if (std.mem.eql(u8, option, "--after")) {
+                after = try std.fmt.parseInt(u64, value, 10);
+            } else if (std.mem.eql(u8, option, "--pane")) {
+                id = try std.fmt.parseInt(usize, value, 10);
+            } else if (std.mem.eql(u8, option, "--command-id")) {
+                command_id = try std.fmt.parseInt(u64, value, 10);
+            } else if (!wait and std.mem.eql(u8, option, "--event")) {
+                event = value;
+            } else return self.fail("unknown event option", "invalid_args", 2);
+        }
+        var cursor = after orelse return self.fail("--after cursor required; subscribe before launching work", "invalid_args", 2);
+        if (wait and id == null) return self.fail("completion waits require --pane ID", "invalid_args", 2);
+        const watch = !wait and std.mem.eql(u8, args[0], "watch");
+        if (watch and (self.options.pretty or self.options.envelope)) return self.fail("watch emits NDJSON; --pretty and --envelope are unsupported", "invalid_args", 2);
+        const deadline = io.nanoTimestamp() + @as(i128, self.options.timeout_ms *| std.time.ns_per_ms);
+        while (true) {
+            // A watch can run indefinitely: reclaim every transport/JSON allocation.
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const now = io.nanoTimestamp();
+            const remaining: u64 = if (watch) 250 else if (now >= deadline) 0 else @intCast(@max(1, @divFloor(deadline - now, std.time.ns_per_ms)));
+            const request: command.Request = .{ .ctx = .{ .origin = .cli }, .data = .{ .events_read = .{ .after = cursor, .id = id, .event = event, .command_id = command_id, .timeout_ms = @min(remaining, 250) } } };
+            command.validate(request.data) catch return self.fail("invalid event arguments", "invalid_args", 2);
+            var reply = try transport.send(a, request, self.options.transport, @max(self.options.timeout_ms, 1000));
+            defer reply.deinit(a);
+            if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "event read failed" }, reply.status, 1);
+            const payload = reply.payload orelse return error.InvalidCommandEnvelope;
+            const items = payload.object.get("events").?.array.items;
+            cursor = @intCast(payload.object.get("cursor").?.integer);
+            if (!watch and !wait) return self.emitOutput(&reply, true);
+            for (items) |item| {
+                if (wait) {
+                    var result = command.Response.ok(item);
+                    return self.emitOutput(&result, true);
+                }
+                if (!self.options.quiet) try writeJsonValue(item, false, false);
+            }
+            if (!watch and io.nanoTimestamp() >= deadline) return self.fail("timed out waiting for event", "timeout", 1);
+        }
+    }
+
     fn printQuery(self: *Runner, request: command.Request) !void {
         var reply = try self.sendRequest(request);
         defer reply.deinit(self.allocator);
+        if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "command failed" }, reply.status, 1);
         try self.emitOutput(&reply, true);
     }
 
@@ -732,6 +931,7 @@ const Runner = struct {
     fn printEvent(self: *Runner, request: command.Request) !void {
         var reply = try self.sendRequest(request);
         defer reply.deinit(self.allocator);
+        if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "command failed" }, reply.status, 1);
         try self.emitOutput(&reply, false);
     }
 
@@ -752,7 +952,10 @@ const Runner = struct {
     }
 
     fn sendRequest(self: *Runner, request: command.Request) !Reply {
-        return command_ipc.send(self.allocator, request, self.options.timeout_ms) catch |err| switch (err) {
+        command.validate(request.data) catch |err| return self.failFmt("invalid command: {s}", .{@errorName(err)}, "invalid_args", 2);
+        var contextual = request;
+        if (contextual.ctx.origin == .internal) contextual.ctx.origin = .cli;
+        return transport.send(self.allocator, contextual, self.options.transport, self.options.timeout_ms) catch |err| switch (err) {
             error.CommandAddrUnavailable => return self.fail("no running Hollow instance found", "transport_error", 1),
             error.Timeout => return self.fail("timed out waiting for command reply", "timeout", 1),
             else => return self.failFmt("command transport failed: {s}", .{@errorName(err)}, "transport_error", 1),
@@ -763,7 +966,12 @@ const Runner = struct {
         const idx = index orelse return null;
         if (idx < 1) return self.fail("index must be >= 1", "invalid_args", 2);
 
-        var reply = try self.sendRequest(.{ .kind = kind });
+        const data: command.Command = switch (kind) {
+            .get_tabs => .{ .get_tabs = .{} },
+            .get_workspaces => .{ .get_workspaces = .{} },
+            else => unreachable,
+        };
+        var reply = try self.sendRequest(.{ .data = data });
         defer reply.deinit(self.allocator);
         const payload = reply.payload orelse return self.fail("command did not return a payload", "invalid_response", 1);
         const items = switch (payload) {
@@ -782,6 +990,16 @@ const Runner = struct {
         };
     }
 
+    fn activeTabId(self: *Runner) !usize {
+        var reply = try self.sendRequest(.{ .data = .{ .get_current_tab = .{} } });
+        defer reply.deinit(self.allocator);
+        const value = reply.payload orelse return self.fail("no active tab", "not_found", 1);
+        if (value != .object) return self.fail("no active tab", "not_found", 1);
+        const id = value.object.get("id") orelse return self.fail("missing tab id", "invalid_response", 1);
+        if (id != .integer or id.integer <= 0) return self.fail("invalid tab id", "invalid_response", 1);
+        return @intCast(id.integer);
+    }
+
     fn resolveTargetPaneIds(self: *Runner, ident: ?usize, tag: ?[]const u8) !?[]usize {
         if (ident != null and tag != null) return self.fail("use either --id or --tag, not both", "invalid_args", 2);
         if (ident) |id| {
@@ -791,7 +1009,7 @@ const Runner = struct {
         }
         if (tag == null) return null;
 
-        var reply = try self.sendRequest(.{ .kind = .get_panes, .tag = tag });
+        var reply = try self.sendRequest(.{ .data = .{ .get_panes = .{ .tag = tag } } });
         defer reply.deinit(self.allocator);
         const payload = reply.payload orelse return self.fail("command did not return a pane list", "invalid_response", 1);
         const items = switch (payload) {
@@ -822,16 +1040,28 @@ const Runner = struct {
         if (pane_ids) |ids| {
             for (ids) |pane_id| {
                 var targeted = request;
-                targeted.id = pane_id;
+                targeted.setTargetId(pane_id);
                 var reply = try self.sendRequest(targeted);
                 defer reply.deinit(self.allocator);
+                if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "command failed" }, reply.status, 1);
                 try self.emitOutput(&reply, false);
             }
             return;
         }
 
-        var reply = try self.sendRequest(request);
+        // Resolve CLI convenience defaults before crossing the typed API boundary.
+        // Raw API mutators require an explicit id and never infer it from ctx.
+        var targeted = request;
+        var active = try self.sendRequest(.{ .data = .{ .get_current_pane = .{} } });
+        defer active.deinit(self.allocator);
+        const pane = active.payload orelse return self.fail("no active pane", "not_found", 1);
+        if (pane != .object) return self.fail("no active pane", "not_found", 1);
+        const pane_id = pane.object.get("id") orelse return self.fail("missing pane id", "invalid_response", 1);
+        if (pane_id != .integer or pane_id.integer <= 0) return self.fail("invalid pane id", "invalid_response", 1);
+        targeted.setTargetId(@intCast(pane_id.integer));
+        var reply = try self.sendRequest(targeted);
         defer reply.deinit(self.allocator);
+        if (!reply.success) return self.failFmt("{s}: {s}", .{ reply.status, reply.error_message orelse "command failed" }, reply.status, 1);
         try self.emitOutput(&reply, false);
     }
 
@@ -916,13 +1146,13 @@ const Runner = struct {
                 i += 1;
                 if (i >= args.len) return self.fail("missing level value", "invalid_args", 2);
                 if (level.* != null) return self.fail("duplicate --level", "invalid_args", 2);
-                if (notification.Level.parse(args[i]) == null) return self.fail("level must be info, warn, error, or success", "invalid_args", 2);
+                command.validate(.{ .pane_bell = .{ .level = args[i] } }) catch return self.fail("level must be info, warn, error, or success", "invalid_args", 2);
                 level.* = args[i];
             } else if (std.mem.eql(u8, arg, "--color")) {
                 i += 1;
                 if (i >= args.len) return self.fail("missing color value", "invalid_args", 2);
                 if (color.* != null) return self.fail("duplicate --color", "invalid_args", 2);
-                if (notification.parseHexColor(args[i]) == null) return self.fail("color must use #RRGGBB format", "invalid_args", 2);
+                command.validate(.{ .pane_bell = .{ .color = args[i] } }) catch return self.fail("color must use #RRGGBB format", "invalid_args", 2);
                 color.* = args[i];
             } else {
                 return self.failFmt("unexpected argument: {s}", .{arg}, "invalid_args", 2);
@@ -1110,14 +1340,19 @@ const Runner = struct {
 
     fn failFmt(self: *Runner, comptime fmt: []const u8, args: anytype, code: []const u8, status: u8) CliAbort {
         const message = std.fmt.allocPrint(self.allocator, fmt, args) catch return self.fail("out of memory", "error", 1);
+        const owned_code = self.allocator.dupe(u8, code) catch {
+            self.allocator.free(message);
+            return self.fail("out of memory", "error", 1);
+        };
         self.clearLastError();
-        self.last_error = .{ .message = message, .code = code, .status = status, .owned_message = true };
+        self.last_error = .{ .message = message, .code = owned_code, .status = status, .owned_message = true, .owned_code = true };
         return error.CliFailed;
     }
 
     fn clearLastError(self: *Runner) void {
         if (self.last_error) |err| {
             if (err.owned_message) self.allocator.free(err.message);
+            if (err.owned_code) self.allocator.free(err.code);
             self.last_error = null;
         }
     }
@@ -1182,18 +1417,19 @@ fn parseProgramStatusRequest(allocator: std.mem.Allocator, args: []const []const
     const json = try builder.finish();
     defer allocator.free(json);
     const params = try parseJsonObjectArg(allocator, json, "params");
-    errdefer command.deinitJsonValue(allocator, params);
+    defer command.deinitJsonValue(allocator, params);
     const channel = try std.fmt.allocPrint(allocator, "program_status_{s}", .{args[0]});
-    return .{ .kind = .get_htp, .channel = channel, .params = params };
+    defer allocator.free(channel);
+    return (command.Request{ .data = .{ .get_htp = .{ .channel = channel, .params = params } } }).clone(allocator);
 }
 
 test "program status CLI builds owned shared commands and validates arguments" {
     const a = std.testing.allocator;
     var request = try parseProgramStatusRequest(a, &.{ "set", "blocked", "--id", "build/tests", "--pane", "42", "--kind", "permission", "--progress", "0", "--message", "Allow deploy?" });
     defer request.deinit(a);
-    try std.testing.expectEqualStrings("program_status_set", request.channel.?);
-    try std.testing.expectEqualStrings("build/tests", request.params.?.object.get("id").?.string);
-    try std.testing.expectEqual(@as(i64, 42), request.params.?.object.get("pane").?.integer);
+    try std.testing.expectEqualStrings("program_status_set", request.data.get_htp.channel);
+    try std.testing.expectEqualStrings("build/tests", request.data.get_htp.params.?.object.get("id").?.string);
+    try std.testing.expectEqual(@as(i64, 42), request.data.get_htp.params.?.object.get("pane").?.integer);
     for ([_][]const []const u8{
         &.{},                                    &.{ "set", "bogus" },                     &.{ "set", "working", "--progress", "101" },
         &.{ "set", "done", "--progress", "10" }, &.{ "set", "working", "--kind", "auth" }, &.{ "get", "--pane", "0" },
@@ -1201,14 +1437,47 @@ test "program status CLI builds owned shared commands and validates arguments" {
     }) |args| try std.testing.expectError(error.InvalidProgramStatusArgs, parseProgramStatusRequest(a, args));
     var clear = try parseProgramStatusRequest(a, &.{ "clear", "--id", "build" });
     defer clear.deinit(a);
-    try std.testing.expectEqualStrings("program_status_clear", clear.channel.?);
+    try std.testing.expectEqualStrings("program_status_clear", clear.data.get_htp.channel);
 }
 
 fn helpText() []const u8 {
-    return "usage: hollow cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto] <command>\n" ++
-        "commands: get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+    return "usage: hollow-cli [--pretty] [--quiet] [--envelope] [--timeout seconds] [--transport auto|socket|file|osc] <command>\n" ++
+        "       hollow cli <same options and commands>\n" ++
+        "commands: api, capabilities, events, job, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
+        "api list | describe <name> | call <name> [args-json]\n" ++
+        "events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]\n" ++
+        "job spawn [--user-shell] [--wait [--auto-close]] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND\n" ++
+        "job get|output|wait|cleanup --id ID --token TOKEN\n" ++
+        "job wait --id ID --token TOKEN [--auto-close]\n" ++
+        "wait <revision> | command|process-exit|status-change --after N --pane ID [--command-id N]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
         "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";
+}
+
+fn parseApiCall(allocator: std.mem.Allocator, name: []const u8, text: []const u8) !command.Request {
+    var args = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+    defer args.deinit();
+    if (args.value != .object) return error.InvalidArgumentType;
+    if (args.value.object.contains("kind") or args.value.object.contains("ctx") or args.value.object.contains("pane_id")) return error.InvalidArgumentName;
+    const encoded_name = try std.json.Stringify.valueAlloc(allocator, name, .{});
+    defer allocator.free(encoded_name);
+    const encoded_args = try std.json.Stringify.valueAlloc(allocator, args.value, .{});
+    defer allocator.free(encoded_args);
+    const envelope = try std.fmt.allocPrint(allocator, "{{\"kind\":{s}{s}{s}", .{ encoded_name, if (encoded_args.len > 2) "," else "", encoded_args[1..] });
+    defer allocator.free(envelope);
+    var request = (try command.parseEnvelope(allocator, envelope)).request;
+    request.ctx.origin = .api;
+    return request;
+}
+
+test "raw API calls use the same typed parser as socket commands" {
+    const a = std.testing.allocator;
+    var request = try parseApiCall(a, "pane_split", "{\"direction\":\"vertical\",\"ratio\":0.3}");
+    defer request.deinit(a);
+    try std.testing.expectEqual(.api, request.ctx.origin);
+    try std.testing.expectEqual(@as(?f64, 0.3), request.data.pane_split.ratio);
+    try std.testing.expectError(error.UnknownField, parseApiCall(a, "get_revision", "{\"text\":\"typo\"}"));
+    try std.testing.expectError(error.InvalidArgumentName, parseApiCall(a, "get_revision", "{\"kind\":\"config_reload\"}"));
 }
 
 fn emptyObject(allocator: std.mem.Allocator) ![]u8 {

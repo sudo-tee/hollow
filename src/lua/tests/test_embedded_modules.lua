@@ -21,6 +21,9 @@ describe("embedded Lua module registry", function()
     for name, original in pairs(previous) do package.preload[name] = original.value end
     assert.is_true(ok, tostring(result))
     assert.is_table(result.hollow.ui.workspace)
+    local shape = result.hollow.shape
+    local schema = shape.strict_object({ count = shape.integer():default(2) })
+    assert.same({ count = 2 }, schema:parse({}))
     assert.is_function(require("hollow.workspace.hosts").acquire)
   end)
 end)

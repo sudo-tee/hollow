@@ -44,6 +44,7 @@ namespace you need. The full type schema lives in
 | `hollow.plugins` | [plugins.md](plugins.md) |
 | `hollow.tbl` | [tbl.md](tbl.md) |
 | `hollow.util` | [util.md](util.md) |
+| `hollow.shape` | [shape.md](shape.md) |
 | `hollow.platform` | [platform.md](platform.md) |
 
 ## See also

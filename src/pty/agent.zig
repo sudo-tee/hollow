@@ -66,6 +66,9 @@ pub const Session = struct {
     shell_argv: []const []const u8,
     command: ?[]const u8,
     close_on_exit: bool,
+    one_shot: bool = false,
+    user_shell: bool = false,
+    shell_integration: bool = true,
     fallback_allowed: bool,
     host: Host,
 
@@ -192,7 +195,17 @@ pub const AgentPty = struct {
         if (request.env_block) |block| session.env = try parseEnvBlock(a, block);
         session.shell_argv = try wslInnerArgv(a, request.shell);
         if (request.launch_command) |cmd| {
-            session.command = try a.dupe(u8, cmd.command);
+            if (cmd.user_shell) {
+                session.command = try cmd.userShellCommand(a, false);
+                session.user_shell = true;
+            } else if (cmd.argv) |args| {
+                const owned = try a.alloc([]const u8, args.len);
+                for (args, 0..) |arg, i| owned[i] = try a.dupe(u8, arg);
+                session.shell_argv = owned;
+                session.shell_integration = false;
+            } else session.command = try a.dupe(u8, cmd.command);
+            session.one_shot = cmd.one_shot;
+            if (cmd.one_shot or cmd.argv != null) session.fallback_allowed = false;
             session.close_on_exit = cmd.close_on_exit;
         }
 
@@ -205,7 +218,7 @@ pub const AgentPty = struct {
         errdefer freeFallback(allocator, &fallback_spec);
         if (request.native_cwd orelse request.cwd) |cwd| fallback_spec.cwd = try allocator.dupe(u8, cwd);
         if (request.env_block) |block| fallback_spec.env_block = try allocator.dupe(u8, block);
-        if (request.launch_command) |cmd| fallback_spec.launch_command = .{ .command = try allocator.dupe(u8, cmd.command), .close_on_exit = cmd.close_on_exit };
+        if (request.launch_command) |cmd| fallback_spec.launch_command = try cmd.clone(allocator);
 
         owned_session = false;
         return .{ .allocator = allocator, .session = session, .fallback_spec = fallback_spec };
@@ -445,7 +458,7 @@ fn freeFallback(allocator: std.mem.Allocator, spec: *Fallback) void {
     allocator.free(spec.shell);
     if (spec.cwd) |cwd| allocator.free(cwd);
     if (spec.env_block) |block| allocator.free(block);
-    if (spec.launch_command) |cmd| allocator.free(cmd.command);
+    if (spec.launch_command) |cmd| cmd.deinit(allocator);
     spec.* = .{ .shell = "", .cwd = null, .env_block = null, .launch_command = null };
 }
 
@@ -580,6 +593,9 @@ fn sendLoop(s: *Session, stdin: std.Io.File) !void {
             .env = s.env,
             .command = s.command,
             .close_on_exit = s.close_on_exit,
+            .one_shot = s.one_shot,
+            .user_shell = s.user_shell,
+            .shell_integration = s.shell_integration,
             .path_style = s.host.path_style,
         };
         break :blk try std.json.Stringify.valueAlloc(gpa, spawn, .{});
@@ -699,9 +715,17 @@ fn acceptFrame(s: *Session, kind: wire.Kind, payload: []const u8) bool {
     defer s.mutex.unlock();
     if (!s.hello) {
         if (kind != .hello) return false;
-        const parsed = std.json.parseFromSlice(struct { version: u32 }, gpa, payload, .{ .ignore_unknown_fields = true }) catch return false;
+        const parsed = std.json.parseFromSlice(struct { version: u32, one_shot: bool = false, user_shell: bool = false }, gpa, payload, .{ .ignore_unknown_fields = true }) catch return false;
         defer parsed.deinit();
         if (parsed.value.version != wire.version) return false;
+        if (s.user_shell and !parsed.value.user_shell) {
+            s.endLocked("agent lacks user-shell job support; update agent");
+            return false;
+        }
+        if (s.one_shot and !parsed.value.one_shot) {
+            s.endLocked("agent lacks one-shot job support; update agent");
+            return false;
+        }
         s.hello = true;
         s.changed.broadcast();
         return true;
@@ -734,6 +758,23 @@ fn acceptFrame(s: *Session, kind: wire.Kind, payload: []const u8) bool {
         else => {},
     }
     return true;
+}
+
+test "one-shot jobs refuse old agent hello before submitting work" {
+    const a = std.testing.allocator;
+    var pty = try AgentPty.init(a, .{ .shell = "/bin/sh", .cols = 80, .rows = 24, .cwd = null, .env_block = null, .launch_command = .{ .command = "false", .one_shot = true }, .host = .{} }, .{});
+    defer pty.closeAndJoin();
+    try std.testing.expect(!acceptFrame(pty.session, .hello, "{\"version\":1}"));
+    try std.testing.expect(!pty.session.spawn_submitted);
+    try std.testing.expectEqual(@as(?u32, failure_status), pty.exitStatus());
+}
+
+test "user shell jobs refuse agents advertising only one-shot support" {
+    var pty = try AgentPty.init(std.testing.allocator, .{ .shell = "/bin/sh", .cols = 80, .rows = 24, .cwd = null, .env_block = null, .launch_command = .{ .command = "false", .one_shot = true, .user_shell = true }, .host = .{} }, .{});
+    defer pty.closeAndJoin();
+    try std.testing.expect(!acceptFrame(pty.session, .hello, "{\"version\":1,\"one_shot\":true}"));
+    try std.testing.expect(!pty.session.spawn_submitted);
+    try std.testing.expectEqual(@as(?u32, failure_status), pty.exitStatus());
 }
 
 fn parseEnvBlock(a: std.mem.Allocator, block: []const u8) ![]const wire.EnvVar {

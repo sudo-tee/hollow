@@ -58,6 +58,8 @@ pub const Spawn = struct {
     close_on_exit: bool = false,
     path_style: PathStyle = .posix,
     shell_integration: bool = true,
+    one_shot: bool = false,
+    user_shell: bool = false,
 };
 
 pub fn encodeResize(cols: u16, rows: u16) [4]u8 {

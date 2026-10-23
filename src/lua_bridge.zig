@@ -125,6 +125,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.host.ssh", .source = @embedFile("lua/hollow/host/ssh.lua") },
     .{ .name = "hollow.host.pty", .source = @embedFile("lua/hollow/host/pty.lua") },
     .{ .name = "hollow.util", .source = @embedFile("lua/hollow/util.lua") },
+    .{ .name = "hollow.shape", .source = @embedFile("lua/hollow/shape.lua") },
     .{ .name = "hollow.color", .source = @embedFile("lua/hollow/color.lua") },
     .{ .name = "hollow.theme", .source = @embedFile("lua/hollow/theme.lua") },
     .{ .name = "hollow.themes.catppuccin-mocha", .source = @embedFile("lua/hollow/themes/catppuccin-mocha.lua") },
@@ -142,6 +143,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.workspace.hosts", .source = @embedFile("lua/hollow/workspace/hosts.lua") },
     .{ .name = "hollow.workspace.project", .source = @embedFile("lua/hollow/workspace/project.lua") },
     .{ .name = "hollow.term", .source = @embedFile("lua/hollow/term.lua") },
+    .{ .name = "hollow.term.jobs", .source = @embedFile("lua/hollow/term/jobs.lua") },
     .{ .name = "hollow.program_status", .source = @embedFile("lua/hollow/program_status.lua") },
     .{ .name = "hollow.config", .source = @embedFile("lua/hollow/config.lua") },
     .{ .name = "hollow.events", .source = @embedFile("lua/hollow/events.lua") },
@@ -197,6 +199,7 @@ const embedded_lua_modules = [_]LuaModule{
 /// Using function pointers keeps luajit.zig free of App imports.
 pub const AppCallbacks = struct {
     app: *anyopaque,
+    job_request: ?*const fn (app: *anyopaque, request: @import("command.zig").Request, callback_ref: c_int) bool = null,
     refresh_live_config: *const fn (app: *anyopaque) void,
     split_pane: *const fn (app: *anyopaque, direction: []const u8, ratio: f32, domain_name: ?[]const u8, cwd: ?[]const u8, command: ?[]const u8, command_mode: []const u8, close_on_exit: bool, floating: bool, fullscreen: bool, x: f32, y: f32, width: f32, height: f32, has_bounds: bool, callback_ref: c_int) bool,
     toggle_pane_maximized: *const fn (app: *anyopaque, pane_id: usize, show_background: bool) void,
@@ -1372,6 +1375,40 @@ pub const Runtime = struct {
         self.context.api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
     }
 
+    pub fn invokeJobCallback(self: *Runtime, callback_ref: c_int, response: @import("command.zig").Response) void {
+        if (callback_ref == LUA_NOREF) return;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const top = api.get_top(self.state);
+        defer api.set_top(self.state, top);
+        defer api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
+        api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return;
+        api.create_table(self.state, 0, 4);
+        api.push_boolean(self.state, if (response.success) 1 else 0);
+        api.set_field(self.state, -2, "success");
+        api.push_lstring(self.state, response.status.ptr, response.status.len);
+        api.set_field(self.state, -2, "status");
+        if (response.error_message) |message| {
+            api.push_lstring(self.state, message.ptr, message.len);
+            api.set_field(self.state, -2, "error");
+        }
+        if (response.payload) |payload| {
+            const response_top = api.get_top(self.state);
+            if (pushJsonValue(self.allocator, api, self.state, payload)) |_| {
+                api.set_field(self.state, -2, "payload");
+            } else |_| {
+                api.set_top(self.state, response_top);
+                api.push_boolean(self.state, 0);
+                api.set_field(self.state, -2, "success");
+                api.push_lstring(self.state, "out_of_memory", 13);
+                api.set_field(self.state, -2, "status");
+            }
+        }
+        if (api.pcall(self.state, 1, 0, 0) != 0) logLuaError(api, self.state, "job_callback");
+    }
+
     fn fireCallback(api: Api, state: *State, ref: c_int, tag: []const u8) void {
         api.rawgeti(state, LUA_REGISTRYINDEX, ref);
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .function) {
@@ -2159,6 +2196,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_process_start, 1);
         api.set_field(self.state, -2, "process_start");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_term_job_request, 1);
+        api.set_field(self.state, -2, "term_job_request");
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_process_poll, 1);
         api.set_field(self.state, -2, "process_poll");
@@ -7371,6 +7411,43 @@ fn l_process_start(state: *State) callconv(.c) c_int {
     };
     ctx.api.push_integer(state, @intCast(id));
     return 1;
+}
+
+fn l_term_job_request(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    queueTermJobRequest(ctx, state) catch |err| {
+        api.push_nil(state);
+        const name = @errorName(err);
+        api.push_lstring(state, name.ptr, name.len);
+        return 2;
+    };
+    api.push_boolean(state, 1);
+    return 1;
+}
+
+fn queueTermJobRequest(ctx: *BridgeContext, state: *State) !void {
+    const command = @import("command.zig");
+    const api = ctx.api;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table or @as(LuaType, @enumFromInt(api.value_type(state, 2))) != .function) return error.InvalidArgumentType;
+    // Scope this bridge to job operations, not arbitrary command dispatch.
+    const kind = luaStringField(api, state, 1, "kind") orelse return error.InvalidArgumentType;
+    if (!(std.mem.eql(u8, kind, "job_spawn") or std.mem.eql(u8, kind, "job_get") or std.mem.eql(u8, kind, "job_output") or std.mem.eql(u8, kind, "job_cleanup"))) return error.UnsupportedJobOperation;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const json = try luaValueToJson(a, api, state, 1);
+    const text = try std.json.Stringify.valueAlloc(a, json, .{});
+    var parsed = try command.parseEnvelope(a, text);
+    defer parsed.deinit(a);
+    const callbacks = ctx.app_callbacks orelse return error.AppUnavailable;
+    const callback = callbacks.job_request orelse return error.AppUnavailable;
+    api.push_value(state, 2);
+    const ref = api.ref(state, LUA_REGISTRYINDEX);
+    if (!callback(callbacks.app, parsed.request, ref)) {
+        api.unref(state, LUA_REGISTRYINDEX, ref);
+        return error.ResourceExhausted;
+    }
 }
 
 fn processSlot(ctx: *BridgeContext, state: *State) ?usize {

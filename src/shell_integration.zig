@@ -1,5 +1,19 @@
 const std = @import("std");
 const build_options = @import("build_options");
+const embedded_cli = if (@hasDecl(build_options, "native_cli_available")) @import("native_cli_blob").bytes else build_options.embedded_hollow_cli;
+const embedded_python = if (@hasDecl(build_options, "embedded_hollow_cli_python")) build_options.embedded_hollow_cli_python else if (@hasDecl(build_options, "embedded_hollow_cli")) build_options.embedded_hollow_cli else "";
+
+test "agent shell bundle embeds a matching ELF CLI rather than Python" {
+    if (!@hasDecl(build_options, "native_cli_required")) return error.SkipZigTest;
+    try std.testing.expect(embedded_cli.len >= 64);
+    try std.testing.expectEqualStrings("\x7fELF", embedded_cli[0..4]);
+    const machine = std.mem.readInt(u16, embedded_cli[18..20], .little);
+    try std.testing.expectEqual(@as(u16, switch (@import("builtin").cpu.arch) {
+        .x86_64 => 62,
+        .aarch64 => 183,
+        else => unreachable,
+    }), machine);
+}
 pub const io = @import("io.zig");
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -29,7 +43,8 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     var bundle_hash = std.hash.Wyhash.hash(0, build_options.embedded_bash_integration);
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, build_options.embedded_zsh_integration);
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, build_options.embedded_fish_integration);
-    bundle_hash = std.hash.Wyhash.hash(bundle_hash, build_options.embedded_hollow_cli);
+    bundle_hash = std.hash.Wyhash.hash(bundle_hash, embedded_cli);
+    bundle_hash = std.hash.Wyhash.hash(bundle_hash, embedded_python);
     const root = try std.fmt.allocPrint(allocator, "/tmp/hollow-{d}/shell-{x}", .{ c.getuid(), bundle_hash });
     errdefer allocator.free(root);
     const root_z = try allocator.dupeZ(u8, root);
@@ -53,7 +68,8 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     try writeFile(allocator, root, "bash.sh", build_options.embedded_bash_integration, .fromMode(0o600));
     try writeFile(allocator, root, "zsh.zsh", build_options.embedded_zsh_integration, .fromMode(0o600));
     try writeFile(allocator, root, "fish.fish", build_options.embedded_fish_integration, .fromMode(0o600));
-    try writeFile(allocator, bin, "hollow-cli", build_options.embedded_hollow_cli, .fromMode(0o700));
+    try writeFile(allocator, bin, "hollow-cli", embedded_cli, .fromMode(0o700));
+    if (embedded_python.len != 0) try writeFile(allocator, bin, "hollow-cli.py", embedded_python, .fromMode(0o700));
     try writeFile(allocator, root, "bashrc", bashRc, .fromMode(0o600));
     try writeFile(allocator, zsh_dir, ".zshenv", zshEnv, .fromMode(0o600));
     try writeFile(allocator, zsh_dir, ".zshrc", zshRc, .fromMode(0o600));

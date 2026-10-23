@@ -27,6 +27,7 @@ Start with [Overview and conventions](lua/overview.md).
 | `hollow.fs` | [fs.md](lua/fs.md) | Filesystem helpers |
 | `hollow.plugins` | [plugins.md](lua/plugins.md) | Plugin loader and sync |
 | `hollow.util` | [util.md](lua/util.md) | Path, color, table utilities |
+| `hollow.shape` | [shape.md](lua/shape.md) | Composable runtime validation schemas |
 | `hollow.platform` | [platform.md](lua/platform.md) | Read-only platform info |
 
 ## CLI

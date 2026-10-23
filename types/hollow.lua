@@ -1060,17 +1060,89 @@
 
 ---@alias HollowActionCategory "tab"|"pane"|"workspace"|"window"|"scroll"|"copy_mode"|"general"|"user"|string
 
+---@alias HollowShapeRule string|(fun(value: any): boolean)|table|HollowShapeSchema<any>
+---@alias HollowShapeParser fun(value: any, path: string): boolean, any
+---@alias HollowShapeRuleParser fun(value: any, rule: HollowShapeRule, path: string): boolean, any
+
+---@class HollowShapeObjectOptions
+---@field strict? boolean
+
+---@class HollowShapeSchema<T>
+---@field __index HollowShapeSchema<any>
+---@field _parse HollowShapeParser
+---@field parse fun(self: HollowShapeSchema<T>, value: any, message?: string): T
+---@field safe_parse fun(self: HollowShapeSchema<T>, value: any): HollowShapeResult<T>
+---@field check fun(self: HollowShapeSchema<T>, value: any): boolean
+---@field is fun(self: HollowShapeSchema<T>, value: any): boolean
+---@field optional fun(self: HollowShapeSchema<T>): HollowShapeSchema<T|nil>
+---@field nullable fun(self: HollowShapeSchema<T>): HollowShapeSchema<T|nil>
+---@field default fun(self: HollowShapeSchema<T>, value: T): HollowShapeSchema<T>
+---@field array fun(self: HollowShapeSchema<T>): HollowShapeSchema<T[]>
+---@field constraint fun(self: HollowShapeSchema<T>, fn: (fun(value: T): boolean), message?: string): HollowShapeSchema<T>
+---@field min fun(self: HollowShapeSchema<T>, value: number): HollowShapeSchema<T>
+---@field max fun(self: HollowShapeSchema<T>, value: number): HollowShapeSchema<T>
+---@field transform fun(self: HollowShapeSchema<T>, fn: fun(value: T): any): HollowShapeSchema<any>
+---@field convert fun(self: HollowShapeSchema<T>, fn: fun(value: T): any): HollowShapeSchema<any>
+---@field or_ fun(self: HollowShapeSchema<T>, other: HollowShapeRule): HollowShapeSchema<T>
+
+---@class HollowShapeResult<T>
+---@field success boolean
+---@field data? T
+---@field error? string
+
+---@class HollowShapeNamespace
+---@field validate fun(value: any, spec: HollowShapeRule, message?: string): any
+---@field parse fun(value: any, spec: HollowShapeRule, message?: string): any
+---@field safe_parse fun(value: any, spec: HollowShapeRule, message?: string): HollowShapeResult<any>
+---@field check fun(value: any, spec: HollowShapeRule): boolean
+---@field is fun(value: any, spec: HollowShapeRule): boolean
+---@field is_schema fun(value: any): boolean
+---@field expect fun(condition: boolean, message: string): boolean
+---@field assert fun(condition: boolean, message: string): boolean
+---@field object fun(spec: table<any, HollowShapeRule>, options?: HollowShapeObjectOptions): HollowShapeSchema<table>
+---@field strict_object fun(spec: table<any, HollowShapeRule>): HollowShapeSchema<table>
+---@field array fun(item?: HollowShapeRule): HollowShapeSchema<table>
+---@field enum fun(values: any[]): HollowShapeSchema<any>
+---@field one_of fun(values: any[]): HollowShapeSchema<any>
+---@field literal fun(value: any): HollowShapeSchema<any>
+---@field union fun(first: HollowShapeRule|HollowShapeRule[], ...: HollowShapeRule): HollowShapeSchema<any>
+---@field optional fun(rule: HollowShapeRule): HollowShapeSchema<any>
+---@field nullable fun(rule: HollowShapeRule): HollowShapeSchema<any>
+---@field custom fun(predicate: fun(value: any): boolean, description?: string): HollowShapeSchema<any>
+---@field constraint fun(rule: HollowShapeRule, predicate: fun(value: any): boolean, description?: string): HollowShapeSchema<any>
+---@field transform fun(rule: HollowShapeRule, transformer: fun(value: any): any): HollowShapeSchema<any>
+---@field convert fun(rule: HollowShapeRule, converter: fun(value: any): any): HollowShapeSchema<any>
+---@field any fun(): HollowShapeSchema<any>
+---@field unknown fun(): HollowShapeSchema<any>
+---@field string fun(): HollowShapeSchema<string>
+---@field number fun(): HollowShapeSchema<number>
+---@field integer fun(): HollowShapeSchema<integer>
+---@field boolean fun(): HollowShapeSchema<boolean>
+---@field function fun(): HollowShapeSchema<function>
+---@field thread fun(): HollowShapeSchema<thread>
+---@field userdata fun(): HollowShapeSchema<userdata>
+---@field table fun(): HollowShapeSchema<table>
+
 ---@class HollowActionSpec
----@field run fun()
+---@field run fun(...: any): any
 ---@field desc? string
 ---@field category? HollowActionCategory
 ---@field workspace_targetable? boolean
 ---@field available? fun(ctx: HollowActionContext): boolean Fast, synchronous check; only true shows action in palette
 ---@field keys? string[] Default chords registered with this action
+---@field arguments? HollowShapeSchema<any> Opt-in schema for named arguments; use strict_object to reject unknown fields
+
+---@class HollowActionResult
+---@field success boolean
+---@field status "ok"|"unknown_action"|"invalid_context"|"invalid_arguments"|"action_failed"
+---@field value? any First callback return value; not an asynchronous completion signal
+---@field error? string
 
 ---@class HollowActionContext
 ---@field name string Action being invoked or checked
 ---@field args table Original positional arguments, with n recording their count (including nils)
+---@field origin string Invocation source: lua, key, palette, or caller-supplied metadata
+---@field caller? table Caller metadata only; never targeting or authorization
 ---@field pane? HollowPane Current pane snapshot
 ---@field tab? HollowTab Current tab snapshot
 ---@field workspace? HollowWorkspace Current workspace snapshot
@@ -1083,6 +1155,7 @@
 ---@field run fun()
 ---@field available? fun(ctx: HollowActionContext): boolean Registry predicate used by the command palette
 ---@field workspace_targetable? boolean
+---@field arguments? HollowShapeSchema<any>
 
 ---@class HollowUiCommandPaletteOptions
 ---@field prompt? string
@@ -1215,6 +1288,8 @@
 ---@field register fun(name: string, spec: HollowActionSpec)
 ---@field list fun(): HollowPaletteEntry[] All registered actions
 ---@field override fun(name: string, handler: fun(ctx: HollowActionContext): any): fun() Register an override; returns an unsubscribe function
+---@field invoke fun(name: string, args?: table, ctx?: table): HollowActionResult Protected invocation with named arguments and separate caller metadata
+---@field context fun(): HollowActionContext? Snapshot of current invocation; nil outside an action
 ---@field [string] fun(opts?: table)
 
 ---@class HollowConfigNamespace
@@ -1324,7 +1399,76 @@ function workspace_api.bootstrap_project(dir) end
 function workspace_api.bootstrap_project_async(dir, domain) end
 
 ---@class HollowTermNamespace
+---@field jobs HollowTermJobs
 local term = {}
+
+---@class HollowTermJobOptions
+---@field argv? string[] Literal arguments; exactly one of argv or cmd is required.
+---@field cmd? string Explicit shell command.
+---@field cwd? string
+---@field domain? string
+---@field user_shell? boolean Load target shell's interactive startup configuration.
+
+---@class HollowTermJobHandle
+---@field pane_id integer
+---@field tab_id integer
+---@field workspace_id integer
+---@field token string Ownership token; not socket authentication.
+---@field cursor integer Pre-launch event cursor.
+
+---@class HollowTermJobState
+---@field pane_id integer
+---@field state "running"|"exited"
+---@field status? integer Process exit status; nil means unknown.
+---@field cursor integer
+---@field output_bytes integer
+---@field output_truncated boolean
+---@field output_incomplete boolean
+
+---@class HollowTermJobResult: HollowTermJobState
+---@field tab_id integer
+---@field workspace_id integer
+---@field token string
+---@field closed? boolean True only after successful auto cleanup.
+
+---@class HollowTermJobOutput
+---@field encoding "base64"
+---@field data string Bounded raw PTY tail, base64 encoded; not viewport text.
+---@field truncated boolean
+---@field incomplete boolean
+---@field capacity_bytes integer
+
+---@class HollowTermJobError
+---@field code string
+---@field message string
+---@field handle? HollowTermJobHandle Included on wait timeout; job is not canceled.
+
+---@class HollowTermJobWaitOptions
+---@field timeout_ms? integer Nonnegative timeout; omitted means no deadline. Does not cancel job.
+---@field auto_close? boolean Close after observed exit, including failure; discards retained output.
+
+---@class HollowTermJob
+local term_job = {}
+---@return HollowPromise<HollowTermJobHandle>
+function term_job:ready() end
+---@return HollowTermJobHandle|nil Snapshot once creation completes.
+function term_job:handle() end
+---@return HollowPromise<HollowTermJobState>
+function term_job:get() end
+---@return HollowPromise<HollowTermJobOutput>
+function term_job:output() end
+---@param opts? HollowTermJobWaitOptions
+---@return HollowPromise<HollowTermJobResult> Nonzero workload status fulfills; infrastructure errors reject.
+function term_job:wait(opts) end
+---@return HollowPromise<boolean> Rejects running jobs or mismatched ownership.
+function term_job:cleanup() end
+
+---@class HollowTermJobs
+local term_jobs = {}
+---Create a retained background pane without focus. Methods queue until creation completes.
+---@param opts HollowTermJobOptions
+---@return HollowTermJob
+function term_jobs.spawn(opts) end
 
 ---@return HollowTabSnapshot|nil
 function term.current_tab() end
@@ -1538,12 +1682,14 @@ function events.apply_filters(name, payload) end
 
 ---@class HollowKeymapOpts
 ---@field desc? string
+---@field args? table Named arguments passed to a registered action
 ---@field timeout_ms? integer
 ---@field mode? HollowKeyMode
 
 ---@class HollowKeymapValue
 ---@field action HollowKeyAction
 ---@field desc? string
+---@field args? table Named arguments passed to a registered action
 
 ---@class HollowLeaderState
 ---@field active boolean
@@ -2228,6 +2374,7 @@ function plugins.sync() end
 ---@field default_shell string
 
 ---@class HollowHostBridge
+---@field term_job_request fun(request: table, callback: fun(response: table)): boolean?, string?
 ---@field set_config fun(opts: table)
 ---@field list_fonts fun(): HollowFontInfo[]
 ---@field new_tab fun(opts?: table)
@@ -2365,6 +2512,7 @@ function plugins.sync() end
 ---@field defer fun(handler: fun(), timeout_ms?: integer)
 ---@field color HollowColorModule
 ---@field util HollowUtilNamespace
+---@field shape HollowShapeNamespace
 ---@field theme HollowThemeNamespace
 ---@field tbl HollowTblModule
 

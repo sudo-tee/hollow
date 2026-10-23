@@ -234,6 +234,7 @@ fn handleHtpChunk(self: *App, pane: *Pane, message_id: ?[]const u8, root: std.js
 }
 
 fn dispatchHtpEvent(self: *App, pane: *Pane, message_id: ?[]const u8, channel: []const u8, payload: ?std.json.Value, received_at_ms: i64, received_cwd: []const u8) void {
+    observeCommandEvent(self, pane, channel, payload);
     const lua = if (self.lua) |*value| value else {
         sendHtpProtocolError(self, pane, message_id, "unavailable", "lua runtime unavailable");
         return;
@@ -280,6 +281,20 @@ fn dispatchHtpQuery(self: *App, pane: *Pane, message_id: ?[]const u8, request_id
 }
 
 pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, params: ?std.json.Value) anyerror!HtpQueryResult {
+    if (std.mem.eql(u8, channel, "command_api")) {
+        const command = @import("../command.zig");
+        const text = try std.json.Stringify.valueAlloc(self.allocator, params orelse .null, .{});
+        defer self.allocator.free(text);
+        var parsed = command.parseEnvelope(self.allocator, text) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return commandBridgeResult(self, command.Response.fail("invalid_args", @errorName(err)));
+        };
+        defer parsed.deinit(self.allocator);
+        // OSC identifies its actual source pane; caller metadata is not a target.
+        if (pane_id != 0) parsed.request.ctx.pane_id = pane_id;
+        const response = try @import("command_dispatcher.zig").executeTransportCommand(self, parsed.request);
+        return commandBridgeResult(self, response);
+    }
     const program_status = @import("program_status_commands.zig");
     if (program_status.handles(channel)) {
         var response = try program_status.execute(self, pane_id, channel, params);
@@ -296,9 +311,66 @@ pub fn dispatchHtpQuerySync(self: *App, pane_id: usize, channel: []const u8, par
     return try lua.dispatchHtpQuery(pane_id, channel, params);
 }
 
+fn commandBridgeResult(self: *App, response_value: @import("../command.zig").Response) !HtpQueryResult {
+    const command = @import("../command.zig");
+    var response = response_value;
+    defer response.deinit(self.allocator);
+    const text = try command.writeResultJson(self.allocator, response);
+    defer self.allocator.free(text);
+    var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+    defer parsed.deinit();
+    return .{ .success = true, .value = try command.cloneJsonValue(self.allocator, parsed.value) };
+}
+
 pub fn dispatchHtpEventSync(self: *App, pane_id: usize, channel: []const u8, payload: ?std.json.Value) anyerror!lua_mod.HtpDispatchResult {
+    if (self.findPaneById(pane_id)) |pane| observeCommandEvent(self, pane, channel, payload);
     const lua = if (self.lua) |*runtime| runtime else return .{ .success = false, .error_message = try self.allocator.dupe(u8, "lua runtime unavailable") };
     return try lua.dispatchHtpEvent(pane_id, channel, payload, null, null);
+}
+
+// Observe the same shell-integration reports on socket, file and OSC paths.
+// Pair starts/ends: an unpaired end must never satisfy a completion wait.
+fn observeCommandEvent(self: *App, pane: *Pane, channel: []const u8, payload: ?std.json.Value) void {
+    const value = payload orelse return;
+    if (value != .object) return;
+    if (std.mem.eql(u8, channel, "command_started")) {
+        const text = value.object.get("command") orelse return;
+        if (text != .string) return;
+        pane.automation_command_id = self.automation_events.publish(.{ .kind = "command_started", .pane_id = @intFromPtr(pane) });
+    } else if (std.mem.eql(u8, channel, "command_ended")) {
+        const command_id = pane.automation_command_id orelse return;
+        const status = value.object.get("exit_code") orelse return;
+        if (status != .integer) return;
+        pane.automation_command_id = null;
+        _ = self.automation_events.publish(.{ .kind = "command_finished", .pane_id = @intFromPtr(pane), .command_id = command_id, .status = status.integer });
+    }
+}
+
+test "external shell completion pairs reports and ignores malformed or unpaired ends" {
+    const a = std.testing.allocator;
+    const app = try a.create(App);
+    defer a.destroy(app);
+    app.* = App.init(a);
+    defer app.config.deinit();
+    var pane = Pane.init(a);
+    var started = try std.json.parseFromSlice(std.json.Value, a, "{\"command\":\"false\"}", .{});
+    defer started.deinit();
+    var ended = try std.json.parseFromSlice(std.json.Value, a, "{\"exit_code\":7}", .{});
+    defer ended.deinit();
+    var malformed = try std.json.parseFromSlice(std.json.Value, a, "{\"exit_code\":\"0\"}", .{});
+    defer malformed.deinit();
+    observeCommandEvent(app, &pane, "command_ended", ended.value);
+    try std.testing.expectEqual(@as(u64, 0), app.automation_events.subscribe());
+    observeCommandEvent(app, &pane, "command_started", started.value);
+    observeCommandEvent(app, &pane, "command_ended", malformed.value);
+    try std.testing.expect(pane.automation_command_id != null);
+    observeCommandEvent(app, &pane, "command_ended", ended.value);
+    observeCommandEvent(app, &pane, "command_ended", ended.value);
+    const batch = try app.automation_events.read(0, .{}, 0);
+    try std.testing.expectEqual(@as(usize, 2), batch.count);
+    try std.testing.expectEqual(@as(?u64, batch.events[0].sequence), batch.events[1].command_id);
+    try std.testing.expectEqual(@as(?i64, 7), batch.events[1].status);
+    try std.testing.expect(pane.automation_command_id == null);
 }
 
 fn sendHtpProtocolError(self: *App, pane: *Pane, request_id: ?[]const u8, code: []const u8, message: []const u8) void {

@@ -329,8 +329,10 @@ local function normalize_binding(action_or_opts, maybe_opts)
   if type(action_or_opts) == "table" and maybe_opts == nil then
     binding.action = action_or_opts.action
     binding.desc = action_or_opts.desc
+    binding.args = action_or_opts.args
   elseif type(maybe_opts) == "table" then
     binding.desc = maybe_opts.desc
+    binding.args = maybe_opts.args
   end
 
   return binding
@@ -603,6 +605,7 @@ local function set_leader_binding(keymap_state, chord, style, action, opts)
   end
   node.action = binding.action
   node.desc = binding.desc
+  node.args = binding.args
 end
 
 local function set_sequence_binding(root, steps, action, opts)
@@ -613,6 +616,7 @@ local function set_sequence_binding(root, steps, action, opts)
   end
   node.action = binding.action
   node.desc = binding.desc
+  node.args = binding.args
 end
 
 local function del_leader_binding(keymap_state, chord, style)
@@ -717,7 +721,10 @@ local function run_action(hollow, binding)
   end
 
   if type(action) == "string" and hollow.action[action] then
-    hollow.action[action]()
+    local result = hollow.action.invoke(action, binding.args, { origin = "key" })
+    if not result.success then
+      error(result.error, 0)
+    end
     return true
   end
 

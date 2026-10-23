@@ -121,9 +121,15 @@ copy_if_exists() {
 
 if [[ $INSTALL -eq 1 ]]; then
   WINDOWS_APP_DIR="$(wslpath -u 'C:\Applications\Hollow')"
-  for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME"; do
+  for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" hollow-cli.exe; do
     if [[ ! -f "$BIN_DIR/$name" ]]; then
       echo "[launch] missing $BIN_DIR/$name; build before installing" >&2
+      exit 1
+    fi
+  done
+  for name in SHA256SUMS linux-x86_64/hollow-cli linux-aarch64/hollow-cli; do
+    if [[ ! -f "$SCRIPT_DIR/zig-out/cli/$name" ]]; then
+      echo "[launch] missing CLI bundle file $name; run zig build cli-all before installing" >&2
       exit 1
     fi
   done
@@ -137,8 +143,12 @@ if [[ $INSTALL -eq 1 ]]; then
   echo "[launch] copying Windows artifacts to $WINDOWS_APP_DIR"
   for name in "$LAUNCHER_NAME" "$GUI_NAME" "$GUI_LAUNCHER_NAME" \
     "$LAUNCHER_PDB_NAME" "$GUI_PDB_NAME" "$GUI_LAUNCHER_PDB_NAME" \
-    hollow-cli; do
+    hollow-cli.exe hollow-cli.py; do
     copy_if_exists "$BIN_DIR/$name" "$WINDOWS_APP_DIR/$name"
+  done
+  mkdir -p "$WINDOWS_APP_DIR/cli/linux-x86_64" "$WINDOWS_APP_DIR/cli/linux-aarch64"
+  for name in linux-x86_64/hollow-cli linux-aarch64/hollow-cli SHA256SUMS; do
+    copy_if_exists "$SCRIPT_DIR/zig-out/cli/$name" "$WINDOWS_APP_DIR/cli/$name"
   done
   mkdir -p "$WINDOWS_APP_DIR/agents/linux-x86_64" "$WINDOWS_APP_DIR/agents/linux-aarch64"
   for name in linux-x86_64/hollow-agent linux-aarch64/hollow-agent SHA256SUMS; do

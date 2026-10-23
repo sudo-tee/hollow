@@ -1,9 +1,46 @@
 local M = {}
+local shape = require("hollow.shape")
 
 function M.setup(hollow, host_api)
   local registry = {}
   local overrides = {}
   local in_override = false
+  local active_context
+
+  local function copy(value, seen)
+    if type(value) ~= "table" or shape.is_schema(value) then
+      return value
+    end
+    seen = seen or {}
+    if seen[value] then
+      return seen[value]
+    end
+    local out = {}
+    seen[value] = out
+    for k, v in pairs(value) do
+      out[k] = copy(v, seen)
+    end
+    return out
+  end
+
+  local function prepare_arguments(name, ...)
+    local args = { n = select("#", ...), ... }
+    local schema = registry[name].arguments
+    if schema then
+      if args.n > 1 then
+        error("typed actions accept one named argument table", 0)
+      end
+      local input = args[1]
+      if input == nil then
+        input = {}
+      end
+      if type(input) ~= "table" then
+        error("action arguments must be a table", 0)
+      end
+      args = { n = 1, schema:parse(copy(input)) }
+    end
+    return args
+  end
 
   local function make_context(name, ...)
     return {
@@ -15,10 +52,12 @@ function M.setup(hollow, host_api)
     }
   end
 
-  local function dispatch(name, ...)
+  local function dispatch_body(name, ...)
     local handlers = overrides[name]
     if not in_override and handlers and #handlers > 0 then
       local ctx = make_context(name, ...)
+      ctx.origin = active_context.origin
+      ctx.caller = active_context.caller
       -- Snapshot the chain: additions take effect on the next invocation.
       local chain = {}
       for i, handler in ipairs(handlers) do
@@ -41,6 +80,28 @@ function M.setup(hollow, host_api)
       end
     end
     return registry[name].run(...)
+  end
+
+  -- Preserve legacy callback signatures and multiple returns, even on nesting.
+  local function dispatch_prepared(name, metadata, args)
+    local ctx = make_context(name, unpack(args, 1, args.n))
+    ctx.origin = metadata and metadata.origin or "lua"
+    ctx.caller = metadata and copy(metadata.caller) or nil
+    local previous = active_context
+    active_context = ctx
+    local function pack(...)
+      return { n = select("#", ...), ... }
+    end
+    local result = pack(pcall(dispatch_body, name, unpack(args, 1, args.n)))
+    active_context = previous
+    if not result[1] then
+      error(result[2], 0)
+    end
+    return unpack(result, 2, result.n)
+  end
+
+  local function dispatch(name, metadata, ...)
+    return dispatch_prepared(name, metadata, prepare_arguments(name, ...))
   end
 
   local function override(name, fn)
@@ -101,8 +162,20 @@ function M.setup(hollow, host_api)
     if type(name) ~= "string" or name == "" then
       error("hollow.action.register: name must be a non-empty string")
     end
-    if name == "register" or name == "list" or name == "override" then
+    if
+      name == "register"
+      or name == "list"
+      or name == "override"
+      or name == "invoke"
+      or name == "context"
+    then
       error("reserved action name: " .. name)
+    end
+    if type(spec.run) ~= "function" then
+      error("hollow.action.register: run must be a function")
+    end
+    if spec.arguments ~= nil and not shape.is_schema(spec.arguments) then
+      error("hollow.action.register: arguments must be a hollow.shape schema")
     end
     if spec.available ~= nil and type(spec.available) ~= "function" then
       error("hollow.action.register: available must be a function")
@@ -119,9 +192,10 @@ function M.setup(hollow, host_api)
       error("hollow.action.register: keymap must be initialized before registering keys")
     end
 
-    registry[name] = spec
+    -- Schema objects keep their metatables and parser closures intact.
+    registry[name] = copy(spec)
     hollow.action[name] = function(...)
-      return dispatch(name, ...)
+      return dispatch(name, nil, ...)
     end
 
     if spec.keys then
@@ -141,6 +215,7 @@ function M.setup(hollow, host_api)
         run = hollow.action[name],
         available = spec.available,
         workspace_targetable = spec.workspace_targetable or false,
+        arguments = copy(spec.arguments),
       }
     end
     table.sort(entries, function(a, b)
@@ -171,6 +246,45 @@ function M.setup(hollow, host_api)
   end
   hollow.action.list = list
   hollow.action.override = override
+  hollow.action.context = function()
+    return copy(active_context)
+  end
+  hollow.action.invoke = function(name, args, ctx)
+    if type(name) ~= "string" or not registry[name] then
+      return { success = false, status = "unknown_action", error = "Unknown action" }
+    end
+    if
+      ctx ~= nil
+      and (
+        type(ctx) ~= "table"
+        or (ctx.origin ~= nil and type(ctx.origin) ~= "string")
+        or (ctx.caller ~= nil and type(ctx.caller) ~= "table")
+      )
+    then
+      return { success = false, status = "invalid_context", error = "Invalid action context" }
+    end
+    if args ~= nil and type(args) ~= "table" then
+      return {
+        success = false,
+        status = "invalid_arguments",
+        error = "Action arguments must be a table",
+      }
+    end
+    local ok, prepared
+    if args == nil then
+      ok, prepared = pcall(prepare_arguments, name)
+    else
+      ok, prepared = pcall(prepare_arguments, name, args)
+    end
+    if not ok then
+      return { success = false, status = "invalid_arguments", error = tostring(prepared) }
+    end
+    local ok, value = pcall(dispatch_prepared, name, ctx, prepared)
+    if not ok then
+      return { success = false, status = "action_failed", error = tostring(value) }
+    end
+    return { success = true, status = "ok", value = value }
+  end
 
   -- ── Pane Actions ─────────────────────────────────
 

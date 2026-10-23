@@ -76,6 +76,14 @@ pub const Pty = union(enum) {
             inline else => |*p| p.hasPendingOutput(),
         };
     }
+    /// POSIX waitpid may win the race with the first reader chunk. Owned job
+    /// completion waits for EOF as well, without changing legacy pane lifecycle.
+    pub fn jobOutputPending(self: *Pty) bool {
+        return switch (self.*) {
+            .native => |*p| if (comptime builtin.os.tag == .windows) p.hasPendingOutput() else !p.outputDrained(),
+            .agent => |*p| p.hasPendingOutput(),
+        };
+    }
     pub fn pendingOutputBytes(self: *Pty) usize {
         return switch (self.*) {
             inline else => |*p| p.pendingOutputBytes(),

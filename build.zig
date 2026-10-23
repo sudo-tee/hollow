@@ -15,17 +15,22 @@ fn platformSystemLibraries(os_tag: std.Target.Os.Tag) []const []const u8 {
     };
 }
 
-fn addShellIntegrationOptions(options: *std.Build.Step.Options) void {
+fn addShellIntegrationOptions(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: *std.Build.Step.Options, root: *std.Build.Module) void {
     options.addOption([]const u8, "embedded_bash_integration", @embedFile("shell-integration/bash.sh"));
     options.addOption([]const u8, "embedded_zsh_integration", @embedFile("shell-integration/zsh.zsh"));
     options.addOption([]const u8, "embedded_fish_integration", @embedFile("shell-integration/fish.fish"));
     options.addOption([]const u8, "embedded_powershell_integration", @embedFile("shell-integration/powershell.ps1"));
     options.addOption([]const u8, "embedded_hollow_cli", @embedFile("scripts/hollow-cli"));
+    if (target.result.os.tag == .linux) {
+        options.addOption(bool, "native_cli_available", true);
+        root.addImport("native_cli_blob", @import("src/cli_build_steps.zig").embeddedModule(b, target, optimize));
+    }
 }
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    @import("src/cli_build_steps.zig").add(b, target, optimize);
     addAgentSteps(b, target, optimize);
     // Skip GUI graph configuration. build-agent.zig also avoids resolving the
     // main package's GUI dependency manifest on a minimal checkout.
@@ -84,7 +89,7 @@ pub fn build(b: *std.Build) void {
     const launcher_build_options = b.addOptions();
     launcher_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     launcher_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
-    addShellIntegrationOptions(launcher_build_options);
+    addShellIntegrationOptions(b, target, optimize, launcher_build_options, launcher_root_module);
     launcher_build_options.addOption(bool, "launcher_mode", true);
     launcher_build_options.addOption(bool, "headless", false);
     launcher_root_module.addImport("fonts", fonts_module);
@@ -103,7 +108,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
     build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
-    addShellIntegrationOptions(build_options);
+    addShellIntegrationOptions(b, target, optimize, build_options, root_module);
     build_options.addOption(bool, "launcher_mode", false);
     build_options.addOption(bool, "headless", false);
     root_module.addImport("fonts", fonts_module);
@@ -181,7 +186,7 @@ pub fn build(b: *std.Build) void {
         const gui_build_options = b.addOptions();
         gui_build_options.addOption([]const u8, "embedded_base_config", @embedFile("conf/init.lua"));
         gui_build_options.addOption([]const u8, "embedded_types", @embedFile("types/hollow.lua"));
-        addShellIntegrationOptions(gui_build_options);
+        addShellIntegrationOptions(b, target, optimize, gui_build_options, gui_root_module);
         gui_build_options.addOption(bool, "launcher_mode", false);
         gui_build_options.addOption(bool, "headless", false);
         gui_root_module.addImport("fonts", fonts_module);
@@ -300,7 +305,7 @@ pub fn build(b: *std.Build) void {
         run_artifact = exe;
     }
 
-    const install_hollow_cli = b.addInstallFile(b.path("scripts/hollow-cli"), "bin/hollow-cli");
+    const install_hollow_cli = b.addInstallFile(b.path("scripts/hollow-cli"), "bin/hollow-cli.py");
     b.getInstallStep().dependOn(&install_hollow_cli.step);
 
     const renderer_bench = b.addExecutable(.{
@@ -336,6 +341,34 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+
+    const background_module = b.createModule(.{
+        .root_source_file = b.path("src/background_pane_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const background_options = b.addOptions();
+    background_options.addOption(bool, "headless", true);
+    background_module.addOptions("build_options", background_options);
+    addShellIntegrationOptions(b, target, optimize, background_options, background_module);
+    background_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    const background_tests = b.addTest(.{ .root_module = background_module, .filters = &.{"background jobs:"} });
+    const background_run = b.addRunArtifact(background_tests);
+    b.step("test-background", "Run headless background pane, mux, and native PTY tests").dependOn(&background_run.step);
+    test_step.dependOn(&background_run.step);
+
+    const command_test_module = b.createModule(.{
+        .root_source_file = b.path("src/command_test.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    const command_tests = b.addTest(.{ .root_module = command_test_module });
+    const command_test_run = b.addRunArtifact(command_tests);
+    const command_test_step = b.step("test-command", "Run headless command contracts, CLI, and socket tests");
+    command_test_step.dependOn(&command_test_run.step);
+    test_step.dependOn(&command_test_run.step);
 
     const lua_test_cmd = b.addSystemCommand(&.{"bash"});
     lua_test_cmd.addFileArg(b.path("scripts/test-lua.sh"));

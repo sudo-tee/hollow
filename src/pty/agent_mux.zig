@@ -56,6 +56,8 @@ pub const Connection = struct {
     control: deploy.Control = .{},
     child: ?std.process.Child.Id = null,
     hello: bool = false,
+    supports_one_shot: bool = false,
+    supports_user_shell: bool = false,
     dead: bool = false,
     stopping: bool = false,
     finished: bool = false,
@@ -407,6 +409,16 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
     }
     if (first) |s| {
         s.mutex.lock();
+        if (s.user_shell and !c.supports_user_shell) {
+            s.endLocked("agent lacks user-shell job support; update agent");
+            s.mutex.unlock();
+            return nextFrame(c, f);
+        }
+        if (s.one_shot and !c.supports_one_shot) {
+            s.endLocked("agent lacks one-shot job support; update agent");
+            s.mutex.unlock();
+            return nextFrame(c, f);
+        }
         var writer: std.Io.Writer = .fixed(&f.bytes);
         std.json.Stringify.value(p.Spawn{
             .cols = s.cols,
@@ -416,6 +428,9 @@ fn nextFrame(c: *Connection, f: *Frame) !bool {
             .argv = s.shell_argv,
             .command = s.command,
             .close_on_exit = s.close_on_exit,
+            .one_shot = s.one_shot,
+            .user_shell = s.user_shell,
+            .shell_integration = s.shell_integration,
             .path_style = s.host.path_style,
         }, .{}, &writer) catch {
             s.endLocked("mux spawn exceeds 64 KiB");
@@ -567,7 +582,13 @@ fn accept(c: *Connection, h: p.Header, bytes: []const u8) !void {
             };
             if (!found) return error.InvalidHello;
         }
+        for (v.capabilities) |cap| if (std.mem.eql(u8, cap, "one-shot")) {
+            c.supports_one_shot = true;
+        };
         c.hello = true;
+        for (v.capabilities) |cap| if (std.mem.eql(u8, cap, "user-shell")) {
+            c.supports_user_shell = true;
+        };
         return;
     }
     if (h.stream == 0 or h.kind == .hello) return error.InvalidStream;
@@ -794,6 +815,24 @@ test "read-ahead cap preserves a baseline refill for every stream" {
     try std.testing.expectEqual(@as(u32, window / 2), window - @min(window, focused.queued_bytes + focused.output_credit));
     focused.queued_bytes = output_limit;
     try std.testing.expectEqual(@as(u32, 0), grantAvailable(&c, &focused));
+}
+
+test "one-shot mux jobs reject a peer without capability before spawn" {
+    for ([_]bool{ false, true }) |user_shell| {
+        var pty = try agent.AgentPty.init(std.testing.allocator, .{ .shell = "/bin/sh", .cols = 80, .rows = 24, .cwd = null, .env_block = null, .launch_command = .{ .command = "false", .one_shot = true, .user_shell = user_shell }, .host = .{} }, .{});
+        pty.started = true; // Fixture owns init's worker/slot reference.
+        defer pty.closeAndJoin();
+        const s = pty.session;
+        s.mux_state.id = 1;
+        var c: Connection = .{ .arena = .init(std.testing.allocator), .key = "old-agent", .host = .{}, .hello = true, .supports_one_shot = user_shell };
+        defer c.arena.deinit();
+        c.sessions[0] = s;
+        var frame: Frame = undefined;
+        try std.testing.expect(!try nextFrame(&c, &frame));
+        try std.testing.expect(!s.mux_state.submitted);
+        try std.testing.expect(c.sessions[0] == null);
+        try std.testing.expectEqual(@as(?u32, agent.failure_status), pty.exitStatus());
+    }
 }
 
 test "final output retains slot and budget until consumed" {

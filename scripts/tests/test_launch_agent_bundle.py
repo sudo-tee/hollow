@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FILES = ("linux-x86_64/hollow-agent", "linux-aarch64/hollow-agent", "SHA256SUMS")
+CLI_FILES = ("linux-x86_64/hollow-cli", "linux-aarch64/hollow-cli", "SHA256SUMS")
 
 
 class LaunchAgentBundleTests(unittest.TestCase):
@@ -23,11 +24,16 @@ class LaunchAgentBundleTests(unittest.TestCase):
         (self.root / "conf").mkdir()
         (self.root / "conf/init.lua").write_text("-- fixture\n")
         (self.root / "zig-out/bin").mkdir(parents=True)
-        for name in ("hollow.exe", "hollow-native.exe", "hollow-gui.exe"):
+        for name in ("hollow.exe", "hollow-native.exe", "hollow-gui.exe", "hollow-cli.exe"):
             (self.root / "zig-out/bin" / name).write_bytes(b"fixture exe")
         self.bundle = self.root / "zig-out/agents"
         for name in FILES:
             path = self.bundle / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(name.encode())
+        self.cli_bundle = self.root / "zig-out/cli"
+        for name in CLI_FILES:
+            path = self.cli_bundle / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(name.encode())
         tools = self.root / "tools"
@@ -53,6 +59,9 @@ class LaunchAgentBundleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for name in FILES:
             self.assertEqual((self.install / "agents" / name).read_bytes(), name.encode())
+        for name in CLI_FILES:
+            self.assertEqual((self.install / "cli" / name).read_bytes(), name.encode())
+        self.assertTrue((self.install / "hollow-cli.exe").is_file())
         self.assertTrue((self.install / "hollow-native.exe").is_file())
         self.assertTrue((self.install / "src/lua/core.lua").is_file())
 
@@ -65,6 +74,16 @@ class LaunchAgentBundleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("zig build agent-all", result.stderr)
         self.assertEqual(previous.read_bytes(), b"previous executable")
+
+    def test_missing_cli_bundle_fails_before_overwriting_installation(self):
+        (self.cli_bundle / CLI_FILES[1]).unlink()
+        self.install.mkdir()
+        previous = self.install / "hollow-cli.exe"
+        previous.write_bytes(b"previous cli")
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("zig build cli-all", result.stderr)
+        self.assertEqual(previous.read_bytes(), b"previous cli")
 
 
 if __name__ == "__main__":

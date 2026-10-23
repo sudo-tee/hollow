@@ -56,6 +56,11 @@ pub const PosixPty = struct {
     closed: bool = false,
 
     pub fn spawn(allocator: std.mem.Allocator, shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, wake: Wake) !PosixPty {
+        if (launch_command) |cmd| if (cmd.one_shot) {
+            const args = try parseCommandString(allocator, shell);
+            defer freeCommandParts(allocator, args);
+            if (args.len == 0 or !isBackgroundShell(args[0])) return error.UnsupportedBackgroundShell;
+        };
         std.log.info("pty_posix.spawn shell={s} cwd={s} launch_command={}", .{
             shell,
             cwd orelse "<null>",
@@ -73,12 +78,13 @@ pub const PosixPty = struct {
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
-            const shell_args = parseCommandString(std.heap.page_allocator, shell) catch c._exit(1);
-            defer freeCommandParts(std.heap.page_allocator, shell_args);
+            const direct = if (launch_command) |cmd| if (cmd.user_shell) null else cmd.argv else null;
+            const shell_args = if (direct) |args| args else parseCommandString(std.heap.page_allocator, shell) catch c._exit(1);
             if (shell_args.len == 0) c._exit(1);
             const shell_path = std.heap.page_allocator.dupeZ(u8, shell_args[0]) catch c._exit(1);
             defer std.heap.page_allocator.free(shell_path);
-            const bundle = shell_integration.install(std.heap.page_allocator, shell_args[0]) catch c._exit(1);
+            const one_shot = if (launch_command) |cmd| cmd.one_shot else false;
+            const bundle = if (direct != null or one_shot) null else shell_integration.install(std.heap.page_allocator, shell_args[0]) catch c._exit(1);
             if (bundle) |value| shell_integration.setupEnv(std.heap.page_allocator, value) catch c._exit(1);
             const argv = buildArgv(std.heap.page_allocator, shell_args, launch_command, bundle) catch c._exit(1);
             defer freeArgv(std.heap.page_allocator, argv);
@@ -86,7 +92,7 @@ pub const PosixPty = struct {
             defer env_arena.deinit();
             const envp = if (env_block) |env| buildEnvp(env_arena.allocator(), env) catch c._exit(1) else null;
             execWithPath(shell_path, argv, if (envp) |items| @ptrCast(@constCast(items.ptr)) else null);
-            c._exit(1);
+            c._exit(if (direct != null or one_shot) 127 else 1);
         }
         if (pid < 0) return error.ForkPtyFailed;
         errdefer {
@@ -159,6 +165,22 @@ pub const PosixPty = struct {
             try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
         }
 
+        if (launch_command) |cmd| {
+            if (cmd.argv != null and !cmd.user_shell) {
+                try argv.append(allocator, null);
+                return argv.toOwnedSlice(allocator);
+            }
+            if (cmd.one_shot) {
+                if (!isBackgroundShell(shell_args[0])) return error.UnsupportedBackgroundShell;
+                try argv.append(allocator, (try allocator.dupeZ(u8, if (cmd.user_shell) "-ic" else "-c")).ptr);
+                const text = if (cmd.user_shell) try cmd.userShellCommand(allocator, false) else cmd.command;
+                defer if (cmd.user_shell) allocator.free(text);
+                try argv.append(allocator, (try allocator.dupeZ(u8, text)).ptr);
+                try argv.append(allocator, null);
+                return argv.toOwnedSlice(allocator);
+            }
+        }
+
         if (bundle) |value| {
             const integration_argv = try shell_integration.argv(allocator, value, if (launch_command) |cmd| cmd.command else null, if (launch_command) |cmd| cmd.close_on_exit else false);
             defer {
@@ -191,6 +213,12 @@ pub const PosixPty = struct {
 
         try argv.append(allocator, null);
         return try argv.toOwnedSlice(allocator);
+    }
+
+    fn isBackgroundShell(path: []const u8) bool {
+        const name = std.fs.path.basename(path);
+        inline for (.{ "bash", "sh", "zsh", "fish" }) |known| if (std.mem.eql(u8, name, known)) return true;
+        return false;
     }
 
     fn freeArgv(allocator: std.mem.Allocator, argv: []?[*:0]const u8) void {
@@ -238,6 +266,13 @@ pub const PosixPty = struct {
 
     pub fn exitStatus(self: *const PosixPty) ?u32 {
         return self.exit_status;
+    }
+
+    pub fn outputDrained(self: *PosixPty) bool {
+        if (self.closed) return true;
+        self.reader_state.mutex.lock();
+        defer self.reader_state.mutex.unlock();
+        return self.reader_state.eof and self.reader_state.buf.items.len == self.reader_state.start;
     }
 
     pub fn read(self: *PosixPty, buffer: []u8) !usize {

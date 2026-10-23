@@ -1,9 +1,9 @@
 # Native `hollow cli …`
 
-The native CLI subcommand talks directly to the running Hollow host's
-command socket. It does not need a tty, does not need shell
-integration sourced, and is the fastest option when a Hollow window
-is already running.
+The native CLI shares its implementation with the [standalone Zig
+`hollow-cli`](standalone.md). It prefers the running host's command socket,
+which needs neither a tty nor sourced shell integration. Both entry points
+support the same commands and transport options.
 
 The CLI uses `HOLLOW_COMMAND_ADDR` when available. Otherwise it discovers the
 running host through `%LOCALAPPDATA%\hollow\command-ipc-address`, so a Windows
@@ -35,11 +35,91 @@ is intercepted by `src/main.zig:guiMain` before the GUI is started.
 | `--quiet`     | Suppress success output                             |
 | `--envelope`  | Print the full reply envelope, not just the payload |
 | `--timeout N` | Seconds to wait for a reply (default 1.5)           |
+| `--transport MODE` | `auto` (default), `socket`, `file`, or `osc` |
 
 `get ...` commands print JSON payloads. Mutating commands are silent
 on success; pass `--envelope` to see the full reply.
 
 ## Commands
+
+### External events and completion
+
+See [external events and completion waits](events.md) for NDJSON watches,
+pane-scoped events, and waits for command completion, process exit, or status
+changes. Subscribe before launching work; revision changes are not completion.
+
+### Background jobs
+
+See [background execution jobs](jobs.md) for `job spawn/get/output/wait/cleanup`:
+no-focus creation, returned resource IDs, explicit argv/shell modes, retained
+output, and cleanup restricted to matching automation-owned panes.
+
+### Discovering the command API
+
+```sh
+hollow cli api list
+hollow cli --pretty api describe pane_split
+hollow cli capabilities
+hollow cli api call get_screen '{"id":123}'
+hollow cli api call pane_split '{"direction":"vertical","ratio":0.3}'
+```
+
+These commands query the **running host**, not a static copy of CLI documentation.
+Restart Hollow after upgrading to expose new commands. Method names are the
+existing snake-case wire names (for example `pane_split`, not `pane.split`).
+All discovery output is JSON; `--pretty`, `--quiet`, and `--envelope` apply normally.
+
+- `api list` returns every native command's name, description, input/output JSON
+  Schemas, request example, validation notes, supported transports, and completion mode.
+- `api describe <name>` returns one contract. Unknown methods fail with
+  `method_not_found` and a nonzero CLI exit status.
+- `capabilities` returns command API version, host platform, feature names, method
+  names, and invocation-context information/schema. This describes the native command
+  API, not every Lua function, plugin action, or dynamic HTP channel.
+- `api call <name> [args-json]` calls a command using one JSON argument object;
+  omitted arguments mean `{}`. It always prints the result, including `null` for
+  accepted queued mutations. It does not evaluate Lua or shell code itself.
+
+Input schemas describe **arguments only**, excluding transport `kind` and `ctx`.
+Required fields come from command-specific argument types. Unknown non-null
+fields, wrong types, invalid directions/colors, non-integer IDs/revisions,
+out-of-range ratios/bounds, and missing required values fail before dispatch.
+Snapshot output schemas describe structural fields and allow additive fields.
+An HTP query's result remains channel-defined, so its output schema is `{}`.
+
+Commands whose completion is `queued` only acknowledge acceptance into Hollow's
+action queue. They do **not** confirm a successful process launch, finished
+mutation, or completed shell command. Read state or use revision waits as needed;
+a revision change itself still does not establish shell-command completion.
+
+#### Invocation context versus targets
+
+Internally, every request has the same shape:
+
+```zig
+Request { ctx: Context, data: Command }
+```
+
+`Command` is a tagged union of command-specific argument structs. `ctx.pane_id`
+identifies the caller (0 when unknown); `ctx.origin` is `cli`, `api`, or `internal`.
+Context is advisory metadata, **not authentication**, and is separate from an
+explicit target such as `id`. Target/default rules remain command-specific and
+are stated in command descriptions. This does not change Lua action callbacks.
+
+The socket keeps the established flat command arguments and `kind` names, with
+optional `ctx`. Legacy top-level `pane_id` and `command` (alias for `cmd`) remain
+accepted. Supplying conflicting context or both command aliases fails. Known
+legacy optional fields serialized as `null` remain tolerated for older clients;
+this exception does not permit arbitrary misspelled fields.
+
+Raw API pane mutators that need an ID require it explicitly. The ordinary CLI
+still supports omitted `--id`/`--tag`: it resolves the active pane first. CLI tags
+remain a convenience for broadcasting multiple targeted API requests. For
+`tab rename` without an ID/index, the CLI resolves the active tab. Neither
+convenience silently treats caller metadata as an explicit mutation target.
+
+The API uses the existing command socket and its existing access controls. No new
+listener, remote execution service, or arbitrary Lua evaluator is introduced.
 
 ### `get`
 

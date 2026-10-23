@@ -316,6 +316,11 @@ pub const Mux = struct {
     /// Split the active pane, spawning a new pane in the given direction.
     /// The new pane becomes the active pane.
     pub fn newTab(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool) !void {
+        _ = try self.newTabWithFocus(runtime, callbacks, cfg, cell_width_px, cell_height_px, window_width, window_height, cwd, domain_name, launch_command, insert_at_end, true);
+    }
+
+    /// Nonactivating creation retains the pane and drains output without focus.
+    pub fn newTabWithFocus(self: *Mux, runtime: *GhosttyRuntime, callbacks: TerminalCallbacks, cfg: Config, cell_width_px: u32, cell_height_px: u32, window_width: u32, window_height: u32, cwd: ?[]const u8, domain_name: ?[]const u8, launch_command: ?LaunchCommand, insert_at_end: bool, activate: bool) !*Tab {
         const ws = self.activeWorkspace() orelse return error.NoActiveWorkspace;
         const current_pane = self.activePane();
         const resolved_domain = domain_name orelse if (current_pane) |pane|
@@ -332,6 +337,9 @@ pub const Mux = struct {
             null;
         const previous_active = ws.active_tab;
         const tab = try ws.newTab(self.allocId(), insert_at_end);
+        // Spawn filters can inspect focus during bootstrap. Do not expose the
+        // new empty tab as active even transiently for a background launch.
+        if (!activate) ws.active_tab = previous_active;
         errdefer {
             var remove_idx: ?usize = null;
             for (ws.tabs.items, 0..) |t, i| {
@@ -353,7 +361,14 @@ pub const Mux = struct {
             self.allocator.destroy(pane);
         }
         try tab.appendPane(pane);
+        if (!activate) {
+            pane.retain_on_exit = true;
+            // Hidden jobs must parse/drain output without waiting for first focus.
+            pane.terminal_output_ready = true;
+            ws.active_tab = previous_active;
+        }
         self.notifyCreated(pane);
+        return tab;
     }
 
     /// Close the active tab. Returns true if no tabs remain (app should quit).
@@ -398,18 +413,27 @@ pub const Mux = struct {
     }
 
     pub fn closePaneById(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize) bool {
+        return self.closePaneByIdWithFocus(runtime, pane_id, true);
+    }
+
+    pub fn closePaneByIdWithFocus(self: *Mux, runtime: *GhosttyRuntime, pane_id: usize, activate: bool) bool {
         for (self.workspaces.items) |ws| {
             for (ws.tabs.items) |tab| {
                 for (tab.panes.items) |pane| {
                     if (@intFromPtr(pane) != pane_id) continue;
 
-                    self.active_workspace = ws;
-                    ws.active_tab = tab;
+                    if (activate) {
+                        self.active_workspace = ws;
+                        ws.active_tab = tab;
+                    }
 
                     self.notifyClosing(pane);
                     const tab_empty = tab.closePane(runtime, pane);
                     if (tab_empty) {
+                        const previous = ws.active_tab;
+                        ws.active_tab = tab;
                         ws.closeTab(runtime);
+                        if (previous != tab) ws.active_tab = previous;
                         if (ws.tabs.items.len == 0) return self.removeWorkspace(runtime, ws);
                     }
                     return false;
@@ -703,7 +727,7 @@ pub const Mux = struct {
             var dead_buf: [64]*Pane = undefined;
             var dead_count: usize = 0;
             for (tab.panes.items) |pane| {
-                if (!pane.hasLiveChild() and dead_count < dead_buf.len) {
+                if (!pane.retain_on_exit and !pane.hasLiveChild() and dead_count < dead_buf.len) {
                     dead_buf[dead_count] = pane;
                     dead_count += 1;
                 }

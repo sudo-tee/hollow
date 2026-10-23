@@ -30,8 +30,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     // A handler (not SIG_IGN) so exec restores the default for the shell.
     _ = c.signal(c.SIGPIPE, ignoreSignal);
 
-    var hello: [32]u8 = undefined;
-    try writeFrame(1, .hello, try std.fmt.bufPrint(&hello, "{{\"version\":{d}}}", .{wire.version}));
+    var hello: [96]u8 = undefined;
+    try writeFrame(1, .hello, try std.fmt.bufPrint(&hello, "{{\"version\":{d},\"one_shot\":true,\"user_shell\":true}}", .{wire.version}));
 
     var reader: wire.Reader = .{};
     defer reader.deinit(allocator);
@@ -88,9 +88,18 @@ fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepar
     shell_integration.io.init(io, libcEnviron());
     const shell = if (spawn.argv.len > 0) spawn.argv[0] else try defaultShellPath(arena);
     // Integration only wraps a bare shell; explicit arguments run verbatim.
-    const integrate = spawn.shell_integration and spawn.argv.len <= 1;
+    const integrate = spawn.shell_integration and !spawn.one_shot and spawn.argv.len <= 1;
     const bundle = if (integrate) shell_integration.install(arena, shell) catch null else null;
     if (bundle) |value| try shell_integration.setupEnv(arena, value);
+    if (spawn.one_shot) {
+        if (!isPosixShell(shell)) return error.UnsupportedBackgroundShell;
+        var args: std.ArrayList(?[*:0]const u8) = .empty;
+        if (spawn.argv.len == 0) try args.append(arena, (try arena.dupeZ(u8, shell)).ptr);
+        for (spawn.argv) |arg| try args.append(arena, (try arena.dupeZ(u8, arg)).ptr);
+        try args.append(arena, if (spawn.user_shell) "-ic" else "-c");
+        try args.append(arena, (try arena.dupeZ(u8, spawn.command orelse return error.InvalidCommand)).ptr);
+        return .{ .cwd = cwd, .argv = try args.toOwnedSliceSentinel(arena, null) };
+    }
     const argv = try buildShellArgv(arena, spawn.argv, shell, spawn.command, spawn.close_on_exit, bundle);
     return .{ .cwd = cwd, .argv = argv };
 }

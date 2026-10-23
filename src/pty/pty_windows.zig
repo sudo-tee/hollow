@@ -105,6 +105,7 @@ pub const WindowsPty = struct {
     }
 
     pub fn spawnWithFallbacks(allocator: std.mem.Allocator, preferred_shell: [:0]const u8, cols: u16, rows: u16, cwd: ?[]const u8, env_block: ?[]const u8, launch_command: ?LaunchCommand, fallbacks: []const []const u8, wake: Wake) !WindowsPty {
+        if (launch_command) |cmd| if (cmd.argv != null or cmd.one_shot) return spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block, launch_command, wake);
         if (spawnWithShell(allocator, preferred_shell, cols, rows, cwd, env_block, launch_command, wake)) |pty| {
             return pty;
         } else |err| switch (err) {
@@ -490,7 +491,6 @@ pub const WindowsPty = struct {
         self.closed = true;
         self.alive = false;
     }
-
 };
 
 fn writerLoop(state: *WriterState) void {
@@ -724,7 +724,8 @@ const CommandSpec = struct {
 };
 
 fn buildCommandSpec(allocator: std.mem.Allocator, shell: [:0]const u8, cwd: ?[]const u8, launch_command: ?LaunchCommand) !CommandSpec {
-    const shell_program = shellProgram(shell);
+    const direct = if (launch_command) |cmd| if (cmd.user_shell) null else cmd.argv else null;
+    const shell_program = if (direct) |args| args[0] else shellProgram(shell);
     const shell_name = std.fs.path.basename(shell_program);
     const argv = try buildArgv(allocator, shell, shell_name, cwd, launch_command);
     defer freeArgv(allocator, argv);
@@ -750,6 +751,28 @@ fn buildArgv(allocator: std.mem.Allocator, shell: [:0]const u8, shell_name: []co
     errdefer {
         freeArgvOwnedStrings(allocator, argv.items);
         argv.deinit(allocator);
+    }
+
+    if (launch_command) |cmd| {
+        if (!cmd.user_shell and cmd.argv != null) {
+            const args = cmd.argv.?;
+            for (args) |arg| try argv.append(allocator, try allocator.dupe(u8, arg));
+            return argv.toOwnedSlice(allocator);
+        }
+        if (cmd.one_shot) {
+            const parsed = try parseCommandString(allocator, shell);
+            defer allocator.free(parsed);
+            try argv.appendSlice(allocator, parsed);
+            if (isPowershell(shell_name)) {
+                if (!cmd.user_shell) inline for (.{ "-NoProfile", "-NonInteractive" }) |arg| try argv.append(allocator, try allocator.dupe(u8, arg));
+                try argv.append(allocator, try allocator.dupe(u8, "-Command"));
+            } else if (std.ascii.eqlIgnoreCase(shell_name, "cmd.exe") or std.ascii.eqlIgnoreCase(shell_name, "cmd")) {
+                if (cmd.user_shell) return error.UnsupportedUserShell;
+                inline for (.{ "/D", "/C" }) |arg| try argv.append(allocator, try allocator.dupe(u8, arg));
+            } else return error.UnsupportedBackgroundShell;
+            try argv.append(allocator, if (cmd.user_shell) try cmd.userShellCommand(allocator, true) else try allocator.dupe(u8, cmd.command));
+            return argv.toOwnedSlice(allocator);
+        }
     }
 
     const shell_argv = try parseCommandString(allocator, shell);
