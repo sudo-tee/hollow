@@ -1958,8 +1958,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     api.get_field(state, -1, "_overlay_state");
     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
-        var top_stack_accum: f32 = 0;
-        var bottom_stack_accum: f32 = 0;
+        const overlay_stack = @import("overlay_stack.zig");
+        var stacks = overlay_stack.Stack{};
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
             api.rawgeti(state, stacks_idx, stack_i);
@@ -1970,6 +1970,13 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
             if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
                 g_overlay_render_stack_index = @intCast(stack_i);
                 const overlay_idx = absoluteIndex(api, state, -1);
+                api.get_field(state, overlay_idx, "stack_context");
+                var context: overlay_stack.Context = .overlay;
+                var context_len: usize = 0;
+                if (api.to_lstring(state, -1, &context_len)) |ptr| {
+                    context = std.meta.stringToEnum(overlay_stack.Context, ptr[0..context_len]) orelse .overlay;
+                }
+                pop(api, state, 1);
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
                 var backdrop_alpha: u8 = 0;
@@ -2148,7 +2155,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     .bottom_left, .bottom_center, .bottom_right => true,
                     else => false,
                 };
-                const stack_offset = if (overlay_is_bottom) bottom_stack_accum else top_stack_accum;
+                const stack_offset = stacks.next(context, overlay_is_bottom, occupied_h, overlay_margin_y);
 
                 var outer_x = content_left + (content_width - occupied_w) * 0.5;
                 var outer_y = top_h + overlay_margin_y + stack_offset;
@@ -2186,14 +2193,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 outer_x = std.math.clamp(outer_x, min_outer_x, max_outer_x);
                 outer_y = std.math.clamp(outer_y, min_outer_y, max_outer_y);
 
-                {
-                    const gap = overlay_margin_y;
-                    if (overlay_is_bottom) {
-                        bottom_stack_accum += occupied_h + gap;
-                    } else {
-                        top_stack_accum += occupied_h + gap;
-                    }
-                }
                 const panel_x = outer_x + panel_margin.left;
                 const panel_y = outer_y + panel_margin.top;
                 const content_x = panel_x + panel_inner_left;

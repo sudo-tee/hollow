@@ -146,6 +146,9 @@ Overlays stack. The topmost overlay receives `on_key` first and can
 return `true` to swallow the key. The notify, input, and select
 helpers are all overlays internally.
 
+Notifications, modals, and direct overlays use independent positioning stacks:
+showing or dismissing a notification does not move a picker or dialog.
+
 ## Composition helpers
 
 Stateful composition helpers live beside the render primitives on
@@ -154,7 +157,10 @@ Stateful composition helpers live beside the render primitives on
 ### `hollow.ui.modal(spec)`
 
 Creates and pushes an overlay, returns a handle with `.close()` and
-`.invalidate()`.  Handles hover/click dispatch automatically.
+`.invalidate()`. Handles hover/click dispatch automatically. Only one modal is
+mounted at a time: while one is open, new modal requests are ignored and return
+`nil`. The current modal keeps its input and selection. This also applies to
+built-in pickers and dialogs; notifications and direct overlays remain independent.
 
 ```lua
 local m = hollow.ui.modal({
@@ -170,7 +176,7 @@ local m = hollow.ui.modal({
   keys    = hollow.ui.keys(...), -- optional key handler
   on_event = function(name, payload) end,  -- optional raw events
 })
-m.close()
+if m then m.close() end
 ```
 
 `state` tracks hover state: `state.hovered_id` is the id of the

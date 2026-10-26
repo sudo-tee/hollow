@@ -820,6 +820,7 @@
 ---@field scrollbar_thumb_color? HollowColor
 
 ---@class HollowUiOverlaySerializedWidget
+---@field stack_context "overlay"|"modal"|"notification"
 ---@field align string
 ---@field backdrop HollowUiThemeBackdrop|nil
 ---@field chrome HollowUiChrome|nil
@@ -853,6 +854,7 @@
 ---@field hidden? boolean
 ---@field reserve? boolean
 ---@field _notify? boolean
+---@field _modal? boolean
 ---@field _expires_at? integer
 
 ---@alias HollowUiWidget HollowWidget
@@ -2067,7 +2069,7 @@ function ui.group(children, style) end
 function ui.button(opts) end
 
 ---@param spec HollowUiModalSpec
----@return HollowUiModalHandle
+---@return HollowUiModalHandle|nil Returns nil if another modal is already open.
 function ui.modal(spec) end
 
 ---@param ... table
