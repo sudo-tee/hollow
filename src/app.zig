@@ -1521,9 +1521,17 @@ pub const App = struct {
 
     pub fn syncActivePaneChange(self: *App, previous: ?*Pane, current: ?*Pane) void {
         if (previous != current) {
-            if (previous) |pane| pane.program_status.setFocused(false);
+            if (previous) |pane| {
+                pane.program_status.setFocused(false);
+                // Pane switches are focus changes for child terminals even when
+                // Hollow's OS window remains focused.
+                if (self.window_focused) self.sendFocusToPane(pane, false);
+            }
         }
-        if (current) |pane| pane.program_status.setFocused(true);
+        if (current) |pane| {
+            pane.program_status.setFocused(true);
+            if (self.window_focused and previous != current) self.sendFocusToPane(pane, true);
+        }
         self.invalidateFocusedPaneCache(previous, current);
         if (self.ghostty) |*runtime| {
             if (self.mux) |*mux| {
@@ -1726,14 +1734,20 @@ pub const App = struct {
         return false;
     }
 
-    pub fn sendFocus(self: *App, gained: bool) !void {
-        self.window_focused = gained;
-        const pane = self.activePane() orelse return;
+    /// Send focus state to a child terminal without treating mux focus as user input.
+    fn sendFocusToPane(self: *App, pane: *Pane, gained: bool) void {
         const rt = if (self.ghostty) |*r| r else return;
         if (!rt.terminalMode(pane.terminal, .focus_event)) return;
         var buf: [8]u8 = undefined;
         const bytes = rt.encodeFocus(if (gained) .gained else .lost, &buf) orelse return;
-        mux_ops.sendText(self, bytes);
+        pane.sendUserText(bytes);
+        self.signalWake();
+    }
+
+    pub fn sendFocus(self: *App, gained: bool) !void {
+        self.window_focused = gained;
+        const pane = self.activePane() orelse return;
+        self.sendFocusToPane(pane, gained);
     }
 
     pub fn sendKey(self: *App, key: ghostty.Key, mods: u32, action: ghostty.KeyAction, text: ?[]const u8, altgr: bool) !bool {
@@ -2952,6 +2966,39 @@ test "window focus is retained even without an active terminal" {
     try std.testing.expect(!lua_callbacks.luaWindowIsFocusedCallback(app));
     try app.sendFocus(true);
     try std.testing.expect(lua_callbacks.luaWindowIsFocusedCallback(app));
+}
+
+test "mux pane changes forward focus events to child terminals" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+
+    const runtime = try app.initTerminalRuntime();
+    var previous = pane_mod.Pane.init(std.testing.allocator);
+    defer previous.deinit(&app.ghostty.?);
+    previous.terminal_runtime = runtime;
+    previous.terminal = try runtime.createTerminal(80, 24, 0);
+    try previous.queueStartupInput("previous");
+    try std.testing.expect(runtime.setTerminalMode(previous.terminal, .focus_event, true));
+
+    var current = pane_mod.Pane.init(std.testing.allocator);
+    defer current.deinit(&app.ghostty.?);
+    current.terminal_runtime = runtime;
+    current.terminal = try runtime.createTerminal(80, 24, 0);
+    try current.queueStartupInput("current");
+    try std.testing.expect(runtime.setTerminalMode(current.terminal, .focus_event, true));
+
+    app.syncActivePaneChange(&previous, &current);
+    try std.testing.expect(std.mem.endsWith(u8, previous.pending_startup_input, "\x1b[O"));
+    try std.testing.expect(std.mem.endsWith(u8, current.pending_startup_input, "\x1b[I"));
+
+    const previous_len = previous.pending_startup_input.len;
+    const current_len = current.pending_startup_input.len;
+    app.window_focused = false;
+    app.syncActivePaneChange(&current, &previous);
+    try std.testing.expectEqual(previous_len, previous.pending_startup_input.len);
+    try std.testing.expectEqual(current_len, current.pending_startup_input.len);
 }
 
 test "viewport iterator row mapping follows platform row order" {

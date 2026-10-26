@@ -42,6 +42,9 @@ an animated blue working spinner (with percentage when reported), amber blocked-
 icons, a green completion check, and a red error cross. Idle has no indicator.
 Mux navigator pane rows show their own status; tab/workspace rows aggregate all
 their panes, even when collapsed. Open overlays read live status on each render.
+When a child terminal enables focus reporting, Hollow forwards focus-in/out events
+when pane or workspace focus changes, as well as when the Hollow window gains or
+loses focus.
 Custom bars can inspect records:
 
 ```lua
