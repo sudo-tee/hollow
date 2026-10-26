@@ -1936,6 +1936,8 @@ function mux_navigator.close() end
 ---@alias HollowActivityView "inbox"|"history"
 
 ---@class HollowActivityEntry
+---@field source? "program_status"|"shell_command" Origin of a live Running entry; shell commands are not explicit task-status reports.
+---@field category? "task"|"command" Live classification, independent of source.
 ---@field app? string Program-reported application name, independent of task title.
 ---@field id integer|string Numeric for retained events; string for live running tasks.
 ---@field kind "notification"|"bell"|"program"
@@ -1957,12 +1959,18 @@ function mux_navigator.close() end
 ---@field cwd? string
 
 ---@class HollowActivityNamespace
+---@field setup fun(opts?: HollowActivityOptions) Replace all shell-command rules; omitted lists reset to empty. Explicit program status is unaffected.
 ---@field list fun(opts?: { view?: HollowActivityView|"running", pane_id?: integer, workspace?: string, activity_kind?: "notification"|"bell"|"program", level?: HollowNotifyLevel }): HollowActivityEntry[] Retained events newest first; isolated snapshots with exact-match filters. Never acknowledges entries.
 ---@field running fun(): HollowActivityEntry[] Live working/blocked programs and shell-integrated commands.
 ---@field summary fun(): { count: integer, level?: HollowNotifyLevel } Pending entries only; never running tasks.
 ---@field dismiss fun(id: integer): boolean Acknowledge an entry without changing program state.
 ---@field dismiss_all fun()
 ---@field clear_history fun() Remove acknowledged history, preserving pending entries.
+
+---@class HollowActivityOptions
+---@field tasks? string[] Lua patterns matching full shell command text to promote into Tasks.
+---@field commands? string[] Lua patterns forcing Commands, overriding tasks.
+---@field ignore? string[] Lua patterns hiding shell commands from live listings and task badges, overriding both lists.
 
 ---@class HollowUiActivityOptions
 ---@field view? HollowActivityView

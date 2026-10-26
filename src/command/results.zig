@@ -23,6 +23,8 @@ pub const TreeWorkspace = struct { id: usize, index: usize, name: []const u8, do
 pub const Domain = struct { name: []const u8, is_active: bool, is_default: bool, shell: ?[]const u8 = null, default_cwd: ?[]const u8 = null };
 pub const Revision = struct { revision: u64 };
 pub const Activity = struct {
+    source: ?[]const u8 = null,
+    category: ?[]const u8 = null,
     id: std.json.Value,
     kind: []const u8,
     title: ?[]const u8 = null,

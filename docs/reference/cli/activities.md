@@ -28,9 +28,17 @@ newest first; Running is a live snapshot, not an event log.
 
 Filters combine with AND. Running program reports use severity `info` for
 working and `warn` for blocked; shell-command fallback uses `info`.
+Running entries include `source = "program_status"` for explicitly reported tasks
+or `"shell_command"` for shell-command fallback. Widget category collapse does not
+filter CLI results. Shell fallback still uses `state = "working"` for compatibility;
+its source identifies observed running commands, not an explicit work report.
+`category = "task"` identifies reported tasks and rule-classified shell tasks;
+`"command"` identifies other shell fallback. [Shell-command rules](../lua/activity.md#shell-command-rules)
+apply to this shared snapshot: ignored shell commands are omitted, even with an
+explicit pane filter. Rules never hide explicit program-status reports.
 
 Entries include `id`, `kind`, and available content/context fields: `title`,
-`message`, `app`, `state`, `block_kind`, `program_id`, `progress`, `level`,
+`message`, `app`, `source`, `category`, `state`, `block_kind`, `program_id`, `progress`, `level`,
 `pending`, `count`, `timestamp_ms`, `pane_id`, `pane_title`, `pane_closed`,
 `workspace`, `tab_title`, and `cwd`. Unavailable fields may be omitted. Retained
 IDs are numeric; live Running IDs are strings. Timestamps are monotonic session

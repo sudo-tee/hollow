@@ -262,8 +262,236 @@ describe("activity center", function()
   it("shows shell commands when programs do not report status", function()
     hollow.htp._handle_emit("command_started", { command = "make test" }, 101, 1000)
     assert.equals("make test", hollow.activity.running()[1].title)
+    assert.equals("shell_command", hollow.activity.running()[1].source)
     report("working", 10)
     assert.equals(1, #hollow.activity.running()) -- Do not duplicate a protocol-aware task.
+    assert.equals("program_status", hollow.activity.running()[1].source)
+  end)
+
+  it("classifies shell builds as Tasks without changing their origin or bell count", function()
+    hollow.activity.setup({ tasks = { "^zig build%f[%s%z]" } })
+    hollow.htp._handle_emit("command_started", { command = "zig build test" }, 101, 1000)
+    local entry = hollow.activity.list({ view = "running" })[1]
+    assert.equals("shell_command", entry.source)
+    assert.equals("task", entry.category)
+    assert.equals("zig build test", entry.title)
+    assert.equals(0, hollow.activity.summary().count)
+    assert.equals(0, #hollow.activity.list({ view = "history" }))
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Tasks (1)", 1, true))
+    assert.is_truthy(text():find("zig build test · Running", 1, true))
+    assert.is_nil(text():find("Commands (", 1, true))
+    local badge, state, deadline =
+      require("hollow.program_status").workspace_badge(hollow.term.mux_tree()[1])
+    assert.is_truthy(badge)
+    assert.equals("working", state)
+    assert.is_number(deadline)
+    hollow.htp._handle_emit("command_ended", { exit_code = 1 }, 101, 2000)
+    assert.equals(0, #hollow.activity.running())
+    assert.is_nil(require("hollow.program_status").workspace_badge(hollow.term.mux_tree()[1]))
+    assert.is_truthy(text():find("All caught up", 1, true))
+    assert.equals(0, hollow.activity.summary().count)
+  end)
+
+  it("gives ignore precedence over commands and tasks, and commands over tasks", function()
+    hollow.activity.setup({
+      tasks = { ".*" },
+      commands = { "%-%-watch", "^nvim%f[%s%z]" },
+      ignore = { "^nvim%f[%s%z]" },
+    })
+    for _, command in ipairs({ "nvim", "nvim file.lua" }) do
+      hollow.htp._handle_emit("command_started", { command = command }, 101, 1000)
+      assert.equals(0, #hollow.activity.list({ view = "running" }))
+      assert.is_nil(require("hollow.program_status").workspace_badge(hollow.term.mux_tree()[1]))
+    end
+    hollow.ui.activity.open()
+    env.get_key_handler()("slash", 0)
+    for char in ("nvim"):gmatch(".") do
+      env.get_key_handler()(char, 0)
+    end
+    assert.is_truthy(text():find("No matching activity", 1, true))
+    env.get_key_handler()("escape", 0)
+    hollow.htp._handle_emit("command_started", { command = "npm test -- --watch" }, 101, 2000)
+    assert.equals("command", hollow.activity.running()[1].category)
+    assert.is_truthy(text():find("Commands (1)", 1, true))
+    assert.is_nil(require("hollow.program_status").workspace_badge(hollow.term.mux_tree()[1]))
+    hollow.htp._handle_emit("command_started", { command = "npm test" }, 101, 3000)
+    assert.equals("task", hollow.activity.running()[1].category)
+    assert.is_truthy(text():find("Tasks (1)", 1, true))
+  end)
+
+  it("keeps explicit status authoritative even for ignored commands and after clear", function()
+    hollow.activity.setup({ tasks = { ".*" }, ignore = { ".*" } })
+    hollow.htp._handle_emit("command_started", { command = "nvim" }, 101, 1000)
+    report("working", 20)
+    assert.equals(1, #hollow.activity.running())
+    assert.equals("program_status", hollow.activity.running()[1].source)
+    assert.equals("task", hollow.activity.running()[1].category)
+    report("done")
+    assert.equals(0, #hollow.activity.running())
+    status[1] = nil
+    emit("term:program_status_changed")
+    hollow.activity.setup({ tasks = { ".*" } })
+    assert.equals(0, #hollow.activity.running())
+    assert.is_nil(require("hollow.program_status").workspace_badge(hollow.term.mux_tree()[1]))
+    hollow.htp._handle_emit("command_started", { command = "make" }, 101, 2000)
+    assert.equals("task", hollow.activity.running()[1].category)
+  end)
+
+  it("reclassifies live commands on setup, copies rules, and resets omitted lists", function()
+    hollow.htp._handle_emit("command_started", { command = "make test" }, 101, 1000)
+    assert.equals("command", hollow.activity.running()[1].category)
+    local opts = { tasks = { "^make%f[%s%z]" } }
+    hollow.activity.setup(opts)
+    opts.tasks[1] = "never"
+    assert.equals("task", hollow.activity.running()[1].category)
+    hollow.activity.setup({ ignore = { "^make%f[%s%z]" } })
+    assert.equals(0, #hollow.activity.running())
+    hollow.activity.setup()
+    assert.equals("command", hollow.activity.running()[1].category)
+    hollow.activity.setup({ tasks = { "^make%f[%s%z]" } })
+    hollow.htp._handle_emit("command_started", { command = "makebelieve" }, 101, 2000)
+    assert.equals("command", hollow.activity.running()[1].category)
+  end)
+
+  it("rejects invalid rules atomically", function()
+    hollow.activity.setup({ tasks = { "^make" } })
+    for _, opts in ipairs({
+      false,
+      "bad",
+      { tasks = false },
+      { tasks = "bad" },
+      { tasks = { 1 } },
+      { tasks = { name = "^make" } },
+      { ignore = { "[" } },
+    }) do
+      assert.has_error(function()
+        hollow.activity.setup(opts)
+      end)
+    end
+    hollow.htp._handle_emit("command_started", { command = "make test" }, 101, 1000)
+    assert.equals("task", hollow.activity.running()[1].category)
+  end)
+
+  it("collapses Commands by default and toggles its header with the mouse", function()
+    hollow.htp._handle_emit("command_started", { command = "node server.js" }, 101, 1000)
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Commands (1)", 1, true))
+    assert.is_nil(text():find("node server.js", 1, true))
+    local header
+    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+      if row.id and row.id:find("category:commands", 1, true) then
+        header = row.id
+      end
+    end
+    assert.is_truthy(header)
+    emit("overlay:click", { id = header })
+    assert.is_truthy(text():find("node server.js · Running", 1, true))
+    local marker
+    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+      if row.id and row.id:find("command:101", 1, true) then
+        marker = row.segments[2]
+      end
+    end
+    assert.equals("▸ ", marker.text)
+    assert.equals(require("hollow.theme").resolve_widget("select").muted, marker.fg)
+    assert.is_nil(text():find("Command · Working", 1, true))
+    assert.is_nil(env.recorded.focus_pane_by_id)
+    assert.equals(0, hollow.activity.summary().count)
+    assert.equals(1, #hollow.activity.running())
+    emit("overlay:click", { id = header })
+    assert.is_nil(text():find("node server.js", 1, true))
+    assert.equals(1, #hollow.activity.list({ view = "running" }))
+  end)
+
+  it("expands Tasks by default and lets keyboard users toggle without acting on headers", function()
+    report("working", 42)
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Tasks (1)", 1, true))
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    env.get_key_handler()("arrow_up", 0)
+    env.get_key_handler()("space", 0)
+    assert.is_nil(text():find("Compiler · Working", 1, true))
+    env.get_key_handler()("v", 0)
+    env.get_key_handler()("y", 0)
+    env.get_key_handler()("d", 0)
+    assert.is_nil(env.recorded.clipboard)
+    assert.is_nil(text():find("Activity details", 1, true))
+    env.get_key_handler()("enter", 0)
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    assert.is_nil(env.recorded.focus_pane_by_id)
+    env.get_key_handler()("t", 0)
+    assert.is_nil(text():find("Compiler · Working", 1, true))
+    env.get_key_handler()("r", 0)
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    assert.equals("working", hollow.activity.running()[1].state)
+  end)
+
+  it("keeps Tasks and Commands independently collapsed", function()
+    hollow.activity.running = function()
+      return {
+        {
+          id = "program:101:test",
+          kind = "program",
+          source = "program_status",
+          state = "working",
+          app = "Compiler",
+          title = "Task",
+        },
+        {
+          id = "command:102",
+          kind = "program",
+          source = "shell_command",
+          state = "working",
+          title = "node server.js",
+        },
+      }
+    end
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    assert.is_nil(text():find("node server.js", 1, true))
+    env.get_key_handler()("c", 0)
+    assert.is_truthy(text():find("node server.js · Running", 1, true))
+    env.get_key_handler()("t", 0)
+    assert.is_nil(text():find("Compiler · Working", 1, true))
+    assert.is_truthy(text():find("node server.js · Running", 1, true))
+    env.get_key_handler()("tab", 0)
+    assert.is_nil(text():find("Tasks (", 1, true))
+    assert.is_nil(text():find("Commands (", 1, true))
+    env.get_key_handler()("tab", 0)
+    assert.is_nil(text():find("Compiler · Working", 1, true))
+    assert.is_truthy(text():find("node server.js · Running", 1, true))
+    env.get_key_handler()("escape", 0)
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    assert.is_nil(text():find("node server.js", 1, true))
+  end)
+
+  it("temporarily reveals collapsed Commands in search and preserves full command copy", function()
+    hollow.htp._handle_emit(
+      "command_started",
+      { command = "node server.js --port 3000" },
+      101,
+      1000
+    )
+    hollow.ui.activity.open()
+    env.get_key_handler()("slash", 0)
+    for char in ("node"):gmatch(".") do
+      env.get_key_handler()(char, 0)
+    end
+    assert.is_truthy(text():find("node server.js --port 3000 · Running", 1, true))
+    env.get_key_handler()("escape", 0)
+    assert.is_nil(text():find("node server.js", 1, true))
+    env.get_key_handler()("enter", 0) -- Expand Commands header, without navigating.
+    env.get_key_handler()("arrow_down", 0)
+    env.get_key_handler()("c", 2)
+    assert.equals("node server.js --port 3000", env.recorded.clipboard)
+    env.get_key_handler()("v", 0)
+    assert.is_truthy(text():find("node server.js --port 3000", 1, true))
+    env.get_key_handler()("escape", 0)
+    hollow.htp._handle_emit("command_ended", { exit_code = 0 }, 101, 2000)
+    assert.is_nil(text():find("Commands (", 1, true))
+    assert.is_truthy(text():find("All caught up", 1, true))
   end)
 
   for _, final_state in ipairs({ "idle", "done", "error", "cleared" }) do
@@ -465,7 +693,11 @@ describe("activity center", function()
     hollow.ui.activity.open()
     local item_rows = 0
     for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      if row.id and row.id:find("activity:item:", 1, true) then
+      if
+        row.id
+        and row.id:find("activity:item:", 1, true)
+        and not row.id:find("category:", 1, true)
+      then
         item_rows = item_rows + 1
         local pill
         for _, segment in ipairs(row.segments) do
@@ -532,7 +764,7 @@ describe("activity center", function()
     notify("needle")
     report("working", 63)
     hollow.ui.activity.open()
-    assert.is_truthy(text():find("Running", 1, true))
+    assert.is_truthy(text():find("Tasks", 1, true))
     assert.is_truthy(text():find("63%", 1, true))
     assert.equals(1, hollow.activity.summary().count)
     env.get_key_handler()("d", 0)
@@ -666,7 +898,7 @@ describe("activity center", function()
     local _, count = text():gsub("Compiler · Blocked", "")
     assert.equals(1, count)
     env.get_key_handler()("d", 0)
-    assert.is_truthy(text():find("Running", 1, true))
+    assert.is_truthy(text():find("Tasks", 1, true))
     assert.is_truthy(text():find("Compiler · Blocked", 1, true))
     assert.equals(0, hollow.activity.summary().count)
   end)

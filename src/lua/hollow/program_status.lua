@@ -29,6 +29,14 @@ function M.badge(panes, now_ms)
         selected = record
       end
     end
+    local activity = _G.hollow and _G.hollow.activity
+    if
+      activity
+      and activity._shell_task(pane)
+      and (not selected or priority.working > priority[selected.state])
+    then
+      selected = { state = "working" }
+    end
   end
   if not selected then
     return nil

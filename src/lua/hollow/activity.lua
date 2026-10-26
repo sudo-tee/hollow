@@ -1,7 +1,23 @@
 -- Activity policy: keep acknowledgement separate from terminal state and toast TTL.
 local Store = require("hollow.activity.store")
+local shape = require("hollow.shape")
 local util = require("hollow.util")
 local M = {}
+
+local pattern_list = shape
+  .string()
+  :constraint(function(pattern)
+    return pcall(string.find, "", pattern)
+  end, "valid Lua pattern")
+  :array()
+  :default({})
+local rules_schema = shape
+  .object({
+    tasks = pattern_list,
+    commands = pattern_list,
+    ignore = pattern_list,
+  })
+  :default({})
 
 ---@param hollow Hollow
 ---@param host_api HollowHostBridge
@@ -11,6 +27,7 @@ function M.setup(hollow, host_api)
   -- A long-lived agent's shell command is not evidence that its task is still
   -- working after the agent clears its own status. Reset only for a new command.
   local program_commands = {}
+  local rules = { tasks = {}, commands = {}, ignore = {} }
   local api = {}
   hollow.activity = api
 
@@ -22,6 +39,35 @@ function M.setup(hollow, host_api)
     hollow.ui.topbar.invalidate()
     hollow.ui.bottombar.invalidate()
     hollow.events.emit("activity:changed", {})
+  end
+
+  -- Rules describe intent, not process lifetime. Keep origin and category separate.
+  local function command_category(command)
+    for _, group in ipairs({ "ignore", "commands", "tasks" }) do
+      for _, pattern in ipairs(rules[group]) do
+        local ok, match = pcall(string.find, command or "", pattern)
+        if ok and match then
+          return ({ ignore = "ignore", commands = "command", tasks = "task" })[group]
+        end
+      end
+    end
+    return "command"
+  end
+
+  function api.setup(opts)
+    rules = util.clone_value(rules_schema:parse(opts, "invalid activity options"))
+    changed()
+  end
+
+  local function shell_category(pane)
+    if pane.running and #(pane.program_status or {}) == 0 and not program_commands[pane.id] then
+      return command_category(pane.running.command)
+    end
+  end
+
+  -- Shared by task badges without changing native program-status records.
+  function api._shell_task(pane)
+    return shell_category(pane) == "task"
   end
 
   local function background(pane)
@@ -182,6 +228,8 @@ function M.setup(hollow, host_api)
               result[#result + 1] = {
                 id = "program:" .. pane.id .. ":" .. (record.id or ""),
                 kind = "program",
+                source = "program_status",
+                category = "task",
                 app = record.app,
                 program_id = record.id,
                 level = record.state == "blocked" and "warn" or "info",
@@ -198,10 +246,13 @@ function M.setup(hollow, host_api)
               }
             end
           end
-          if not has_status and not program_commands[pane.id] and pane.running then
+          local category = shell_category(pane)
+          if category and category ~= "ignore" then
             result[#result + 1] = {
               id = "command:" .. pane.id,
               kind = "program",
+              source = "shell_command",
+              category = category,
               app = "Command",
               level = "info",
               pending = false,
@@ -281,6 +332,7 @@ function M.setup(hollow, host_api)
     end
     changed()
   end)
+  hollow.events.on("term:command_finished", changed)
   hollow.events.on("term:bell", function(event)
     local pane = event.pane
     if not pane then

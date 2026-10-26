@@ -47,6 +47,9 @@ local function location(entry)
 end
 
 local function row_label(entry)
+  if entry.source == "shell_command" then
+    return ((entry.title or "Command") .. " · Running"):gsub("%s+", " ")
+  end
   if entry.kind == "program" then
     local app = entry.app and entry.app ~= "" and entry.app or "Program"
     local state = entry.state or "idle"
@@ -62,6 +65,9 @@ local function row_label(entry)
 end
 
 local function marker(entry)
+  if entry.source == "shell_command" and entry.category ~= "task" then
+    return "▸ "
+  end
   if entry.kind == "program" then
     return program_status.badge({
       {
@@ -92,7 +98,8 @@ function ui.activity.open(opts)
   if backdrop == nil then
     backdrop = theme.backdrop
   end
-  local show_running = true
+  local expanded = { tasks = true, commands = false }
+  local search_expanded = {}
   local searching = false
   local width = opts.width or DEFAULT_WIDTH
   local height = opts.height or opts.max_height or DEFAULT_HEIGHT
@@ -106,17 +113,25 @@ function ui.activity.open(opts)
   local rows = {}
   local filter = ui.text_input({
     on_change = function()
+      search_expanded = {}
       if list then
         list.nav.index = 1
       end
     end,
   })
 
+  local function category_expanded(category)
+    if filter.value ~= "" then
+      return search_expanded[category] ~= false
+    end
+    return expanded[category]
+  end
+
   local function refresh()
     local selected = list and rows[list.nav.index]
     local selected_id = selected and selected.id
     local entries = hollow.activity.list({ view = view })
-    local running = view == "inbox" and show_running and hollow.activity.running() or {}
+    local running = view == "inbox" and hollow.activity.running() or {}
     local blocked = {}
     for _, entry in ipairs(entries) do
       if entry.kind == "program" and entry.state == "blocked" then
@@ -129,21 +144,43 @@ function ui.activity.open(opts)
         return entry.state ~= "blocked" or not blocked[entry.id]
       end)
       :get()
-    rows = {}
-    local function add(items, section)
-      local first = true
+    local function matching(items)
+      local matches = {}
       for _, entry in ipairs(items) do
         local text =
           util.words(row_label(entry), title(entry), entry.message, location(entry), entry.state)
         if filter.value == "" or shared.select_item_matches(filter.value, text, true) then
-          entry.section = first and section or nil
-          rows[#rows + 1] = entry
-          first = false
+          matches[#matches + 1] = entry
+        end
+      end
+      return matches
+    end
+    rows = matching(entries)
+    local groups = { tasks = {}, commands = {} }
+    for _, entry in ipairs(running) do
+      local category = entry.source == "shell_command" and entry.category ~= "task" and "commands"
+        or "tasks"
+      entry.group = category
+      groups[category][#groups[category] + 1] = entry
+    end
+    for _, category in ipairs({ "tasks", "commands" }) do
+      local items = matching(groups[category])
+      if #items > 0 then
+        local open = category_expanded(category)
+        rows[#rows + 1] = {
+          id = "category:" .. category,
+          header_category = category,
+          title = category == "tasks" and "Tasks" or "Commands",
+          count = #items,
+          expanded = open,
+        }
+        if open then
+          for _, entry in ipairs(items) do
+            rows[#rows + 1] = entry
+          end
         end
       end
     end
-    add(entries)
-    add(running, "Running")
     if list then
       for index, entry in ipairs(rows) do
         if entry.id == selected_id then
@@ -161,8 +198,27 @@ function ui.activity.open(opts)
     refresh()
   end
 
+  local function toggle_category(category)
+    local selected = rows[list.nav.index]
+    local target = filter.value ~= "" and search_expanded or expanded
+    target[category] = not category_expanded(category)
+    if selected and selected.group == category and not target[category] then
+      for index, entry in ipairs(rows) do
+        if entry.header_category == category then
+          list.nav.index = index
+          break
+        end
+      end
+    end
+    refresh()
+  end
+
   local function activate(index)
     local entry = rows[index]
+    if entry and entry.header_category then
+      toggle_category(entry.header_category)
+      return
+    end
     if not entry or not entry.pane_id or entry.pane_closed then
       return
     end
@@ -186,7 +242,8 @@ function ui.activity.open(opts)
 
   local function inspect()
     copy_feedback = nil
-    details = rows[list.nav.index]
+    local entry = rows[list.nav.index]
+    details = entry and not entry.header_category and entry or nil
     if details then
       detail_view.set(
         title(details) .. "\n\n" .. (details.message or "") .. "\n\n" .. location(details)
@@ -196,7 +253,7 @@ function ui.activity.open(opts)
 
   local function copy()
     local entry = details or rows[list.nav.index]
-    if not entry then
+    if not entry or entry.header_category then
       return
     end
     local heading = entry.title
@@ -220,14 +277,14 @@ function ui.activity.open(opts)
     items = function()
       return rows
     end,
-    row_count_fn = function(entry)
-      return entry.section and 2 or 1
-    end,
     row_budget = function()
       return math.max(2, height - (searching and 6 or 4))
     end,
     on_activate = activate,
   })
+  if rows[1] and rows[1].header_category and rows[2] and not rows[2].header_category then
+    list.nav.index = 2
+  end
 
   local function command(fn)
     return function(key, mods)
@@ -269,9 +326,17 @@ function ui.activity.open(opts)
     i = command(function()
       set_view("inbox")
     end),
-    r = command(function()
-      show_running = not show_running
-      refresh()
+    ["r|t"] = command(function()
+      toggle_category("tasks")
+    end),
+    c = command(function()
+      toggle_category("commands")
+    end),
+    space = command(function()
+      local entry = rows[list.nav.index]
+      if entry and entry.header_category then
+        toggle_category(entry.header_category)
+      end
     end),
     d = command(dismiss),
     ["<C-d>"] = function()
@@ -397,14 +462,6 @@ function ui.activity.open(opts)
               hollow.activity.dismiss_all()
             end,
           }) or ui.text(""),
-          ui.button({
-            id = "activity:running",
-            text = (show_running and icons.expanded or icons.collapsed) .. " Running",
-            style = { fg = theme.muted },
-            on_click = function()
-              show_running = not show_running
-            end,
-          }),
         }),
         ui.divider(theme.divider),
       }
@@ -422,53 +479,65 @@ function ui.activity.open(opts)
         local selected = index == list.nav.index
         local hovered = state.hovered_id == id
         local fg = util.state_value(selected, hovered, theme.selection_fg, theme.hover_fg, theme.fg)
-        local workspace =
-          util.truncate_end(entry.workspace or "", math.min(20, math.floor(width / 4)))
-        local time = age(entry.timestamp_ms)
-        local workspace_colors = shared.workspace_colors(
-          entry.workspace or "",
-          require("hollow.ui.workspace.source").switcher_state().workspace_color_fn
-        )
-        local reserved = 8
-          + util.utf8_len(time)
-          + (workspace ~= "" and util.utf8_len(workspace) + 4 or 0)
-          + (entry.pane_closed and 14 or 0)
         options.fill_bg = util.state_value(selected, hovered, theme.selection_bg, theme.hover_bg)
         options.scrollbar_track_color = theme.scrollbar_track
         options.scrollbar_thumb_color = theme.scrollbar_thumb
-        if entry.section then
-          content[#content + 1] =
-            ui.row({ ui.text(entry.section, { fg = theme.muted, bold = true }) })
+        if entry.header_category then
+          content[#content + 1] = ui.row({
+            ui.text(
+              (entry.expanded and icons.expanded or icons.collapsed)
+                .. " "
+                .. entry.title
+                .. " ("
+                .. entry.count
+                .. ")",
+              { fg = fg, bold = true }
+            ),
+          }, options)
+        else
+          local workspace =
+            util.truncate_end(entry.workspace or "", math.min(20, math.floor(width / 4)))
+          local time = age(entry.timestamp_ms)
+          local workspace_colors = shared.workspace_colors(
+            entry.workspace or "",
+            require("hollow.ui.workspace.source").switcher_state().workspace_color_fn
+          )
+          local reserved = 8
+            + util.utf8_len(time)
+            + (workspace ~= "" and util.utf8_len(workspace) + 4 or 0)
+            + (entry.pane_closed and 14 or 0)
+          content[#content + 1] = ui.row({
+            ui.text(selected and "> " or "  ", { fg = fg }),
+            ui.text(marker(entry), {
+              fg = entry.source == "shell_command" and entry.category ~= "task" and theme.muted
+                or program_status.color(entry.state)
+                or theme.notify_levels[entry.level]
+                or fg,
+            }),
+            ui.text(
+              util.truncate_end(row_label(entry), math.max(8, width - reserved)),
+              { fg = fg, bold = selected }
+            ),
+            ui.spacer(),
+            ui.text(entry.pane_closed and "pane closed  " or "", { fg = theme.muted }),
+            ui.text(workspace, {
+              fg = workspace_colors.fg,
+              bg = workspace_colors.bg,
+              radius = 4,
+              padding = PILL_PADDING,
+            }),
+            ui.text(time ~= "" and ("  " .. time) or "", { fg = theme.muted }),
+            ui.text("  "),
+            entry.pending and ui.button({
+              id = "activity:dismiss:" .. entry.id,
+              text = "×",
+              style = { fg = fg },
+              on_click = function()
+                hollow.activity.dismiss(entry.id)
+              end,
+            }) or ui.text(""),
+          }, options)
         end
-        content[#content + 1] = ui.row({
-          ui.text(selected and "> " or "  ", { fg = fg }),
-          ui.text(
-            marker(entry),
-            { fg = program_status.color(entry.state) or theme.notify_levels[entry.level] or fg }
-          ),
-          ui.text(
-            util.truncate_end(row_label(entry), math.max(8, width - reserved)),
-            { fg = fg, bold = selected }
-          ),
-          ui.spacer(),
-          ui.text(entry.pane_closed and "pane closed  " or "", { fg = theme.muted }),
-          ui.text(workspace, {
-            fg = workspace_colors.fg,
-            bg = workspace_colors.bg,
-            radius = 4,
-            padding = PILL_PADDING,
-          }),
-          ui.text(time ~= "" and ("  " .. time) or "", { fg = theme.muted }),
-          ui.text("  "),
-          entry.pending and ui.button({
-            id = "activity:dismiss:" .. entry.id,
-            text = "×",
-            style = { fg = fg },
-            on_click = function()
-              hollow.activity.dismiss(entry.id)
-            end,
-          }) or ui.text(""),
-        }, options)
       end
       if #rows == 0 then
         content[#content + 1] = ui.row({
@@ -483,7 +552,13 @@ function ui.activity.open(opts)
       content[#content + 1] = ui.divider(theme.divider)
       content[#content + 1] = ui.row({
         ui.text(
-          copy_feedback or "Enter open   v details   y copy   d dismiss   / search   Tab views",
+          copy_feedback
+            or (
+              rows[list.nav.index]
+                and rows[list.nav.index].header_category
+                and "Enter/Space toggle   t tasks   c commands   / search   Tab views"
+              or "Enter open   v details   y copy   d dismiss   / search   Tab views"
+            ),
           { fg = theme.muted }
         ),
       })
