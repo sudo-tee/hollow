@@ -24,6 +24,10 @@ Legacy OSC 777 uses `ESC ] 777 ; notify ; title ; body`.
 Numeric OSC 9 ConEmu commands are not treated as notifications.
 
 Notifications without `w` use same 3000 ms default as `hollow.ui.notify.show`.
+Toast expiry does not erase the notification: all notifications are retained in
+the session-only [Activity Center](lua/activity.md). Background notifications
+remain in Inbox until acknowledged. Explicit close or replacement archives them
+without deleting their history.
 Notifications with an identifier replace previous toast with same identifier in same pane.
 An unfocused pane also receives bell attention, with visual flash colored by urgency when visual bell is enabled.
 

@@ -30,23 +30,7 @@ local function switcher_state()
 end
 
 local function workspace_name_color(name)
-  local custom_fn = switcher_state().workspace_color_fn
-  if custom_fn then
-    return custom_fn(name)
-  end
-  local theme = shared.resolve_theme()
-  local hash = hollow.tbl.range(1, #name):reduce(function(value, index)
-    return (value * 31 + name:byte(index)) % 2147483647
-  end, 0)
-  -- Golden angle (~222.5deg) for maximal hue distance between workspaces
-  local hue = ((hash / 2147483647) * 360 + 222.5) % 360
-  local bg_luminance = color.hex_luminance(theme.palette.background)
-  local is_dark = bg_luminance < 128
-  local saturation = 0.3
-  local lightness = is_dark and 0.22 or 0.68
-  local bg = color.hex_from_hsl(hue, saturation, lightness)
-  local fg = color.contrast_hex_color(bg, 0.45, theme.palette.foreground)
-  return { bg = bg, fg = fg }
+  return shared.workspace_colors(name, switcher_state().workspace_color_fn)
 end
 
 local function derived_palette()

@@ -154,16 +154,17 @@ describe("program status in navigation overlays", function()
     assert.same({}, bell_colors(hollow))
   end)
 
-  it("uses highest unfocused attention severity for the topbar bell", function()
+  it("uses highest pending inbox severity for the topbar bell", function()
     local levels = require("hollow.theme").resolve_widget("select").notify_levels
     local button = require("hollow.ui.widgets.attention").topbar_button()
+    hollow._emit_builtin_event("window:blurred", {})
+    hollow.ui.notify.warn("warning")
+    hollow.ui.notify.error("failure")
     assert.equals(levels.error, button.render().style.fg)
-    tree[1].tabs[2].panes[2].is_focused = true
+    hollow.activity.dismiss(hollow.activity.list()[1].id)
     assert.equals(levels.warn, button.render().style.fg)
-    blocked[1].attention = false
-    assert.is_nil(button.render())
-    tree[1].tabs[2].panes[1].has_bell = true
-    assert.equals(levels.warn, button.render().style.fg)
+    hollow.activity.dismiss_all()
+    assert.equals("󰂜 ", button.render().text)
   end)
 
   it("shows pane badges and aggregate tab/workspace badges, including collapsed rows", function()
@@ -286,28 +287,25 @@ describe("program status in navigation overlays", function()
     end
   )
 
-  it("reuses one existing topbar bell and its filter for OSC and status attention", function()
-    tree[1].is_active = false
-    tree[2] = { id = 42, index = 2, name = "other", is_active = true, tabs = {} }
+  it("opens the activity center from one persistent bell without clearing live status", function()
+    hollow._emit_builtin_event("window:blurred", {})
+    env.host_api.get_pane_program_status = function()
+      return failed
+    end
+    hollow._emit_builtin_event("term:program_status_changed", { pane_id = 101 })
+    hollow._emit_builtin_event("term:bell", { pane_id = 101 })
     local button = require("hollow.ui.widgets.attention").topbar_button()
     assert.equals("attention-button", button.id)
-    assert.equals("󰂚 ", button.render().text)
-    tree[1].tabs[2].panes[1].has_bell = true
-    assert.equals("󰂚 ", button.render().text) -- Both sources still render one icon.
+    assert.equals("󰂚 2 ", button.render().text)
     button.on_click()
     local text = overlay_text(hollow)
-    assert.is_truthy(text:find("󰒃", 1, true))
+    assert.is_truthy(text:find("Activity", 1, true))
     assert.is_truthy(text:find("✗", 1, true))
-    assert.is_nil(text:find("⠹", 1, true))
-    hollow.ui.overlay.clear()
-    blocked[1].attention = false
-    failed[1].attention = false
-    assert.equals("󰂚 ", button.render().text) -- OSC bell remains independently pending.
-    tree[1].tabs[2].panes[1].has_bell = false
-    assert.is_nil(button.render())
+    assert.is_truthy(text:find("Running", 1, true))
+    hollow.activity.dismiss_all()
+    assert.equals("󰂜 ", button.render().text)
     assert.equals("✗ ", require("hollow.program_status").workspace_badge(tree[1]))
-    failed[1].attention = true
-    assert.equals("󰂚 ", button.render().text)
+    assert.is_true(failed[1].attention)
     for _, span in ipairs(hollow.ui.workspace.topbar_button()) do
       assert.is_nil((span.text or ""):find("󰂚", 1, true))
     end

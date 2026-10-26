@@ -4,6 +4,9 @@ The widget runtime.
 The same widget model powers the top bar, the bottom bar, sidebars,
 and overlays (modals, prompts, pickers, notifications).
 
+The [Activity Center](activity.md) combines an inbox, session history, and running
+programs. `hollow.ui.activity.open({ view = "inbox" | "history" })` opens it.
+
 For the conceptual model see [Custom UI](../../custom-ui.md).
 For recipes see [UI recipes](../../examples/ui-recipes.md).
 For the LuaLS schema see
@@ -23,6 +26,7 @@ hollow.ui.row(children, opts?)     -- explicit row node
 hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
+hollow.ui.is_focused()             -- whether Hollow's window has OS focus
 ```
 
 Widget `render` functions return exactly one `row` or `column`. Rows
@@ -41,6 +45,26 @@ return hollow.ui.column({
 
 Anonymous arrays are not inferred as rows or row lists.
 
+### Read-only text view
+
+`ui.text_view` is a composable behavior, not another modal. It wraps plain text,
+preserves paragraph breaks, and supports arrows, `j`/`k`, Home/End, page keys,
+mouse-wheel scrolling, and a draggable scrollbar.
+
+```lua
+local view = hollow.ui.text_view({
+  text = "Long message...", width = 80, row_budget = 16, id = "message",
+})
+-- In an existing modal:
+-- render: compose view.render(theme), a list of row nodes, into your column
+-- keys: view.keys(key, mods)
+-- on_event: view.on_event(name, payload)
+view.set("Replacement text") -- resets scrolling
+```
+
+Width is measured in Unicode code points, not terminal display cells; UTF-8
+sequences are never split. Whitespace within each paragraph is normalized.
+
 ### Span style
 
 A span style is a table with any of:
@@ -56,6 +80,12 @@ A span style is a table with any of:
 ```
 
 A bare color string is accepted in shorthand: `hollow.ui.span("x", "#7e9cd8")`.
+
+Overlay spans also support pixel padding, e.g.
+`{ bg = "#1f1f28", radius = 4, padding = { x = 8, y = 3 } }`.
+Numeric padding applies to all edges; tables accept `top`, `right`, `bottom`,
+`left`, or `x`/`y` shorthands. Padding contributes to row size, right alignment,
+and click targets, so padded pills do not overlap adjacent rows.
 
 ## Bar items
 

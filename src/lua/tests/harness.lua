@@ -568,6 +568,11 @@ local function make_host_api()
     return nil
   end
 
+  function host_api.clipboard_write(text)
+    recorded.clipboard = text
+    return true
+  end
+
   function host_api.paste_clipboard()
     return nil
   end

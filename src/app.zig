@@ -401,6 +401,7 @@ pub const App = struct {
     leader_visual_expires_at_ns: i128 = 0,
     topbar_cache_visible: bool = false,
     topbar_cache_dirty: bool = true,
+    window_focused: bool = true,
     topbar_cache_expires_at_ns: i128 = 0,
     config_watcher: ?*ConfigWatcher = null,
     config_watch_reload_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1158,6 +1159,7 @@ pub const App = struct {
             .get_pane_width = lua_callbacks.luaGetPaneWidthCallback,
             .get_pane_height = lua_callbacks.luaGetPaneHeightCallback,
             .get_window_width = lua_callbacks.luaGetWindowWidthCallback,
+            .window_is_focused = lua_callbacks.luaWindowIsFocusedCallback,
             .get_window_height = lua_callbacks.luaGetWindowHeightCallback,
             .now_ms = lua_callbacks.luaNowMsCallback,
             .pane_is_floating = lua_callbacks.luaPaneIsFloatingCallback,
@@ -1182,6 +1184,7 @@ pub const App = struct {
             .set_bar_cache_state = lua_callbacks.luaSetBarCacheStateCallback,
             .request_layout_refresh = lua_callbacks.luaRequestLayoutRefreshCallback,
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
+            .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
             .scroll_active = lua_callbacks.luaScrollActiveCallback,
             .scroll_active_page = lua_callbacks.luaScrollActivePageCallback,
@@ -1724,6 +1727,7 @@ pub const App = struct {
     }
 
     pub fn sendFocus(self: *App, gained: bool) !void {
+        self.window_focused = gained;
         const pane = self.activePane() orelse return;
         const rt = if (self.ghostty) |*r| r else return;
         if (!rt.terminalMode(pane.terminal, .focus_event)) return;
@@ -1910,6 +1914,12 @@ pub const App = struct {
         } else null;
         defer if (command_states) |value| deinitJsonValue(self.allocator, value);
 
+        const activity_state = if (self.lua) |*lua| lua.exportActivityState() catch |err| {
+            std.log.err("config reload: could not preserve activity: {s}", .{@errorName(err)});
+            return false;
+        } else null;
+        defer if (activity_state) |value| deinitJsonValue(self.allocator, value);
+
         quick_select.cancel(self);
 
         const old_window_width = self.config.window_width;
@@ -1958,6 +1968,10 @@ pub const App = struct {
             self.registerLuaCallbacks(lua);
             if (command_states) |value| lua.restoreCommandStates(value) catch |err| {
                 std.log.err("config reload: could not restore command state: {s}", .{@errorName(err)});
+                return false;
+            };
+            if (activity_state) |value| lua.restoreActivityState(value) catch |err| {
+                std.log.err("config reload: could not restore activity: {s}", .{@errorName(err)});
                 return false;
             };
         }
@@ -2927,6 +2941,17 @@ test "closePaneById synchronizes surviving focus without accessing the destroyed
     try std.testing.expect(survivor.program_status.focused);
     mux_ops.closePaneById(app, 0);
     try std.testing.expectEqual(survivor, mux.activePane().?);
+}
+
+test "window focus is retained even without an active terminal" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    app.* = App.init(std.testing.allocator);
+    defer app.deinit();
+    try app.sendFocus(false);
+    try std.testing.expect(!lua_callbacks.luaWindowIsFocusedCallback(app));
+    try app.sendFocus(true);
+    try std.testing.expect(lua_callbacks.luaWindowIsFocusedCallback(app));
 }
 
 test "viewport iterator row mapping follows platform row order" {

@@ -240,6 +240,7 @@
 ---@alias HollowEventHandle integer
 
 ---@class HollowStyle
+---@field padding? HollowUiBoxValue Overlay span padding in pixels; included in row sizing and click targets.
 ---@field fg? HollowColor
 ---@field bg? HollowColor
 ---@field bold? boolean
@@ -788,6 +789,7 @@
 ---@field style? HollowStyle
 
 ---@class HollowUiSegment
+---@field padding? {top:number,right:number,bottom:number,left:number} Normalized overlay span padding in pixels.
 ---@field text string
 ---@field fg? HollowColor
 ---@field bg? HollowColor
@@ -912,6 +914,7 @@
 ---@field fn fun()
 
 ---@class HollowUiNotifyOptions
+---@field pane_id? integer Originating pane for activity history and background detection.
 ---@field level? HollowNotifyLevel
 ---@field title? string
 ---@field ttl? number
@@ -1930,6 +1933,49 @@ function mux_navigator.open(opts) end
 
 function mux_navigator.close() end
 
+---@alias HollowActivityView "inbox"|"history"
+
+---@class HollowActivityEntry
+---@field app? string Program-reported application name, independent of task title.
+---@field id integer|string Numeric for retained events; string for live running tasks.
+---@field kind "notification"|"bell"|"program"
+---@field title? string
+---@field message? string
+---@field level? HollowNotifyLevel
+---@field state? "working"|"blocked"|"done"|"error"
+---@field block_kind? string
+---@field program_id? string Protocol record identity within the originating pane.
+---@field progress? integer
+---@field timestamp_ms? integer Monotonic session timestamp; absent for live tasks.
+---@field pending? boolean
+---@field count? integer Grouped bell occurrences.
+---@field pane_id? integer
+---@field pane_closed? boolean
+---@field pane_title? string
+---@field workspace? string
+---@field tab_title? string
+---@field cwd? string
+
+---@class HollowActivityNamespace
+---@field list fun(opts?: { view?: HollowActivityView }): HollowActivityEntry[] Newest first; isolated snapshots.
+---@field running fun(): HollowActivityEntry[] Live working/blocked programs and shell-integrated commands.
+---@field summary fun(): { count: integer, level?: HollowNotifyLevel } Pending entries only; never running tasks.
+---@field dismiss fun(id: integer): boolean Acknowledge an entry without changing program state.
+---@field dismiss_all fun()
+---@field clear_history fun() Remove acknowledged history, preserving pending entries.
+
+---@class HollowUiActivityOptions
+---@field view? HollowActivityView
+---@field width? integer
+---@field height? integer
+---@field max_height? integer
+---@field theme? HollowUiTheme
+---@field chrome? HollowUiChrome|boolean
+---@field backdrop? HollowOverlayBackdropValue
+
+---@class HollowUiActivityNamespace
+---@field open fun(opts?: HollowUiActivityOptions): HollowUiModalHandle|nil
+
 ---@class HollowUiSelectNamespace
 local select = {}
 
@@ -2028,6 +2074,10 @@ local workspace = {}
 ---@class HollowUi
 local ui = {}
 
+--- True when Hollow's window has OS focus, not merely when a pane is active.
+---@return boolean
+function ui.is_focused() end
+
 ---@param text string
 ---@param style? HollowUiNodeStyle|HollowHexColor
 ---@return HollowUiSpanNode
@@ -2093,6 +2143,18 @@ function ui.scroll_nav(n, opts) end
 ---@return HollowUiTextInput
 function ui.text_input(opts) end
 
+---@class HollowUiTextView
+---@field nav HollowUiScrollNav
+---@field set fun(text: string)
+---@field render fun(theme: HollowUiTheme): HollowUiRowNode[]
+---@field keys fun(key: string, mods: HollowUiKeyMods): boolean
+---@field on_event fun(name: string, event: table): boolean
+
+--- Read-only wrapped text behavior. Width counts Unicode code points, not display cells.
+---@param opts? { text?: string, width?: integer, row_budget?: integer, id?: string }
+---@return HollowUiTextView
+function ui.text_view(opts) end
+
 ---@param opts { id_prefix: string, items: fun(): any[], row_budget: fun(): integer, row_count_fn?: fun(item: any): integer, on_activate: fun(index: integer) }
 ---@return table
 function ui.selectable_list(opts) end
@@ -2134,6 +2196,8 @@ ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
 ui.mux_navigator = mux_navigator
+---@type HollowUiActivityNamespace
+ui.activity = {}
 ui.select = select
 ui.confirm = confirm
 ui.workspace = workspace
@@ -2407,6 +2471,7 @@ function plugins.sync() end
 ---@field get_pane_split_direction fun(pane_id: integer): "horizontal"|"vertical"|nil
 ---@field get_pane_split_ratio fun(pane_id: integer): number|nil
 ---@field get_window_width fun(): integer
+---@field window_is_focused fun(): boolean|nil
 ---@field get_window_height fun(): integer
 ---@field now_ms fun(): integer
 ---@field pane_exists fun(pane_id: integer): boolean
@@ -2460,6 +2525,7 @@ function plugins.sync() end
 ---@field focus_pane_by_id fun(pane_id: integer): boolean
 ---@field resize_pane fun(axis: string, delta: number)
 ---@field copy_selection fun()
+---@field clipboard_write fun(text:string):boolean
 ---@field paste_clipboard fun()
 ---@field scroll_active fun(delta: integer)
 ---@field scroll_active_page fun(pages: integer)
@@ -2487,7 +2553,12 @@ function plugins.sync() end
 ---@field dispatch_overlay_key fun(key:string, mods:HollowUiKeyMods):boolean
 ---@field handle_bar_node_event fun(kind:string, payload:HollowUiBarNodePayload|any)
 
+---@class HollowClipboardNamespace
+---@field write fun(text:string):boolean Queue a clipboard write; false if unavailable or rejected. Embedded NUL is unsupported.
+
 ---@class Hollow
+---@field clipboard HollowClipboardNamespace
+---@field activity HollowActivityNamespace
 ---@field action HollowActionNamespace
 ---@field config HollowConfigNamespace
 ---@field fonts HollowFontsNamespace

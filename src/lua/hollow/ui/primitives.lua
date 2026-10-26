@@ -9,6 +9,18 @@ local ui = hollow.ui
 local bar = ui.bar or {}
 ui.bar = bar
 
+--- Whether the Hollow window, not merely its active pane, has OS focus.
+function ui.is_focused()
+  local state = require("hollow.state").get()
+  if state.host_api.window_is_focused then
+    local focused = state.host_api.window_is_focused()
+    if focused ~= nil then
+      return focused
+    end
+  end
+  return state.ui.window_focused ~= false
+end
+
 ---@param value any
 ---@return HollowUiNodeStyle
 local function clone_table(value)

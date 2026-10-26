@@ -1301,13 +1301,14 @@ fn finalizeAndDrawOverlayScrollbars(stack_index: usize) void {
 
 fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
     const cell_h = @max(@as(f32, 1.0), renderer.cell_h - 2.0);
+    const text_y = y + bar.rowPadding(segments).top;
     var right_w: f32 = 0;
     var saw_spacer = false;
     for (segments) |seg| {
         if (seg.spacer) {
             saw_spacer = true;
         } else if (saw_spacer and seg.text.len > 0) {
-            right_w += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+            right_w += @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w + seg.padding.left + seg.padding.right;
         }
     }
 
@@ -1319,25 +1320,26 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
             continue;
         }
         if (seg.text.len == 0) continue;
-        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w;
+        const seg_w = @as(f32, @floatFromInt(countCodepoints(seg.text))) * renderer.cell_w + seg.padding.left + seg.padding.right;
         const seg_x = cursor_x;
         if (seg_x + seg_w > right_edge) break;
-        const bg_y = y + 1.0;
+        const bg_y = text_y - seg.padding.top + 1.0;
+        const bg_h = cell_h + seg.padding.top + seg.padding.bottom;
         if (seg.radius > 0) {
             if (seg.bg) |bg| {
-                drawRoundedRect(seg_x, bg_y, seg_w, cell_h, seg.radius, bg.r, bg.g, bg.b, 220);
+                drawRoundedRect(seg_x, bg_y, seg_w, bg_h, seg.radius, bg.r, bg.g, bg.b, 220);
             }
             if (seg.border) |border| {
-                drawRoundedRectOutline(seg_x, bg_y, seg_w, cell_h, seg.radius, seg.border_size, border.r, border.g, border.b, 220);
+                drawRoundedRectOutline(seg_x, bg_y, seg_w, bg_h, seg.radius, seg.border_size, border.r, border.g, border.b, 220);
             }
         } else if (seg.bg) |bg| {
-            drawBorderRect(seg_x, bg_y, seg_w, cell_h, bg.r, bg.g, bg.b, 220);
+            drawBorderRect(seg_x, bg_y, seg_w, bg_h, bg.r, bg.g, bg.b, 220);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
-        renderer.drawLabelFace(seg_x, y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
+        renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
-        if (seg.id) |id| cacheOverlayHitRegion(id, seg.text, seg_x, bg_y, seg_w, cell_h);
+        if (seg.id) |id| cacheOverlayHitRegion(id, seg.text, seg_x, bg_y, seg_w, bg_h);
     }
 }
 
@@ -2094,8 +2096,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 }
                 pop(api, state, 1);
 
-                var max_chars: usize = 0;
-                var row_count: usize = 0;
+                var content_w: f32 = 0;
+                var content_h: f32 = 0;
                 var row_i_measure: c_int = 1;
                 while (true) : (row_i_measure += 1) {
                     api.rawgeti(state, rows_idx, row_i_measure);
@@ -2107,10 +2109,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
-                        var row_chars: usize = 0;
-                        for (row_segments) |seg| row_chars += countCodepoints(seg.text);
-                        if (row_chars > max_chars) max_chars = row_chars;
-                        row_count += 1;
+                        var row_width: f32 = 0;
+                        for (row_segments) |seg| {
+                            if (seg.spacer or seg.text.len == 0) continue;
+                            row_width += @as(f32, @floatFromInt(countCodepoints(seg.text))) * ctx.renderer.cell_w + seg.padding.left + seg.padding.right;
+                        }
+                        content_w = @max(content_w, row_width);
+                        const padding = bar.rowPadding(row_segments);
+                        content_h += ctx.renderer.cell_h + padding.top + padding.bottom;
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);
@@ -2118,7 +2124,6 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
                 const available_width = @max(@as(f32, 160.0), ctx.width - reserved_sidebar_width);
                 const max_panel_w = available_width - ctx.renderer.cell_w * 2.0;
-                const content_w = @as(f32, @floatFromInt(max_chars)) * ctx.renderer.cell_w;
                 const base_padding_x = ctx.renderer.cell_w * 0.5;
                 const base_padding_top = ctx.renderer.cell_h;
                 const base_padding_bottom = ctx.renderer.cell_h * 0.5;
@@ -2133,7 +2138,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 const desired_panel_h = if (height_rows > 0)
                     @as(f32, @floatFromInt(height_rows)) * ctx.renderer.cell_h
                 else
-                    @as(f32, @floatFromInt(@max(@as(usize, 1), row_count))) * ctx.renderer.cell_h + panel_inner_top + panel_inner_bottom;
+                    @max(ctx.renderer.cell_h, content_h) + panel_inner_top + panel_inner_bottom;
                 const max_clamped_panel_w = @max(@as(f32, 160.0), max_panel_w - panel_margin.horizontal());
                 const max_clamped_panel_h = @max(ctx.renderer.cell_h * 3.0, ctx.height - top_h - bottom_h - ctx.renderer.cell_h * 2.0 - panel_margin.vertical());
                 const panel_w = std.math.clamp(desired_panel_w, @as(f32, 160.0), max_clamped_panel_w);
@@ -2226,6 +2231,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 });
 
                 var row_i: c_int = 1;
+                var row_y = content_y;
                 while (true) : (row_i += 1) {
                     api.rawgeti(state, rows_idx, row_i);
                     if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
@@ -2236,7 +2242,9 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
-                        const text_y = content_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i - 1));
+                        const padding = bar.rowPadding(row_segments);
+                        const row_height = ctx.renderer.cell_h + padding.top + padding.bottom;
+                        const text_y = row_y + padding.top;
                         const row_divider = overlayRowColorField(api, state, row_idx, "divider");
                         const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
                         const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
@@ -2252,7 +2260,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_id = overlayRowStringField(api, state, row_idx, "id");
                         if (overlayRowBoolField(api, state, row_idx, "hoverable")) {
                             if (row_id) |id| {
-                                cacheOverlayHitRegion(id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
+                                cacheOverlayHitRegion(id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
                                 if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, id, g_overlay_hovered_id.?)) {
                                     row_fill_bg = OVERLAY_HOVER_BG;
                                 }
@@ -2260,12 +2268,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 const pool_idx = g_overlay_hit_cache.hit_count;
                                 if (pool_idx < MAX_OVERLAY_HIT_REGIONS) {
                                     const auto_id = std.fmt.bufPrint(&g_overlay_hit_id_pool[pool_idx], "overlay:{d}:row:{d}", .{ stack_i, row_i }) catch "overlay:row";
-                                    cacheOverlayHitRegion(auto_id, label, row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0));
+                                    cacheOverlayHitRegion(auto_id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
                                     ctx.app.appendUiSemanticNode(.overlay, .listitem, false, auto_id, label, .{
                                         .x = row_x,
-                                        .y = text_y + 1.0,
+                                        .y = row_y + 1.0,
                                         .width = row_w,
-                                        .height = @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0),
+                                        .height = @max(@as(f32, 1.0), row_height - 2.0),
                                     });
                                     if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, auto_id, g_overlay_hovered_id.?)) {
                                         row_fill_bg = OVERLAY_HOVER_BG;
@@ -2274,7 +2282,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             }
                         }
                         if (row_fill_bg) |bg| {
-                            drawBorderRect(row_x, text_y + 1.0, row_w, @max(@as(f32, 1.0), ctx.renderer.cell_h - 2.0), bg.r, bg.g, bg.b, 255);
+                            drawBorderRect(row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0), bg.r, bg.g, bg.b, 255);
                         }
                         if (row_divider) |divider| {
                             drawBorderRect(row_x, text_y + ctx.renderer.cell_h * 0.5, row_w, 1.0, divider.r, divider.g, divider.b, 255);
@@ -2285,9 +2293,9 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                 cacheOverlayScrollbarRow(
                                     id,
                                     row_x + row_w - hit_width,
-                                    text_y,
+                                    row_y,
                                     hit_width,
-                                    ctx.renderer.cell_h,
+                                    row_height,
                                     row_scrollbar_thumb,
                                     row_scrollbar_thumb_ratio,
                                     row_scrollbar_thumb_size,
@@ -2300,7 +2308,8 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             }
                         }
                         const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 8.0), ctx.renderer.cell_w) else 0.0;
-                        drawRowSegments(ctx.renderer, row_x, text_y, row_w - seg_right_pad, row_segments);
+                        drawRowSegments(ctx.renderer, row_x, row_y, row_w - seg_right_pad, row_segments);
+                        row_y += row_height;
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
                     pop(api, state, 1);
