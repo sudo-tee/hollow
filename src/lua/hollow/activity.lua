@@ -48,9 +48,22 @@ function M.setup(hollow, host_api)
   end
 
   function api.list(opts)
-    local view = opts and opts.view or "inbox"
-    assert(view == "inbox" or view == "history", "activity view must be inbox or history")
-    return store:list(view)
+    opts = opts or {}
+    local view = opts.view or "inbox"
+    assert(view == "inbox" or view == "history" or view == "running", "invalid activity view")
+    local entries = view == "running" and api.running() or store:list(view)
+    local result = {}
+    for _, entry in ipairs(entries) do
+      if
+        (not opts.pane_id or entry.pane_id == opts.pane_id)
+        and (not opts.workspace or entry.workspace == opts.workspace)
+        and (not opts.activity_kind or entry.kind == opts.activity_kind)
+        and (not opts.level or entry.level == opts.level)
+      then
+        result[#result + 1] = entry
+      end
+    end
+    return result
   end
 
   function api.summary()
@@ -170,6 +183,9 @@ function M.setup(hollow, host_api)
                 id = "program:" .. pane.id .. ":" .. (record.id or ""),
                 kind = "program",
                 app = record.app,
+                program_id = record.id,
+                level = record.state == "blocked" and "warn" or "info",
+                pending = false,
                 state = record.state,
                 block_kind = record.kind,
                 title = record.title ~= "" and record.title or record.app,
@@ -187,6 +203,8 @@ function M.setup(hollow, host_api)
               id = "command:" .. pane.id,
               kind = "program",
               app = "Command",
+              level = "info",
+              pending = false,
               state = "working",
               title = pane.running.command,
               pane_id = pane.id,

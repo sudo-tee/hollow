@@ -1957,7 +1957,7 @@ function mux_navigator.close() end
 ---@field cwd? string
 
 ---@class HollowActivityNamespace
----@field list fun(opts?: { view?: HollowActivityView }): HollowActivityEntry[] Newest first; isolated snapshots.
+---@field list fun(opts?: { view?: HollowActivityView|"running", pane_id?: integer, workspace?: string, activity_kind?: "notification"|"bell"|"program", level?: HollowNotifyLevel }): HollowActivityEntry[] Retained events newest first; isolated snapshots with exact-match filters. Never acknowledges entries.
 ---@field running fun(): HollowActivityEntry[] Live working/blocked programs and shell-integrated commands.
 ---@field summary fun(): { count: integer, level?: HollowNotifyLevel } Pending entries only; never running tasks.
 ---@field dismiss fun(id: integer): boolean Acknowledge an entry without changing program state.

@@ -618,6 +618,16 @@ pub fn executeCommand(self: *App, request: command_mod.Request) !command_mod.Res
         .get_current_tab => .ok(try self.currentTabValue()),
         .get_tabs => .ok(try self.tabsValue()),
         .get_panes => |args| .ok(try self.panesValue(args.tag)),
+        .get_activities => |args| if (self.lua) |*lua|
+            .ok(try lua.queryActivities(.{
+                .view = args.view,
+                .pane_id = args.id,
+                .workspace = args.workspace,
+                .activity_kind = args.activity_kind,
+                .level = args.level,
+            }))
+        else
+            .fail("unavailable", "Activity Center requires an initialized Lua runtime"),
         .get_workspace => |args| .ok(try self.snapshotWorkspaceValue(args.id)),
         .get_current_workspace => .ok(try self.currentWorkspaceValue()),
         .get_workspaces => .ok(try self.workspacesValue()),
@@ -1092,4 +1102,8 @@ test "discovery and empty snapshots obey their structural result contracts" {
     defer unknown.deinit(a);
     try std.testing.expect(!unknown.success);
     try std.testing.expectEqualStrings("method_not_found", unknown.status);
+    var activities = try executeCommand(app, .{ .data = .{ .get_activities = .{} } });
+    defer activities.deinit(a);
+    try std.testing.expect(!activities.success);
+    try std.testing.expectEqualStrings("unavailable", activities.status);
 }

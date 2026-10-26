@@ -42,6 +42,12 @@ on success; pass `--envelope` to see the full reply.
 
 ## Commands
 
+### Activity Center
+
+`hollow cli get activities [--view inbox|history|running]` lists session activity
+without acknowledging it. Optional pane, workspace, kind, and severity filters
+combine with AND. See [activity listing](activities.md) for JSON fields and examples.
+
 ### External events and completion
 
 See [external events and completion waits](events.md) for NDJSON watches,
@@ -137,6 +143,7 @@ Query state. All `get` commands print JSON.
 | `hollow cli get current-tab`       |                        |
 | `hollow cli get tabs`              |                        |
 | `hollow cli get panes`             | `[--tag TAG]`          |
+| `hollow cli get activities` | `[--view inbox\|history\|running] [--pane ID] [--workspace NAME] [--kind KIND] [--severity LEVEL]` |
 | `hollow cli get workspace`         | `[--id ID\|--index N]` |
 | `hollow cli get current-workspace` |                        |
 | `hollow cli get workspaces`        |                        |

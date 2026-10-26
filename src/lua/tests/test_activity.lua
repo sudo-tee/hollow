@@ -405,6 +405,47 @@ describe("activity center", function()
     assert.equals(1, hollow.activity.summary().count)
   end)
 
+  it("queries activity views with exact combined filters without acknowledgement", function()
+    emit("window:blurred", {})
+    notify("full notification\nsecond line")
+    emit("term:bell")
+    report("error")
+    local entries = hollow.activity.list({
+      view = "inbox",
+      pane_id = 101,
+      workspace = "main",
+      activity_kind = "program",
+      level = "error",
+    })
+    assert.equals(1, #entries)
+    assert.equals("Building project", entries[1].message)
+    assert.equals(3, hollow.activity.summary().count)
+    entries[1].message = "mutated"
+    assert.equals(
+      "Building project",
+      hollow.activity.list({ activity_kind = "program" })[1].message
+    )
+    assert.equals(0, #hollow.activity.list({ workspace = "missing" }))
+    assert.equals(0, #hollow.activity.list({ pane_id = 999 }))
+    assert.equals(0, #hollow.activity.list({ activity_kind = "notification", level = "error" }))
+    hollow.activity.dismiss_all()
+    assert.equals(0, #hollow.activity.list())
+    assert.equals(3, #hollow.activity.list({ view = "history" }))
+    report("working", 50)
+    local running = hollow.activity.list({
+      view = "running",
+      activity_kind = "program",
+      level = "info",
+      pane_id = 101,
+    })
+    assert.equals(1, #running)
+    assert.equals(50, running[1].progress)
+    assert.is_false(running[1].pending)
+    assert.equals(0, #hollow.activity.list({ view = "running", level = "warn" }))
+    report("blocked")
+    assert.equals(1, #hollow.activity.list({ view = "running", level = "warn" }))
+  end)
+
   it("keeps pane context after closure and never navigates to a recycled pane ID", function()
     emit("window:blurred", {})
     notify("remember me")

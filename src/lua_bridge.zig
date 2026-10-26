@@ -1547,6 +1547,31 @@ pub const Runtime = struct {
         return self.exportLuaState("activity", "_export");
     }
 
+    pub fn queryActivities(self: *Runtime, opts: anytype) !std.json.Value {
+        const text = try std.json.Stringify.valueAlloc(self.allocator, opts, .{});
+        defer self.allocator.free(text);
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+        defer parsed.deinit();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+        try self.pushStateHandler("activity", "list");
+        try pushJsonValue(self.allocator, api, self.state, parsed.value);
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "activity.list");
+            return error.LuaActivityQueryFailed;
+        }
+        // Empty Lua tables are ambiguous; this contract always returns an array.
+        var value = try luaValueToJson(self.allocator, api, self.state, -1);
+        if (value == .object and value.object.count() == 0) {
+            deinitJsonValue(self.allocator, value);
+            value = .{ .array = std.json.Array.init(self.allocator) };
+        }
+        return value;
+    }
+
     pub fn restoreActivityState(self: *Runtime, value: std.json.Value) !void {
         return self.restoreLuaState("activity", "_restore", value);
     }
@@ -7685,6 +7710,31 @@ test "activity state crosses Lua reload in memory with IDs and acknowledgement i
         \\hollow.ui.notify.info("new notification")
         \\assert(hollow.activity.list({view = "history"})[1].id == 3)
     );
+}
+
+test "activity query returns JSON arrays and full filtered content without acknowledgement" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(@embedFile("lua/core.lua"));
+    const empty = try runtime.queryActivities(.{ .view = "inbox" });
+    defer deinitJsonValue(std.testing.allocator, empty);
+    try std.testing.expect(empty == .array);
+    try std.testing.expectEqual(@as(usize, 0), empty.array.items.len);
+    try runtime.runString(
+        \\hollow._emit_builtin_event("window:blurred", {})
+        \\hollow.ui.notify.error("full message\nsecond line", {title = "Task"})
+    );
+    const entries = try runtime.queryActivities(.{ .view = "history", .activity_kind = "notification", .level = "error" });
+    defer deinitJsonValue(std.testing.allocator, entries);
+    try std.testing.expect(entries == .array);
+    try std.testing.expectEqual(@as(usize, 1), entries.array.items.len);
+    try std.testing.expectEqualStrings("full message\nsecond line", entries.array.items[0].object.get("message").?.string);
+    var typed = try std.json.parseFromValue([]const @import("command/results.zig").Activity, std.testing.allocator, entries, .{ .ignore_unknown_fields = true });
+    defer typed.deinit();
+    try std.testing.expect(typed.value[0].pending.?);
+    try runtime.runString("assert(hollow.activity.summary().count == 1)");
 }
 
 test "clipboard bridge rejects writes without application callbacks" {

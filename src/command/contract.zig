@@ -6,6 +6,8 @@ const results = @import("results.zig");
 pub const version = 1;
 
 pub fn choices(kind: Kind, field: []const u8) ?[]const []const u8 {
+    if (kind == .get_activities and std.mem.eql(u8, field, "view")) return &.{ "inbox", "history", "running" };
+    if (kind == .get_activities and std.mem.eql(u8, field, "activity_kind")) return &.{ "notification", "bell", "program" };
     if (std.mem.eql(u8, field, "direction")) return switch (kind) {
         .pane_split => &.{ "vertical", "horizontal" },
         .pane_resize => &.{ "left", "right", "up", "down", "vertical", "horizontal" },
@@ -132,6 +134,7 @@ pub fn description(kind: Kind) []const u8 {
         .get_current_tab => "Read the active tab.",
         .get_tabs => "List tabs in the active workspace.",
         .get_panes => "List panes, optionally filtered by tag.",
+        .get_activities => "List session Inbox (default), History, or Running activity without acknowledgement; optional filters use exact matches.",
         .get_workspace => "Read a workspace snapshot; defaults to the active workspace.",
         .get_current_workspace => "Read the active workspace.",
         .get_workspaces => "List workspaces.",
@@ -186,7 +189,7 @@ pub fn description(kind: Kind) []const u8 {
 
 pub fn isDeferred(kind: Kind) bool {
     return switch (kind) {
-        .events_subscribe, .events_read, .job_spawn, .job_get, .job_output, .job_cleanup => false,
+        .events_subscribe, .events_read, .job_spawn, .job_get, .job_output, .job_cleanup, .get_activities => false,
         .get_pane, .get_pane_text, .get_screen, .pane_screenshot, .tab_screenshot, .get_ui_nodes, .get_revision, .get_current_pane, .get_tab, .get_current_tab, .get_tabs, .get_panes, .get_workspace, .get_current_workspace, .get_workspaces, .get_mux_tree, .get_domain, .get_htp, .ui_click, .wait_revision, .api_list, .api_describe, .capabilities => false,
         else => true,
     };
@@ -316,6 +319,7 @@ pub fn Result(comptime kind: Kind) type {
         .get_pane_text => []const u8,
         .get_tabs => []const results.Tab,
         .get_panes => []const results.Pane,
+        .get_activities => []const results.Activity,
         .get_workspaces => []const results.Workspace,
         .get_mux_tree => []const results.TreeWorkspace,
         .api_list => []const results.Method,

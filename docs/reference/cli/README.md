@@ -12,6 +12,7 @@ key decoding, and JSON output. Socket and file transports do not need a tty;
 OSC requires a readable POSIX terminal. Both default to `--transport auto`.
 
 - [Command reference](native.md)
+- [Activity Center listing and filters](activities.md)
 - [Standalone CLI, transports, and guest packaging](standalone.md)
 - [Legacy Python client](hollow-cli.md) — retained for older hosts and compatibility
 

@@ -37,6 +37,8 @@ source cannot supply task lifecycle information.
 ```lua
 hollow.activity.list({ view = "inbox" })   -- default view; newest first
 hollow.activity.list({ view = "history" }) -- all retained entries, including pending
+hollow.activity.list({ view = "running", pane_id = 42 }) -- filtered live work
+hollow.activity.list({ workspace = "main", activity_kind = "program", level = "error" })
 hollow.activity.running()                 -- live working/blocked tasks
 hollow.activity.summary()                 -- { count, level? }; excludes running
 hollow.activity.dismiss(entry.id)          -- true if acknowledgement changed
@@ -59,6 +61,11 @@ Lists are isolated snapshots. Retained entries have numeric IDs, `kind`
 entries also retain pane ID, pane title, workspace, and cwd. Program entries
 include `state` and optionally `block_kind`. Live running entries have string IDs
 and optionally `progress`; they are not retained events and cannot be dismissed.
+
+`list` accepts exact-match `pane_id`, `workspace`, `activity_kind`, and `level`
+filters combined with AND. `view = "running"` queries the same live snapshot as
+`running()`. The native [activity CLI](../cli/activities.md) uses this same API;
+neither Lua nor CLI listing acknowledges entries.
 
 `ui.activity.open()` accepts `view`, `width`, `height`, `max_height`, `theme`,
 `chrome`, and `backdrop`. It returns a modal handle, or `nil` when another modal
