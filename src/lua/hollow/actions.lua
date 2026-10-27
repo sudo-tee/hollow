@@ -889,6 +889,22 @@ function M.setup(hollow, host_api)
     category = "pane",
   })
 
+  register(hollow, "activity_center", {
+    run = function()
+      hollow.ui.activity.open()
+    end,
+    desc = "Open activity inbox and running programs",
+    category = "general",
+  })
+
+  register(hollow, "notification_history", {
+    run = function()
+      hollow.ui.activity.open({ view = "history" })
+    end,
+    desc = "Open session notification and activity history",
+    category = "general",
+  })
+
   local palette = hollow.ui.command_palette
 
   local function pick_workspace_and_run(fn)

@@ -4,6 +4,9 @@ The widget runtime.
 The same widget model powers the top bar, the bottom bar, sidebars,
 and overlays (modals, prompts, pickers, notifications).
 
+The [Activity Center](activity.md) combines an inbox, session history, and running
+programs. `hollow.ui.activity.open({ view = "inbox" | "history" })` opens it.
+
 For the conceptual model see [Custom UI](../../custom-ui.md).
 For recipes see [UI recipes](../../examples/ui-recipes.md).
 For the LuaLS schema see
@@ -23,6 +26,8 @@ hollow.ui.row(children, opts?)     -- explicit row node
 hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
+hollow.ui.action_button(opts)      -- padded action with hover styling
+hollow.ui.is_focused()             -- whether Hollow's window has OS focus
 ```
 
 Widget `render` functions return exactly one `row` or `column`. Rows
@@ -41,6 +46,41 @@ return hollow.ui.column({
 
 Anonymous arrays are not inferred as rows or row lists.
 
+`ui.action_button` is an opt-in overlay button with horizontal padding, rounded
+corners, and select-theme colors. Pass the modal render `state` for hover feedback
+and its `theme` to match the surrounding widget. `style` overrides normal defaults;
+`hover_style` overrides hover defaults. Like `ui.button`, a clickable action needs
+a stable `id`.
+
+```lua
+render = function(theme, state)
+  return hollow.ui.row({ hollow.ui.action_button({
+    id = "example:copy", text = "Copy", theme = theme, state = state,
+    on_click = copy,
+  }) })
+end
+```
+
+### Read-only text view
+
+`ui.text_view` is a composable behavior, not another modal. It wraps plain text,
+preserves paragraph breaks, and supports arrows, `j`/`k`, Home/End, page keys,
+mouse-wheel scrolling, and a draggable scrollbar.
+
+```lua
+local view = hollow.ui.text_view({
+  text = "Long message...", width = 80, row_budget = 16, id = "message",
+})
+-- In an existing modal:
+-- render: compose view.render(theme), a list of row nodes, into your column
+-- keys: view.keys(key, mods)
+-- on_event: view.on_event(name, payload)
+view.set("Replacement text") -- resets scrolling
+```
+
+Width is measured in Unicode code points, not terminal display cells; UTF-8
+sequences are never split. Whitespace within each paragraph is normalized.
+
 ### Span style
 
 A span style is a table with any of:
@@ -56,6 +96,12 @@ A span style is a table with any of:
 ```
 
 A bare color string is accepted in shorthand: `hollow.ui.span("x", "#7e9cd8")`.
+
+Overlay spans also support pixel padding, e.g.
+`{ bg = "#1f1f28", radius = 4, padding = { x = 8, y = 3 } }`.
+Numeric padding applies to all edges; tables accept `top`, `right`, `bottom`,
+`left`, or `x`/`y` shorthands. Padding contributes to row size, right alignment,
+and click targets, so padded pills do not overlap adjacent rows.
 
 ## Bar items
 
@@ -146,6 +192,9 @@ Overlays stack. The topmost overlay receives `on_key` first and can
 return `true` to swallow the key. The notify, input, and select
 helpers are all overlays internally.
 
+Notifications, modals, and direct overlays use independent positioning stacks:
+showing or dismissing a notification does not move a picker or dialog.
+
 ## Composition helpers
 
 Stateful composition helpers live beside the render primitives on
@@ -154,7 +203,10 @@ Stateful composition helpers live beside the render primitives on
 ### `hollow.ui.modal(spec)`
 
 Creates and pushes an overlay, returns a handle with `.close()` and
-`.invalidate()`.  Handles hover/click dispatch automatically.
+`.invalidate()`. Handles hover/click dispatch automatically. Only one modal is
+mounted at a time: while one is open, new modal requests are ignored and return
+`nil`. The current modal keeps its input and selection. This also applies to
+built-in pickers and dialogs; notifications and direct overlays remain independent.
 
 ```lua
 local m = hollow.ui.modal({
@@ -170,7 +222,7 @@ local m = hollow.ui.modal({
   keys    = hollow.ui.keys(...), -- optional key handler
   on_event = function(name, payload) end,  -- optional raw events
 })
-m.close()
+if m then m.close() end
 ```
 
 `state` tracks hover state: `state.hovered_id` is the id of the

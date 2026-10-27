@@ -242,8 +242,6 @@ local function resolve_segment_style(value)
   return value
 end
 
-
-
 ---@param rendered any
 ---@return HollowUiRows
 local function normalize_widget_rows(rendered)
@@ -515,9 +513,40 @@ function M.style_to_segment(text, style)
     if style.border_size ~= nil then
       segment.border_size = style.border_size
     end
+    if style.padding ~= nil then
+      local value = style.padding
+      local box = type(value) == "table" and value or {}
+      local all = type(value) == "number" and value or 0
+      local top = box.top or box.y or box.vertical or box[1] or all
+      local right = box.right or box.x or box.horizontal or box[2] or top
+      local bottom = box.bottom or box.y or box.vertical or box[3] or top
+      local left = box.left or box.x or box.horizontal or box[4] or right
+      segment.padding = {}
+      for edge, px in pairs({ top = top, right = right, bottom = bottom, left = left }) do
+        segment.padding[edge] = type(px) == "number" and px == px and px < math.huge
+          and math.max(0, px) or 0
+      end
+    end
   end
 
   return segment
+end
+
+-- Shared by the workspace selector and activity workspace pills.
+function M.workspace_colors(name, custom_fn)
+  if custom_fn then
+    return custom_fn(name)
+  end
+  local theme = M.resolve_theme()
+  local hash = 0
+  for index = 1, #name do
+    hash = (hash * 31 + name:byte(index)) % 2147483647
+  end
+  -- Golden angle (~222.5deg) for maximal hue distance between workspaces.
+  local hue = ((hash / 2147483647) * 360 + 222.5) % 360
+  local lightness = color.hex_luminance(theme.palette.background) < 128 and 0.22 or 0.68
+  local bg = color.hex_from_hsl(hue, 0.3, lightness)
+  return { bg = bg, fg = color.contrast_hex_color(bg, 0.45, theme.palette.foreground) }
 end
 
 ---@param segments HollowUiSegment[]

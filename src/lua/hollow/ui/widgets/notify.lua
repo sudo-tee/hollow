@@ -40,6 +40,7 @@ end
 ---@return HollowUiWidget
 function ui.notify.show(message, opts)
   opts = opts or {}
+  local activity_id = hollow.activity and hollow.activity._notification(message, opts)
 
   if opts.id ~= nil then
     for index = #overlay_stack, 1, -1 do
@@ -75,6 +76,9 @@ function ui.notify.show(message, opts)
     backdrop = opts.backdrop,
     on_key = function(key)
       if key == "escape" then
+        if widget._activity_id then
+          hollow.activity.dismiss(widget._activity_id)
+        end
         ui.close_overlay_widget(widget)
         return true
       end
@@ -85,6 +89,7 @@ function ui.notify.show(message, opts)
 
   widget._notify = true
   widget._notify_id = opts.id
+  widget._activity_id = activity_id
   ui.overlay.push(widget)
 
   local ttl = opts.ttl or 3000
@@ -96,6 +101,9 @@ function ui.notify.show(message, opts)
 end
 
 function ui.notify.clear(notification_id)
+  if hollow.activity then
+    hollow.activity._dismiss_notifications(notification_id)
+  end
   for index = #overlay_stack, 1, -1 do
     local widget = overlay_stack[index]
     if
@@ -104,6 +112,16 @@ function ui.notify.clear(notification_id)
       and widget._notify == true
       and (notification_id == nil or widget._notify_id == notification_id)
     then
+      ui.close_overlay_widget(widget)
+    end
+  end
+end
+
+-- Dismissal from the inbox also closes its toast; expiry only closes the overlay.
+function ui.notify._dismiss_activity(id)
+  for index = #overlay_stack, 1, -1 do
+    local widget = overlay_stack[index]
+    if widget._notify and widget._activity_id == id then
       ui.close_overlay_widget(widget)
     end
   end

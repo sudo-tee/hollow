@@ -174,6 +174,9 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
     .{ .name = "hollow.ui.widgets.attention", .source = @embedFile("lua/hollow/ui/widgets/attention.lua") },
+    .{ .name = "hollow.activity", .source = @embedFile("lua/hollow/activity.lua") },
+    .{ .name = "hollow.activity.store", .source = @embedFile("lua/hollow/activity/store.lua") },
+    .{ .name = "hollow.ui.widgets.activity", .source = @embedFile("lua/hollow/ui/widgets/activity.lua") },
     .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
     .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
@@ -187,6 +190,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.builder.internal.click_registry", .source = @embedFile("lua/hollow/ui/builder/internal/click_registry.lua") },
     .{ .name = "hollow.ui.builder.behaviors.scroll_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/scroll_nav.lua") },
     .{ .name = "hollow.ui.builder.behaviors.selectable_list", .source = @embedFile("lua/hollow/ui/builder/behaviors/selectable_list.lua") },
+    .{ .name = "hollow.ui.builder.behaviors.text_view", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_view.lua") },
     .{ .name = "hollow.ui.builder.behaviors.text_input", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_input.lua") },
     .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
     .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
@@ -260,6 +264,7 @@ pub const AppCallbacks = struct {
     pane_is_floating: *const fn (app: *anyopaque, pane_id: usize) bool,
     pane_is_maximized: *const fn (app: *anyopaque, pane_id: usize) bool,
     get_window_width: *const fn (app: *anyopaque) usize,
+    window_is_focused: *const fn (app: *anyopaque) bool,
     get_window_height: *const fn (app: *anyopaque) usize,
     now_ms: *const fn (app: *anyopaque) i64,
     pane_is_focused: *const fn (app: *anyopaque, pane_id: usize) bool,
@@ -278,6 +283,7 @@ pub const AppCallbacks = struct {
     set_bar_cache_state: *const fn (app: *anyopaque, surface: []const u8, dirty: bool, expires_at_ms: i64, visible: bool) void,
     request_layout_refresh: *const fn (app: *anyopaque) void,
     copy_selection: *const fn (app: *anyopaque) void,
+    clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
@@ -1489,44 +1495,85 @@ pub const Runtime = struct {
         return callback(self);
     }
 
-    fn pushCommandStateHandler(self: *Runtime, name: [:0]const u8) !void {
+    fn pushStateHandler(self: *Runtime, namespace: [:0]const u8, name: [:0]const u8) !void {
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
         if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingHollow;
-        api.get_field(self.state, -1, "term");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingTerm;
+        api.get_field(self.state, -1, namespace);
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingLuaStateNamespace;
         api.get_field(self.state, -1, name);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return error.MissingCommandStateHandler;
+        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return error.MissingLuaStateHandler;
     }
 
-    pub fn exportCommandStates(self: *Runtime) !std.json.Value {
+    fn exportLuaState(self: *Runtime, namespace: [:0]const u8, handler: [:0]const u8) !std.json.Value {
         self.mutex.lock();
         defer self.mutex.unlock();
         const api = self.context.api;
         const initial_top = api.get_top(self.state);
         defer api.set_top(self.state, initial_top);
 
-        try self.pushCommandStateHandler("_export_command_states");
+        try self.pushStateHandler(namespace, handler);
         if (api.pcall(self.state, 0, 1, 0) != 0) {
-            logLuaError(api, self.state, "export_command_states");
-            return error.CommandStateExportFailed;
+            logLuaError(api, self.state, handler);
+            return error.LuaStateExportFailed;
         }
         return try luaValueToJson(self.allocator, api, self.state, -1);
     }
 
-    pub fn restoreCommandStates(self: *Runtime, value: std.json.Value) !void {
+    fn restoreLuaState(self: *Runtime, namespace: [:0]const u8, handler: [:0]const u8, value: std.json.Value) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         const api = self.context.api;
         const initial_top = api.get_top(self.state);
         defer api.set_top(self.state, initial_top);
 
-        try self.pushCommandStateHandler("_restore_command_states");
+        try self.pushStateHandler(namespace, handler);
         try pushJsonValue(self.allocator, api, self.state, value);
         if (api.pcall(self.state, 1, 0, 0) != 0) {
-            logLuaError(api, self.state, "restore_command_states");
-            return error.CommandStateRestoreFailed;
+            logLuaError(api, self.state, handler);
+            return error.LuaStateRestoreFailed;
         }
+    }
+
+    pub fn exportCommandStates(self: *Runtime) !std.json.Value {
+        return self.exportLuaState("term", "_export_command_states");
+    }
+
+    pub fn restoreCommandStates(self: *Runtime, value: std.json.Value) !void {
+        return self.restoreLuaState("term", "_restore_command_states", value);
+    }
+
+    pub fn exportActivityState(self: *Runtime) !std.json.Value {
+        return self.exportLuaState("activity", "_export");
+    }
+
+    pub fn queryActivities(self: *Runtime, opts: anytype) !std.json.Value {
+        const text = try std.json.Stringify.valueAlloc(self.allocator, opts, .{});
+        defer self.allocator.free(text);
+        var parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, text, .{});
+        defer parsed.deinit();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const api = self.context.api;
+        const initial_top = api.get_top(self.state);
+        defer api.set_top(self.state, initial_top);
+        try self.pushStateHandler("activity", "list");
+        try pushJsonValue(self.allocator, api, self.state, parsed.value);
+        if (api.pcall(self.state, 1, 1, 0) != 0) {
+            logLuaError(api, self.state, "activity.list");
+            return error.LuaActivityQueryFailed;
+        }
+        // Empty Lua tables are ambiguous; this contract always returns an array.
+        var value = try luaValueToJson(self.allocator, api, self.state, -1);
+        if (value == .object and value.object.count() == 0) {
+            deinitJsonValue(self.allocator, value);
+            value = .{ .array = std.json.Array.init(self.allocator) };
+        }
+        return value;
+    }
+
+    pub fn restoreActivityState(self: *Runtime, value: std.json.Value) !void {
+        return self.restoreLuaState("activity", "_restore", value);
     }
 
     pub fn dispatchHtpEvent(self: *Runtime, pane_id: usize, channel: []const u8, payload: ?std.json.Value, received_at_ms: ?i64, received_cwd: ?[]const u8) !HtpDispatchResult {
@@ -2400,6 +2447,9 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_copy_selection, 1);
         api.set_field(self.state, -2, "copy_selection");
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_clipboard_write, 1);
+        api.set_field(self.state, -2, "clipboard_write");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_paste_clipboard, 1);
@@ -2561,6 +2611,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_window_width, 1);
         api.set_field(self.state, -2, "get_window_width");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_window_is_focused, 1);
+        api.set_field(self.state, -2, "window_is_focused");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_get_window_height, 1);
@@ -5240,11 +5294,15 @@ pub fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]co
 pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_buf: []u8, table_idx: c_int) []bar.Segment {
     var seg_count: usize = 0;
     var text_used: usize = 0;
+    const abs_idx = absoluteIndex(api, state, table_idx);
 
     api.push_nil(state);
-    while (api.next(state, table_idx) != 0) {
+    while (api.next(state, abs_idx) != 0) {
         defer pop(api, state, 1);
-        if (seg_count >= seg_buf.len) break;
+        if (seg_count >= seg_buf.len) {
+            pop(api, state, 1);
+            break;
+        }
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
 
         var seg = bar.Segment{ .text = "" };
@@ -5291,6 +5349,18 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         pop(api, state, 1);
 
         seg.border = parseColorField(api, state, -1, "border");
+        api.get_field(state, -1, "padding");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            inline for (.{ "top", "right", "bottom", "left" }) |edge| {
+                api.get_field(state, -1, edge);
+                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    const px = api.to_number(state, -1);
+                    if (std.math.isFinite(px)) @field(seg.padding, edge) = @floatCast(std.math.clamp(px, 0, 4096));
+                }
+                pop(api, state, 1);
+            }
+        }
+        pop(api, state, 1);
 
         api.get_field(state, -1, "border_size");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
@@ -6587,6 +6657,17 @@ fn l_get_window_height(state: *State) callconv(.c) c_int {
     return 1;
 }
 
+fn l_window_is_focused(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const cbs = ctx.app_callbacks orelse {
+        ctx.api.push_nil(state);
+        return 1;
+    };
+    const focused = cbs.window_is_focused(cbs.app);
+    ctx.api.push_boolean(state, if (focused) 1 else 0);
+    return 1;
+}
+
 fn l_now_ms(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -6865,6 +6946,22 @@ fn l_copy_selection(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     if (ctx.app_callbacks) |cbs| cbs.copy_selection(cbs.app);
     return 0;
+}
+
+fn l_clipboard_write(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const api = ctx.api;
+    var success = false;
+    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string) {
+        var len: usize = 0;
+        if (api.to_lstring(state, 1, &len)) |ptr| {
+            if (ctx.app_callbacks) |cbs| {
+                if (cbs.clipboard_write) |write| success = write(cbs.app, ptr[0..len]);
+            }
+        }
+    }
+    api.push_boolean(state, if (success) 1 else 0);
+    return 1;
 }
 
 fn l_paste_clipboard(state: *State) callconv(.c) c_int {
@@ -7586,6 +7683,107 @@ test "command state crosses runtime recreation without losing numeric pane IDs" 
         \\end}}
     );
     try runtime.restoreCommandStates(saved);
+}
+
+test "activity state crosses Lua reload in memory with IDs and acknowledgement intact" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var saved: std.json.Value = undefined;
+    {
+        var runtime = try Runtime.init(std.testing.allocator, &cfg);
+        defer runtime.deinit();
+        try runtime.runString(@embedFile("lua/core.lua"));
+        try runtime.runString(
+            \\hollow._emit_builtin_event("window:blurred", {})
+            \\hollow.ui.notify.info("retained notification")
+            \\hollow.ui.notify.error("dismissed error")
+            \\hollow.activity.dismiss(2)
+        );
+        saved = try runtime.exportActivityState();
+    }
+    defer deinitJsonValue(std.testing.allocator, saved);
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(@embedFile("lua/core.lua"));
+    try runtime.restoreActivityState(saved);
+    try runtime.runString(
+        \\local entries = hollow.activity.list({view = "history"})
+        \\assert(#entries == 2 and entries[1].id == 2 and entries[1].pending == false)
+        \\assert(entries[2].id == 1 and entries[2].message == "retained notification")
+        \\assert(hollow.activity.summary().count == 1)
+        \\hollow.ui.notify.info("new notification")
+        \\assert(hollow.activity.list({view = "history"})[1].id == 3)
+    );
+}
+
+test "activity query returns JSON arrays and full filtered content without acknowledgement" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(@embedFile("lua/core.lua"));
+    const empty = try runtime.queryActivities(.{ .view = "inbox" });
+    defer deinitJsonValue(std.testing.allocator, empty);
+    try std.testing.expect(empty == .array);
+    try std.testing.expectEqual(@as(usize, 0), empty.array.items.len);
+    try runtime.runString(
+        \\hollow._emit_builtin_event("window:blurred", {})
+        \\hollow.ui.notify.error("full message\nsecond line", {title = "Task"})
+    );
+    const entries = try runtime.queryActivities(.{ .view = "history", .activity_kind = "notification", .level = "error" });
+    defer deinitJsonValue(std.testing.allocator, entries);
+    try std.testing.expect(entries == .array);
+    try std.testing.expectEqual(@as(usize, 1), entries.array.items.len);
+    try std.testing.expectEqualStrings("full message\nsecond line", entries.array.items[0].object.get("message").?.string);
+    var typed = try std.json.parseFromValue([]const @import("command/results.zig").Activity, std.testing.allocator, entries, .{ .ignore_unknown_fields = true });
+    defer typed.deinit();
+    try std.testing.expect(typed.value[0].pending.?);
+    try runtime.runString("assert(hollow.activity.summary().count == 1)");
+}
+
+test "clipboard bridge rejects writes without application callbacks" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\assert(type(host_api.clipboard_write) == "function")
+        \\assert(host_api.clipboard_write("hello\nworld") == false)
+        \\assert(host_api.clipboard_write({}) == false)
+    );
+}
+
+test "overlay segment padding parses and contributes to row insets" {
+    var cfg = config.Config.init(std.testing.allocator);
+    defer cfg.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &cfg);
+    defer runtime.deinit();
+    try runtime.runString(
+        \\padding_segments = {
+        \\  {text = "pill", padding = {left = 8, right = 8, top = 3, bottom = 3}},
+        \\  {text = "plain"},
+        \\  {text = "invalid", padding = {left = -1, right = math.huge, top = 0/0}},
+        \\}
+    );
+    const api = runtime.context.api;
+    api.get_field(runtime.state, LUA_GLOBALSINDEX, "padding_segments");
+    defer pop(api, runtime.state, 1);
+    var segments: [4]bar.Segment = undefined;
+    var text: [128]u8 = undefined;
+    const parsed = parseSegmentArray(api, runtime.state, &segments, &text, -1);
+    try std.testing.expectEqual(@as(usize, 3), parsed.len);
+    try std.testing.expectEqual(@as(f32, 8), parsed[0].padding.left);
+    try std.testing.expectEqual(@as(f32, 8), parsed[0].padding.right);
+    try std.testing.expectEqual(@as(f32, 0), parsed[1].padding.left);
+    try std.testing.expectEqual(@as(f32, 0), parsed[2].padding.left);
+    try std.testing.expectEqual(@as(f32, 0), parsed[2].padding.right);
+    const padding = bar.rowPadding(parsed);
+    try std.testing.expectEqual(@as(f32, 3), padding.top);
+    try std.testing.expectEqual(@as(f32, 3), padding.bottom);
+    const stack_top = api.get_top(runtime.state);
+    const truncated = parseSegmentArray(api, runtime.state, segments[0..1], &text, -1);
+    try std.testing.expectEqual(@as(usize, 1), truncated.len);
+    try std.testing.expectEqual(stack_top, api.get_top(runtime.state));
 }
 
 test "HTP bridge forwards receipt timestamp and cwd" {

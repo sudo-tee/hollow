@@ -22,6 +22,29 @@ pub const Workspace = struct { id: usize, index: usize, name: []const u8, domain
 pub const TreeWorkspace = struct { id: usize, index: usize, name: []const u8, domain: ?[]const u8, is_active: bool, tabs: []const Tab };
 pub const Domain = struct { name: []const u8, is_active: bool, is_default: bool, shell: ?[]const u8 = null, default_cwd: ?[]const u8 = null };
 pub const Revision = struct { revision: u64 };
+pub const Activity = struct {
+    source: ?[]const u8 = null,
+    category: ?[]const u8 = null,
+    id: std.json.Value,
+    kind: []const u8,
+    title: ?[]const u8 = null,
+    message: ?[]const u8 = null,
+    app: ?[]const u8 = null,
+    state: ?[]const u8 = null,
+    block_kind: ?[]const u8 = null,
+    program_id: ?[]const u8 = null,
+    progress: ?f64 = null,
+    level: ?[]const u8 = null,
+    pending: ?bool = null,
+    count: ?usize = null,
+    timestamp_ms: ?u64 = null,
+    pane_id: ?usize = null,
+    pane_title: ?[]const u8 = null,
+    pane_closed: ?bool = null,
+    workspace: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
+    tab_title: ?[]const u8 = null,
+};
 pub const Screenshot = struct { path: []const u8, width: usize, height: usize };
 const Point = struct { row: usize, col: usize };
 const Cursor = struct { position: ?Point, visible: bool, blinking: bool, password_input: bool, wide_tail: bool, style: []const u8 };

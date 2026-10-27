@@ -340,6 +340,11 @@ pub fn luaGetWindowWidthCallback(app_ptr: *anyopaque) usize {
     return app.config.window_width;
 }
 
+pub fn luaWindowIsFocusedCallback(app_ptr: *anyopaque) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    return app.window_focused;
+}
+
 pub fn luaGetWindowHeightCallback(app_ptr: *anyopaque) usize {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     return app.config.window_height;
@@ -503,6 +508,18 @@ pub fn luaRequestLayoutRefreshCallback(app_ptr: *anyopaque) void {
 pub fn luaCopySelectionCallback(app_ptr: *anyopaque) void {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     _ = app.enqueueMouse(.copy_selection);
+}
+
+pub fn luaClipboardWriteCallback(app_ptr: *anyopaque, text: []const u8) bool {
+    const app: *App = @ptrCast(@alignCast(app_ptr));
+    // Sokol accepts C strings; reject embedded NUL rather than silently truncate.
+    if (std.mem.indexOfScalar(u8, text, 0) != null) return false;
+    const owned = app.allocator.dupeZ(u8, text) catch return false;
+    if (!app.enqueueMouse(.{ .clipboard_write = owned })) {
+        app.allocator.free(owned);
+        return false;
+    }
+    return true;
 }
 
 pub fn luaPasteClipboardCallback(app_ptr: *anyopaque) void {

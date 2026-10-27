@@ -125,6 +125,10 @@ Bind these with `{ mode = "copy_mode" }`. See [Copy mode](../copy-mode.md).
 | Action | What it does |
 | --- | --- |
 | `command_palette` | Open the command palette |
+| `activity_center` | Open the activity inbox and running programs (`<leader>a`) |
+| `notification_history` | Open session activity history (`<leader>h`) |
+| `mux_navigator` | Navigate workspaces, tabs, and panes (`<leader>n`) |
+| `attention_navigator` | Open the existing pane-attention filter |
 | `reload_config` | Reload configuration |
 | `font_size_increase` | Increase font size by 0.5 |
 | `font_size_decrease` | Decrease font size by 0.5 |

@@ -5,14 +5,22 @@
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local ui = _G.hollow.ui
+local overlay_stack = require("hollow.state").get().ui.overlay_stack
 local button_component = require("hollow.ui.builder.components.button")
 local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
 ---@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any }
----@return HollowUiModalHandle
+---@return HollowUiModalHandle|nil
 function M.modal(spec)
+  -- Preserve unfinished input and questions; never replace an active modal.
+  for _, existing in ipairs(overlay_stack) do
+    if existing._modal then
+      return nil
+    end
+  end
+
   local theme
   if type(spec.theme) == "table" then
     theme = spec.theme
@@ -58,6 +66,7 @@ function M.modal(spec)
     backdrop = spec.backdrop,
   })
 
+  widget._modal = true
   ui.overlay.push(widget)
 
   local handle = {

@@ -198,6 +198,7 @@ pub const PendingInputEvent = union(enum) {
     selection_end,
     clear_selection,
     copy_selection,
+    clipboard_write: [:0]u8,
     paste_clipboard,
     paste: struct {
         bytes: [CLIPBOARD_EVENT_MAX]u8,
@@ -246,6 +247,7 @@ pub fn deinitPendingInputEvent(allocator: std.mem.Allocator, event: *PendingInpu
             if (payload.command) |value| allocator.free(value);
         },
         .command_request => |*request| request.deinit(allocator),
+        .clipboard_write => |text| allocator.free(text),
         .lua_job_request => |*payload| payload.request.deinit(allocator),
         .new_workspace => |payload| {
             if (payload.cwd) |value| allocator.free(value);
@@ -496,6 +498,7 @@ pub fn processInputQueue(self: *App) void {
                     std.log.err("copy selection failed: {s}", .{@errorName(err)});
                 };
             },
+            .clipboard_write => |text| c.sapp_set_clipboard_string(text.ptr),
             .paste_clipboard => {
                 self.pasteClipboard() catch |err| {
                     std.log.err("paste clipboard failed: {s}", .{@errorName(err)});

@@ -11,6 +11,36 @@ describe("UI composition test suite", function()
   end)
 
   describe("unified composition API", function()
+    it("provides opt-in action button defaults and hover overrides", function()
+      local theme = { fg = "#111111", hover_fg = "#eeeeee", hover_bg = "#222222" }
+      local style = { fg = "#333333", padding = { left = 9 } }
+      local click = function() end
+      local opts = {
+        id = "action",
+        text = "Run",
+        theme = theme,
+        state = { hovered_id = "other" },
+        style = style,
+        hover_style = { fg = "#ffffff" },
+        on_click = click,
+      }
+      local normal = hollow.ui.action_button(opts)
+      assert.equals("#333333", normal.style.fg)
+      assert.equals(4, normal.style.radius)
+      assert.same({ left = 9 }, normal.style.padding)
+      assert.equals(click, normal.style.on_click)
+      opts.state.hovered_id = "action"
+      local hover = hollow.ui.action_button(opts)
+      assert.equals("#ffffff", hover.style.fg)
+      assert.equals("#222222", hover.style.bg)
+      assert.same({ fg = "#333333", padding = { left = 9 } }, style)
+      local defaults = hollow.ui.action_button({ id = "default", theme = theme })
+      assert.same({ left = 4, right = 4 }, defaults.style.padding)
+      assert.has_error(function()
+        hollow.ui.action_button({ on_click = click })
+      end)
+    end)
+
     it("creates explicit row and column nodes", function()
       local sample_row = hollow.ui.row({ "hello", hollow.ui.text(" world", { bold = true }) }, {
         id = "sample-row",
@@ -41,6 +71,126 @@ describe("UI composition test suite", function()
         hollow.ui.rows == nil,
         "anonymous row-list inference should not be exposed"
       )
+    end)
+  end)
+
+  describe("exclusive modals", function()
+    before_each(function()
+      hollow.ui.overlay.clear()
+    end)
+
+    after_each(function()
+      hollow.ui.overlay.clear()
+    end)
+
+    it("ignores new modals until the active modal closes", function()
+      local old_key_calls = 0
+      local unmounts = 0
+      local first = hollow.ui.modal({
+        render = function()
+          return hollow.ui.row({ "first" })
+        end,
+        keys = function()
+          old_key_calls = old_key_calls + 1
+          return true
+        end,
+      })
+      first.widget.on_unmount = function()
+        unmounts = unmounts + 1
+      end
+      local second = hollow.ui.modal({
+        render = function()
+          return hollow.ui.row({ "second" })
+        end,
+      })
+      harness.assert_equal(second, nil, "blocked modal should return nil")
+      harness.assert_equal(hollow.ui.overlay.depth(), 1, "only one modal should remain")
+      harness.assert_equal(unmounts, 0, "active modal should not unmount")
+      hollow.ui.dispatch_overlay_key("x", 0)
+      harness.assert_equal(old_key_calls, 1, "active modal should still receive keys")
+      first.close()
+      harness.assert_equal(unmounts, 1, "active modal should unmount once when closed")
+      local next_modal = hollow.ui.modal({
+        render = function()
+          return hollow.ui.row({ "next" })
+        end,
+      })
+      harness.assert_true(next_modal ~= nil, "new modal should open after previous closes")
+      first.close()
+      harness.assert_equal(hollow.ui.overlay.depth(), 1, "stale close must not close new modal")
+      next_modal.close()
+      harness.assert_equal(hollow.ui.overlay.depth(), 0, "new modal should close normally")
+    end)
+
+    it("preserves unfinished input when another picker is requested", function()
+      local value
+      hollow.ui.input.open({
+        prompt = "Rename",
+        default = "draft",
+        on_confirm = function(result)
+          value = result
+        end,
+      })
+      hollow.ui.dispatch_overlay_key("x", 0)
+      hollow.ui.workspace.open_switcher()
+      harness.assert_equal(hollow.ui.overlay.depth(), 1, "switcher must not replace input")
+      hollow.ui.dispatch_overlay_key("enter", 0)
+      harness.assert_equal(value, "draftx", "original input and callback must survive")
+      harness.assert_equal(hollow.ui.overlay.depth(), 0, "ignored switcher must not open later")
+    end)
+
+    it("preserves questions without firing callbacks for ignored dialogs", function()
+      local answer
+      local ignored_callbacks = 0
+      hollow.ui.confirm.open({
+        prompt = "Continue?",
+        on_confirm = function(result)
+          answer = result
+        end,
+      })
+      hollow.ui.input.open({
+        prompt = "Ignored",
+        on_confirm = function()
+          ignored_callbacks = ignored_callbacks + 1
+        end,
+        on_cancel = function()
+          ignored_callbacks = ignored_callbacks + 1
+        end,
+      })
+      hollow.ui.workspace.open_switcher()
+      hollow.ui.dispatch_overlay_key("enter", 0)
+      harness.assert_equal(answer, true, "original question should receive the answer")
+      harness.assert_equal(ignored_callbacks, 0, "ignored dialogs should not fire callbacks")
+      harness.assert_equal(hollow.ui.overlay.depth(), 0, "no ignored dialogs should remain")
+    end)
+
+    it("preserves notifications and direct overlays with separate layout contexts", function()
+      local direct = hollow.ui.overlay.new({
+        render = function()
+          return hollow.ui.row({ "direct" })
+        end,
+      })
+      hollow.ui.overlay.push(direct)
+      hollow.ui.notify.info("notification", { ttl = 0 })
+      local active = hollow.ui.modal({
+        render = function()
+          return hollow.ui.row({ "old" })
+        end,
+      })
+      hollow.ui.modal({
+        render = function()
+          return hollow.ui.row({ "new" })
+        end,
+      })
+      local overlays = hollow.ui._overlay_state()
+      harness.assert_equal(#overlays, 3, "blocked modal should preserve other overlay kinds")
+      harness.assert_equal(overlays[1].stack_context, "overlay", "direct overlay context")
+      harness.assert_equal(overlays[2].stack_context, "notification", "notification context")
+      harness.assert_equal(overlays[3].stack_context, "modal", "modal context")
+      hollow.ui.notify.clear()
+      harness.assert_equal(hollow.ui.overlay.depth(), 2, "clearing notifications must keep modal")
+      active.close()
+      harness.assert_equal(hollow.ui.overlay.depth(), 1, "closing modal must keep direct overlay")
     end)
   end)
 

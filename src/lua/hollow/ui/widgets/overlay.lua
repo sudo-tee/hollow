@@ -60,6 +60,7 @@ local function serialize_overlay_widget(widget)
   end
 
   return {
+    stack_context = widget._notify and "notification" or (widget._modal and "modal" or "overlay"),
     align = shared.normalize_overlay_align(widget.align),
     backdrop = shared.normalize_overlay_backdrop(widget.backdrop),
     chrome = shared.normalize_overlay_chrome(widget.chrome),

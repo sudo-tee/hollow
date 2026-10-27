@@ -397,6 +397,11 @@ const Runner = struct {
         const sub = args[0];
         const rest = args[1..];
 
+        if (std.mem.eql(u8, sub, "activities")) {
+            const query = parseActivityArgs(rest) catch |err|
+                return self.failFmt("invalid activity options: {s}", .{@errorName(err)}, "invalid_args", 2);
+            return try self.printQuery(.{ .data = .{ .get_activities = query } });
+        }
         if (std.mem.eql(u8, sub, "pane")) {
             var id: ?usize = null;
             try self.parseOnlyId(rest, &id);
@@ -1445,6 +1450,7 @@ fn helpText() []const u8 {
         "       hollow cli <same options and commands>\n" ++
         "commands: api, capabilities, events, job, get, workspace, tab, pane, focus, scroll, config, run, send-keys, emit, notify, program-status, ui, wait\n" ++
         "api list | describe <name> | call <name> [args-json]\n" ++
+        "get activities [--view inbox|history|running] [--pane ID] [--workspace NAME] [--kind notification|bell|program] [--severity info|warn|error|success]\n" ++
         "events subscribe | read|watch --after N [--pane ID] [--event KIND] [--command-id N]\n" ++
         "job spawn [--user-shell] [--wait [--auto-close]] [--cwd PATH] [--domain NAME] -- ARGV... | --shell COMMAND\n" ++
         "job get|output|wait|cleanup --id ID --token TOKEN\n" ++
@@ -1452,6 +1458,49 @@ fn helpText() []const u8 {
         "wait <revision> | command|process-exit|status-change --after N --pane ID [--command-id N]\n" ++
         "program-status set <idle|working|done|blocked|error> [--pane ID] [--id TASK] [--kind none|permission|question|auth] [--progress 0..100] [--app TEXT] [--title TEXT] [--message TEXT]\n" ++
         "program-status get [--pane ID]\nprogram-status clear [--pane ID] [--id TASK]\n";
+}
+
+fn parseActivityArgs(args: []const []const u8) !command.Args(.get_activities) {
+    var query: command.Args(.get_activities) = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 2) {
+        const flag = args[i];
+        if (i + 1 >= args.len) return error.MissingFlagValue;
+        const value = args[i + 1];
+        if (std.mem.eql(u8, flag, "--pane")) {
+            if (query.id != null) return error.DuplicateFlag;
+            query.id = try parseUnsignedArg(value, "pane");
+        } else {
+            const field: *?[]const u8 = if (std.mem.eql(u8, flag, "--view")) &query.view else if (std.mem.eql(u8, flag, "--workspace")) &query.workspace else if (std.mem.eql(u8, flag, "--kind")) &query.activity_kind else if (std.mem.eql(u8, flag, "--severity") or std.mem.eql(u8, flag, "--level")) &query.level else return error.UnknownFlag;
+            if (field.* != null) return error.DuplicateFlag;
+            field.* = value;
+        }
+    }
+    try command.validate(.{ .get_activities = query });
+    return query;
+}
+
+test "activity CLI filters share typed contracts and reject malformed options" {
+    const query = try parseActivityArgs(&.{ "--view", "history", "--pane", "101", "--workspace", "main", "--kind", "program", "--severity", "error" });
+    try std.testing.expectEqualStrings("history", query.view.?);
+    try std.testing.expectEqual(@as(?usize, 101), query.id);
+    try std.testing.expectEqualStrings("main", query.workspace.?);
+    try std.testing.expectEqualStrings("program", query.activity_kind.?);
+    try std.testing.expectEqualStrings("error", query.level.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), (try parseActivityArgs(&.{})).view);
+    try std.testing.expectError(error.MissingFlagValue, parseActivityArgs(&.{"--view"}));
+    try std.testing.expectError(error.DuplicateFlag, parseActivityArgs(&.{ "--view", "inbox", "--view", "history" }));
+    try std.testing.expectError(error.DuplicateFlag, parseActivityArgs(&.{ "--level", "warn", "--severity", "error" }));
+    try std.testing.expectError(error.UnknownFlag, parseActivityArgs(&.{ "--typo", "x" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseActivityArgs(&.{ "--pane", "0" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseActivityArgs(&.{ "--view", "all" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseActivityArgs(&.{ "--kind", "status" }));
+    try std.testing.expectError(error.InvalidArgumentValue, parseActivityArgs(&.{ "--severity", "debug" }));
+    const a = std.testing.allocator;
+    var request = try parseApiCall(a, "get_activities", "{\"view\":\"running\",\"id\":101,\"activity_kind\":\"program\"}");
+    defer request.deinit(a);
+    try std.testing.expectEqual(@as(?usize, 101), request.data.get_activities.id);
+    try std.testing.expectEqual(@as(usize, 0), request.ctx.pane_id);
 }
 
 fn parseApiCall(allocator: std.mem.Allocator, name: []const u8, text: []const u8) !command.Request {

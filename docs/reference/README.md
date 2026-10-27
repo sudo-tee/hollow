@@ -14,6 +14,7 @@ Start with [Overview and conventions](lua/overview.md).
 | `hollow.config` | [config.md](lua/config.md) | Read and write configuration |
 | `hollow.term` | [term.md](lua/term.md) | Tabs, panes, workspaces, text, process |
 | `hollow.events` | [events.md](lua/events.md) | Subscribe to host events |
+| `hollow.activity` | [activity.md](lua/activity.md) | Activity inbox, session history, and running programs |
 | `hollow.keymap` | [keymap.md](lua/keymap.md) | Bind keys to actions or callbacks |
 | `hollow.ui` | [ui.md](lua/ui.md) | Widgets, top bar, sidebars, overlays |
 | `hollow.ui.workspace` | [workspace.md](lua/workspace.md) | Workspace switcher and discovery |

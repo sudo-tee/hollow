@@ -237,6 +237,22 @@ hollow.keymap.set("<C-S-n>", hollow.term.new_tab)
 
 ---
 
+## hollow.activity — Session Activity
+
+`hollow.activity` owns the bounded, in-memory activity inbox and history.
+`list({ view = "inbox" | "history" })`, `summary()`, `running()`, `dismiss(id)`,
+`dismiss_all()`, and `clear_history()` expose isolated snapshots and explicit
+acknowledgement. Running work never affects the unread bell count. History
+survives config reload but is not persisted across application restarts.
+
+`hollow.ui.activity.open(opts?)` opens Inbox or History using the existing modal
+shell. `hollow.ui.is_focused()` queries OS window focus. The composable
+`hollow.ui.text_view({ text?, width?, row_budget?, id? })` behavior supplies wrapped,
+read-only rows with keyboard and mouse scrolling, without creating a modal.
+
+See [Activity API](docs/reference/lua/activity.md) and
+[UI reference](docs/reference/lua/ui.md) for lifecycle rules and options.
+
 ## hollow.ui — Rendering Primitives
 
 All widgets are composed from these span nodes.

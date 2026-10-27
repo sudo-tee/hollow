@@ -94,6 +94,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(process.stdout), {"revision": 5})
         self.assertEqual(seen[0]["kind"], "get_revision")
 
+    def test_activity_listing_preserves_full_content_and_explicit_filters(self):
+        payload = [{"id": 12, "kind": "program", "state": "error",
+                    "title": "Task title", "message": "full message\nsecond line",
+                    "workspace": "main", "pane_id": 42, "pending": True}]
+        for args in (("get", "activities", "--view", "history", "--pane", "42",
+                      "--workspace", "main", "--kind", "program", "--severity", "error"),
+                     ("api", "call", "get_activities",
+                      '{"view":"history","id":42,"workspace":"main","activity_kind":"program","level":"error"}')):
+            process, seen = self.socket_call(args, result(payload))
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads(process.stdout), payload)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0]["kind"], "get_activities")
+            self.assertEqual(seen[0]["view"], "history")
+            self.assertEqual(seen[0]["id"], 42)
+            self.assertEqual(seen[0]["workspace"], "main")
+            self.assertEqual(seen[0]["activity_kind"], "program")
+            self.assertEqual(seen[0]["level"], "error")
+            self.assertEqual(seen[0]["ctx"]["pane_id"], 7)
+
+    def test_activity_default_and_running_queries_return_arrays(self):
+        for args in (("get", "activities"), ("get", "activities", "--view", "running")):
+            process, seen = self.socket_call(args, result([]))
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads(process.stdout), [])
+            self.assertNotIn("id", seen[0])  # Caller pane is not an implicit filter.
+
+    def test_activity_invalid_options_fail_before_transport(self):
+        for args in (("--view", "unknown"), ("--kind", "status"), ("--pane", "0"),
+                     ("--severity", "debug"), ("--workspace",),
+                     ("--view", "inbox", "--view", "history")):
+            process = self.run_cli("get", "activities", *args)
+            self.assertEqual(process.returncode, 2, process.stderr)
+
     def test_errors_exit_nonzero(self):
         process, _ = self.socket_call(("api", "describe", "missing"),
                                      {"kind": "error", "status": "method_not_found", "error": "unknown command"})
