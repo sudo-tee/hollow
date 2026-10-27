@@ -11,6 +11,36 @@ describe("UI composition test suite", function()
   end)
 
   describe("unified composition API", function()
+    it("provides opt-in action button defaults and hover overrides", function()
+      local theme = { fg = "#111111", hover_fg = "#eeeeee", hover_bg = "#222222" }
+      local style = { fg = "#333333", padding = { left = 9 } }
+      local click = function() end
+      local opts = {
+        id = "action",
+        text = "Run",
+        theme = theme,
+        state = { hovered_id = "other" },
+        style = style,
+        hover_style = { fg = "#ffffff" },
+        on_click = click,
+      }
+      local normal = hollow.ui.action_button(opts)
+      assert.equals("#333333", normal.style.fg)
+      assert.equals(4, normal.style.radius)
+      assert.same({ left = 9 }, normal.style.padding)
+      assert.equals(click, normal.style.on_click)
+      opts.state.hovered_id = "action"
+      local hover = hollow.ui.action_button(opts)
+      assert.equals("#ffffff", hover.style.fg)
+      assert.equals("#222222", hover.style.bg)
+      assert.same({ fg = "#333333", padding = { left = 9 } }, style)
+      local defaults = hollow.ui.action_button({ id = "default", theme = theme })
+      assert.same({ left = 4, right = 4 }, defaults.style.padding)
+      assert.has_error(function()
+        hollow.ui.action_button({ on_click = click })
+      end)
+    end)
+
     it("creates explicit row and column nodes", function()
       local sample_row = hollow.ui.row({ "hello", hollow.ui.text(" world", { bold = true }) }, {
         id = "sample-row",

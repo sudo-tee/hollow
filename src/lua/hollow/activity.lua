@@ -27,6 +27,7 @@ function M.setup(hollow, host_api)
   -- A long-lived agent's shell command is not evidence that its task is still
   -- working after the agent clears its own status. Reset only for a new command.
   local program_commands = {}
+  local live_since = {}
   local rules = { tasks = {}, commands = {}, ignore = {} }
   local api = {}
   hollow.activity = api
@@ -216,6 +217,18 @@ function M.setup(hollow, host_api)
 
   function api.running()
     local result = {}
+    local seen = {}
+    local current_ms = now()
+    -- Program status carries no start time, so remember when each state was first seen.
+    local function since(id, state)
+      local mark = live_since[id]
+      if not mark or mark.state ~= state then
+        mark = { state = state, ms = current_ms }
+        live_since[id] = mark
+      end
+      seen[id] = true
+      return mark.ms
+    end
     for _, workspace in ipairs(hollow.term.mux_tree()) do
       for _, tab in ipairs(workspace.tabs or {}) do
         for _, pane in ipairs(tab.panes or {}) do
@@ -225,8 +238,10 @@ function M.setup(hollow, host_api)
           end
           for _, record in ipairs(pane.program_status or {}) do
             if record.state == "working" or record.state == "blocked" then
+              local id = "program:" .. pane.id .. ":" .. (record.id or "")
               result[#result + 1] = {
-                id = "program:" .. pane.id .. ":" .. (record.id or ""),
+                id = id,
+                started_ms = since(id, record.state),
                 kind = "program",
                 source = "program_status",
                 category = "task",
@@ -257,6 +272,7 @@ function M.setup(hollow, host_api)
               level = "info",
               pending = false,
               state = "working",
+              started_ms = current_ms - (pane.running.ms or 0),
               title = pane.running.command,
               pane_id = pane.id,
               pane_title = pane.title,
@@ -265,6 +281,11 @@ function M.setup(hollow, host_api)
             }
           end
         end
+      end
+    end
+    for id in pairs(live_since) do
+      if not seen[id] then
+        live_since[id] = nil
       end
     end
     return result
@@ -285,6 +306,15 @@ function M.setup(hollow, host_api)
       local old = previous[id]
       local same_state = old and old.state == record.state and old.kind == record.kind
       local entry = same_state and store:find(old.entry_id)
+      local live_id = "program:" .. pane.id .. ":" .. id
+      if record.state == "working" or record.state == "blocked" then
+        local mark = live_since[live_id]
+        if not mark or mark.state ~= record.state then
+          live_since[live_id] = { state = record.state, ms = now() }
+        end
+      else
+        live_since[live_id] = nil
+      end
       if record.state == "blocked" or record.state == "done" or record.state == "error" then
         if not same_state then
           entry = context(pane)

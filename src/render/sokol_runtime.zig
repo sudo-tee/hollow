@@ -213,6 +213,10 @@ var g_overlay_hit_cache: struct {
     hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = [_]CachedOverlayHitRegion{.{}} ** MAX_OVERLAY_HIT_REGIONS,
 } = .{};
 var g_overlay_hit_id_pool: [MAX_OVERLAY_HIT_REGIONS][64]u8 = undefined;
+// Segment IDs are parsed into a scratch buffer reused for every row. Hit
+// regions must own their IDs until the next frame's hit cache is rebuilt.
+var g_overlay_cached_ids: [MAX_OVERLAY_HIT_REGIONS][4096]u8 = undefined;
+var g_overlay_hovered_id_buf: [4096]u8 = undefined;
 var g_overlay_hovered_id: ?[]const u8 = null;
 var g_overlay_render_stack_index: usize = 0;
 var g_overlay_scrollbar_cache: struct {
@@ -1196,12 +1200,15 @@ fn overlaySegmentsLabel(segments: []const bar.Segment, out: []u8) []const u8 {
 fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32) void {
     if (!g_overlay_hit_cache.enabled or id.len == 0 or width <= 0 or height <= 0) return;
     if (g_overlay_hit_cache.hit_count >= g_overlay_hit_cache.hits.len) return;
+    if (id.len > g_overlay_cached_ids[0].len) return;
+    const owned_id = g_overlay_cached_ids[g_overlay_hit_cache.hit_count][0..id.len];
+    fastmem.copy(u8, owned_id, id);
     g_overlay_hit_cache.hits[g_overlay_hit_cache.hit_count] = .{
         .x = x,
         .width = width,
         .y = y,
         .height = height,
-        .node_id = id,
+        .node_id = owned_id,
         .stack_index = g_overlay_render_stack_index,
     };
     g_overlay_hit_cache.hit_count += 1;
@@ -1213,6 +1220,17 @@ fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, widt
             .height = height,
         });
     }
+}
+
+test "overlay hit regions retain IDs when segment scratch storage is reused" {
+    g_overlay_hit_cache = .{ .enabled = true };
+    defer g_overlay_hit_cache = .{};
+    var scratch = "activity:dismiss:42".*;
+    cacheOverlayHitRegion(&scratch, "dismiss", 0, 0, 20, 20);
+    @memset(&scratch, 'x');
+    cacheOverlayHitRegion(&scratch, "other", 30, 0, 20, 20);
+    const hit = hitTestOverlay(10, 10).?;
+    try std.testing.expectEqualStrings("activity:dismiss:42", hit.id);
 }
 
 fn cacheOverlayScrollbarRow(
@@ -2555,7 +2573,8 @@ fn updateOverlayHover(app: *App, mouse_x: f32, mouse_y: f32) void {
         if (mouse_x < region.x or mouse_x >= region.x + region.width) continue;
         if (mouse_y < region.y or mouse_y >= region.y + region.height) continue;
         if (region.node_id) |id| {
-            g_overlay_hovered_id = id;
+            fastmem.copy(u8, g_overlay_hovered_id_buf[0..id.len], id);
+            g_overlay_hovered_id = g_overlay_hovered_id_buf[0..id.len];
             app.emitLuaBuiltInEvent("overlay:hover", .{ .overlay_node = .{
                 .id = id,
                 .index = region.stack_index,

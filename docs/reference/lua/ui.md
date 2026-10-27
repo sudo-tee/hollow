@@ -26,6 +26,7 @@ hollow.ui.row(children, opts?)     -- explicit row node
 hollow.ui.column(rows)             -- explicit vertical layout
 hollow.ui.divider(color?)          -- divider row
 hollow.ui.button(opts)             -- clickable span
+hollow.ui.action_button(opts)      -- padded action with hover styling
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
 ```
 
@@ -44,6 +45,21 @@ return hollow.ui.column({
 ```
 
 Anonymous arrays are not inferred as rows or row lists.
+
+`ui.action_button` is an opt-in overlay button with horizontal padding, rounded
+corners, and select-theme colors. Pass the modal render `state` for hover feedback
+and its `theme` to match the surrounding widget. `style` overrides normal defaults;
+`hover_style` overrides hover defaults. Like `ui.button`, a clickable action needs
+a stable `id`.
+
+```lua
+render = function(theme, state)
+  return hollow.ui.row({ hollow.ui.action_button({
+    id = "example:copy", text = "Copy", theme = theme, state = state,
+    on_click = copy,
+  }) })
+end
+```
 
 ### Read-only text view
 

@@ -648,6 +648,11 @@
 ---@field on_mouse_enter? fun(e: { id: string })
 ---@field on_mouse_leave? fun(e: { id: string })
 
+---@class HollowUiActionButtonOptions: HollowUiButtonOptions
+---@field theme? table Select widget theme by default.
+---@field state? { hovered_id?: string } Modal render state, used to highlight hover.
+---@field hover_style? HollowUiNodeStyle Overrides applied while hovered.
+
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
 
@@ -2125,6 +2130,10 @@ function ui.group(children, style) end
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode
 function ui.button(opts) end
+
+---@param opts HollowUiActionButtonOptions
+---@return HollowUiSpanNode
+function ui.action_button(opts) end
 
 ---@param spec HollowUiModalSpec
 ---@return HollowUiModalHandle|nil Returns nil if another modal is already open.

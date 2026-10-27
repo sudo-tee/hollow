@@ -168,6 +168,33 @@ function ui.button(opts)
   return ui.span(opts.text or "", style)
 end
 
+--- A padded overlay action with theme-aware hover styling.
+---@param opts HollowUiActionButtonOptions
+---@return HollowUiSpanNode
+function ui.action_button(opts)
+  opts = opts or {}
+  local theme = opts.theme or require("hollow.theme").resolve_widget("select")
+  local style = { fg = theme.fg, radius = 4, padding = { left = 4, right = 4 } }
+  for key, value in pairs(opts.style or {}) do
+    style[key] = util.clone_value(value)
+  end
+  if opts.state and opts.state.hovered_id == opts.id and opts.id ~= nil then
+    style.fg = theme.hover_fg
+    style.bg = theme.hover_bg
+    for key, value in pairs(opts.hover_style or {}) do
+      style[key] = util.clone_value(value)
+    end
+  end
+  return ui.button({
+    id = opts.id,
+    text = opts.text,
+    style = style,
+    on_click = opts.on_click,
+    on_mouse_enter = opts.on_mouse_enter,
+    on_mouse_leave = opts.on_mouse_leave,
+  })
+end
+
 ---@param opts HollowUiBarTabsOptions|nil
 ---@return HollowUiBarTabsNode
 function bar.tabs(opts)

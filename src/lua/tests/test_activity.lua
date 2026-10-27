@@ -71,6 +71,85 @@ describe("activity center", function()
     assert.is_truthy(text():find("Copied", 1, true))
   end)
 
+  it("styles title, detail, and status as separate segments", function()
+    emit("window:blurred", {})
+    notify("all targets compiled")
+    report("blocked")
+    hollow.ui.activity.open()
+    local theme = require("hollow.theme").resolve_widget("select")
+    local function segment(value)
+      for _, overlay in ipairs(hollow.ui._overlay_state()) do
+        for _, row in ipairs(overlay.rows or {}) do
+          for _, item in ipairs(row.segments or {}) do
+            if item.text == value then
+              return item
+            end
+          end
+        end
+      end
+    end
+    assert.is_truthy(text():find("Build · all targets compiled", 1, true))
+    assert.is_true(segment("Build").bold)
+    assert.equals(theme.muted, segment("all targets compiled").fg)
+    assert.equals(require("hollow.program_status").color("blocked"), segment("Blocked").fg)
+  end)
+
+  it("shows elapsed time for live work and aligns trailing columns", function()
+    emit("window:blurred", {})
+    notify("all targets compiled")
+    report("working", 10)
+    env.recorded.now_ms = env.recorded.now_ms + 125000
+    hollow.ui.activity.open()
+    assert.is_truthy(text():find("Compiler · Working", 1, true))
+    local widths = {}
+    for _, overlay in ipairs(hollow.ui._overlay_state()) do
+      for _, row in ipairs(overlay.rows or {}) do
+        local tail, spacer = "", false
+        for _, item in ipairs(row.segments or {}) do
+          if spacer then
+            tail = tail .. (item.text or "")
+          end
+          spacer = spacer or item.spacer == true
+        end
+        if row.id and spacer then
+          widths[#widths + 1] = tail
+        end
+      end
+    end
+    assert.equals(2, #widths)
+    assert.is_truthy(widths[2]:find("2m", 1, true))
+    assert.equals(
+      require("hollow.util").utf8_len(widths[1]),
+      require("hollow.util").utf8_len(widths[2])
+    )
+  end)
+
+  it("colors the Inbox badge by the most severe pending item", function()
+    emit("window:blurred", {})
+    notify("info")
+    report("blocked")
+    hollow.ui.activity.open()
+    local badge
+    for _, overlay in ipairs(hollow.ui._overlay_state()) do
+      for _, row in ipairs(overlay.rows or {}) do
+        for _, item in ipairs(row.segments or {}) do
+          if item.id == "activity:inbox:badge" then
+            badge = item
+          end
+        end
+      end
+    end
+    assert.equals("2", badge.text)
+    assert.equals(require("hollow.theme").resolve_widget("select").notify_levels.warn, badge.bg)
+  end)
+
+  it("groups history under a Today section", function()
+    notify("finished")
+    hollow.ui.activity.open({ view = "history" })
+    assert.is_truthy(text():find("Today (1)", 1, true))
+    assert.is_truthy(text():find("Build · finished", 1, true))
+  end)
+
   it("copies status details with Ctrl-C and the Copy button", function()
     report("working", 42)
     hollow.ui.activity.open()
@@ -913,6 +992,32 @@ describe("activity center", function()
     assert.equals(0, hollow.activity.summary().count)
     assert.is_nil(env.recorded.focus_pane_by_id)
     assert.is_truthy(text():find("All caught up", 1, true))
+  end)
+
+  it("pads and highlights the dismiss button on hover", function()
+    emit("window:blurred", {})
+    notify("hover dismiss")
+    local id = "activity:dismiss:" .. hollow.activity.list()[1].id
+    hollow.ui.activity.open({ theme = { hover_fg = "#abcdef", hover_bg = "#123456" } })
+    local function button()
+      text()
+      for _, overlay in ipairs(hollow.ui._overlay_state()) do
+        for _, row in ipairs(overlay.rows or {}) do
+          for _, segment in ipairs(row.segments or {}) do
+            if segment.id == id then
+              return segment
+            end
+          end
+        end
+      end
+    end
+    assert.same({ left = 4, right = 4, top = 0, bottom = 0 }, button().padding)
+    assert.is_nil(button().bg)
+    emit("overlay:hover", { id = id })
+    assert.equals("#abcdef", button().fg)
+    assert.equals("#123456", button().bg)
+    emit("overlay:leave", { id = id })
+    assert.is_nil(button().bg)
   end)
 
   it("bounds retained entries and never reuses IDs", function()

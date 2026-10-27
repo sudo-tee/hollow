@@ -1,3 +1,4 @@
+local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
@@ -12,21 +13,44 @@ local DEFAULT_WIDTH = 100
 local DEFAULT_HEIGHT = 24
 local PILL_PADDING = { left = 8, right = 8, top = 3, bottom = 3 }
 
-local function age(timestamp)
+local SECTION_GAP = { top = 8 }
+local LEVEL_RANK = { info = 1, success = 1, warn = 2, error = 3 }
+local SECTIONS = {
+  tasks = "Tasks",
+  commands = "Commands",
+  today = "Today",
+  earlier = "Earlier",
+}
+
+local function now_ms()
+  return util.host_now_ms(require("hollow.state").get().host_api)
+end
+
+local function seconds_since(timestamp)
+  return math.max(0, math.floor((now_ms() - timestamp) / 1000))
+end
+
+-- Live work shows elapsed seconds; finished items read as a coarse age.
+local function age(entry)
+  local live = entry.started_ms ~= nil
+  local timestamp = entry.started_ms or entry.timestamp_ms
   if not timestamp then
-    return ""
+    return "", 0
   end
-  local seconds = math.max(
-    0,
-    math.floor((util.host_now_ms(require("hollow.state").get().host_api) - timestamp) / 1000)
-  )
+  local seconds = seconds_since(timestamp)
   if seconds < 60 then
-    return "now"
+    return live and (seconds .. "s") or "now", seconds
   end
   if seconds < 3600 then
-    return math.floor(seconds / 60) .. "m"
+    return math.floor(seconds / 60) .. "m", seconds
   end
-  return math.floor(seconds / 3600) .. "h"
+  return math.floor(seconds / 3600) .. "h", seconds
+end
+
+local function same_day(timestamp)
+  local a = os.date("*t", math.floor(timestamp / 1000))
+  local b = os.date("*t", math.floor(now_ms() / 1000))
+  return a.year == b.year and a.yday == b.yday
 end
 
 local function title(entry)
@@ -46,22 +70,43 @@ local function location(entry)
   )
 end
 
-local function row_label(entry)
+local function squash(value)
+  return value and (value:gsub("%s+", " ")) or nil
+end
+
+-- Primary text carries identity; secondary carries state or message detail.
+local function row_parts(entry)
   if entry.source == "shell_command" then
-    return ((entry.title or "Command") .. " · Running"):gsub("%s+", " ")
+    return squash(entry.title or "Command"), "Running"
   end
   if entry.kind == "program" then
     local app = entry.app and entry.app ~= "" and entry.app or "Program"
     local state = entry.state or "idle"
-    return (app .. " · " .. state:gsub("^%l", string.upper)):gsub("%s+", " ")
+    return squash(app), (state:gsub("^%l", string.upper))
   end
   local label = title(entry)
-  if entry.kind == "notification" and entry.message and entry.message ~= "" then
-    label = label == "Notification" and entry.message
-      or entry.message == entry.title and label
-      or (label .. " · " .. entry.message)
+  local message = entry.kind == "notification" and entry.message ~= "" and entry.message or nil
+  if message and label == "Notification" then
+    return squash(message), nil
   end
-  return label:gsub("%s+", " ")
+  if message == entry.title then
+    message = nil
+  end
+  return squash(label), squash(message)
+end
+
+local function row_label(entry)
+  local primary, secondary = row_parts(entry)
+  return secondary and (primary .. " · " .. secondary) or primary
+end
+
+local function hint_row(theme, text)
+  local segments = {}
+  for key, label in text:gmatch("(%S+) ([^%s]+)") do
+    segments[#segments + 1] = ui.text(key, { fg = theme.title, bold = true })
+    segments[#segments + 1] = ui.text(" " .. label .. "   ", { fg = theme.muted })
+  end
+  return ui.row(segments)
 end
 
 local function marker(entry)
@@ -77,7 +122,17 @@ local function marker(entry)
       },
     }) or ""
   end
-  return entry.kind == "bell" and (icons.bell .. " ") or "● "
+  if entry.kind == "bell" then
+    return icons.bell .. " "
+  end
+  return entry.pending == false and "○ " or "● "
+end
+
+local function state_color(theme, entry)
+  if entry.source == "shell_command" and entry.category ~= "task" then
+    return theme.muted
+  end
+  return program_status.color(entry.state) or theme.notify_levels[entry.level]
 end
 
 ---@param opts? HollowUiActivityOptions
@@ -98,7 +153,7 @@ function ui.activity.open(opts)
   if backdrop == nil then
     backdrop = theme.backdrop
   end
-  local expanded = { tasks = true, commands = false }
+  local expanded = { tasks = true, commands = false, today = true, earlier = true }
   local search_expanded = {}
   local searching = false
   local width = opts.width or DEFAULT_WIDTH
@@ -111,6 +166,7 @@ function ui.activity.open(opts)
     row_budget = height - 4,
   })
   local rows = {}
+  local row_group = {}
   local filter = ui.text_input({
     on_change = function()
       search_expanded = {}
@@ -155,28 +211,40 @@ function ui.activity.open(opts)
       end
       return matches
     end
-    rows = matching(entries)
-    local groups = { tasks = {}, commands = {} }
+    rows = {}
+    row_group = {}
+    local groups = { tasks = {}, commands = {}, today = {}, earlier = {} }
+    local order = { "tasks", "commands" }
+    if view == "history" then
+      order = { "today", "earlier" }
+      for _, entry in ipairs(entries) do
+        local category = (not entry.timestamp_ms or same_day(entry.timestamp_ms)) and "today"
+          or "earlier"
+        groups[category][#groups[category] + 1] = entry
+      end
+    else
+      rows = matching(entries)
+    end
     for _, entry in ipairs(running) do
       local category = entry.source == "shell_command" and entry.category ~= "task" and "commands"
         or "tasks"
-      entry.group = category
       groups[category][#groups[category] + 1] = entry
     end
-    for _, category in ipairs({ "tasks", "commands" }) do
+    for _, category in ipairs(order) do
       local items = matching(groups[category])
       if #items > 0 then
         local open = category_expanded(category)
         rows[#rows + 1] = {
           id = "category:" .. category,
           header_category = category,
-          title = category == "tasks" and "Tasks" or "Commands",
+          title = SECTIONS[category],
           count = #items,
           expanded = open,
         }
         if open then
           for _, entry in ipairs(items) do
             rows[#rows + 1] = entry
+            row_group[entry] = category
           end
         end
       end
@@ -192,17 +260,24 @@ function ui.activity.open(opts)
     end
   end
 
+  local function skip_leading_header()
+    if rows[1] and rows[1].header_category and rows[2] and not rows[2].header_category then
+      list.nav.index = 2
+    end
+  end
+
   local function set_view(value)
     view = value
     list.nav.index = 1
     refresh()
+    skip_leading_header()
   end
 
   local function toggle_category(category)
     local selected = rows[list.nav.index]
     local target = filter.value ~= "" and search_expanded or expanded
     target[category] = not category_expanded(category)
-    if selected and selected.group == category and not target[category] then
+    if selected and row_group[selected] == category and not target[category] then
       for index, entry in ipairs(rows) do
         if entry.header_category == category then
           list.nav.index = index
@@ -282,9 +357,7 @@ function ui.activity.open(opts)
     end,
     on_activate = activate,
   })
-  if rows[1] and rows[1].header_category and rows[2] and not rows[2].header_category then
-    list.nav.index = 2
-  end
+  skip_leading_header()
 
   local function command(fn)
     return function(key, mods)
@@ -399,9 +472,11 @@ function ui.activity.open(opts)
             ui.row({
               ui.text("Activity details", { fg = theme.title, bold = true }),
               ui.spacer(),
-              ui.button({
+              ui.action_button({
                 id = "activity:copy",
                 text = copy_feedback or "Copy",
+                theme = theme,
+                state = state,
                 style = { fg = theme.title },
                 on_click = copy,
               }),
@@ -410,53 +485,72 @@ function ui.activity.open(opts)
           })
           :concat(detail_view.render(theme), {
             ui.divider(theme.divider),
-            ui.row({
-              ui.text(
-                "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back",
-                { fg = theme.muted }
-              ),
-            }),
+            hint_row(theme, "↑/↓ scroll   PgUp/PgDn page   y/Ctrl-C copy   Esc back"),
           })
           :get())
       end
       refresh()
       local summary = hollow.activity.summary()
+      local worst
+      for _, entry in ipairs(view == "inbox" and hollow.activity.list({ view = "inbox" }) or {}) do
+        if (LEVEL_RANK[entry.level] or 0) > (LEVEL_RANK[worst] or 0) then
+          worst = entry.level
+        end
+      end
+      local function tab(name, label, badge)
+        local active = view == name
+        local segments = {
+          ui.button({
+            id = "activity:" .. name,
+            text = label,
+            style = {
+              fg = active and theme.selection_fg or theme.muted,
+              bg = active and theme.selection_bg or nil,
+              bold = active,
+              radius = 4,
+              padding = PILL_PADDING,
+            },
+            on_click = function()
+              set_view(name)
+            end,
+          }),
+        }
+        if badge then
+          segments[#segments + 1] = ui.text(" ")
+          segments[#segments + 1] = ui.button({
+            id = "activity:" .. name .. ":badge",
+            text = badge.text,
+            style = {
+              fg = theme.panel_bg,
+              bg = badge.color,
+              bold = true,
+              radius = 4,
+              padding = { left = 5, right = 5, top = 1, bottom = 1 },
+            },
+            on_click = function()
+              set_view(name)
+            end,
+          })
+        end
+        return ui.group(segments)
+      end
       local content = {
         ui.row({
           ui.text("Activity  ", { fg = theme.title, bold = true }),
-          ui.button({
-            id = "activity:inbox",
-            text = "Inbox (" .. summary.count .. ")",
-            style = {
-              fg = view == "inbox" and theme.selection_fg or theme.muted,
-              bg = view == "inbox" and theme.selection_bg or nil,
-              bold = view == "inbox",
-              radius = 4,
-              padding = PILL_PADDING,
-            },
-            on_click = function()
-              set_view("inbox")
-            end,
-          }),
+          tab("inbox", "Inbox", summary.count > 0 and {
+            text = tostring(summary.count),
+            color = worst == "error" and theme.notify_levels.error
+              or worst == "warn" and theme.notify_levels.warn
+              or theme.title,
+          } or nil),
           ui.text("  "),
-          ui.button({
-            id = "activity:history",
-            text = "History",
-            style = {
-              fg = view == "history" and theme.selection_fg or theme.muted,
-              bg = view == "history" and theme.selection_bg or nil,
-              bold = view == "history",
-              radius = 4,
-              padding = PILL_PADDING,
-            },
-            on_click = function()
-              set_view("history")
-            end,
-          }),
+          tab("history", "History"),
           ui.spacer(),
-          summary.count > 0 and ui.button({
+          summary.count > 0 and ui.action_button({
             id = "activity:dismiss-all",
-            text = "Dismiss all  ",
+            text = "Dismiss all",
+            theme = theme,
+            state = state,
             style = { fg = theme.muted },
             on_click = function()
               hollow.activity.dismiss_all()
@@ -472,6 +566,18 @@ function ui.activity.open(opts)
         })
         content[#content + 1] = ui.divider(theme.divider)
       end
+      -- Fixed-width trailing columns keep pills and ages aligned across rows.
+      local pill_cap = math.min(20, math.floor(width / 4))
+      local pill_width, time_width = 0, 0
+      for _, entry in ipairs(rows) do
+        if not entry.header_category then
+          pill_width =
+            math.max(pill_width, util.utf8_len(util.truncate_end(entry.workspace or "", pill_cap)))
+          time_width = math.max(time_width, util.utf8_len((age(entry))))
+        end
+      end
+      local stale = theme.stale or color.darken_hex_color(theme.muted, 0.35, theme.muted)
+      local color_fn = require("hollow.ui.workspace.source").switcher_state().workspace_color_fn
       local viewport = list.visible_range()
       for index = viewport.start_idx, viewport.end_idx do
         local entry = rows[index]
@@ -484,59 +590,80 @@ function ui.activity.open(opts)
         options.scrollbar_thumb_color = theme.scrollbar_thumb
         if entry.header_category then
           content[#content + 1] = ui.row({
-            ui.text(
-              (entry.expanded and icons.expanded or icons.collapsed)
-                .. " "
-                .. entry.title
-                .. " ("
-                .. entry.count
-                .. ")",
-              { fg = fg, bold = true }
-            ),
+            ui.text((entry.expanded and icons.expanded or icons.collapsed) .. " ", {
+              fg = selected and fg or theme.muted,
+              padding = index > 1 and SECTION_GAP or nil,
+            }),
+            ui.text(entry.title, { fg = selected and fg or theme.title, bold = true }),
+            ui.text(" (" .. entry.count .. ")", { fg = selected and fg or theme.counter }),
           }, options)
         else
-          local workspace =
-            util.truncate_end(entry.workspace or "", math.min(20, math.floor(width / 4)))
-          local time = age(entry.timestamp_ms)
-          local workspace_colors = shared.workspace_colors(
-            entry.workspace or "",
-            require("hollow.ui.workspace.source").switcher_state().workspace_color_fn
-          )
-          local reserved = 8
-            + util.utf8_len(time)
-            + (workspace ~= "" and util.utf8_len(workspace) + 4 or 0)
-            + (entry.pane_closed and 14 or 0)
-          content[#content + 1] = ui.row({
-            ui.text(selected and "> " or "  ", { fg = fg }),
-            ui.text(marker(entry), {
-              fg = entry.source == "shell_command" and entry.category ~= "task" and theme.muted
-                or program_status.color(entry.state)
-                or theme.notify_levels[entry.level]
-                or fg,
+          local workspace = util.truncate_end(entry.workspace or "", pill_cap)
+          local time, seconds = age(entry)
+          local indent = row_group[entry] and "  " or ""
+          local reserved = 11
+            + util.utf8_len(indent)
+            + time_width
+            + (pill_width > 0 and pill_width + 4 or 0)
+            + (entry.pane_closed and 13 or 0)
+          local budget = math.max(8, width - reserved)
+          local primary, secondary = row_parts(entry)
+          primary = util.truncate_end(primary, budget)
+          local rest = budget - util.utf8_len(primary) - 3
+          secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
+          local read = entry.pending == false and not entry.started_ms
+          local accent = state_color(theme, entry)
+          local status_like = entry.kind == "program" or entry.source == "shell_command"
+          local secondary_fg = status_like and accent
+            or selected and theme.selected_muted
+            or theme.muted
+          local segments = {
+            ui.text((selected and "> " or "  ") .. indent, { fg = selected and theme.title or fg }),
+            ui.text(marker(entry), { fg = read and theme.muted or accent or fg }),
+            ui.text(primary, {
+              fg = read and not selected and theme.muted or fg,
+              bold = not read,
             }),
-            ui.text(
-              util.truncate_end(row_label(entry), math.max(8, width - reserved)),
-              { fg = fg, bold = selected }
-            ),
+            ui.text(secondary and " · " or "", { fg = theme.muted }),
+            ui.text(secondary or "", { fg = secondary_fg }),
             ui.spacer(),
-            ui.text(entry.pane_closed and "pane closed  " or "", { fg = theme.muted }),
-            ui.text(workspace, {
-              fg = workspace_colors.fg,
-              bg = workspace_colors.bg,
-              radius = 4,
-              padding = PILL_PADDING,
-            }),
-            ui.text(time ~= "" and ("  " .. time) or "", { fg = theme.muted }),
-            ui.text("  "),
-            entry.pending and ui.button({
-              id = "activity:dismiss:" .. entry.id,
-              text = "×",
-              style = { fg = fg },
-              on_click = function()
-                hollow.activity.dismiss(entry.id)
-              end,
-            }) or ui.text(""),
-          }, options)
+            ui.text(entry.pane_closed and "pane closed  " or "", { fg = stale }),
+          }
+          if pill_width > 0 then
+            if workspace ~= "" then
+              local colors = shared.workspace_colors(entry.workspace, color_fn)
+              segments[#segments + 1] = ui.text(workspace, {
+                fg = colors.fg,
+                bg = colors.bg,
+                radius = 4,
+                padding = PILL_PADDING,
+              })
+              segments[#segments + 1] =
+                ui.text(string.rep(" ", pill_width - util.utf8_len(workspace)))
+            else
+              segments[#segments + 1] =
+                ui.text(string.rep(" ", pill_width), { padding = PILL_PADDING })
+            end
+          end
+          segments[#segments + 1] = ui.text(
+            "  " .. string.rep(" ", time_width - util.utf8_len(time)) .. time,
+            { fg = not selected and seconds >= 3600 and stale or selected and fg or theme.muted }
+          )
+          segments[#segments + 1] = ui.text("  ")
+          local dismiss_id = "activity:dismiss:" .. entry.id
+          segments[#segments + 1] = entry.pending
+              and ui.action_button({
+                id = dismiss_id,
+                text = "×",
+                theme = theme,
+                state = state,
+                style = { fg = selected and fg or theme.muted },
+                on_click = function()
+                  hollow.activity.dismiss(entry.id)
+                end,
+              })
+            or ui.text(" ", { padding = { left = 4, right = 4 } })
+          content[#content + 1] = ui.row(segments, options)
         end
       end
       if #rows == 0 then
@@ -550,18 +677,15 @@ function ui.activity.open(opts)
         })
       end
       content[#content + 1] = ui.divider(theme.divider)
-      content[#content + 1] = ui.row({
-        ui.text(
-          copy_feedback
-            or (
-              rows[list.nav.index]
-                and rows[list.nav.index].header_category
-                and "Enter/Space toggle   t tasks   c commands   / search   Tab views"
-              or "Enter open   v details   y copy   d dismiss   / search   Tab views"
-            ),
-          { fg = theme.muted }
-        ),
-      })
+      content[#content + 1] = copy_feedback
+          and ui.row({ ui.text(copy_feedback, { fg = theme.notify_levels.success }) })
+        or hint_row(
+          theme,
+          rows[list.nav.index]
+              and rows[list.nav.index].header_category
+              and (view == "history" and "Enter/Space toggle   / search   Tab views" or "Enter/Space toggle   t tasks   c commands   / search   Tab views")
+            or "Enter open   v details   y copy   d dismiss   / search   Tab views"
+        )
       return ui.column(content)
     end,
   })
