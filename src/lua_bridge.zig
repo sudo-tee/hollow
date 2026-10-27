@@ -7762,7 +7762,7 @@ test "overlay segment padding parses and contributes to row insets" {
         \\}
     );
     const api = runtime.context.api;
-    api.get_global(runtime.state, "padding_segments");
+    api.get_field(runtime.state, LUA_GLOBALSINDEX, "padding_segments");
     defer pop(api, runtime.state, 1);
     var segments: [4]bar.Segment = undefined;
     var text: [128]u8 = undefined;
