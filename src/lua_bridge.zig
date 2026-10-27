@@ -5294,11 +5294,15 @@ pub fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]co
 pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_buf: []u8, table_idx: c_int) []bar.Segment {
     var seg_count: usize = 0;
     var text_used: usize = 0;
+    const abs_idx = absoluteIndex(api, state, table_idx);
 
     api.push_nil(state);
-    while (api.next(state, table_idx) != 0) {
+    while (api.next(state, abs_idx) != 0) {
         defer pop(api, state, 1);
-        if (seg_count >= seg_buf.len) break;
+        if (seg_count >= seg_buf.len) {
+            pop(api, state, 1);
+            break;
+        }
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
 
         var seg = bar.Segment{ .text = "" };
@@ -7776,6 +7780,10 @@ test "overlay segment padding parses and contributes to row insets" {
     const padding = bar.rowPadding(parsed);
     try std.testing.expectEqual(@as(f32, 3), padding.top);
     try std.testing.expectEqual(@as(f32, 3), padding.bottom);
+    const stack_top = api.get_top(runtime.state);
+    const truncated = parseSegmentArray(api, runtime.state, segments[0..1], &text, -1);
+    try std.testing.expectEqual(@as(usize, 1), truncated.len);
+    try std.testing.expectEqual(stack_top, api.get_top(runtime.state));
 }
 
 test "HTP bridge forwards receipt timestamp and cwd" {
