@@ -1,19 +1,7 @@
 //! A small, per-exec subreaper. It owns the workload's lifetime independently
 //! of the RPC agent, and has neither a listener nor a persistence contract.
 const std = @import("std");
-pub const c = @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("unistd.h");
-    @cInclude("signal.h");
-    @cInclude("sys/wait.h");
-    @cInclude("sys/prctl.h");
-    @cInclude("sys/signalfd.h");
-    @cInclude("poll.h");
-    @cInclude("fcntl.h");
-    @cInclude("errno.h");
-    @cInclude("stdlib.h");
-});
+pub const c = @import("posix_c");
 
 pub const Launch = struct {
     pipes: [3][2]c_int,

@@ -326,7 +326,7 @@ fn syncPaneRenderState(self: *App, runtime: *GhosttyRuntime, pane: *Pane) !void 
 fn captureCopyModeLine(self: *App, pane: *Pane, history_row: usize) !CopyModeLine {
     const runtime = if (self.ghostty) |*rt| rt else return .{};
     var row_text: [4096]u8 = undefined;
-    var offsets: [4097]u32 = [_]u32{0} ** 4097;
+    var offsets: [4097]u32 = @splat(0);
     var cell_buf: [512]CopyModeCell = undefined;
     var row_cols: usize = 0;
     errdefer for (cell_buf[0..row_cols]) |cell| {
@@ -387,7 +387,7 @@ fn captureCopyModeVisibleLine(
     row_cells: *?*anyopaque,
 ) !CopyModeLine {
     var row_text: [4096]u8 = undefined;
-    var offsets: [4097]u32 = [_]u32{0} ** 4097;
+    var offsets: [4097]u32 = @splat(0);
     var cell_buf: [512]CopyModeCell = undefined;
     var row_cols: usize = 0;
     errdefer for (cell_buf[0..row_cols]) |cell| {
@@ -848,7 +848,7 @@ fn findPromptJumpTarget(source: PromptJumpSource, direction: PromptJumpDir, star
 }
 
 fn captureCopyModeGridRefText(allocator: std.mem.Allocator, runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, raw_cell: u64) ![]u8 {
-    var cps: [16]u32 = [_]u32{0} ** 16;
+    var cps: [16]u32 = @splat(0);
     const grapheme_len = @min(runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0, cps.len);
     var buf: [32]u8 = undefined;
     var len: usize = 0;
@@ -895,7 +895,7 @@ fn colorFromGridRefCell(runtime: *GhosttyRuntime, ref: *const ghostty.GridRef, r
     return switch (runtime.cellContentTag(raw_cell)) {
         .bg_color_rgb => blk: {
             var rgb: ghostty.ColorRgb = undefined;
-            if (runtime.cell_get(raw_cell, @intFromEnum(ghostty.CellDataV.color_rgb), &rgb) == ghostty.success) break :blk rgb;
+            if (runtime.cell_get(raw_cell, @backingInt(ghostty.CellDataV.color_rgb), &rgb) == ghostty.success) break :blk rgb;
             break :blk null;
         },
         else => null,

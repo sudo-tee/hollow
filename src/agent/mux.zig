@@ -5,21 +5,7 @@ const p = @import("mux_protocol.zig");
 const pty = @import("pty.zig");
 const pty_readers = @import("pty_readers.zig");
 var stopping: std.atomic.Value(bool) = .init(false);
-const c = @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("pty.h");
-    @cInclude("poll.h");
-    @cInclude("signal.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/prctl.h");
-    @cInclude("sys/wait.h");
-    @cInclude("sys/resource.h");
-    @cInclude("errno.h");
-    @cInclude("stdlib.h");
-});
+const c = @import("posix_c");
 
 const Counters = struct {
     polls: u64 = 0,
@@ -84,7 +70,7 @@ const Stream = struct {
 /// Priority turns preserve the background cursor. Frames never exceed max_data.
 const Scheduler = struct {
     cursor: usize = 0,
-    deficit: [p.max_streams]usize = .{0} ** p.max_streams,
+    deficit: [p.max_streams]usize = @splat(0),
     focus_pending: bool = true,
     priority_slot: ?usize = null,
 
@@ -134,7 +120,7 @@ const Scheduler = struct {
 const Agent = struct {
     a: std.mem.Allocator,
     io: std.Io,
-    streams: [p.max_streams]?Stream = .{null} ** p.max_streams,
+    streams: [p.max_streams]?Stream = @splat(null),
     last_id: u32 = 0,
     negotiated: bool = false,
     focused: ?usize = null,
@@ -365,7 +351,7 @@ const Agent = struct {
     fn stageRings(self: *Agent) void {
         const set = self.readers.?;
         const focus = set.focused.load(.monotonic);
-        var ready: [p.max_streams]bool = .{false} ** p.max_streams;
+        var ready: [p.max_streams]bool = @splat(false);
         for (&set.slots, 0..) |*slot, i| {
             ready[i] = slot.attached.load(.acquire) and !slot.detach.load(.acquire) and slot.pending() > 0;
         }
@@ -625,7 +611,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io) !void {
             const frame = (try reader.next()) orelse break;
             try agent.dispatch(frame.header, frame.payload);
         }
-        var ready: [p.max_streams]bool = .{false} ** p.max_streams;
+        var ready: [p.max_streams]bool = @splat(false);
         for (&agent.streams, 0..) |*entry, i| if (entry.*) |*s| {
             if (s.attached) {
                 const set = agent.readers.?;
@@ -758,7 +744,7 @@ fn nowNs() i64 {
 
 test "byte scheduler bounds focused preference and guarantees background progress" {
     var scheduler: Scheduler = .{};
-    var ready = [_]bool{false} ** p.max_streams;
+    var ready = @as([p.max_streams]bool, @splat(false));
     ready[0] = true;
     ready[1] = true;
     const expected = [_]usize{ 0, 1, 0, 1, 0, 1 };
@@ -772,7 +758,7 @@ test "byte scheduler bounds focused preference and guarantees background progres
 
 test "scheduler accounts partial reads by bytes and drops idle deficit" {
     var scheduler: Scheduler = .{};
-    var ready = [_]bool{false} ** p.max_streams;
+    var ready = @as([p.max_streams]bool, @splat(false));
     ready[0] = true;
     ready[1] = true;
     try std.testing.expectEqual(@as(usize, 0), scheduler.choose(ready, null).?);
@@ -785,8 +771,8 @@ test "scheduler accounts partial reads by bytes and drops idle deficit" {
 
 test "focus-first turns preserve every background position within bounded round" {
     var scheduler: Scheduler = .{};
-    const ready = [_]bool{true} ** p.max_streams;
-    var counts = [_]usize{0} ** p.max_streams;
+    const ready = @as([p.max_streams]bool, @splat(true));
+    var counts = @as([p.max_streams]usize, @splat(0));
     for (0..2 * (p.max_streams - 1)) |turn| {
         const i = scheduler.choose(ready, 17).?;
         if (turn % 2 == 0) try std.testing.expectEqual(@as(usize, 17), i);
@@ -798,7 +784,7 @@ test "focus-first turns preserve every background position within bounded round"
 
 test "partial focused reads do not move background cursor or spend its deficit" {
     var scheduler: Scheduler = .{};
-    var ready = [_]bool{false} ** p.max_streams;
+    var ready = @as([p.max_streams]bool, @splat(false));
     ready[0] = true;
     ready[31] = true;
     try std.testing.expectEqual(@as(usize, 31), scheduler.choose(ready, 31).?);
@@ -814,7 +800,7 @@ test "partial focused reads do not move background cursor or spend its deficit" 
 
 test "focus-only and no-ready scheduling remain live without background work" {
     var scheduler: Scheduler = .{};
-    var ready = [_]bool{false} ** p.max_streams;
+    var ready = @as([p.max_streams]bool, @splat(false));
     try std.testing.expect(scheduler.choose(ready, 31) == null);
     ready[31] = true;
     for (0..8) |_| {
@@ -832,7 +818,7 @@ test "transport flush preserves staged control frame across EAGAIN and partial w
     defer _ = c.close(fds[1]);
     try std.testing.expectEqual(@as(c_int, 4096), c.fcntl(fds[1], c.F_SETPIPE_SZ, @as(c_int, 4096)));
 
-    var fill: [4096]u8 = .{0xaa} ** 4096;
+    var fill: [4096]u8 = @splat(0xaa);
     while (true) {
         const n = c.write(fds[1], &fill, fill.len);
         if (n < 0) {
@@ -881,7 +867,7 @@ test "transport flush preserves staged control frame across EAGAIN and partial w
 test "reader rings rotate full frames across staging buffers" {
     var set: pty_readers.Set = .{};
     var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .readers = &set };
-    var rings: [3][pty_readers.ring_size]u8 = .{.{0} ** pty_readers.ring_size} ** 3;
+    var rings: [3][pty_readers.ring_size]u8 = @splat(@splat(0));
     for (&rings, 0..) |*ring, i| {
         set.slots[i].ring = ring;
         set.slots[i].stream_id = @intCast(i + 1);
@@ -901,7 +887,7 @@ test "reader rings rotate full frames across staging buffers" {
 test "focused reader flood alternates with rotating background frames" {
     var set: pty_readers.Set = .{};
     var agent: Agent = .{ .a = std.testing.allocator, .io = undefined, .readers = &set };
-    var rings: [3][pty_readers.ring_size]u8 = .{.{0} ** pty_readers.ring_size} ** 3;
+    var rings: [3][pty_readers.ring_size]u8 = @splat(@splat(0));
     for (&rings, 0..) |*ring, i| {
         set.slots[i].ring = ring;
         set.slots[i].stream_id = @intCast(i + 1);

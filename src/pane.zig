@@ -179,7 +179,7 @@ pub const Pane = struct {
     viewport_scroll_pending: bool = false,
     read_buf: *[PTY_READ_BUFFER_SIZE]u8 = &shared_pty_read_buf,
     logged_first_pty_read: bool = false,
-    pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = [_]u8{0} ** PTY_PENDING_SEQUENCE_MAX,
+    pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = @splat(0),
     pty_pending_len: usize = 0,
     pty_sanitize_buf: *[PTY_SANITIZE_BUFFER_SIZE]u8 = &shared_pty_sanitize_buf,
     /// Shared bounded capture for OSC 9, OSC 99, and OSC 777 notifications.
@@ -189,7 +189,7 @@ pub const Pane = struct {
     osc99_buf: std.ArrayListUnmanaged(u8) = .empty,
     notification_osc_kind: NotificationOscKind = .osc99,
     osc99_notifications: osc99.State = .{},
-    osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = [_]u8{0} ** HTP_OSC_PREFIX.len,
+    osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = @splat(0),
     osc_prefix_len: usize = 0,
     osc1337_active: bool = false,
     osc1337_st_pending: bool = false,
@@ -388,7 +388,7 @@ pub const Pane = struct {
         const mouse_event = try runtime.createMouseEvent();
         errdefer runtime.freeMouseEvent(mouse_event);
 
-        const shell = try self.allocator.dupeZ(u8, try cfg.shellForDomain(domain_name));
+        const shell = try self.allocator.dupeSentinel(u8, try cfg.shellForDomain(domain_name), 0);
         defer self.allocator.free(shell);
 
         // Build environment block for HTP
@@ -681,7 +681,7 @@ pub const Pane = struct {
                 runtime.syncMouseEncoder(self.mouse_encoder, self.terminal);
                 // Log mouse tracking state changes for diagnostics.
                 var mouse_tracking: u32 = 0;
-                const mt_result = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
+                const mt_result = runtime.terminal_get(self.terminal, @backingInt(ghostty.TerminalData.mouse_tracking), &mouse_tracking);
                 if (mouse_tracking != self.last_mouse_tracking) {
                     std.log.info("pane mouse_tracking changed {d} -> {d} (get_result={d})", .{ self.last_mouse_tracking, mouse_tracking, mt_result });
                     self.last_mouse_tracking = mouse_tracking;
@@ -693,7 +693,7 @@ pub const Pane = struct {
 
                 {
                     var active_screen: u32 = 0;
-                    _ = runtime.terminal_get(self.terminal, @intFromEnum(ghostty.TerminalData.active_screen), &active_screen);
+                    _ = runtime.terminal_get(self.terminal, @backingInt(ghostty.TerminalData.active_screen), &active_screen);
                     self.active_screen = active_screen;
                 }
 
@@ -1934,7 +1934,7 @@ test "background PTY parses blocked and error after rendering helpers are releas
     try Wait.poll(&pane, &runtime, .cleared);
     pane.sendText("\n");
     try Wait.poll(&pane, &runtime, .{ .state = .failure });
-    try std.testing.expectEqual(@intFromEnum(ghostty.TerminalScreen.alternate), pane.active_screen);
+    try std.testing.expectEqual(@backingInt(ghostty.TerminalScreen.alternate), pane.active_screen);
     try std.testing.expect(!pane.hasRenderHelpers());
     try std.testing.expectEqual(@as(usize, 0), pane.boot_output.items.len);
 }

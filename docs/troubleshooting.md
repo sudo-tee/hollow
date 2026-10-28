@@ -10,15 +10,15 @@ For deeper platform-specific notes see
 
 ## Build
 
-### `zig version` is not `0.16.0`
+### `zig version` is not `0.17.0`
 
-Zig `0.16.x` is not yet compatible.
+Zig `0.16.x` is no longer compatible with the pinned Ghostty dependency.
 The `scripts/check-zig-version.sh` script will refuse to build with
 any other version.
 
 ```bash
 zig version
-# 0.16.0
+# 0.17.0
 ```
 
 Use `asdf install` or `mise install` to pick up the pinned toolchain

@@ -110,7 +110,7 @@ pub fn loadFaceFromPath(allocator: std.mem.Allocator, lib: ft.FT_Library, path: 
 }
 
 pub fn loadFaceFromPathIndex(allocator: std.mem.Allocator, lib: ft.FT_Library, path: []const u8, face_index: c_long, size_px: f32) !ft.FT_Face {
-    const zpath = try allocator.dupeZ(u8, path);
+    const zpath = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(zpath);
 
     var face: ft.FT_Face = null;
@@ -269,7 +269,7 @@ fn discoverWindowsFontFromFilesystem(allocator: std.mem.Allocator, name: []const
 fn matchWindowsFontWithDirectWrite(allocator: std.mem.Allocator, name: []const u8, style: RequestedFontStyle) !?FontDiscoveryMatch {
     if (builtin.os.tag != .windows) return null;
 
-    const family_z = try allocator.dupeZ(u8, name);
+    const family_z = try allocator.dupeSentinel(u8, name, 0);
     defer allocator.free(family_z);
 
     var match: dwrite.HollowDWriteFontMatch = std.mem.zeroes(dwrite.HollowDWriteFontMatch);
@@ -526,7 +526,7 @@ fn collectFontFaceDetailsFromFile(
     file_path: []const u8,
     seen: *SeenFontFamilyDetails,
 ) !void {
-    const zpath = try allocator.dupeZ(u8, file_path);
+    const zpath = try allocator.dupeSentinel(u8, file_path, 0);
     defer allocator.free(zpath);
 
     var probe_face: ft.FT_Face = null;
@@ -549,7 +549,7 @@ fn collectFontFaceDetailsFromFile(
 }
 
 fn collectFontFamiliesFromFile(allocator: std.mem.Allocator, lib: ft.FT_Library, file_path: []const u8, seen: *SeenFontFamilies) !void {
-    const zpath = try allocator.dupeZ(u8, file_path);
+    const zpath = try allocator.dupeSentinel(u8, file_path, 0);
     defer allocator.free(zpath);
 
     var probe_face: ft.FT_Face = null;
@@ -579,7 +579,7 @@ fn scoreFontFile(
     name: []const u8,
     style: RequestedFontStyle,
 ) !?FontDiscoveryMatch {
-    const zpath = try allocator.dupeZ(u8, file_path);
+    const zpath = try allocator.dupeSentinel(u8, file_path, 0);
     defer allocator.free(zpath);
 
     var probe_face: ft.FT_Face = null;

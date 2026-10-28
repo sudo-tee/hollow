@@ -3,24 +3,7 @@
 const std = @import("std");
 const wire = @import("pty_protocol.zig");
 const shell_integration = @import("shell_integration");
-const c = @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("errno.h");
-    @cInclude("fcntl.h");
-    @cInclude("poll.h");
-    @cInclude("pty.h");
-    @cInclude("pwd.h");
-    @cInclude("signal.h");
-    @cInclude("stdlib.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/signalfd.h");
-    @cInclude("sys/uio.h");
-    @cInclude("sys/wait.h");
-    @cInclude("termios.h");
-    @cInclude("time.h");
-    @cInclude("unistd.h");
-});
+const c = @import("posix_c");
 
 const read_chunk = 64 * 1024;
 const pending_limit = 256 * 1024;
@@ -81,9 +64,9 @@ fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepar
     for (spawn.env) |entry| {
         if (entry.key.len == 0 or std.mem.indexOfScalar(u8, entry.key, '=') != null) return error.InvalidEnv;
         const value = if (spawn.path_style == .wsl and isPathEnvironmentVariable(entry.key)) try windowsPathToWsl(arena, entry.value) else entry.value;
-        if (c.setenv((try arena.dupeZ(u8, entry.key)).ptr, (try arena.dupeZ(u8, value)).ptr, 1) != 0) return error.SetEnvFailed;
+        if (c.setenv((try arena.dupeSentinel(u8, entry.key, 0)).ptr, (try arena.dupeSentinel(u8, value, 0)).ptr, 1) != 0) return error.SetEnvFailed;
     }
-    const cwd: ?[:0]const u8 = if (spawn.cwd) |dir| try arena.dupeZ(u8, if (spawn.path_style == .wsl) try windowsPathToWsl(arena, dir) else dir) else null;
+    const cwd: ?[:0]const u8 = if (spawn.cwd) |dir| try arena.dupeSentinel(u8, if (spawn.path_style == .wsl) try windowsPathToWsl(arena, dir) else dir, 0) else null;
 
     shell_integration.io.init(io, libcEnviron());
     const shell = if (spawn.argv.len > 0) spawn.argv[0] else try defaultShellPath(arena);
@@ -94,10 +77,10 @@ fn prepareSpawn(arena: std.mem.Allocator, io: std.Io, spawn: wire.Spawn) !Prepar
     if (spawn.one_shot) {
         if (!isPosixShell(shell)) return error.UnsupportedBackgroundShell;
         var args: std.ArrayList(?[*:0]const u8) = .empty;
-        if (spawn.argv.len == 0) try args.append(arena, (try arena.dupeZ(u8, shell)).ptr);
-        for (spawn.argv) |arg| try args.append(arena, (try arena.dupeZ(u8, arg)).ptr);
+        if (spawn.argv.len == 0) try args.append(arena, (try arena.dupeSentinel(u8, shell, 0)).ptr);
+        for (spawn.argv) |arg| try args.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
         try args.append(arena, if (spawn.user_shell) "-ic" else "-c");
-        try args.append(arena, (try arena.dupeZ(u8, spawn.command orelse return error.InvalidCommand)).ptr);
+        try args.append(arena, (try arena.dupeSentinel(u8, spawn.command orelse return error.InvalidCommand, 0)).ptr);
         return .{ .cwd = cwd, .argv = try args.toOwnedSliceSentinel(arena, null) };
     }
     const argv = try buildShellArgv(arena, spawn.argv, shell, spawn.command, spawn.close_on_exit, bundle);
@@ -289,15 +272,15 @@ fn execPrepared(cwd: ?[:0]const u8, argv: [:null]const ?[*:0]const u8) !void {
 fn buildShellArgv(arena: std.mem.Allocator, input: []const []const u8, shell: []const u8, command: ?[]const u8, close_on_exit: bool, bundle: ?shell_integration.Bundle) ![:null]const ?[*:0]const u8 {
     var argv: std.ArrayList(?[*:0]const u8) = .empty;
     if (input.len == 0) {
-        try argv.append(arena, (try arena.dupeZ(u8, shell)).ptr);
-    } else for (input) |arg| try argv.append(arena, (try arena.dupeZ(u8, arg)).ptr);
+        try argv.append(arena, (try arena.dupeSentinel(u8, shell, 0)).ptr);
+    } else for (input) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
 
     if (bundle) |value| {
-        for (try shell_integration.argv(arena, value, command, close_on_exit)) |arg| try argv.append(arena, (try arena.dupeZ(u8, arg)).ptr);
+        for (try shell_integration.argv(arena, value, command, close_on_exit)) |arg| try argv.append(arena, (try arena.dupeSentinel(u8, arg, 0)).ptr);
     } else if (command) |text| {
         const trimmed = std.mem.trimEnd(u8, text, "\r\n");
         if (isPosixShell(shell)) try argv.append(arena, "-lc");
-        try argv.append(arena, if (close_on_exit) try std.fmt.allocPrintSentinel(arena, "{s}; exit", .{trimmed}, 0) else try arena.dupeZ(u8, trimmed));
+        try argv.append(arena, if (close_on_exit) try std.fmt.allocPrintSentinel(arena, "{s}; exit", .{trimmed}, 0) else try arena.dupeSentinel(u8, trimmed, 0));
     } else if (input.len == 0 and isPosixShell(shell)) {
         try argv.append(arena, "-i");
     }

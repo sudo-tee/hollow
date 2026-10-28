@@ -89,19 +89,19 @@ pub fn schema(comptime T: type, writer: *std.Io.Writer) anyerror!void {
         },
         .@"struct" => |info| {
             try writer.writeAll("{\"type\":\"object\",\"properties\":{");
-            inline for (info.fields, 0..) |field, i| {
+            inline for (info.field_names, info.field_types, 0..) |field, Field, i| {
                 if (i != 0) try writer.writeByte(',');
-                try std.json.Stringify.value(field.name, .{}, writer);
+                try std.json.Stringify.value(field, .{}, writer);
                 try writer.writeByte(':');
-                try schema(field.type, writer);
+                try schema(Field, writer);
             }
             try writer.writeAll("},\"required\":[");
             var first = true;
-            inline for (info.fields) |field| {
-                if (field.default_value_ptr == null) {
+            inline for (info.field_names, info.field_attrs) |field, attrs| {
+                if (attrs.default_value_ptr == null) {
                     if (!first) try writer.writeByte(',');
                     first = false;
-                    try std.json.Stringify.value(field.name, .{}, writer);
+                    try std.json.Stringify.value(field, .{}, writer);
                 }
             }
             try writer.writeAll("]}");

@@ -225,8 +225,8 @@ pub const FtRenderer = struct {
 
     // Prepared run cache
     prepared_cache: std.HashMap(PreparedKey, PreparedCacheEntry, PreparedCacheContext, std.hash_map.default_max_load_percentage),
-    recent_prepared: [RECENT_PREPARED_CACHE_LEN]?RecentPreparedEntry = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN,
-    kitty_textures: [KITTY_TEXTURE_CACHE_LEN]?KittyTexture = [_]?KittyTexture{null} ** KITTY_TEXTURE_CACHE_LEN,
+    recent_prepared: [RECENT_PREPARED_CACHE_LEN]?RecentPreparedEntry = @splat(null),
+    kitty_textures: [KITTY_TEXTURE_CACHE_LEN]?KittyTexture = @splat(null),
 
     // Metrics (all in physical pixels)
     cell_w: f32,
@@ -247,7 +247,7 @@ pub const FtRenderer = struct {
     italic_embolden: ?f32,
     bold_italic_embolden: ?f32,
 
-    glyph_buf: [32]u8 = [_]u8{0} ** 32,
+    glyph_buf: [32]u8 = @splat(0),
     grapheme_buf: []u8 = &.{},
     logged_first_draw: bool = false,
     logged_first_content: bool = false,
@@ -258,7 +258,7 @@ pub const FtRenderer = struct {
     /// shaping and the glyph_cache hashmap on warm frames.
     /// null = not yet populated.  Atlas UVs are stable once placed, so entries
     /// never need invalidation (except on atlas eviction via resetAtlasIfNeeded).
-    ascii_glyphs: [4][256]?Glyph = [_][256]?Glyph{[_]?Glyph{null} ** 256} ** 4,
+    ascii_glyphs: [4][256]?Glyph = @splat(@splat(null)),
 
     /// Reusable ligature run buffer — avoids a heap alloc+free every frame.
     /// Grown on demand via realloc; never shrunk.
@@ -271,7 +271,7 @@ pub const FtRenderer = struct {
     prepared_glyphs: std.ArrayListUnmanaged(PreparedGlyph) = .empty,
     shaped_runs: std.ArrayListUnmanaged(ShapedRunEntry) = .empty,
     shaped_run_read_idx: usize = 0,
-    style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = [_]?CachedStyleInfo{null} ** STYLE_CACHE_SIZE,
+    style_cache: [STYLE_CACHE_SIZE]?CachedStyleInfo = @splat(null),
     render_colors_scratch: ghostty.RenderStateColors = undefined,
     offscreen_pass_scratch: c.sg_pass = std.mem.zeroes(c.sg_pass),
 
@@ -534,7 +534,7 @@ pub const FtRenderer = struct {
 
         // Allocate additional stream buffers lazily when multiple panes upload
         // glyphs in the same frame. Each buffer may only be updated once/frame.
-        var glyph_vbufs = [_]c.sg_buffer{.{ .id = 0 }} ** GLYPH_VBUF_RING_LEN;
+        var glyph_vbufs = @as([GLYPH_VBUF_RING_LEN]c.sg_buffer, @splat(.{ .id = 0 }));
         glyph_vbufs[0] = glyph_batch.createGlyphVertexBuffer(0);
 
         // Static index buffer: 6 indices per quad (0,1,2, 0,2,3), pre-built

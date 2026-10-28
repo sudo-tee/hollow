@@ -2,7 +2,6 @@
 ///
 /// These are pure byte-level utilities with no dependencies on FreeType,
 /// HarfBuzz, or sokol, so they can be unit-tested in isolation.
-
 const std = @import("std");
 
 /// Encode a single codepoint into `buf` as UTF-8.

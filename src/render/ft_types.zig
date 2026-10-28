@@ -299,7 +299,7 @@ pub const GlyphCacheContext = struct {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(std.mem.asBytes(&key.glyph_index));
         hasher.update(std.mem.asBytes(&key.face_index));
-        const mode: u8 = @intFromEnum(key.raster_mode);
+        const mode: u8 = @backingInt(key.raster_mode);
         hasher.update(std.mem.asBytes(&mode));
         return hasher.final();
     }
@@ -338,7 +338,7 @@ pub const PreparedCacheContext = struct {
         hasher.update(std.mem.asBytes(&key.face_idx));
         const liga: u8 = @intFromBool(key.ligatures);
         hasher.update(std.mem.asBytes(&liga));
-        const mode: u8 = @intFromEnum(key.raster_mode);
+        const mode: u8 = @backingInt(key.raster_mode);
         hasher.update(std.mem.asBytes(&mode));
         return hasher.final();
     }

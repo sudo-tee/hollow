@@ -29,7 +29,7 @@ pub const Header = struct {
 
     pub fn encode(self: Header) [header_len]u8 {
         var out: [header_len]u8 = undefined;
-        out[0] = @intFromEnum(self.kind);
+        out[0] = @backingInt(self.kind);
         std.mem.writeInt(u32, out[1..5], self.stream, .little);
         std.mem.writeInt(u32, out[5..9], self.len, .little);
         return out;
@@ -38,7 +38,7 @@ pub const Header = struct {
     pub fn decode(bytes: *const [header_len]u8) !Header {
         const len = std.mem.readInt(u32, bytes[5..9], .little);
         if (len > max_payload) return error.PayloadTooLarge;
-        return .{ .kind = @enumFromInt(bytes[0]), .stream = std.mem.readInt(u32, bytes[1..5], .little), .len = len };
+        return .{ .kind = @fromBackingInt(@intCast(bytes[0])), .stream = std.mem.readInt(u32, bytes[1..5], .little), .len = len };
     }
 };
 

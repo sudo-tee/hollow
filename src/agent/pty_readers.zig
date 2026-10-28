@@ -13,14 +13,7 @@
 //! until the owner grants more.
 const std = @import("std");
 const p = @import("mux_protocol.zig");
-const c = @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    @cInclude("unistd.h");
-    @cInclude("errno.h");
-    @cInclude("sys/epoll.h");
-    @cInclude("sys/eventfd.h");
-    @cInclude("sys/prctl.h");
-});
+const c = @import("posix_c");
 
 pub const max_readers = 4;
 pub const ring_size = p.window;
@@ -89,7 +82,7 @@ const Reader = struct {
 pub const Set = struct {
     readers: [max_readers]Reader = undefined,
     count: usize = 0,
-    slots: [p.max_streams]Slot = .{Slot{}} ** p.max_streams,
+    slots: [p.max_streams]Slot = @splat(Slot{}),
     /// Owner wakeup: written only when the owner announced it is about to
     /// sleep, so a busy owner costs readers no syscalls.
     wake_fd: c_int = -1,
@@ -135,7 +128,7 @@ pub const Set = struct {
         for (self.readers[0..self.count]) |*reader| {
             if (reader.thread) |thread| thread.join();
             reader.thread = null;
-            inline for (std.meta.fields(Counters)) |field| @field(self.final, field.name) += @field(reader.counters, field.name);
+            inline for (@typeInfo(Counters).@"struct".field_names) |field| @field(self.final, field) += @field(reader.counters, field);
             if (reader.epoll_fd >= 0) _ = c.close(reader.epoll_fd);
             if (reader.command_fd >= 0) _ = c.close(reader.command_fd);
         }

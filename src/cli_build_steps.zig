@@ -8,6 +8,7 @@ pub fn executable(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
         .link_libc = true,
     });
     if (target.result.os.tag == .windows) root.linkSystemLibrary("ws2_32", .{});
+    @import("c_build.zig").addPosix(b, root, target, optimize);
     return b.addExecutable(.{
         .name = "hollow-cli",
         .root_module = root,
@@ -27,7 +28,9 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     b.step("cli", "Build standalone hollow-cli for the selected target").dependOn(&install.step);
     b.getInstallStep().dependOn(&install.step);
     const all = b.step("cli-all", "Package x86_64 and aarch64 Linux musl CLIs");
-    const manifest = b.addSystemCommand(&.{ "python3", b.path("scripts/agent_manifest.py").getPath(b), "--name", "hollow-cli" });
+    const manifest = b.addSystemCommand(&.{"python3"});
+    manifest.addFileArg(b.path("scripts/agent_manifest.py"));
+    manifest.addArgs(&.{ "--name", "hollow-cli" });
     const sums = manifest.addOutputFileArg("SHA256SUMS");
     inline for (.{ std.Target.Cpu.Arch.x86_64, std.Target.Cpu.Arch.aarch64 }) |arch| {
         const guest = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
@@ -47,6 +50,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .link_libc = true,
     }) });
     const test_step = b.step("test-cli", "Run GUI-independent shared CLI, transport, and contract tests");
+    @import("c_build.zig").addPosix(b, tests.root_module, b.graph.host, .Debug);
     test_step.dependOn(&b.addRunArtifact(tests).step);
     if (b.graph.host.result.os.tag == .linux) {
         // Exercise the main build's binary module as well as the agent's
@@ -64,10 +68,12 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
             .link_libc = true,
         });
         root.addOptions("build_options", options);
+        @import("c_build.zig").addPosix(b, root, b.graph.host, .Debug);
         root.addImport("native_cli_blob", embeddedModule(b, b.graph.host, optimize));
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = root })).step);
     }
-    const smoke = b.addSystemCommand(&.{ "python3", b.path("scripts/test_zig_cli.py").getPath(b) });
+    const smoke = b.addSystemCommand(&.{"python3"});
+    smoke.addFileArg(b.path("scripts/test_zig_cli.py"));
     smoke.addArtifactArg(executable(b, b.graph.host, optimize));
     smoke.has_side_effects = true;
     test_step.dependOn(&smoke.step);

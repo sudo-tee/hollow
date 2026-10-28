@@ -17,8 +17,8 @@ pub const Level = enum {
     }
 
     pub fn parse(text: []const u8) ?Level {
-        inline for (std.meta.fields(Level)) |field| {
-            if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
+        inline for (@typeInfo(Level).@"enum".field_names) |field| {
+            if (std.mem.eql(u8, text, field)) return @field(Level, field);
         }
         return null;
     }

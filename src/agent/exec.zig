@@ -143,12 +143,12 @@ pub fn spawn(id: u64, opts: Options, now: u64) !Job {
     const argv = try a.alloc(?[*:0]const u8, opts.argv.len + 1);
     for (opts.argv, 0..) |arg, i| {
         if (!valid(arg)) return error.InvalidArgv;
-        argv[i] = (try a.dupeZ(u8, arg)).ptr;
+        argv[i] = (try a.dupeSentinel(u8, arg, 0)).ptr;
     }
     argv[opts.argv.len] = null;
     const cwd = if (opts.cwd) |dir| blk: {
         if (!valid(dir) or dir.len == 0 or dir.len > 4096) return error.InvalidPath;
-        break :blk try a.dupeZ(u8, dir);
+        break :blk try a.dupeSentinel(u8, dir, 0);
     } else null;
 
     var env_map: std.StringHashMap([]const u8) = .init(a);
@@ -175,7 +175,7 @@ pub fn spawn(id: u64, opts: Options, now: u64) !Job {
         var paths = std.mem.splitScalar(u8, path, ':');
         while (paths.next()) |dir| {
             if (candidates.items.len == 256) return error.InvalidArgv;
-            const candidate = if (dir.len == 0) try a.dupeZ(u8, opts.argv[0]) else try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, opts.argv[0] }, 0);
+            const candidate = if (dir.len == 0) try a.dupeSentinel(u8, opts.argv[0], 0) else try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, opts.argv[0] }, 0);
             try candidates.append(a, candidate.ptr);
         }
     }

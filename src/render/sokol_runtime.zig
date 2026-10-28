@@ -160,8 +160,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
 const WinLongPtr = if (builtin.os.tag == .windows) win32.LONG_PTR else isize;
 const WinHwnd = if (builtin.os.tag == .windows) win32.HWND else *anyopaque;
 
-var g_title_buf: [256]u8 = [_]u8{0} ** 256;
-var g_last_window_title: [256]u8 = [_]u8{0} ** 256;
+var g_title_buf: [256]u8 = @splat(0);
+var g_last_window_title: [256]u8 = @splat(0);
 var g_renderer_ready = false;
 var g_logged_first_frame = false;
 var g_frame_index: usize = 0;
@@ -210,7 +210,7 @@ var g_bottom_bar_cache: BarCache = .{};
 var g_overlay_hit_cache: struct {
     enabled: bool = false,
     hit_count: usize = 0,
-    hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = [_]CachedOverlayHitRegion{.{}} ** MAX_OVERLAY_HIT_REGIONS,
+    hits: [MAX_OVERLAY_HIT_REGIONS]CachedOverlayHitRegion = @splat(.{}),
 } = .{};
 var g_overlay_hit_id_pool: [MAX_OVERLAY_HIT_REGIONS][64]u8 = undefined;
 // Segment IDs are parsed into a scratch buffer reused for every row. Hit
@@ -221,7 +221,7 @@ var g_overlay_hovered_id: ?[]const u8 = null;
 var g_overlay_render_stack_index: usize = 0;
 var g_overlay_scrollbar_cache: struct {
     count: usize = 0,
-    scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = [_]CachedOverlayScrollbar{.{}} ** MAX_OVERLAY_SCROLLBARS,
+    scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = @splat(.{}),
 } = .{};
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
@@ -422,8 +422,8 @@ const PaneCacheEntry = struct {
     /// so hashes survive scrolling and only rows with genuinely changed content
     /// are re-rendered.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
-    row_map_keys: [ROW_MAP_CAP]u64 = [_]u64{ROW_MAP_EMPTY} ** ROW_MAP_CAP,
-    row_map_vals: [ROW_MAP_CAP]u64 = [_]u64{0} ** ROW_MAP_CAP,
+    row_map_keys: [ROW_MAP_CAP]u64 = @splat(ROW_MAP_EMPTY),
+    row_map_vals: [ROW_MAP_CAP]u64 = @splat(0),
     /// Cursor row from the *previous* rendered frame (0-based).
     /// Used to force-clear old cursor pixels when the cursor moves to a new row
     /// and ghostty does not mark the old cursor row as dirty (content unchanged).
@@ -444,7 +444,7 @@ const PaneCacheEntry = struct {
     has_cursor_state: bool = false,
     last_selection_range: ?selection.Range = null,
 };
-var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = [_]?PaneCacheEntry{null} ** MAX_PANE_CACHES;
+var g_pane_caches: [MAX_PANE_CACHES]?PaneCacheEntry = @splat(null);
 
 /// Find or create a PaneCacheEntry for the given pane at the given pixel dimensions.
 /// If the existing cache is the wrong size it is destroyed and recreated.
@@ -678,23 +678,23 @@ const BarLayout = struct {
 const BarSegmentView = struct {
     segment: bar.Segment = .{ .text = "" },
     style: BarStyle = .{},
-    segments: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
+    segments: [16]bar.Segment = @splat(.{ .text = "" }),
     segments_len: usize = 0,
-    text_storage: [512]u8 = [_]u8{0} ** 512,
-    id_storage: [128]u8 = [_]u8{0} ** 128,
-    segments_text_storage: [1024]u8 = [_]u8{0} ** 1024,
-    segments_id_storage: [16][128]u8 = [_][128]u8{[_]u8{0} ** 128} ** 16,
+    text_storage: [512]u8 = @splat(0),
+    id_storage: [128]u8 = @splat(0),
+    segments_text_storage: [1024]u8 = @splat(0),
+    segments_id_storage: [16][128]u8 = @splat(@splat(0)),
 };
 
 const BarTabView = struct {
     segment: bar.Segment = .{ .text = "" },
     style: BarStyle = .{},
-    segments: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
+    segments: [16]bar.Segment = @splat(.{ .text = "" }),
     segments_len: usize = 0,
-    text_storage: [512]u8 = [_]u8{0} ** 512,
-    id_storage: [128]u8 = [_]u8{0} ** 128,
-    segments_text_storage: [1024]u8 = [_]u8{0} ** 1024,
-    segments_id_storage: [16][128]u8 = [_][128]u8{[_]u8{0} ** 128} ** 16,
+    text_storage: [512]u8 = @splat(0),
+    id_storage: [128]u8 = @splat(0),
+    segments_text_storage: [1024]u8 = @splat(0),
+    segments_id_storage: [16][128]u8 = @splat(@splat(0)),
 };
 
 const BarItemKind = enum {
@@ -707,7 +707,7 @@ const BarTabsView = struct {
     fit_content: bool = false,
     max_width: f32 = 0,
     style: BarStyle = .{},
-    tabs: [16]BarTabView = [_]BarTabView{.{}} ** 16,
+    tabs: [16]BarTabView = @splat(.{}),
     len: usize = 0,
 };
 
@@ -720,16 +720,16 @@ const BarItemView = struct {
 const BarWidgetView = struct {
     layout: BarLayout = .{},
     style: BarStyle = .{},
-    items: [32]BarItemView = [_]BarItemView{.{}} ** 32,
+    items: [32]BarItemView = @splat(.{}),
     len: usize = 0,
 };
 
 const BarWidgetScratch = struct {
     widget: BarWidgetView = .{},
-    text_buf: [2048]u8 = [_]u8{0} ** 2048,
-    seg_buf_16: [16]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 16,
-    seg_text_buf_1024: [1024]u8 = [_]u8{0} ** 1024,
-    seg_buf_32: [32]bar.Segment = [_]bar.Segment{.{ .text = "" }} ** 32,
+    text_buf: [2048]u8 = @splat(0),
+    seg_buf_16: [16]bar.Segment = @splat(.{ .text = "" }),
+    seg_text_buf_1024: [1024]u8 = @splat(0),
+    seg_buf_32: [32]bar.Segment = @splat(.{ .text = "" }),
 };
 
 threadlocal var g_bar_widget_scratch: BarWidgetScratch = .{};
@@ -769,20 +769,20 @@ fn barBoxField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) 
     var box = BarBox{};
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return box;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) return box;
     const box_idx = absoluteIndex(api, state, -1);
 
     api.get_field(state, box_idx, "top");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) box.top = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) box.top = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     api.get_field(state, box_idx, "right");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) box.right = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) box.right = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     api.get_field(state, box_idx, "bottom");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) box.bottom = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) box.bottom = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     api.get_field(state, box_idx, "left");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) box.left = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) box.left = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     return box;
 }
@@ -791,7 +791,7 @@ fn barStyleField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8
     var style = BarStyle{};
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return style;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) return style;
     const style_idx = absoluteIndex(api, state, -1);
     style.fg = lua_mod.parseColorField(api, state, style_idx, "fg");
     style.bg = lua_mod.parseColorField(api, state, style_idx, "bg");
@@ -801,10 +801,10 @@ fn barStyleField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8
     style.close_hover_fg = lua_mod.parseColorField(api, state, style_idx, "close_hover_fg");
     style.close_hover_bg = lua_mod.parseColorField(api, state, style_idx, "close_hover_bg");
     api.get_field(state, style_idx, "radius");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) style.radius = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) style.radius = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     api.get_field(state, style_idx, "close_radius");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) style.close_radius = @floatCast(api.to_number(state, -1));
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) style.close_radius = @floatCast(api.to_number(state, -1));
     pop(api, state, 1);
     api.get_field(state, style_idx, "bold");
     style.bold = api.to_boolean(state, -1) != 0;
@@ -887,7 +887,7 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
     resetBarWidgetView(dst);
 
     api.get_field(state, table_idx, "layout");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const layout_idx = lua_mod.absoluteIndex(api, state, -1);
         dst.layout = topLevelBarLayout(api, state, layout_idx);
     }
@@ -897,18 +897,18 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
 
     api.get_field(state, table_idx, "items");
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) return;
     const items_idx = absoluteIndex(api, state, -1);
 
     var item_i: c_int = 1;
     while (dst.len < dst.items.len) : (item_i += 1) {
         api.rawgeti(state, items_idx, item_i);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
             lua_mod.pop(api, state, 1);
             break;
         }
         defer lua_mod.pop(api, state, 1);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) continue;
         const item_idx = absoluteIndex(api, state, -1);
 
         api.get_field(state, item_idx, "kind");
@@ -938,23 +938,23 @@ fn parseBarWidgetView(dst: *BarWidgetView, api: Api, state: *State, table_idx: c
             lua_mod.pop(api, state, 1);
 
             api.get_field(state, item_idx, "max_width");
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                 item_ptr.tabs.max_width = @max(0, @as(f32, @floatCast(api.to_number(state, -1))));
             }
             lua_mod.pop(api, state, 1);
 
             api.get_field(state, item_idx, "tabs");
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                 const tabs_idx = absoluteIndex(api, state, -1);
                 var tab_i: c_int = 1;
                 while (item_ptr.tabs.len < item_ptr.tabs.tabs.len) : (tab_i += 1) {
                     api.rawgeti(state, tabs_idx, tab_i);
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                         lua_mod.pop(api, state, 1);
                         break;
                     }
                     defer lua_mod.pop(api, state, 1);
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) continue;
                     const tab_idx = absoluteIndex(api, state, -1);
                     fillBarTabView(&item_ptr.tabs.tabs[item_ptr.tabs.len], api, state, tab_idx, text_buf, scratch);
                     item_ptr.tabs.len += 1;
@@ -984,7 +984,7 @@ fn segmentArrayCodepoints(segments: []const bar.Segment) usize {
 
 fn segmentArrayFieldIndex(api: Api, state: *State, item_idx: c_int) ?c_int {
     api.get_field(state, item_idx, "segments");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         return absoluteIndex(api, state, -1);
     }
     pop(api, state, 1);
@@ -1021,7 +1021,7 @@ fn topBarSegmentFromLuaItem(api: Api, state: *State, item_idx: c_int, text_buf: 
     var seg = bar.Segment{ .text = "" };
 
     api.get_field(state, item_idx, "text");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             const n = @min(len, text_buf.len);
@@ -1039,7 +1039,7 @@ fn topBarSegmentFromLuaItem(api: Api, state: *State, item_idx: c_int, text_buf: 
     seg.bg = lua_mod.parseColorField(api, state, item_idx, "bg");
 
     api.get_field(state, item_idx, "id");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             seg.id = ptr[0..len];
@@ -1056,7 +1056,7 @@ const BarCache = struct {
     height: f32 = 0,
     y: f32 = 0,
     hit_count: usize = 0,
-    hits: [MAX_BAR_HIT_REGIONS]CachedBarHitRegion = [_]CachedBarHitRegion{.{}} ** MAX_BAR_HIT_REGIONS,
+    hits: [MAX_BAR_HIT_REGIONS]CachedBarHitRegion = @splat(.{}),
 };
 
 fn utf8CodepointLen(first_byte: u8) usize {
@@ -1148,7 +1148,7 @@ fn parseHexColor(text: []const u8) ?ghostty.ColorRgb {
 
 fn overlayRowSegmentsIndex(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int) c_int {
     api.get_field(state, row_idx, "segments");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         return absoluteIndex(api, state, -1);
     }
     pop(api, state, 1);
@@ -1158,7 +1158,7 @@ fn overlayRowSegmentsIndex(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_i
 fn overlayRowColorField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
     var len: usize = 0;
     const ptr = api.to_lstring(state, -1, &len) orelse return null;
     return parseHexColor(ptr[0..len]);
@@ -1173,14 +1173,14 @@ fn overlayRowBoolField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, 
 fn overlayRowNumberField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?f32 {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .number) return null;
     return @floatCast(api.to_number(state, -1));
 }
 
 fn overlayRowStringField(api: lua_mod.Api, state: *lua_mod.State, row_idx: c_int, field: [*:0]const u8) ?[]const u8 {
     api.get_field(state, row_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
     var len: usize = 0;
     const ptr = api.to_lstring(state, -1, &len) orelse return null;
     return ptr[0..len];
@@ -1835,13 +1835,13 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
     const dirty = barCacheDirty(api, state, ui_idx, dirty_field);
     if (!dirty) {
         api.get_field(state, ui_idx, cache_field);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
             const expires_field: [:0]const u8 = if (std.mem.eql(u8, cache_field, "bottombar_cache_state") or std.mem.eql(u8, cache_field, "bottombar_cache_layout"))
                 "bottombar_cache_expires_at"
             else
                 "topbar_cache_expires_at";
             api.get_field(state, ui_idx, expires_field);
-            const expires_type: LuaType = @enumFromInt(api.value_type(state, -1));
+            const expires_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
             if (expires_type == .number) {
                 const now_ms = @divFloor(io.nanoTimestamp(), std.time.ns_per_ms);
                 const expires_at = api.to_number(state, -1);
@@ -1862,7 +1862,7 @@ fn pushBarCachedTable(api: Api, state: *State, ui_idx: c_int, dirty_field: [:0]c
     }
 
     api.get_field(state, ui_idx, producer_field);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         return true;
     }
     pop(api, state, 1);
@@ -1875,12 +1875,12 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     const api = runtime.context.api;
     const state = runtime.state;
     api.get_field(state, LUA_GLOBALSINDEX, "hollow");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
         pop(api, state, 1);
         return;
     }
     api.get_field(state, -1, "ui");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
         pop(api, state, 2);
         return;
     }
@@ -1893,7 +1893,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     if (pushBarCachedTable(api, state, ui_idx, "topbar_cache_dirty", "topbar_cache_layout", "_topbar_layout")) {
         const layout_idx = lua_mod.absoluteIndex(api, state, -1);
         api.get_field(state, layout_idx, "height");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             const height = api.to_number(state, -1);
             if (height > 0) top_h = @floatCast(height);
         }
@@ -1904,7 +1904,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     if (pushBarCachedTable(api, state, ui_idx, "bottombar_cache_dirty", "bottombar_cache_layout", "_bottombar_layout")) {
         const layout_idx = lua_mod.absoluteIndex(api, state, -1);
         api.get_field(state, layout_idx, "height");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             const height = api.to_number(state, -1);
             if (height > 0) bottom_h = @as(f32, @floatCast(height));
         }
@@ -1927,10 +1927,10 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     }
 
     api.get_field(state, -1, "_sidebar_state");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const sidebar_idx = absoluteIndex(api, state, -1);
         api.get_field(state, sidebar_idx, "width");
-        const sidebar_cols = if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) @as(usize, @intFromFloat(api.to_number(state, -1))) else 24;
+        const sidebar_cols = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) @as(usize, @intFromFloat(api.to_number(state, -1))) else 24;
         pop(api, state, 1);
         const sidebar_width = @as(f32, @floatFromInt(sidebar_cols)) * ctx.renderer.cell_w + ctx.renderer.cell_w;
 
@@ -1957,16 +1957,16 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, 122, 162, 247, 255);
 
         api.get_field(state, sidebar_idx, "rows");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
             const rows_idx = absoluteIndex(api, state, -1);
             var row_i: c_int = 1;
             while (true) : (row_i += 1) {
                 api.rawgeti(state, rows_idx, row_i);
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                     pop(api, state, 1);
                     break;
                 }
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                     const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], absoluteIndex(api, state, -1));
                     const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
                     drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments);
@@ -1982,18 +1982,18 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
     g_overlay_scrollbar_cache = .{};
 
     api.get_field(state, -1, "_overlay_state");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .function and api.pcall(state, 0, 1, 0) == 0 and @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const stacks_idx = absoluteIndex(api, state, -1);
         const overlay_stack = @import("overlay_stack.zig");
         var stacks = overlay_stack.Stack{};
         var stack_i: c_int = 1;
         while (true) : (stack_i += 1) {
             api.rawgeti(state, stacks_idx, stack_i);
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                 pop(api, state, 1);
                 break;
             }
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                 g_overlay_render_stack_index = @intCast(stack_i);
                 const overlay_idx = absoluteIndex(api, state, -1);
                 api.get_field(state, overlay_idx, "stack_context");
@@ -2006,9 +2006,9 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 api.get_field(state, overlay_idx, "backdrop");
                 var backdrop_color: ?ghostty.ColorRgb = null;
                 var backdrop_alpha: u8 = 0;
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                     api.get_field(state, -1, "color");
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
                         var color_len: usize = 0;
                         if (api.to_lstring(state, -1, &color_len)) |color_ptr| {
                             backdrop_color = parseHexColor(color_ptr[0..color_len]);
@@ -2017,7 +2017,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                     pop(api, state, 1);
 
                     api.get_field(state, -1, "alpha");
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                         const value = api.to_number(state, -1);
                         backdrop_alpha = @intCast(std.math.clamp(@as(i32, @intFromFloat(value)), 0, 255));
                     }
@@ -2027,7 +2027,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
                 api.get_field(state, overlay_idx, "width");
                 var width_rows: usize = 0;
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                     const value = api.to_number(state, -1);
                     if (value > 0) width_rows = @intFromFloat(value);
                 }
@@ -2035,7 +2035,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
 
                 api.get_field(state, overlay_idx, "height");
                 var height_rows: usize = 0;
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                     const value = api.to_number(state, -1);
                     if (value > 0) height_rows = @intFromFloat(value);
                 }
@@ -2049,7 +2049,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 var panel_radius: f32 = 0;
                 var panel_padding = BarBox{};
                 var panel_margin = BarBox{};
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                     const chrome_idx = absoluteIndex(api, state, -1);
                     if (overlayRowColorField(api, state, chrome_idx, "bg")) |bg| {
                         panel_bg = bg;
@@ -2058,18 +2058,18 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         panel_border = border;
                     }
                     api.get_field(state, chrome_idx, "border_size");
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                         panel_border_size = @max(@as(f32, 0.0), @as(f32, @floatCast(api.to_number(state, -1))));
                     }
                     pop(api, state, 1);
                     api.get_field(state, chrome_idx, "alpha");
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                         const value = api.to_number(state, -1);
                         panel_alpha = @intCast(std.math.clamp(@as(i32, @intFromFloat(value)), 0, 255));
                     }
                     pop(api, state, 1);
                     api.get_field(state, chrome_idx, "radius");
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                         panel_radius = @floatCast(api.to_number(state, -1));
                     }
                     pop(api, state, 1);
@@ -2079,7 +2079,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 pop(api, state, 1);
 
                 api.get_field(state, overlay_idx, "rows");
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
                     pop(api, state, 1);
                     pop(api, state, 1);
                     continue;
@@ -2125,11 +2125,11 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 var row_i_measure: c_int = 1;
                 while (true) : (row_i_measure += 1) {
                     api.rawgeti(state, rows_idx, row_i_measure);
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                         pop(api, state, 1);
                         break;
                     }
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
@@ -2258,11 +2258,11 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 var row_y = content_y;
                 while (true) : (row_i += 1) {
                     api.rawgeti(state, rows_idx, row_i);
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
                         pop(api, state, 1);
                         break;
                     }
-                    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                         const row_idx = absoluteIndex(api, state, -1);
                         const row_segments_idx = overlayRowSegmentsIndex(api, state, row_idx);
                         const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], row_segments_idx);
@@ -2358,12 +2358,12 @@ fn preRasterizeLuaBarWidgets(runtime: *lua_mod.Runtime) void {
     const api = runtime.context.api;
     const state = runtime.state;
     api.get_field(state, LUA_GLOBALSINDEX, "hollow");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
         pop(api, state, 1);
         return;
     }
     api.get_field(state, -1, "ui");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) {
         pop(api, state, 2);
         return;
     }
@@ -2928,8 +2928,8 @@ pub fn run(app: *App) !void {
         } else |_| {
             var release_buf: [128]u8 = undefined;
             const release = readLineFromFile("/proc/sys/kernel/osrelease", &release_buf) catch "";
-            if (std.ascii.indexOfIgnoreCase(release, "microsoft") != null or
-                std.ascii.indexOfIgnoreCase(release, "wsl") != null)
+            if (std.ascii.findIgnoreCase(release, "microsoft") != null or
+                std.ascii.findIgnoreCase(release, "wsl") != null)
             {
                 std.log.info("WSL2 detected — forcing GALLIUM_DRIVER=d3d12", .{});
                 _ = c.setenv("GALLIUM_DRIVER", "d3d12", 1);
@@ -3577,11 +3577,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const saved_renderer_pad_x = rend.padding_x;
                     const saved_renderer_pad_y = rend.padding_y;
                     {
-                        const pad_left: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                        const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.left
                         else
                             cfg.terminal_padding.left);
-                        const pad_top: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                        const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                             cfg.alternate_screen_padding.top
                         else
                             cfg.terminal_padding.top);
@@ -3746,11 +3746,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (leaf.pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (leaf.pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (leaf.pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -3802,11 +3802,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const saved_pad_x_r = renderer.padding_x;
                         const saved_pad_y_r = renderer.padding_y;
                         {
-                            const pad_left: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            const pad_left: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.left
                             else
                                 app.config.terminal_padding.left);
-                            const pad_top: f32 = @floatFromInt(if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+                            const pad_top: f32 = @floatFromInt(if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
                                 app.config.alternate_screen_padding.top
                             else
                                 app.config.terminal_padding.top);
@@ -5011,7 +5011,7 @@ fn handleChar(app: *App, event: c.sapp_event) void {
         g_swallow_char_pending = 0;
     }
 
-    var utf8_buf: [5]u8 = [_]u8{0} ** 5;
+    var utf8_buf: [5]u8 = @splat(0);
     const utf8 = encodeCodepoint(event.char_code, &utf8_buf) orelse return;
     if (quick_select.inputActive(app)) {
         if (utf8.len == 1) enqueueQuickSelectInput(app, .{ .character = utf8[0] });

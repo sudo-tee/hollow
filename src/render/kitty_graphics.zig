@@ -5,7 +5,6 @@
 ///   - `getOrCreateKittyTexture`: GPU texture cache for Kitty images.
 ///   - `clipTexturedQuad`: clips a textured quad to pane bounds with UV adjustment.
 ///   - `queueKittyLayerInPane`: draws Kitty placement layers for a pane.
-
 const std = @import("std");
 const c = @import("sokol_c");
 const ghostty = @import("../term/ghostty.zig");

@@ -14,7 +14,7 @@ pub const output_budget = 16 * 1024 * 1024;
 const grace = 3 * std.time.ns_per_s;
 const max_connections = 16;
 var registry_mutex: io.Mutex = .{};
-var registry: [max_connections]?*Connection = .{null} ** max_connections;
+var registry: [max_connections]?*Connection = @splat(null);
 
 pub const Stream = struct {
     id: u32 = 0,
@@ -50,7 +50,7 @@ pub const Connection = struct {
     changed: io.Condition = .{},
     // Watchdog-only wakeups: lifecycle changes, never per-output frames.
     watch: io.Condition = .{},
-    sessions: [p.max_streams]?*agent.Session = .{null} ** p.max_streams,
+    sessions: [p.max_streams]?*agent.Session = @splat(null),
     next_id: u32 = 1,
     cursor: usize = 0,
     control: deploy.Control = .{},
@@ -208,10 +208,23 @@ fn unregister(c: *Connection) void {
     };
 }
 
+/// A retired pane may leave the shared reader's cancellation in flight. Join
+/// the worker only when no sessions remain; live siblings still own transport.
+/// Caller retains a connection reference throughout the wait.
+pub fn joinIdle(c: *Connection) void {
+    c.mutex.lock();
+    defer c.mutex.unlock();
+    for (c.sessions) |entry| if (entry != null) return;
+    c.dead = true;
+    c.changed.broadcast();
+    c.watch.broadcast();
+    while (!c.finished) c.changed.wait(&c.mutex);
+}
+
 /// Application teardown only, after pane owners stop creating new PTYs.
 /// Cancel all connections together before waiting, not one grace per pane.
 pub fn shutdown() void {
-    var connections: [max_connections]?*Connection = .{null} ** max_connections;
+    var connections: [max_connections]?*Connection = @splat(null);
     registry_mutex.lock();
     for (registry, 0..) |entry, i| if (entry) |c| {
         _ = c.refs.fetchAdd(1, .monotonic);
@@ -750,7 +763,7 @@ test "mux buffered frame limits checked before payload reads" {
     var source = FirstSliceReader.init(&oversized, &buffer);
     try std.testing.expectError(error.PayloadTooLarge, readReceivedFrame(&source.interface));
     try std.testing.expectEqual(@as(usize, 1), source.calls);
-    const unknown = (p.Header{ .kind = @enumFromInt(250), .len = 0 }).encode();
+    const unknown = (p.Header{ .kind = @fromBackingInt(@intCast(250)), .len = 0 }).encode();
     var fixed = std.Io.Reader.fixed(&unknown);
     try std.testing.expectError(error.InvalidKind, readReceivedFrame(&fixed));
 }

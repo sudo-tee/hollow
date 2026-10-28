@@ -2,11 +2,11 @@
     .name = .hollow,
     .version = "0.0.0",
     .fingerprint = 0x523e250065f12856,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .ghostty = .{
-            .url = "git+https://github.com/ghostty-org/ghostty.git#22fa134a07f5749edd9e92c6bc17d8aaf61843be",
-            .hash = "ghostty-1.3.2-dev-5UdBCw6JewVSNmU8sj9cx3YZWyIVXgAHBHU8T-xS1Hg0",
+            .url = "git+https://github.com/ghostty-org/ghostty.git#6ba144158577d033ccb6ed4b574e4013957c9161",
+            .hash = "ghostty-1.4.1-dev-5UdBC6a2hwXqHrw8ovZK5dcOiekrP9exRDLLILjtLyHC",
         },
         .fontdeps = .{ .path = "vendor/ghostty-fontdeps", .lazy = true },
         .zluajit = .{ .path = "third_party/lua-zluajit" },

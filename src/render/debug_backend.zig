@@ -13,8 +13,8 @@ pub const FrameSnapshot = struct {
     title: []const u8,
     shell: []const u8,
     dirty: ghostty.RenderStateDirty = .false_value,
-    lines: [MAX_ROWS][MAX_COLS]u8 = [_][MAX_COLS]u8{[_]u8{0} ** MAX_COLS} ** MAX_ROWS,
-    line_lens: [MAX_ROWS]usize = [_]usize{0} ** MAX_ROWS,
+    lines: [MAX_ROWS][MAX_COLS]u8 = @splat(@splat(0)),
+    line_lens: [MAX_ROWS]usize = @splat(0),
     visible_line_count: usize = 0,
 };
 
@@ -72,7 +72,7 @@ pub const DebugBackend = struct {
                     continue;
                 }
 
-                var cps: [16]u32 = [_]u32{0} ** 16;
+                var cps: [16]u32 = @splat(0);
                 runtime.cellGraphemes(row_cells.*, &cps);
                 const cp = cps[0];
                 snapshot.lines[line_index][out_index] = codepointToAscii(cp);

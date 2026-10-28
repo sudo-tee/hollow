@@ -1,10 +1,6 @@
 //! Optional headless native/Lua integration test; links the Lua 5.1 C API.
 const std = @import("std");
-const c = @cImport({
-    @cInclude("lua.h");
-    @cInclude("lauxlib.h");
-    @cInclude("lualib.h");
-});
+const c = @import("lua_c");
 const bindings = @import("host/lua.zig");
 const host = @import("host.zig");
 const Api = struct {

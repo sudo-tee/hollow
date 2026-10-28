@@ -86,6 +86,23 @@ test "user shell jobs load startup and preserve argv on dedicated and mux agents
     }
 }
 
+test "closing the last mux pane joins the shared reader and worker" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer pty.closeAndJoin();
+    try pty.start();
+    const connection = pty.session.mux_connection.?;
+    _ = connection.refs.fetchAdd(1, .monotonic);
+    defer connection.unref();
+    pty.closeAndJoin();
+    connection.mutex.lock();
+    defer connection.mutex.unlock();
+    try std.testing.expect(connection.finished);
+    try std.testing.expect(connection.reader_done);
+    for (connection.sessions) |session| try std.testing.expect(session == null);
+}
+
 test "mux panes reuse a connector and isolate env resize input exit and close" {
     const path = try agentPath();
     defer std.testing.allocator.free(path);
@@ -445,7 +462,7 @@ test "agent pty reports a checksum mismatch" {
     const home_env = try std.fmt.allocPrint(std.testing.allocator, "HOME={s}", .{home});
     defer std.testing.allocator.free(home_env);
     var host: agent.Host = .{ .connector = .{ .argv = &.{ "env", home_env } } };
-    const wrong = "0" ** 64;
+    const wrong = &@as([64:0]u8, @splat('0'));
     host.agent.artifacts.set(.x86_64, .{ .path = path, .sha256 = wrong });
     host.agent.artifacts.set(.aarch64, .{ .path = path, .sha256 = wrong });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
@@ -459,7 +476,7 @@ test "agent pty reports a checksum mismatch" {
 
 test "unreachable implicit host requests native fallback with queued input" {
     var host: agent.Host = .{ .connector = .{ .argv = &.{"/bin/false"} }, .fallback = true };
-    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = "0" ** 64 });
+    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = &@as([64:0]u8, @splat('0')) });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
     defer pty.closeAndJoin();
     try pty.writeAll("typed early");
@@ -499,7 +516,7 @@ test "a Lua descriptor error is shown in the pane" {
 
 test "a stalled bootstrap is bounded by the host timeout and by close" {
     var host: agent.Host = .{ .connector = .{ .argv = &.{ "/bin/sh", "-c", "exec sleep 30", "x" } }, .agent = .{ .timeout_ms = 200 } };
-    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = "0" ** 64 });
+    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = &@as([64:0]u8, @splat('0')) });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
     defer pty.closeAndJoin();
     try pty.start();

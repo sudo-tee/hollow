@@ -15,11 +15,7 @@ test "agent shell bundle embeds a matching ELF CLI rather than Python" {
     }), machine);
 }
 pub const io = @import("io.zig");
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("sys/stat.h");
-    @cInclude("unistd.h");
-});
+const c = @import("posix_c");
 
 pub const Shell = enum { bash, zsh, fish };
 
@@ -47,7 +43,7 @@ pub fn install(allocator: std.mem.Allocator, shell_path: []const u8) !?Bundle {
     bundle_hash = std.hash.Wyhash.hash(bundle_hash, embedded_python);
     const root = try std.fmt.allocPrint(allocator, "/tmp/hollow-{d}/shell-{x}", .{ c.getuid(), bundle_hash });
     errdefer allocator.free(root);
-    const root_z = try allocator.dupeZ(u8, root);
+    const root_z = try allocator.dupeSentinel(u8, root, 0);
     defer allocator.free(root_z);
 
     const bin = try std.fs.path.join(allocator, &.{ root, "bin" });
@@ -144,9 +140,9 @@ fn writeFile(allocator: std.mem.Allocator, dir: []const u8, name: []const u8, co
 }
 
 fn setEnv(allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
-    const key_z = try allocator.dupeZ(u8, key);
+    const key_z = try allocator.dupeSentinel(u8, key, 0);
     defer allocator.free(key_z);
-    const value_z = try allocator.dupeZ(u8, value);
+    const value_z = try allocator.dupeSentinel(u8, value, 0);
     defer allocator.free(value_z);
     if (c.setenv(key_z.ptr, value_z.ptr, 1) != 0) return error.SetEnvFailed;
 }

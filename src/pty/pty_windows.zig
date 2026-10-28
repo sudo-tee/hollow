@@ -115,7 +115,7 @@ pub const WindowsPty = struct {
 
         for (fallbacks) |candidate| {
             if (std.mem.eql(u8, candidate, preferred_shell)) continue;
-            const shell_z = try allocator.dupeZ(u8, candidate);
+            const shell_z = try allocator.dupeSentinel(u8, candidate, 0);
             defer allocator.free(shell_z);
             if (spawnWithShell(allocator, shell_z, cols, rows, cwd, env_block, launch_command, wake)) |pty| {
                 return pty;
@@ -1183,7 +1183,7 @@ fn buildEnvironmentBlock(allocator: std.mem.Allocator, env_block: ?[]const u8, s
     }
     try utf16_block.append(allocator, 0); // final double-null
 
-    return try allocator.dupeZ(u16, utf16_block.items);
+    return try allocator.dupeSentinel(u16, utf16_block.items, 0);
 }
 
 threadlocal var preview_buf: [48]u8 = undefined;

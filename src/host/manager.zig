@@ -51,8 +51,8 @@ const Pending = struct {
 pub const Manager = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    hosts: [max_hosts]?Entry = .{null} ** max_hosts,
-    pending: [max_pending]?Pending = .{null} ** max_pending,
+    hosts: [max_hosts]?Entry = @splat(null),
+    pending: [max_pending]?Pending = @splat(null),
     next_id: u64 = 1,
     environ: std.process.Environ,
 

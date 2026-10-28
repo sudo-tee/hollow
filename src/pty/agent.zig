@@ -210,7 +210,7 @@ pub const AgentPty = struct {
         }
 
         var fallback_spec: Fallback = .{
-            .shell = try allocator.dupeZ(u8, request.shell),
+            .shell = try allocator.dupeSentinel(u8, request.shell, 0),
             .cwd = null,
             .env_block = null,
             .launch_command = null,
@@ -440,6 +440,7 @@ pub const AgentPty = struct {
             s.mutex.lock();
             while (!s.reader_done) s.changed.wait(&s.mutex);
             s.mutex.unlock();
+            mux.joinIdle(s.mux_connection.?);
             s.unref();
             return;
         }
