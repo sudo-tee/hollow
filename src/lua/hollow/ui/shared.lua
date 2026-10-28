@@ -1,6 +1,6 @@
+local color = require("hollow.color")
 local state = require("hollow.state").get()
 local theme_api = require("hollow.theme")
-local color = require("hollow.color")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -300,15 +300,7 @@ function M.is_text_shorthand(value)
     return false
   end
 
-  local count = 0
-  for _ in ipairs(value) do
-    count = count + 1
-    if count > 1 then
-      return false
-    end
-  end
-
-  return count == 1 and type(value[1]) == "string"
+  return type(value[1]) == "string" and table.maxn(value) == 1
 end
 
 ---@param value any
@@ -335,38 +327,70 @@ function M.is_inline_node(value)
   return M.is_span_node(value) or M.is_text_shorthand(value)
 end
 
+local function unexpected(child, label, index)
+  local kind = type(child) == "table" and child._type or type(child)
+  error(string.format("%s: unexpected %q node at child %d", label, tostring(kind), index))
+end
+
+local function collect(list, accept, label, out, strict)
+  for i = 1, table.maxn(list) do
+    local child = list[i]
+    local kind = type(child)
+    if child == nil or kind == "boolean" then
+      -- Skip conditional children.
+    elseif kind == "table" and child._type == nil and not M.is_text_shorthand(child) then
+      collect(child, accept, label, out, strict)
+    else
+      accept(child, out, label, i, strict)
+    end
+  end
+  return out
+end
+
+local function accept_inline(child, out, label, index, strict)
+  local kind = type(child)
+  if kind == "string" or kind == "number" then
+    out[#out + 1] = { _type = "span", text = tostring(child) }
+  elseif M.is_span_node(child) then
+    out[#out + 1] = child
+  elseif M.is_text_shorthand(child) then
+    out[#out + 1] = M.normalize_text_shorthand(child)
+  elseif strict then
+    unexpected(child, label, index)
+  else
+    out[#out + 1] = { _type = "span", text = tostring(child) }
+  end
+end
+
+local function accept_row(child, out, label, index)
+  if type(child) == "table" and child._type == "row" then
+    out[#out + 1] = child
+  elseif type(child) == "table" and child._type == "column" then
+    collect(child.children or {}, accept_row, label, out, true)
+  else
+    unexpected(child, label, index)
+  end
+end
+
+---@param list table
+---@param label string
+---@param strict boolean|nil
+---@return HollowUiRenderableNode[]
+function M.collect_inline(list, label, strict)
+  return collect(list, accept_inline, label, {}, strict)
+end
+
+---@param list table
+---@param label string
+---@return HollowUiRowNode[]
+function M.collect_rows(list, label)
+  return collect(list, accept_row, label, {}, true)
+end
+
 ---@param value any
 ---@return HollowUiRenderableNode[]
 function M.normalize_inline_nodes(value)
-  if type(value) == "string" then
-    return { { _type = "span", text = value } }
-  end
-
-  if M.is_span_node(value) then
-    return { value }
-  end
-
-  if M.is_text_shorthand(value) then
-    return { M.normalize_text_shorthand(value) }
-  end
-
-  if type(value) == "table" then
-    local nodes = hollow.tbl(value):filter_map(function(node)
-      if type(node) == "string" then
-        return { _type = "span", text = node }
-      elseif M.is_span_node(node) then
-        return node
-      elseif M.is_text_shorthand(node) then
-        return M.normalize_text_shorthand(node)
-      end
-    end):get()
-
-    if #nodes > 0 then
-      return nodes
-    end
-  end
-
-  return { { _type = "span", text = tostring(value or "") } }
+  return M.collect_inline({ value }, "hollow.ui", false)
 end
 
 ---@param nodes HollowUiRenderableNode[]|nil
@@ -526,8 +550,11 @@ function M.style_to_segment(text, style)
       local left = box.left or box.x or box.horizontal or box[4] or right
       segment.padding = {}
       for edge, px in pairs({ top = top, right = right, bottom = bottom, left = left }) do
-        segment.padding[edge] = type(px) == "number" and px == px and px < math.huge
-          and math.max(0, px) or 0
+        segment.padding[edge] = type(px) == "number"
+            and px == px
+            and px < math.huge
+            and math.max(0, px)
+          or 0
       end
     end
   end
@@ -555,11 +582,14 @@ end
 ---@param segments HollowUiSegment[]
 ---@return string
 function M.segments_plain_text(segments)
-  return table.concat(hollow.tbl(segments or {}):filter_map(function(segment)
-    if type(segment.text) == "string" and segment.text ~= "" then
-      return segment.text
-    end
-  end):get())
+  return table.concat(hollow
+    .tbl(segments or {})
+    :filter_map(function(segment)
+      if type(segment.text) == "string" and segment.text ~= "" then
+        return segment.text
+      end
+    end)
+    :get())
 end
 
 ---@param value any
@@ -580,11 +610,14 @@ function M.bar_value_to_segments(value, fallback_text, style)
 
     if M.is_span_node(value) or value[1] ~= nil then
       local flattened = M.flatten_span_nodes(M.normalize_inline_nodes(value), style)
-      local segments = hollow.tbl(flattened):filter_map(function(node)
-        if type(node.text) == "string" and node.text ~= "" then
-          return M.style_to_segment(node.text, node.style)
-        end
-      end):get()
+      local segments = hollow
+        .tbl(flattened)
+        :filter_map(function(node)
+          if type(node.text) == "string" and node.text ~= "" then
+            return M.style_to_segment(node.text, node.style)
+          end
+        end)
+        :get()
 
       if #segments > 0 then
         return segments

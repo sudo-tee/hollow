@@ -71,13 +71,64 @@ end
 ---@param style HollowUiNodeStyle|HollowHexColor|nil
 ---@return HollowUiGroupNode
 function ui.group(children, style)
-  local normalized = {}
-  for _, child in ipairs(children or {}) do
-    for _, node in ipairs(shared.normalize_inline_nodes(child)) do
-      normalized[#normalized + 1] = node
+  local normalized = shared.collect_inline(children or {}, "hollow.ui.group()", true)
+  return { _type = "group", children = normalized, style = style }
+end
+
+--- Select a branch, evaluating it only if it is a function.
+---@param cond any
+---@param then_ any
+---@param else_ any
+---@return any
+function ui.when(cond, then_, else_)
+  local value = cond and then_ or else_
+  if type(value) == "function" then
+    value = value()
+  end
+  return value or false
+end
+
+--- Map a list into a fragment, preserving indices for falsy results.
+---@generic T
+---@param list T[]|HollowTblInstance|nil
+---@param fn fun(item: T, i: integer): any
+---@return any[]
+function ui.each(list, fn)
+  local out = {}
+  if list == nil then
+    return out
+  end
+  if type(list.get) == "function" then
+    list = list:get()
+  end
+  for i, item in ipairs(list) do
+    out[i] = fn(item, i) or false
+  end
+  return out
+end
+
+--- Join truthy items into a fragment. Function separators receive their 1-based separator index.
+---@param items any[]
+---@param sep any|fun(i: integer): any
+---@return any[]
+function ui.join(items, sep)
+  local out = {}
+  local count = 0
+  for i = 1, table.maxn(items) do
+    local item = items[i]
+    if item then
+      if count > 0 then
+        local separator = sep
+        if type(sep) == "function" then
+          separator = sep(count)
+        end
+        out[#out + 1] = separator
+      end
+      out[#out + 1] = item
+      count = count + 1
     end
   end
-  return { _type = "group", children = normalized, style = style }
+  return out
 end
 
 ---@param children HollowUiInlineNode[]
@@ -89,12 +140,7 @@ function ui.row(children, opts)
   end
 
   opts = opts or {}
-  local nodes = {}
-  for _, value in ipairs(children) do
-    for _, node in ipairs(shared.normalize_inline_nodes(value)) do
-      nodes[#nodes + 1] = node
-    end
-  end
+  local nodes = shared.collect_inline(children, "hollow.ui.row()", true)
 
   local hoverable = opts.hoverable
   if hoverable == nil then
@@ -127,13 +173,7 @@ function ui.column(children)
     error("hollow.ui.column() expects a list of rows")
   end
 
-  local rows = {}
-  for _, child in ipairs(children) do
-    if type(child) ~= "table" or child._type ~= "row" then
-      error("hollow.ui.column() children must be ui.row() or ui.divider() nodes")
-    end
-    rows[#rows + 1] = child
-  end
+  local rows = shared.collect_rows(children, "hollow.ui.column()")
   return { _type = "column", children = rows }
 end
 
