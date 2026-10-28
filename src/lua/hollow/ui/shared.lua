@@ -834,6 +834,85 @@ function M.merge_styles(...)
   return result
 end
 
+local COMPUTED_STYLE_FIELDS = {
+  fg = true,
+  bg = true,
+  bold = true,
+  border = true,
+  border_size = true,
+  radius = true,
+  background_extend = true,
+  padding = true,
+  margin = true,
+  -- Legacy node metadata is accepted but never copied into the visual result.
+  id = true,
+  on_click = true,
+  on_mouse_enter = true,
+  on_mouse_leave = true,
+  hover = true,
+}
+
+--- Private prototype: merge visual layers, resolve tokens, and separate paint
+--- from spacing. No theme lookup, state inference, identity or callbacks.
+--- Callers select state layers explicitly; the last layer wins. Missing boxes
+--- stay absent so legacy adapters can retain their surface-specific defaults.
+---@param palette table
+---@vararg HollowUiNodeStyle|boolean|nil
+---@return HollowUiComputedStyle
+function M.compute_style(palette, ...)
+  -- Read a single layer directly: only the output boxes are allocated. Multiple
+  -- layers still use the established box-aware merge, never a second cascade.
+  local style = select("#", ...) == 1 and (...) or nil
+  if type(style) ~= "table" then
+    style = M.merge_styles(...)
+  end
+  for key in pairs(style) do
+    if not COMPUTED_STYLE_FIELDS[key] then
+      error(string.format("hollow.ui: unsupported computed style field %q", tostring(key)))
+    end
+  end
+  local function resolved_color(key)
+    local value = resolve_color(style[key], key, palette)
+    return color.is_hex_color(value) and value or nil
+  end
+  return {
+    text = { fg = resolved_color("fg"), bold = style.bold == true },
+    box = {
+      bg = resolved_color("bg"),
+      border = resolved_color("border"),
+      border_size = style.border_size,
+      radius = style.radius,
+      background_extend = style.background_extend,
+    },
+    layout = {
+      padding = style.padding ~= nil and M.normalize_segment_padding(style.padding) or nil,
+      margin = style.margin ~= nil and M.normalize_segment_padding(style.margin) or nil,
+    },
+  }
+end
+
+--- Adapter prototype for the existing span protocol. Interaction identity is
+--- supplied separately; never store handlers or IDs in a computed style.
+---@param text string
+---@param computed HollowUiComputedStyle
+---@param id? string
+---@return HollowUiSegment
+function M.computed_style_to_segment(text, computed, id)
+  local box = computed.box
+  return {
+    text = text,
+    id = type(id) == "string" and id ~= "" and id or nil,
+    fg = computed.text.fg,
+    bold = computed.text.bold,
+    bg = box.bg,
+    border = box.border,
+    border_size = box.border_size,
+    radius = box.radius,
+    background_extend = box.background_extend,
+    padding = util.clone_value(computed.layout.padding),
+  }
+end
+
 ---@param base HollowUiNodeStyle|nil
 ---@param overlay_style HollowUiNodeStyle|nil
 ---@return HollowUiNodeStyle

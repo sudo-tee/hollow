@@ -266,6 +266,13 @@
 ---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
 
 ---@alias HollowStyleValue HollowStyle|HollowColor
+--- Internal prototype; not a public widget or host-protocol API.
+--- Absent layout boxes preserve the receiving surface's existing defaults.
+---@class HollowUiComputedStyle
+---@field text { fg?: HollowColor, bold: boolean }
+---@field box { bg?: HollowColor, border?: HollowColor, border_size?: number, radius?: number, background_extend?: number }
+---@field layout { padding?: { top: number, right: number, bottom: number, left: number }, margin?: { top: number, right: number, bottom: number, left: number } }
+
 ---@alias HollowUiNodeStyle HollowStyle
 
 ---@class HollowUiStyleWrapper
