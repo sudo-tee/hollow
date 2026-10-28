@@ -331,6 +331,13 @@ pub fn build(b: *std.Build) void {
             "-Ithird_party/sokol/util",
         },
     });
+    renderer_bench.root_module.addCSourceFile(.{
+        .file = b.path("src/render/png_decode.c"),
+        .flags = &.{
+            "-Ithird_party/stb",
+            "-DGHOSTTY_STATIC",
+        },
+    });
     const install_renderer_bench = b.addInstallArtifact(renderer_bench, .{});
     const renderer_bench_step = b.step("renderer-bench", "Build the headless renderer benchmark");
     renderer_bench_step.dependOn(&install_renderer_bench.step);
@@ -417,6 +424,13 @@ pub fn build(b: *std.Build) void {
         .flags = &.{
             "-Ithird_party/sokol",
             "-Ithird_party/sokol/util",
+        },
+    });
+    renderer_bench_tests.root_module.addCSourceFile(.{
+        .file = b.path("src/render/png_decode.c"),
+        .flags = &.{
+            "-Ithird_party/stb",
+            "-DGHOSTTY_STATIC",
         },
     });
     const renderer_bench_test_cmd = b.addRunArtifact(renderer_bench_tests);

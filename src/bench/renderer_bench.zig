@@ -11,6 +11,12 @@ const default_frames: usize = 1000;
 const default_chunk_bytes: usize = 393216;
 const default_warmup: usize = 3;
 const default_iterations: usize = 10;
+const default_image_count: usize = 8;
+const default_image_width: usize = 32;
+const default_image_height: usize = 32;
+const default_animation_frames: usize = 4;
+const default_animation_gap_ms: usize = 40;
+const kitty_image_storage_limit: u64 = 64 * 1024 * 1024;
 
 const Scenario = enum {
     repaint,
@@ -19,6 +25,8 @@ const Scenario = enum {
     scroll,
     styled,
     replay,
+    image,
+    image_animation,
 };
 
 const Mode = enum {
@@ -37,8 +45,21 @@ const Options = struct {
     chunk_bytes: usize = default_chunk_bytes,
     warmup: usize = default_warmup,
     iterations: usize = default_iterations,
+    image_count: usize = default_image_count,
+    image_width: usize = default_image_width,
+    image_height: usize = default_image_height,
+    animation_frames: usize = default_animation_frames,
+    animation_gap_ms: usize = default_animation_gap_ms,
     mode: Mode = .pipeline,
     json: bool = false,
+
+    fn hasImages(self: Options) bool {
+        return self.scenario == .image or self.scenario == .image_animation;
+    }
+
+    fn hasAnimation(self: Options) bool {
+        return self.scenario == .image_animation;
+    }
 };
 
 const CallbackState = struct {
@@ -55,8 +76,24 @@ const Session = struct {
     callbacks: CallbackState = .{},
 
     fn init(runtime: *ghostty.Runtime, cols: usize, rows: usize) !Session {
+        return initWithKitty(runtime, cols, rows, 0, 0, 0);
+    }
+
+    fn initWithKitty(
+        runtime: *ghostty.Runtime,
+        cols: usize,
+        rows: usize,
+        cell_width: u32,
+        cell_height: u32,
+        storage_limit: u64,
+    ) !Session {
         const terminal = try runtime.createTerminal(@intCast(cols), @intCast(rows), 64 * 1024 * 1024);
         errdefer runtime.freeTerminal(terminal);
+
+        if (storage_limit != 0) {
+            runtime.resizeTerminal(terminal, @intCast(cols), @intCast(rows), cell_width, cell_height);
+            runtime.setKittyImageStorageLimit(terminal, storage_limit);
+        }
 
         var session = Session{
             .runtime = runtime,
@@ -141,6 +178,8 @@ const Harness = struct {
     last_bg_rects: usize = 0,
     last_atlas_flushed: bool = false,
     last_glyph_verts: usize = 0,
+    last_image_count: usize = 0,
+    last_image_placements_generation: u64 = 0,
 
     fn init(allocator: std.mem.Allocator, options: Options) !Harness {
         setupSokol();
@@ -183,6 +222,20 @@ const Harness = struct {
         shutdownSokol();
     }
 
+    fn newSession(self: *Harness) !Session {
+        if (!self.options.hasImages()) return Session.init(&self.runtime, self.options.cols, self.options.rows);
+        const cell_width: u32 = @max(1, @as(u32, @intFromFloat(self.renderer.cell_w)));
+        const cell_height: u32 = @max(1, @as(u32, @intFromFloat(self.renderer.cell_h)));
+        return Session.initWithKitty(
+            &self.runtime,
+            self.options.cols,
+            self.options.rows,
+            cell_width,
+            cell_height,
+            kitty_image_storage_limit,
+        );
+    }
+
     fn prepare(self: *Harness, session: *Session, corpus: []const u8) !void {
         feedChunks(&self.runtime, session.terminal, corpus, self.options.chunk_bytes);
         try self.runtime.updateRenderState(session.render_state, session.terminal);
@@ -197,6 +250,15 @@ const Harness = struct {
             self.final_cursor_row = @intCast(cursor.y);
             self.final_cursor_col = @intCast(cursor.x);
         }
+        self.last_image_placements_generation = self.runtime.renderStateImagePlacementsGeneration(session.render_state) orelse 0;
+    }
+
+    fn prepareImages(self: *Harness, session: *Session) i128 {
+        if (!self.options.hasImages()) return 0;
+        const start = io.nanoTimestamp();
+        self.renderer.prepareKittyTextures(&self.runtime, session.terminal, session.render_state);
+        self.last_image_count = self.renderer.render_images.items.items.len;
+        return io.nanoTimestamp() - start;
     }
 
     fn clearDirtyRows(self: *Harness, session: *Session) void {
@@ -262,8 +324,12 @@ const Harness = struct {
         pass.action.colors[0].load_action = if (force_full) c.SG_LOADACTION_CLEAR else c.SG_LOADACTION_LOAD;
         pass.action.colors[0].clear_value = .{ .r = 18.0 / 255.0, .g = 20.0 / 255.0, .b = 28.0 / 255.0, .a = 1.0 };
         c.sg_begin_pass(&pass);
+        c.sgl_draw_layer(-3);
+        c.sgl_draw_layer(-2);
         c.sgl_draw();
+        c.sgl_draw_layer(-1);
         self.renderer.drawGlyphQuads(self.viewport_width, self.viewport_height, true, .{ 0.006, 0.007, 0.009, 1.0 });
+        c.sgl_draw_layer(1);
         c.sg_end_pass();
         c.sg_commit();
     }
@@ -287,6 +353,8 @@ const Results = struct {
     cold_pipeline: TimingSamples = .{},
     parse: TimingSamples = .{},
     render_state: TimingSamples = .{},
+    image_prepare: TimingSamples = .{},
+    animation_tick: TimingSamples = .{},
     render: TimingSamples = .{},
     submit: TimingSamples = .{},
 
@@ -296,6 +364,8 @@ const Results = struct {
         self.cold_pipeline.deinit(allocator);
         self.parse.deinit(allocator);
         self.render_state.deinit(allocator);
+        self.image_prepare.deinit(allocator);
+        self.animation_tick.deinit(allocator);
         self.render.deinit(allocator);
         self.submit.deinit(allocator);
     }
@@ -423,6 +493,172 @@ fn appendPattern(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator
         try list.appendSlice(allocator, text[0..count]);
         written += count;
     }
+}
+
+fn appendKittyRawImage(
+    list: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    width: usize,
+    height: usize,
+    seed: u32,
+    comptime header: []const u8,
+    args: anytype,
+) !void {
+    const pixel_count = try std.math.mul(usize, width, height);
+    const pixel_len = try std.math.mul(usize, pixel_count, 4);
+    var pixels = try allocator.alloc(u8, pixel_len);
+    defer allocator.free(pixels);
+
+    for (0..pixel_count) |pixel| {
+        const x = pixel % width;
+        const y = pixel / width;
+        const base: u32 = seed *% 31 +% @as(u32, @intCast(x * 7 + y * 13));
+        const offset = pixel * 4;
+        pixels[offset + 0] = @intCast((base +% 37) % 256);
+        pixels[offset + 1] = @intCast((base +% 113) % 256);
+        pixels[offset + 2] = @intCast((base +% 197) % 256);
+        pixels[offset + 3] = if ((@as(u32, @intCast(x + y)) +% seed) % 7 == 0) 180 else 255;
+    }
+
+    try appendFormat(list, allocator, header ++ ";", args);
+    const encoded_len = std.base64.standard.Encoder.calcSize(pixels.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, pixels);
+    try list.appendSlice(allocator, encoded);
+    try list.appendSlice(allocator, "\x1b\\");
+}
+
+fn appendVirtualPlaceholders(list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, row: usize, image_id: usize) !void {
+    try appendFormat(list, allocator, "\x1b[{d};1H\x1b[38;5;{d}m", .{ row, image_id });
+    // U+10EEEE followed by row/column combining marks. The two cells show
+    // the first two columns of the virtual placement.
+    try list.appendSlice(allocator, "\xf4\x8e\xbb\xae\xcc\x85\xcc\x85");
+    try list.appendSlice(allocator, "\xf4\x8e\xbb\xae\xcc\x85\xcc\x8d");
+    try list.appendSlice(allocator, "\x1b[39m");
+}
+
+fn imagePlacementRow(options: Options, index: usize) usize {
+    const span = if (options.rows > 2) options.rows - 1 else 1;
+    return 1 + ((index * 3) % span);
+}
+
+fn imagePlacementCol(options: Options, index: usize) usize {
+    const span = if (options.cols > 3) options.cols - 2 else 1;
+    return 1 + ((index * 5) % span);
+}
+
+fn buildImageCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
+    var corpus: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer corpus.deinit(allocator);
+    try corpus.appendSlice(allocator, "\x1b[?1049h\x1b[2J\x1b[H");
+
+    var image_index: usize = 0;
+    while (image_index < options.image_count) : (image_index += 1) {
+        const image_id = image_index + 1;
+        const row = imagePlacementRow(options, image_index);
+        const col = imagePlacementCol(options, image_index);
+        const z: i32 = switch (image_index % 3) {
+            0 => -2_147_483_647,
+            1 => -1,
+            else => 0,
+        };
+        try appendFormat(&corpus, allocator, "\x1b[{d};{d}H", .{ row, col });
+        if (image_index == 0) {
+            try appendKittyRawImage(
+                &corpus,
+                allocator,
+                options.image_width,
+                options.image_height,
+                @intCast(image_id),
+                "\x1b_Ga=T,f=32,i={d},p=1,s={d},v={d},c=2,r=2,z={d},C=1,q=2",
+                .{ image_id, options.image_width, options.image_height, z },
+            );
+        } else {
+            try appendKittyRawImage(
+                &corpus,
+                allocator,
+                options.image_width,
+                options.image_height,
+                @intCast(image_id),
+                "\x1b_Ga=T,f=32,i={d},s={d},v={d},c=2,r=2,z={d},C=1,q=2",
+                .{ image_id, options.image_width, options.image_height, z },
+            );
+        }
+    }
+
+    // Exercise Ghostty's virtual-placement resolution. Kitty identifies the
+    // image in foreground color and the source cell in combining marks.
+    const virtual_id = options.image_count + 1;
+    const virtual_row = if (options.rows > 1) options.rows - 1 else 1;
+    try appendFormat(&corpus, allocator, "\x1b[{d};1H", .{virtual_row});
+    try appendKittyRawImage(
+        &corpus,
+        allocator,
+        options.image_width,
+        options.image_height,
+        @intCast(virtual_id),
+        "\x1b_Ga=T,U=1,f=32,i={d},s={d},v={d},c=2,r=1,C=1,q=2",
+        .{ virtual_id, options.image_width, options.image_height },
+    );
+    try appendVirtualPlaceholders(&corpus, allocator, virtual_row, virtual_id);
+
+    // Exercise relative placement resolution against the first fixed image.
+    const child_id = options.image_count + 2;
+    try appendFormat(&corpus, allocator, "\x1b[1;1H", .{});
+    try appendKittyRawImage(
+        &corpus,
+        allocator,
+        options.image_width,
+        options.image_height,
+        @intCast(child_id),
+        "\x1b_Ga=T,f=32,i={d},s={d},v={d},c=2,r=2,P=1,Q=1,H=1,V=1,z=1,C=1,q=2",
+        .{ child_id, options.image_width, options.image_height },
+    );
+    try corpus.appendSlice(allocator, "\x1b[0m");
+    return corpus.toOwnedSlice(allocator);
+}
+
+fn buildImageAnimationCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
+    var corpus: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer corpus.deinit(allocator);
+    try corpus.appendSlice(allocator, "\x1b[?1049h\x1b[2J\x1b[H");
+
+    var image_index: usize = 0;
+    while (image_index < options.image_count) : (image_index += 1) {
+        const image_id = image_index + 1;
+        const row = imagePlacementRow(options, image_index);
+        const col = imagePlacementCol(options, image_index);
+        const z: i32 = if (image_index % 2 == 0) -1 else 0;
+        try appendFormat(&corpus, allocator, "\x1b[{d};{d}H", .{ row, col });
+        try appendKittyRawImage(
+            &corpus,
+            allocator,
+            options.image_width,
+            options.image_height,
+            @intCast(image_id * 100),
+            "\x1b_Ga=T,f=32,i={d},s={d},v={d},c=2,r=2,z={d},C=1,q=2",
+            .{ image_id, options.image_width, options.image_height, z },
+        );
+
+        var frame: usize = 1;
+        while (frame < options.animation_frames) : (frame += 1) {
+            try appendKittyRawImage(
+                &corpus,
+                allocator,
+                options.image_width,
+                options.image_height,
+                @intCast(image_id * 100 + frame),
+                "\x1b_Ga=f,f=32,i={d},s={d},v={d},z={d},q=2",
+                .{ image_id, options.image_width, options.image_height, options.animation_gap_ms },
+            );
+        }
+        try appendFormat(&corpus, allocator, "\x1b_Ga=a,i={d},r=1,z={d},q=2\x1b\\", .{ image_id, options.animation_gap_ms });
+        try appendFormat(&corpus, allocator, "\x1b_Ga=a,i={d},s=3,q=2\x1b\\", .{image_id});
+    }
+
+    try corpus.appendSlice(allocator, "\x1b[0m");
+    return corpus.toOwnedSlice(allocator);
 }
 
 fn buildCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
@@ -573,6 +809,8 @@ fn buildCorpus(allocator: std.mem.Allocator, options: Options) ![]u8 {
                 }
             }
         },
+        .image => return buildImageCorpus(allocator, options),
+        .image_animation => return buildImageAnimationCorpus(allocator, options),
         .replay => unreachable,
     }
     return corpus.toOwnedSlice(allocator);
@@ -587,8 +825,23 @@ fn feedChunks(runtime: *ghostty.Runtime, terminal: ?*anyopaque, corpus: []const 
     }
 }
 
+const PipelineSample = struct {
+    total: i128,
+    parse: i128,
+    render_state: i128,
+    image_prepare: i128,
+    animation_tick: i128,
+    render: i128,
+    submit: i128,
+};
+
+const RenderSample = struct {
+    image_prepare: i128,
+    render: i128,
+};
+
 fn parseSample(harness: *Harness, corpus: []const u8) !i128 {
-    var session = try Session.init(&harness.runtime, harness.options.cols, harness.options.rows);
+    var session = try harness.newSession();
     defer session.deinit();
     session.activate();
     const start = io.nanoTimestamp();
@@ -596,20 +849,22 @@ fn parseSample(harness: *Harness, corpus: []const u8) !i128 {
     return io.nanoTimestamp() - start;
 }
 
-fn renderSample(harness: *Harness, session: *Session) i128 {
+fn renderSample(harness: *Harness, session: *Session) RenderSample {
+    const image_prepare = harness.prepareImages(session);
     const start = io.nanoTimestamp();
     harness.queue(session, true);
     harness.renderer.discardGlyphQuads();
-    return io.nanoTimestamp() - start;
+    return .{ .image_prepare = image_prepare, .render = io.nanoTimestamp() - start };
 }
 
-fn pipelineSample(harness: *Harness, corpus: []const u8) !struct { total: i128, parse: i128, render_state: i128, render: i128, submit: i128 } {
-    var session = try Session.init(&harness.runtime, harness.options.cols, harness.options.rows);
+fn pipelineSample(harness: *Harness, corpus: []const u8) !PipelineSample {
+    var session = try harness.newSession();
     defer session.deinit();
     session.activate();
 
     var parse_ns: i128 = 0;
     var render_state_ns: i128 = 0;
+    var image_prepare_ns: i128 = 0;
     var render_ns: i128 = 0;
     var submit_ns: i128 = 0;
     const total_start = io.nanoTimestamp();
@@ -626,10 +881,11 @@ fn pipelineSample(harness: *Harness, corpus: []const u8) !struct { total: i128, 
         render_state_ns += io.nanoTimestamp() - start;
         harness.captureState(&session);
 
+        image_prepare_ns += harness.prepareImages(&session);
         start = io.nanoTimestamp();
         // Match cached-pane policy: full dirty means screen-wide replacement;
         // ordinary chunked output uses retained partial rows.
-        const force_full = offset == 0 or harness.dirty_level == .full;
+        const force_full = harness.options.hasImages() or offset == 0 or harness.dirty_level == .full;
         harness.queue(&session, force_full);
         if (force_full) harness.clearDirtyRows(&session);
         render_ns += io.nanoTimestamp() - start;
@@ -643,9 +899,90 @@ fn pipelineSample(harness: *Harness, corpus: []const u8) !struct { total: i128, 
         .total = io.nanoTimestamp() - total_start,
         .parse = parse_ns,
         .render_state = render_state_ns,
+        .image_prepare = image_prepare_ns,
+        .animation_tick = 0,
         .render = render_ns,
         .submit = submit_ns,
     };
+}
+
+fn pipelineAnimationSample(harness: *Harness, corpus: []const u8) !PipelineSample {
+    var session = try harness.newSession();
+    defer session.deinit();
+    session.activate();
+
+    var parse_ns: i128 = 0;
+    var render_state_ns: i128 = 0;
+    var image_prepare_ns: i128 = 0;
+    var animation_tick_ns: i128 = 0;
+    var render_ns: i128 = 0;
+    var submit_ns: i128 = 0;
+    const total_start = io.nanoTimestamp();
+    var start: i128 = 0;
+
+    var offset: usize = 0;
+    while (offset < corpus.len) {
+        const end = @min(offset + harness.options.chunk_bytes, corpus.len);
+        start = io.nanoTimestamp();
+        harness.runtime.terminalWrite(session.terminal, corpus[offset..end]);
+        parse_ns += io.nanoTimestamp() - start;
+
+        start = io.nanoTimestamp();
+        harness.runtime.clearRenderStateDirty(session.render_state);
+        try harness.runtime.updateRenderState(session.render_state, session.terminal);
+        render_state_ns += io.nanoTimestamp() - start;
+        harness.captureState(&session);
+
+        image_prepare_ns += harness.prepareImages(&session);
+        start = io.nanoTimestamp();
+        harness.queue(&session, true);
+        harness.renderer.discardGlyphQuads();
+        render_ns += io.nanoTimestamp() - start;
+        start = io.nanoTimestamp();
+        harness.submit(true);
+        submit_ns += io.nanoTimestamp() - start;
+        offset = end;
+    }
+
+    var now_ms: u64 = 0;
+    var frame: usize = 0;
+    while (frame < harness.options.frames) : (frame += 1) {
+        const graphics = harness.runtime.terminalKittyGraphics(session.terminal) orelse return error.AnimationStorageUnavailable;
+        const tick_start = io.nanoTimestamp();
+        const next_ms = harness.runtime.tickKittyAnimation(graphics, now_ms) orelse return error.AnimationStopped;
+        animation_tick_ns += io.nanoTimestamp() - tick_start;
+        now_ms = next_ms;
+
+        start = io.nanoTimestamp();
+        harness.runtime.clearRenderStateDirty(session.render_state);
+        try harness.runtime.updateRenderState(session.render_state, session.terminal);
+        render_state_ns += io.nanoTimestamp() - start;
+        harness.captureState(&session);
+
+        image_prepare_ns += harness.prepareImages(&session);
+        start = io.nanoTimestamp();
+        harness.queue(&session, true);
+        harness.renderer.discardGlyphQuads();
+        render_ns += io.nanoTimestamp() - start;
+        start = io.nanoTimestamp();
+        harness.submit(true);
+        submit_ns += io.nanoTimestamp() - start;
+    }
+
+    return .{
+        .total = io.nanoTimestamp() - total_start,
+        .parse = parse_ns,
+        .render_state = render_state_ns,
+        .image_prepare = image_prepare_ns,
+        .animation_tick = animation_tick_ns,
+        .render = render_ns,
+        .submit = submit_ns,
+    };
+}
+
+fn pipelineSampleForOptions(harness: *Harness, corpus: []const u8) !PipelineSample {
+    if (harness.options.hasAnimation()) return pipelineAnimationSample(harness, corpus);
+    return pipelineSample(harness, corpus);
 }
 
 fn run(harness: *Harness, corpus: []const u8, results: *Results) !void {
@@ -657,7 +994,7 @@ fn run(harness: *Harness, corpus: []const u8, results: *Results) !void {
             while (i < harness.options.iterations) : (i += 1) try results.parse.append(harness.allocator, try parseSample(harness, corpus));
         },
         .render_state => {
-            var session = try Session.init(&harness.runtime, harness.options.cols, harness.options.rows);
+            var session = try harness.newSession();
             defer session.deinit();
             session.activate();
             try harness.prepare(&session, corpus);
@@ -671,27 +1008,35 @@ fn run(harness: *Harness, corpus: []const u8, results: *Results) !void {
             }
         },
         .render => {
-            var session = try Session.init(&harness.runtime, harness.options.cols, harness.options.rows);
+            var session = try harness.newSession();
             defer session.deinit();
             session.activate();
             try harness.prepare(&session, corpus);
-            try results.cold_render.append(harness.allocator, renderSample(harness, &session));
+            const cold = renderSample(harness, &session);
+            try results.cold_render.append(harness.allocator, cold.render);
+            if (harness.options.hasImages()) try results.image_prepare.append(harness.allocator, cold.image_prepare);
             var i: usize = 0;
             while (i < harness.options.warmup) : (i += 1) _ = renderSample(harness, &session);
             i = 0;
-            while (i < harness.options.iterations) : (i += 1) try results.render.append(harness.allocator, renderSample(harness, &session));
+            while (i < harness.options.iterations) : (i += 1) {
+                const sample = renderSample(harness, &session);
+                try results.render.append(harness.allocator, sample.render);
+                if (harness.options.hasImages()) try results.image_prepare.append(harness.allocator, sample.image_prepare);
+            }
         },
         .pipeline => {
-            const cold = try pipelineSample(harness, corpus);
+            const cold = try pipelineSampleForOptions(harness, corpus);
             try results.cold_pipeline.append(harness.allocator, cold.total);
             var i: usize = 0;
-            while (i < harness.options.warmup) : (i += 1) _ = try pipelineSample(harness, corpus);
+            while (i < harness.options.warmup) : (i += 1) _ = try pipelineSampleForOptions(harness, corpus);
             i = 0;
             while (i < harness.options.iterations) : (i += 1) {
-                const sample = try pipelineSample(harness, corpus);
+                const sample = try pipelineSampleForOptions(harness, corpus);
                 try results.total.append(harness.allocator, sample.total);
                 try results.parse.append(harness.allocator, sample.parse);
                 try results.render_state.append(harness.allocator, sample.render_state);
+                if (harness.options.hasImages()) try results.image_prepare.append(harness.allocator, sample.image_prepare);
+                if (harness.options.hasAnimation()) try results.animation_tick.append(harness.allocator, sample.animation_tick);
                 try results.render.append(harness.allocator, sample.render);
                 try results.submit.append(harness.allocator, sample.submit);
             }
@@ -755,6 +1100,8 @@ fn parseScenario(value: []const u8) !Scenario {
     if (std.mem.eql(u8, value, "scroll")) return .scroll;
     if (std.mem.eql(u8, value, "styled")) return .styled;
     if (std.mem.eql(u8, value, "replay")) return .replay;
+    if (std.mem.eql(u8, value, "image")) return .image;
+    if (std.mem.eql(u8, value, "image-animation")) return .image_animation;
     return error.InvalidScenario;
 }
 
@@ -782,10 +1129,15 @@ fn parseOptions(allocator: std.mem.Allocator, args: [][]u8) !Options {
         if (i + 1 >= args.len) return error.MissingOptionValue;
         const value = args[i + 1];
         i += 1;
-        if (std.mem.eql(u8, arg, "--scenario")) options.scenario = try parseScenario(value) else if (std.mem.eql(u8, arg, "--input")) options.input_path = try allocator.dupe(u8, value) else if (std.mem.eql(u8, arg, "--frames")) options.frames = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--rows")) options.rows = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--cols")) options.cols = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--chunk-bytes")) options.chunk_bytes = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--warmup")) options.warmup = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--iterations")) options.iterations = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--mode")) options.mode = try parseMode(value) else return error.UnknownOption;
+        if (std.mem.eql(u8, arg, "--scenario")) options.scenario = try parseScenario(value) else if (std.mem.eql(u8, arg, "--input")) options.input_path = try allocator.dupe(u8, value) else if (std.mem.eql(u8, arg, "--frames")) options.frames = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--rows")) options.rows = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--cols")) options.cols = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--chunk-bytes")) options.chunk_bytes = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--warmup")) options.warmup = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--iterations")) options.iterations = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--images")) options.image_count = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--image-width")) options.image_width = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--image-height")) options.image_height = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--animation-frames")) options.animation_frames = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--animation-gap-ms")) options.animation_gap_ms = try parseUnsigned(value) else if (std.mem.eql(u8, arg, "--mode")) options.mode = try parseMode(value) else return error.UnknownOption;
     }
     if (options.rows == 0 or options.cols == 0 or options.rows > std.math.maxInt(u16) or options.cols > std.math.maxInt(u16)) return error.InvalidGrid;
     if (options.chunk_bytes == 0 or options.iterations == 0) return error.InvalidCount;
+    if (options.hasImages()) {
+        if (options.image_count == 0 or options.image_count > 200) return error.InvalidImageCount;
+        if (options.image_width == 0 or options.image_height == 0 or options.image_width > 1024 or options.image_height > 1024) return error.InvalidImageSize;
+        if (options.hasAnimation() and (options.animation_frames < 2 or options.animation_frames > 64 or options.animation_gap_ms == 0)) return error.InvalidAnimation;
+    }
     return options;
 }
 
@@ -813,9 +1165,10 @@ pub fn main(init: std.process.Init) !void {
     const checksum = std.hash.Fnv1a_64.hash(corpus);
     if (options.json) {
         const chunks = (corpus.len + options.chunk_bytes - 1) / options.chunk_bytes;
-        try output.interface.print("{{\"scenario\":\"{s}\",\"mode\":\"{s}\",\"rows\":{d},\"cols\":{d},\"frames\":{d},\"bytes\":{d},\"chunk_bytes\":{d},\"chunks\":{d},\"iterations\":{d},\"input_checksum\":\"{x}\",\"render_state_rows\":{d},\"render_state_cols\":{d},\"dirty_level\":\"{s}\",\"cursor_row\":{d},\"cursor_col\":{d},\"cells_visited\":{d},\"glyph_runs\":{d},\"bg_rects\":{d},\"atlas_flushed\":{},\"glyph_verts_count\":{d},\"stages\":{{", .{
-            @tagName(options.scenario), @tagName(options.mode),    options.rows,                  options.cols,             options.frames,           corpus.len,                 options.chunk_bytes,     chunks,                options.iterations,         checksum,
-            harness.render_state_rows,  harness.render_state_cols, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects, harness.last_atlas_flushed, harness.last_glyph_verts,
+        try output.interface.print("{{\"scenario\":\"{s}\",\"mode\":\"{s}\",\"rows\":{d},\"cols\":{d},\"frames\":{d},\"bytes\":{d},\"chunk_bytes\":{d},\"chunks\":{d},\"iterations\":{d},\"input_checksum\":\"{x}\",\"render_state_rows\":{d},\"render_state_cols\":{d},\"dirty_level\":\"{s}\",\"cursor_row\":{d},\"cursor_col\":{d},\"image_placements\":{d},\"image_placements_generation\":{d},\"cells_visited\":{d},\"glyph_runs\":{d},\"bg_rects\":{d},\"atlas_flushed\":{},\"glyph_verts_count\":{d},\"stages\":{{", .{
+            @tagName(options.scenario), @tagName(options.mode),    options.rows,                  options.cols,             options.frames,           corpus.len,               options.chunk_bytes,                      chunks,                     options.iterations,      checksum,
+            harness.render_state_rows,  harness.render_state_cols, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_image_count, harness.last_image_placements_generation, harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects,
+            harness.last_atlas_flushed, harness.last_glyph_verts,
         });
         var first = true;
         if (results.parse.values.items.len > 0) {
@@ -827,6 +1180,16 @@ pub fn main(init: std.process.Init) !void {
             if (!first) try output.interface.writeAll(",");
             first = false;
             try printJsonStats(&output, "render_state", results.render_state.values.items);
+        }
+        if (results.image_prepare.values.items.len > 0) {
+            if (!first) try output.interface.writeAll(",");
+            first = false;
+            try printJsonStats(&output, "image_prepare", results.image_prepare.values.items);
+        }
+        if (results.animation_tick.values.items.len > 0) {
+            if (!first) try output.interface.writeAll(",");
+            first = false;
+            try printJsonStats(&output, "animation_tick", results.animation_tick.values.items);
         }
         if (results.render.values.items.len > 0) {
             if (!first) try output.interface.writeAll(",");
@@ -851,15 +1214,17 @@ pub fn main(init: std.process.Init) !void {
         try output.interface.writeAll("}}\n");
     } else {
         const chunks = (corpus.len + options.chunk_bytes - 1) / options.chunk_bytes;
-        try output.interface.print("scenario: {s}\nmode: {s}\ngrid: {d}x{d}\nframes: {d}\nbytes: {d}\nchunk_bytes: {d}\nchunks: {d}\niterations: {d}\ninput_checksum: {x}\nrender_state: {d}x{d}\ndirty_level: {s}\ncursor: {d},{d}\nrenderer_counters: rows_rendered={d} rows_skipped={d} cells_visited={d} glyph_runs={d} bg_rects={d} atlas_flushed={} glyph_verts_count={d}\n", .{
-            @tagName(options.scenario), @tagName(options.mode),    options.cols,                  options.rows,             options.frames,           corpus.len,                 options.chunk_bytes,       chunks,                     options.iterations,      checksum,
-            harness.render_state_cols,  harness.render_state_rows, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_rows_rendered, harness.last_rows_skipped, harness.last_cells_visited, harness.last_glyph_runs, harness.last_bg_rects,
-            harness.last_atlas_flushed, harness.last_glyph_verts,
+        try output.interface.print("scenario: {s}\nmode: {s}\ngrid: {d}x{d}\nframes: {d}\nbytes: {d}\nchunk_bytes: {d}\nchunks: {d}\niterations: {d}\ninput_checksum: {x}\nrender_state: {d}x{d}\ndirty_level: {s}\ncursor: {d},{d}\nimage_placements: {d}\nimage_placements_generation: {d}\nrenderer_counters: rows_rendered={d} rows_skipped={d} cells_visited={d} glyph_runs={d} bg_rects={d} atlas_flushed={} glyph_verts_count={d}\n", .{
+            @tagName(options.scenario), @tagName(options.mode),    options.cols,                  options.rows,             options.frames,           corpus.len,               options.chunk_bytes,                      chunks,                     options.iterations,        checksum,
+            harness.render_state_cols,  harness.render_state_rows, @tagName(harness.dirty_level), harness.final_cursor_row, harness.final_cursor_col, harness.last_image_count, harness.last_image_placements_generation, harness.last_rows_rendered, harness.last_rows_skipped, harness.last_cells_visited,
+            harness.last_glyph_runs,    harness.last_bg_rects,     harness.last_atlas_flushed,    harness.last_glyph_verts,
         });
         if (results.cold_render.values.items.len > 0) try output.interface.print("cold_render_cpu_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_render.values.items[0])) / 1_000_000.0});
         if (results.cold_pipeline.values.items.len > 0) try output.interface.print("cold_pipeline_ms: {d:.3}\n", .{@as(f64, @floatFromInt(results.cold_pipeline.values.items[0])) / 1_000_000.0});
         if (results.parse.values.items.len > 0) try printStats(&output, "parse", results.parse.values.items, corpus.len);
         if (results.render_state.values.items.len > 0) try printStats(&output, "render_state", results.render_state.values.items, 0);
+        if (results.image_prepare.values.items.len > 0) try printStats(&output, "image_prepare", results.image_prepare.values.items, 0);
+        if (results.animation_tick.values.items.len > 0) try printStats(&output, "animation_tick", results.animation_tick.values.items, 0);
         if (results.render.values.items.len > 0) try printStats(&output, "render_cpu", results.render.values.items, 0);
         if (results.submit.values.items.len > 0) try printStats(&output, "submit_cpu", results.submit.values.items, 0);
         if (results.total.values.items.len > 0) try printStats(&output, "pipeline", results.total.values.items, corpus.len);
@@ -921,6 +1286,78 @@ pub fn runFlashScenarioTest(allocator: std.mem.Allocator) !void {
 
     if (updates < 2) return error.FlashScenarioDidNotProduceUpdates;
     if (!saw_backgrounds or !saw_glyphs) return error.EmptyFlashRender;
+}
+
+pub fn runImageScenarioTest(allocator: std.mem.Allocator) !void {
+    const options = Options{
+        .scenario = .image,
+        .frames = 1,
+        .rows = 8,
+        .cols = 24,
+        .chunk_bytes = 97,
+        .warmup = 0,
+        .iterations = 1,
+        .image_count = 3,
+        .image_width = 4,
+        .image_height = 4,
+    };
+    const corpus = try buildCorpus(allocator, options);
+    defer allocator.free(corpus);
+    var harness = try Harness.init(allocator, options);
+    defer harness.deinit();
+    var session = try harness.newSession();
+    defer session.deinit();
+    session.activate();
+
+    try harness.prepare(&session, corpus);
+    if (harness.last_image_placements_generation == 0) return error.ImagePlacementsNotUpdated;
+    _ = harness.prepareImages(&session);
+    if (harness.last_image_count < options.image_count + 2) return error.ImagesNotPrepared;
+    harness.queue(&session, true);
+    if (harness.last_image_count == 0) return error.EmptyImageRender;
+    harness.submit(true);
+}
+
+pub fn runImageAnimationScenarioTest(allocator: std.mem.Allocator) !void {
+    const options = Options{
+        .scenario = .image_animation,
+        .frames = 4,
+        .rows = 8,
+        .cols = 24,
+        .chunk_bytes = 113,
+        .warmup = 0,
+        .iterations = 1,
+        .image_count = 2,
+        .image_width = 4,
+        .image_height = 4,
+        .animation_frames = 4,
+        .animation_gap_ms = 7,
+    };
+    const corpus = try buildCorpus(allocator, options);
+    defer allocator.free(corpus);
+    var harness = try Harness.init(allocator, options);
+    defer harness.deinit();
+    var session = try harness.newSession();
+    defer session.deinit();
+    session.activate();
+
+    try harness.prepare(&session, corpus);
+    const graphics = harness.runtime.terminalKittyGraphics(session.terminal) orelse return error.AnimationStorageUnavailable;
+    const image = harness.runtime.kittyGraphicsImage(graphics, 1) orelse return error.AnimationImageMissing;
+    var generation: u64 = 0;
+    if (!harness.runtime.kittyImageData(image, .generation, &generation)) return error.AnimationGenerationUnavailable;
+    const deadline = harness.runtime.tickKittyAnimation(graphics, 0) orelse return error.AnimationDidNotStart;
+    const next_deadline = harness.runtime.tickKittyAnimation(graphics, deadline) orelse return error.AnimationDidNotAdvance;
+    _ = next_deadline;
+    var next_generation: u64 = 0;
+    if (!harness.runtime.kittyImageData(image, .generation, &next_generation) or next_generation == generation) return error.AnimationGenerationUnchanged;
+
+    try harness.runtime.updateRenderState(session.render_state, session.terminal);
+    harness.captureState(&session);
+    _ = harness.prepareImages(&session);
+    if (harness.last_image_count < options.image_count) return error.AnimatedImagesNotPrepared;
+    harness.queue(&session, true);
+    harness.submit(true);
 }
 
 pub fn runPaneGlyphOffsetTest(allocator: std.mem.Allocator) !void {
