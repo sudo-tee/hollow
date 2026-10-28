@@ -225,9 +225,7 @@ pub const KittyTextureKey = struct {
     image_id: u32,
     width: u32,
     height: u32,
-    format: ghostty.KittyImageFormat,
-    data_len: usize,
-    data_ptr: usize,
+    generation: u64,
 };
 
 pub const KittyTexture = struct {

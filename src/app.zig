@@ -2541,6 +2541,10 @@ pub const App = struct {
                 }
                 const now_ns = io.nanoTimestamp();
                 const is_active = pane_is_active;
+                pane.tickImageAnimation(runtime, now_ns);
+                if (!pane.synchronized_output_active and pane.image_animation_deadline_ns != 0) {
+                    next_idle_render_poll_ns = input.minWakeNs(next_idle_render_poll_ns, pane.image_animation_deadline_ns);
+                }
                 // Ghostty-managed idle state (primarily cursor blink) does not
                 // need a 60 Hz poll. Poll the active pane at a modest cadence so
                 // idle windows do not burn CPU just to discover blink changes.

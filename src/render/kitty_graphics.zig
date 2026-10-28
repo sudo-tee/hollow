@@ -14,7 +14,6 @@ const ft_types = @import("ft_types.zig");
 const FtRenderer = @import("ft_renderer.zig").FtRenderer;
 
 const KittyTexture = ft_types.KittyTexture;
-const KittyTextureKey = ft_types.KittyTextureKey;
 
 extern fn hollow_decode_png_bytes(
     data: [*]const u8,
@@ -96,6 +95,14 @@ pub fn expandKittyPixels(allocator: std.mem.Allocator, format: ghostty.KittyImag
 // ── Texture cache ─────────────────────────────────────────────────────────────
 
 pub fn getOrCreateKittyTexture(self: *FtRenderer, runtime: *ghostty.Runtime, image_id: u32, image: ?*const anyopaque) ?*KittyTexture {
+    var generation: u64 = 0;
+    if (!runtime.kittyImageData(image, .generation, &generation)) return null;
+    var free_slot: ?usize = null;
+    for (&self.kitty_textures, 0..) |*slot, i| {
+        if (slot.*) |*tex| {
+            if (tex.key.generation == generation) return tex;
+        } else if (free_slot == null) free_slot = i;
+    }
     var width: u32 = 0;
     var height: u32 = 0;
     var format: ghostty.KittyImageFormat = .rgba;
@@ -107,29 +114,12 @@ pub fn getOrCreateKittyTexture(self: *FtRenderer, runtime: *ghostty.Runtime, ima
     if (!runtime.kittyImageData(image, .data_ptr, @ptrCast(&data_ptr)) or data_ptr == null) return null;
     if (!runtime.kittyImageData(image, .data_len, &data_len) or data_len == 0) return null;
 
-    const key = KittyTextureKey{
-        .image_id = image_id,
-        .width = width,
-        .height = height,
-        .format = format,
-        .data_len = data_len,
-        .data_ptr = @intFromPtr(data_ptr.?),
-    };
-
-    var free_slot: ?usize = null;
-    for (&self.kitty_textures, 0..) |*slot, i| {
-        if (slot.*) |*tex| {
-            if (std.meta.eql(tex.key, key)) return tex;
-        } else if (free_slot == null) {
-            free_slot = i;
-        }
-    }
-
     const pixels = data_ptr.?[0..data_len];
     const rgba_pixels = expandKittyPixels(self.allocator, format, pixels, width, height) orelse return null;
     defer self.allocator.free(rgba_pixels);
 
-    const slot_idx = free_slot orelse 0;
+    const slot_idx = free_slot orelse self.kitty_texture_cursor;
+    self.kitty_texture_cursor = (slot_idx + 1) % self.kitty_textures.len;
     if (self.kitty_textures[slot_idx]) |*old| old.deinit();
 
     var img_desc = std.mem.zeroes(c.sg_image_desc);
@@ -146,7 +136,7 @@ pub fn getOrCreateKittyTexture(self: *FtRenderer, runtime: *ghostty.Runtime, ima
     const view = c.sg_make_view(&view_desc);
 
     self.kitty_textures[slot_idx] = KittyTexture{
-        .key = key,
+        .key = .{ .image_id = image_id, .width = width, .height = height, .generation = generation },
         .image = sg_img,
         .view = view,
     };
@@ -199,56 +189,51 @@ pub fn clipTexturedQuad(
 
 // ── Kitty layer drawing ───────────────────────────────────────────────────────
 
+/// Upload only outside an active GPU pass. Drawing never creates resources.
+pub fn prepareKittyTextures(self: *FtRenderer, runtime: *ghostty.Runtime, terminal: ?*anyopaque, state: ?*anyopaque) void {
+    const graphics = runtime.terminalKittyGraphics(terminal) orelse return;
+    self.render_images.update(self.allocator, state) catch return;
+    for (self.render_images.items.items) |placement| {
+        const image = runtime.kittyGraphicsImage(graphics, placement.image_id) orelse continue;
+        _ = getOrCreateKittyTexture(self, runtime, placement.image_id, image);
+    }
+}
+
 pub fn queueKittyLayerInPane(
     self: *FtRenderer,
     runtime: *ghostty.Runtime,
-    terminal: ?*anyopaque,
-    layer: ghostty.KittyPlacementLayer,
+    state: ?*anyopaque,
+    layer: ghostty.ImageLayer,
     ox: f32,
     oy: f32,
     pw: f32,
     ph: f32,
-    fb_w: f32,
-    fb_h: f32,
 ) void {
-    const term = terminal orelse return;
-    const graphics = runtime.terminalKittyGraphics(term) orelse return;
-    const iterator = runtime.createKittyPlacementIterator() catch return;
-    defer runtime.freeKittyPlacementIterator(iterator);
-    if (!runtime.populateKittyPlacementIterator(graphics, iterator)) return;
-    if (!runtime.setKittyPlacementLayer(iterator, layer)) return;
+    _ = runtime;
+    // Called once per layer; the retained list and iterator reuse their storage.
+    if (layer == .below_bg) self.render_images.update(self.allocator, state) catch return;
 
     c.sgl_defaults();
-    c.sgl_viewport(0, 0, @intFromFloat(fb_w), @intFromFloat(fb_h), true);
+    c.sgl_viewport(@intFromFloat(ox), @intFromFloat(oy), @intFromFloat(pw), @intFromFloat(ph), true);
     c.sgl_scissor_rect(@intFromFloat(ox), @intFromFloat(oy), @intFromFloat(pw), @intFromFloat(ph), true);
     c.sgl_matrix_mode_projection();
     c.sgl_load_identity();
-    c.sgl_ortho(0.0, fb_w, fb_h, 0.0, -1.0, 1.0);
+    c.sgl_ortho(0.0, pw, ph, 0.0, -1.0, 1.0);
 
-    while (runtime.nextKittyPlacement(iterator)) {
-        var is_virtual = false;
-        if (!runtime.kittyPlacementData(iterator, .is_virtual, &is_virtual) or is_virtual) continue;
-
-        var image_id: u32 = 0;
-        if (!runtime.kittyPlacementData(iterator, .image_id, &image_id)) continue;
-        const image = runtime.kittyGraphicsImage(graphics, image_id) orelse continue;
-        const render_info = runtime.kittyPlacementRenderInfo(iterator, image, term) orelse continue;
-        if (!render_info.viewport_visible or render_info.pixel_width == 0 or render_info.pixel_height == 0) continue;
-
-        const tex = getOrCreateKittyTexture(self, runtime, image_id, image) orelse continue;
-
-        var x = self.padding_x + @as(f32, @floatFromInt(render_info.viewport_col)) * self.cell_w;
-        var y = self.padding_y + @as(f32, @floatFromInt(render_info.viewport_row)) * self.cell_h;
-        var w = @as(f32, @floatFromInt(render_info.pixel_width));
-        var h = @as(f32, @floatFromInt(render_info.pixel_height));
-        var uv0_x = @as(f32, @floatFromInt(render_info.source_x)) / @as(f32, @floatFromInt(tex.key.width));
-        var uv0_y = @as(f32, @floatFromInt(render_info.source_y)) / @as(f32, @floatFromInt(tex.key.height));
-        var uv1_x = @as(f32, @floatFromInt(render_info.source_x + render_info.source_width)) / @as(f32, @floatFromInt(tex.key.width));
-        var uv1_y = @as(f32, @floatFromInt(render_info.source_y + render_info.source_height)) / @as(f32, @floatFromInt(tex.key.height));
+    for (self.render_images.items.items) |placement| {
+        if (placement.layer != @backingInt(layer) or placement.width == 0 or placement.height == 0) continue;
+        const tex = for (&self.kitty_textures) |*slot| {
+            if (slot.*) |*texture| if (texture.key.generation == placement.generation) break texture;
+        } else continue;
+        var x = self.padding_x + @as(f32, @floatFromInt(placement.col)) * self.cell_w + @as(f32, @floatFromInt(placement.offset_x));
+        var y = self.padding_y + @as(f32, @floatFromInt(placement.row)) * self.cell_h + @as(f32, @floatFromInt(placement.offset_y));
+        var w = @as(f32, @floatFromInt(placement.width));
+        var h = @as(f32, @floatFromInt(placement.height));
+        var uv0_x = @as(f32, @floatFromInt(placement.source_x)) / @as(f32, @floatFromInt(tex.key.width));
+        var uv0_y = @as(f32, @floatFromInt(placement.source_y)) / @as(f32, @floatFromInt(tex.key.height));
+        var uv1_x = @as(f32, @floatFromInt(placement.source_x + placement.source_width)) / @as(f32, @floatFromInt(tex.key.width));
+        var uv1_y = @as(f32, @floatFromInt(placement.source_y + placement.source_height)) / @as(f32, @floatFromInt(tex.key.height));
         if (!clipTexturedQuad(&x, &y, &w, &h, &uv0_x, &uv0_y, &uv1_x, &uv1_y, pw, ph)) continue;
-
-        x += ox;
-        y += oy;
 
         c.sgl_load_default_pipeline();
         c.sgl_enable_texture();
