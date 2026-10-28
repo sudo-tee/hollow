@@ -86,6 +86,23 @@ test "user shell jobs load startup and preserve argv on dedicated and mux agents
     }
 }
 
+test "closing the last mux pane joins the shared reader and worker" {
+    const path = try agentPath();
+    defer std.testing.allocator.free(path);
+    var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", multiplex(path)), .{});
+    defer pty.closeAndJoin();
+    try pty.start();
+    const connection = pty.session.mux_connection.?;
+    _ = connection.refs.fetchAdd(1, .monotonic);
+    defer connection.unref();
+    pty.closeAndJoin();
+    connection.mutex.lock();
+    defer connection.mutex.unlock();
+    try std.testing.expect(connection.finished);
+    try std.testing.expect(connection.reader_done);
+    for (connection.sessions) |session| try std.testing.expect(session == null);
+}
+
 test "mux panes reuse a connector and isolate env resize input exit and close" {
     const path = try agentPath();
     defer std.testing.allocator.free(path);

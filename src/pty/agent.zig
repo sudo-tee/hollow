@@ -440,6 +440,7 @@ pub const AgentPty = struct {
             s.mutex.lock();
             while (!s.reader_done) s.changed.wait(&s.mutex);
             s.mutex.unlock();
+            mux.joinIdle(s.mux_connection.?);
             s.unref();
             return;
         }
