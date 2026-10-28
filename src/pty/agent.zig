@@ -210,7 +210,7 @@ pub const AgentPty = struct {
         }
 
         var fallback_spec: Fallback = .{
-            .shell = try allocator.dupeZ(u8, request.shell),
+            .shell = try allocator.dupeSentinel(u8, request.shell, 0),
             .cwd = null,
             .env_block = null,
             .launch_command = null,

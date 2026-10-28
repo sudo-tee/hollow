@@ -187,7 +187,7 @@ pub fn queueTerminal(
     const run_buf = self.run_buf;
     resetQueueState(self);
 
-    var hash_skip_bits: HashSkipBits = [_]u64{0} ** HASH_SKIP_WORDS;
+    var hash_skip_bits: HashSkipBits = @splat(0);
 
     const t_pass1_start = if (queue.debug_timing) io.nanoTimestamp() else 0;
     queueBackgroundAndRasterPass(self, runtime, &queue, queue.viewport_width, queue.viewport_height, &hash_skip_bits, run_buf);
@@ -441,7 +441,7 @@ pub fn queueBackgroundAndRasterRow(
                 appendQueuedRun(self, .raster, run_buf, glyph_utf8, col_x, text_style.face_idx, text_style.fg, &run, row.py);
             },
             .codepoint_grapheme => {
-                var cps: [16]u32 = [_]u32{0} ** 16;
+                var cps: [16]u32 = @splat(0);
                 const grapheme_len = @min(runtime.cellGraphemeLen(queue.row_cells.*), cps.len);
                 const glyph_utf8 = encodeCurrentCellGraphemeUtf8(self, runtime, queue.row_cells.*, &cps) orelse {
                     flushQueuedRun(self, .raster, run_buf, &run, row.py);
@@ -640,7 +640,7 @@ pub fn queueGlyphRow(
                 appendQueuedRun(self, .draw, run_buf, encodeCodepointUtf8(self, cp), col_x, text_style.face_idx, text_style.fg, &run, row.py);
             },
             .codepoint_grapheme => {
-                var cps: [16]u32 = [_]u32{0} ** 16;
+                var cps: [16]u32 = @splat(0);
                 const grapheme_len = @min(runtime.cellGraphemeLen(queue.row_cells.*), cps.len);
                 const glyph_utf8 = encodeCurrentCellGraphemeUtf8(self, runtime, queue.row_cells.*, &cps) orelse {
                     flushQueuedRun(self, .draw, run_buf, &run, row.py);
@@ -1001,7 +1001,7 @@ pub fn encodeCurrentCellGraphemeUtf8(self: *FtRenderer, runtime: *ghostty.Runtim
     }
     const text = runtime.cellGraphemeUtf8Into(row_cells, self.grapheme_buf) orelse return null;
 
-    cps.* = [_]u32{0} ** 16;
+    cps.* = @splat(0);
     var view = std.unicode.Utf8View.init(text) catch return null;
     var iter = view.iterator();
     var i: usize = 0;

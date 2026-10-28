@@ -974,7 +974,7 @@ pub const Runtime = struct {
         if (result != success or handle == null) {
             return error.TerminalCreateFailed;
         }
-        _ = self.terminal_set(handle, @intFromEnum(TerminalOpt.scrollback_max_bytes), &max_scrollback);
+        _ = self.terminal_set(handle, @backingInt(TerminalOpt.scrollback_max_bytes), &max_scrollback);
         return handle;
     }
 
@@ -992,19 +992,19 @@ pub const Runtime = struct {
         const terminal = handle orelse return;
 
         var foreground_value = foreground;
-        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_foreground), &foreground_value);
+        _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_foreground), &foreground_value);
 
         var background_value = background;
-        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_background), &background_value);
+        _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_background), &background_value);
 
         if (cursor) |cursor_value| {
             var cursor_color = cursor_value;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_cursor), &cursor_color);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_cursor), &cursor_color);
         } else {
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_cursor), null);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_cursor), null);
         }
 
-        _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_palette), palette);
+        _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_palette), palette);
     }
 
     pub fn freeTerminal(self: *Runtime, handle: ?*anyopaque) void {
@@ -1023,16 +1023,16 @@ pub const Runtime = struct {
 
     pub fn terminalMode(self: *Runtime, handle: ?*anyopaque, mode: Mode) bool {
         if (handle) |terminal| {
-            var config = TerminalModeConfig{ .mode = @intFromEnum(mode), .value = false };
-            return self.terminal_get(terminal, @intFromEnum(TerminalData.mode), &config) == success and config.value;
+            var config = TerminalModeConfig{ .mode = @backingInt(mode), .value = false };
+            return self.terminal_get(terminal, @backingInt(TerminalData.mode), &config) == success and config.value;
         }
         return false;
     }
 
     pub fn setTerminalMode(self: *Runtime, handle: ?*anyopaque, mode: Mode, value: bool) bool {
         if (handle) |terminal| {
-            var config = TerminalModeConfig{ .mode = @intFromEnum(mode), .value = value };
-            return self.terminal_set(terminal, @intFromEnum(TerminalOpt.mode), &config) == success;
+            var config = TerminalModeConfig{ .mode = @backingInt(mode), .value = value };
+            return self.terminal_set(terminal, @backingInt(TerminalOpt.mode), &config) == success;
         }
         return false;
     }
@@ -1040,7 +1040,7 @@ pub const Runtime = struct {
     pub fn terminalTitle(self: *Runtime, allocator: std.mem.Allocator, handle: ?*anyopaque) !?[]u8 {
         if (handle) |terminal| {
             var title = String{ .ptr = null, .len = 0 };
-            if (self.terminal_get(terminal, @intFromEnum(TerminalData.title), &title) == success and title.ptr != null and title.len > 0) {
+            if (self.terminal_get(terminal, @backingInt(TerminalData.title), &title) == success and title.ptr != null and title.len > 0) {
                 return try allocator.dupe(u8, title.ptr.?[0..title.len]);
             }
         }
@@ -1050,8 +1050,8 @@ pub const Runtime = struct {
     pub fn terminalActiveScreen(self: *Runtime, handle: ?*anyopaque) TerminalScreen {
         if (handle) |terminal| {
             var screen: u32 = 0;
-            if (self.terminal_get(terminal, @intFromEnum(TerminalData.active_screen), &screen) == success) {
-                return @enumFromInt(screen);
+            if (self.terminal_get(terminal, @backingInt(TerminalData.active_screen), &screen) == success) {
+                return @fromBackingInt(@intCast(screen));
             }
         }
         return .primary;
@@ -1060,7 +1060,7 @@ pub const Runtime = struct {
     pub fn terminalScrollbar(self: *Runtime, handle: ?*anyopaque) ?TerminalScrollbar {
         if (handle) |terminal| {
             var scrollbar: TerminalScrollbar = undefined;
-            if (self.terminal_get(terminal, @intFromEnum(TerminalData.scrollbar), &scrollbar) == success) {
+            if (self.terminal_get(terminal, @backingInt(TerminalData.scrollbar), &scrollbar) == success) {
                 return scrollbar;
             }
         }
@@ -1069,35 +1069,35 @@ pub const Runtime = struct {
 
     pub fn terminalScroll(self: *Runtime, handle: ?*anyopaque, delta: isize) void {
         if (handle) |terminal| {
-            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.delta), .value = .{ .delta = delta } };
+            const viewport = ScrollViewport{ .tag = @backingInt(ScrollViewportTag.delta), .value = .{ .delta = delta } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
     pub fn terminalScrollPrompt(self: *Runtime, handle: ?*anyopaque, delta: isize) void {
         if (handle) |terminal| self.terminal_scroll_viewport(terminal, .{
-            .tag = @intFromEnum(ScrollViewportTag.delta_prompt),
+            .tag = @backingInt(ScrollViewportTag.delta_prompt),
             .value = .{ .delta_prompt = delta },
         });
     }
 
     pub fn terminalScrollTop(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| {
-            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
+            const viewport = ScrollViewport{ .tag = @backingInt(ScrollViewportTag.top), .value = .{ ._padding = .{ 0, 0 } } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
     pub fn terminalScrollBottom(self: *Runtime, handle: ?*anyopaque) void {
         if (handle) |terminal| {
-            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
+            const viewport = ScrollViewport{ .tag = @backingInt(ScrollViewportTag.bottom), .value = .{ ._padding = .{ 0, 0 } } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
     }
 
     pub fn terminalScrollToRow(self: *Runtime, handle: ?*anyopaque, row: usize) void {
         if (handle) |terminal| {
-            const viewport = ScrollViewport{ .tag = @intFromEnum(ScrollViewportTag.row), .value = .{ .row = row } };
+            const viewport = ScrollViewport{ .tag = @backingInt(ScrollViewportTag.row), .value = .{ .row = row } };
             self.terminal_scroll_viewport(terminal, viewport);
         }
     }
@@ -1136,89 +1136,89 @@ pub const Runtime = struct {
     }
 
     pub fn setWritePtyCallback(self: *Runtime, handle: ?*anyopaque, callback: WritePtyCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.write_pty), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.write_pty), @ptrCast(callback));
     }
 
     pub fn setTerminalUserdata(self: *Runtime, handle: ?*anyopaque, userdata: ?*anyopaque) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.userdata), userdata);
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.userdata), userdata);
     }
 
     pub fn setBellCallback(self: *Runtime, handle: ?*anyopaque, callback: BellCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.bell), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.bell), @ptrCast(callback));
     }
 
     pub fn setEnquiryCallback(self: *Runtime, handle: ?*anyopaque, callback: EnquiryCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.enquiry), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.enquiry), @ptrCast(callback));
     }
 
     pub fn setXtversionCallback(self: *Runtime, handle: ?*anyopaque, callback: XtversionCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.xtversion), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.xtversion), @ptrCast(callback));
     }
 
     pub fn setSizeCallback(self: *Runtime, handle: ?*anyopaque, callback: SizeCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.size), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.size), @ptrCast(callback));
     }
 
     pub fn setColorSchemeCallback(self: *Runtime, handle: ?*anyopaque, callback: ColorSchemeCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.color_scheme), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.color_scheme), @ptrCast(callback));
     }
 
     pub fn setDeviceAttributesCallback(self: *Runtime, handle: ?*anyopaque, callback: DeviceAttributesCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.device_attributes), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.device_attributes), @ptrCast(callback));
     }
 
     pub fn setTitleChangedCallback(self: *Runtime, handle: ?*anyopaque, callback: TitleChangedCallback) void {
-        if (handle) |terminal| _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.title_changed), @ptrCast(callback));
+        if (handle) |terminal| _ = self.terminal_set(terminal, @backingInt(TerminalOpt.title_changed), @ptrCast(callback));
     }
 
     pub fn setKittyImageStorageLimit(self: *Runtime, handle: ?*anyopaque, bytes: u64) void {
         if (handle) |terminal| {
             var copy = bytes;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_storage_limit), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.kitty_image_storage_limit), &copy);
         }
     }
 
     pub fn setKittyImageMediumFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_file), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.kitty_image_medium_file), &copy);
         }
     }
 
     pub fn setKittyImageMediumTempFile(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_temp_file), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.kitty_image_medium_temp_file), &copy);
         }
     }
 
     pub fn setKittyImageMediumSharedMem(self: *Runtime, handle: ?*anyopaque, enabled: bool) void {
         if (handle) |terminal| {
             var copy = enabled;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.kitty_image_medium_shared_mem), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.kitty_image_medium_shared_mem), &copy);
         }
     }
 
     pub fn setApcMaxBytes(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
         if (handle) |terminal| {
             var copy = bytes;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.apc_max_bytes), &copy);
         }
     }
 
     pub fn setApcMaxBytesKitty(self: *Runtime, handle: ?*anyopaque, bytes: usize) void {
         if (handle) |terminal| {
             var copy = bytes;
-            _ = self.terminal_set(terminal, @intFromEnum(TerminalOpt.apc_max_bytes_kitty), &copy);
+            _ = self.terminal_set(terminal, @backingInt(TerminalOpt.apc_max_bytes_kitty), &copy);
         }
     }
 
     pub fn setSysDecodePng(self: *Runtime, callback: ?DecodePngFn) i32 {
-        return self.sys_set(@intFromEnum(SysOpt.decode_png), if (callback) |cb| @ptrCast(cb) else null);
+        return self.sys_set(@backingInt(SysOpt.decode_png), if (callback) |cb| @ptrCast(cb) else null);
     }
 
     pub fn setSysUserdata(self: *Runtime, value: ?*anyopaque) i32 {
-        return self.sys_set(@intFromEnum(SysOpt.userdata), value);
+        return self.sys_set(@backingInt(SysOpt.userdata), value);
     }
 
     /// Register all terminal callbacks on `handle` in one call. Must be called
@@ -1234,11 +1234,11 @@ pub const Runtime = struct {
         self.setTitleChangedCallback(handle, cbs.title_changed);
         inline for (.{ "pwd_changed", "clipboard_write", "render_hold", "semantic_prompt", "reset", "program_status" }) |name| {
             const cb = @field(cbs, name);
-            _ = self.terminal_set(handle, @intFromEnum(@field(TerminalOpt, name)), if (cb) |value| @ptrCast(value) else null);
+            _ = self.terminal_set(handle, @backingInt(@field(TerminalOpt, name)), if (cb) |value| @ptrCast(value) else null);
         }
         // Match Hollow's former bounded OSC 52 capture. Reads remain disabled.
         var max_bytes: usize = 48 * 1024;
-        _ = self.terminal_set(handle, @intFromEnum(TerminalOpt.clipboard_write_max_bytes), &max_bytes);
+        _ = self.terminal_set(handle, @backingInt(TerminalOpt.clipboard_write_max_bytes), &max_bytes);
     }
 
     pub fn createRenderState(self: *Runtime) !?*anyopaque {
@@ -1260,22 +1260,22 @@ pub const Runtime = struct {
     pub fn getRenderStateDirty(self: *Runtime, render_state: ?*anyopaque) ?RenderStateDirty {
         if (render_state) |state| {
             var dirty: u32 = 0;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.dirty), &dirty) == success) return @enumFromInt(dirty);
+            if (self.render_state_get(state, @backingInt(RenderStateData.dirty), &dirty) == success) return @fromBackingInt(@intCast(dirty));
         }
         return null;
     }
 
     pub fn clearRenderStateDirty(self: *Runtime, render_state: ?*anyopaque) void {
         if (render_state) |state| {
-            var dirty: u32 = @intFromEnum(RenderStateDirty.false_value);
-            _ = self.render_state_set(state, @intFromEnum(RenderStateOpt.dirty), &dirty);
+            var dirty: u32 = @backingInt(RenderStateDirty.false_value);
+            _ = self.render_state_set(state, @backingInt(RenderStateOpt.dirty), &dirty);
         }
     }
 
     pub fn renderStateColorsInto(self: *Runtime, render_state: ?*anyopaque, out: *RenderStateColors) bool {
         if (render_state) |state| {
             out.size = @sizeOf(RenderStateColors);
-            return self.render_state_get(state, @intFromEnum(RenderStateData.colors), out) == success;
+            return self.render_state_get(state, @backingInt(RenderStateData.colors), out) == success;
         }
         return false;
     }
@@ -1289,7 +1289,7 @@ pub const Runtime = struct {
     pub fn renderStateCols(self: *Runtime, render_state: ?*anyopaque) ?u16 {
         if (render_state) |state| {
             var cols: u16 = 0;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.cols), &cols) == success) return cols;
+            if (self.render_state_get(state, @backingInt(RenderStateData.cols), &cols) == success) return cols;
         }
         return null;
     }
@@ -1297,7 +1297,7 @@ pub const Runtime = struct {
     pub fn renderStateRows(self: *Runtime, render_state: ?*anyopaque) ?u16 {
         if (render_state) |state| {
             var rows: u16 = 0;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.rows), &rows) == success) return rows;
+            if (self.render_state_get(state, @backingInt(RenderStateData.rows), &rows) == success) return rows;
         }
         return null;
     }
@@ -1314,7 +1314,7 @@ pub const Runtime = struct {
 
     pub fn populateRowIterator(self: *Runtime, render_state: ?*anyopaque, row_iterator: *?*anyopaque) bool {
         if (render_state) |state| {
-            return self.render_state_get(state, @intFromEnum(RenderStateData.row_iterator), @ptrCast(row_iterator)) == success;
+            return self.render_state_get(state, @backingInt(RenderStateData.row_iterator), @ptrCast(row_iterator)) == success;
         }
         return false;
     }
@@ -1327,7 +1327,7 @@ pub const Runtime = struct {
     pub fn rowDirty(self: *Runtime, row_iterator: ?*anyopaque) bool {
         if (row_iterator) |iterator| {
             var dirty = false;
-            return self.row_get(iterator, @intFromEnum(RowData.dirty), &dirty) == success and dirty;
+            return self.row_get(iterator, @backingInt(RowData.dirty), &dirty) == success and dirty;
         }
         return false;
     }
@@ -1335,7 +1335,7 @@ pub const Runtime = struct {
     pub fn clearRowDirty(self: *Runtime, row_iterator: ?*anyopaque) void {
         if (row_iterator) |iterator| {
             var dirty = false;
-            _ = self.row_set(iterator, @intFromEnum(RowOpt.dirty), &dirty);
+            _ = self.row_set(iterator, @backingInt(RowOpt.dirty), &dirty);
         }
     }
 
@@ -1351,7 +1351,7 @@ pub const Runtime = struct {
 
     pub fn populateRowCells(self: *Runtime, row_iterator: ?*anyopaque, row_cells: *?*anyopaque) bool {
         if (row_iterator) |iterator| {
-            return self.row_get(iterator, @intFromEnum(RowData.cells), @ptrCast(row_cells)) == success;
+            return self.row_get(iterator, @backingInt(RowData.cells), @ptrCast(row_cells)) == success;
         }
         return false;
     }
@@ -1365,7 +1365,7 @@ pub const Runtime = struct {
         if (row_cells) |cells| {
             out.* = undefined;
             out.size = @sizeOf(Style);
-            return self.row_cells_get(cells, @intFromEnum(CellData.style), out) == success;
+            return self.row_cells_get(cells, @backingInt(CellData.style), out) == success;
         }
         return false;
     }
@@ -1379,7 +1379,7 @@ pub const Runtime = struct {
     pub fn cellGraphemeLen(self: *Runtime, row_cells: ?*anyopaque) u32 {
         if (row_cells) |cells| {
             var len: u32 = 0;
-            _ = self.row_cells_get(cells, @intFromEnum(CellData.graphemes_len), &len);
+            _ = self.row_cells_get(cells, @backingInt(CellData.graphemes_len), &len);
             return len;
         }
         return 0;
@@ -1400,7 +1400,7 @@ pub const Runtime = struct {
     pub fn cellGraphemeUtf8Len(self: *Runtime, row_cells: ?*anyopaque) ?usize {
         const cells = row_cells orelse return null;
         var buffer = Buffer{};
-        const result = self.row_cells_get(cells, @intFromEnum(CellData.graphemes_utf8), &buffer);
+        const result = self.row_cells_get(cells, @backingInt(CellData.graphemes_utf8), &buffer);
         if (result == success or result == out_of_space) return buffer.len;
         return null;
     }
@@ -1411,14 +1411,14 @@ pub const Runtime = struct {
             .ptr = if (out.len > 0) out.ptr else null,
             .cap = out.len,
         };
-        if (self.row_cells_get(cells, @intFromEnum(CellData.graphemes_utf8), &buffer) != success) return null;
+        if (self.row_cells_get(cells, @backingInt(CellData.graphemes_utf8), &buffer) != success) return null;
         return out[0..buffer.len];
     }
 
     pub fn cellBackground(self: *Runtime, row_cells: ?*anyopaque) ?ColorRgb {
         if (row_cells) |cells| {
             var rgb: ColorRgb = undefined;
-            if (self.row_cells_get(cells, @intFromEnum(CellData.bg_color), &rgb) == success) return rgb;
+            if (self.row_cells_get(cells, @backingInt(CellData.bg_color), &rgb) == success) return rgb;
         }
         return null;
     }
@@ -1426,7 +1426,7 @@ pub const Runtime = struct {
     pub fn cellForeground(self: *Runtime, row_cells: ?*anyopaque) ?ColorRgb {
         if (row_cells) |cells| {
             var rgb: ColorRgb = undefined;
-            if (self.row_cells_get(cells, @intFromEnum(CellData.fg_color), &rgb) == success) return rgb;
+            if (self.row_cells_get(cells, @backingInt(CellData.fg_color), &rgb) == success) return rgb;
         }
         return null;
     }
@@ -1445,7 +1445,7 @@ pub const Runtime = struct {
     /// Pure function: extract the content_tag from a raw cell u64 (bits 0-1).
     /// No C call — direct bit extraction.
     pub inline fn cellContentTagRaw(_: *Runtime, cell: u64) CellContentTag {
-        return @enumFromInt(cell & 0x3);
+        return @fromBackingInt(@intCast(cell & 0x3));
     }
 
     /// Pure function: extract the codepoint from a raw cell u64 (bits 2-22).
@@ -1471,7 +1471,7 @@ pub const Runtime = struct {
     pub fn cellRaw(self: *Runtime, row_cells: ?*anyopaque) u64 {
         if (row_cells) |cells| {
             var raw: u64 = 0;
-            _ = self.row_cells_get(cells, @intFromEnum(CellData.raw), &raw);
+            _ = self.row_cells_get(cells, @backingInt(CellData.raw), &raw);
             return raw;
         }
         return 0;
@@ -1481,7 +1481,7 @@ pub const Runtime = struct {
     /// Cheap bit-test on the raw u64 — no iterator, no struct allocation.
     pub fn cellHasText(self: *Runtime, cell: u64) bool {
         var result: bool = false;
-        _ = self.cell_get(cell, @intFromEnum(CellDataV.has_text), &result);
+        _ = self.cell_get(cell, @backingInt(CellDataV.has_text), &result);
         return result;
     }
 
@@ -1490,22 +1490,22 @@ pub const Runtime = struct {
     /// raw u64 — no iterator, no struct allocation.
     pub fn cellHasStyling(self: *Runtime, cell: u64) bool {
         var result: bool = false;
-        _ = self.cell_get(cell, @intFromEnum(CellDataV.has_styling), &result);
+        _ = self.cell_get(cell, @backingInt(CellDataV.has_styling), &result);
         return result;
     }
 
     /// Pure function: get the content tag from a raw cell u64.
     pub fn cellContentTag(self: *Runtime, cell: u64) CellContentTag {
         var tag: u32 = 0;
-        _ = self.cell_get(cell, @intFromEnum(CellDataV.content_tag), &tag);
-        return @enumFromInt(tag);
+        _ = self.cell_get(cell, @backingInt(CellDataV.content_tag), &tag);
+        return @fromBackingInt(@intCast(tag));
     }
 
     /// Pure function: get the codepoint from a raw cell u64.
     /// Returns 0 for empty/bg-only cells.
     pub fn cellCodepoint(self: *Runtime, cell: u64) u32 {
         var cp: u32 = 0;
-        _ = self.cell_get(cell, @intFromEnum(CellDataV.codepoint), &cp);
+        _ = self.cell_get(cell, @backingInt(CellDataV.codepoint), &cp);
         return cp;
     }
 
@@ -1513,8 +1513,8 @@ pub const Runtime = struct {
     /// Returns the OSC 133 semantic prompt state of the cell.
     pub fn cellSemanticContent(self: *Runtime, cell: u64) CellSemanticContent {
         var sc: u32 = 0;
-        _ = self.cell_get(cell, @intFromEnum(CellDataV.semantic_content), &sc);
-        return @enumFromInt(sc);
+        _ = self.cell_get(cell, @backingInt(CellDataV.semantic_content), &sc);
+        return @fromBackingInt(@intCast(sc));
     }
 
     /// Get a GhosttyRow from a grid reference.
@@ -1548,7 +1548,7 @@ pub const Runtime = struct {
     pub fn rowSemanticPrompt(self: *Runtime, row: u64) RowSemanticPrompt {
         var sp: u32 = 0;
         _ = self.grid_row_get(row, 6, &sp);
-        return @enumFromInt(sp);
+        return @fromBackingInt(@intCast(sp));
     }
 
     pub fn rowWrapped(self: *Runtime, row: u64) bool {
@@ -1566,7 +1566,7 @@ pub const Runtime = struct {
     pub fn terminalKittyGraphics(self: *Runtime, handle: ?*anyopaque) ?*anyopaque {
         if (handle) |terminal| {
             var graphics: ?*anyopaque = null;
-            const result = self.terminal_get(terminal, @intFromEnum(TerminalData.kitty_graphics), @ptrCast(&graphics));
+            const result = self.terminal_get(terminal, @backingInt(TerminalData.kitty_graphics), @ptrCast(&graphics));
             if (result == success and graphics != null) return graphics;
         }
         return null;
@@ -1585,14 +1585,14 @@ pub const Runtime = struct {
     pub fn populateKittyPlacementIterator(self: *Runtime, graphics: ?*anyopaque, iterator: ?*anyopaque) bool {
         if (graphics == null or iterator == null) return false;
         var handle = iterator;
-        const result = self.kitty_graphics_get(graphics, @intFromEnum(KittyGraphicsData.placement_iterator), @ptrCast(&handle));
+        const result = self.kitty_graphics_get(graphics, @backingInt(KittyGraphicsData.placement_iterator), @ptrCast(&handle));
         return result == success;
     }
 
     pub fn setKittyPlacementLayer(self: *Runtime, iterator: ?*anyopaque, layer: KittyPlacementLayer) bool {
         if (iterator) |it| {
             var copy = layer;
-            return self.kitty_graphics_placement_iterator_set(it, @intFromEnum(KittyGraphicsPlacementIteratorOption.layer), &copy) == success;
+            return self.kitty_graphics_placement_iterator_set(it, @backingInt(KittyGraphicsPlacementIteratorOption.layer), &copy) == success;
         }
         return false;
     }
@@ -1603,7 +1603,7 @@ pub const Runtime = struct {
     }
 
     pub fn kittyPlacementData(self: *Runtime, iterator: ?*anyopaque, data: KittyGraphicsPlacementData, out: ?*anyopaque) bool {
-        if (iterator) |it| return self.kitty_graphics_placement_get(it, @intFromEnum(data), out) == success;
+        if (iterator) |it| return self.kitty_graphics_placement_get(it, @backingInt(data), out) == success;
         return false;
     }
 
@@ -1613,7 +1613,7 @@ pub const Runtime = struct {
     }
 
     pub fn kittyImageData(self: *Runtime, image: ?*const anyopaque, data: KittyImageData, out: ?*anyopaque) bool {
-        if (image) |value| return self.kitty_graphics_image_get(value, @intFromEnum(data), out) == success;
+        if (image) |value| return self.kitty_graphics_image_get(value, @backingInt(data), out) == success;
         return false;
     }
 
@@ -1629,12 +1629,12 @@ pub const Runtime = struct {
     pub fn cursorPos(self: *Runtime, render_state: ?*anyopaque) ?struct { x: u16, y: u16 } {
         if (render_state) |state| {
             var has_value = false;
-            _ = self.render_state_get(state, @intFromEnum(RenderStateData.cursor_viewport_has_value), &has_value);
+            _ = self.render_state_get(state, @backingInt(RenderStateData.cursor_viewport_has_value), &has_value);
             if (!has_value) return null;
             var x: u16 = 0;
             var y: u16 = 0;
-            _ = self.render_state_get(state, @intFromEnum(RenderStateData.cursor_viewport_x), &x);
-            _ = self.render_state_get(state, @intFromEnum(RenderStateData.cursor_viewport_y), &y);
+            _ = self.render_state_get(state, @backingInt(RenderStateData.cursor_viewport_x), &x);
+            _ = self.render_state_get(state, @backingInt(RenderStateData.cursor_viewport_y), &y);
             return .{ .x = x, .y = y };
         }
         return null;
@@ -1643,7 +1643,7 @@ pub const Runtime = struct {
     pub fn cursorVisible(self: *Runtime, render_state: ?*anyopaque) bool {
         if (render_state) |state| {
             var visible = false;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_visible), &visible) == success) return visible;
+            if (self.render_state_get(state, @backingInt(RenderStateData.cursor_visible), &visible) == success) return visible;
         }
         return false;
     }
@@ -1651,8 +1651,8 @@ pub const Runtime = struct {
     pub fn cursorVisualStyle(self: *Runtime, render_state: ?*anyopaque) CursorVisualStyle {
         if (render_state) |state| {
             var style: u32 = 0;
-            _ = self.render_state_get(state, @intFromEnum(RenderStateData.cursor_visual_style), &style);
-            return @enumFromInt(style);
+            _ = self.render_state_get(state, @backingInt(RenderStateData.cursor_visual_style), &style);
+            return @fromBackingInt(@intCast(style));
         }
         return .block;
     }
@@ -1660,7 +1660,7 @@ pub const Runtime = struct {
     pub fn cursorBlinking(self: *Runtime, render_state: ?*anyopaque) bool {
         if (render_state) |state| {
             var blinking = false;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_blinking), &blinking) == success) return blinking;
+            if (self.render_state_get(state, @backingInt(RenderStateData.cursor_blinking), &blinking) == success) return blinking;
         }
         return false;
     }
@@ -1668,7 +1668,7 @@ pub const Runtime = struct {
     pub fn cursorPasswordInput(self: *Runtime, render_state: ?*anyopaque) bool {
         if (render_state) |state| {
             var password_input = false;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_password_input), &password_input) == success) return password_input;
+            if (self.render_state_get(state, @backingInt(RenderStateData.cursor_password_input), &password_input) == success) return password_input;
         }
         return false;
     }
@@ -1676,7 +1676,7 @@ pub const Runtime = struct {
     pub fn cursorWideTail(self: *Runtime, render_state: ?*anyopaque) bool {
         if (render_state) |state| {
             var wide_tail = false;
-            if (self.render_state_get(state, @intFromEnum(RenderStateData.cursor_viewport_wide_tail), &wide_tail) == success) return wide_tail;
+            if (self.render_state_get(state, @backingInt(RenderStateData.cursor_viewport_wide_tail), &wide_tail) == success) return wide_tail;
         }
         return false;
     }
@@ -1708,8 +1708,8 @@ pub const Runtime = struct {
     pub fn encodeKey(self: *Runtime, encoder: ?*anyopaque, event: ?*anyopaque, key: Key, mods: u32, action: KeyAction, consumed_mods: u32, unshifted_codepoint: u32, utf8: ?[]const u8, out: []u8) ?[]const u8 {
         if (encoder == null or event == null or out.len == 0) return null;
 
-        self.key_event_set_key(event, @intFromEnum(key));
-        self.key_event_set_action(event, @intFromEnum(action));
+        self.key_event_set_key(event, @backingInt(key));
+        self.key_event_set_action(event, @backingInt(action));
         self.key_event_set_mods(event, mods);
         self.key_event_set_consumed_mods(event, consumed_mods);
         self.key_event_set_unshifted_codepoint(event, unshifted_codepoint);
@@ -1731,21 +1731,21 @@ pub const Runtime = struct {
     pub fn setMouseEncoderSize(self: *Runtime, encoder: ?*anyopaque, size: MouseEncoderSize) void {
         if (encoder) |mouse_encoder| {
             var copy = size;
-            self.mouse_encoder_setopt(mouse_encoder, @intFromEnum(MouseEncOpt.size), &copy);
+            self.mouse_encoder_setopt(mouse_encoder, @backingInt(MouseEncOpt.size), &copy);
         }
     }
 
     pub fn setMouseEncoderAnyButtonPressed(self: *Runtime, encoder: ?*anyopaque, pressed: bool) void {
         if (encoder) |mouse_encoder| {
             var copy = pressed;
-            self.mouse_encoder_setopt(mouse_encoder, @intFromEnum(MouseEncOpt.any_button_pressed), &copy);
+            self.mouse_encoder_setopt(mouse_encoder, @backingInt(MouseEncOpt.any_button_pressed), &copy);
         }
     }
 
     pub fn setMouseEncoderTrackLastCell(self: *Runtime, encoder: ?*anyopaque, track: bool) void {
         if (encoder) |mouse_encoder| {
             var copy = track;
-            self.mouse_encoder_setopt(mouse_encoder, @intFromEnum(MouseEncOpt.track_last_cell), &copy);
+            self.mouse_encoder_setopt(mouse_encoder, @backingInt(MouseEncOpt.track_last_cell), &copy);
         }
     }
 
@@ -1771,8 +1771,8 @@ pub const Runtime = struct {
 
     pub fn encodeMouse(self: *Runtime, encoder: ?*anyopaque, event: ?*anyopaque, action: MouseAction, button: ?MouseButton, mods: u32, position: MousePosition, out: []u8) ?[]const u8 {
         if (encoder == null or event == null or out.len == 0) return null;
-        self.mouse_event_set_action(event, @intFromEnum(action));
-        if (button) |value| self.mouse_event_set_button(event, @intFromEnum(value)) else self.mouse_event_clear_button(event);
+        self.mouse_event_set_action(event, @backingInt(action));
+        if (button) |value| self.mouse_event_set_button(event, @backingInt(value)) else self.mouse_event_clear_button(event);
         self.mouse_event_set_mods(event, mods);
         self.mouse_event_set_position(event, position);
         var written: usize = 0;
@@ -1783,7 +1783,7 @@ pub const Runtime = struct {
     pub fn encodeFocus(self: *Runtime, event: FocusEvent, out: []u8) ?[]const u8 {
         if (out.len == 0) return null;
         var written: usize = 0;
-        if (self.focus_encode(@intFromEnum(event), out.ptr, out.len, &written) == success and written > 0) return out[0..written];
+        if (self.focus_encode(@backingInt(event), out.ptr, out.len, &written) == success and written > 0) return out[0..written];
         return null;
     }
 
@@ -1803,7 +1803,7 @@ pub const Runtime = struct {
     pub fn rowRaw(self: *Runtime, row_iterator: ?*anyopaque) u64 {
         if (row_iterator) |iterator| {
             var raw: u64 = 0;
-            if (self.row_get(iterator, @intFromEnum(RowData.raw), &raw) != success) return 0;
+            if (self.row_get(iterator, @backingInt(RowData.raw), &raw) != success) return 0;
             // Dirty bit is bit 40 in the Row packed struct (after the 32-bit cells offset
             // and 8 boolean/enum flags).  Mask it out so the key is stable across frames.
             const dirty_bit: u64 = @as(u64, 1) << 40;
@@ -1871,9 +1871,7 @@ test "native prompt navigation moves relative to viewport top" {
 }
 
 test "callback bindings match upstream C layouts" {
-    const headers = @cImport({
-        @cInclude("ghostty/vt.h");
-    });
+    const headers = @import("ghostty_c");
     try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalProgramStatus), @sizeOf(ProgramStatus));
     try std.testing.expectEqual(@offsetOf(headers.GhosttyTerminalProgramStatus, "message"), @offsetOf(ProgramStatus, "message"));
     try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalSemanticPrompt), @sizeOf(SemanticPrompt));
@@ -1889,7 +1887,7 @@ test "terminal default colors are exposed through render state" {
     const terminal = try runtime.createTerminal(80, 24, 0);
     defer runtime.freeTerminal(terminal);
 
-    var palette = [_]ColorRgb{.{ .r = 0, .g = 0, .b = 0 }} ** 256;
+    var palette = @as([256]ColorRgb, @splat(.{ .r = 0, .g = 0, .b = 0 }));
     palette[0] = .{ .r = 1, .g = 2, .b = 3 };
     const foreground = ColorRgb{ .r = 220, .g = 221, .b = 222 };
     const background = ColorRgb{ .r = 25, .g = 26, .b = 28 };

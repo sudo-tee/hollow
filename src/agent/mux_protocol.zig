@@ -15,10 +15,10 @@ pub const hello = "{\"protocol\":\"hollow-mux\",\"version\":1,\"capabilities\":[
 pub const hello_ack = "{\"protocol\":\"hollow-mux\",\"version\":1}";
 
 // Additional kinds are intentionally not added to the dedicated PTY enum.
-pub const negotiate: pty.Kind = @enumFromInt(9);
-pub const spawned: pty.Kind = @enumFromInt(10);
-pub const credit: pty.Kind = @enumFromInt(11);
-pub const focus: pty.Kind = @enumFromInt(12);
+pub const negotiate: pty.Kind = @fromBackingInt(@intCast(9));
+pub const spawned: pty.Kind = @fromBackingInt(@intCast(10));
+pub const credit: pty.Kind = @fromBackingInt(@intCast(11));
+pub const focus: pty.Kind = @fromBackingInt(@intCast(12));
 
 pub fn amount(bytes: []const u8) !u32 {
     if (bytes.len != 4) return error.InvalidCredit;

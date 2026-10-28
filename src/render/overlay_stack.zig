@@ -9,7 +9,7 @@ pub const Stack = struct {
 
     pub fn next(self: *Stack, context: Context, is_bottom: bool, height: f32, gap: f32) f32 {
         const offsets = if (is_bottom) &self.bottom else &self.top;
-        const index = @intFromEnum(context);
+        const index = @backingInt(context);
         const offset = offsets[index];
         offsets[index] += height + gap;
         return offset;

@@ -1,6 +1,6 @@
 .{
     .name = .hollow_agent,
     .version = "0.0.0",
-    .minimum_zig_version = "0.16.0",
-    .paths = .{ "build-agent.zig", "build-agent.zig.zon", "src/agent", "src/host", "src/host.zig", "src/host_transport.zig", "src/host_operations.zig", "src/host_manager_test.zig", "src/host_local_test.zig", "src/host_local_manager_test.zig", "src/host_lua_test.zig", "src/io.zig", "src/lua/hollow/async.lua", "src/lua/hollow/host.lua", "src/lua/hollow/host", "scripts/agent_manifest.py" },
+    .minimum_zig_version = "0.17.0",
+    .paths = .{ "build-agent.zig", "build-agent.zig.zon", "src/agent", "src/host", "src/host.zig", "src/host_transport.zig", "src/host_operations.zig", "src/host_manager_test.zig", "src/host_local_test.zig", "src/host_local_manager_test.zig", "src/host_lua_test.zig", "src/io.zig", "src/c_build.zig", "src/posix_bindings.h", "src/lua_bindings.h", "src/lua/hollow/async.lua", "src/lua/hollow/host.lua", "src/lua/hollow/host", "scripts/agent_manifest.py" },
 }

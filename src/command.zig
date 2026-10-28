@@ -314,9 +314,9 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: Request) ![]u8 {
 }
 
 fn isLegacyField(name: []const u8) bool {
-    inline for (std.meta.fields(Command)) |variant| {
-        inline for (std.meta.fields(variant.type)) |field| {
-            if (std.mem.eql(u8, name, field.name)) return true;
+    inline for (@typeInfo(Command).@"union".field_types) |Variant| {
+        inline for (@typeInfo(Variant).@"struct".field_names) |field| {
+            if (std.mem.eql(u8, name, field)) return true;
         }
     }
     return false;

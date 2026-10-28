@@ -431,7 +431,7 @@ pub const Tab = struct {
         if (pane.restore_place_first) {
             target.* = SplitNode.initSplit(new_leaf, existing_leaf, direction, ratio);
         } else {
-        target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
+            target.* = SplitNode.initSplit(existing_leaf, new_leaf, direction, 1.0 - ratio);
         }
         pane.restore_anchor_id = @intFromPtr(anchor_pane);
         return true;

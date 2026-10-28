@@ -6,18 +6,7 @@ const fs = @import("fs.zig");
 const ex = @import("exec.zig");
 const pty = @import("pty.zig");
 const mux = @import("mux.zig");
-const c = @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("poll.h");
-    @cInclude("signal.h");
-    @cInclude("sys/signalfd.h");
-    @cInclude("sys/wait.h");
-    @cInclude("sys/prctl.h");
-    @cInclude("errno.h");
-    @cInclude("stdlib.h");
-});
+const c = @import("posix_c");
 const A = std.heap.page_allocator;
 const max_jobs = 16;
 const queue_limit = 4 * 1024 * 1024;
@@ -26,7 +15,7 @@ const Agent = struct {
     input: std.ArrayList(u8) = .empty,
     output: std.ArrayList(u8) = .empty,
     sent: usize = 0,
-    jobs: [max_jobs]?ex.Job = .{null} ** max_jobs,
+    jobs: [max_jobs]?ex.Job = @splat(null),
     greeted: bool = false,
     closing: bool = false,
     last_id: u64 = 0,

@@ -32,8 +32,8 @@ pub fn validateJson(comptime T: type, value: std.json.Value) !void {
         .float => if (value != .integer and value != .float) return error.InvalidArgumentType,
         .@"struct" => |info| {
             if (value != .object) return error.InvalidArgumentType;
-            inline for (info.fields) |field| {
-                if (value.object.get(field.name)) |v| try validateJson(field.type, v);
+            inline for (info.field_names, info.field_types) |name, Field| {
+                if (value.object.get(name)) |v| try validateJson(Field, v);
             }
         },
         .pointer => |info| {
@@ -75,13 +75,13 @@ pub fn validate(data: command.Command) !void {
     }
     switch (data) {
         inline else => |args, kind| {
-            inline for (std.meta.fields(@TypeOf(args))) |field| {
-                const value = @field(args, field.name);
-                switch (@typeInfo(field.type)) {
+            inline for (@typeInfo(@TypeOf(args)).@"struct".field_names) |name| {
+                const value = @field(args, name);
+                switch (@typeInfo(@TypeOf(value))) {
                     .optional => if (value) |v| {
-                        try validateField(kind, field.name, v);
+                        try validateField(kind, name, v);
                     },
-                    else => try validateField(kind, field.name, value),
+                    else => try validateField(kind, name, value),
                 }
             }
         },
@@ -210,27 +210,27 @@ fn schema(comptime T: type, kind: Kind, comptime name: []const u8, writer: *std.
         .bool => try writer.writeAll("{\"type\":\"boolean\"}"),
         .@"enum" => |info| {
             try writer.writeAll("{\"type\":\"string\",\"enum\":[");
-            inline for (info.fields, 0..) |field, i| {
+            inline for (info.field_names, 0..) |field, i| {
                 if (i != 0) try writer.writeByte(',');
-                try std.json.Stringify.value(field.name, .{}, writer);
+                try std.json.Stringify.value(field, .{}, writer);
             }
             try writer.writeAll("]}");
         },
         .@"struct" => |info| {
             try writer.writeAll("{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{");
-            inline for (info.fields, 0..) |field, i| {
+            inline for (info.field_names, info.field_types, 0..) |field, Field, i| {
                 if (i != 0) try writer.writeByte(',');
-                try std.json.Stringify.value(field.name, .{}, writer);
+                try std.json.Stringify.value(field, .{}, writer);
                 try writer.writeByte(':');
-                try schema(field.type, kind, field.name, writer);
+                try schema(Field, kind, field, writer);
             }
             try writer.writeAll("},\"required\":[");
             var first = true;
-            inline for (info.fields) |field| {
-                if (field.default_value_ptr == null) {
+            inline for (info.field_names, info.field_attrs) |field, attrs| {
+                if (attrs.default_value_ptr == null) {
                     if (!first) try writer.writeByte(',');
                     first = false;
-                    try std.json.Stringify.value(field.name, .{}, writer);
+                    try std.json.Stringify.value(field, .{}, writer);
                 }
             }
             try writer.writeAll("]");
@@ -274,15 +274,16 @@ fn writeExample(comptime kind: Kind, writer: *std.Io.Writer) !void {
     }
     try writer.writeAll("{\"kind\":");
     try std.json.Stringify.value(@tagName(kind), .{}, writer);
-    inline for (std.meta.fields(command.Args(kind))) |field| {
-        if (field.default_value_ptr == null) {
+    const info = @typeInfo(command.Args(kind)).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |field, Field, attrs| {
+        if (attrs.default_value_ptr == null) {
             try writer.writeByte(',');
-            try std.json.Stringify.value(field.name, .{}, writer);
+            try std.json.Stringify.value(field, .{}, writer);
             try writer.writeByte(':');
-            switch (@typeInfo(field.type)) {
-                .int => try writer.writeAll(if (std.mem.eql(u8, field.name, "revision")) "0" else "1"),
+            switch (@typeInfo(Field)) {
+                .int => try writer.writeAll(if (std.mem.eql(u8, field, "revision")) "0" else "1"),
                 .pointer => {
-                    const value = if (choices(kind, field.name)) |values| values[0] else if (std.mem.eql(u8, field.name, "token")) "0123456789abcdef0123456789abcdef" else if (std.mem.eql(u8, field.name, "path")) "hollow.png" else if (std.mem.eql(u8, field.name, "name") and kind == .api_describe) "get_screen" else "example";
+                    const value = if (choices(kind, field)) |values| values[0] else if (std.mem.eql(u8, field, "token")) "0123456789abcdef0123456789abcdef" else if (std.mem.eql(u8, field, "path")) "hollow.png" else if (std.mem.eql(u8, field, "name") and kind == .api_describe) "get_screen" else "example";
                     try std.json.Stringify.value(value, .{}, writer);
                 },
                 else => unreachable,
@@ -358,9 +359,9 @@ pub fn listValue(allocator: std.mem.Allocator) !std.json.Value {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try out.writer.writeByte('[');
-    inline for (std.meta.fields(Kind), 0..) |field, i| {
+    inline for (@typeInfo(Kind).@"enum".field_names, 0..) |field, i| {
         if (i != 0) try out.writer.writeByte(',');
-        try writeDescription(@field(Kind, field.name), &out.writer);
+        try writeDescription(@field(Kind, field), &out.writer);
     }
     try out.writer.writeByte(']');
     return jsonValue(allocator, out.written());
@@ -373,8 +374,8 @@ pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
     var context = try std.json.parseFromSlice(std.json.Value, allocator, context_schema.written(), .{});
     defer context.deinit();
     const names = comptime blk: {
-        var out: [std.meta.fields(Kind).len][]const u8 = undefined;
-        for (std.meta.fields(Kind), 0..) |field, i| out[i] = field.name;
+        var out: [@typeInfo(Kind).@"enum".field_names.len][]const u8 = undefined;
+        for (@typeInfo(Kind).@"enum".field_names, 0..) |field, i| out[i] = field;
         break :blk out;
     };
     const text = try std.json.Stringify.valueAlloc(allocator, .{
@@ -400,7 +401,7 @@ test "every command has a discoverable contract and a parseable example" {
     const a = std.testing.allocator;
     const list = try listValue(a);
     defer command.deinitJsonValue(a, list);
-    try std.testing.expectEqual(std.meta.fields(Kind).len, list.array.items.len);
+    try std.testing.expectEqual(@typeInfo(Kind).@"enum".field_names.len, list.array.items.len);
     for (list.array.items) |entry| {
         var method = try std.json.parseFromValue(results.Method, a, entry, .{});
         method.deinit();
@@ -475,7 +476,7 @@ test "capabilities enumerate the same methods and publish the context contract" 
     var parsed = try std.json.parseFromValue(Result(.capabilities), a, value, .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, version), parsed.value.api_version);
-    try std.testing.expectEqual(std.meta.fields(Kind).len, parsed.value.methods.len);
+    try std.testing.expectEqual(@typeInfo(Kind).@"enum".field_names.len, parsed.value.methods.len);
     const context_schema = value.object.get("context_schema").?.object;
     try std.testing.expect(!context_schema.get("additionalProperties").?.bool);
     try std.testing.expectEqual(@as(usize, 3), context_schema.get("properties").?.object.get("origin").?.object.get("enum").?.array.items.len);

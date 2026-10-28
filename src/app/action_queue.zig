@@ -6,7 +6,7 @@ pub const ActionQueue = struct {
     const capacity = 64;
 
     mutex: io.Mutex = .{},
-    items: [capacity]PendingInputEvent = [_]PendingInputEvent{.none} ** capacity,
+    items: [capacity]PendingInputEvent = @splat(.none),
     head: usize = 0,
     tail: usize = 0,
 

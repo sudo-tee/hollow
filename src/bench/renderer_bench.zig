@@ -369,7 +369,7 @@ fn deviceAttributes(_: ?*anyopaque, _: ?*anyopaque, _: *ghostty.DeviceAttributes
 fn titleChanged(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}
 
 fn makePalette() [256]ghostty.ColorRgb {
-    var palette = [_]ghostty.ColorRgb{.{ .r = 0, .g = 0, .b = 0 }} ** 256;
+    var palette = @as([256]ghostty.ColorRgb, @splat(.{ .r = 0, .g = 0, .b = 0 }));
     palette[0] = .{ .r = 0, .g = 0, .b = 0 };
     palette[1] = .{ .r = 205, .g = 49, .b = 49 };
     palette[2] = .{ .r = 13, .g = 188, .b = 121 };

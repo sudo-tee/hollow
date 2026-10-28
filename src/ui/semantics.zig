@@ -35,9 +35,9 @@ pub const Node = struct {
     role: Role = .button,
     clickable: bool = false,
     bounds: Bounds = .{},
-    id_buf: [max_id_len]u8 = [_]u8{0} ** max_id_len,
+    id_buf: [max_id_len]u8 = @splat(0),
     id_len: u16 = 0,
-    label_buf: [max_label_len]u8 = [_]u8{0} ** max_label_len,
+    label_buf: [max_label_len]u8 = @splat(0),
     label_len: u16 = 0,
 
     pub fn id(self: *const Node) []const u8 {
@@ -53,7 +53,7 @@ pub const Snapshot = struct {
     generation: u64 = 0,
     valid: bool = false,
     truncated: bool = false,
-    nodes: [max_nodes]Node = [_]Node{.{}} ** max_nodes,
+    nodes: [max_nodes]Node = @splat(.{}),
     len: usize = 0,
 };
 

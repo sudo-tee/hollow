@@ -11,10 +11,7 @@
 //! skip straight to step 3.
 const std = @import("std");
 const builtin = @import("builtin");
-const posix = if (builtin.os.tag == .windows) struct {} else @cImport({
-    @cInclude("sys/wait.h");
-    @cInclude("errno.h");
-});
+const posix = if (builtin.os.tag == .windows) struct {} else @import("posix_c");
 
 const gpa = std.heap.smp_allocator;
 
@@ -499,12 +496,12 @@ test "remote shell connectors quote every argument" {
 }
 
 test "bundle manifest records" {
-    const digest = "A" ** 64;
+    const digest = &@as([64:0]u8, @splat('A'));
     const record = parseRecord(digest ++ "  linux-aarch64/hollow-agent").?;
     try std.testing.expectEqual(Arch.aarch64, record.arch);
     try std.testing.expect(parseRecord(digest ++ "  linux-arm/hollow-agent") == null);
     try std.testing.expect(parseRecord(digest ++ " linux-x86_64/hollow-agent") == null);
-    try std.testing.expect(parseRecord("g" ** 64 ++ "  linux-x86_64/hollow-agent") == null);
+    try std.testing.expect(parseRecord(&@as([64:0]u8, @splat('g')) ++ "  linux-x86_64/hollow-agent") == null);
 }
 
 test "probe output" {
@@ -522,7 +519,7 @@ test "deploy deadline remains active after stdout and stderr EOF" {
     var control: Control = .{};
     var failure: Failure = .{};
     var agent: Agent = .{ .timeout_ms = 100 };
-    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = "a" ** 64 });
+    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = &@as([64:0]u8, @splat('a')) });
     const started = now(std.testing.io);
     try std.testing.expectError(error.DeployFailed, install(std.testing.io, arena.allocator(), &control, .{
         .argv = &.{ "/bin/sh", "-c", "printf 'ok x86_64 /unused\\n'; exec 1>&- 2>&-; exec sleep 30" },
@@ -538,7 +535,7 @@ test "deploy cancellation remains active after pipe EOF" {
     var control: Control = .{};
     var failure: Failure = .{};
     var agent: Agent = .{};
-    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = "a" ** 64 });
+    agent.artifacts.set(.x86_64, .{ .path = "/unused", .sha256 = &@as([64:0]u8, @splat('a')) });
     const Cancel = struct {
         fn run(value: *Control) void {
             std.Io.sleep(std.testing.io, .fromMilliseconds(150), .awake) catch return;

@@ -3,20 +3,7 @@ const io = @import("../io.zig");
 const LaunchCommand = @import("launch_command.zig").LaunchCommand;
 const Wake = @import("wake.zig").Wake;
 const shell_integration = @import("../shell_integration.zig");
-const c = @cImport({
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("errno.h");
-    @cInclude("fcntl.h");
-    @cInclude("pty.h");
-    @cInclude("poll.h");
-    @cInclude("signal.h");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/wait.h");
-    @cInclude("termios.h");
-    @cInclude("unistd.h");
-});
+const c = @import("posix_c");
 
 const READER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 
@@ -74,14 +61,14 @@ pub const PosixPty = struct {
         const pid = c.forkpty(&master, null, null, &winsize);
         if (pid == 0) {
             if (cwd) |dir| {
-                const dir_z = std.heap.page_allocator.dupeZ(u8, dir) catch c._exit(1);
+                const dir_z = std.heap.page_allocator.dupeSentinel(u8, dir, 0) catch c._exit(1);
                 defer std.heap.page_allocator.free(dir_z);
                 if (c.chdir(dir_z.ptr) != 0) c._exit(1);
             }
             const direct = if (launch_command) |cmd| if (cmd.user_shell) null else cmd.argv else null;
             const shell_args = if (direct) |args| args else parseCommandString(std.heap.page_allocator, shell) catch c._exit(1);
             if (shell_args.len == 0) c._exit(1);
-            const shell_path = std.heap.page_allocator.dupeZ(u8, shell_args[0]) catch c._exit(1);
+            const shell_path = std.heap.page_allocator.dupeSentinel(u8, shell_args[0], 0) catch c._exit(1);
             defer std.heap.page_allocator.free(shell_path);
             const one_shot = if (launch_command) |cmd| cmd.one_shot else false;
             const bundle = if (direct != null or one_shot) null else shell_integration.install(std.heap.page_allocator, shell_args[0]) catch c._exit(1);
@@ -162,7 +149,7 @@ pub const PosixPty = struct {
             argv.deinit(allocator);
         }
         for (shell_args) |arg| {
-            try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
+            try argv.append(allocator, (try allocator.dupeSentinel(u8, arg, 0)).ptr);
         }
 
         if (launch_command) |cmd| {
@@ -172,10 +159,10 @@ pub const PosixPty = struct {
             }
             if (cmd.one_shot) {
                 if (!isBackgroundShell(shell_args[0])) return error.UnsupportedBackgroundShell;
-                try argv.append(allocator, (try allocator.dupeZ(u8, if (cmd.user_shell) "-ic" else "-c")).ptr);
+                try argv.append(allocator, (try allocator.dupeSentinel(u8, if (cmd.user_shell) "-ic" else "-c", 0)).ptr);
                 const text = if (cmd.user_shell) try cmd.userShellCommand(allocator, false) else cmd.command;
                 defer if (cmd.user_shell) allocator.free(text);
-                try argv.append(allocator, (try allocator.dupeZ(u8, text)).ptr);
+                try argv.append(allocator, (try allocator.dupeSentinel(u8, text, 0)).ptr);
                 try argv.append(allocator, null);
                 return argv.toOwnedSlice(allocator);
             }
@@ -187,7 +174,7 @@ pub const PosixPty = struct {
                 for (integration_argv) |arg| allocator.free(arg);
                 allocator.free(integration_argv);
             }
-            for (integration_argv) |arg| try argv.append(allocator, (try allocator.dupeZ(u8, arg)).ptr);
+            for (integration_argv) |arg| try argv.append(allocator, (try allocator.dupeSentinel(u8, arg, 0)).ptr);
             try argv.append(allocator, null);
             return try argv.toOwnedSlice(allocator);
         }
@@ -195,18 +182,18 @@ pub const PosixPty = struct {
         if (launch_command) |cmd| {
             const shell_name = std.fs.path.basename(shell_args[0]);
             if (std.mem.eql(u8, shell_name, "bash") or std.mem.eql(u8, shell_name, "sh") or std.mem.eql(u8, shell_name, "zsh") or std.mem.eql(u8, shell_name, "fish")) {
-                try argv.append(allocator, (try allocator.dupeZ(u8, "-lc")).ptr);
+                try argv.append(allocator, (try allocator.dupeSentinel(u8, "-lc", 0)).ptr);
                 const wrapped = if (cmd.close_on_exit)
                     try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimEnd(u8, cmd.command, "\r\n")}, 0)
                 else
-                    try allocator.dupeZ(u8, cmd.command);
+                    try allocator.dupeSentinel(u8, cmd.command, 0);
                 try argv.append(allocator, wrapped.ptr);
             } else if (std.mem.eql(u8, shell_name, "ssh") or std.mem.eql(u8, shell_name, "ssh.exe")) {
-                try argv.append(allocator, (try allocator.dupeZ(u8, "-tt")).ptr);
+                try argv.append(allocator, (try allocator.dupeSentinel(u8, "-tt", 0)).ptr);
                 const wrapped = if (cmd.close_on_exit)
                     try std.fmt.allocPrintSentinel(allocator, "{s}; exit", .{std.mem.trimEnd(u8, cmd.command, "\r\n")}, 0)
                 else
-                    try allocator.dupeZ(u8, cmd.command);
+                    try allocator.dupeSentinel(u8, cmd.command, 0);
                 try argv.append(allocator, wrapped.ptr);
             }
         }
@@ -661,7 +648,7 @@ test "writer shutdown completes when child pipe is full" {
     defer _ = c.close(fds[1]);
     const flags = c.fcntl(fds[1], c.F_GETFL, @as(c_int, 0));
     try std.testing.expect(c.fcntl(fds[1], c.F_SETFL, flags | c.O_NONBLOCK) >= 0);
-    const filler = [_]u8{0} ** 4096;
+    const filler = @as([4096]u8, @splat(0));
     while (c.write(fds[1], &filler, filler.len) > 0) {}
     var state = WriterState{};
     defer state.buf.deinit(std.heap.page_allocator);

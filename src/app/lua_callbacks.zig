@@ -514,7 +514,7 @@ pub fn luaClipboardWriteCallback(app_ptr: *anyopaque, text: []const u8) bool {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     // Sokol accepts C strings; reject embedded NUL rather than silently truncate.
     if (std.mem.indexOfScalar(u8, text, 0) != null) return false;
-    const owned = app.allocator.dupeZ(u8, text) catch return false;
+    const owned = app.allocator.dupeSentinel(u8, text, 0) catch return false;
     if (!app.enqueueMouse(.{ .clipboard_write = owned })) {
         app.allocator.free(owned);
         return false;

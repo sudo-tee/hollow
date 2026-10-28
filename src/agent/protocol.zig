@@ -31,7 +31,7 @@ pub const Header = struct {
         try validate(self);
         var out: [header_len]u8 = undefined;
         putInt(u32, out[0..4], self.payload_len);
-        out[4] = @intFromEnum(self.kind);
+        out[4] = @backingInt(self.kind);
         out[5] = self.flags;
         putInt(u64, out[6..14], self.request_id);
         putInt(u64, out[14..22], self.stream_id);
@@ -106,7 +106,7 @@ pub const Decoder = struct {
 
 test "header decoder rejects extra bytes without consuming input" {
     var decoder = Decoder{};
-    const oversized = [_]u8{0} ** (header_len + 1);
+    const oversized = @as([header_len + 1]u8, @splat(0));
     try std.testing.expectError(error.ExcessHeaderBytes, decoder.push(&oversized));
     try std.testing.expectEqual(@as(usize, 0), decoder.used);
 }

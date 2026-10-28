@@ -1,0 +1,34 @@
+diff --git a/build.zig b/build.zig
+--- a/build.zig
++++ b/build.zig
+@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
+     var version: std.Io.Writer.Allocating = .init(b.allocator);
+     defer version.deinit();
+     gen_version(b, &version.writer) catch |e| {
+-        if (b.release_mode != .off)
++        if (b.graph.release_mode != .off)
+             std.debug.panic("gen_version failed: {any}", .{e});
+         version.writer.writeAll("unknown") catch {};
+     };
+@@ -65,8 +65,7 @@ pub fn build(b: *std.Build) void {
+     const run_cmd = b.addRunArtifact(exe);
+     run_step.dependOn(&run_cmd.step);
+     run_cmd.step.dependOn(b.getInstallStep());
+-    if (b.args) |args|
+-        run_cmd.addArgs(args);
++    run_cmd.addPassthruArgs();
+ 
+     const main_mod = b.createModule(.{
+         .root_source_file = b.path("src/main.zig"),
+diff --git a/src/backend/INotify.zig b/src/backend/INotify.zig
+--- a/src/backend/INotify.zig
++++ b/src/backend/INotify.zig
+@@ -144,7 +144,7 @@ pub fn Create(comptime variant: InterfaceType) type {
+         }
+ 
+         pub fn add_watch(self: *@This(), allocator: std.mem.Allocator, path: []const u8) error{ OutOfMemory, WatchFailed }!void {
+-            const path_z = try allocator.dupeZ(u8, path);
++            const path_z = try allocator.dupeSentinel(u8, path, 0);
+             defer allocator.free(path_z);
+             const wd = std.os.linux.inotify_add_watch(self.inotify_fd, path_z, watch_mask);
+             const wd_signed: isize = @bitCast(wd);

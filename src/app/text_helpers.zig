@@ -18,9 +18,9 @@ pub fn shouldForwardChar(mods: u32, codepoint: u32, right_alt_down: bool) bool {
 }
 
 pub fn isLayoutTextKey(key: ghostty.Key) bool {
-    const key_value = @intFromEnum(key);
-    if ((key_value >= @intFromEnum(ghostty.Key.a) and key_value <= @intFromEnum(ghostty.Key.z)) or
-        (key_value >= @intFromEnum(ghostty.Key.digit_0) and key_value <= @intFromEnum(ghostty.Key.digit_9))) return true;
+    const key_value = @backingInt(key);
+    if ((key_value >= @backingInt(ghostty.Key.a) and key_value <= @backingInt(ghostty.Key.z)) or
+        (key_value >= @backingInt(ghostty.Key.digit_0) and key_value <= @backingInt(ghostty.Key.digit_9))) return true;
 
     return switch (key) {
         .space,
@@ -45,7 +45,7 @@ pub fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64
     hasher.update(render_mode);
     hasher.update(std.mem.asBytes(&snapshot.rows));
     hasher.update(std.mem.asBytes(&snapshot.cols));
-    const dirty = @intFromEnum(snapshot.dirty);
+    const dirty = @backingInt(snapshot.dirty);
     hasher.update(std.mem.asBytes(&dirty));
     hasher.update(snapshot.title);
     var line_idx: usize = 0;
@@ -58,7 +58,7 @@ pub fn snapshotHash(snapshot: *const FrameSnapshot, render_mode: []const u8) u64
 
 pub fn titleCString(text: []const u8) [256:0]u8 {
     const max_len = 255;
-    var buf: [max_len + 1:0]u8 = [_:0]u8{0} ** (max_len + 1);
+    var buf: [max_len + 1:0]u8 = @splat(0);
     const trimmed = if (text.len > max_len) text[0..max_len] else text;
     fastmem.copy(u8, buf[0..trimmed.len], trimmed);
     return buf;
@@ -67,7 +67,7 @@ pub fn titleCString(text: []const u8) [256:0]u8 {
 pub fn windowTitleCString(text: []const u8, agent: bool) [256:0]u8 {
     if (!agent) return titleCString(text);
     const suffix = " (hollow-agent)";
-    var buf: [256:0]u8 = [_:0]u8{0} ** 256;
+    var buf: [256:0]u8 = @splat(0);
     const len = @min(text.len, 255 - suffix.len);
     fastmem.copy(u8, buf[0..len], text[0..len]);
     fastmem.copy(u8, buf[len..][0..suffix.len], suffix);
@@ -91,7 +91,7 @@ pub fn appendCellText(runtime: *ghostty.Runtime, row_cells: ?*anyopaque, out: []
         return;
     }
 
-    var cps: [16]u32 = [_]u32{0} ** 16;
+    var cps: [16]u32 = @splat(0);
     runtime.cellGraphemes(row_cells, &cps);
     var cp_index: usize = 0;
     while (cp_index < grapheme_len and cps[cp_index] != 0) : (cp_index += 1) {
@@ -105,7 +105,7 @@ pub fn appendCellText(runtime: *ghostty.Runtime, row_cells: ?*anyopaque, out: []
 
 pub fn appendGridRefText(runtime: *ghostty.Runtime, ref: *const ghostty.GridRef, raw_cell: u64, out: []u8, len: *usize) void {
     if (len.* >= out.len) return;
-    var cps: [16]u32 = [_]u32{0} ** 16;
+    var cps: [16]u32 = @splat(0);
     const grapheme_len = @min(runtime.gridRefGraphemesInto(ref, cps[0..]) orelse 0, cps.len);
     if (grapheme_len == 0) {
         if (!runtime.cellHasText(raw_cell)) {
@@ -237,7 +237,7 @@ test "titleCString truncates and null terminates window titles" {
 test "window title identifies agent and reserves space for indicator" {
     try std.testing.expectEqualStrings("shell (hollow-agent)", std.mem.span(@as([*:0]const u8, &windowTitleCString("shell", true))));
     try std.testing.expectEqualStrings("shell", std.mem.span(@as([*:0]const u8, &windowTitleCString("shell", false))));
-    const title = windowTitleCString("x" ** 300, true);
+    const title = windowTitleCString(&@as([300:0]u8, @splat('x')), true);
     try std.testing.expectEqualStrings(" (hollow-agent)", title[255 - " (hollow-agent)".len .. 255]);
     try std.testing.expectEqual(@as(u8, 0), title[255]);
 }

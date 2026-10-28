@@ -146,7 +146,7 @@ pub fn selectionBeginWord(self: *App, pane: *Pane, point: selection.CellPoint) v
     const runtime = if (self.ghostty) |*rt| rt else return;
     if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
 
-    var ascii_cols: [4096]u8 = [_]u8{0} ** 4096;
+    var ascii_cols: [4096]u8 = @splat(0);
     var col_count: usize = 0;
     var row_index: usize = 0;
     var found_row = false;
@@ -154,7 +154,7 @@ pub fn selectionBeginWord(self: *App, pane: *Pane, point: selection.CellPoint) v
         if (row_index != point.row) continue;
         if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
         while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
-            var cell_buf: [16]u8 = [_]u8{0} ** 16;
+            var cell_buf: [16]u8 = @splat(0);
             var cell_len: usize = 0;
             text_helpers.appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
             ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] != 0) cell_buf[0] else ' ';

@@ -463,13 +463,13 @@ test "OSC 99 validates encoded UTF-8 only after assembling title and body" {
 test "OSC 99 accepts the full encoded packet limit and bounds decoded assemblies" {
     var state: State = .{};
     defer state.deinit(std.testing.allocator);
-    const packet = "i=large:e=1;" ++ "QUFB" ** (max_encoded_payload_bytes / 4);
+    const packet = "i=large:e=1;" ++ @import("../repeat.zig").bytes("QUFB", max_encoded_payload_bytes / 4);
     try state.feed(std.testing.allocator, packet);
     var item = state.popNotification().?;
     defer item.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("A" ** 3072, item.message);
+    try std.testing.expectEqualStrings(&@as([3072:0]u8, @splat('A')), item.message);
 
-    const chunk = "i=large:d=0:e=1;" ++ "QUFB" ** (max_encoded_payload_bytes / 4);
+    const chunk = "i=large:d=0:e=1;" ++ @import("../repeat.zig").bytes("QUFB", max_encoded_payload_bytes / 4);
     try state.feed(std.testing.allocator, chunk);
     try state.feed(std.testing.allocator, chunk);
     try state.feed(std.testing.allocator, packet);

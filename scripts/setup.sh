@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$SCRIPT_DIR/.."
 PATCHES_DIR="$ROOT/patches"
 BUSTED_VERSION="${BUSTED_VERSION:-2.3.0}"
-GHOSTTY_PACKAGE="ghostty-1.3.2-dev-5UdBCw6JewVSNmU8sj9cx3YZWyIVXgAHBHU8T-xS1Hg0"
+GHOSTTY_PACKAGE="ghostty-1.4.1-dev-5UdBC6a2hwXqHrw8ovZK5dcOiekrP9exRDLLILjtLyHC"
 
 "$SCRIPT_DIR/check-zig-version.sh"
 
@@ -114,6 +114,7 @@ apply_patch "third_party/luajit-upstream" "$PATCHES_DIR/luajit-relver.patch"
 # @intCast(wd) panics on a watch failure. Patched locally until upstream ships
 # a fix.
 apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-inotify-fix.patch"
+apply_patch "third_party/nightwatch" "$PATCHES_DIR/nightwatch-zig-0.17.patch"
 
 # Ghostty is a build.zig.zon package rather than a git submodule. The package
 # name includes the pinned content hash, so dependency updates fail here until

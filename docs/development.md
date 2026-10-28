@@ -8,6 +8,13 @@ Command API checks can run without GUI libraries: `zig build test-command`.
 This covers command contracts/examples, native CLI parsing, and real loopback
 socket validation. `zig build test` also includes these checks.
 
+The bundled LuaJIT 2.1 includes the backported LuaJIT 3.0 syntax extensions,
+including safe navigation (`object?.field`) and nil coalescing (`value ?? fallback`).
+See [LuaJIT extensions](https://luajit.org/extensions.html). Run `zig build test-luajit`
+to exercise the bundled runtime (interpreter, JIT, and bytecode loading).
+System `luajit` installations used by `scripts/test-lua.sh` may be older; keep
+shared test fixtures compatible or test new syntax through `test-luajit`.
+
 This page covers building Hollow from source, running tests, and the
 project layout you'll touch when contributing.
 
@@ -17,7 +24,7 @@ For the per-platform caveats see [Platforms](platforms/README.md).
 
 ## Toolchain
 
-- Zig **0.16.0** is the only supported version. The repo pins it in
+- Zig **0.17.0** is the only supported version. The repo pins it in
   `.tool-versions`. The wrapper `scripts/check-zig-version.sh` will
   hard-fail on any other version.
 - A C/C++ toolchain for the Zig C backend.
@@ -27,7 +34,7 @@ For the per-platform caveats see [Platforms](platforms/README.md).
   `launch.sh` wrapper handles the cross-compile from WSL.
 
 ```bash
-zig version   # must print 0.16.0
+zig version   # must print 0.17.0
 ```
 
 If you use `asdf` or `mise`, the local `.tool-versions` installs the

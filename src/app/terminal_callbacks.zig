@@ -90,7 +90,7 @@ fn deviceAttributesCallback(_: ?*anyopaque, _: ?*anyopaque, out: ?*ghostty.Devic
     if (out == null) return false;
     const out_ptr = out.?;
     out_ptr.primary.conformance_level = 1;
-    out_ptr.primary.features = [_]u16{ 1, 2, 22 } ++ ([_]u16{0} ** 61);
+    out_ptr.primary.features = [_]u16{ 1, 2, 22 } ++ @as([61]u16, @splat(0));
     out_ptr.primary.num_features = 3;
     out_ptr.secondary.device_type = 1;
     out_ptr.secondary.firmware_version = 1;
@@ -149,7 +149,7 @@ fn pwdChangedCallback(terminal: ?*anyopaque, userdata: ?*anyopaque) callconv(.c)
     const pane = paneFromUserdata(userdata) orelse return;
     const runtime = pane.terminal_runtime orelse return;
     var pwd: ghostty.String = .{ .ptr = null, .len = 0 };
-    if (runtime.terminal_get(terminal, @intFromEnum(ghostty.TerminalData.pwd), &pwd) != ghostty.success) return;
+    if (runtime.terminal_get(terminal, @backingInt(ghostty.TerminalData.pwd), &pwd) != ghostty.success) return;
     var path = pwd.slice();
     if (std.mem.startsWith(u8, path, "cwd;")) path = path[4..];
     if (std.mem.startsWith(u8, path, "file://")) {
@@ -184,7 +184,7 @@ fn commitClipboardWrite(allocator: std.mem.Allocator, request: *const ghostty.Cl
     if (request.contents_len != 1 or !std.mem.eql(u8, contents[0].mime.slice(), "text/plain")) return 2;
     const text = contents[0].data.slice();
     const end = std.mem.indexOfScalar(u8, text, 0) orelse text.len;
-    const owned = allocator.dupeZ(u8, text[0..end]) catch return 5;
+    const owned = allocator.dupeSentinel(u8, text[0..end], 0) catch return 5;
     defer allocator.free(owned);
     commit(owned);
     return 0;

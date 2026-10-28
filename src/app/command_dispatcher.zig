@@ -17,9 +17,7 @@ const notification = @import("../notification.zig");
 
 const LUA_NOREF: c_int = -1;
 
-const libc = if (builtin.os.tag == .windows) void else @cImport({
-    @cInclude("stdlib.h");
-});
+const libc = if (builtin.os.tag == .windows) void else @import("posix_c");
 
 const win32_env = if (builtin.os.tag == .windows) struct {
     pub extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) i32;
@@ -57,9 +55,9 @@ fn setProcessEnvVar(name: []const u8, value: []const u8) !void {
         return;
     }
 
-    const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+    const name_z = try std.heap.page_allocator.dupeSentinel(u8, name, 0);
     defer std.heap.page_allocator.free(name_z);
-    const value_z = try std.heap.page_allocator.dupeZ(u8, value);
+    const value_z = try std.heap.page_allocator.dupeSentinel(u8, value, 0);
     defer std.heap.page_allocator.free(value_z);
     if (libc.setenv(name_z.ptr, value_z.ptr, 1) != 0) return error.SetEnvironmentVariableFailed;
 }
@@ -72,7 +70,7 @@ fn unsetProcessEnvVar(name: []const u8) !void {
         return;
     }
 
-    const name_z = try std.heap.page_allocator.dupeZ(u8, name);
+    const name_z = try std.heap.page_allocator.dupeSentinel(u8, name, 0);
     defer std.heap.page_allocator.free(name_z);
     if (libc.unsetenv(name_z.ptr) != 0) return error.SetEnvironmentVariableFailed;
 }

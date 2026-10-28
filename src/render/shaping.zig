@@ -78,7 +78,7 @@ pub fn putPreparedCache(self: *FtRenderer, utf8: []const u8, face_idx: u8, raste
         const victim_glyphs = victim.value.glyphs;
         self.prepared_cache_bytes -= victim_glyphs.len * @sizeOf(PreparedGlyph) + 6 * @sizeOf(PreparedKey);
         // Recent entries borrow storage from this map.
-        self.recent_prepared = [_]?RecentPreparedEntry{null} ** RECENT_PREPARED_CACHE_LEN;
+        self.recent_prepared = @splat(null);
         self.allocator.free(victim_glyphs);
         self.prepared_cache_evictions += 1;
     }
@@ -122,7 +122,7 @@ pub fn preparedFingerprint(utf8: []const u8, face_idx: u8, ligatures: bool, rast
     var fingerprint: u64 = @as(u64, utf8.len) *% 0x9E3779B185EBCA87;
     fingerprint ^= (@as(u64, face_idx) << 48);
     fingerprint ^= (@as(u64, @intFromBool(ligatures)) << 40);
-    fingerprint ^= (@as(u64, @intFromEnum(raster_mode)) << 32);
+    fingerprint ^= (@as(u64, @backingInt(raster_mode)) << 32);
     if (utf8.len > 0) {
         fingerprint ^= @as(u64, utf8[0]) << 24;
         fingerprint ^= @as(u64, utf8[utf8.len - 1]) << 16;

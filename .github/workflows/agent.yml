@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Native Windows local fs/exec, WSL case requires explicit target
         shell: pwsh
         run: |
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Install headless Lua test dependencies
         run: sudo apt-get update && sudo apt-get install -y luajit libluajit-5.1-dev lua-busted
       - name: Verify real Docker daemon is available
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Build static agent artifacts without GUI dependencies
         run: zig build --build-file build-agent.zig -Doptimize=ReleaseSafe agent agent-all test-agent test-agent-loop test-agent-fs
       - name: Shared Zig CLI transports and packaged guest binaries
@@ -92,7 +92,8 @@ jobs:
           zig test src/host_manager_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
           zig test src/host_local_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
           zig test src/host_local_manager_test.zig -target x86_64-windows-gnu -lc -fno-emit-bin
-          zig test src/host_lua_test.zig -target x86_64-windows-gnu -I /usr/include/luajit-2.1 -lc -fno-emit-bin
+          zig translate-c src/lua_bindings.h -target x86_64-windows-gnu -I /usr/include/luajit-2.1 > .zig-cache/host_lua_bindings.zig
+          zig test -target x86_64-windows-gnu --dep lua_c -Mroot=src/host_lua_test.zig -target x86_64-windows-gnu -Mlua_c=.zig-cache/host_lua_bindings.zig -lc -fno-emit-bin
       - name: Same native Lua contract through rootless Podman
         run: python3 scripts/agent_host_tests.py --connector podman --agent zig-out/bin/hollow-agent -- zig build --build-file build-agent.zig -Doptimize=ReleaseSafe test-host-lua
       - name: Lua host promise contract

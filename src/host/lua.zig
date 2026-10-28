@@ -316,10 +316,10 @@ fn pushValue(api: anytype, state: anytype, value: anytype) void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
         .@"struct" => |fields| {
-            api.create_table(state, 0, fields.fields.len);
-            inline for (fields.fields) |field| {
-                pushValue(api, state, @field(value, field.name));
-                api.set_field(state, -2, field.name);
+            api.create_table(state, 0, fields.field_names.len);
+            inline for (fields.field_names) |field| {
+                pushValue(api, state, @field(value, field));
+                api.set_field(state, -2, field);
             }
         },
         .pointer => |pointer| {

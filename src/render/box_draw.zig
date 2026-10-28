@@ -507,7 +507,8 @@ pub fn draw(cp: u32, metrics: Metrics, canvas: *SimpleCanvas) void {
             while (px < metrics.cell_width) : (px += 1) {
                 if ((px % 2 == 0 and py % 2 == 0) or
                     (density >= 2 and px % 2 != 0 and py % 2 == 0) or
-                    (density >= 3 and px % 2 == 0 and py % 2 != 0)) {
+                    (density >= 3 and px % 2 == 0 and py % 2 != 0))
+                {
                     canvas.setPixel(@intCast(px), @intCast(py), 255);
                 }
             }

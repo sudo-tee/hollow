@@ -205,7 +205,7 @@ fn exec(job: *Job, a: std.mem.Allocator, opts: operations.ExecOptions) !operatio
     if (process_result.stdout.len + process_result.stderr.len > opts.output_limit) return error.StreamTooLong;
     return .{ .exit_code = switch (process_result.term) {
         .exited => |code| code,
-        .signal => |sig| 128 + @as(i32, @intCast(@intFromEnum(sig))),
+        .signal => |sig| 128 + @as(i32, @intCast(@backingInt(sig))),
         else => -1,
     }, .stdout = try a.dupe(u8, process_result.stdout), .stderr = try a.dupe(u8, process_result.stderr) };
 }

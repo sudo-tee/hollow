@@ -1,13 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
-const c = @cImport({
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("sys/stat.h");
-    @cInclude("dirent.h");
-    @cInclude("fcntl.h");
-    @cInclude("unistd.h");
-    @cInclude("errno.h");
-});
+const c = @import("posix_c");
 
 pub const Stat = struct { kind: []const u8, mode: u32, size: i64, mtime: i64 };
 
@@ -51,7 +44,7 @@ fn lastErrno() c_int {
 
 fn pathZ(allocator: std.mem.Allocator, path: []const u8) FsError![:0]u8 {
     try validatePath(path);
-    return allocator.dupeZ(u8, path) catch |err| switch (err) {
+    return allocator.dupeSentinel(u8, path, 0) catch |err| switch (err) {
         error.OutOfMemory => error.ResourceExhausted,
     };
 }
@@ -62,7 +55,7 @@ pub fn stat(path: []const u8) FsError!Stat {
 
     var st: linux.Statx = undefined;
     const rc = linux.statx(linux.AT.FDCWD, z, linux.AT.SYMLINK_NOFOLLOW, .BASIC_STATS, &st);
-    if (linux.errno(rc) != .SUCCESS) return errnoError(@intFromEnum(linux.errno(rc)));
+    if (linux.errno(rc) != .SUCCESS) return errnoError(@backingInt(linux.errno(rc)));
     if (!st.mask.TYPE or !st.mask.MODE or !st.mask.SIZE or !st.mask.MTIME) return error.Unsupported;
     const file_type = st.mode & c.S_IFMT;
     const kind: []const u8 = if (file_type == c.S_IFDIR) "directory" else if (file_type == c.S_IFLNK) "symlink" else if (file_type == c.S_IFREG) "file" else "other";
@@ -86,7 +79,7 @@ pub fn read(allocator: std.mem.Allocator, path: []const u8, offset: u64, limit: 
 
     var st: linux.Statx = undefined;
     const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true }, &st);
-    if (linux.errno(rc) != .SUCCESS) return errnoError(@intFromEnum(linux.errno(rc)));
+    if (linux.errno(rc) != .SUCCESS) return errnoError(@backingInt(linux.errno(rc)));
     if (!st.mask.TYPE) return error.Unsupported;
     if ((st.mode & c.S_IFMT) != c.S_IFREG) return error.NotRegularFile;
 

@@ -311,11 +311,11 @@ const LUA_GLOBALSINDEX: c_int = -10002;
 const LUA_NOREF: c_int = -1;
 
 fn luaFunctionFieldRef(api: Api, state: *State, table_idx: c_int, field: []const u8) c_int {
-    const field_name = std.heap.page_allocator.dupeZ(u8, field) catch return LUA_NOREF;
+    const field_name = std.heap.page_allocator.dupeSentinel(u8, field, 0) catch return LUA_NOREF;
     defer std.heap.page_allocator.free(field_name);
     api.get_field(state, table_idx, field_name);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .function) return LUA_NOREF;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .function) return LUA_NOREF;
     api.push_value(state, -1);
     return api.ref(state, LUA_REGISTRYINDEX);
 }
@@ -352,7 +352,7 @@ const WslDistroCache = struct {
 
         api.create_table(state, 0, @intCast(self.distros.items.len));
         for (self.distros.items, 0..) |distro, index| {
-            const zdistro = std.heap.page_allocator.dupeZ(u8, distro) catch continue;
+            const zdistro = std.heap.page_allocator.dupeSentinel(u8, distro, 0) catch continue;
             defer std.heap.page_allocator.free(zdistro);
             api.push_string(state, zdistro);
             api.rawseti(state, -2, @intCast(index + 1));
@@ -447,7 +447,7 @@ fn loadWslDistrosThread(cache: *WslDistroCache) void {
 
 fn luaValueToJson(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_int) anyerror!std.json.Value {
     const abs_idx = absoluteIndex(api, state, idx);
-    const value_type: LuaType = @enumFromInt(api.value_type(state, abs_idx));
+    const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, abs_idx)));
     switch (value_type) {
         .nil_type => return .null,
         .boolean => return .{ .bool = api.to_boolean(state, abs_idx) != 0 },
@@ -477,7 +477,7 @@ fn luaTableToJson(allocator: std.mem.Allocator, api: Api, state: *State, table_i
     api.push_nil(state);
     while (api.next(state, abs_idx) != 0) {
         defer pop(api, state, 1);
-        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
+        const key_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -2)));
         switch (key_type) {
             .number => {
                 const n = api.to_number(state, -2);
@@ -523,7 +523,7 @@ fn luaTableToJson(allocator: std.mem.Allocator, api: Api, state: *State, table_i
     api.push_nil(state);
     while (api.next(state, abs_idx) != 0) {
         defer pop(api, state, 1);
-        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
+        const key_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -2)));
         const key = switch (key_type) {
             .string => blk: {
                 var len: usize = 0;
@@ -563,7 +563,7 @@ fn pushJsonValue(allocator: std.mem.Allocator, api: Api, state: *State, value: s
             var it = obj.iterator();
             while (it.next()) |entry| {
                 try pushJsonValue(allocator, api, state, entry.value_ptr.*);
-                const zkey = try allocator.dupeZ(u8, entry.key_ptr.*);
+                const zkey = try allocator.dupeSentinel(u8, entry.key_ptr.*, 0);
                 defer allocator.free(zkey);
                 api.set_field(state, -2, zkey);
             }
@@ -794,7 +794,7 @@ fn runChildProcess(allocator: std.mem.Allocator, argv: []const []const u8, cwd: 
 
 fn luaChildRunOptions(api: Api, state: *State, idx: c_int) ChildRunOptions {
     const abs_idx = absoluteIndex(api, state, idx);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, abs_idx))) != .table) return .{};
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, abs_idx)))) != .table) return .{};
 
     var opts = ChildRunOptions{};
     api.get_field(state, abs_idx, "hide_window");
@@ -812,9 +812,9 @@ fn childRunResultToLua(state: *State, api: Api, result: std.process.RunResult, e
         else => false,
     };
 
-    const zstdout = std.heap.page_allocator.dupeZ(u8, result.stdout) catch return api.raise_error(state, err_label);
+    const zstdout = std.heap.page_allocator.dupeSentinel(u8, result.stdout, 0) catch return api.raise_error(state, err_label);
     defer std.heap.page_allocator.free(zstdout);
-    const zstderr = std.heap.page_allocator.dupeZ(u8, result.stderr) catch return api.raise_error(state, err_label);
+    const zstderr = std.heap.page_allocator.dupeSentinel(u8, result.stderr, 0) catch return api.raise_error(state, err_label);
     defer std.heap.page_allocator.free(zstderr);
 
     api.push_boolean(state, if (success) 1 else 0);
@@ -950,7 +950,7 @@ pub const Runtime = struct {
     }
 
     fn runStringNamed(self: *Runtime, code: []const u8, chunk_name: []const u8) !void {
-        const zchunk_name = try self.allocator.dupeZ(u8, chunk_name);
+        const zchunk_name = try self.allocator.dupeSentinel(u8, chunk_name, 0);
         defer self.allocator.free(zchunk_name);
 
         if (self.context.api.load_buffer(self.state, code.ptr, code.len, zchunk_name) != 0) {
@@ -991,7 +991,7 @@ pub const Runtime = struct {
     }
 
     pub fn runFile(self: *Runtime, path: []const u8) !void {
-        const zpath = try self.allocator.dupeZ(u8, path);
+        const zpath = try self.allocator.dupeSentinel(u8, path, 0);
         defer self.allocator.free(zpath);
 
         if (self.context.api.load_file(self.state, zpath) != 0) {
@@ -1029,7 +1029,7 @@ pub const Runtime = struct {
 
         const api = ctx.api;
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 1);
             return;
         }
@@ -1048,11 +1048,11 @@ pub const Runtime = struct {
         const top = api.get_top(self.state);
         defer api.set_top(self.state, top);
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return false;
         api.get_field(self.state, -1, "action");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return false;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return false;
         api.get_field(self.state, -1, name);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return false;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) return false;
         api.create_table(self.state, 0, 1);
         api.push_number(self.state, @floatFromInt(tab_id));
         api.set_field(self.state, -2, "tab_id");
@@ -1071,9 +1071,9 @@ pub const Runtime = struct {
         const top = api.get_top(self.state);
         defer api.set_top(self.state, top);
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return;
         api.get_field(self.state, -1, "_filter_spawn");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) return;
         api.create_table(self.state, 0, 4);
         try pushOwnedString(allocator, api, self.state, spec.shell);
         api.set_field(self.state, -2, "shell");
@@ -1089,7 +1089,7 @@ pub const Runtime = struct {
         var entries = std.mem.splitScalar(u8, spec.env_block, 0);
         while (entries.next()) |entry| {
             const equal = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
-            const key = try allocator.dupeZ(u8, entry[0..equal]);
+            const key = try allocator.dupeSentinel(u8, entry[0..equal], 0);
             try pushOwnedString(allocator, api, self.state, entry[equal + 1 ..]);
             api.set_field(self.state, -2, key);
         }
@@ -1098,11 +1098,11 @@ pub const Runtime = struct {
             logLuaError(api, self.state, "spawn filter");
             return;
         }
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return error.InvalidSpawnSpec;
         api.get_field(self.state, -1, "cwd");
         var cwd: ?[]const u8 = null;
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .nil_type) {
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .nil_type) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .string) return error.InvalidSpawnSpec;
             var len: usize = 0;
             const ptr = api.to_lstring(self.state, -1, &len) orelse return error.InvalidSpawnSpec;
             if (len == 0 or std.mem.indexOfScalar(u8, ptr[0..len], 0) != null) return error.InvalidSpawnSpec;
@@ -1110,12 +1110,12 @@ pub const Runtime = struct {
         }
         pop(api, self.state, 1);
         api.get_field(self.state, -1, "env");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.InvalidSpawnSpec;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return error.InvalidSpawnSpec;
         var block: std.ArrayList(u8) = .empty;
         api.push_nil(self.state);
         while (api.next(self.state, -2) != 0) {
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -2))) != .string or
-                @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .string) return error.InvalidSpawnSpec;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -2)))) != .string or
+                @as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .string) return error.InvalidSpawnSpec;
             var key_len: usize = 0;
             const key = api.to_lstring(self.state, -2, &key_len) orelse return error.InvalidSpawnSpec;
             var value_len: usize = 0;
@@ -1143,16 +1143,16 @@ pub const Runtime = struct {
         const top = api.get_top(self.state);
         defer api.set_top(self.state, top);
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return null;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return null;
         api.get_field(self.state, -1, "_pty_host");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return null;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) return null;
         if (domain) |name| api.push_lstring(self.state, name.ptr, name.len) else api.push_nil(self.state);
         api.push_lstring(self.state, shell.ptr, shell.len);
         if (api.pcall(self.state, 2, 1, 0) != 0) {
             logLuaError(api, self.state, "pty host");
             return null;
         }
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return null;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return null;
         const idx = absoluteIndex(api, self.state, -1);
         const mode = luaStringField(api, self.state, idx, "mode") orelse return null;
         var host: @import("pty/agent.zig").Host = .{};
@@ -1178,9 +1178,9 @@ pub const Runtime = struct {
 
         // Push the handler function from the registry.
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const fn_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         if (fn_type == .function) {
-            const zkey = std.heap.page_allocator.dupeZ(u8, key) catch {
+            const zkey = std.heap.page_allocator.dupeSentinel(u8, key, 0) catch {
                 pop(api, self.state, 1);
                 return false;
             };
@@ -1214,7 +1214,7 @@ pub const Runtime = struct {
         if (ref == LUA_NOREF) return .default;
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 1);
             return .default;
         }
@@ -1233,7 +1233,7 @@ pub const Runtime = struct {
             return .default;
         }
 
-        const result_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const result_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         switch (result_type) {
             .nil_type => {
                 pop(api, self.state, 1);
@@ -1272,19 +1272,19 @@ pub const Runtime = struct {
         const api = ctx.api;
 
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return false;
         }
 
         api.get_field(self.state, -1, "keymap");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return false;
         }
 
         api.get_field(self.state, -1, "is_leader_active");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return false;
         }
@@ -1306,13 +1306,13 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return;
         }
 
         api.get_field(self.state, -1, "_emit_builtin_event");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 2);
             return;
         }
@@ -1345,7 +1345,7 @@ pub const Runtime = struct {
         defer api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 1);
             return;
         }
@@ -1391,7 +1391,7 @@ pub const Runtime = struct {
         defer api.set_top(self.state, top);
         defer api.unref(self.state, LUA_REGISTRYINDEX, callback_ref);
         api.rawgeti(self.state, LUA_REGISTRYINDEX, callback_ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) return;
         api.create_table(self.state, 0, 4);
         api.push_boolean(self.state, if (response.success) 1 else 0);
         api.set_field(self.state, -2, "success");
@@ -1418,7 +1418,7 @@ pub const Runtime = struct {
 
     fn fireCallback(api: Api, state: *State, ref: c_int, tag: []const u8) void {
         api.rawgeti(state, LUA_REGISTRYINDEX, ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .function) {
             pop(api, state, 1);
             api.unref(state, LUA_REGISTRYINDEX, ref);
             return;
@@ -1499,11 +1499,11 @@ pub const Runtime = struct {
     fn pushStateHandler(self: *Runtime, namespace: [:0]const u8, name: [:0]const u8) !void {
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingHollow;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return error.MissingHollow;
         api.get_field(self.state, -1, namespace);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return error.MissingLuaStateNamespace;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return error.MissingLuaStateNamespace;
         api.get_field(self.state, -1, name);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) return error.MissingLuaStateHandler;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) return error.MissingLuaStateHandler;
     }
 
     fn exportLuaState(self: *Runtime, namespace: [:0]const u8, handler: [:0]const u8) !std.json.Value {
@@ -1583,17 +1583,17 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow global") };
         }
         api.get_field(self.state, -1, "htp");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow.htp namespace") };
         }
         api.get_field(self.state, -1, "_handle_emit");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing htp emit handler") };
         }
@@ -1635,17 +1635,17 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow global") };
         }
         api.get_field(self.state, -1, "htp");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing hollow.htp namespace") };
         }
         api.get_field(self.state, -1, "_handle_query");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return .{ .success = false, .error_message = try self.allocator.dupe(u8, "missing htp query handler") };
         }
@@ -1688,13 +1688,13 @@ pub const Runtime = struct {
             logLuaError(api, self.state, "quick_select_match");
             return;
         }
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) return;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) return;
 
         const results_idx = absoluteIndex(api, self.state, -1);
         api.push_nil(self.state);
         while (api.next(self.state, results_idx) != 0) {
             defer pop(api, self.state, 1);
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) continue;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) continue;
             const match_idx = absoluteIndex(api, self.state, -1);
             const start_col = luaNonNegativeIntegerField(api, self.state, match_idx, "start_col") orelse continue;
             const end_col = luaNonNegativeIntegerField(api, self.state, match_idx, "end_col") orelse continue;
@@ -1740,13 +1740,13 @@ pub const Runtime = struct {
             logLuaError(api, self.state, "quick_select_action");
             return .failed;
         }
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .table) {
             const command_idx = absoluteIndex(api, self.state, -1);
             var index: c_int = 1;
             while (true) : (index += 1) {
                 api.rawgeti(self.state, command_idx, index);
                 defer pop(api, self.state, 1);
-                const value_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+                const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
                 if (value_type == .nil_type) break;
                 if (value_type != .string) return .failed;
                 var arg_len: usize = 0;
@@ -1804,7 +1804,7 @@ pub const Runtime = struct {
             return .failed;
         }
 
-        const result_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const result_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         if (result_type == .nil_type) return .fallback;
         if (result_type != .table) {
             std.log.err("lua: link route must return nil, a handled result, or a URL rewrite", .{});
@@ -1813,12 +1813,12 @@ pub const Runtime = struct {
 
         const result_idx = absoluteIndex(api, self.state, -1);
         api.get_field(self.state, result_idx, "handled");
-        const handled = @as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .boolean and api.to_boolean(self.state, -1) != 0;
+        const handled = @as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .boolean and api.to_boolean(self.state, -1) != 0;
         pop(api, self.state, 1);
         if (handled) return .handled;
 
         api.get_field(self.state, result_idx, "url");
-        const url_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const url_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         if (url_type == .nil_type) {
             std.log.err("lua: link route result must include handled=true or a url string", .{});
             return .failed;
@@ -1847,7 +1847,7 @@ pub const Runtime = struct {
         if (ref == LUA_NOREF) return segment;
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const fn_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         if (fn_type != .function) {
             pop(api, self.state, 1);
             return segment;
@@ -1858,7 +1858,7 @@ pub const Runtime = struct {
         api.push_boolean(self.state, if (is_hovered) 1 else 0);
         api.push_boolean(self.state, if (hover_close) 1 else 0);
 
-        const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
+        const zfallback = std.heap.page_allocator.dupeSentinel(u8, fallback, 0) catch {
             pop(api, self.state, 1);
             return segment;
         };
@@ -1887,7 +1887,7 @@ pub const Runtime = struct {
         if (ref == LUA_NOREF) return segment;
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        const fn_type: LuaType = @enumFromInt(api.value_type(self.state, -1));
+        const fn_type: LuaType = @fromBackingInt(@intCast(api.value_type(self.state, -1)));
         if (fn_type != .function) {
             pop(api, self.state, 1);
             return segment;
@@ -1898,7 +1898,7 @@ pub const Runtime = struct {
         api.push_number(self.state, @floatFromInt(active_workspace_index));
         api.push_number(self.state, @floatFromInt(workspace_count));
 
-        const zfallback = std.heap.page_allocator.dupeZ(u8, fallback) catch {
+        const zfallback = std.heap.page_allocator.dupeSentinel(u8, fallback, 0) catch {
             pop(api, self.state, 1);
             return segment;
         };
@@ -1938,7 +1938,7 @@ pub const Runtime = struct {
         if (ref == LUA_NOREF or seg_buf.len == 0 or text_buf.len == 0) return seg_buf[0..0];
 
         api.rawgeti(self.state, LUA_REGISTRYINDEX, ref);
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 1);
             return seg_buf[0..0];
         }
@@ -1947,7 +1947,7 @@ pub const Runtime = struct {
             .left => "left",
             .right => "right",
         };
-        const zside = std.heap.page_allocator.dupeZ(u8, side_text) catch {
+        const zside = std.heap.page_allocator.dupeSentinel(u8, side_text, 0) catch {
             pop(api, self.state, 1);
             return seg_buf[0..0];
         };
@@ -1962,7 +1962,7 @@ pub const Runtime = struct {
             return seg_buf[0..0];
         }
 
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return seg_buf[0..0];
         }
@@ -1973,12 +1973,12 @@ pub const Runtime = struct {
         while (api.next(self.state, -2) != 0) {
             defer pop(api, self.state, 1);
             if (seg_count >= seg_buf.len) break;
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) continue;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) continue;
 
             var seg = bar.Segment{ .text = "" };
 
             api.get_field(self.state, -1, "text");
-            if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .string) {
                 var len: usize = 0;
                 if (api.to_lstring(self.state, -1, &len)) |ptr| {
                     if (text_used + len <= text_buf.len) {
@@ -2013,19 +2013,19 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return null;
         }
 
         api.get_field(self.state, -1, "ui");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return null;
         }
 
         api.get_field(self.state, -1, "_sidebar_state");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2036,7 +2036,7 @@ pub const Runtime = struct {
             return null;
         }
 
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2045,7 +2045,7 @@ pub const Runtime = struct {
         var layout = SidebarLayout{};
 
         api.get_field(self.state, sidebar_idx, "width");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .number) {
             const width = api.to_number(self.state, -1);
             if (width > 0) layout.width_cols = @as(usize, @intFromFloat(width));
         }
@@ -2056,7 +2056,7 @@ pub const Runtime = struct {
         pop(api, self.state, 1);
 
         api.get_field(self.state, sidebar_idx, "side");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .string) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .string) {
             var side_len: usize = 0;
             if (api.to_lstring(self.state, -1, &side_len)) |ptr| {
                 const side = ptr[0..side_len];
@@ -2076,19 +2076,19 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return null;
         }
 
         api.get_field(self.state, -1, "ui");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return null;
         }
 
         api.get_field(self.state, -1, "_bottombar_layout");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2099,7 +2099,7 @@ pub const Runtime = struct {
             return null;
         }
 
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2108,7 +2108,7 @@ pub const Runtime = struct {
         var layout = BottomBarLayout{};
 
         api.get_field(self.state, layout_idx, "height");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .number) {
             const height = api.to_number(self.state, -1);
             if (height > 0) layout.height_px = asInt(u32, height) catch 0;
         }
@@ -2125,19 +2125,19 @@ pub const Runtime = struct {
 
         const api = self.context.api;
         api.get_field(self.state, LUA_GLOBALSINDEX, "hollow");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return null;
         }
 
         api.get_field(self.state, -1, "ui");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return null;
         }
 
         api.get_field(self.state, -1, "_topbar_layout");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .function) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .function) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2148,7 +2148,7 @@ pub const Runtime = struct {
             return null;
         }
 
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 3);
             return null;
         }
@@ -2157,7 +2157,7 @@ pub const Runtime = struct {
         var layout = BottomBarLayout{};
 
         api.get_field(self.state, layout_idx, "height");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) == .number) {
             const height = api.to_number(self.state, -1);
             if (height > 0) layout.height_px = asInt(u32, height) catch 0;
         }
@@ -2727,13 +2727,13 @@ pub const Runtime = struct {
         const api = self.context.api;
 
         api.get_field(self.state, LUA_GLOBALSINDEX, "package");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 1);
             return error.LuaRuntimeFailed;
         }
 
         api.get_field(self.state, -1, "preload");
-        if (@as(LuaType, @enumFromInt(api.value_type(self.state, -1))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(self.state, -1)))) != .table) {
             pop(api, self.state, 2);
             return error.LuaRuntimeFailed;
         }
@@ -2744,7 +2744,7 @@ pub const Runtime = struct {
         api.push_integer(self.state, @as(isize, @intCast(module.source.len)));
         api.push_cclosure(self.state, l_preloaded_module_loader, 4);
 
-        const zname = try self.allocator.dupeZ(u8, module.name);
+        const zname = try self.allocator.dupeSentinel(u8, module.name, 0);
         defer self.allocator.free(zname);
         api.set_field(self.state, -2, zname);
         pop(api, self.state, 2);
@@ -2774,7 +2774,7 @@ const BridgeContext = struct {
     quick_select_action_ref: c_int = -1,
     link_route_ref: c_int = -1,
     gui_ready_fired: bool = false,
-    process_jobs: [16]?*ProcessJob = [_]?*ProcessJob{null} ** 16,
+    process_jobs: [16]?*ProcessJob = @splat(null),
     host_manager: ?host_runtime.Manager = null,
     deferred_callback_refs: std.ArrayListUnmanaged(c_int) = .empty,
     timed_callback_refs: std.ArrayListUnmanaged(TimedCallback) = .empty,
@@ -2866,7 +2866,7 @@ fn luaModuleDiskPath(allocator: std.mem.Allocator, sources: RuntimeLuaSources, m
 }
 
 fn loadLuaChunkFromDisk(api: Api, state: *State, path: []const u8) !void {
-    const zpath = try std.heap.page_allocator.dupeZ(u8, path);
+    const zpath = try std.heap.page_allocator.dupeSentinel(u8, path, 0);
     defer std.heap.page_allocator.free(zpath);
 
     if (api.load_file(state, zpath) != 0) {
@@ -2876,7 +2876,7 @@ fn loadLuaChunkFromDisk(api: Api, state: *State, path: []const u8) !void {
 }
 
 fn loadLuaChunkFromSource(api: Api, state: *State, source: []const u8, chunk_name: []const u8) !void {
-    const zchunk_name = try std.heap.page_allocator.dupeZ(u8, chunk_name);
+    const zchunk_name = try std.heap.page_allocator.dupeSentinel(u8, chunk_name, 0);
     defer std.heap.page_allocator.free(zchunk_name);
 
     if (api.load_buffer(state, source.ptr, source.len, zchunk_name) != 0) {
@@ -2904,7 +2904,7 @@ fn loadLuaModuleIntoState(ctx: *BridgeContext, state: *State, module: LuaModule)
 }
 
 fn pushOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, value: []const u8) !void {
-    const zvalue = try allocator.dupeZ(u8, value);
+    const zvalue = try allocator.dupeSentinel(u8, value, 0);
     defer allocator.free(zvalue);
     api.push_string(state, zvalue);
 }
@@ -3151,7 +3151,7 @@ fn l_log(state: *State) callconv(.c) c_int {
         return 0;
     }
 
-    const value_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
     switch (value_type) {
         .string => {
             var len: usize = 0;
@@ -3160,7 +3160,7 @@ fn l_log(state: *State) callconv(.c) c_int {
         },
         .number => std.log.info("lua: {d}", .{api.to_number(state, 1)}),
         .boolean => std.log.info("lua: {s}", .{if (api.to_boolean(state, 1) != 0) "true" else "false"}),
-        else => std.log.info("lua: <type {d}>", .{@intFromEnum(value_type)}),
+        else => std.log.info("lua: <type {d}>", .{@backingInt(value_type)}),
     }
 
     return 0;
@@ -3171,7 +3171,7 @@ fn l_strftime(state: *State) callconv(.c) c_int {
     const api = ctx.api;
 
     var fmt_len: usize = 0;
-    const fmt_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const fmt_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &fmt_len)
     else
         null;
@@ -3213,7 +3213,7 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "read_dir expects a string path");
     }
 
@@ -3245,7 +3245,7 @@ fn l_read_dir(state: *State) callconv(.c) c_int {
         };
         defer std.heap.page_allocator.free(joined);
 
-        const zjoined = std.heap.page_allocator.dupeZ(u8, joined) catch {
+        const zjoined = std.heap.page_allocator.dupeSentinel(u8, joined, 0) catch {
             return api.raise_error(state, "read_dir failed");
         };
         defer std.heap.page_allocator.free(zjoined);
@@ -3310,7 +3310,7 @@ fn l_glob(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "glob expects a string pattern");
     }
 
@@ -3355,7 +3355,7 @@ fn l_glob(state: *State) callconv(.c) c_int {
         };
         defer std.heap.page_allocator.free(joined);
 
-        const zjoined = std.heap.page_allocator.dupeZ(u8, joined) catch {
+        const zjoined = std.heap.page_allocator.dupeSentinel(u8, joined, 0) catch {
             return api.raise_error(state, "glob failed");
         };
         defer std.heap.page_allocator.free(zjoined);
@@ -3372,7 +3372,7 @@ fn l_is_dir(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "is_dir expects a string path");
     }
 
@@ -3431,7 +3431,7 @@ fn l_mkdir_p(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "mkdir_p expects a string path");
     }
 
@@ -3460,7 +3460,7 @@ fn l_read_file(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "read_file expects a string path");
     }
 
@@ -3484,10 +3484,10 @@ fn l_write_file(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "write_file expects a string path");
     }
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .string) {
         return api.raise_error(state, "write_file expects string contents");
     }
 
@@ -3523,7 +3523,7 @@ fn l_path_exists(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "path_exists expects a string path");
     }
 
@@ -3577,7 +3577,7 @@ fn l_json_decode(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "json_decode expects a JSON string");
     }
 
@@ -3644,7 +3644,7 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
     host.agent = target.agent;
     api.get_field(state, idx, "multiplex");
     defer pop(api, state, 1);
-    const multiplex_type: LuaType = @enumFromInt(api.value_type(state, -1));
+    const multiplex_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
     if (multiplex_type != .nil_type) {
         if (multiplex_type != .table) return error.InvalidMuxSettings;
         const multiplex_idx = absoluteIndex(api, state, -1);
@@ -3652,7 +3652,7 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
         inline for (.{ "read_workers", "batch_jobs" }) |field| {
             api.get_field(state, multiplex_idx, field);
             defer pop(api, state, 1);
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return error.InvalidMuxSettings;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .number) return error.InvalidMuxSettings;
             const value = api.to_number(state, -1);
             if (!std.math.isFinite(value) or @floor(value) != value) return error.InvalidMuxSettings;
             @field(tuning, field) = try asInt(u8, value);
@@ -3668,7 +3668,7 @@ fn parsePtyHost(api: Api, state: *State, idx: c_int, arena: std.mem.Allocator, h
 fn l_run_child_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table) {
         return api.raise_error(state, "run_child_process expects an argv table");
     }
 
@@ -3682,8 +3682,8 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
         api.get_table(state, argv_idx);
         defer pop(api, state, 1);
 
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) break;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) {
             return api.raise_error(state, "run_child_process argv items must be strings");
         }
 
@@ -3706,7 +3706,7 @@ fn l_run_child_process(state: *State) callconv(.c) c_int {
         std.log.warn("lua: run_child_process failed err={s}", .{@errorName(err)});
         api.push_boolean(state, 0);
         api.push_string(state, "");
-        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        const zerr = std.heap.page_allocator.dupeSentinel(u8, @errorName(err), 0) catch return 3;
         defer std.heap.page_allocator.free(zerr);
         api.push_string(state, zerr);
         return 3;
@@ -3724,7 +3724,7 @@ fn childExitCode(term: std.process.Child.Term) isize {
 fn l_run_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "run_process expects a command string");
     }
 
@@ -3739,7 +3739,7 @@ fn l_run_process(state: *State) callconv(.c) c_int {
     argv.append(std.heap.page_allocator, cmd) catch return api.raise_error(state, "run_process failed");
 
     if (api.get_top(state) >= 2) {
-        if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .table) {
             return api.raise_error(state, "run_process expects an args table");
         }
 
@@ -3750,8 +3750,8 @@ fn l_run_process(state: *State) callconv(.c) c_int {
             api.get_table(state, argv_idx);
             defer pop(api, state, 1);
 
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) break;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) {
                 return api.raise_error(state, "run_process args must be strings");
             }
 
@@ -3772,7 +3772,7 @@ fn l_run_process(state: *State) callconv(.c) c_int {
         api.set_field(state, -2, "code");
         api.push_string(state, "");
         api.set_field(state, -2, "stdout");
-        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 1;
+        const zerr = std.heap.page_allocator.dupeSentinel(u8, @errorName(err), 0) catch return 1;
         defer std.heap.page_allocator.free(zerr);
         api.push_string(state, zerr);
         api.set_field(state, -2, "stderr");
@@ -3794,10 +3794,10 @@ fn l_run_process(state: *State) callconv(.c) c_int {
 fn l_run_domain_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .string) {
         return api.raise_error(state, "run_domain_process expects a domain string");
     }
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .table) {
         return api.raise_error(state, "run_domain_process expects an argv table");
     }
 
@@ -3817,8 +3817,8 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
         api.get_table(state, argv_idx);
         defer pop(api, state, 1);
 
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) break;
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) break;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) {
             return api.raise_error(state, "run_domain_process argv items must be strings");
         }
 
@@ -3839,7 +3839,7 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
         std.log.warn("lua: run_domain_process unknown shell domain={s} err={s}", .{ domain, @errorName(err) });
         api.push_boolean(state, 0);
         api.push_string(state, "");
-        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        const zerr = std.heap.page_allocator.dupeSentinel(u8, @errorName(err), 0) catch return 3;
         defer std.heap.page_allocator.free(zerr);
         api.push_string(state, zerr);
         return 3;
@@ -3851,7 +3851,7 @@ fn l_run_domain_process(state: *State) callconv(.c) c_int {
         std.log.warn("lua: run_domain_process failed domain={s} err={s}", .{ domain, @errorName(err) });
         api.push_boolean(state, 0);
         api.push_string(state, "");
-        const zerr = std.heap.page_allocator.dupeZ(u8, @errorName(err)) catch return 3;
+        const zerr = std.heap.page_allocator.dupeSentinel(u8, @errorName(err), 0) catch return 3;
         defer std.heap.page_allocator.free(zerr);
         api.push_string(state, zerr);
         return 3;
@@ -4100,7 +4100,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var refresh_live_config = false;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table) {
         std.log.err("set_config expects a Lua table", .{});
         return 0;
     }
@@ -4112,7 +4112,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "fonts") and value_type == .table) {
             const fonts_idx = absoluteIndex(api, state, -1);
@@ -4199,7 +4199,7 @@ fn l_set_config(state: *State) callconv(.c) c_int {
             api.push_nil(state);
             while (api.next(state, watch_table) != 0) {
                 defer pop(api, state, 1);
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) continue;
                 var dir_len: usize = 0;
                 const dir_ptr = api.to_lstring(state, -1, &dir_len) orelse continue;
                 const dir_slice = dir_ptr[0..dir_len];
@@ -4250,41 +4250,41 @@ fn applyUiThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
 
-        if (std.mem.eql(u8, key, "top_bar") and api.value_type(state, -1) == @intFromEnum(LuaType.table)) {
+        if (std.mem.eql(u8, key, "top_bar") and api.value_type(state, -1) == @backingInt(LuaType.table)) {
             const top_bar_idx = absoluteIndex(api, state, -1);
             try applyTopBarThemeTable(cfg, api, state, top_bar_idx);
             continue;
         }
 
-        if (std.mem.eql(u8, key, "scrollbar") and api.value_type(state, -1) == @intFromEnum(LuaType.table)) {
+        if (std.mem.eql(u8, key, "scrollbar") and api.value_type(state, -1) == @backingInt(LuaType.table)) {
             const scrollbar_idx = absoluteIndex(api, state, -1);
             try applyScrollbarThemeTable(cfg, api, state, scrollbar_idx);
             continue;
         }
 
         if (std.mem.eql(u8, key, "split_active")) {
-            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
                 var val_len: usize = 0;
                 if (api.to_lstring(state, -1, &val_len)) |ptr| {
                     if (parseHexColor(ptr[0..val_len])) |color| cfg.split_active_color = color;
                 }
             }
         } else if (std.mem.eql(u8, key, "split_inactive") or std.mem.eql(u8, key, "split")) {
-            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
                 var val_len: usize = 0;
                 if (api.to_lstring(state, -1, &val_len)) |ptr| {
                     if (parseHexColor(ptr[0..val_len])) |color| cfg.split_inactive_color = color;
                 }
             }
         } else if (std.mem.eql(u8, key, "floating_active")) {
-            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
                 var val_len: usize = 0;
                 if (api.to_lstring(state, -1, &val_len)) |ptr| {
                     if (parseHexColor(ptr[0..val_len])) |color| cfg.floating_active_color = color;
                 }
             }
         } else if (std.mem.eql(u8, key, "floating_inactive")) {
-            if (api.value_type(state, -1) == @intFromEnum(LuaType.string)) {
+            if (api.value_type(state, -1) == @backingInt(LuaType.string)) {
                 var val_len: usize = 0;
                 if (api.to_lstring(state, -1, &val_len)) |ptr| {
                     if (parseHexColor(ptr[0..val_len])) |color| cfg.floating_inactive_color = color;
@@ -4302,7 +4302,7 @@ fn applyTopBarThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (value_type == .number and std.mem.eql(u8, key, "height")) {
             cfg.top_bar_height = try asInt(u32, api.to_number(state, -1));
@@ -4335,7 +4335,7 @@ fn applyUnfocusedPaneTable(cfg: *config.Config, api: Api, state: *State, table_i
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "cursor")) {
             if (value_type == .boolean) {
@@ -4378,7 +4378,7 @@ fn applyBellTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_int
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "visual") and value_type == .boolean) {
             cfg.bell.visual = api.to_boolean(state, -1) != 0;
@@ -4724,7 +4724,7 @@ fn applyHyperlinksTable(cfg: *config.Config, api: Api, state: *State, table_idx:
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (value_type == .boolean) {
             const value = api.to_boolean(state, -1) != 0;
@@ -4778,7 +4778,7 @@ fn applyDomainsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
         if (value_type == .string) {
             var value_len: usize = 0;
             const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -4802,7 +4802,7 @@ fn applyDomainTable(cfg: *config.Config, api: Api, state: *State, domain_name: [
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
 
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "ssh") and value_type == .table) {
             const ssh_idx = absoluteIndex(api, state, -1);
@@ -4843,7 +4843,7 @@ fn applyDomainEnvTable(cfg: *config.Config, api: Api, state: *State, domain_name
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
 
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -4863,7 +4863,7 @@ fn applyDomainSshTable(cfg: *config.Config, api: Api, state: *State, domain_name
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -4909,7 +4909,7 @@ fn applyDomainSshTable(cfg: *config.Config, api: Api, state: *State, domain_name
 fn luaStringField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?[]const u8 {
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
     var len: usize = 0;
     const ptr = api.to_lstring(state, -1, &len) orelse return null;
     return ptr[0..len];
@@ -4925,7 +4925,7 @@ fn applyFontsTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "fallbacks") and value_type == .table) {
             const fallbacks_idx = absoluteIndex(api, state, -1);
@@ -5034,7 +5034,7 @@ fn applyFontFallbacksTable(cfg: *config.Config, api: Api, state: *State, table_i
     api.push_nil(state);
     while (api.next(state, table_idx) != 0) {
         defer pop(api, state, 1);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -5060,7 +5060,7 @@ fn logLuaError(api: Api, state: *State, ctx_label: []const u8) void {
 }
 
 fn luaValueToOwnedString(allocator: std.mem.Allocator, api: Api, state: *State, idx: c_int) ?[]u8 {
-    const value_type: LuaType = @enumFromInt(api.value_type(state, idx));
+    const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, idx)));
     if (value_type == .string) {
         var len: usize = 0;
         const ptr = api.to_lstring(state, idx, &len) orelse return null;
@@ -5145,7 +5145,7 @@ fn applyPaletteArray(cfg: *config.Config, api: Api, state: *State, table_idx: c_
     while (i < count) : (i += 1) {
         api.rawgeti(state, table_idx, @intCast(i + 1));
         defer pop(api, state, 1);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) continue;
 
         var value_len: usize = 0;
         const value_ptr = api.to_lstring(state, -1, &value_len) orelse continue;
@@ -5160,8 +5160,8 @@ fn applyIndexedPalette(cfg: *config.Config, api: Api, state: *State, table_idx: 
     while (api.next(state, table_idx) != 0) {
         defer pop(api, state, 1);
 
-        const key_type: LuaType = @enumFromInt(api.value_type(state, -2));
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const key_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -2)));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
         if (key_type != .number or value_type != .string) continue;
 
         const key_num = api.to_number(state, -2);
@@ -5183,7 +5183,7 @@ fn applyThemeTable(cfg: *config.Config, api: Api, state: *State, table_idx: c_in
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (std.mem.eql(u8, key, "ansi") and value_type == .table) {
             const ansi_idx = absoluteIndex(api, state, -1);
@@ -5225,7 +5225,7 @@ fn applyScrollbarThemeTable(cfg: *config.Config, api: Api, state: *State, table_
         var key_len: usize = 0;
         const key_ptr = api.to_lstring(state, -2, &key_len) orelse continue;
         const key = key_ptr[0..key_len];
-        const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+        const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
 
         if (value_type == .boolean) {
             const value = api.to_boolean(state, -1) != 0;
@@ -5286,7 +5286,7 @@ fn applyScrollbarThemeTable(cfg: *config.Config, api: Api, state: *State, table_
 pub fn parseColorField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8) ?ghostty.ColorRgb {
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return null;
     var len: usize = 0;
     const ptr = api.to_lstring(state, -1, &len) orelse return null;
     return parseHexColor(ptr[0..len]);
@@ -5304,11 +5304,11 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
             pop(api, state, 1);
             break;
         }
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) continue;
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) continue;
 
         var seg = bar.Segment{ .text = "" };
         api.get_field(state, -1, "text");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| {
                 if (text_used + len <= text_buf.len) {
@@ -5327,7 +5327,7 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         seg.fg = parseColorField(api, state, -1, "fg");
         seg.bg = parseColorField(api, state, -1, "bg");
         api.get_field(state, -1, "id");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
             var len: usize = 0;
             if (api.to_lstring(state, -1, &len)) |ptr| {
                 if (text_used + len <= text_buf.len) {
@@ -5344,13 +5344,13 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         pop(api, state, 1);
 
         api.get_field(state, -1, "radius");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             seg.radius = @floatCast(api.to_number(state, -1));
         }
         pop(api, state, 1);
 
         api.get_field(state, -1, "background_extend");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             const count = api.to_number(state, -1);
             if (std.math.isFinite(count)) seg.background_extend = @intFromFloat(std.math.clamp(count, 0, 32));
         }
@@ -5358,10 +5358,10 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
 
         seg.border = parseColorField(api, state, -1, "border");
         api.get_field(state, -1, "padding");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
             inline for (.{ "top", "right", "bottom", "left" }) |edge| {
                 api.get_field(state, -1, edge);
-                if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+                if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
                     const px = api.to_number(state, -1);
                     if (std.math.isFinite(px)) @field(seg.padding, edge) = @floatCast(std.math.clamp(px, 0, 4096));
                 }
@@ -5371,7 +5371,7 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         pop(api, state, 1);
 
         api.get_field(state, -1, "border_size");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             seg.border_size = @max(@as(f32, 0.0), @as(f32, @floatCast(api.to_number(state, -1))));
         }
         pop(api, state, 1);
@@ -5386,7 +5386,7 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
 }
 
 fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8) bar.Segment {
-    const value_type: LuaType = @enumFromInt(api.value_type(state, -1));
+    const value_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, -1)));
     if (value_type == .string) {
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
@@ -5402,7 +5402,7 @@ fn parseLabelResult(api: Api, state: *State, out_buf: []u8, fallback: []const u8
     var seg = bar.Segment{ .text = fallback };
 
     api.get_field(state, -1, "text");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .string) {
         var len: usize = 0;
         if (api.to_lstring(state, -1, &len)) |ptr| {
             const n = @min(len, out_buf.len);
@@ -5433,7 +5433,7 @@ pub fn absoluteIndex(api: Api, state: *State, idx: c_int) c_int {
 fn luaNonNegativeIntegerField(api: Api, state: *State, table_idx: c_int, field: [:0]const u8) ?usize {
     api.get_field(state, table_idx, field);
     defer pop(api, state, 1);
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .number) return null;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .number) return null;
     const value = api.to_number(state, -1);
     if (value < 0 or value > @as(f64, @floatFromInt(std.math.maxInt(usize))) or @floor(value) != value) return null;
     return @intFromFloat(value);
@@ -5449,7 +5449,7 @@ fn l_new_tab(state: *State) callconv(.c) c_int {
     var callback_ref: c_int = LUA_NOREF;
     var insert_at_end = false;
 
-    switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+    switch (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1))))) {
         .string => {
             var len: usize = 0;
             if (api.to_lstring(state, 1, &len)) |ptr| domain_name = ptr[0..len];
@@ -5505,7 +5505,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
     var name: ?[]const u8 = null;
     var callback_ref: c_int = LUA_NOREF;
 
-    switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+    switch (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1))))) {
         .string => {
             var len: usize = 0;
             if (api.to_lstring(state, 1, &len)) |ptr| cwd = ptr[0..len];
@@ -5529,7 +5529,7 @@ fn l_new_workspace(state: *State) callconv(.c) c_int {
 fn l_close_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const workspace_id = switch (@as(LuaType, @enumFromInt(api.value_type(state, 1)))) {
+    const workspace_id = switch (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1))))) {
         .number => blk: {
             const value = @as(isize, @intFromFloat(api.to_number(state, 1)));
             if (value >= 0) break :blk @as(?usize, @intCast(value)) else break :blk null;
@@ -5547,7 +5547,7 @@ fn l_get_workspace_id(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -5570,7 +5570,7 @@ fn l_prev_workspace(state: *State) callconv(.c) c_int {
 fn l_schedule(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .function) {
         std.log.err("lua: schedule expects a function", .{});
         return 0;
     }
@@ -5587,7 +5587,7 @@ fn l_defer(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .function) {
         std.log.err("lua: defer expects a function", .{});
         return 0;
     }
@@ -5628,7 +5628,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     };
 
     var dir_len: usize = 0;
-    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const dir_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &dir_len)
     else
         null;
@@ -5636,7 +5636,7 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     var direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
 
     // Optional second argument: ratio in (0, 1). Defaults to 0.5.
-    var ratio: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    var ratio: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(f32, @floatCast(api.to_number(state, 2)))
     else
         0.5;
@@ -5654,17 +5654,17 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
     var height: f32 = 0.75;
     var has_bounds = false;
     var callback_ref: c_int = LUA_NOREF;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 3)))) == .string) {
         var domain_len: usize = 0;
         if (api.to_lstring(state, 3, &domain_len)) |ptr| domain_name = ptr[0..domain_len];
-    } else if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .table) {
+    } else if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .table) {
         const opts_idx = absoluteIndex(api, state, 1);
         domain_name = luaStringField(api, state, opts_idx, "domain");
         cwd = luaStringField(api, state, opts_idx, "cwd");
         command = luaStringField(api, state, opts_idx, "command");
         if (luaStringField(api, state, opts_idx, "command_mode")) |mode| command_mode = mode;
         api.get_field(state, opts_idx, "close_on_exit");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .boolean) {
             close_on_exit = api.to_boolean(state, -1) != 0;
         }
         pop(api, state, 1);
@@ -5673,40 +5673,40 @@ fn l_split_pane(state: *State) callconv(.c) c_int {
             direction = opt_direction;
         }
         api.get_field(state, opts_idx, "floating");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .boolean) {
             floating = api.to_boolean(state, -1) != 0;
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "fullscreen");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .boolean) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .boolean) {
             fullscreen = api.to_boolean(state, -1) != 0;
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "ratio");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             ratio = @as(f32, @floatCast(api.to_number(state, -1)));
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "x");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             x = @as(f32, @floatCast(api.to_number(state, -1)));
             has_bounds = true;
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "y");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             y = @as(f32, @floatCast(api.to_number(state, -1)));
             has_bounds = true;
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "width");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             width = @as(f32, @floatCast(api.to_number(state, -1)));
             has_bounds = true;
         }
         pop(api, state, 1);
         api.get_field(state, opts_idx, "height");
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
             height = @as(f32, @floatCast(api.to_number(state, -1)));
             has_bounds = true;
         }
@@ -5725,11 +5725,11 @@ fn l_toggle_pane_maximized(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
 
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         cbs.get_current_pane_id(cbs.app);
-    const show_background = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .boolean)
+    const show_background = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .boolean)
         api.to_boolean(state, 2) != 0
     else
         false;
@@ -5742,11 +5742,11 @@ fn l_set_pane_floating(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
 
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         cbs.get_current_pane_id(cbs.app);
-    const floating = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .boolean)
+    const floating = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .boolean)
         api.to_boolean(state, 2) != 0
     else
         true;
@@ -5759,14 +5759,14 @@ fn l_set_floating_pane_bounds(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
 
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         cbs.get_current_pane_id(cbs.app);
-    const x: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number) @floatCast(api.to_number(state, 2)) else 0.15;
-    const y: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number) @floatCast(api.to_number(state, 3)) else 0.1;
-    const width: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 4))) == .number) @floatCast(api.to_number(state, 4)) else 0.7;
-    const height: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 5))) == .number) @floatCast(api.to_number(state, 5)) else 0.75;
+    const x: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number) @floatCast(api.to_number(state, 2)) else 0.15;
+    const y: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 3)))) == .number) @floatCast(api.to_number(state, 3)) else 0.1;
+    const width: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 4)))) == .number) @floatCast(api.to_number(state, 4)) else 0.7;
+    const height: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 5)))) == .number) @floatCast(api.to_number(state, 5)) else 0.75;
     cbs.set_floating_pane_bounds(cbs.app, pane_id, x, y, width, height);
     return 0;
 }
@@ -5776,17 +5776,17 @@ fn l_move_pane(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
 
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         cbs.get_current_pane_id(cbs.app);
     var dir_len: usize = 0;
-    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+    const dir_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .string)
         api.to_lstring(state, 2, &dir_len)
     else
         null;
     const direction = if (dir_ptr) |ptr| ptr[0..dir_len] else "right";
-    const amount: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+    const amount: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 3)))) == .number)
         @floatCast(api.to_number(state, 3))
     else
         0.08;
@@ -5803,7 +5803,7 @@ fn l_focus_pane(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
 
     var dir_len: usize = 0;
-    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const dir_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &dir_len)
     else
         null;
@@ -5823,14 +5823,14 @@ fn l_resize_pane(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
 
     var dir_len: usize = 0;
-    const dir_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const dir_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &dir_len)
     else
         null;
 
     const direction: []const u8 = if (dir_ptr) |p| p[0..dir_len] else "vertical";
 
-    const delta: f32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const delta: f32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(f32, @floatCast(api.to_number(state, 2)))
     else
         0.05;
@@ -5843,7 +5843,7 @@ fn l_resize_pane(state: *State) callconv(.c) c_int {
 fn l_on_top_bar(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     if (arg_type == .nil_type) {
         if (ctx.top_bar_ref != LUA_NOREF) {
@@ -5854,7 +5854,7 @@ fn l_on_top_bar(state: *State) callconv(.c) c_int {
     }
 
     if (arg_type != .function) {
-        std.log.err("lua: on_top_bar expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        std.log.err("lua: on_top_bar expects a function, got type {d}", .{@backingInt(arg_type)});
         return 0;
     }
 
@@ -5872,7 +5872,7 @@ fn l_on_top_bar(state: *State) callconv(.c) c_int {
 fn l_on_workspace_title(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     if (arg_type == .nil_type) {
         if (ctx.workspace_title_ref != LUA_NOREF) {
@@ -5883,7 +5883,7 @@ fn l_on_workspace_title(state: *State) callconv(.c) c_int {
     }
 
     if (arg_type != .function) {
-        std.log.err("lua: on_workspace_title expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        std.log.err("lua: on_workspace_title expects a function, got type {d}", .{@backingInt(arg_type)});
         return 0;
     }
 
@@ -5901,7 +5901,7 @@ fn l_on_workspace_title(state: *State) callconv(.c) c_int {
 fn l_on_gui_ready(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     if (arg_type == .nil_type) {
         if (ctx.gui_ready_ref != LUA_NOREF) {
@@ -5912,7 +5912,7 @@ fn l_on_gui_ready(state: *State) callconv(.c) c_int {
     }
 
     if (arg_type != .function) {
-        std.log.err("lua: on_gui_ready expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        std.log.err("lua: on_gui_ready expects a function, got type {d}", .{@backingInt(arg_type)});
         return 0;
     }
 
@@ -5929,7 +5929,7 @@ fn l_on_gui_ready(state: *State) callconv(.c) c_int {
 fn l_on_status(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     if (arg_type == .nil_type) {
         if (ctx.status_ref != LUA_NOREF) {
@@ -5940,7 +5940,7 @@ fn l_on_status(state: *State) callconv(.c) c_int {
     }
 
     if (arg_type != .function) {
-        std.log.err("lua: on_status expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        std.log.err("lua: on_status expects a function, got type {d}", .{@backingInt(arg_type)});
         return 0;
     }
 
@@ -5959,7 +5959,7 @@ fn l_switch_tab(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
-    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -5972,7 +5972,7 @@ fn l_switch_workspace(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
-    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -5986,7 +5986,7 @@ fn l_set_tab_title(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &len)
     else
         null;
@@ -6003,13 +6003,13 @@ fn l_set_tab_title_by_id(state: *State) callconv(.c) c_int {
         return 1;
     };
 
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
 
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .string)
         api.to_lstring(state, 2, &len)
     else
         null;
@@ -6033,7 +6033,7 @@ fn l_set_leader_state(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
 
     const active = api.to_boolean(state, 1) != 0;
-    const expires_at_ms: i64 = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const expires_at_ms: i64 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @intFromFloat(api.to_number(state, 2))
     else
         0;
@@ -6049,7 +6049,7 @@ fn l_set_bar_cache_state(state: *State) callconv(.c) c_int {
     var surface_len: usize = 0;
     const surface = api.to_lstring(state, 1, &surface_len) orelse return 0;
     const dirty = api.to_boolean(state, 2) != 0;
-    const expires_at_ms: i64 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+    const expires_at_ms: i64 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 3)))) == .number)
         @intFromFloat(api.to_number(state, 3))
     else
         0;
@@ -6070,7 +6070,7 @@ fn l_set_workspace_name(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &len)
     else
         null;
@@ -6090,7 +6090,7 @@ fn l_set_workspace_default_cwd(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &len)
     else
         null;
@@ -6109,7 +6109,7 @@ fn l_get_workspace_name(state: *State) callconv(.c) c_int {
         return 1;
     };
     var out_buf: [128]u8 = undefined;
-    const idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6184,7 +6184,7 @@ fn l_get_tab_id_at(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const index: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6204,7 +6204,7 @@ fn l_get_tab_pane_count(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6219,11 +6219,11 @@ fn l_get_tab_pane_id_at(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
-    const index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const index: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 2)))
     else
         0;
@@ -6243,7 +6243,7 @@ fn l_get_tab_active_pane_id(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6263,7 +6263,7 @@ fn l_get_tab_index_by_id(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6295,7 +6295,7 @@ fn l_get_workspace_tab_count(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const workspace_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const workspace_index: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6310,11 +6310,11 @@ fn l_get_workspace_tab_id_at(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const workspace_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const workspace_index: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
-    const tab_index: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const tab_index: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 2)))
     else
         0;
@@ -6346,7 +6346,7 @@ fn l_get_pane_pid(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6361,7 +6361,7 @@ fn l_get_pane_title(state: *State) callconv(.c) c_int {
         api.push_string(state, "");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6378,7 +6378,7 @@ fn l_get_pane_cwd(state: *State) callconv(.c) c_int {
         api.push_string(state, "");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6395,13 +6395,13 @@ fn l_get_pane_text(state: *State) callconv(.c) c_int {
         api.push_string(state, "");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
     var out_buf: [64 * 1024]u8 = undefined;
     const text = cbs.get_pane_text(cbs.app, pane_id, &out_buf);
-    const ztext = std.heap.page_allocator.dupeZ(u8, text) catch {
+    const ztext = std.heap.page_allocator.dupeSentinel(u8, text, 0) catch {
         api.push_string(state, "");
         return 1;
     };
@@ -6417,7 +6417,7 @@ fn l_get_pane_foreground_process(state: *State) callconv(.c) c_int {
         api.push_string(state, "");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6432,7 +6432,7 @@ fn l_get_pane_program_status(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     api.create_table(state, 0, 0);
     const cbs = ctx.app_callbacks orelse return 1;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .number) return 1;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .number) return 1;
     const pane_number = api.to_number(state, 1);
     if (!std.math.isFinite(pane_number) or pane_number < 0 or pane_number >= @as(f64, @floatFromInt(std.math.maxInt(usize)))) return 1;
     const pane_id: usize = @intFromFloat(pane_number);
@@ -6468,12 +6468,12 @@ fn l_set_pane_foreground_process(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
     var len: usize = 0;
-    const proc_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+    const proc_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .string)
         api.to_lstring(state, 2, &len)
     else
         null;
@@ -6489,7 +6489,7 @@ fn l_get_pane_domain(state: *State) callconv(.c) c_int {
         api.push_string(state, "");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6506,7 +6506,7 @@ fn l_get_pane_split_direction(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6525,7 +6525,7 @@ fn l_get_pane_split_ratio(state: *State) callconv(.c) c_int {
         api.push_nil(state);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6544,7 +6544,7 @@ fn l_get_pane_active_screen(state: *State) callconv(.c) c_int {
         api.push_string(state, "primary");
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6560,7 +6560,7 @@ fn l_get_pane_rows(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6575,7 +6575,7 @@ fn l_get_pane_cols(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6590,7 +6590,7 @@ fn l_get_pane_x(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6605,7 +6605,7 @@ fn l_get_pane_y(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6620,7 +6620,7 @@ fn l_get_pane_width(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6635,7 +6635,7 @@ fn l_get_pane_height(state: *State) callconv(.c) c_int {
         api.push_number(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6695,7 +6695,7 @@ fn l_pane_is_floating(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6710,7 +6710,7 @@ fn l_pane_is_maximized(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6725,7 +6725,7 @@ fn l_pane_is_focused(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6740,7 +6740,7 @@ fn l_pane_has_bell(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6755,7 +6755,7 @@ fn l_pane_exists(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6770,7 +6770,7 @@ fn l_focus_pane_by_id(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6785,7 +6785,7 @@ fn l_switch_tab_by_id(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6800,7 +6800,7 @@ fn l_close_tab_by_id(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6815,11 +6815,11 @@ fn l_move_tab_to_workspace(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const tab_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const tab_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
-    const ws_idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const ws_idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 2)))
     else
         0;
@@ -6834,11 +6834,11 @@ fn l_move_pane_to_workspace(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
-    const ws_idx: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .number)
+    const ws_idx: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 2)))
     else
         0;
@@ -6853,7 +6853,7 @@ fn l_bell_pane(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6868,12 +6868,12 @@ fn l_send_text_to_pane(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .string)
         api.to_lstring(state, 2, &len)
     else
         null;
@@ -6889,7 +6889,7 @@ fn l_close_pane_by_id(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
@@ -6904,17 +6904,17 @@ fn l_send_key_to_pane(state: *State) callconv(.c) c_int {
         api.push_boolean(state, 0);
         return 1;
     };
-    const pane_id: usize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pane_id: usize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @as(usize, @intFromFloat(api.to_number(state, 1)))
     else
         0;
     var key_len: usize = 0;
-    const key_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 2))) == .string)
+    const key_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) == .string)
         api.to_lstring(state, 2, &key_len)
     else
         null;
     const key_name: []const u8 = if (key_ptr) |p| p[0..key_len] else "";
-    const mods: u32 = if (@as(LuaType, @enumFromInt(api.value_type(state, 3))) == .number)
+    const mods: u32 = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 3)))) == .number)
         @as(u32, @intFromFloat(api.to_number(state, 3)))
     else
         0;
@@ -6930,7 +6930,7 @@ fn l_send_text(state: *State) callconv(.c) c_int {
         return 1;
     };
     var len: usize = 0;
-    const ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &len)
     else
         null;
@@ -6960,7 +6960,7 @@ fn l_clipboard_write(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     var success = false;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string) {
         var len: usize = 0;
         if (api.to_lstring(state, 1, &len)) |ptr| {
             if (ctx.app_callbacks) |cbs| {
@@ -6982,7 +6982,7 @@ fn l_scroll_active(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
-    const delta: isize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const delta: isize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @intFromFloat(api.to_number(state, 1))
     else
         0;
@@ -6994,7 +6994,7 @@ fn l_scroll_active_page(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
-    const pages: isize = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .number)
+    const pages: isize = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .number)
         @intFromFloat(api.to_number(state, 1))
     else
         0;
@@ -7019,7 +7019,7 @@ fn l_prompt_jump(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
     var direction_len: usize = 0;
-    const direction_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const direction_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &direction_len)
     else
         null;
@@ -7045,7 +7045,7 @@ fn l_copy_mode_move(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
 
     var direction_len: usize = 0;
-    const direction_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const direction_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &direction_len)
     else
         null;
@@ -7087,7 +7087,7 @@ fn l_copy_mode_search_set_query(state: *State) callconv(.c) c_int {
     const cbs = ctx.app_callbacks orelse return 0;
 
     var query_len: usize = 0;
-    const query_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const query_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &query_len)
     else
         null;
@@ -7113,7 +7113,7 @@ fn l_quick_select_start(state: *State) callconv(.c) c_int {
     const api = ctx.api;
     const cbs = ctx.app_callbacks orelse return 0;
     var action_len: usize = 0;
-    const action_ptr = if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) == .string)
+    const action_ptr = if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) == .string)
         api.to_lstring(state, 1, &action_len)
     else
         null;
@@ -7133,7 +7133,7 @@ fn l_quick_select_handlers(state: *State) callconv(.c) c_int {
         api.unref(state, LUA_REGISTRYINDEX, ctx.quick_select_action_ref);
         ctx.quick_select_action_ref = LUA_NOREF;
     }
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function or @as(LuaType, @enumFromInt(api.value_type(state, 2))) != .function) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .function or @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .function) {
         std.log.err("lua: quick_select_handlers expects match and action functions", .{});
         return 0;
     }
@@ -7151,7 +7151,7 @@ fn l_link_route_handler(state: *State) callconv(.c) c_int {
         api.unref(state, LUA_REGISTRYINDEX, ctx.link_route_ref);
         ctx.link_route_ref = LUA_NOREF;
     }
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .function) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .function) {
         std.log.err("lua: link_route_handler expects a function", .{});
         return 0;
     }
@@ -7167,7 +7167,7 @@ fn l_on_key(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
 
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     // nil argument → unregister handler
     if (arg_type == .nil_type) {
@@ -7179,7 +7179,7 @@ fn l_on_key(state: *State) callconv(.c) c_int {
     }
 
     if (arg_type != .function) {
-        std.log.err("lua: on_key expects a function, got type {d}", .{@intFromEnum(arg_type)});
+        std.log.err("lua: on_key expects a function, got type {d}", .{@backingInt(arg_type)});
         return 0;
     }
 
@@ -7200,7 +7200,7 @@ fn l_on_key(state: *State) callconv(.c) c_int {
 fn l_on_file_drop(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
-    const arg_type: LuaType = @enumFromInt(api.value_type(state, 1));
+    const arg_type: LuaType = @fromBackingInt(@intCast(api.value_type(state, 1)));
 
     if (arg_type == .nil_type) {
         if (ctx.on_file_drop_ref != LUA_NOREF) {
@@ -7445,15 +7445,15 @@ fn startProcess(ctx: *BridgeContext, state: *State) !usize {
     const slot = for (ctx.process_jobs, 0..) |job, i| {
         if (job == null) break i;
     } else return error.ProcessJobLimit;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table) return error.ExpectedOptions;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table) return error.ExpectedOptions;
     api.get_field(state, 1, "cmd");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) != .table) return error.ExpectedArgv;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .table) return error.ExpectedArgv;
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(std.heap.page_allocator);
     var i: c_int = 1;
     while (true) : (i += 1) {
         api.rawgeti(state, -1, i);
-        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .nil_type) {
+        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .nil_type) {
             pop(api, state, 1);
             break;
         }
@@ -7468,12 +7468,12 @@ fn startProcess(ctx: *BridgeContext, state: *State) !usize {
     var environment = io.environ().createMap(std.heap.page_allocator) catch return error.EnvironmentUnavailable;
     defer environment.deinit();
     api.get_field(state, 1, "env");
-    if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
         const env_idx = absoluteIndex(api, state, -1);
         api.push_nil(state);
         while (api.next(state, env_idx) != 0) {
-            if (@as(LuaType, @enumFromInt(api.value_type(state, -2))) != .string or
-                @as(LuaType, @enumFromInt(api.value_type(state, -1))) != .string) return error.InvalidEnvironment;
+            if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -2)))) != .string or
+                @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) != .string) return error.InvalidEnvironment;
             var key_len: usize = 0;
             var value_len: usize = 0;
             const key = api.to_lstring(state, -2, &key_len) orelse return error.InvalidEnvironment;
@@ -7534,7 +7534,7 @@ fn l_term_job_request(state: *State) callconv(.c) c_int {
 fn queueTermJobRequest(ctx: *BridgeContext, state: *State) !void {
     const command = @import("command.zig");
     const api = ctx.api;
-    if (@as(LuaType, @enumFromInt(api.value_type(state, 1))) != .table or @as(LuaType, @enumFromInt(api.value_type(state, 2))) != .function) return error.InvalidArgumentType;
+    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 1)))) != .table or @as(LuaType, @fromBackingInt(@intCast(api.value_type(state, 2)))) != .function) return error.InvalidArgumentType;
     // Scope this bridge to job operations, not arbitrary command dispatch.
     const kind = luaStringField(api, state, 1, "kind") orelse return error.InvalidArgumentType;
     if (!(std.mem.eql(u8, kind, "job_spawn") or std.mem.eql(u8, kind, "job_get") or std.mem.eql(u8, kind, "job_output") or std.mem.eql(u8, kind, "job_cleanup"))) return error.UnsupportedJobOperation;

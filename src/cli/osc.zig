@@ -6,18 +6,7 @@ const command = @import("../command.zig");
 const io = @import("../io.zig");
 const codec = @import("../htp/codec.zig");
 const transport = @import("transport.zig");
-const c = if (builtin.os.tag == .windows) struct {} else @cImport({
-    @cDefine("_GNU_SOURCE", "1");
-    // translate-c cannot lower glibc's fortify error-attributed inline wrappers.
-    // Buffer bounds are managed in Zig; import the underlying libc declarations.
-    @cUndef("_FORTIFY_SOURCE");
-    @cDefine("_FORTIFY_SOURCE", "0");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("termios.h");
-    @cInclude("poll.h");
-    @cInclude("errno.h");
-});
+const c = if (builtin.os.tag == .windows) struct {} else @import("posix_c");
 
 pub fn send(a: std.mem.Allocator, request: command.Request, timeout_ms: u64) !command.Response {
     if (builtin.os.tag == .windows) return error.OscRequiresPosixTerminal;

@@ -440,7 +440,7 @@ pub const App = struct {
     /// Called from the event thread.
     pub fn enqueueChar(self: *App, bytes: []const u8) bool {
         if (bytes.len == 0 or bytes.len > 4) return false;
-        var ev: input.PendingInputEvent = .{ .char = .{ .bytes = [_]u8{0} ** 5, .len = @intCast(bytes.len) } };
+        var ev: input.PendingInputEvent = .{ .char = .{ .bytes = @splat(0), .len = @intCast(bytes.len) } };
         fastmem.copy(u8, ev.char.bytes[0..bytes.len], bytes);
         return self.enqueueMouse(ev);
     }
@@ -680,7 +680,7 @@ pub const App = struct {
         try putJsonField(self.allocator, &screen, "rows", .{ .integer = rows });
         try putJsonField(self.allocator, &screen, "cols", .{ .integer = cols });
         try putJsonField(self.allocator, &screen, "coordinate_base", .{ .integer = 0 });
-        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
+        try putJsonField(self.allocator, &screen, "active_screen", .{ .string = try self.allocator.dupe(u8, if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate)) "alternate" else "primary") });
         try putJsonField(self.allocator, &screen, "cursor", try self.screenCursorValue(runtime, pane));
         try putJsonField(self.allocator, &screen, "lines", try self.screenLinesValue(runtime, pane, rows, cols));
         return .{ .object = screen };
@@ -1622,7 +1622,7 @@ pub const App = struct {
     }
 
     fn panePadding(self: *const App, pane: *const Pane) Config.TerminalPadding {
-        return if (pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate))
+        return if (pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate))
             self.config.alternate_screen_padding
         else
             self.config.terminal_padding;
@@ -2417,7 +2417,7 @@ pub const App = struct {
                 if (pane.active_screen != active_screen_before) {
                     automation_changed = true;
                     pane.pending_alt_screen_nudge = self.config.alternate_screen_resize_nudge and
-                        pane.active_screen == @intFromEnum(ghostty.TerminalScreen.alternate);
+                        pane.active_screen == @backingInt(ghostty.TerminalScreen.alternate);
                     pane.alt_screen_nudge_quiet_ticks = 0;
                     pane.alt_screen_nudge_not_before_ns = if (pane.pending_alt_screen_nudge)
                         io.nanoTimestamp() + ALT_SCREEN_NUDGE_DELAY_NS
@@ -2582,7 +2582,7 @@ pub const App = struct {
                             cursor_pos,
                         });
                     }
-                    if (@intFromEnum(post_dirty) > @intFromEnum(pane.render_dirty)) {
+                    if (@backingInt(post_dirty) > @backingInt(pane.render_dirty)) {
                         pane.render_dirty = post_dirty;
                     }
                     if (self.copy_mode_active and self.copy_mode_pane == pane and !self.copy_mode_needs_refresh) {
@@ -2610,7 +2610,7 @@ pub const App = struct {
                     }
                 }
                 if (pane.pending_alt_screen_nudge) {
-                    if (pane.active_screen != @intFromEnum(ghostty.TerminalScreen.alternate)) {
+                    if (pane.active_screen != @backingInt(ghostty.TerminalScreen.alternate)) {
                         pane.pending_alt_screen_nudge = false;
                         pane.alt_screen_nudge_quiet_ticks = 0;
                         pane.alt_screen_nudge_not_before_ns = 0;

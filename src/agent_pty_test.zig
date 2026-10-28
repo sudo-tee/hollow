@@ -445,7 +445,7 @@ test "agent pty reports a checksum mismatch" {
     const home_env = try std.fmt.allocPrint(std.testing.allocator, "HOME={s}", .{home});
     defer std.testing.allocator.free(home_env);
     var host: agent.Host = .{ .connector = .{ .argv = &.{ "env", home_env } } };
-    const wrong = "0" ** 64;
+    const wrong = &@as([64:0]u8, @splat('0'));
     host.agent.artifacts.set(.x86_64, .{ .path = path, .sha256 = wrong });
     host.agent.artifacts.set(.aarch64, .{ .path = path, .sha256 = wrong });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
@@ -459,7 +459,7 @@ test "agent pty reports a checksum mismatch" {
 
 test "unreachable implicit host requests native fallback with queued input" {
     var host: agent.Host = .{ .connector = .{ .argv = &.{"/bin/false"} }, .fallback = true };
-    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = "0" ** 64 });
+    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = &@as([64:0]u8, @splat('0')) });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
     defer pty.closeAndJoin();
     try pty.writeAll("typed early");
@@ -499,7 +499,7 @@ test "a Lua descriptor error is shown in the pane" {
 
 test "a stalled bootstrap is bounded by the host timeout and by close" {
     var host: agent.Host = .{ .connector = .{ .argv = &.{ "/bin/sh", "-c", "exec sleep 30", "x" } }, .agent = .{ .timeout_ms = 200 } };
-    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = "0" ** 64 });
+    host.agent.artifacts.set(.x86_64, .{ .path = "/nonexistent", .sha256 = &@as([64:0]u8, @splat('0')) });
     var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
     defer pty.closeAndJoin();
     try pty.start();
