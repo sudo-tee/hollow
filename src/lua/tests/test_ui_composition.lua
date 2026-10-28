@@ -11,6 +11,7 @@ describe("UI composition test suite", function()
   end)
 
   describe("unified composition API", function()
+    -- stylua: ignore start
     it("composes selectable tabs with count badges", function()
       local theme = { selection_fg = "#ffffff", selection_bg = "#111111", muted = "#888888", panel_bg = "#000000" }
       local click = function() end
@@ -30,6 +31,7 @@ describe("UI composition test suite", function()
       assert.equals("2", nodes[6].text)
       assert.equals(click, nodes[6].style.on_click)
     end)
+    -- stylua: ignore end
 
     it("provides opt-in action button defaults and hover overrides", function()
       local theme = { fg = "#111111", hover_fg = "#eeeeee", hover_bg = "#222222" }
@@ -51,8 +53,9 @@ describe("UI composition test suite", function()
       assert.equals(click, normal.style.on_click)
       opts.state.hovered_id = "action"
       local hover = hollow.ui.action_button(opts)
-      assert.equals("#ffffff", hover.style.fg)
-      assert.equals("#222222", hover.style.bg)
+      local hovered_style = require("hollow.ui.shared").apply_hover(hover.style, opts.id)
+      assert.equals("#ffffff", hovered_style.fg)
+      assert.equals("#222222", hovered_style.bg)
       assert.same({ fg = "#333333", padding = { left = 9 } }, style)
       local defaults = hollow.ui.action_button({ id = "default", theme = theme })
       assert.same({ left = 4, right = 4 }, defaults.style.padding)

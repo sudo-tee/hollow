@@ -27,38 +27,54 @@ local function normalize_footer_items(items)
   return result
 end
 
---- Append a body item (single node or array of nodes) to rows.
----@param rows table
----@param item any
----@param theme table
-local function append_body_item(rows, item, theme)
+local function contains_rows(item)
+  if type(item) ~= "table" then
+    return false
+  end
+  if item._type == "row" or item._type == "column" then
+    return true
+  end
+  if item._type ~= nil or shared.is_text_shorthand(item) then
+    return false
+  end
+  for i = 1, table.maxn(item) do
+    if contains_rows(item[i]) then
+      return true
+    end
+  end
+  return false
+end
+
+--- Convert loose body items into rows or recursive row fragments.
+local function body_item(item, theme)
+  if item == nil or type(item) == "boolean" then
+    return false
+  end
   local default_style = theme and { fg = theme.fg } or nil
 
   if type(item) ~= "table" then
-    rows[#rows + 1] = ui.row({ ui.text(tostring(item), default_style) })
-    return
+    return ui.row({ ui.text(tostring(item), default_style) })
   end
 
-  if item._type == "row" then
-    rows[#rows + 1] = item
-    return
-  end
-
-  if item._type == "column" then
-    for _, row in ipairs(item.children) do
-      rows[#rows + 1] = row
-    end
-    return
+  if item._type == "row" or item._type == "column" then
+    return item
   end
 
   if shared.is_span_node(item) or shared.is_text_shorthand(item) then
     local node = default_style and ui.group({ item }, default_style) or item
-    rows[#rows + 1] = ui.row({ node })
-    return
+    return ui.row({ node })
+  end
+
+  if contains_rows(item) then
+    local fragment = {}
+    for i = 1, table.maxn(item) do
+      fragment[i] = body_item(item[i], theme)
+    end
+    return fragment
   end
 
   local node = default_style and ui.group(item, default_style) or ui.group(item)
-  rows[#rows + 1] = ui.row({ node })
+  return ui.row({ node })
 end
 
 ---@param opts { title?: string, body?: table[], footer?: (HollowUiDialogButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[], selected?: integer, hovered?: integer }
@@ -71,44 +87,36 @@ function M.dialog(opts, theme)
   local selected = opts.selected
   local hovered = opts.hovered
 
-  local rows = {}
-
-  if title and title ~= "" then
-    rows = {
-      ui.row({ ui.text(title, { fg = theme.title, bold = true }) }),
-      ui.divider(theme.divider),
-    }
+  local body_rows = {}
+  for i = 1, table.maxn(body) do
+    body_rows[i] = body_item(body[i], theme)
   end
 
-  for _, item in ipairs(body) do
-    append_body_item(rows, item, theme)
-  end
+  return ui.column({
+    ui.when(title and title ~= "", function()
+      return {
+        ui.row({ ui.text(title, { fg = theme.title, bold = true }) }),
+        ui.divider(theme.divider),
+      }
+    end),
+    body_rows,
+    ui.when(#footer > 0, function()
+      local buttons = ui.join(
+        ui.each(footer, function(btn, i)
+          local is_selected = selected and i == selected
+          local is_hovered = hovered and i == hovered
+          local style = button_component.button_style(theme, btn, is_selected, is_hovered)
+          style.id = btn.id or ("dialog:btn:" .. i)
+          style.on_click = btn.on_click
 
-  if #footer > 0 then
-    rows[#rows + 1] = ui.row({ ui.text(" ") })
-
-    local button_nodes = {}
-    button_nodes[#button_nodes + 1] = ui.spacer()
-
-    for i, btn in ipairs(footer) do
-      if #button_nodes > 1 then
-        button_nodes[#button_nodes + 1] = ui.text("  ")
-      end
-      local is_selected = selected and i == selected
-      local is_hovered = hovered and i == hovered
-      local style = button_component.button_style(theme, btn, is_selected, is_hovered)
-      style.id = btn.id or ("dialog:btn:" .. i)
-      style.on_click = btn.on_click
-
-      click_registry.register(style.id, btn.on_click)
-
-      button_nodes[#button_nodes + 1] = ui.text(" " .. btn.text .. " ", style)
-    end
-
-    rows[#rows + 1] = ui.row(button_nodes)
-  end
-
-  return ui.column(rows)
+          click_registry.register(style.id, btn.on_click)
+          return ui.text(" " .. btn.text .. " ", style)
+        end),
+        "  "
+      )
+      return { ui.row({ ui.text(" ") }), ui.row({ ui.spacer(), buttons }) }
+    end),
+  })
 end
 
 return M

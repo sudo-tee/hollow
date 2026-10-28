@@ -75,6 +75,7 @@ local function serialize_bar_style(style)
   if style == nil then
     return nil
   end
+  style = shared.resolve_tokens(style, shared.bar_palette())
 
   local bg = color.normalize_hex_color(style.bg, nil)
   local fg = color.normalize_hex_color(style.fg, nil)
@@ -139,6 +140,7 @@ local function serialize_bar_text_style(style)
   if style == nil then
     return nil
   end
+  style = shared.resolve_tokens(style, shared.bar_palette())
 
   local serialized = {}
   local fg = color.normalize_hex_color(style.fg, nil)
@@ -174,8 +176,13 @@ local function serialize_bar_value(surface, value, fallback_text, style)
       shared.merge_style_tables(resolved_style, resolve_bar_hover_style(surface, value.style))
   end
 
-  local segments = shared.bar_value_to_segments(value, fallback_text, text_style)
-  local segment = shared.style_to_segment(shared.segments_plain_text(segments), merged_style)
+  local segments =
+    shared.bar_value_to_segments(value, fallback_text, text_style, shared.bar_palette())
+  local segment = shared.style_to_segment(
+    shared.segments_plain_text(segments),
+    merged_style,
+    shared.bar_palette()
+  )
   segment.segments = segments
   segment.style = serialize_bar_style(merged_style)
   return segment
@@ -450,7 +457,8 @@ end
 ---@return HollowUiSegment
 local function serialize_time(surface, node)
   local style = resolve_bar_hover_style(surface, node.style)
-  local segment = shared.style_to_segment(os.date(node.format or "%H:%M"), style)
+  local segment =
+    shared.style_to_segment(os.date(node.format or "%H:%M"), style, shared.bar_palette())
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
   local next_tick_ms = (math.floor(current_time_ms() / 1000) + 1) * 1000
@@ -479,7 +487,7 @@ local function serialize_key_legend(surface, node)
   end
 
   local style = resolve_bar_hover_style(surface, node.style)
-  local segment = shared.style_to_segment(text, style)
+  local segment = shared.style_to_segment(text, style, shared.bar_palette())
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
   local expires_at = leader_state
@@ -576,6 +584,13 @@ function M.serialize(widget, surface)
   local serialized = tbl(items)
     :filter_map(function(item)
       local ok, value, item_expires_at = pcall(serialize_bar_item, surface, item, ctx, handlers)
+      if
+        not ok
+        and type(value) == "string"
+        and value:find("hollow.ui: unknown style token", 1, true)
+      then
+        error(value, 0)
+      end
       if ok and value ~= nil then
         expires_at = min_expiry(expires_at, item_expires_at)
         return value
