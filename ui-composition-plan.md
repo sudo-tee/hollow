@@ -142,7 +142,7 @@ end
 - Returns a fragment.
 
 ### `ui.style(...)`
-> Full style design (theme tokens, box-aware merge, `ui.variants`, overlay
+> Full style design (theme tokens, box-aware merge, conditional layers, overlay
 > hover, presets) is in `ui-styles-plan.md`. Only the basic merge lands here.
 
 - Merges style tables left to right and skips `nil`/`false` arguments.

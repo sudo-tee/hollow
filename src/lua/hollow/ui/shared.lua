@@ -7,6 +7,131 @@ local hollow = _G.hollow
 local host_api = state.host_api
 
 local M = {}
+local palettes = {}
+local cached_bar_palette
+
+function M.invalidate_palettes()
+  palettes = {}
+  cached_bar_palette = nil
+end
+
+---@param kind string|nil
+---@return HollowUiTheme
+function M.palette(kind)
+  kind = kind or "all"
+  if not palettes[kind] then
+    palettes[kind] = theme_api.resolve_widget(kind)
+  end
+  return palettes[kind]
+end
+
+---@return HollowUiTheme
+function M.bar_palette()
+  if not cached_bar_palette then
+    local ui = M.resolve_theme().ui
+    local tabs = ui.tab_bar
+    cached_bar_palette = util.clone_value(M.palette("all"))
+    local bar = {
+      bar_bg = ui.top_bar.background,
+      bar_fg = ui.status.fg,
+      status_bg = ui.status.bg,
+      status_fg = ui.status.fg,
+      tab_bar_bg = tabs.background,
+      tab_active_fg = tabs.active_tab.fg,
+      tab_active_bg = tabs.active_tab.bg,
+      tab_inactive_fg = tabs.inactive_tab.fg,
+      tab_inactive_bg = tabs.inactive_tab.bg,
+      tab_hover_fg = tabs.hover_tab.fg,
+      tab_hover_bg = tabs.hover_tab.bg,
+      accent = ui.accent,
+      warm = ui.warm,
+    }
+    for key, value in pairs(bar) do
+      cached_bar_palette[key] = value
+    end
+  end
+  return cached_bar_palette
+end
+
+local function edit_distance(a, b)
+  local prev = {}
+  for j = 0, #b do
+    prev[j] = j
+  end
+  for i = 1, #a do
+    local row = { [0] = i }
+    for j = 1, #b do
+      row[j] =
+        math.min(row[j - 1] + 1, prev[j] + 1, prev[j - 1] + (a:sub(i, i) == b:sub(j, j) and 0 or 1))
+    end
+    prev = row
+  end
+  return prev[#b]
+end
+
+local function closest_token(palette, token)
+  local best, distance
+  local function visit(tbl, prefix)
+    for key, value in pairs(tbl) do
+      if type(key) == "string" then
+        local path = prefix .. key
+        if type(value) == "table" then
+          visit(value, path .. ".")
+        elseif type(value) == "string" and value:sub(1, 1) == "#" then
+          local d = edit_distance(token, path)
+          if not distance or d < distance or (d == distance and path < best) then
+            best, distance = path, d
+          end
+        end
+      end
+    end
+  end
+  visit(palette, "")
+  return best
+end
+
+local function resolve_color(value, key, palette)
+  if type(value) ~= "string" or value:sub(1, 1) == "#" then
+    return value
+  end
+  local resolved = palette
+  if value == "" or value:sub(1, 1) == "." or value:sub(-1) == "." or value:find("..", 1, true) then
+    resolved = nil
+  else
+    for part in value:gmatch("[^.]+") do
+      resolved = type(resolved) == "table" and resolved[part] or nil
+    end
+  end
+  if type(resolved) ~= "string" or resolved:sub(1, 1) ~= "#" then
+    local hint = closest_token(palette, value)
+    error(
+      string.format(
+        "hollow.ui: unknown style token %q for %s%s",
+        value,
+        key,
+        hint and string.format(" (did you mean %q?)", hint) or ""
+      )
+    )
+  end
+  return resolved
+end
+
+---@param style HollowUiNodeStyle|nil
+---@param palette table
+---@return HollowUiNodeStyle
+function M.resolve_tokens(style, palette)
+  local result = util.clone_value(style or {})
+  local function resolve(current)
+    for _, key in ipairs({ "fg", "bg", "border" }) do
+      current[key] = resolve_color(current[key], key, palette)
+    end
+    if type(current.hover) == "table" then
+      resolve(current.hover)
+    end
+  end
+  resolve(result)
+  return result
+end
 
 local SPAN_NODE_TYPES = {
   span = true,
@@ -505,10 +630,27 @@ end
 -- Segment serialization
 -- ---------------------------------------------------------------------------
 
+---@param value any
+---@return { top: number, right: number, bottom: number, left: number }
+function M.normalize_segment_padding(value)
+  local box = type(value) == "table" and value or {}
+  local all = type(value) == "number" and value or 0
+  local top = box.top or box.y or box.vertical or box[1] or all
+  local right = box.right or box.x or box.horizontal or box[2] or top
+  local bottom = box.bottom or box.y or box.vertical or box[3] or top
+  local left = box.left or box.x or box.horizontal or box[4] or right
+  local padding = {}
+  for edge, px in pairs({ top = top, right = right, bottom = bottom, left = left }) do
+    padding[edge] = type(px) == "number" and px == px and px < math.huge and math.max(0, px) or 0
+  end
+  return padding
+end
+
 ---@param text string
 ---@param style HollowUiNodeStyle|HollowUiStyleWrapper|HollowHexColor|nil
+---@param palette table|nil
 ---@return HollowUiSegment
-function M.style_to_segment(text, style)
+function M.style_to_segment(text, style, palette)
   local segment = { text = text }
 
   if color.is_hex_color(style) then
@@ -518,44 +660,31 @@ function M.style_to_segment(text, style)
 
   style = resolve_segment_style(style)
   if type(style) == "table" then
+    local function segment_color(key)
+      local value = style[key]
+      if type(value) == "string" and value:sub(1, 1) ~= "#" then
+        value = resolve_color(value, key, palette or M.palette("all"))
+      end
+      return color.is_hex_color(value) and value or nil
+    end
     segment.bold = style.bold == true
     if type(style.id) == "string" and style.id ~= "" then
       segment.id = style.id
     end
-    if color.is_hex_color(style.fg) then
-      segment.fg = style.fg
-    end
-    if color.is_hex_color(style.bg) then
-      segment.bg = style.bg
-    end
+    segment.fg = segment_color("fg")
+    segment.bg = segment_color("bg")
     if style.radius ~= nil then
       segment.radius = style.radius
     end
     if style.background_extend ~= nil then
       segment.background_extend = style.background_extend
     end
-    if color.is_hex_color(style.border) then
-      segment.border = style.border
-    end
+    segment.border = segment_color("border")
     if style.border_size ~= nil then
       segment.border_size = style.border_size
     end
     if style.padding ~= nil then
-      local value = style.padding
-      local box = type(value) == "table" and value or {}
-      local all = type(value) == "number" and value or 0
-      local top = box.top or box.y or box.vertical or box[1] or all
-      local right = box.right or box.x or box.horizontal or box[2] or top
-      local bottom = box.bottom or box.y or box.vertical or box[3] or top
-      local left = box.left or box.x or box.horizontal or box[4] or right
-      segment.padding = {}
-      for edge, px in pairs({ top = top, right = right, bottom = bottom, left = left }) do
-        segment.padding[edge] = type(px) == "number"
-            and px == px
-            and px < math.huge
-            and math.max(0, px)
-          or 0
-      end
+      segment.padding = M.normalize_segment_padding(style.padding)
     end
   end
 
@@ -595,16 +724,21 @@ end
 ---@param value any
 ---@param fallback_text string
 ---@param style HollowUiNodeStyle|nil
+---@param palette table|nil
 ---@return HollowUiSegment[]
-function M.bar_value_to_segments(value, fallback_text, style)
+function M.bar_value_to_segments(value, fallback_text, style, palette)
   if type(value) == "string" then
-    return { M.style_to_segment(value, style) }
+    return { M.style_to_segment(value, style, palette) }
   end
 
   if type(value) == "table" then
     if value._type == "span" then
       return {
-        M.style_to_segment(value.text or fallback_text, M.merge_style_tables(style, value.style)),
+        M.style_to_segment(
+          value.text or fallback_text,
+          M.merge_style_tables(style, value.style),
+          palette
+        ),
       }
     end
 
@@ -614,7 +748,7 @@ function M.bar_value_to_segments(value, fallback_text, style)
         .tbl(flattened)
         :filter_map(function(node)
           if type(node.text) == "string" and node.text ~= "" then
-            return M.style_to_segment(node.text, node.style)
+            return M.style_to_segment(node.text, node.style, palette)
           end
         end)
         :get()
@@ -631,25 +765,93 @@ function M.bar_value_to_segments(value, fallback_text, style)
         bold = value.bold,
       })
       local text = type(value.text) == "string" and value.text or fallback_text
-      return { M.style_to_segment(text, merged_style) }
+      return { M.style_to_segment(text, merged_style, palette) }
     end
   end
 
-  return { M.style_to_segment(fallback_text, style) }
+  return { M.style_to_segment(fallback_text, style, palette) }
+end
+
+---@param value any
+---@return any
+local function partial_box(value)
+  if type(value) == "number" then
+    return { top = value, right = value, bottom = value, left = value }
+  end
+  if type(value) ~= "table" then
+    return value
+  end
+  local out = {}
+  if value[1] ~= nil then
+    local top = value[1]
+    local right = value[2] or top
+    out.top, out.right, out.bottom, out.left = top, right, value[3] or top, value[4] or right
+  end
+  local x, y = value.x or value.horizontal, value.y or value.vertical
+  out.top, out.bottom = value.top or y or out.top, value.bottom or y or out.bottom
+  out.left, out.right = value.left or x or out.left, value.right or x or out.right
+  return out
+end
+
+local function merge_into(result, layer)
+  for key, value in pairs(layer) do
+    if key == "padding" or key == "margin" then
+      local box = partial_box(value)
+      if type(box) == "table" then
+        result[key] = type(result[key]) == "table" and result[key] or {}
+        for side, px in pairs(box) do
+          result[key][side] = util.clone_value(px)
+        end
+      else
+        result[key] = util.clone_value(value)
+      end
+    elseif key == "hover" and type(value) == "table" then
+      if type(result[key]) ~= "table" then
+        result[key] = {}
+      end
+      merge_into(result[key], value)
+    elseif type(value) == "table" then
+      if type(result[key]) ~= "table" then
+        result[key] = {}
+      end
+      util.merge_tables(result[key], util.clone_value(value))
+    else
+      result[key] = util.clone_value(value)
+    end
+  end
+end
+
+---@vararg HollowUiNodeStyle|boolean|nil
+---@return HollowUiNodeStyle
+function M.merge_styles(...)
+  local result = {}
+  for i = 1, select("#", ...) do
+    local layer = select(i, ...)
+    if type(layer) == "table" then
+      merge_into(result, layer)
+    end
+  end
+  return result
 end
 
 ---@param base HollowUiNodeStyle|nil
 ---@param overlay_style HollowUiNodeStyle|nil
 ---@return HollowUiNodeStyle
 function M.merge_style_tables(base, overlay_style)
-  local merged = {}
-  if type(base) == "table" then
-    util.merge_tables(merged, base)
+  return M.merge_styles(base, overlay_style)
+end
+
+---@param style any
+---@param hovered_id any
+---@return any
+function M.apply_hover(style, hovered_id)
+  if type(style) ~= "table" or type(style.id) ~= "string" or style.id == "" then
+    return style
   end
-  if type(overlay_style) == "table" then
-    util.merge_tables(merged, overlay_style)
+  if style.id ~= hovered_id or type(style.hover) ~= "table" then
+    return style
   end
-  return merged
+  return M.merge_styles(style, style.hover)
 end
 
 ---@param rendered any

@@ -1,4 +1,4 @@
-# UI styles plan: static styles, theme tokens, variants
+# UI styles plan: static styles, theme tokens, conditional layers
 
 Companion to `ui-composition-plan.md`. That plan fixes _structure_ (children,
 gating, lists). This one fixes _styles_: large inline style tables that mix
@@ -48,17 +48,15 @@ What already exists and should be reused:
 
 ---
 
-## 2. Design overview (four small pieces)
+## 2. Design overview (three small pieces)
 
 1. **Theme tokens**: a style color can be a token name (`fg = "muted"`) instead
    of a hex value. Styles then no longer need `theme` and can become module-level
    constants.
-2. **`ui.style(...)`**: layered merge (already in the composition plan),
-   made box-aware.
-3. **`ui.variants(spec)`**: a function `(props, theme?) -> style` for state-based
-   styles (base + flags + enums + compounds). It's like `cva` from the React world,
-   minus class names.
-4. **Native `hover` in overlays**: `style.hover = { ... }` works the same way it
+2. **`ui.style(...)`**: layered, box-aware merge that skips falsy arguments.
+   State-based styles are just conditional layers: `ui.style(BASE, active and ACTIVE)`.
+   No separate variants DSL (see §5).
+3. **Native `hover` in overlays**: `style.hover = { ... }` works the same way it
    does in bars, so components stop checking `hovered_id` themselves.
 
 Optional fifth piece: **`hollow.ui.styles` presets** (`pill`, `badge`, `muted`,
@@ -85,8 +83,9 @@ Non-color keys (`radius`, `padding`, `bold`, ...) are never treated as tokens.
 ### Two resolution points
 
 **Eager**: `shared.resolve_tokens(style, theme)` returns a fresh table with tokens
-replaced. `ui.variants` calls it when given a theme. Use it when a component
-takes `opts.theme` (as `ui.tab` and `tab_bar` do in tests), so the custom theme wins.
+replaced. Use it when a component takes `opts.theme` (as `ui.tab` and `tab_bar`
+do in tests), so the custom theme wins. Internal for now; expose it publicly only
+if user code turns out to need it.
 
 **Lazy (fallback)**: in `shared.style_to_segment`, if `fg`/`bg`/`border` is a
 non-hex string, resolve it against the current theme. The palette comes from
@@ -157,70 +156,94 @@ Implement it as a dedicated `shared.merge_styles(...)`. Keep
 
 ---
 
-## 5. `ui.variants(spec)`
+## 5. State-based styles: conditional layers (no `ui.variants`)
 
-### Spec
+An earlier draft added a `cva`-like `ui.variants` (`base`/`when`/`by`/`compound`/
+`defaults`/`strict`, function layers, weak caches, clone-on-return). It was
+dropped: across all call sites it was used for two base-only styles, one
+two-flag style and one enum, and every one reads more simply as plain tables
+plus `ui.style`. Lua has no type inference or autocomplete for a spec DSL, so
+the DSL hid the logic it was supposed to clarify.
 
-```lua
-local tab_style = ui.variants({
-  base = { fg = "muted", radius = 4, padding = { x = 8, y = 3 } },
+### Pattern
 
-  -- boolean flags: applied when props[name] is truthy
-  when = {
-    active = { fg = "selection_fg", bg = "selection_bg", bold = true },
-    badged = { padding = { right = 0 } },
-  },
-
-  -- enums: applied by props[name] value
-  by = {
-    kind = {
-      primary     = { fg = "primary_bg" },
-      destructive = { fg = "destructive_bg" },
-    },
-  },
-
-  -- combinations: applied when every listed prop matches
-  compound = {
-    { active = true, badged = true, style = { background_extend = 2 } },
-  },
-
-  -- props used when the caller omits them
-  defaults = { kind = "default" },
-})
-
-style = tab_style({ active = opts.active, badged = badge ~= nil }, opts.theme)
-```
-
-### Semantics
-
-- **Order** (deterministic; Lua `pairs` order is not, so it's fixed when the
-  spec is defined): `base` → `by` (sorted by key name) → `when` (sorted by key
-  name) → `compound` (in list order). Later layers win.
-- Merging uses `ui.style` semantics (box-aware, fresh table).
-- An unknown enum value applies nothing. An optional `strict = true` makes it an error.
-- `theme` given → tokens resolved eagerly. `nil` → tokens left for the lazy path.
-- A style value inside the spec may be a function `(theme) -> style` as an escape
-  hatch for computed colors (for example `color.brighten_hex_color(theme.selected_bg, 0.25)`
-  in `button_component.button_style`). It is called only on the eager path, so if
-  no theme is passed the current widget theme is resolved first.
-
-### Caching and mutation (important)
-
-- Cache results by `(theme table, props key)`. The props key is built from the
-  declared flag and enum names only, so extra props don't break the cache. The
-  outer key is a weak-keyed table on `theme`.
-- **Always return a shallow-cloned result.** `bar_events.register` writes
-  `style.id` into span styles in place, and `ui.span` does not clone. A shared
-  cached table would let one span's auto id leak into another span. Cloning
-  about 6 fields per call is cheap. Add a test that guards this.
-
-### Return value
-
-A plain style table. It composes with `ui.style` for one-off dynamic values:
+Styles are module-level constants. The render picks layers with `and`.
+`ui.style` skips falsy arguments, merges left to right (later wins) and returns
+a fresh table.
 
 ```lua
-style = ui.style(badge_style(nil, theme), { bg = badge.color })
+local TAB = { fg = "muted", bold = false, radius = 4, padding = { x = 8, y = 3 } }
+local TAB_ACTIVE = { fg = "selection_fg", bg = "selection_bg", bold = true }
+local TAB_BADGED = { padding = { right = 0 } }
+local TAB_ACTIVE_BADGED = { background_extend = 2 }
+
+style = ui.style(
+  TAB,
+  active and TAB_ACTIVE,
+  badged and TAB_BADGED,
+  active and badged and TAB_ACTIVE_BADGED
+)
 ```
+
+What each `ui.variants` feature becomes:
+
+| Variants feature | Plain Lua |
+| --- | --- |
+| `base` | first argument |
+| `when = { flag = S }` | `flag and S` |
+| `by = { kind = { a = S } }` | `KINDS[kind] or KINDS.default` |
+| `compound` | `a and b and S` |
+| `defaults` | `opts.x or "default"` (at the call site) |
+| `strict` | `assert(KINDS[kind], ...)` if wanted |
+| layer order | argument order (explicit, no sorting rules) |
+| function layer `(theme) -> style` | the caller already has `theme`; call a local function |
+| cache + clone-on-return | not needed: every `ui.style` call returns a fresh table, so `bar_events.register` writing `style.id` can't leak |
+
+Eager resolution when a theme is in hand:
+`ui.themed_style(theme, ...)` (public): merges the layers like `ui.style` and
+resolves tokens in one call. With `theme = nil` it behaves exactly like
+`ui.style(...)`, so tokens stay for the lazy path (which picks the right widget
+palette at serialization time).
+
+```lua
+style = ui.themed_style(opts.theme, BASE, active and ACTIVE)
+```
+
+### Enum example: `button_component.button_style`
+
+Dialog themes can be partial (tests pass `{ fg = ... }` only), and
+`resolve_tokens` errors on missing keys. So the table holds theme key names and
+looks them up directly instead of going through tokens:
+
+```lua
+-- Theme keys per kind. Default emphasis has no bg key: it brightens `selected_bg`.
+local KINDS = {
+  default = { fg = "fg", emphasized_fg = "selected_fg" },
+  primary = { fg = "primary_bg", emphasized_fg = "primary_fg", emphasized_bg = "primary_bg" },
+  destructive = {
+    fg = "destructive_bg",
+    emphasized_fg = "destructive_fg",
+    emphasized_bg = "destructive_bg",
+  },
+}
+
+function M.button_style(theme, btn, selected, hovered)
+  local kind = KINDS[btn.kind] or KINDS.default
+  local radius = theme.radius or 4
+  if not (selected or hovered) then
+    return { fg = theme[kind.fg], radius = radius }
+  end
+  local bg
+  if kind.emphasized_bg then
+    bg = theme[kind.emphasized_bg]
+  else
+    bg = color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
+  end
+  return { fg = theme[kind.emphasized_fg], bg = bg, bold = true, radius = radius }
+end
+```
+
+The whole state table is visible at once; there is no ordering rule to learn.
 
 ---
 
@@ -238,10 +261,12 @@ Today overlays pass `hover_state` into `render`, and each component compares
 - Result: `ui.action_button` no longer needs `opts.state`:
 
 ```lua
-local action_style = ui.variants({
-  base = { fg = "fg", radius = 4, padding = { x = 4 },
-           hover = { fg = "hover_fg", bg = "hover_bg" } },
-})
+local ACTION = {
+  fg = "fg",
+  radius = 4,
+  padding = { x = 4 },
+  hover = { fg = "hover_fg", bg = "hover_bg" },
+}
 ```
 
 - Keep accepting `opts.state` / `opts.hover_style` on `action_button` for
@@ -273,8 +298,9 @@ ui.styles = styles
 Usage: `ui.text(label, ui.styles.muted)` or
 `ui.style(ui.styles.badge, { bg = color })`. Since everything is plain tables,
 users can define their own the same way. Freezing isn't needed because
-`ui.style` and `ui.variants` never mutate inputs. Document "don't mutate presets"
-anyway.
+`ui.style` never mutates inputs. Pass presets through `ui.style` before handing
+them to a span (spans may get `style.id` written in place). Document "don't
+mutate presets".
 
 ---
 
@@ -286,26 +312,28 @@ nested ternaries.
 After:
 
 ```lua
-local tab_style = ui.variants({
-  base = { fg = "muted", radius = 4, padding = { x = 8, y = 3 } },
-  when = {
-    active = { fg = "selection_fg", bg = "selection_bg", bold = true },
-    badged = { padding = { right = 0 } },
-  },
-  compound = { { active = true, badged = true, style = { background_extend = 2 } } },
-})
-
-local badge_style = ui.variants({ base = ui.styles.badge })
+local TAB = { fg = "muted", bold = false, radius = 4, padding = { x = 8, y = 3 } }
+local TAB_ACTIVE = { fg = "selection_fg", bg = "selection_bg", bold = true }
+local TAB_BADGED = { padding = { right = 0 } }
+local TAB_ACTIVE_BADGED = { background_extend = 2 }
+local BADGE = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } }
 
 function ui.tab(opts)
   local theme = select_theme(opts)
+  local active = opts.active == true
   local badge = opts.badge
   return ui.group({
     ui.button({
       id = opts.id,
       on_click = opts.on_click,
       text = badge and (opts.label .. " ") or opts.label,
-      style = tab_style({ active = opts.active, badged = badge ~= nil }, theme),
+      style = ui.themed_style(
+        theme,
+        TAB,
+        active and TAB_ACTIVE,
+        badge and TAB_BADGED,
+        active and badge and TAB_ACTIVE_BADGED
+      ),
     }),
     ui.when(badge, function()
       return {
@@ -313,7 +341,7 @@ function ui.tab(opts)
           id = opts.id .. ":badge",
           on_click = opts.on_click,
           text = tostring(badge.text),
-          style = ui.style(badge_style(nil, theme), { bg = badge.color }),
+          style = ui.themed_style(theme, BADGE, { bg = badge.color }),
         }),
         " ",
       }
@@ -322,8 +350,8 @@ function ui.tab(opts)
 end
 ```
 
-The render now only contains structure and state flags. Every visual decision
-sits in two declarations above it.
+The render contains structure and state flags. Every visual value sits in the
+constants above it.
 
 Note on behaviour (Decision 3): built-in primitives (`ui.tab`, `ui.tab_bar`,
 `ui.action_button`) keep `"select"` as their default palette, so their output
@@ -333,7 +361,7 @@ doesn't change. Each one resolves its theme once:
 local function select_theme(opts)
   return opts.theme or require("hollow.theme").resolve_widget("select")
 end
--- in ui.tab: local theme = select_theme(opts), then pass `theme` to both variants
+-- in ui.tab: local theme = select_theme(opts), then resolve tokens against `theme`
 ```
 
 Tokens are therefore resolved eagerly in primitives. The lazy path is for user
@@ -372,10 +400,7 @@ code that writes `{ fg = "muted" }` without a theme in hand.
   `bar_serialize.lua`, and `"all"` from `core.lua`.
 - Unknown-token error with a "did you mean" hint.
 
-**Phase B: variants**
-
-- `ui.variants` with ordering, defaults, compound, function escape hatch,
-  cache and clone-on-return.
+**Phase B: dropped** (`ui.variants` replaced by conditional `ui.style` layers, §5).
 
 **Phase C: overlay hover**
 
@@ -387,17 +412,15 @@ code that writes `{ fg = "muted" }` without a theme in hand.
 
 - `hollow.ui.styles`.
 - Migrate `ui.tab`, `ui.action_button`, `button_component.button_style`
-  (natural fit for `by = { kind = ... }` + `when = { active = ... }`),
-  `dialog.lua`, then widgets one commit at a time.
+  (`KINDS` lookup table, §5), `dialog.lua`, then widgets one commit at a time.
 
 **Phase E: types + docs**
 
 - `types/hollow.lua`: `HollowStyleToken` alias (`string`), widen
   `HollowStyle.fg/bg/border` to `HollowColor|HollowStyleToken`, add a `hover?:
-HollowStyle` field, plus `HollowUiVariantsSpec` and stubs for `ui.style`,
-  `ui.variants`, `ui.styles`.
+HollowStyle` field, plus stubs for `ui.style`, `ui.themed_style` and `ui.styles`.
 - `docs/reference/lua/ui.md`: a "Styles" section covering tokens (list the token
-  names from `resolve_widget`), merge rules, variants, hover and presets.
+  names from `resolve_widget`), merge rules, conditional layers, hover and presets.
 - `docs/themes.md`: link the token list.
 
 ---
@@ -418,12 +441,10 @@ HollowStyle` field, plus `HollowUiVariantsSpec` and stubs for `ui.style`,
 - **lazy**: `style_to_segment("x", { fg = "muted" }, palette)` gives the hex.
   Without a palette it uses the cached current theme. The cache is invalidated
   after a theme change.
-- **variants**: base only; flag on/off; enum value; unknown enum (lenient and
-  strict); compound applies only when all match; layer order (when beats by,
-  compound beats when); defaults; function escape hatch receives theme; eager
-  vs lazy (`theme` nil leaves tokens).
-- **cache safety**: two calls with the same props return _different_ tables.
-  Mutating one (`style.id = "x"`) doesn't affect the next call.
+- **layers**: `ui.style(A, false, B)` = `ui.style(A, B)`; later layer wins;
+  result is a fresh table (mutating it leaves `A` and `B` untouched).
+- **themed_style**: resolves tokens against the given theme; `nil` theme leaves
+  tokens; inputs untouched.
 - **overlay hover**: a span with `id` and `hover` gets hover colors only when
   that id is hovered. Bars behave as before (existing `test_ui_bars.lua`).
 - **regression**: the existing tab / tab_bar test passes after migration.
@@ -434,7 +455,7 @@ HollowStyle` field, plus `HollowUiVariantsSpec` and stubs for `ui.style`,
 
 - [x] Decide open questions §9
 - [ ] Phase A: `merge_styles`, `ui.style`, `resolve_tokens`, lazy palette in `style_to_segment`
-- [ ] Phase B: `ui.variants`
+- [x] Phase B: dropped (conditional layers instead)
 - [ ] Phase C: overlay `hover`, `apply_hover`, `action_button` cleanup
 - [ ] Phase D: `ui.styles` presets, migrate `tab`, `action_button`, `button_style`, `dialog`, widgets
 - [ ] Phase E: types + docs
