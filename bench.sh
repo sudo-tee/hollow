@@ -10,6 +10,8 @@ prog="${HOLLOW_BENCH_PROG:-$(basename -- "${BASH_SOURCE[0]}")}"
 usage() {
   local prefix="$prog " suffix=""
   if [[ "$prog" == "make bench" ]]; then
+    echo 'Run a mode with make bench MODE; pass additional arguments via ARGS.'
+    echo
     prefix='make bench ARGS="'
     suffix='"'
   fi
