@@ -134,85 +134,38 @@ pub fn selectionEnd(self: *App) void {
 }
 
 pub fn selectionBeginWord(self: *App, pane: *Pane, point: selection.CellPoint) void {
-    if (!self.hasPane(pane)) return;
-    if (self.mux) |*mux| {
-        const previous = mux.activePane();
-        mux.setActivePane(pane);
-        self.syncActivePaneChange(previous, pane);
-    }
-    const history_point = selectionPointToHistory(self, pane, point);
-    const had_selection = hasSelection(self);
-
-    const runtime = if (self.ghostty) |*rt| rt else return;
-    if (!runtime.populateRowIterator(pane.render_state, &pane.row_iterator)) return;
-
-    var ascii_cols: [4096]u8 = @splat(0);
-    var col_count: usize = 0;
-    var row_index: usize = 0;
-    var found_row = false;
-    while (runtime.nextRow(pane.row_iterator)) : (row_index += 1) {
-        if (row_index != point.row) continue;
-        if (!runtime.populateRowCells(pane.row_iterator, &pane.row_cells)) break;
-        while (runtime.nextCell(pane.row_cells) and col_count < ascii_cols.len) : (col_count += 1) {
-            var cell_buf: [16]u8 = @splat(0);
-            var cell_len: usize = 0;
-            text_helpers.appendCellText(runtime, pane.row_cells, &cell_buf, &cell_len);
-            ascii_cols[col_count] = if (cell_len == 1 and cell_buf[0] != 0) cell_buf[0] else ' ';
-        }
-        found_row = true;
-        break;
-    }
-
-    if (!found_row or col_count == 0 or point.col >= col_count) {
-        selectionBegin(self, pane, point, false);
-        return;
-    }
-
-    const isWordChar = struct {
-        fn call(ch: u8) bool {
-            return ch != ' ' and ch != '\t' and ch >= 0x21;
-        }
-    }.call;
-
-    if (!isWordChar(ascii_cols[point.col])) {
-        selectionBegin(self, pane, point, false);
-        return;
-    }
-
-    var start = point.col;
-    while (start > 0 and isWordChar(ascii_cols[start - 1])) : (start -= 1) {}
-    var end = point.col;
-    while (end + 1 < col_count and isWordChar(ascii_cols[end + 1])) : (end += 1) {}
-
-    if (had_selection) {
-        self.emitLuaBuiltInEvent("selection:cleared", .none);
-    }
-    self.selection_pane = pane;
-    self.selection_anchor = .{ .row = history_point.row, .col = start };
-    self.selection_head = .{ .row = history_point.row, .col = end };
-    self.selection_drag_active = false;
-    pane.render_dirty = .full;
-    self.selection_generation +%= 1;
-    self.emitLuaBuiltInEvent("selection:begin", .none);
+    selectionBeginNative(self, pane, point, false);
 }
 
 pub fn selectionBeginLine(self: *App, pane: *Pane, point: selection.CellPoint) void {
+    selectionBeginNative(self, pane, point, true);
+}
+
+fn selectionBeginNative(self: *App, pane: *Pane, point: selection.CellPoint, line: bool) void {
     if (!self.hasPane(pane)) return;
     if (self.mux) |*mux| {
         const previous = mux.activePane();
         mux.setActivePane(pane);
         self.syncActivePaneChange(previous, pane);
     }
-    const history_point = selectionPointToHistory(self, pane, point);
+    const runtime = if (self.ghostty) |*rt| rt else return;
+    const selected = runtime.selectAt(pane.terminal, .{
+        .tag = .viewport,
+        .value = .{ .coordinate = .{ .x = @intCast(point.col), .y = @intCast(point.row) } },
+    }, line) orelse {
+        selectionBegin(self, pane, point, false);
+        return;
+    };
+    const start = runtime.gridRefPoint(pane.terminal, &selected.start, .screen) orelse return;
+    const end = runtime.gridRefPoint(pane.terminal, &selected.end, .screen) orelse return;
     const had_selection = hasSelection(self);
 
-    const cols = @max(@as(usize, 1), @as(usize, pane.cols));
     if (had_selection) {
         self.emitLuaBuiltInEvent("selection:cleared", .none);
     }
     self.selection_pane = pane;
-    self.selection_anchor = .{ .row = history_point.row, .col = 0 };
-    self.selection_head = .{ .row = history_point.row, .col = cols - 1 };
+    self.selection_anchor = .{ .row = start.y, .col = start.x };
+    self.selection_head = .{ .row = end.y, .col = end.x };
     self.selection_drag_active = false;
     pane.render_dirty = .full;
     self.selection_generation +%= 1;

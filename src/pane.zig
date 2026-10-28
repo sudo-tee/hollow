@@ -21,9 +21,7 @@ const PTY_SANITIZE_BUFFER_SIZE: usize = PTY_READ_BUFFER_SIZE + PTY_PENDING_SEQUE
 
 const is_windows = @import("builtin").os.tag == .windows;
 
-const OSC9_PREFIX = "\x1b]9;";
 const OSC99_PREFIX = "\x1b]99;";
-const OSC777_PREFIX = "\x1b]777;";
 const OSC1337_PREFIX = "\x1b]1337;";
 const HTP_OSC_PREFIX = "\x1b]1337;Hollow;";
 const OSC1337_SEQUENCE_MAX = 8 * 1024 * 1024;
@@ -99,23 +97,13 @@ const CombinedInput = struct {
 const OscPrefixMatch = enum {
     none,
     partial,
-    osc9,
     osc1337,
     osc99,
-    osc777,
     htp,
-};
-
-const NotificationOscKind = enum {
-    osc99,
-    osc9,
-    osc777,
 };
 
 fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
     if (std.mem.eql(u8, prefix, OSC99_PREFIX)) return .osc99;
-    if (std.mem.eql(u8, prefix, OSC9_PREFIX)) return .osc9;
-    if (std.mem.eql(u8, prefix, OSC777_PREFIX)) return .osc777;
     if (std.mem.eql(u8, prefix, HTP_OSC_PREFIX)) return .htp;
     if (prefix.len >= OSC1337_PREFIX.len and
         std.mem.eql(u8, prefix[0..OSC1337_PREFIX.len], OSC1337_PREFIX) and
@@ -124,8 +112,6 @@ fn classifyOscPrefix(prefix: []const u8) OscPrefixMatch {
         return .osc1337;
     }
     if (std.mem.startsWith(u8, OSC99_PREFIX, prefix) or
-        std.mem.startsWith(u8, OSC9_PREFIX, prefix) or
-        std.mem.startsWith(u8, OSC777_PREFIX, prefix) or
         std.mem.startsWith(u8, OSC1337_PREFIX, prefix) or
         std.mem.startsWith(u8, HTP_OSC_PREFIX, prefix))
     {
@@ -157,6 +143,9 @@ pub const Pane = struct {
     cwd: []u8 = &.{},
     pending_cwd: ?[]u8 = null,
     program_status: @import("term/program_status.zig").State = .{},
+    paste_output: ?*ghostty.PasteOutput = null,
+    image_storage_generation: u64 = 0,
+    image_animation_deadline_ns: i128 = 0,
     /// Actual terminal dimensions in characters (updated on every resize).
     cols: u16 = 0,
     rows: u16 = 0,
@@ -182,12 +171,11 @@ pub const Pane = struct {
     pty_pending_seq: [PTY_PENDING_SEQUENCE_MAX]u8 = @splat(0),
     pty_pending_len: usize = 0,
     pty_sanitize_buf: *[PTY_SANITIZE_BUFFER_SIZE]u8 = &shared_pty_sanitize_buf,
-    /// Shared bounded capture for OSC 9, OSC 99, and OSC 777 notifications.
+    /// Bounded custom OSC 99 capture; Ghostty handles OSC 9/777 callbacks.
     osc99_active: bool = false,
     osc99_st_pending: bool = false,
     osc99_overflow: bool = false,
     osc99_buf: std.ArrayListUnmanaged(u8) = .empty,
-    notification_osc_kind: NotificationOscKind = .osc99,
     osc99_notifications: osc99.State = .{},
     osc_prefix_buf: [HTP_OSC_PREFIX.len]u8 = @splat(0),
     osc_prefix_len: usize = 0,
@@ -754,6 +742,25 @@ pub const Pane = struct {
                 std.log.err("pane: sendText failed: {s}", .{@errorName(err)});
             };
         }
+    }
+
+    pub fn tickImageAnimation(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128) void {
+        if (self.synchronized_output_active) return;
+        const graphics = runtime.terminalKittyGraphics(self.terminal) orelse {
+            self.image_animation_deadline_ns = 0;
+            return;
+        };
+        const before = runtime.kittyStorageGeneration(graphics);
+        if (before == self.image_storage_generation and
+            (self.image_animation_deadline_ns == 0 or now_ns < self.image_animation_deadline_ns)) return;
+        const next_ms = runtime.tickKittyAnimation(graphics, @intCast(@divFloor(now_ns, std.time.ns_per_ms)));
+        self.image_animation_deadline_ns = if (next_ms) |ms| @max(now_ns + 8 * std.time.ns_per_ms, @as(i128, ms) * std.time.ns_per_ms) else 0;
+        const after = runtime.kittyStorageGeneration(graphics);
+        if (after != self.image_storage_generation) {
+            self.render_dirty = .full;
+            self.render_state_fresh = false;
+        }
+        self.image_storage_generation = after;
     }
 
     pub fn expireRenderHold(self: *Pane, runtime: *GhosttyRuntime, now_ns: i128, timeout_ns: i128) bool {
@@ -1334,17 +1341,7 @@ pub const Pane = struct {
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
                 switch (classifyOscPrefix(prefix)) {
                     .osc99 => {
-                        self.beginNotificationOscSequence(.osc99);
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc9 => {
-                        self.beginNotificationOscSequence(.osc9);
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc777 => {
-                        self.beginNotificationOscSequence(.osc777);
+                        self.beginNotificationOscSequence();
                         self.osc_prefix_len = 0;
                         continue;
                     },
@@ -1587,17 +1584,7 @@ pub const Pane = struct {
                 const prefix = self.osc_prefix_buf[0..self.osc_prefix_len];
                 switch (classifyOscPrefix(prefix)) {
                     .osc99 => {
-                        self.beginNotificationOscSequence(.osc99);
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc9 => {
-                        self.beginNotificationOscSequence(.osc9);
-                        self.osc_prefix_len = 0;
-                        continue;
-                    },
-                    .osc777 => {
-                        self.beginNotificationOscSequence(.osc777);
+                        self.beginNotificationOscSequence();
                         self.osc_prefix_len = 0;
                         continue;
                     },
@@ -1715,11 +1702,10 @@ pub const Pane = struct {
         };
     }
 
-    fn beginNotificationOscSequence(self: *Pane, kind: NotificationOscKind) void {
+    fn beginNotificationOscSequence(self: *Pane) void {
         self.osc99_active = true;
         self.osc99_st_pending = false;
         self.osc99_overflow = false;
-        self.notification_osc_kind = kind;
         self.osc99_buf.clearRetainingCapacity();
     }
 
@@ -1758,34 +1744,14 @@ pub const Pane = struct {
 
     fn finishNotificationOscSequence(self: *Pane) void {
         if (!self.osc99_overflow and self.osc99_buf.items.len > 0) {
-            switch (self.notification_osc_kind) {
-                .osc99 => self.osc99_notifications.feed(self.allocator, self.osc99_buf.items) catch |err| {
-                    std.log.warn("osc99: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
-                },
-                .osc9 => if (!isConEmuOsc9(self.osc99_buf.items)) {
-                    self.queueSimpleOscNotification("", self.osc99_buf.items);
-                },
-                .osc777 => self.finishOsc777Notification(),
-            }
+            self.osc99_notifications.feed(self.allocator, self.osc99_buf.items) catch |err| {
+                std.log.warn("osc99: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
+            };
         }
         self.osc99_active = false;
         self.osc99_st_pending = false;
         self.osc99_overflow = false;
         self.osc99_buf.clearRetainingCapacity();
-    }
-
-    fn queueSimpleOscNotification(self: *Pane, title: []const u8, body: []const u8) void {
-        self.osc99_notifications.enqueueSimple(self.allocator, title, body, .info) catch |err| {
-            std.log.warn("osc: failed to queue notification pane={x} err={s}", .{ @intFromPtr(self), @errorName(err) });
-        };
-    }
-
-    fn finishOsc777Notification(self: *Pane) void {
-        const prefix = "notify;";
-        const payload = self.osc99_buf.items;
-        if (!std.mem.startsWith(u8, payload, prefix)) return;
-        const body_start = std.mem.indexOfScalarPos(u8, payload, prefix.len, ';') orelse return;
-        self.queueSimpleOscNotification(payload[prefix.len..body_start], payload[body_start + 1 ..]);
     }
 
     fn applyOsc1337Sequence(self: *Pane, payload: []const u8) void {
@@ -1836,16 +1802,6 @@ fn parseOsc1337CellSize(value: []const u8) ?u32 {
         }
     }
     return std.fmt.parseInt(u32, trimmed, 10) catch null;
-}
-
-fn isConEmuOsc9(payload: []const u8) bool {
-    const separator = std.mem.indexOfScalar(u8, payload, ';') orelse return false;
-    const command = payload[0..separator];
-    if (command.len == 0) return false;
-    for (command) |byte| {
-        if (!std.ascii.isDigit(byte)) return false;
-    }
-    return true;
 }
 
 fn trailingAnsiPrefixLen(bytes: []const u8) usize {
@@ -2026,24 +1982,38 @@ test "sanitizePtyOutput captures split OSC 99 notification packets" {
     try std.testing.expectEqual(@as(?u64, 5000), result.ttl_ms);
 }
 
-test "sanitizePtyOutput routes OSC 9 and OSC 777 notifications" {
+test "image animation invalidates fresh snapshots and schedules next frame" {
+    var runtime = try GhosttyRuntime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(std.testing.allocator);
+    pane.terminal = try runtime.createTerminal(20, 6, 0);
+    defer pane.deinit(&runtime);
+    runtime.terminalWrite(pane.terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
+        "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\" ++
+        "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
+    pane.render_state_fresh = true;
+    pane.tickImageAnimation(&runtime, 1000 * std.time.ns_per_ms);
+    try std.testing.expect(!pane.render_state_fresh);
+    try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
+    try std.testing.expectEqual(@as(i128, 1030 * std.time.ns_per_ms), pane.image_animation_deadline_ns);
+    pane.render_dirty = .false_value;
+    pane.render_state_fresh = true;
+    pane.tickImageAnimation(&runtime, 1010 * std.time.ns_per_ms);
+    try std.testing.expect(pane.render_state_fresh);
+    pane.tickImageAnimation(&runtime, pane.image_animation_deadline_ns);
+    try std.testing.expect(!pane.render_state_fresh);
+    try std.testing.expectEqual(ghostty.RenderStateDirty.full, pane.render_dirty);
+}
+
+test "sanitizePtyOutput forwards native OSC 9 and OSC 777 protocols" {
     var pane = Pane.init(std.testing.allocator);
     defer pane.osc99_buf.deinit(std.testing.allocator);
     defer pane.osc99_notifications.deinit(std.testing.allocator);
 
     var input = "\x1b]9;Build complete\x07 \x1b]777;notify;Build;Tests passed\x1b\\X".*;
     const output = pane.sanitizePtyOutputForPlatform(&input, false);
-    try std.testing.expectEqualStrings(" X", output);
-    try std.testing.expectEqual(@as(usize, 2), pane.osc99_notifications.queued.items.len);
-
-    var osc9_notification = pane.osc99_notifications.popNotification().?;
-    defer osc9_notification.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("Build complete", osc9_notification.message);
-
-    var osc777_notification = pane.osc99_notifications.popNotification().?;
-    defer osc777_notification.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("Build", osc777_notification.title);
-    try std.testing.expectEqualStrings("Tests passed", osc777_notification.message);
+    try std.testing.expectEqualStrings("\x1b]9;Build complete\x07 \x1b]777;notify;Build;Tests passed\x1b\\X", output);
+    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
 }
 
 test "sanitizePtyOutput does not turn ConEmu OSC 9 commands into notifications" {
@@ -2053,7 +2023,7 @@ test "sanitizePtyOutput does not turn ConEmu OSC 9 commands into notifications" 
 
     var input = "\x1b]9;1;420\x07X".*;
     const output = pane.sanitizePtyOutputForPlatform(&input, false);
-    try std.testing.expectEqualStrings("X", output);
+    try std.testing.expectEqualStrings("\x1b]9;1;420\x07X", output);
     try std.testing.expect(!pane.osc99_notifications.hasNotifications());
 }
 

@@ -21,6 +21,8 @@ pub fn terminalCallbacks() ghostty.TerminalCallbacks {
         .program_status = programStatusCallback,
         .semantic_prompt = semanticPromptCallback,
         .reset = resetCallback,
+        .desktop_notification = desktopNotificationCallback,
+        .progress_report = progressReportCallback,
     };
 }
 
@@ -32,6 +34,10 @@ fn writePtyCallback(_: ?*anyopaque, userdata: ?*anyopaque, bytes: ?[*]const u8, 
     if (bytes == null or len == 0) return;
     const bytes_ptr = bytes.?;
     const pane = paneFromUserdata(userdata) orelse return;
+    if (pane.paste_output) |output| {
+        output.append(bytes_ptr[0..len]);
+        return;
+    }
     pane.sendText(bytes_ptr[0..len]);
 }
 
@@ -133,6 +139,29 @@ fn programStatusCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const g
     };
 }
 
+fn desktopNotificationCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.DesktopNotification) callconv(.c) void {
+    const pane = paneFromUserdata(userdata) orelse return;
+    if (report.size < @sizeOf(ghostty.DesktopNotification)) return;
+    pane.osc99_notifications.enqueueSimple(pane.allocator, report.title.slice(), report.body.slice(), .info) catch {};
+}
+
+fn progressReportCallback(_: ?*anyopaque, userdata: ?*anyopaque, report: *const ghostty.ProgressReport) callconv(.c) void {
+    const pane = paneFromUserdata(userdata) orelse return;
+    if (report.size < @sizeOf(ghostty.ProgressReport) or report.state < 0 or report.state > 4) return;
+    const id = "hollow/osc9-progress";
+    const title = if (report.state == 4) "Paused" else "Progress";
+    const status: ghostty.ProgramStatus = .{
+        .state = if (report.state == 0) 5 else if (report.state == 2) 4 else 1,
+        .kind = 0,
+        .progress = if (report.state == 3) -1 else report.progress,
+        .id = .{ .ptr = id.ptr, .len = id.len },
+        .app = .{ .ptr = null, .len = 0 },
+        .title = .{ .ptr = title.ptr, .len = title.len },
+        .message = .{ .ptr = null, .len = 0 },
+    };
+    pane.program_status.apply(pane.allocator, &status) catch {};
+}
+
 fn semanticPromptCallback(_: ?*anyopaque, userdata: ?*anyopaque, event: *const ghostty.SemanticPrompt) callconv(.c) void {
     const pane = paneFromUserdata(userdata) orelse return;
     // Only a primary prompt ends a command, not RPROMPT/continuations.
@@ -199,6 +228,36 @@ test "color scheme follows configured terminal background" {
         ghostty.ColorScheme.light,
         colorSchemeForBackground(.{ .r = 240, .g = 240, .b = 240 }),
     );
+}
+
+test "native notifications and progress retain ordering and ignore cancellation" {
+    var runtime = try ghostty.Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    var pane = Pane.init(std.testing.allocator);
+    pane.terminal_runtime = &runtime;
+    pane.terminal = try runtime.createTerminal(80, 24, 0);
+    defer pane.deinit(&runtime);
+    runtime.setTerminalUserdata(pane.terminal, &pane);
+    runtime.registerCallbacks(pane.terminal, terminalCallbacks());
+    runtime.terminalWrite(pane.terminal, "\x1b]9;Build comp");
+    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
+    runtime.terminalWrite(pane.terminal, "lete\x07\x1b]777;notify;Build;Tests passed\x1b\\");
+    var first = pane.osc99_notifications.popNotification().?;
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Build complete", first.message);
+    var second = pane.osc99_notifications.popNotification().?;
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Build", second.title);
+    try std.testing.expectEqualStrings("Tests passed", second.message);
+    runtime.terminalWrite(pane.terminal, "\x1b]9;cancelled\x18\x1b]9;1;420\x07");
+    try std.testing.expect(!pane.osc99_notifications.hasNotifications());
+    runtime.terminalWrite(pane.terminal, "\x1b]9;4;1;42\x07");
+    try std.testing.expectEqual(@as(usize, 1), pane.program_status.records.items.len);
+    try std.testing.expectEqual(@as(i8, 42), pane.program_status.records.items[0].progress);
+    runtime.terminalWrite(pane.terminal, "\x1b]9;4;3\x07");
+    try std.testing.expectEqual(@as(i8, -1), pane.program_status.records.items[0].progress);
+    runtime.terminalWrite(pane.terminal, "\x1b]9;4;0\x07");
+    try std.testing.expectEqual(@as(usize, 0), pane.program_status.records.items.len);
 }
 
 test "render hold captures each exact boundary including end and restart in one write" {

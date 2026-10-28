@@ -123,22 +123,19 @@ pub fn sendPaste(self: *App, text: []const u8) !void {
         sendText(self, text);
         return;
     };
-    const bracketed = rt.terminalMode(pane.terminal, .bracketed_paste);
-    if (self.config.debug_terminal_trace) {
-        std.log.info("terminal-trace sendPaste pane={x} len={d} bracketed={}", .{ @intFromPtr(pane), text.len, bracketed });
-    }
-    if (bracketed) {
-        const prefix = "\x1b[200~";
-        const suffix = "\x1b[201~";
-        const payload = try self.allocator.alloc(u8, prefix.len + text.len + suffix.len);
-        defer self.allocator.free(payload);
-        @memcpy(payload[0..prefix.len], prefix);
-        @memcpy(payload[prefix.len .. prefix.len + text.len], text);
-        @memcpy(payload[prefix.len + text.len ..], suffix);
-        sendText(self, payload);
-        return;
-    }
-    sendText(self, text);
+    var output: ghostty.PasteOutput = .{ .allocator = self.allocator };
+    defer output.deinit();
+    pane.paste_output = &output;
+    defer pane.paste_output = null;
+    rt.pasteText(pane.terminal, text) catch |err| {
+        if (err == error.UnsafePaste) {
+            try pane.osc99_notifications.enqueueSimple(self.allocator, "Paste blocked", "Unsafe terminal paste rejected (unbracketed multiline text or embedded paste terminator).", .warn);
+            self.signalWake();
+        }
+        return err;
+    };
+    if (output.failure) |err| return err;
+    if (output.bytes.items.len > 0) sendText(self, output.bytes.items);
 }
 
 // ============================================================

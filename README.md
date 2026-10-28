@@ -45,6 +45,10 @@ If you are new to the repo, start with [the docs index](docs/README.md).
 - Plugin system with Lua API for custom panes, overlays, and widgets (`hollow.plugins`)
 - Sensible default UX but fully customizable via Lua config and plugins
 
+Paste uses Ghostty's mode-aware encoding and safety checks. Unbracketed
+multiline text and embedded bracketed-paste terminators are rejected with a
+"Paste blocked" notification; there is currently no override prompt.
+
 ## Quick Start
 
 **Download a release:** [github.com/sudo-tee/hollow/releases](https://github.com/sudo-tee/hollow/releases)
