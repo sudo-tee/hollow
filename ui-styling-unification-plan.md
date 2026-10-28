@@ -333,6 +333,12 @@ If this does not materially reduce special-case style code or improve visual con
 - Existing tab, dialog, palette, notification, sidebar and bar tests remain the
   broader regression coverage. Native screenshots and render/allocation timing
   baselines are still pending; serialized fixtures do not replace those checks.
-- Next slice: the private pure resolver, with the existing fixtures as its
-  compatibility boundary. No recipes, state APIs or native protocol changes
-  have shipped in this first slice.
+- Phase 1 prototype: private `shared.compute_style` plus a legacy span adapter,
+  with explicit palette/layer inputs, fresh visual snapshots and bundled-theme
+  parity tests. No live serializer migration or new public API yet.
+- The reproducible Lua benchmark shows per-serialization recomputation is more
+  expensive than the current path. Reusing a computed snapshot reduces that
+  work; investigate dirty-node reuse or a simpler flat contract before rollout.
+  See `docs/ui-computed-style.md` for the contract, measurements and review gate.
+- Recipes, additional states, native protocol changes, screenshots and full
+  render timings remain future work. Phase 1's live adoption is not complete.
