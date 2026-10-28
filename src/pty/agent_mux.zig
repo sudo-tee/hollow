@@ -208,6 +208,19 @@ fn unregister(c: *Connection) void {
     };
 }
 
+/// A retired pane may leave the shared reader's cancellation in flight. Join
+/// the worker only when no sessions remain; live siblings still own transport.
+/// Caller retains a connection reference throughout the wait.
+pub fn joinIdle(c: *Connection) void {
+    c.mutex.lock();
+    defer c.mutex.unlock();
+    for (c.sessions) |entry| if (entry != null) return;
+    c.dead = true;
+    c.changed.broadcast();
+    c.watch.broadcast();
+    while (!c.finished) c.changed.wait(&c.mutex);
+}
+
 /// Application teardown only, after pane owners stop creating new PTYs.
 /// Cancel all connections together before waiting, not one grace per pane.
 pub fn shutdown() void {
