@@ -66,10 +66,14 @@ require an X11 session or XWayland; see [Linux](docs/platforms/linux.md).
 already pinned.
 
 ```
-./scripts/setup.sh        # fetch and patch dependencies
-./launch.sh               # Windows cross-build + run
-zig build run             # non-Windows build + run
+make setup                # fetch and patch dependencies
+make dev                  # incremental Windows cross-build + run
+make run                  # non-Windows build + run
 ```
+
+Run `make help` for build, test, and benchmark commands. Pass options with
+`ARGS`, for example `make dev ARGS="--build-only"` or
+`make bench ARGS="scroll 100"`. Existing scripts remain available directly.
 
 Full build docs in [Development](docs/development.md).
 
