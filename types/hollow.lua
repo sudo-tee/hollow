@@ -120,6 +120,10 @@
 ---@field selected_bg? HollowColor
 ---@field selected_detail_bg? HollowColor
 ---@field selected_fg? HollowColor
+---@field selection_bg? HollowColor
+---@field selection_fg? HollowColor
+---@field hover_bg? HollowColor
+---@field hover_fg? HollowColor
 ---@field primary_bg? HollowColor
 ---@field primary_fg? HollowColor
 ---@field destructive_bg? HollowColor
@@ -239,10 +243,13 @@
 ---@alias HollowHtpValue nil|boolean|number|string|table
 ---@alias HollowEventHandle integer
 
+---@alias HollowStyleToken string Theme token name, including dotted paths.
+
 ---@class HollowStyle
 ---@field padding? HollowUiBoxValue Overlay span padding in pixels; included in row sizing and click targets.
----@field fg? HollowColor
----@field bg? HollowColor
+---@field margin? HollowUiBoxValue
+---@field fg? HollowColor|HollowStyleToken
+---@field bg? HollowColor|HollowStyleToken
 ---@field bold? boolean
 ---@field italic? boolean
 ---@field underline? boolean
@@ -250,8 +257,10 @@
 ---@field dim? boolean
 ---@field id? string
 ---@field radius? number Rounded corner radius for bg/border rect
----@field border? HollowColor Border color for bg rect outline
+---@field border? HollowColor|HollowStyleToken Border color for bg rect outline
 ---@field border_size? number Border thickness in pixels
+---@field background_extend? number
+---@field hover? HollowStyle Overrides applied to hovered spans.
 ---@field on_click? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_enter? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
@@ -650,8 +659,8 @@
 
 ---@class HollowUiActionButtonOptions: HollowUiButtonOptions
 ---@field theme? table Select widget theme by default.
----@field state? { hovered_id?: string } Modal render state, used to highlight hover.
----@field hover_style? HollowUiNodeStyle Overrides applied while hovered.
+---@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
+---@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
 
 ---@class HollowUiTabOptions
 ---@field id string
@@ -667,6 +676,8 @@
 
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
+---@alias HollowUiChild HollowUiInlineNode|number|boolean|nil|HollowUiChild[]
+---@alias HollowUiRowChild HollowUiRowNode|HollowUiColumnNode|boolean|nil|HollowUiRowChild[]
 
 ---@class HollowUiFormatColumnSpec
 ---@field text? string
@@ -2102,7 +2113,15 @@ function select.close() end
 ---@field close fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem)
 local workspace = {}
 
+---@class HollowUiStylePresets
+---@field muted HollowStyle
+---@field title HollowStyle
+---@field pill HollowStyle
+---@field badge HollowStyle
+---@field kbd HollowStyle
+
 ---@class HollowUi
+---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
 --- True when Hollow's window has OS focus, not merely when a pane is active.
@@ -2119,12 +2138,12 @@ function ui.span(text, style) end
 ---@return HollowUiRenderableNode
 function ui.text(value, style) end
 
----@param children HollowUiInlineNode[]
+---@param children HollowUiChild[]
 ---@param opts? HollowUiRowOptions
 ---@return HollowUiRowNode
 function ui.row(children, opts) end
 
----@param children HollowUiRowNode[]
+---@param children HollowUiRowChild[]
 ---@return HollowUiColumnNode
 function ui.column(children) end
 
@@ -2140,10 +2159,41 @@ function ui.spacer() end
 ---@return HollowUiIconNode
 function ui.icon(name, style) end
 
----@param children HollowUiRenderableNode[]
+---@param children HollowUiChild[]|nil
 ---@param style? HollowUiNodeStyle|HollowHexColor
 ---@return HollowUiGroupNode
 function ui.group(children, style) end
+
+--- Select a branch, evaluating it only when it is a function.
+---@param cond any
+---@param then_ any
+---@param else_? any
+---@return any
+function ui.when(cond, then_, else_) end
+
+--- Map an array or HollowTbl wrapper into a fragment.
+---@generic T, R
+---@param list T[]|HollowTbl|nil
+---@param fn fun(item: T, index: integer): R|nil|false
+---@return (R|false)[]
+function ui.each(list, fn) end
+
+--- Join truthy items with a separator or separator factory.
+---@param items any[]
+---@param sep any|fun(index: integer): any
+---@return any[]
+function ui.join(items, sep) end
+
+--- Merge style layers into a fresh table, skipping nil and false layers.
+---@param ... HollowStyle|false|nil
+---@return HollowStyle
+function ui.style(...) end
+
+--- Merge styles and resolve tokens against theme; nil theme leaves tokens unresolved.
+---@param theme table|nil
+---@param ... HollowStyle|false|nil
+---@return HollowStyle
+function ui.styled(theme, ...) end
 
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode

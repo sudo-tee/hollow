@@ -7,6 +7,15 @@ local hollow = _G.hollow
 local ui = hollow.ui
 ui.style = shared.merge_styles
 
+---@type HollowUiStylePresets
+ui.styles = {
+  muted = { fg = "muted" },
+  title = { fg = "title", bold = true },
+  pill = { radius = 4, padding = { x = 4 } },
+  badge = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } },
+  kbd = { fg = "fg", bg = "input_bg", radius = 3, padding = { x = 4 } },
+}
+
 local bar = ui.bar or {}
 ui.bar = bar
 
@@ -68,7 +77,7 @@ function ui.icon(name, style)
   return { _type = "icon", name = tostring(name or ""), style = style }
 end
 
----@param children HollowUiRenderableNode[]|nil
+---@param children HollowUiChild[]|nil
 ---@param style HollowUiNodeStyle|HollowHexColor|nil
 ---@return HollowUiGroupNode
 function ui.group(children, style)
@@ -91,7 +100,7 @@ end
 
 --- Map a list into a fragment, preserving indices for falsy results.
 ---@generic T
----@param list T[]|HollowTblInstance|nil
+---@param list T[]|HollowTbl|nil
 ---@param fn fun(item: T, i: integer): any
 ---@return any[]
 function ui.each(list, fn)
@@ -132,7 +141,7 @@ function ui.join(items, sep)
   return out
 end
 
----@param children HollowUiInlineNode[]
+---@param children HollowUiChild[]
 ---@param opts HollowUiRowOptions|nil
 ---@return HollowUiRowNode
 function ui.row(children, opts)
@@ -167,7 +176,7 @@ function ui.row(children, opts)
   }
 end
 
----@param children HollowUiRowNode[]
+---@param children HollowUiRowChild[]
 ---@return HollowUiColumnNode
 function ui.column(children)
   if type(children) ~= "table" then
@@ -208,9 +217,9 @@ end
 --- Merge style layers like `ui.style`, then resolve tokens against `theme`.
 --- Without a theme, tokens stay unresolved for serialization.
 ---@param theme table|nil
----@param ... HollowUiNodeStyle|false|nil
+---@vararg HollowUiNodeStyle|false|nil
 ---@return HollowUiNodeStyle
-function ui.themed_style(theme, ...)
+function ui.styled(theme, ...)
   local style = ui.style(...)
   return theme and shared.resolve_tokens(style, theme) or style
 end
@@ -219,7 +228,6 @@ local TAB = { fg = "muted", bold = false, radius = 4, padding = { x = 8, y = 3 }
 local TAB_ACTIVE = { fg = "selection_fg", bg = "selection_bg", bold = true }
 local TAB_BADGED = { padding = { right = 0 } }
 local TAB_ACTIVE_BADGED = { background_extend = 2 }
-local BADGE = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } }
 local ACTION = {
   fg = "fg",
   radius = 4,
@@ -274,7 +282,7 @@ function ui.tab(opts)
     ui.button({
       id = opts.id,
       text = badge and (opts.label .. " ") or opts.label,
-      style = ui.themed_style(
+      style = ui.styled(
         theme,
         TAB,
         active and TAB_ACTIVE,
@@ -288,7 +296,7 @@ function ui.tab(opts)
         ui.button({
           id = opts.id .. ":badge",
           text = tostring(badge.text),
-          style = ui.themed_style(theme, BADGE, { bg = badge.color }),
+          style = ui.styled(theme, ui.styles.badge, { bg = badge.color }),
           on_click = opts.on_click,
         }),
         " ",

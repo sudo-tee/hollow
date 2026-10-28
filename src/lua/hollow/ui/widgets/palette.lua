@@ -30,6 +30,12 @@ end
 
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
+local SECTION_TITLE = { fg = "title", bold = true, padding = list_style.section_padding }
+local TITLE = ui.styles.title
+local MUTED = ui.styles.muted
+local KEY_HINT = { fg = "panel_border", bold = true }
+local DOMAIN_BULLET = { fg = "muted", bold = false }
+local DOMAIN_ACTIVE = { bold = true }
 
 local function list_row_budget(opts)
   local total = shared.normalize_overlay_size(opts.height)
@@ -250,12 +256,15 @@ local function render_section_header(
   local arrow = is_collapsed and icons.collapsed or icons.expanded
   return ui.row(
     {
-      list_style.indicator(ui, theme, is_selected, is_hovered, nil, list_style.section_indicator_padding),
-      ui.text(arrow .. " " .. label, {
-        fg = theme.title,
-        bold = true,
-        padding = list_style.section_padding,
-      }),
+      list_style.indicator(
+        ui,
+        theme,
+        is_selected,
+        is_hovered,
+        nil,
+        list_style.section_indicator_padding
+      ),
+      ui.text(arrow .. " " .. label, ui.styled(theme, SECTION_TITLE)),
     },
     list_style.row(
       row_options,
@@ -286,34 +295,37 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
     util.state_value(is_selected, is_hovered, theme.selected_fg, theme.selected_fg, theme.fg)
   local active_color = shared.resolve_theme().palette.bright_green
   local label_fg = entry.domain_name and entry.is_active and active_color or fg
-  local label_nodes = hollow
-    .tbl({
-      list_style.indicator(ui, theme, is_selected, is_hovered, "  "),
-    })
-    :concat(entry.domain_name and {
-      ui.span(entry.is_active and "• " or "  ", {
-        fg = entry.is_active and active_color or theme.muted,
-        bold = entry.is_active,
-      }),
-    } or {})
-    :concat(
-      shared.highlight_inline_nodes(
-        { ui.span(label_text, { fg = label_fg, bold = entry.domain_name and entry.is_active }) },
-        query,
-        { fg = theme.panel_border, bold = true }
-      )
-    )
-    :concat(right_text ~= "" and {
-      ui.spacer(),
-      ui.group(
-        shared.highlight_inline_nodes(
-          { ui.span(right_text, { fg = theme.panel_border or theme.muted }) },
-          query,
-          { fg = theme.panel_border, bold = true }
+  local label_nodes = {
+    list_style.indicator(ui, theme, is_selected, is_hovered, "  "),
+    ui.when(entry.domain_name, function()
+      return ui.span(
+        entry.is_active and "• " or "  ",
+        ui.styled(
+          theme,
+          DOMAIN_BULLET,
+          entry.is_active and DOMAIN_ACTIVE,
+          entry.is_active and { fg = active_color }
         )
-      ),
-    } or {})
-    :get()
+      )
+    end),
+    shared.highlight_inline_nodes(
+      { ui.span(label_text, { fg = label_fg, bold = entry.domain_name and entry.is_active }) },
+      query,
+      ui.styled(theme, KEY_HINT)
+    ),
+    ui.when(right_text ~= "", function()
+      return {
+        ui.spacer(),
+        ui.group(
+          shared.highlight_inline_nodes(
+            { ui.span(right_text, { fg = theme.panel_border or theme.muted }) },
+            query,
+            ui.styled(theme, KEY_HINT)
+          )
+        ),
+      }
+    end),
+  }
   return ui.row(
     { ui.group(label_nodes) },
     list_style.row(row_options, theme, is_selected, is_hovered)
@@ -399,32 +411,26 @@ function ui.command_palette.open(opts)
         ui.row({ ui.text("No matches", { fg = theme.empty }) }),
       }
 
-    local rows = hollow
-      .tbl({
-        ui.row({
-          ui.text((opts.prompt or "Command Palette") .. ":", {
-            fg = theme.title,
-            bold = true,
-          }),
-          ui.text(counter and ("  " .. counter) or "", { fg = theme.counter }),
-        }),
-        ui.divider(theme.divider),
-        ui.row({
-          ui.text("Filter: ", { fg = theme.title, bold = true }),
-          ui.group(filter.render(theme)),
-        }),
-        ui.divider(theme.divider),
-      })
-      :concat(entry_rows, {
-        ui.divider(theme.divider),
-        ui.row({
-          ui.text("<CR>", { fg = theme.panel_border, bold = true }),
-          ui.text(" execute  ", { fg = theme.muted }),
-          ui.text("<Esc>", { fg = theme.panel_border, bold = true }),
-          ui.text(" dismiss", { fg = theme.muted }),
-        }),
-      })
-      :get()
+    local rows = {
+      ui.row({
+        ui.text((opts.prompt or "Command Palette") .. ":", ui.styled(theme, TITLE)),
+        ui.text(counter and ("  " .. counter) or "", { fg = theme.counter }),
+      }),
+      ui.divider(theme.divider),
+      ui.row({
+        ui.text("Filter: ", ui.styled(theme, TITLE)),
+        ui.group(filter.render(theme)),
+      }),
+      ui.divider(theme.divider),
+      entry_rows,
+      ui.divider(theme.divider),
+      ui.row({
+        ui.text("<CR>", ui.styled(theme, KEY_HINT)),
+        ui.text(" execute  ", ui.styled(theme, MUTED)),
+        ui.text("<Esc>", ui.styled(theme, KEY_HINT)),
+        ui.text(" dismiss", ui.styled(theme, MUTED)),
+      }),
+    }
     return ui.column(rows)
   end
 

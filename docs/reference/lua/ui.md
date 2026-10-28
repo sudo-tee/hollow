@@ -30,6 +30,11 @@ hollow.ui.action_button(opts)      -- padded action with hover styling
 hollow.ui.tab(opts)                -- selectable tab with optional badge
 hollow.ui.tab_bar(opts)            -- spaced group of tabs
 hollow.ui.is_focused()             -- whether Hollow's window has OS focus
+hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
+hollow.ui.each(list, fn)            -- map dense list to child fragment
+hollow.ui.join(items, sep)          -- join truthy children
+hollow.ui.style(...)                -- merge style layers
+hollow.ui.themed_style(theme, ...)  -- merge and resolve tokens now
 ```
 
 Widget `render` functions return exactly one `row` or `column`. Rows
@@ -46,18 +51,79 @@ return hollow.ui.column({
 })
 ```
 
-Anonymous arrays are not inferred as rows or row lists.
+Containers are strict: `ui.row` takes inline children; `ui.column` takes rows.
+Nested columns and fragments of rows are flattened by `ui.column`; nested arrays
+flatten at any depth. Wrong-kind nodes error instead of being coerced. Bare
+strings and numbers are inline text, but a bare string is not a row. Widget
+`render` must return exactly one explicit `ui.row(...)` or `ui.column(...)`.
+
+`nil`, booleans (`false` and `true`), and `false` branches are skipped. Lua
+array literals containing `nil` have holes, but collection scans through the
+highest indexed child, so later children survive. A text shorthand table such
+as `{ "text", fg = "muted" }` is one inline leaf, not a child list.
+
+### Conditional and list rendering
+
+| Child | Inline containers (`group`, `row`) | `column` |
+| --- | --- | --- |
+| `nil`, `false`, `true` | Skip | Skip |
+| String or number | Convert to text | Error |
+| Span, icon, spacer, group | Keep | Error |
+| Text shorthand | Convert to styled span | Error |
+| Row | Error | Keep |
+| Column | Error | Splice its rows |
+| Array fragment | Flatten recursively | Flatten recursively |
+| Function or other value | Error | Error |
+
+Pass a list to `ui.row`, not a bare span or shorthand. For one string, use
+`ui.row({ ui.text("text") })`; `ui.row({ "text" })` is ambiguous shorthand
+and is rejected. Widget `render` does not accept anonymous lists of rows.
+
+`ui.when` evaluates only the selected function branch; non-functions are used
+as-is. Use it for optional child fragments:
+
+```lua
+ui.when(show_status, function()
+  return ui.row({ ui.text("ready", ui.style(ui.styles.muted)) })
+end)
+```
+
+Use `condition and node` for simple gating; use `ui.when` with a function when
+constructing a branch must be lazy. Like Lua's `and/or` idiom, a false/nil
+`then_` value falls through to `else_`; a selected function returning nil/false
+renders nothing.
+
+`ui.each` maps a dense `ipairs` list, returning a fragment and preserving
+indices for skipped results. It accepts ordinary lists or a `hollow.tbl`
+wrapper (unwrapped with `:get()`). Pass wrappers to `ui.each`, not directly to
+containers.
+`ui.join` drops falsy items before inserting separators. A separator function
+receives the 1-based separator number:
+
+```lua
+ui.each(items, function(item, i)
+  return ui.row({ ui.text(item.name), ui.when(item.active, "  active") })
+end)
+
+ui.join({ "one", false, "three" }, function(i)
+  return ui.text(i == 1 and " · " or " / ", ui.style(ui.styles.muted))
+end)
+```
 
 `ui.action_button` is an opt-in overlay button with horizontal padding, rounded
-corners, and select-theme colors. Pass the modal render `state` for hover feedback
-and its `theme` to match the surrounding widget. `style` overrides normal defaults;
+corners, and select-theme colors. Pass the modal render `theme` to match the
+surrounding widget; hover needs no render state. `style` overrides normal defaults;
 `hover_style` overrides hover defaults. Like `ui.button`, a clickable action needs
 a stable `id`.
 
+`state` remains accepted for compatibility; native overlay hover now applies
+the style's `hover` layer. Legacy `style.padding` and `hover_style.padding`
+replace the whole padding box rather than merging sparse edges.
+
 ```lua
-render = function(theme, state)
+render = function(theme)
   return hollow.ui.row({ hollow.ui.action_button({
-    id = "example:copy", text = "Copy", theme = theme, state = state,
+    id = "example:copy", text = "Copy", theme = theme,
     on_click = copy,
   }) })
 end
@@ -130,6 +196,89 @@ hollow.ui.bar.custom({ id?, render, on_click?, on_mouse_enter?, on_mouse_leave? 
 
 Bar items are reusable by all bar surfaces. See
 [Top bar](#top-bar) and [Bottom bar](#bottom-bar).
+
+## Styles
+
+Style color fields `fg`, `bg`, and `border` accept hex colors or theme tokens.
+The same applies recursively to those fields inside `hover`; other fields are
+never interpreted as tokens. Dotted paths work, for example
+`notify_levels.warn`. Unknown tokens error and include a closest-token hint.
+Lazy token lookup uses the widget kind's palette, or `"all"` when no specific kind
+is available. Overrides from `theme.ui.widgets.all` and that widget kind apply;
+bar items additionally receive bar tokens. If a render holds a custom theme,
+use `ui.themed_style(theme, ...)` so it takes precedence over lazy lookup.
+
+Default widget tokens available from `theme.resolve_widget(...)`:
+
+`panel_bg`, `panel_border`, `divider`, `title`, `fg`, `muted`, `input_bg`,
+`input_fg`, `cursor_bg`, `cursor_fg`, `selected_bg`, `selected_detail_bg`,
+`selected_fg`, `hover_bg`, `hover_fg`, `primary_bg`, `primary_fg`,
+`destructive_bg`, `destructive_fg`, `selected_muted`, `detail`, `notify_fg`,
+`counter`, `empty`, `scrollbar_track`, `scrollbar_thumb`, and
+`notify_levels.info`, `notify_levels.warn`, `notify_levels.error`,
+`notify_levels.success`. `backdrop` is a structured backdrop value, not a color
+token. `subtle` is not a default widget token; it exists only in the custom
+mux-navigator palette.
+
+Bar palette adds `bar_bg` from `theme.ui.top_bar.background`, `bar_fg` from
+`theme.ui.status.fg`, `status_bg`/`status_fg` from `theme.ui.status`,
+`tab_bar_bg` from `theme.ui.tab_bar.background`, `tab_active_fg`/`tab_active_bg`
+from `active_tab`, `tab_inactive_fg`/`tab_inactive_bg` from `inactive_tab`,
+`tab_hover_fg`/`tab_hover_bg` from `hover_tab`, and `accent`/`warm` from
+`theme.ui`.
+
+`ui.style(...)` merges left to right into a fresh table; `nil` and `false`
+layers are skipped. `padding` and `margin` merge by normalized edge, including
+sparse overrides; nested `hover` styles merge recursively. Keep shared styles
+as constants and combine conditional layers with `and`:
+
+```lua
+local BASE = { fg = "muted", padding = { x = 8, y = 3 } }
+local ACTIVE = { fg = "selected_fg", bg = "selected_bg" }
+local style = ui.style(BASE, active and ACTIVE)
+```
+
+`ui.themed_style(theme, ...)` applies the same merge and eagerly resolves
+tokens against supplied theme. With `theme == nil`, it behaves like `ui.style`
+and leaves tokens for normal rendering-time resolution. `style.hover` is
+applied by overlay rendering when an identified node is hovered. Give overlay
+spans a non-empty `style.id`, or use `ui.button({ id = ..., ... })`. Bars may
+assign automatic ids. Row-level hover remains controlled separately through
+row options/state.
+
+```lua
+ui.button({
+  id = "example:run",
+  text = "Run",
+  style = ui.style({ fg = "fg", hover = { fg = "hover_fg", bg = "hover_bg" } }),
+  on_click = run,
+})
+```
+
+Built-in presets are plain style tables: `ui.styles.muted`, `.title`, `.pill`,
+`.badge`, `.kbd`. Treat them as constants; derive modified styles with
+`ui.style(ui.styles.badge, { bg = color })` or `ui.themed_style(...)` rather
+than mutating a preset. Pass a fresh copy to spans, for example
+`ui.text("ready", ui.style(ui.styles.muted))`: bar registration may write ids
+into span styles.
+
+| Preset | Recipe |
+| --- | --- |
+| `muted` | `fg = "muted"` |
+| `title` | `fg = "title"`, bold |
+| `pill` | Radius 4, horizontal padding 4 |
+| `badge` | `fg = "panel_bg"`, bold, radius 4, padding x=5/y=1 |
+| `kbd` | `fg = "fg"`, `bg = "input_bg"`, radius 3, horizontal padding 4 |
+
+### Compatibility notes
+
+- `nil`/boolean children are skipped; nested arrays flatten; wrong-kind
+  children in strict containers now error.
+- `ui.column` accepts nested columns and row fragments; inline anonymous
+  arrays are not themselves rendered as a row.
+- Non-hex strings in `fg`/`bg`/`border` now mean tokens; unknown names error.
+- Internal `normalize_inline_nodes(nil | false)` now returns an empty list.
+- Overlay span `style.hover` is now honored.
 
 ## Top bar
 

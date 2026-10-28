@@ -124,15 +124,24 @@ A side panel. Can be left or right, fixed width, and optionally reserves
 terminal space (shrinks the tiled layout) instead of drawing over it.
 
 ```lua
-hollow.ui.sidebar.mount(hollow.ui.sidebar.new({
+local ui = hollow.ui
+local MUTED = ui.styles.muted
+
+hollow.ui.sidebar.mount(ui.sidebar.new({
   side   = "right",
   width  = 32,         -- in terminal columns
   reserve = false,     -- true: shrinks the tiled layout
   hidden = false,
   render = function(ctx)
-    return hollow.ui.column({
-      hollow.ui.row({ hollow.ui.text("title", { bold = true, fg = "#7e9cd8" }) }),
-      hollow.ui.row({ hollow.ui.text(ctx.term.pane.cwd or "", { fg = "#727169" }) }),
+    local pane = ctx.term.pane
+    return ui.column({
+      ui.row({ ui.text("title", ui.style(ui.styles.title)) }),
+      ui.when(pane and pane.cwd, function()
+        return ui.row({ ui.text(pane.cwd, ui.style(MUTED)) })
+      end),
+      ui.each(pane and pane.tags or {}, function(tag)
+        return ui.row({ ui.text(tag, ui.style(ui.styles.pill)) })
+      end),
     })
   end,
 }))
@@ -219,10 +228,13 @@ hollow.ui.select.open({
 })
 ```
 
-Useful widget tokens: `panel_bg`, `panel_border`, `divider`, `title`,
-`fg`, `muted`, `input_bg`, `input_fg`, `selected_bg`, `selected_fg`,
-`detail`, `notify_fg`, `radius`, `padding`, `margin`, `backdrop`,
-`notify_levels` (per-level accent colors).
+Use token names in style `fg`, `bg`, and `border` fields, including nested
+`hover` styles; dotted paths such as `notify_levels.warn` work. Non-color
+style fields are not tokens. Unknown token names error with a suggestion.
+See the [full widget and bar token list](reference/lua/ui.md#styles) for
+available defaults and their theme sources. `ui.styles` presets are plain
+constants; use `ui.style` or `ui.themed_style` to derive styles rather than
+changing preset tables.
 
 ## Workspace switcher
 

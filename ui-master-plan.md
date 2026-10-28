@@ -62,14 +62,16 @@ are module-level constants combined with `and` (SP §5).
 | 1 | Baseline (510 tests) | done |
 | 2 | Children semantics: `collect_inline` / `collect_rows`, strict containers | done, committed `a3ae1f9` |
 | 3 | `ui.when`, `ui.each`, `ui.join` | done, committed `a3ae1f9` |
-| 4 | `ui.style` (box-aware merge), tokens, palettes + cache | done, uncommitted |
+| 4 | `ui.style` (box-aware merge), tokens, palettes + cache | committed `5c6aaf9` |
 | 5 | `ui.variants` | removed in Step A |
-| 6 | Migrate `tab` / `tab_bar` / `action_button` | done (constants + `ui.style` since Step A), uncommitted |
-| 7 | Native overlay hover, `shared.apply_hover` | done, uncommitted |
-| 8 | Builder `button_style` + dialog | done (`KINDS` table since Step A), uncommitted |
-| A | Replace `ui.variants` with conditional layers; public `ui.themed_style` | done, uncommitted (555 tests) |
+| 6 | Migrate `tab` / `tab_bar` / `action_button` | committed `5c6aaf9` |
+| 7 | Native overlay hover, `shared.apply_hover` | committed `5c6aaf9` |
+| 8 | Builder `button_style` + dialog | committed `5c6aaf9` |
+| A | Replace `ui.variants` with conditional layers; public `ui.themed_style` | committed `5c6aaf9` (558 tests including cleanup) |
+| B | Widget render-tree migrations | done, uncommitted (562 tests) |
+| C | Presets, public types and docs | done, uncommitted (564 tests) |
 
-Remaining: **B → C**.
+Remaining: **review and commit**. LuaLS diagnostics require an environment with LuaLS installed.
 
 ---
 
@@ -103,8 +105,8 @@ go away. See SP §5 for the mapping table.
 Guards (must pass **unchanged**): `test_ui_composition.lua` tab/tab_bar test,
 `test_ui_primitive_styles.lua` and `test_ui_builder_styles.lua` snapshots.
 
-**Done when:** `grep -rn "variants" src/lua types docs` returns nothing, guards
-green, output identical.
+**Done when:** no `ui.variants` / `HollowUiVariants` API references under
+`src/lua`, `types`, or `docs`; guards green and output identical.
 
 ---
 
@@ -166,12 +168,12 @@ Anything else that changes output is a bug.
 
 ## 7. Final acceptance
 
-- [ ] Full suite green; count ≥ 510 + new tests
+- [x] Full suite green; count ≥ 510 + new tests
 - [ ] `stylua --check` clean on touched files
-- [ ] No `#nodes + 1]` in `primitives.lua`; no `variants` anywhere
-- [ ] `ui.tab` / `ui.tab_bar` match SP §8 / CP §5 in shape
-- [ ] Tab/tab_bar regression test unchanged and passing
-- [ ] Types and docs updated
+- [x] No `#nodes + 1]` in `primitives.lua`; no removed variants API references
+- [x] `ui.tab` / `ui.tab_bar` match SP §8 / CP §5 in shape
+- [x] Tab/tab_bar regression test unchanged and passing
+- [x] Types and docs updated
 
 ---
 
@@ -219,4 +221,62 @@ Kept by topic; these are facts the remaining steps rely on.
   `shared.normalize_segment_padding`; sparse style-merge boxes remain separate.
   Style merging reuses already-normalized accumulated boxes.
 - Full suite: **558 successes, 0 failures, 0 errors, 0 pending**. StyLua clean
-  on all four touched Lua files; `git diff --check` clean. Changes uncommitted.
+  on all four touched Lua files; `git diff --check` clean. Committed `5c6aaf9`.
+
+**Widget migration scope**
+- `workspace/source.lua` and `builder/keys.lua` build data, not render trees;
+  leave their accumulators unchanged. `text_view.lua` is a hot viewport loop;
+  retain its imperative rendering. `source.lua` has pre-existing formatting
+  failures and stays untouched rather than introducing unrelated formatting churn.
+- Independent pre/post serialized overlay snapshots cover 29 states across mux,
+  select, palette, workspace and activity, including navigation, empty results,
+  row hover, activity details and distinct-color custom themes. Final render-tree
+  and style migration is byte-identical. Four new tests pin custom theme recipes.
+- Every migration sub-step passed the full Lua suite. Step B final validation:
+  **562 successes, 0 failures, 0 errors, 0 pending**; StyLua clean on all five
+  touched Lua files. Row-level hover remains unchanged.
+
+**Final validation**
+- Step C adds five presets, reuses exact matching title/muted/badge recipes,
+  updates public types, and documents child semantics, tokens, conditional layers,
+  native hover and presets. Preset tests cover cloning and bar auto-id isolation.
+- Full Lua suite: **564 successes, 0 failures, 0 errors, 0 pending**. StyLua
+  clean on all eight touched Lua files; `git diff --check` clean. All 29 overlay
+  snapshots still match after preset reuse. Five new documentation examples
+  executed successfully, including the mounted sidebar example.
+- LuaLS is not installed, so LuaLS diagnostics could not be checked. No root
+  changelog exists; compatibility notes live in the UI reference instead.
+- Literal `variants` grep also matches four unrelated benchmark descriptions in
+  `docs/agent-mux-development.md`. Those historical descriptions remain untouched;
+  the removed API/type names have no matches in `src/lua`, `types` or `docs`.
+- Final read-only review found no actionable issues. Changes remain uncommitted
+  on `feat/declarative-ui`; existing third-party submodule changes are untouched.
+
+**Activity follow-up and short-function experiment**
+- Activity now composes visible rows with `ui.each`, optional fragments with
+  `ui.when`, and state-based span styles with `ui.styled` layers. Data filtering,
+  width calculations and row-hover precedence remain unchanged. Three regression
+  tests pin read/selected/stale styles, placeholder alignment and search styling.
+- At operator request, activity's expression callbacks use bundled LuaJIT short
+  functions: `|| -> expression`, `hint -> expression`, and one `|| -> do ... end`
+  block for lazy workspace-color calculation. No other production file adopts
+  the experimental syntax. Tests now use the selected `ui.styled` name.
+- Verified bundled LuaJIT **2.1.1792588164**, including `zig build test-luajit`.
+  Full Lua suite with a CLI linked against the bundled library:
+  `LUA=/tmp/opencode/hollow-luajit scripts/test-lua.sh` — **567 successes,
+  0 failures, 0 errors, 0 pending**. All 23 detailed activity snapshots match
+  pre-refactor output, including the short-function version.
+- Tooling limitation: system LuaJIT **2.1.1774638290** and StyLua **2.6.0** do not
+  parse the short functions. The default system-interpreter test command must
+  use the newer runtime via `LUA`; activity formatting was maintained manually.
+  Other touched tests pass StyLua; `git diff --check` remains clean. No Zig,
+  renderer, global formatter configuration or submodule changes made here.
+
+**Short-function experiment deferred**
+- At operator request, activity callbacks use standard `function(...) ... end`
+  syntax again. The composition and style changes remain intact.
+- StyLua remains the formatter; no editor or CI migration to `luafmt` is retained.
+  Trial runs of EmmyLua Formatter 0.25.1 produced invalid LuaJIT output for some
+  call chains and non-idempotent formatting. Revisit after tooling improves.
+- Verified `scripts/test-lua.sh` with system LuaJIT: **567 successes, 0 failures,
+  0 errors**. Activity passes `stylua --check`; `git diff --check` is clean.

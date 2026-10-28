@@ -11,6 +11,9 @@ local ui = hollow.ui
 ui.select = ui.select or {}
 
 local DEFAULT_TOTAL_ROWS = 14
+local TITLE = ui.styles.title
+local KEY_HINT = { fg = "panel_border", bold = true }
+local MUTED = ui.styles.muted
 
 ---@param opts HollowUiSelectOptions
 ---@return HollowUiTheme
@@ -167,11 +170,11 @@ end
 local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options, query)
   local row_fg =
     util.state_value(is_selected, is_hovered, theme.selection_fg, theme.hover_fg, theme.fg)
-  local match_style = { fg = theme.panel_border, bold = true }
-  local label_nodes = hollow
-    .tbl({ list_style.indicator(ui, theme, is_selected, is_hovered) })
-    :concat(shared.highlight_inline_nodes(entry.label_nodes, query, match_style))
-    :get()
+  local match_style = ui.styled(theme, KEY_HINT)
+  local label_nodes = {
+    list_style.indicator(ui, theme, is_selected, is_hovered),
+    shared.highlight_inline_nodes(entry.label_nodes, query, match_style),
+  }
 
   local rows = {
     ui.row(
@@ -188,10 +191,10 @@ local function render_entry_rows(entry, is_selected, is_hovered, theme, row_opti
       theme.selected_muted,
       theme.detail
     )
-    local detail_nodes = hollow
-      .tbl({ ui.span("   ", { fg = detail_fg, padding = list_style.row_padding }) })
-      :concat(shared.highlight_inline_nodes(entry.detail_nodes, query, match_style))
-      :get()
+    local detail_nodes = {
+      ui.span("   ", { fg = detail_fg, padding = list_style.row_padding }),
+      shared.highlight_inline_nodes(entry.detail_nodes, query, match_style),
+    }
     rows[#rows + 1] = ui.row(
       { ui.group(detail_nodes, { fg = detail_fg }) },
       list_style.row(row_options, theme, is_selected, is_hovered)
@@ -213,8 +216,8 @@ local function render_hint_rows(actions, theme)
         return
       end
       return {
-        ui.text(normalize_hint_chord(key_hint), { fg = theme.panel_border, bold = true }),
-        ui.text(" " .. (action.desc or action.name or "action"), { fg = theme.muted }),
+        ui.text(normalize_hint_chord(key_hint), ui.styled(theme, KEY_HINT)),
+        ui.text(" " .. (action.desc or action.name or "action"), ui.styled(theme, MUTED)),
       }
     end)
     :get()
@@ -223,15 +226,7 @@ local function render_hint_rows(actions, theme)
     return nil
   end
 
-  local hint_nodes = hollow
-    .tbl(hints)
-    :flat_map(function(nodes, index)
-      if index == 1 then
-        return nodes
-      end
-      return hollow.tbl({ ui.text("  ", { fg = theme.divider }) }):concat(nodes):get()
-    end)
-    :get()
+  local hint_nodes = ui.join(hints, ui.text("  ", { fg = theme.divider }))
   return { ui.divider(theme.divider), ui.row(hint_nodes) }
 end
 
@@ -326,28 +321,23 @@ function ui.select.open(opts)
         end)
         :get()
 
-      local rows = hollow
-        .tbl({
-          ui.row({
-            ui.text((opts.prompt or "Select") .. ":", {
-              fg = render_theme.title,
-              bold = true,
-            }),
-            ui.text(counter and ("  " .. counter) or "", { fg = render_theme.counter }),
-          }),
-          ui.divider(render_theme.divider),
-          ui.row({
-            ui.text("Filter: ", { fg = render_theme.title, bold = true }),
-            ui.group(filter.render(render_theme)),
-          }),
-          ui.divider(render_theme.divider),
-        })
-        :concat(
-          #entries == 0 and { render_empty_row(render_theme) } or {},
-          entry_rows,
-          render_hint_rows(actions, render_theme) or {}
-        )
-        :get()
+      local rows = {
+        ui.row({
+          ui.text((opts.prompt or "Select") .. ":", ui.styled(render_theme, TITLE)),
+          ui.text(counter and ("  " .. counter) or "", { fg = render_theme.counter }),
+        }),
+        ui.divider(render_theme.divider),
+        ui.row({
+          ui.text("Filter: ", ui.styled(render_theme, TITLE)),
+          ui.group(filter.render(render_theme)),
+        }),
+        ui.divider(render_theme.divider),
+        ui.when(#entries == 0, function()
+          return render_empty_row(render_theme)
+        end),
+        entry_rows,
+        render_hint_rows(actions, render_theme),
+      }
       return ui.column(rows)
     end,
     width = opts.width,

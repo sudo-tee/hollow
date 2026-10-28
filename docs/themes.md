@@ -8,6 +8,8 @@ inline theme spec or load a custom module.
 For the API see [`hollow.theme`](reference/lua/theme.md).
 For UI colors used by widgets see
 [Custom UI → Widget theming](custom-ui.md#widget-theming).
+The full default widget-token list and bar-token sources are in the
+[`hollow.ui` styles reference](reference/lua/ui.md#styles).
 
 ## Built-in themes
 

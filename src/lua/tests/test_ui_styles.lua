@@ -45,17 +45,44 @@ describe("UI styles", function()
     assert.is_nil(active.id)
   end)
 
+  it("provides token-based style presets", function()
+    assert.same({
+      muted = { fg = "muted" },
+      title = { fg = "title", bold = true },
+      pill = { radius = 4, padding = { x = 4 } },
+      badge = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } },
+      kbd = { fg = "fg", bg = "input_bg", radius = 3, padding = { x = 4 } },
+    }, hollow.ui.styles)
+    for _, preset in pairs(hollow.ui.styles) do
+      local segment = shared.style_to_segment("preset", hollow.ui.style(preset))
+      assert.equals("preset", segment.text)
+    end
+  end)
+
+  it("keeps presets isolated from bar auto-ids and derived style mutations", function()
+    local ui = hollow.ui
+    local node = ui.span("pill", ui.style(ui.styles.pill, { hover = { fg = "hover_fg" } }))
+    require("hollow.ui.widgets.bars.bar_events").register(node, {}, function()
+      return "auto-id"
+    end)
+    assert.equals("auto-id", node.style.id)
+    node.style.padding.left = 99
+    assert.is_nil(ui.styles.pill.id)
+    assert.is_nil(ui.styles.pill.hover)
+    assert.same({ x = 4 }, ui.styles.pill.padding)
+    ui.tab({ id = "preset-tab", label = "Tab", badge = { text = 2, color = "#123456" } })
+    assert.is_nil(ui.styles.badge.id)
+    assert.is_nil(ui.styles.badge.bg)
+  end)
+
   it("merges and resolves themed styles in one call", function()
     local theme = { muted = "#111111", selection_fg = "#222222" }
     local base = { fg = "muted", bold = false }
     local active = { fg = "selection_fg", bold = true }
 
-    assert.same(
-      { fg = "#111111", bold = false },
-      hollow.ui.themed_style(theme, base, false and active)
-    )
-    assert.same({ fg = "#222222", bold = true }, hollow.ui.themed_style(theme, base, active))
-    assert.same({ fg = "muted", bold = false }, hollow.ui.themed_style(nil, base))
+    assert.same({ fg = "#111111", bold = false }, hollow.ui.styled(theme, base, false and active))
+    assert.same({ fg = "#222222", bold = true }, hollow.ui.styled(theme, base, active))
+    assert.same({ fg = "muted", bold = false }, hollow.ui.styled(nil, base))
     assert.equals("muted", base.fg)
   end)
 
