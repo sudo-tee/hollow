@@ -142,6 +142,7 @@ pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
         .link_libc = true,
     }) });
+    @import("../c_build.zig").addPosix(b, pane_bench.root_module, b.graph.host, optimize);
     b.step("agent-pane-bench", "Build native pane-adapter startup, frame-drain, and backlog diagnostics").dependOn(&b.addInstallArtifact(pane_bench, .{}).step);
     const pane_bench_tests = b.addSystemCommand(&.{"python3"});
     pane_bench_tests.addFileArg(b.path("scripts/test_agent_pane_bench.py"));
