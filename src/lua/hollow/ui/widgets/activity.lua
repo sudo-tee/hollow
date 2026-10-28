@@ -3,7 +3,6 @@ local icons = require("hollow.ui.icons")
 local list_style = require("hollow.ui.widgets.list_style")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -152,10 +151,7 @@ function ui.activity.open(opts)
   opts = opts or {}
   local view = opts.view or "inbox"
   assert(view == "inbox" or view == "history", "activity view must be inbox or history")
-  local theme = theme_api.resolve_widget("select")
-  if opts.theme then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
+  local theme = shared.widget_theme("select", opts.theme)
   local chrome = opts.chrome
   if chrome == nil then
     chrome = shared.theme_overlay_chrome(theme)

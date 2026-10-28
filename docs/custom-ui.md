@@ -64,6 +64,22 @@ A span style is a table:
 `id` plus `on_click` makes a node clickable. The runtime delivers the
 event as `on_event("click", { id = "my-id", ... })`.
 
+## Shared component styling
+
+Use semantic button variants instead of deriving paint in each render:
+
+```lua
+ui.action_button({
+  id = "save", text = "Save", variant = "primary", size = "sm",
+  disabled = saving, on_click = save,
+})
+```
+
+Raw styles and `ui.styled(theme, ...)` remain supported. Selectable overlay rows
+can use `variant = "selectable"`, explicit `selected`, and per-instance `style`.
+See [component styling](reference/lua/ui.md#component-styling) for supported
+fields, disabled behavior, theme overrides and compatibility precedence.
+
 ## The four surfaces
 
 ### Top bar

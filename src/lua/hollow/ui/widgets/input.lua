@@ -10,7 +10,7 @@
 ---   end,
 --- })
 --- ```
-local theme_api = require("hollow.theme")
+local shared = require("hollow.ui.shared")
 local util = require("hollow.util")
 local ui = _G.hollow.ui
 
@@ -20,10 +20,7 @@ ui.input = ui.input or {}
 function ui.input.open(opts)
   opts = opts or {}
 
-  local base_theme = theme_api.resolve_widget("input")
-  if type(opts.theme) == "table" then
-    util.merge_tables(base_theme, util.clone_value(opts.theme))
-  end
+  local base_theme = shared.widget_theme("input", opts.theme)
 
   local input = ui.text_input({
     initial = opts.default,

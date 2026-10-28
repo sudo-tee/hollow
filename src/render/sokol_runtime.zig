@@ -2278,12 +2278,13 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         var label_buf: [ui_semantics.max_label_len]u8 = undefined;
                         const label = overlaySegmentsLabel(row_segments, &label_buf);
                         var row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
+                        const row_hover_bg = overlayRowColorField(api, state, row_idx, "hover_bg") orelse OVERLAY_HOVER_BG;
                         const row_id = overlayRowStringField(api, state, row_idx, "id");
                         if (overlayRowBoolField(api, state, row_idx, "hoverable")) {
                             if (row_id) |id| {
                                 cacheOverlayHitRegion(id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
                                 if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, id, g_overlay_hovered_id.?)) {
-                                    row_fill_bg = OVERLAY_HOVER_BG;
+                                    row_fill_bg = row_hover_bg;
                                 }
                             } else {
                                 const pool_idx = g_overlay_hit_cache.hit_count;
@@ -2297,7 +2298,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                         .height = @max(@as(f32, 1.0), row_height - 2.0),
                                     });
                                     if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, auto_id, g_overlay_hovered_id.?)) {
-                                        row_fill_bg = OVERLAY_HOVER_BG;
+                                        row_fill_bg = row_hover_bg;
                                     }
                                 }
                             }

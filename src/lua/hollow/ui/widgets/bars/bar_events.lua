@@ -24,6 +24,10 @@ function M.register(value, handlers, next_auto_id)
           return type(style[field]) == "function"
         end)
         if has_handler or type(style.hover) == "table" then
+          -- The node gets its own style before assigning identity. Configs may
+          -- reuse a preset or the same style table on several sibling spans.
+          style = util.clone_value(style)
+          node.style = style
           style.id = next_auto_id()
         end
       end

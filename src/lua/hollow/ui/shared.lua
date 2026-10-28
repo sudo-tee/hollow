@@ -10,9 +10,65 @@ local M = {}
 local palettes = {}
 local cached_bar_palette
 
+local COLOR_FIELDS = { "fg", "bg", "border" }
+local TOKEN_COLOR_FIELDS =
+  { "fg", "bg", "border", "close_fg", "close_bg", "close_hover_fg", "close_hover_bg" }
+
+-- Open widgets keep palette/chrome references. Refresh their contents on theme
+-- changes, without retaining closed widgets or resolving a theme per span.
+local live_palettes = setmetatable({}, { __mode = "k" })
+local live_chrome = setmetatable({}, { __mode = "k" })
+local function replace_contents(target, source)
+  for key in pairs(target) do
+    if source[key] == nil then
+      target[key] = nil
+    end
+  end
+  for key, value in pairs(source) do
+    if type(value) == "table" and type(target[key]) == "table" then
+      replace_contents(target[key], value)
+    else
+      target[key] = util.clone_value(value)
+    end
+  end
+end
+
+local function build_widget_palette(spec)
+  local palette = theme_api.resolve_widget(spec.kind)
+  if spec.decorate then
+    spec.decorate(palette)
+  end
+  util.merge_tables(palette, util.clone_value(spec.overrides))
+  if
+    spec.overrides.button_emphasis_bg == nil
+    and (spec.overrides.selected_bg ~= nil or spec.overrides.panel_bg ~= nil)
+  then
+    palette.button_emphasis_bg =
+      color.brighten_hex_color(palette.selected_bg, 0.25, palette.panel_bg)
+  end
+  return palette
+end
+
+function M.widget_theme(kind, overrides, decorate)
+  local spec = {
+    kind = kind,
+    overrides = type(overrides) == "table" and util.clone_value(overrides) or {},
+    decorate = decorate,
+  }
+  local palette = build_widget_palette(spec)
+  live_palettes[palette] = spec
+  return palette
+end
+
 function M.invalidate_palettes()
   palettes = {}
   cached_bar_palette = nil
+  for palette, spec in pairs(live_palettes) do
+    replace_contents(palette, build_widget_palette(spec))
+  end
+  for chrome, build in pairs(live_chrome) do
+    replace_contents(chrome, build() or {})
+  end
 end
 
 ---@param kind string|nil
@@ -116,21 +172,30 @@ local function resolve_color(value, key, palette)
   return resolved
 end
 
+-- Only use on owned tables. Public token resolution still clones its input.
+local function resolve_owned_tokens(style, palette)
+  for _, key in ipairs({
+    "fg",
+    "bg",
+    "border",
+    "close_fg",
+    "close_bg",
+    "close_hover_fg",
+    "close_hover_bg",
+  }) do
+    style[key] = resolve_color(style[key], key, palette)
+  end
+  if type(style.hover) == "table" then
+    resolve_owned_tokens(style.hover, palette)
+  end
+  return style
+end
+
 ---@param style HollowUiNodeStyle|nil
 ---@param palette table
 ---@return HollowUiNodeStyle
 function M.resolve_tokens(style, palette)
-  local result = util.clone_value(style or {})
-  local function resolve(current)
-    for _, key in ipairs({ "fg", "bg", "border" }) do
-      current[key] = resolve_color(current[key], key, palette)
-    end
-    if type(current.hover) == "table" then
-      resolve(current.hover)
-    end
-  end
-  resolve(result)
-  return result
+  return resolve_owned_tokens(util.clone_value(style or {}), palette)
 end
 
 local SPAN_NODE_TYPES = {
@@ -232,7 +297,7 @@ end
 ---@return integer
 local function normalize_px(value, default)
   local number = tonumber(value)
-  if number == nil then
+  if number == nil or number ~= number or number == math.huge or number == -math.huge then
     return default
   end
 
@@ -268,6 +333,10 @@ local function normalize_box(value)
     left = normalize_px(left, 0),
   }
 end
+
+-- Surface adapters share pixel rules; spans retain fractional padding.
+M.normalize_surface_px = normalize_px
+M.normalize_surface_box = normalize_box
 
 ---@param box { top: integer, right: integer, bottom: integer, left: integer }
 ---@return boolean
@@ -646,48 +715,46 @@ function M.normalize_segment_padding(value)
   return padding
 end
 
+-- One flat visual normalization path. The caller owns `target`; writing into
+-- the final segment avoids allocating a second computed object per span.
+local function write_computed_style(style, palette, target)
+  local function segment_color(key)
+    local value = style[key]
+    if type(value) == "string" and value:sub(1, 1) ~= "#" then
+      value = resolve_color(value, key, palette or M.palette("all"))
+    end
+    return color.is_hex_color(value) and value or nil
+  end
+  target.bold = style.bold == true
+  target.fg = segment_color("fg")
+  target.bg = segment_color("bg")
+  target.border = segment_color("border")
+  target.radius = style.radius
+  target.background_extend = style.background_extend
+  target.border_size = style.border_size
+  if style.padding ~= nil then
+    target.padding = M.normalize_segment_padding(style.padding)
+  end
+  return target
+end
+
 ---@param text string
 ---@param style HollowUiNodeStyle|HollowUiStyleWrapper|HollowHexColor|nil
 ---@param palette table|nil
 ---@return HollowUiSegment
 function M.style_to_segment(text, style, palette)
   local segment = { text = text }
-
   if color.is_hex_color(style) then
     segment.fg = style
     return segment
   end
-
   style = resolve_segment_style(style)
   if type(style) == "table" then
-    local function segment_color(key)
-      local value = style[key]
-      if type(value) == "string" and value:sub(1, 1) ~= "#" then
-        value = resolve_color(value, key, palette or M.palette("all"))
-      end
-      return color.is_hex_color(value) and value or nil
-    end
-    segment.bold = style.bold == true
+    write_computed_style(style, palette, segment)
     if type(style.id) == "string" and style.id ~= "" then
       segment.id = style.id
     end
-    segment.fg = segment_color("fg")
-    segment.bg = segment_color("bg")
-    if style.radius ~= nil then
-      segment.radius = style.radius
-    end
-    if style.background_extend ~= nil then
-      segment.background_extend = style.background_extend
-    end
-    segment.border = segment_color("border")
-    if style.border_size ~= nil then
-      segment.border_size = style.border_size
-    end
-    if style.padding ~= nil then
-      segment.padding = M.normalize_segment_padding(style.padding)
-    end
   end
-
   return segment
 end
 
@@ -852,16 +919,12 @@ local COMPUTED_STYLE_FIELDS = {
   hover = true,
 }
 
---- Private prototype: merge visual layers, resolve tokens, and separate paint
---- from spacing. No theme lookup, state inference, identity or callbacks.
---- Callers select state layers explicitly; the last layer wins. Missing boxes
---- stay absent so legacy adapters can retain their surface-specific defaults.
+--- Pure internal flat computed style, sharing the live span normalizer.
+--- Explicit state layers are chosen by the caller; no implicit global theme.
 ---@param palette table
 ---@vararg HollowUiNodeStyle|boolean|nil
 ---@return HollowUiComputedStyle
 function M.compute_style(palette, ...)
-  -- Read a single layer directly: only the output boxes are allocated. Multiple
-  -- layers still use the established box-aware merge, never a second cascade.
   local style = select("#", ...) == 1 and (...) or nil
   if type(style) ~= "table" then
     style = M.merge_styles(...)
@@ -871,45 +934,208 @@ function M.compute_style(palette, ...)
       error(string.format("hollow.ui: unsupported computed style field %q", tostring(key)))
     end
   end
-  local function resolved_color(key)
-    local value = resolve_color(style[key], key, palette)
-    return color.is_hex_color(value) and value or nil
+  local computed = write_computed_style(style, palette, {})
+  if style.margin ~= nil then
+    computed.margin = M.normalize_segment_padding(style.margin)
   end
-  return {
-    text = { fg = resolved_color("fg"), bold = style.bold == true },
-    box = {
-      bg = resolved_color("bg"),
-      border = resolved_color("border"),
-      border_size = style.border_size,
-      radius = style.radius,
-      background_extend = style.background_extend,
-    },
-    layout = {
-      padding = style.padding ~= nil and M.normalize_segment_padding(style.padding) or nil,
-      margin = style.margin ~= nil and M.normalize_segment_padding(style.margin) or nil,
-    },
-  }
+  return computed
 end
 
---- Adapter prototype for the existing span protocol. Interaction identity is
---- supplied separately; never store handlers or IDs in a computed style.
+--- Existing host protocol adapter; identity remains outside visual snapshots.
 ---@param text string
 ---@param computed HollowUiComputedStyle
 ---@param id? string
 ---@return HollowUiSegment
 function M.computed_style_to_segment(text, computed, id)
-  local box = computed.box
+  local segment = util.clone_value(computed)
+  segment.margin = nil -- Span protocol has no margin field.
+  segment.text = text
+  segment.id = type(id) == "string" and id ~= "" and id or nil
+  return segment
+end
+
+-- Internal recipes deliberately use existing theme keys, including partial
+-- palettes. No registry, selector cascade or public variants DSL is needed.
+local BUTTON_KINDS = {
+  default = { fg = "fg", emphasized_fg = "selected_fg" },
+  primary = { fg = "primary_bg", emphasized_fg = "primary_fg", emphasized_bg = "primary_bg" },
+  destructive = {
+    fg = "destructive_bg",
+    emphasized_fg = "destructive_fg",
+    emphasized_bg = "destructive_bg",
+  },
+  ghost = { fg = "fg", emphasized_fg = "hover_fg", emphasized_bg = "hover_bg" },
+}
+local BUTTON_SIZES = {
+  sm = { padding = { x = 6, y = 2 } },
+  md = { padding = { x = 8, y = 3 } },
+}
+local STATE_ORDER = { "hovered", "selected", "pressed", "focus_visible", "disabled" }
+
+--- Merge explicit states in a single deterministic order. Instance styles win
+--- last. This only resolves paint; callers must enforce disabled interaction.
+local function apply_style_states(result, layers, visual_state, override)
+  for _, name in ipairs(STATE_ORDER) do
+    if visual_state and visual_state[name] and type(layers[name]) == "table" then
+      merge_into(result, layers[name])
+    end
+  end
+  if type(override) == "table" then
+    merge_into(result, override)
+  end
+  return result
+end
+
+function M.resolve_style_states(base, layers, visual_state, override)
+  return apply_style_states(M.merge_styles(base), layers, visual_state, override)
+end
+
+--- Pure, private component resolver. Returns the existing flat style contract
+--- so live components do not allocate nested computed snapshots every render.
+function M.resolve_component_style(component, palette, opts, visual_state, override)
+  opts, visual_state = opts or {}, visual_state or {}
+  local base, layers = {}, {}
+  if component == "button" then
+    local variant = opts.variant or "default"
+    local kind = BUTTON_KINDS[variant]
+    if not kind then
+      error("hollow.ui: unknown button variant " .. tostring(variant))
+    end
+    local dialog = opts.presentation == "dialog"
+    base = {
+      fg = dialog and palette[kind.fg] or palette.fg,
+      radius = dialog and (palette.radius or 4) or 4,
+    }
+    if dialog then
+      base.fg = palette[kind.fg]
+    end
+    local emphasis
+    if dialog then
+      emphasis = {
+        fg = palette[kind.emphasized_fg] or false,
+        bg = kind.emphasized_bg and palette[kind.emphasized_bg]
+          or (not kind.emphasized_bg and (palette.button_emphasis_bg or color.brighten_hex_color(
+            palette.selected_bg,
+            0.25,
+            palette.panel_bg
+          )))
+          or false,
+        bold = true,
+      }
+    else
+      base.padding = { left = 4, right = 4 }
+      if variant == "primary" or variant == "destructive" then
+        base.fg, base.bg = palette[kind.emphasized_fg], palette[kind.emphasized_bg]
+      end
+      base.hover = { fg = palette.hover_fg, bg = palette.hover_bg }
+      emphasis = base.hover
+    end
+    if opts.size then
+      if not BUTTON_SIZES[opts.size] then
+        error("hollow.ui: unknown button size " .. tostring(opts.size))
+      end
+      base.padding = partial_box(base.padding)
+      merge_into(base, BUTTON_SIZES[opts.size])
+    end
+    layers.hovered, layers.selected = emphasis, emphasis
+    layers.disabled = { fg = palette.muted or palette.fg or false, hover = false }
+  elseif component == "tab" then
+    base = { fg = palette.muted, bold = false, radius = 4, padding = { x = 8, y = 3 } }
+    layers.selected =
+      { fg = palette.selection_fg or false, bg = palette.selection_bg or false, bold = true }
+    if opts.badged then
+      base.padding.right = 0
+    end
+    if visual_state.selected and opts.badged then
+      layers.selected.background_extend = 2
+    end
+  elseif component == "list_row" then
+    if opts.variant and opts.variant ~= "selectable" then
+      error("hollow.ui: unknown list_row variant " .. tostring(opts.variant))
+    end
+    base = { fg = palette.fg, bg = opts.default_bg, radius = 4 }
+    layers.hovered = { fg = palette.hover_fg or false, bg = palette.hover_bg or false }
+    layers.selected = { fg = palette.selection_fg or false, bg = palette.selection_bg or false }
+    layers.disabled = { fg = palette.muted or palette.fg or false }
+  elseif component == "panel" then
+    base = {
+      bg = palette.panel_bg,
+      border = palette.panel_border,
+      radius = palette.radius,
+      padding = palette.padding,
+      margin = palette.margin,
+    }
+  else
+    error("hollow.ui: unknown component " .. tostring(component))
+  end
+  -- Recipe tables are owned; normalize once and resolve without cloning again.
+  if base.padding ~= nil then
+    base.padding = partial_box(base.padding)
+  end
+  if base.margin ~= nil then
+    base.margin = partial_box(base.margin)
+  end
+  local style = apply_style_states(base, layers, visual_state, override)
+  resolve_owned_tokens(style, palette)
+  for _, key in ipairs(COLOR_FIELDS) do
+    if style[key] == false then
+      style[key] = nil
+    end
+  end
+  return style
+end
+
+--- Normalize row paint while retaining legacy aliases as final overrides.
+--- Rows have their own boxes; only text properties are inherited by children.
+function M.resolve_row_style(row, palette, hovered_id)
+  if row.style == nil and row.variant == nil then
+    return nil
+  end
+  local function validate(style)
+    for key, value in pairs(style or {}) do
+      if key == "hover" and type(value) == "table" then
+        validate(value)
+      elseif
+        key ~= "fg"
+        and key ~= "bg"
+        and key ~= "bold"
+        and key ~= "radius"
+        and key ~= "hover"
+      then
+        error("hollow.ui: unsupported row style field " .. tostring(key))
+      end
+    end
+  end
+  validate(row.style)
+  palette = row.theme or palette
+  local visual_state = M.node_state({ hovered_id = hovered_id }, row.id, row.selected)
+  visual_state.hovered = row.hoverable ~= false and visual_state.hovered
+  local style = row.variant
+      and M.resolve_component_style("list_row", palette, {
+        variant = row.variant,
+      }, visual_state)
+    or {}
+  style = M.merge_styles(style, row.style)
+  if visual_state.hovered and type(row.style) == "table" and type(row.style.hover) == "table" then
+    merge_into(style, row.style.hover)
+  end
+  if row.fill_bg ~= nil then
+    style.bg = row.fill_bg
+  end
+  if row.fill_radius ~= nil then
+    style.radius = row.fill_radius
+  end
+  return M.resolve_tokens(style, palette)
+end
+
+--- Existing event owners supply selection; hover is looked up in one place.
+function M.node_state(hover_state, id, selected)
   return {
-    text = text,
-    id = type(id) == "string" and id ~= "" and id or nil,
-    fg = computed.text.fg,
-    bold = computed.text.bold,
-    bg = box.bg,
-    border = box.border,
-    border_size = box.border_size,
-    radius = box.radius,
-    background_extend = box.background_extend,
-    padding = util.clone_value(computed.layout.padding),
+    selected = selected == true,
+    hovered = type(id) == "string"
+      and id ~= ""
+      and hover_state ~= nil
+      and hover_state.hovered_id == id,
   }
 end
 
@@ -1209,8 +1435,11 @@ M.normalize_hex_color = color.normalize_hex_color
 
 ---@param value any
 ---@return HollowUiChrome|nil
-function M.normalize_overlay_chrome(value)
+function M.normalize_overlay_chrome(value, palette)
   value = type(value) == "table" and value or {}
+  if palette then
+    value = M.resolve_tokens(value, palette)
+  end
 
   local bg = color.normalize_hex_color(value.bg, nil)
   local border = color.normalize_hex_color(value.border, nil)
@@ -1259,15 +1488,18 @@ end
 ---@param border_size integer|nil
 ---@return HollowUiChrome|nil
 function M.theme_overlay_chrome(theme, border, border_size)
-  return M.normalize_overlay_chrome({
-    bg = theme.panel_bg,
-    border = border or theme.panel_border,
-    border_size = border_size,
-    alpha = 255,
-    radius = theme.radius,
-    padding = theme.padding,
-    margin = theme.margin,
-  })
+  local function build()
+    local style = M.resolve_component_style("panel", theme)
+    style.border = border or style.border
+    style.border_size = border_size
+    style.alpha = 255
+    return M.normalize_overlay_chrome(style, theme)
+  end
+  local chrome = build()
+  if chrome then
+    live_chrome[chrome] = build
+  end
+  return chrome
 end
 
 -- ---------------------------------------------------------------------------

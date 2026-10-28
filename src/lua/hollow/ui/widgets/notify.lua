@@ -1,5 +1,4 @@
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -10,18 +9,6 @@ local ui = hollow.ui
 local overlay_stack = state.ui.overlay_stack
 
 ui.notify = ui.notify or {}
-
----@param theme HollowUiTheme
----@param opts HollowUiNotifyOptions
----@return HollowUiTheme
-local function merged_theme(theme, opts)
-  if type(opts.theme) ~= "table" then
-    return theme
-  end
-
-  util.merge_tables(theme, util.clone_value(opts.theme))
-  return theme
-end
 
 ---@param level string|nil
 ---@param title string|nil
@@ -56,23 +43,26 @@ function ui.notify.show(message, opts)
     end
   end
 
-  local theme = merged_theme(theme_api.resolve_widget("notify"), opts)
+  local theme = shared.widget_theme("notify", opts.theme)
   local action = opts.action
   local level = opts.level or "info"
-  local level_color = theme.notify_levels[level] or theme.title
   local widget
 
   widget = ui.overlay.new({
     render = function()
       return ui.row({
         ui.text(notify_text(level, opts.title, message, action), {
-          fg = level_color,
+          fg = theme.notify_levels[level] or theme.title,
           bold = true,
         }),
       })
     end,
     align = opts.align or "top_right",
-    chrome = opts.chrome or shared.theme_overlay_chrome(theme, level_color, 2),
+    chrome = opts.chrome or shared.theme_overlay_chrome(
+      theme,
+      theme.notify_levels[level] and ("notify_levels." .. level) or "title",
+      2
+    ),
     backdrop = opts.backdrop,
     on_key = function(key)
       if key == "escape" then
@@ -87,6 +77,7 @@ function ui.notify.show(message, opts)
     end,
   })
 
+  widget._palette = theme
   widget._notify = true
   widget._notify_id = opts.id
   widget._activity_id = activity_id

@@ -159,6 +159,10 @@ function ui.row(children, opts)
 
   return {
     _type = "row",
+    style = opts.style,
+    variant = opts.variant,
+    selected = opts.selected,
+    theme = opts.theme,
     children = nodes,
     id = opts.id,
     hoverable = hoverable == true,
@@ -201,11 +205,21 @@ function ui.button(opts)
     error("hollow.ui.button() requires an id when on_click is set")
   end
 
-  local style = type(opts.style) == "table" and clone_table(opts.style) or {}
+  local style
+  if opts.variant or opts.size then
+    style = shared.resolve_component_style("button", opts.theme or shared.palette("select"), opts, {
+      disabled = opts.disabled == true,
+    }, opts.style)
+  else
+    style = type(opts.style) == "table" and clone_table(opts.style) or {}
+  end
   style.id = opts.id
   style.on_click = opts.on_click
   style.on_mouse_enter = opts.on_mouse_enter
   style.on_mouse_leave = opts.on_mouse_leave
+  if opts.disabled then
+    style.on_click, style.on_mouse_enter, style.on_mouse_leave, style.hover = nil, nil, nil, nil
+  end
 
   return ui.span(opts.text or "", style)
 end
@@ -227,24 +241,15 @@ end
 --- Compatibility alias for the alternate documented helper name.
 ui.themed_style = ui.styled
 
-local TAB = { fg = "muted", bold = false, radius = 4, padding = { x = 8, y = 3 } }
-local TAB_ACTIVE = { fg = "selection_fg", bg = "selection_bg", bold = true }
-local TAB_BADGED = { padding = { right = 0 } }
-local TAB_ACTIVE_BADGED = { background_extend = 2 }
-local ACTION = {
-  fg = "fg",
-  radius = 4,
-  padding = { left = 4, right = 4 },
-  hover = { fg = "hover_fg", bg = "hover_bg" },
-}
-
 --- A padded overlay action with theme-aware hover styling.
 ---@param opts HollowUiActionButtonOptions
 ---@return HollowUiSpanNode
 function ui.action_button(opts)
   opts = opts or {}
   local theme = select_theme(opts)
-  local style = ui.style(ACTION)
+  local style = shared.resolve_component_style("button", theme, opts, {
+    disabled = opts.disabled == true,
+  })
   local hover = style.hover
   for key, value in pairs(opts.style or {}) do
     if key ~= "hover" then
@@ -263,9 +268,14 @@ function ui.action_button(opts)
     end
   end
   style.hover = hover
-  style = shared.resolve_tokens(style, theme)
+  -- The recipe owns and resolves its defaults. Resolve again only when local
+  -- overrides may have introduced tokens, avoiding a redundant clone per render.
+  if type(opts.style) == "table" or type(opts.hover_style) == "table" then
+    style = shared.resolve_tokens(style, theme)
+  end
   return ui.button({
     id = opts.id,
+    disabled = opts.disabled,
     text = opts.text,
     style = style,
     on_click = opts.on_click,
@@ -285,12 +295,11 @@ function ui.tab(opts)
     ui.button({
       id = opts.id,
       text = badge and (opts.label .. " ") or opts.label,
-      style = ui.styled(
+      style = shared.resolve_component_style(
+        "tab",
         theme,
-        TAB,
-        active and TAB_ACTIVE,
-        badge and TAB_BADGED,
-        active and badge and TAB_ACTIVE_BADGED
+        { badged = not not badge },
+        { selected = active }
       ),
       on_click = opts.on_click,
     }),

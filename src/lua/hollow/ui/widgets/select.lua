@@ -1,6 +1,5 @@
 local list_style = require("hollow.ui.widgets.list_style")
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -18,11 +17,7 @@ local MUTED = ui.styles.muted
 ---@param opts HollowUiSelectOptions
 ---@return HollowUiTheme
 local function resolve_select_theme(opts)
-  local theme = theme_api.resolve_widget("select")
-  if type(opts.theme) == "table" then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
-  return theme
+  return shared.widget_theme("select", opts.theme)
 end
 
 ---@param entry HollowUiSelectEntry
@@ -313,7 +308,7 @@ function ui.select.open(opts)
           return render_entry_rows(
             entry,
             index == nav.index,
-            state and state.hovered_id == row_id,
+            list_style.hovered(state, row_id),
             render_theme,
             row_options,
             filter.value

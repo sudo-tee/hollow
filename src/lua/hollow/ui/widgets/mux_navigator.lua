@@ -3,7 +3,6 @@ local icons = require("hollow.ui.icons")
 local list_style = require("hollow.ui.widgets.list_style")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -143,15 +142,12 @@ local function flatten_tree(tree, collapsed, query, pane_filter)
 end
 
 local function resolve_theme(opts)
-  local theme = theme_api.resolve_widget("select")
-  if theme.subtle == nil then
-    local palette = shared.resolve_theme().palette
-    theme.subtle = color.brighten_hex_color(palette.background, 0.35, palette.foreground)
-  end
-  if type(opts.theme) == "table" then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
-  return theme
+  return shared.widget_theme("select", opts.theme, function(theme)
+    if theme.subtle == nil then
+      local palette = shared.resolve_theme().palette
+      theme.subtle = color.brighten_hex_color(palette.background, 0.35, palette.foreground)
+    end
+  end)
 end
 
 local function row_budget(opts)
@@ -290,7 +286,7 @@ function ui.mux_navigator.open(opts)
             local row = rows[index]
             local row_id, options = selectable.row(index, row.key, visible_index, viewport)
             local selected = index == nav.index
-            local hovered = state and state.hovered_id == row_id
+            local hovered = list_style.hovered(state, row_id)
             local active = row.item.is_active or row.item.is_focused
             local is_workspace = row.kind == "workspace"
             local row_fg =

@@ -1,7 +1,7 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
-describe("private computed style prototype", function()
+describe("shared computed styles", function()
   local hollow, shared
   local palette = { fg = "#112233", muted = "#223344", hover_bg = "#334455" }
 
@@ -13,18 +13,15 @@ describe("private computed style prototype", function()
   it("separates visual properties from identity and behavior", function()
     assert.same(
       {
-        text = { fg = "#112233", bold = true },
-        box = {
-          bg = "#000000",
-          border = "#223344",
-          border_size = 2,
-          radius = 4,
-          background_extend = 1,
-        },
-        layout = {
-          padding = { top = 2, right = 6, bottom = 2, left = 6 },
-          margin = { top = 0, right = 0, bottom = 0, left = 3 },
-        },
+        fg = "#112233",
+        bold = true,
+        bg = "#000000",
+        border = "#223344",
+        border_size = 2,
+        radius = 4,
+        background_extend = 1,
+        padding = { top = 2, right = 6, bottom = 2, left = 6 },
+        margin = { top = 0, right = 0, bottom = 0, left = 3 },
       },
       shared.compute_style(palette, {
         id = "action",
@@ -48,27 +45,28 @@ describe("private computed style prototype", function()
     local selected = { bg = "#556677", bold = true }
     local instance = { fg = "muted", bold = false, padding = { left = 0 } }
     local resolved = shared.compute_style(palette, base, false, nil, hover, selected, instance)
-    assert.same({ fg = "#223344", bold = false }, resolved.text)
-    assert.equals("#556677", resolved.box.bg)
-    assert.same({ top = 4, right = 2, bottom = 4, left = 0 }, resolved.layout.padding)
-    assert.is_nil(shared.compute_style(palette, base).box.bg)
-    resolved.layout.padding.top = 99
+    assert.equals("#223344", resolved.fg)
+    assert.is_false(resolved.bold)
+    assert.equals("#556677", resolved.bg)
+    assert.same({ top = 4, right = 2, bottom = 4, left = 0 }, resolved.padding)
+    assert.is_nil(shared.compute_style(palette, base).bg)
+    resolved.padding.top = 99
     assert.equals(4, base.padding)
     assert.same({ right = 2 }, hover.padding)
     assert.equals("hover_bg", base.hover.bg)
   end)
 
   it("preserves absent boxes and explicit zero/false reset semantics", function()
-    assert.same({ text = { bold = false }, box = {}, layout = {} }, shared.compute_style({}))
+    assert.same({ bold = false }, shared.compute_style({}))
     local result = shared.compute_style(
       {},
       { bg = "#112233", padding = 4 },
       { bg = false, padding = false }
     )
-    assert.is_nil(result.box.bg)
-    assert.same({ top = 0, right = 0, bottom = 0, left = 0 }, result.layout.padding)
+    assert.is_nil(result.bg)
+    assert.same({ top = 0, right = 0, bottom = 0, left = 0 }, result.padding)
     assert.is_nil(shared.computed_style_to_segment("x", result).bg)
-    assert.equals("#112233", shared.compute_style({}, { bg = "#112233" }, { bg = nil }).box.bg)
+    assert.equals("#112233", shared.compute_style({}, { bg = "#112233" }, { bg = nil }).bg)
   end)
 
   it("respects partial explicit palettes and dotted tokens without global lookups", function()
@@ -83,8 +81,8 @@ describe("private computed style prototype", function()
     )
     hollow.theme.resolve_widget = resolve_widget
     assert.is_true(ok)
-    assert.equals("#abcdef", result.text.fg)
-    assert.equals("#fedcba", result.box.border)
+    assert.equals("#abcdef", result.fg)
+    assert.equals("#fedcba", result.border)
     assert.has_error(function()
       shared.compute_style(palette, { fg = "mutd" })
     end, 'hollow.ui: unknown style token "mutd" for fg (did you mean "muted"?)')
@@ -93,13 +91,13 @@ describe("private computed style prototype", function()
   it("returns independent snapshots from one reused style table", function()
     local source = { fg = "fg", padding = { x = 4 }, margin = { y = 2 } }
     local first = shared.compute_style(palette, source)
-    first.text.fg = "#ffffff"
-    first.layout.padding.left = 99
-    first.layout.margin.top = 99
+    first.fg = "#ffffff"
+    first.padding.left = 99
+    first.margin.top = 99
     local second = shared.compute_style(palette, source)
-    assert.equals("#112233", second.text.fg)
-    assert.equals(4, second.layout.padding.left)
-    assert.equals(2, second.layout.margin.top)
+    assert.equals("#112233", second.fg)
+    assert.equals(4, second.padding.left)
+    assert.equals(2, second.margin.top)
     assert.same({ fg = "fg", padding = { x = 4 }, margin = { y = 2 } }, source)
   end)
 
@@ -119,10 +117,10 @@ describe("private computed style prototype", function()
           local row = require("hollow.ui.widgets.list_style").row({}, theme, selected, hovered)
           local computed =
             shared.compute_style(theme, { bg = row.fill_bg, radius = row.fill_radius })
-          assert.equals(row.fill_bg, computed.box.bg)
-          assert.equals(row.fill_radius, computed.box.radius)
+          assert.equals(row.fill_bg, computed.bg)
+          assert.equals(row.fill_radius, computed.radius)
           -- Row accents remain separate component parts, not span borders.
-          assert.is_nil(computed.box.border)
+          assert.is_nil(computed.border)
           local action = hollow.ui.action_button({ id = "run", text = "Run", theme = theme })
           local style = shared.apply_hover(action.style, hovered and "run" or nil)
           local expected = shared.style_to_segment("Run", style, theme)
@@ -130,7 +128,7 @@ describe("private computed style prototype", function()
           local actual = shared.computed_style_to_segment("Run", normalized, action.style.id)
           assert.same(expected, actual)
           actual.padding.left = 99
-          assert.equals(4, normalized.layout.padding.left)
+          assert.equals(4, normalized.padding.left)
         end
       end
     end
@@ -140,7 +138,7 @@ describe("private computed style prototype", function()
     local first = shared.compute_style(shared.palette("all"), { fg = "muted" })
     hollow.config.set({ theme = { ui = { status = { fg = "#010203" } } } })
     local second = shared.compute_style(shared.palette("all"), { fg = "muted" })
-    assert.is_not.equal(first.text.fg, second.text.fg)
-    assert.equals(shared.palette("all").muted, second.text.fg)
+    assert.is_not.equal(first.fg, second.fg)
+    assert.equals(shared.palette("all").muted, second.fg)
   end)
 end)

@@ -32,6 +32,7 @@ describe("styling unification baseline", function()
           segments = { { text = "Choice", fg = "#abcdef", bold = false } },
           fill_bg = selected and "#112233" or (hovered and "#223344" or "#010203"),
           fill_radius = 4,
+          hover_bg = hollow.theme.resolve_widget("overlay").hover_bg,
           accent_bar = selected and "#334455" or nil,
           scrollbar_track = false,
           scrollbar_thumb = false,

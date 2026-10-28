@@ -200,19 +200,20 @@ Bar items are reusable by all bar surfaces. See
 ## Styles
 
 Style color fields `fg`, `bg`, and `border` accept hex colors or theme tokens.
-The same applies recursively to those fields inside `hover`; other fields are
+The same applies recursively to those fields inside `hover`; non-color fields are
 never interpreted as tokens. Dotted paths work, for example
 `notify_levels.warn`. Unknown tokens error and include a closest-token hint.
 Lazy token lookup uses the widget kind's palette, or `"all"` when no specific kind
 is available. Overrides from `theme.ui.widgets.all` and that widget kind apply;
-bar items additionally receive bar tokens. If a render holds a custom theme,
+bar items additionally receive bar tokens. Bar tab part fields `close_fg`,
+`close_bg`, `close_hover_fg`, and `close_hover_bg` also accept those tokens. If a render holds a custom theme,
 use `ui.styled(theme, ...)` so it takes precedence over lazy lookup.
 
 Default widget tokens available from `theme.resolve_widget(...)`:
 
 `panel_bg`, `panel_border`, `divider`, `title`, `fg`, `muted`, `input_bg`,
 `input_fg`, `cursor_bg`, `cursor_fg`, `selected_bg`, `selected_detail_bg`,
-`selected_fg`, `hover_bg`, `hover_fg`, `primary_bg`, `primary_fg`,
+`selected_fg`, `selection_bg`, `selection_fg`, `button_emphasis_bg`, `hover_bg`, `hover_fg`, `primary_bg`, `primary_fg`,
 `destructive_bg`, `destructive_fg`, `selected_muted`, `detail`, `notify_fg`,
 `counter`, `empty`, `scrollbar_track`, `scrollbar_thumb`, and
 `notify_levels.info`, `notify_levels.warn`, `notify_levels.error`,
@@ -256,6 +257,51 @@ ui.button({
 })
 ```
 
+### Component styling
+
+`ui.styled(theme, ...)` remains the public style helper. Recipes are internal;
+plugins customize instances with normal style tables.
+
+```lua
+ui.button({
+  id = "build", text = "Build", variant = "primary", size = "sm",
+  disabled = building, on_click = build,
+  style = { padding = { right = 10 } },
+})
+
+ui.row({ ui.text("Build results") }, {
+  id = "result-row", variant = "selectable", selected = selected,
+  style = { radius = 6, hover = { bg = "hover_bg" } },
+})
+```
+
+Button variants are `default`, `primary`, `destructive`, and `ghost`. Sizes
+are `sm` (6×2 pixel padding) and `md` (8×3). Specifying a variant or size opts a
+raw `ui.button` into the select-palette recipe; otherwise its original raw style
+behavior is preserved. `opts.theme` can supply a partial palette.
+`ui.action_button` accepts the same variant, size and disabled options while
+retaining its original padding defaults and override rules. Disabled buttons
+suppress click/hover callbacks and hover paint. They do not introduce a new
+keyboard-navigation model.
+
+Selectable overlay row recipes resolve model selection above pointer hover;
+explicit instance styles remain final overrides. Row
+styles accept `fg`, `bg`, `bold`, `radius`, and `hover`. Only `fg`/`bold` inherit
+into text. Legacy `fill_bg` and `fill_radius` take precedence over `style`;
+`accent_bar` stays a separate part; explicit `false` suppresses it. Unsupported row geometry fields error;
+continue using segment padding for row content spacing. Sidebar rows use the
+same text rules and retain their existing text-only presentation.
+
+Overlay widget `style` can supply surface paint and spacing. Explicit `chrome`
+fields win; their boxes replace the entire corresponding style box. Both accept
+color tokens using the widget palette. Bar pixel boxes share the same
+normalization rules; span padding continues to support fractional pixels.
+
+The internal state resolver orders hover, selection, pressed, focus-visible,
+disabled, then explicit instance overrides. Pressed and focus-visible remain
+internal until actual event owners supply those states. No public selector,
+recipe-registration or general variants API is introduced.
+
 ### Compatibility precedence
 
 These are the existing rules preserved during styling unification:
@@ -285,7 +331,7 @@ Built-in presets are plain style tables: `ui.styles.muted`, `.title`, `.pill`,
 `ui.style(ui.styles.badge, { bg = color })` or `ui.styled(...)` rather
 than mutating a preset. Pass a fresh copy to spans, for example
 `ui.text("ready", ui.style(ui.styles.muted))`: bar registration may write ids
-into span styles.
+into private node styles. Automatic IDs no longer mutate the source style table.
 
 | Preset | Recipe |
 | --- | --- |

@@ -26,47 +26,9 @@ local function next_bar_auto_id()
   bar_auto_id_counter = bar_auto_id_counter + 1
   return "bar:auto:" .. bar_auto_id_counter
 end
----@param value any
----@param fallback integer
----@return integer
-local function normalize_px(value, fallback)
-  local number = tonumber(value)
-  if number == nil then
-    return fallback
-  end
-
-  number = math.floor(number)
-  if number < 0 then
-    return 0
-  end
-  return number
-end
-
----@param value any
----@return {top:integer,right:integer,bottom:integer,left:integer}
-local function normalize_box(value)
-  if type(value) == "number" then
-    local px = normalize_px(value, 0)
-    return { top = px, right = px, bottom = px, left = px }
-  end
-
-  if type(value) ~= "table" then
-    return { top = 0, right = 0, bottom = 0, left = 0 }
-  end
-
-  local y = value.y or value.vertical
-  local x = value.x or value.horizontal
-  local top = value.top or y or value[1] or 0
-  local right = value.right or x or value[2] or top
-  local bottom = value.bottom or y or value[3] or top
-  local left = value.left or x or value[4] or right
-  return {
-    top = normalize_px(top, 0),
-    right = normalize_px(right, 0),
-    bottom = normalize_px(bottom, 0),
-    left = normalize_px(left, 0),
-  }
-end
+-- Keep one surface normalization contract for bars and overlays.
+local normalize_px = shared.normalize_surface_px
+local normalize_box = shared.normalize_surface_box
 
 ---@param style any
 ---@return table|nil

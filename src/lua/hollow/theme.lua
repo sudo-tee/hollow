@@ -396,6 +396,11 @@ function M.resolve_widget(kind, theme)
     end
   end
 
+  -- Derive after widget overrides so recipes share the same semantic paint.
+  if result.button_emphasis_bg == nil then
+    result.button_emphasis_bg = color.brighten_hex_color(result.selected_bg, 0.25, result.panel_bg)
+  end
+
   return result
 end
 

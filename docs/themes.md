@@ -11,6 +11,16 @@ For UI colors used by widgets see
 The full default widget-token list and bar-token sources are in the
 [`hollow.ui` styles reference](reference/lua/ui.md#styles).
 
+Widget palettes supply colors; internal component recipes decide when to use
+them. Override `theme.ui.widgets.all` for shared values and a widget-kind table
+for that kind. Per-instance styles are applied afterwards. The concrete
+`button_emphasis_bg` token defaults to the existing dialog-button emphasis,
+derived after widget overrides; explicit values win. Bar close-button part
+colors accept the same widget/bar token namespace as ordinary bar paint.
+Runtime theme changes invalidate cached palettes; component results are
+recomputed from the current palette. Already-open built-in widgets refresh their
+palette and default chrome while keeping explicit instance theme overrides.
+
 ## Built-in themes
 
 Hollow ships with the following themes, all under

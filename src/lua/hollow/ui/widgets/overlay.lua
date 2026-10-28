@@ -17,16 +17,14 @@ ui.overlay = ui.overlay or {}
 ---@return HollowUiOverlaySerializedRow
 local function serialize_overlay_row(row, palette, hovered_id)
   local serialized = { segments = {}, id = row.id, hoverable = row.hoverable ~= false }
+  local paint = shared.resolve_row_style(row, palette, hovered_id)
+  local inherited = paint and { fg = paint.fg, bold = paint.bold } or nil
 
-  for _, node in ipairs(shared.flatten_span_nodes(row.children or {})) do
+  for _, node in ipairs(shared.flatten_span_nodes(row.children or {}, inherited)) do
     if node.spacer then
       serialized.segments[#serialized.segments + 1] = { spacer = true }
     else
-      if
-        type(node.style) == "table"
-        and type(node.style.id) == "string"
-        and type(node.style.on_click) == "function"
-      then
+      if type(node.style) == "table" and type(node.style.id) == "string" then
         click_registry.register(node.style.id, node.style.on_click)
       end
       serialized.segments[#serialized.segments + 1] = shared.style_to_segment(
@@ -38,9 +36,18 @@ local function serialize_overlay_row(row, palette, hovered_id)
   end
 
   if type(row) == "table" and row._type == "row" then
-    serialized.fill_bg = row.fill_bg
-    serialized.fill_radius = row.fill_radius
-    serialized.accent_bar = row.accent_bar
+    serialized.fill_bg = paint and paint.bg or row.fill_bg
+    serialized.fill_radius = paint and paint.radius or row.fill_radius
+    if row.accent_bar ~= nil then
+      serialized.accent_bar = row.accent_bar
+    else
+      serialized.accent_bar = row.variant == "selectable"
+          and row.selected
+          and (row.theme or palette).panel_border
+        or nil
+    end
+    -- Native hover keeps a safe fallback for old producers; Lua owns the paint.
+    serialized.hover_bg = (row.theme or palette).hover_bg
     serialized.divider = row.divider
     serialized.scrollbar_track = row.scrollbar_track == true
     serialized.scrollbar_thumb = row.scrollbar_thumb == true
@@ -59,17 +66,24 @@ end
 local function serialize_overlay_widget(widget)
   local rows = shared.render_widget_rows(widget)
   local serialized_rows = {}
-  local palette = shared.palette(widget._kind or "all")
+  local palette = widget._palette or shared.palette(widget._kind or "all")
 
   for index, row in ipairs(rows) do
     serialized_rows[index] = serialize_overlay_row(row, palette, widget._hovered_id)
   end
 
+  local chrome = widget.chrome
+  if type(widget.style) == "table" then
+    chrome = util.clone_value(widget.style)
+    for key, value in pairs(type(widget.chrome) == "table" and widget.chrome or {}) do
+      chrome[key] = util.clone_value(value)
+    end
+  end
   return {
     stack_context = widget._notify and "notification" or (widget._modal and "modal" or "overlay"),
     align = shared.normalize_overlay_align(widget.align),
     backdrop = shared.normalize_overlay_backdrop(widget.backdrop),
-    chrome = shared.normalize_overlay_chrome(widget.chrome),
+    chrome = shared.normalize_overlay_chrome(chrome, palette),
     width = shared.normalize_overlay_size(widget.width),
     height = shared.normalize_overlay_size(widget.height),
     max_height = shared.normalize_overlay_size(widget.max_height),

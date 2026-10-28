@@ -1,4 +1,4 @@
-local util = require("hollow.util")
+local shared = require("hollow.ui.shared")
 
 local M = {}
 M.section_padding = { top = 8 }
@@ -14,13 +14,20 @@ function M.indicator(ui, theme, selected, hovered, indent, padding)
 end
 
 function M.row(options, theme, selected, hovered, default_bg)
-  options.fill_bg =
-    util.state_value(selected, hovered, theme.selection_bg, theme.hover_bg, default_bg)
-  options.fill_radius = 4
+  local style = shared.resolve_component_style("list_row", theme, { default_bg = default_bg }, {
+    selected = selected,
+    hovered = hovered,
+  })
+  options.fill_bg = style.bg
+  options.fill_radius = style.radius
   options.accent_bar = selected and theme.panel_border or nil
   options.scrollbar_track_color = theme.scrollbar_track
   options.scrollbar_thumb_color = theme.scrollbar_thumb
   return options
+end
+
+function M.hovered(state, id)
+  return shared.node_state(state, id).hovered
 end
 
 return M

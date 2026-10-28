@@ -1,7 +1,7 @@
 # Hollow UI styling unification plan
 
 **Target:** `feat/declarative-ui`
-**Status:** implementation started; Phase 0 API reconciliation and serialized baseline fixtures implemented
+**Status:** implemented Lua styling unification; native build/visual acceptance pending
 **Scope:** Lua widget styling, theme resolution, interaction states, the Lua-to-Zig presentation contract, and future Lua-view reuse.
 **Companion plans:** `ui-master-plan.md`, `ui-styles-plan.md`, `ui-composition-plan.md`.
 **Out of scope:** changes to the mux split tree, terminal cell styling, and choosing a layout engine.
@@ -260,6 +260,9 @@ Not a prerequisite for the MVP:
 
 ## 5. Recommended PR order
 
+**Maintainer instruction:** implement this work in one PR (#41), overriding the
+separate-PR sequence below. The entries remain implementation milestones.
+
 1. **PR 1:** naming reconciliation, baseline snapshots and tests (Phase 0).
 2. **PR 2:** pure style resolver and normalization tests (Phase 1).
 3. **PR 3:** button and list-row recipes (first half of Phase 2).
@@ -323,22 +326,33 @@ If this does not materially reduce special-case style code or improve visual con
 
 ## Implementation progress
 
-- Phase 0, first slice: `ui.styled` is canonical; `ui.themed_style` is retained
-  as the same function. LuaLS and API docs cover both names and current override
-  precedence.
-- Added serialized fixtures for the existing list-row selected/hover priority
-  and action-button paint/geometry in a top bar and overlay, including hover
-  leave. Fixtures also pass unchanged at the pre-implementation commit
-  `68709b3`.
-- Existing tab, dialog, palette, notification, sidebar and bar tests remain the
-  broader regression coverage. Native screenshots and render/allocation timing
-  baselines are still pending; serialized fixtures do not replace those checks.
-- Phase 1 prototype: private `shared.compute_style` plus a legacy span adapter,
-  with explicit palette/layer inputs, fresh visual snapshots and bundled-theme
-  parity tests. No live serializer migration or new public API yet.
-- The reproducible Lua benchmark shows per-serialization recomputation is more
-  expensive than the current path. Reusing a computed snapshot reduces that
-  work; investigate dirty-node reuse or a simpler flat contract before rollout.
-  See `docs/ui-computed-style.md` for the contract, measurements and review gate.
-- Recipes, additional states, native protocol changes, screenshots and full
-  render timings remain future work. Phase 1's live adoption is not complete.
+All work is consolidated in PR #41 against `feat/declarative-ui`; #42 was folded
+into that branch and closed. `ui.styled` is canonical, with `ui.themed_style` as
+an alias.
+
+- Foundation: one flat computed-style normalizer serves live span serialization
+  and private inspection snapshots. The earlier nested prototype was simplified
+  after measurement. Identity/callbacks remain separate from visual paint.
+- Recipes: buttons (action and dialog presentations), tabs, list rows, and panel
+  chrome use one private resolver. Select, palette and mux navigator share row
+  recipes and hover lookup. Existing presets remain plain constants.
+- States: deterministic explicit ordering; real selected/hover state is retained.
+  Public buttons support semantic variants, sizes and disabled interaction.
+  Stale overlay callbacks and auto-ID mutations of shared bar styles are fixed.
+  Pressed/focus state is not fabricated where input owners do not provide it.
+- Adapters: row style/legacy aliases and overlay style/chrome have documented
+  precedence. Bars/chrome share surface pixel normalization. Native rows consume
+  optional palette-owned hover paint; other native fallbacks are intentionally
+  retained for incomplete/old producers and inventoried in the implementation doc.
+- Themes/docs/types: existing tokens and partial palettes remain supported;
+  dialog emphasis has a concrete derived theme token. Open widget palettes and
+  default chrome refresh on theme changes without retaining closed widgets. No global recipe registry
+  or public variants DSL is needed. Public additions have LuaLS types/examples.
+- Performance: reproducible 25/100/500-group workloads and style microbenchmarks
+  compare old/new paths. Production does not allocate nested computed snapshots
+  or introduce a generic style cache. Theme palette invalidation is retained.
+
+See `docs/ui-computed-style.md` for the final contract and verification details.
+Native screenshots/DPI/hit-region acceptance and full native timing remain
+pending. Zig 0.17 formatting passes; build tests cannot fetch external packages
+in this environment (`HttpConnectionClosing`). The Lua suite runs directly.

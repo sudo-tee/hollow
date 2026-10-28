@@ -1,7 +1,6 @@
 local icons = require("hollow.ui.icons")
 local list_style = require("hollow.ui.widgets.list_style")
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -45,11 +44,7 @@ local function list_row_budget(opts)
 end
 
 local function resolve_theme(opts)
-  local theme = theme_api.resolve_widget("select")
-  if type(opts.theme) == "table" then
-    util.merge_tables(theme, util.clone_value(opts.theme))
-  end
-  return theme
+  return shared.widget_theme("select", opts.theme)
 end
 
 local ENTRY_DEFAULTS = {
@@ -385,7 +380,7 @@ function ui.command_palette.open(opts)
             local entry = flat[index]
             local row_id, row_options = selectable.row(index, index, visible_index, viewport)
             local is_selected = index == nav.index
-            local is_hovered = state and state.hovered_id == row_id
+            local is_hovered = list_style.hovered(state, row_id)
             if entry._type == "header" then
               return render_section_header(
                 theme,

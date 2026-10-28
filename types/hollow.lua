@@ -107,6 +107,7 @@
 ---@alias HollowUiBoxValue integer|HollowUiBox
 ---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowUiThemeBackdrop
 ---@class HollowUiTheme
+---@field button_emphasis_bg? HollowColor Default dialog-button emphasis, derived after widget overrides.
 ---@field panel_bg? HollowColor
 ---@field panel_border? HollowColor
 ---@field divider? HollowColor
@@ -260,18 +261,29 @@
 ---@field border? HollowColor|HollowStyleToken Border color for bg rect outline
 ---@field border_size? number Border thickness in pixels
 ---@field background_extend? number
+---@field close_fg? HollowColor|HollowStyleToken Bar tab close-button part.
+---@field close_bg? HollowColor|HollowStyleToken Bar tab close-button part.
+---@field close_hover_fg? HollowColor|HollowStyleToken Bar tab close-button part.
+---@field close_hover_bg? HollowColor|HollowStyleToken Bar tab close-button part.
+---@field close_radius? number Bar tab close-button part.
 ---@field hover? HollowStyle Overrides applied to hovered spans.
 ---@field on_click? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_enter? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
 
 ---@alias HollowStyleValue HollowStyle|HollowColor
---- Internal prototype; not a public widget or host-protocol API.
---- Absent layout boxes preserve the receiving surface's existing defaults.
+--- Internal flat visual snapshot. Identity and callbacks remain on nodes.
+--- Surface adapters retain their existing pixel/unit rules.
 ---@class HollowUiComputedStyle
----@field text { fg?: HollowColor, bold: boolean }
----@field box { bg?: HollowColor, border?: HollowColor, border_size?: number, radius?: number, background_extend?: number }
----@field layout { padding?: { top: number, right: number, bottom: number, left: number }, margin?: { top: number, right: number, bottom: number, left: number } }
+---@field fg? HollowColor
+---@field bold boolean
+---@field bg? HollowColor
+---@field border? HollowColor
+---@field border_size? number
+---@field radius? number
+---@field background_extend? number
+---@field padding? { top: number, right: number, bottom: number, left: number }
+---@field margin? { top: number, right: number, bottom: number, left: number }
 
 ---@alias HollowUiNodeStyle HollowStyle
 
@@ -281,8 +293,8 @@
 ---@alias HollowUiNodeEventPayload table<string, any>
 
 ---@class HollowUiChrome
----@field bg? HollowColor
----@field border? HollowColor
+---@field bg? HollowColor|HollowStyleToken
+---@field border? HollowColor|HollowStyleToken
 ---@field border_size? integer
 ---@field alpha? integer
 ---@field radius? integer
@@ -656,7 +668,14 @@
 ---@class HollowUiTextShorthand: HollowStyle
 ---@field [1] string
 
+---@alias HollowUiButtonVariant "default"|"primary"|"destructive"|"ghost"
+---@alias HollowUiControlSize "sm"|"md"
+
 ---@class HollowUiButtonOptions
+---@field variant? HollowUiButtonVariant Opts into the themed button recipe; raw buttons otherwise retain their style.
+---@field size? HollowUiControlSize Opts into recipe spacing.
+---@field disabled? boolean Suppresses click/hover callbacks and hover paint.
+---@field theme? table Select palette by default for recipe buttons.
 ---@field id string
 ---@field text? string
 ---@field style? HollowUiNodeStyle
@@ -692,12 +711,23 @@
 ---@field width? integer
 ---@field align? "left"|"right"
 
+---@class HollowUiRowStyle
+---@field fg? HollowColor|HollowStyleToken
+---@field bg? HollowColor|HollowStyleToken
+---@field bold? boolean
+---@field radius? number
+---@field hover? HollowUiRowStyle
+
 ---@class HollowUiRowOptions
+---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
+---@field variant? "selectable"
+---@field selected? boolean Explicit model selection, independent of pointer hover.
+---@field theme? table Optional partial palette for this row.
 ---@field id? string
 ---@field hoverable? boolean
 ---@field fill_bg? HollowColor
 ---@field fill_radius? number
----@field accent_bar? HollowColor
+---@field accent_bar? HollowColor|false
 ---@field divider? HollowColor
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
@@ -708,13 +738,17 @@
 ---@field scrollbar_thumb_color? HollowColor
 
 ---@class HollowUiRowNode
+---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
+---@field variant? "selectable"
+---@field selected? boolean Explicit model selection, independent of pointer hover.
+---@field theme? table Optional partial palette for this row.
 ---@field _type "row"
 ---@field children HollowUiRenderableNode[]
 ---@field id? string
 ---@field hoverable boolean
 ---@field fill_bg? HollowColor
 ---@field fill_radius? number
----@field accent_bar? HollowColor
+---@field accent_bar? HollowColor|false
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
@@ -848,11 +882,12 @@
 ---@field tabs HollowUiSegment[]
 
 ---@class HollowUiOverlaySerializedRow
+---@field hover_bg? HollowColor Lua-owned hover paint, with native compatibility fallback.
 ---@field segments HollowUiSegment[]
 ---@field hoverable boolean
 ---@field fill_bg? HollowColor
 ---@field fill_radius? number
----@field accent_bar? HollowColor
+---@field accent_bar? HollowColor|false
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
@@ -881,7 +916,10 @@
 ---@alias HollowWidgetRenderResult HollowUiColumnNode|HollowUiRowNode|nil
 
 ---@class HollowWidget
+---@field style? HollowStyle|HollowUiChrome Surface paint; explicit overlay chrome fields win.
+---@field layout? { padding?: HollowUiBoxValue, margin?: HollowUiBoxValue }
 ---@field _kind? string
+---@field _palette? table Internal resolved palette, including instance overrides.
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_event? fun(name: string, e: any)
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
@@ -940,6 +978,7 @@
 ---@field reserve? boolean
 
 ---@class HollowUiOverlayOptions
+---@field style? HollowUiChrome Surface paint below explicit chrome fields.
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
 ---@field on_mount? fun()

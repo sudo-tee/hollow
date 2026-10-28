@@ -1,97 +1,137 @@
-# Private computed-style prototype
+# Shared UI styling
 
-This is the Phase 1 experiment from `ui-styling-unification-plan.md`, stacked
-on the Phase 0 baseline. It is private, is not called by live serializers, and
-does not add a public `ui` method, recipe DSL, interaction state or host protocol.
-`ui.styled` remains the canonical public token/merge helper.
+The styling unification lives in one PR against `feat/declarative-ui`.
+`ui.styled` is the canonical public merge/token helper; `ui.themed_style` is a
+compatibility alias. There is no public recipe registry or variants DSL.
 
-## Contract
+## Flat computed style
 
-`shared.compute_style(palette, ...)` consumes an explicit palette and zero or
-more legacy style layers. It uses the existing box-aware `merge_styles` and
-color-token resolver. A single layer is read directly to avoid copying it;
-multiple layers merge into an owned temporary. Neither path mutates inputs.
+The initial nested `text`/`box`/`layout` prototype added copying and allocation
+cost. The implementation instead uses a flat internal visual contract matching
+the existing span protocol: `fg`, `bg`, `bold`, `border`, `border_size`, `radius`,
+`background_extend`, and normalized `padding`. Pure snapshots can also contain
+`margin`; the span adapter omits that field because spans have no margin.
 
-The result separates:
+`shared.compute_style(palette, ...)` merges explicit layers and returns a fresh
+visual snapshot. It reuses the same normalization function as live
+`style_to_segment`; that serializer writes directly into its final output, with
+no intermediate snapshot. Identity and callbacks stay on nodes, outside paint.
+`computed_style_to_segment` copies snapshots before attaching text and identity.
+These are private helpers, also useful for inspecting styles in Lua tests.
 
-- `text`: concrete `fg` and boolean `bold`.
-- `box`: concrete `bg` / `border`, `border_size`, `radius`, `background_extend`.
-- `layout`: normalized `padding` and `margin`, when supplied.
+Colors use the existing strict token resolver, including dotted paths and typo
+hints. A supplied partial palette is authoritative: explicit unknown tokens
+error. Recipe defaults read optional palette fields directly so missing optional
+colors preserve legacy behavior. `nil` means absent, never clear; false color
+overrides suppress earlier colors. False boxes reset spacing to zero. Absent
+boxes stay absent. Constants, palettes and caller style tables are not mutated.
 
-Supported paint fields match the current span protocol. Unsupported fields
-(such as `opacity`, `shadow` and `italic`) error in the prototype rather than
-claiming native support. This does not change acceptance of legacy raw styles.
-The prototype assumes the existing numeric paint-field types and keeps their
-values unchanged; native geometry rules remain with existing surface adapters.
+Span padding retains fractions. Bar/chrome pixel dimensions floor values and
+clamp negative or non-finite input through one shared surface normalizer.
+Their existing sizing units, hit geometry and truncation rules are unchanged.
 
-Colors resolve only against the supplied palette, including dotted tokens and
-strict typo hints. Invalid literal colors are omitted as in legacy span
-serialization. The helper performs no global theme lookup or caching. Callers
-must obtain a fresh palette after a theme change and recompute affected styles.
+## Recipes and states
 
-Layer order is caller-owned. For eventual recipes it should be base, variant,
-size, hover, selected, pressed, focus-visible, disabled, explicit override, but
-this prototype supplies none of those states automatically. To preserve current
-span hover, call `apply_hover` before computing; an inactive `hover` table is
-not applied or resolved. Legacy group inheritance is unchanged. Inherited text
-can be supplied as a first layer; do not feed parent boxes or callbacks into
-new inheritance paths.
+Private `shared.resolve_component_style` owns button, tab, list-row and panel
+recipes. Dialog buttons and action buttons use the same button recipe with
+legacy presentation defaults; their existing colors and geometry are retained.
+Select, palette and mux-navigator rows share the list-row recipe. Panel chrome
+uses the panel recipe. Presets remain plain constants where that is simpler.
 
-`nil` means absent and cannot clear an earlier layer. Explicit false color
-values suppress earlier colors and become absent concrete paint. A false box
-resets spacing to zero. A missing box remains absent, preserving adapter
-defaults; an explicitly supplied box normalizes all four edges. Zero and false
-values in ordinary fields retain existing merge behavior.
+State order is base/variant/size, hovered, selected, pressed, focus-visible,
+disabled, then explicit instance override. State comes from existing event or
+model owners. Selection is never inferred from hover. Pressed/focus paint can
+be resolved internally but no input states or public behavior are fabricated.
+Disabled public buttons suppress callbacks and hover paint, including callbacks
+registered by a previous enabled overlay render.
 
-## Legacy adapter and fixtures
+New `ui.button` variant/size options opt into the themed recipe; ordinary raw
+buttons retain their original style behavior. `ui.action_button` always uses
+the recipe and preserves legacy whole-padding-box replacement and
+`hover_style` precedence. Tabs retain badge padding and background extension.
 
-`shared.computed_style_to_segment(text, computed, id)` maps the snapshot to the
-existing span protocol. Identity is supplied separately; callbacks and IDs are
-never copied into computed paint. Padding is copied on output so mutation of
-one segment cannot alter a shared snapshot. Margin remains in the computed
-snapshot and is not emitted into a span protocol that has no margin field.
+A selectable overlay row accepts explicit `selected` and a small `style`
+contract: foreground, background, bold, radius and hover. Only foreground/bold
+inherit into text. Row padding, border and other unsupported fields error rather
+than silently promising geometry support. Existing segment padding remains the
+way to size list-row content. Legacy `fill_bg`/`fill_radius` are final overrides;
+selection accents remain separate parts. Sidebar rows share text normalization;
+their existing text-only host representation does not gain overlay row boxes.
 
-The action-button fixture compares this adapter directly to
-`style_to_segment`, after existing hover resolution, for normal/hover/selected
-combinations in Hollow, Kanagawa Wave, Nord and Rose Pine. The row fixture maps
-`fill_bg` to `box.bg` and `fill_radius` to `box.radius`; selection accents remain
-separate component parts. Row/chrome/bar compatibility adapters and recipes are
-still future work, not implicit behavior of this prototype.
+Overlay `style` supplies surface values; explicitly present `chrome` fields
+win, replacing whole padding/margin boxes as before. Bars and overlays share
+surface pixel normalization and token rules. Bar close-button part colors also
+accept tokens. Auto-generated bar IDs copy node styles before writing identity,
+so shared styles cannot leak IDs or hover mutations between siblings.
 
-## Measurement and migration gate
+## Native boundary and fallback inventory
 
-Run from the repository root with the LuaJIT/Busted dependencies installed:
+The host schema is retained, with one additive optional row field: `hover_bg`.
+Lua supplies widget-palette hover paint; native code uses it and keeps the old
+fallback for older or incomplete producers. Native placement and hit-region
+math are untouched.
+
+Intentional remaining UI fallbacks in `src/render/sokol_runtime.zig`:
+
+| Area | Fallback ownership |
+| --- | --- |
+| `OVERLAY_HOVER_BG` | Old producers without row `hover_bg`; new Lua rows supply palette paint |
+| Overlay panel background, border, alpha and geometry | Raw overlays without chrome; built-in modal/notification/picker chrome is supplied by Lua recipes |
+| Tab active/inactive colors and selection stripe | Raw bar tabs without explicit paint; existing configured bars retain their supplied theme styles |
+| Segment/sidebar default foreground | Spans that omit foreground; explicit colors/tokens win |
+| Scrollbar track/thumb colors | Incomplete rows; built-in list rows supply palette colors |
+
+Keeping these fallbacks preserves custom configs and older producers. Removing
+all native defaults or replacing the protocol/layout engine is outside this
+compatibility migration. Terminal VT styling remains separate.
+
+## Verification and performance
+
+Run with LuaJIT/Busted dependencies installed:
 
 ```sh
-luajit scripts/bench-ui-style.lua
 scripts/test-lua.sh
+luajit scripts/bench-ui-style.lua
+luajit scripts/bench-ui-style.lua --components
+luajit scripts/bench-ui-style.lua --overlay
+zig fmt --check src/render/sokol_runtime.zig
+zig build test-lua
+zig build test
 ```
 
-The benchmark warms each path and reports the median of seven timed batches,
-with ordinary garbage collection enabled. A separate pass disables collection
-briefly to count allocated Lua bytes per node. It compares the legacy segment
-path, recomputing a snapshot for every segment, and adapting an existing
-snapshot. Nodes repeat one action style; this is a Lua microbenchmark, not a
-native frame, input-latency or full widget-tree benchmark.
+Tests cover state precedence, input immutability, missing partial-theme fields,
+button variants/sizes, disabled activation, row text/box separation, chrome
+precedence, shared bar styles, runtime theme changes, and bar part tokens.
+Existing serialized fixtures cover tabs/dialogs/lists and action paint in both
+bars and overlays. Four-theme parity fixtures cover Hollow, Kanagawa Wave,
+Nord and Rose Pine.
 
-One Linux x86-64 LuaJIT run, milliseconds per batch:
+The benchmark warms each path, reports the median of seven timed batches with
+ordinary GC, and separately measures allocations with GC briefly stopped.
+`--components` repeatedly builds an action, a badged tab and a list-row recipe,
+and serializes their spans. It can run unchanged at pre-unification commit
+`68709b3`. These are homogeneous Lua workloads, not native frame or input latency
+measurements. No generic style cache was added; theme palettes already cache and
+invalidate on theme changes. Open built-in widget palettes and default chrome
+refresh in place through weakly held references, retaining explicit instance
+overrides and allowing closed widgets to be collected.
 
-| Nodes | Legacy | Recompute + adapt | Reuse + adapt |
-| --- | ---: | ---: | ---: |
-| 25 | 0.032 | 0.056 | 0.020 |
-| 100 | 0.153 | 0.284 | 0.087 |
-| 500 | 1.091 | 1.809 | 0.422 |
+`--overlay` measures actual Lua render plus overlay serialization for rows that
+contain an action and a badged tab, with list-row paint and panel chrome. A
+Linux x86-64 LuaJIT sample compared with `68709b3`:
 
-Allocated bytes/node were 752, 1848 and 720 respectively. Timings vary with the
-host; these values establish no universal budget or native performance claim.
+| Rows | Baseline ms | Unified ms | Baseline bytes/row | Unified bytes/row |
+| --- | ---: | ---: | ---: | ---: |
+| 25 | 0.953 | 0.896 | 16336 | 16850 |
+| 100 | 3.813 | 3.509 | 15895 | 16363 |
+| 500 | 25.380 | 24.408 | 15770 | 16238 |
 
-**Decision:** keep this prototype outside the live render path. Recomputing
-nested snapshots for every serialization costs more time and allocations than
-the existing path. A later recipe migration should compute once for a dirty
-node and reuse its snapshot, or simplify the shape to centralized flat
-normalization. Do not introduce a generic cache until a real component proves
-it worthwhile. This slice intentionally does not complete Phase 1's live
-bar/overlay adoption exit criterion.
+This sample shows similar render/serialization timings, with roughly 3% more
+allocated bytes per row. Component-only groups used 13636 bytes before and
+13720 after (about 0.6% more). Host scheduling and GC vary; these values do not
+establish a universal tolerance or native frame-time claim.
 
-Native screenshots, DPI/hit-region checks and Zig tests are still pending;
-this environment has no Zig toolchain or running Hollow GUI.
+Native visual acceptance across DPI/window sizes, screenshots and complete
+native timing remain unverified in this environment. Zig 0.17 formatting passes;
+both build test commands are blocked while fetching external dependencies with
+`HttpConnectionClosing`. The Lua suite runs directly through LuaJIT/Busted.
