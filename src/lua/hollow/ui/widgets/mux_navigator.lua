@@ -14,6 +14,8 @@ ui.mux_navigator = ui.mux_navigator or {}
 local DEFAULT_TOTAL_ROWS = 30
 local DEFAULT_WIDTH = 100
 local FILTER_ORDER = { "all", "pane_bell" }
+local TITLE = ui.styles.title
+local MUTED = ui.styles.muted
 
 local FILTERS = {
   all = {
@@ -322,6 +324,7 @@ function ui.mux_navigator.open(opts)
                 and not hovered
                 and theme.notify_levels.success
               or row_fg
+            local detail = row_detail(row)
             local row_nodes = {
               list_style.indicator(ui, theme, selected, hovered),
               ui.text(indent),
@@ -337,19 +340,26 @@ function ui.mux_navigator.open(opts)
                 fg = prefix_fg,
                 bold = is_workspace or selected or active,
               }),
+              ui.when(row.status_badge, function()
+                return ui.text(" " .. row.status_badge, {
+                  fg = program_status.color(row.status_state),
+                  bold = true,
+                })
+              end),
+              ui.when(value ~= nil, function()
+                return ui.text(": " .. value, { fg = value_fg, bold = selected or active })
+              end),
+              ui.when(detail ~= "", function()
+                return {
+                  ui.spacer(),
+                  ui.text(detail, ui.styled(theme, MUTED)),
+                }
+              end, function()
+                return ui.when(row.kind == "pane" and row.item.cwd ~= "", function()
+                  return { ui.spacer(), ui.text(row.item.cwd, { fg = theme.subtle }) }
+                end)
+              end),
             }
-            if row.status_badge then
-              row_nodes[#row_nodes + 1] = ui.text(" " .. row.status_badge, {
-                fg = program_status.color(row.status_state),
-                bold = true,
-              })
-            end
-            if value ~= nil then
-              row_nodes[#row_nodes + 1] = ui.text(": " .. value, {
-                fg = value_fg,
-                bold = selected or active,
-              })
-            end
 
             list_style.row(
               options,
@@ -359,37 +369,22 @@ function ui.mux_navigator.open(opts)
               is_workspace and (theme.selected_detail_bg or theme.panel_bg) or nil
             )
 
-            local detail = row_detail(row)
-            if detail ~= "" then
-              row_nodes[#row_nodes + 1] = ui.spacer()
-              row_nodes[#row_nodes + 1] = ui.text(detail, { fg = theme.muted })
-            elseif row.kind == "pane" and row.item.cwd ~= "" then
-              row_nodes[#row_nodes + 1] = ui.spacer()
-              row_nodes[#row_nodes + 1] = ui.text(row.item.cwd, { fg = theme.subtle })
-            end
-
             return ui.row(row_nodes, options)
           end)
           :get()
       or { ui.row({ ui.text("No matching panes", { fg = theme.empty }) }) }
 
     local search_row = ui.row({
-      ui.text("/ ", { fg = theme.title, bold = true }),
+      ui.text("/ ", ui.styled(theme, TITLE)),
       search_mode and ui.group(filter.render(theme))
-        or ui.text("search panes", { fg = theme.muted }),
+        or ui.text("search panes", ui.styled(theme, MUTED)),
       ui.spacer(),
       ui.text(filter_id == "pane_bell" and (icons.bell .. " ") or "  ", {
         fg = filter_id == "pane_bell" and theme.notify_levels.warn or theme.muted,
       }),
-      ui.text(pane_filter.label, { fg = theme.muted }),
+      ui.text(pane_filter.label, ui.styled(theme, MUTED)),
     })
-    return ui.column(hollow
-      .tbl({
-        search_row,
-        ui.divider(theme.divider),
-      })
-      :concat(tree_rows)
-      :get())
+    return ui.column({ search_row, ui.divider(theme.divider), tree_rows })
   end
 
   local handlers = {
