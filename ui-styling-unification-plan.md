@@ -323,7 +323,7 @@ If this does not materially reduce special-case style code or improve visual con
 
 ## Implementation progress
 
-- Phase 0, first slice: `ui.themed_style` is canonical; `ui.styled` is retained
+- Phase 0, first slice: `ui.styled` is canonical; `ui.themed_style` is retained
   as the same function. LuaLS and API docs cover both names and current override
   precedence.
 - Added serialized fixtures for the existing list-row selected/hover priority

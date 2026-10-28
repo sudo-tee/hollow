@@ -219,13 +219,13 @@ end
 ---@param theme table|nil
 ---@vararg HollowUiNodeStyle|false|nil
 ---@return HollowUiNodeStyle
-function ui.themed_style(theme, ...)
+function ui.styled(theme, ...)
   local style = ui.style(...)
   return theme and shared.resolve_tokens(style, theme) or style
 end
 
---- Compatibility alias for the original helper name.
-ui.styled = ui.themed_style
+--- Compatibility alias for the alternate documented helper name.
+ui.themed_style = ui.styled
 
 local TAB = { fg = "muted", bold = false, radius = 4, padding = { x = 8, y = 3 } }
 local TAB_ACTIVE = { fg = "selection_fg", bg = "selection_bg", bold = true }
@@ -285,7 +285,7 @@ function ui.tab(opts)
     ui.button({
       id = opts.id,
       text = badge and (opts.label .. " ") or opts.label,
-      style = ui.themed_style(
+      style = ui.styled(
         theme,
         TAB,
         active and TAB_ACTIVE,
@@ -299,7 +299,7 @@ function ui.tab(opts)
         ui.button({
           id = opts.id .. ":badge",
           text = tostring(badge.text),
-          style = ui.themed_style(theme, ui.styles.badge, { bg = badge.color }),
+          style = ui.styled(theme, ui.styles.badge, { bg = badge.color }),
           on_click = opts.on_click,
         }),
         " ",
