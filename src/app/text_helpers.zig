@@ -64,6 +64,16 @@ pub fn titleCString(text: []const u8) [256:0]u8 {
     return buf;
 }
 
+pub fn windowTitleCString(text: []const u8, agent: bool) [256:0]u8 {
+    if (!agent) return titleCString(text);
+    const suffix = " (hollow-agent)";
+    var buf: [256:0]u8 = [_:0]u8{0} ** 256;
+    const len = @min(text.len, 255 - suffix.len);
+    fastmem.copy(u8, buf[0..len], text[0..len]);
+    fastmem.copy(u8, buf[len..][0..suffix.len], suffix);
+    return buf;
+}
+
 pub fn firstCodepoint(text: []const u8) u32 {
     if (text.len == 0) return 0;
     const len = std.unicode.utf8ByteSequenceLength(text[0]) catch return text[0];
@@ -221,6 +231,14 @@ test "titleCString truncates and null terminates window titles" {
 
     try std.testing.expectEqual(@as(u8, 'x'), title[0]);
     try std.testing.expectEqual(@as(u8, 'x'), title[254]);
+    try std.testing.expectEqual(@as(u8, 0), title[255]);
+}
+
+test "window title identifies agent and reserves space for indicator" {
+    try std.testing.expectEqualStrings("shell (hollow-agent)", std.mem.span(@as([*:0]const u8, &windowTitleCString("shell", true))));
+    try std.testing.expectEqualStrings("shell", std.mem.span(@as([*:0]const u8, &windowTitleCString("shell", false))));
+    const title = windowTitleCString("x" ** 300, true);
+    try std.testing.expectEqualStrings(" (hollow-agent)", title[255 - " (hollow-agent)".len .. 255]);
     try std.testing.expectEqual(@as(u8, 0), title[255]);
 }
 

@@ -1975,7 +1975,7 @@ pub const App = struct {
             self.requestLayoutResize(true);
         }
 
-        const window_title = text_helpers.titleCString(self.activeTitle());
+        const window_title = self.windowTitleCString();
         sapp_set_window_title(&window_title);
 
         if (self.lua) |*lua| {
@@ -2080,6 +2080,14 @@ pub const App = struct {
             if (pane.title.len > 0) return pane.title;
         }
         return self.config.windowTitle();
+    }
+
+    pub fn windowTitleCString(self: *App) [256:0]u8 {
+        const agent = if (self.activePane()) |pane|
+            if (pane.pty) |*pty| @import("pty/pty.zig").usesAgent(pty) else false
+        else
+            false;
+        return text_helpers.windowTitleCString(self.activeTitle(), agent);
     }
 
     /// Height in pixels of the shared top bar. 0 when hidden.

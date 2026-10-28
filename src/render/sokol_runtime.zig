@@ -4360,7 +4360,8 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         app.fireGuiReady();
     }
 
-    updateWindowTitle(app.activeTitle());
+    const window_title = app.windowTitleCString();
+    updateWindowTitle(std.mem.span(@as([*:0]const u8, &window_title)));
 }
 
 fn updatePerfCounters(frame_start_ns: i128) void {
