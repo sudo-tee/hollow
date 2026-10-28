@@ -80,10 +80,32 @@ describe("UI styles", function()
     local base = { fg = "muted", bold = false }
     local active = { fg = "selection_fg", bold = true }
 
-    assert.same({ fg = "#111111", bold = false }, hollow.ui.styled(theme, base, false and active))
-    assert.same({ fg = "#222222", bold = true }, hollow.ui.styled(theme, base, active))
-    assert.same({ fg = "muted", bold = false }, hollow.ui.styled(nil, base))
+    assert.same(
+      { fg = "#111111", bold = false },
+      hollow.ui.themed_style(theme, base, false and active)
+    )
+    assert.same({ fg = "#222222", bold = true }, hollow.ui.themed_style(theme, base, active))
+    assert.same({ fg = "muted", bold = false }, hollow.ui.themed_style(nil, base))
     assert.equals("muted", base.fg)
+  end)
+
+  it("retains styled as the same helper for existing configs", function()
+    assert.equals(hollow.ui.themed_style, hollow.ui.styled)
+    local base = { fg = "muted", hover = { bg = "hover_bg" }, padding = { x = 4 } }
+    local palette = { muted = "#111111", hover_bg = "#222222" }
+    assert.same(
+      hollow.ui.themed_style(palette, base, false, { padding = { right = 0 } }),
+      hollow.ui.styled(palette, base, false, { padding = { right = 0 } })
+    )
+    local resolved = hollow.ui.themed_style(palette, base)
+    resolved.hover.bg = "#ffffff"
+    resolved.padding.left = 99
+    assert.equals("hover_bg", base.hover.bg)
+    assert.same({ x = 4 }, base.padding)
+    assert.same(hollow.ui.style(base), hollow.ui.themed_style(nil, base))
+    assert.has_error(function()
+      hollow.ui.themed_style({ fg = "#111111" }, { fg = "missing" })
+    end)
   end)
 
   it("normalizes box shorthand before applying side overrides", function()

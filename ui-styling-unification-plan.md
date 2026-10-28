@@ -1,7 +1,7 @@
 # Hollow UI styling unification plan
 
 **Target:** `feat/declarative-ui`
-**Status:** proposed / not implemented
+**Status:** implementation started; Phase 0 API reconciliation and serialized baseline fixtures implemented
 **Scope:** Lua widget styling, theme resolution, interaction states, the Lua-to-Zig presentation contract, and future Lua-view reuse.
 **Companion plans:** `ui-master-plan.md`, `ui-styles-plan.md`, `ui-composition-plan.md`.
 **Out of scope:** changes to the mux split tree, terminal cell styling, and choosing a layout engine.
@@ -320,3 +320,19 @@ If this does not materially reduce special-case style code or improve visual con
 ---
 
 **Implementation note:** On this branch `src/lua_bridge.zig` has an explicit embedded-Lua module registry. If a new Lua source module is introduced, register it there; otherwise start within existing modules to keep the first PR small.
+
+## Implementation progress
+
+- Phase 0, first slice: `ui.themed_style` is canonical; `ui.styled` is retained
+  as the same function. LuaLS and API docs cover both names and current override
+  precedence.
+- Added serialized fixtures for the existing list-row selected/hover priority
+  and action-button paint/geometry in a top bar and overlay, including hover
+  leave. Fixtures also pass unchanged at the pre-implementation commit
+  `68709b3`.
+- Existing tab, dialog, palette, notification, sidebar and bar tests remain the
+  broader regression coverage. Native screenshots and render/allocation timing
+  baselines are still pending; serialized fixtures do not replace those checks.
+- Next slice: the private pure resolver, with the existing fixtures as its
+  compatibility boundary. No recipes, state APIs or native protocol changes
+  have shipped in this first slice.

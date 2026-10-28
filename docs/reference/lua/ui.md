@@ -240,7 +240,8 @@ local style = ui.style(BASE, active and ACTIVE)
 
 `ui.themed_style(theme, ...)` applies the same merge and eagerly resolves
 tokens against supplied theme. With `theme == nil`, it behaves like `ui.style`
-and leaves tokens for normal rendering-time resolution. `style.hover` is
+and leaves tokens for normal rendering-time resolution. `ui.styled` remains
+an alias for compatibility; use `ui.themed_style` in new code. `style.hover` is
 applied by overlay rendering when an identified node is hovered. Give overlay
 spans a non-empty `style.id`, or use `ui.button({ id = ..., ... })`. Bars may
 assign automatic ids. Row-level hover remains controlled separately through
@@ -254,6 +255,30 @@ ui.button({
   on_click = run,
 })
 ```
+
+### Compatibility precedence
+
+These are the existing rules preserved during styling unification:
+
+- `ui.style` uses the last supplied value for ordinary fields, merges box
+  edges and nested `hover`, skips `nil`/`false` layers, and preserves explicit
+  `false` field values. A `nil` field is absent, not a request to clear an
+  earlier layer.
+- `ui.action_button` starts with the select palette (or the supplied
+  `opts.theme`). `opts.style` replaces ordinary fields and whole padding boxes;
+  its `hover` table merges over the default hover. Legacy `opts.hover_style`
+  wins over that hover table, and its padding replaces the whole hover box.
+  Tokens in these overrides resolve against the same palette.
+- Hover on an identified span overrides its base style only while that span
+  is hovered. List rows have a separate legacy state policy: selected paint
+  wins over hovered paint, followed by the default row background.
+- `ui.button` copies styles before assigning `opts.id` and event callbacks;
+  those explicit options win over event fields in the supplied style.
+
+These rules describe today's API, not a new recipe or state API. The baseline
+fixtures in `src/lua/tests/test_ui_style_baseline.lua` lock row paint and action
+segment geometry/paint across normal, hovered and selected states. They run
+through real overlay/bar serialization; native drawing still needs visual QA.
 
 Built-in presets are plain style tables: `ui.styles.muted`, `.title`, `.pill`,
 `.badge`, `.kbd`. Treat them as constants; derive modified styles with
