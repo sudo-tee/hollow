@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Router for Hollow's terminal benchmarks; each mode is implemented in scripts/.
+# Router for Hollow's terminal benchmarks; workload modes are implemented in scripts/.
 # With no arguments (or --help) it lists the modes. Invoke as `bench.sh`
 # (or `make bench`).
 set -euo pipefail
@@ -9,7 +9,7 @@ prog="$(basename -- "${BASH_SOURCE[0]}")"
 
 usage() {
   cat <<EOF
-$prog: router for Hollow's terminal benchmarks. Each mode lives in scripts/.
+$prog: router for Hollow's terminal benchmarks. Workload modes live in scripts/.
 
 Workload modes only emit terminal traffic on stdout; run them inside the
 terminal under test (e.g. a Hollow pane).
@@ -24,6 +24,15 @@ terminal under test (e.g. a Hollow pane).
   chunked       chunked writes with synchronized output
   chunked-raw   chunked writes without synchronized output
   codex-flash   sparse timer-driven status-row updates
+  image         visible Kitty image placement and composition workload
+  image-animation visible Kitty animated-image workload
+  $prog image [COUNT] [RATE_HZ] [IMAGES] [PIXELS] [CHUNK_BYTES]
+  $prog image-animation [TICKS] [RATE_HZ] [IMAGES] [ANIMATION_FRAMES] [FRAME_DELAY_MS]
+
+Headless renderer modes:
+
+  $prog renderer-image [renderer-bench ARGS...]
+  $prog renderer-image-animation [renderer-bench ARGS...]
 
 Workflow modes:
 
@@ -49,10 +58,31 @@ need_python() {
   fi
 }
 
+run_renderer_bench() {
+  local scenario="$1"
+  shift
+  if [[ -x "$script_dir/zig-out/bin/hollow-renderer-bench" ]]; then
+    exec "$script_dir/zig-out/bin/hollow-renderer-bench" --scenario "$scenario" "$@"
+  fi
+  if ! command -v zig >/dev/null 2>&1; then
+    echo "$prog requires zig or zig-out/bin/hollow-renderer-bench" >&2
+    exit 1
+  fi
+  cd -- "$script_dir"
+  exec zig build run-renderer-bench -Doptimize=ReleaseFast -- --scenario "$scenario" "$@"
+}
+
 case "$mode" in
   scroll|repaint|keypress|split-scroll|sync-output|chunked|chunked-raw|codex-flash)
     need_python
     HOLLOW_BENCH_PROG="$prog" exec python3 "$script_dir/scripts/bench_workloads.py" "$mode" "$@"
+    ;;
+  image|image-animation)
+    need_python
+    exec python3 "$script_dir/scripts/bench_images.py" "$mode" "$@"
+    ;;
+  renderer-image|renderer-image-animation)
+    run_renderer_bench "${mode#renderer-}" "$@"
     ;;
   cpu)
     need_python

@@ -14,6 +14,14 @@ test "renderer handles timer-driven flashing updates" {
     try benchmark.runFlashScenarioTest(std.testing.allocator);
 }
 
+test "renderer prepares static Kitty image placements" {
+    try benchmark.runImageScenarioTest(std.testing.allocator);
+}
+
+test "renderer advances animated Kitty images" {
+    try benchmark.runImageAnimationScenarioTest(std.testing.allocator);
+}
+
 test "direct glyph vertices include pane offset" {
     try benchmark.runPaneGlyphOffsetTest(std.testing.allocator);
 }

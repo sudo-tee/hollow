@@ -387,7 +387,7 @@ fn selectionRedrawRange(previous: ?selection.Range, current: ?selection.Range) ?
     };
 }
 
-const ROW_MAP_EMPTY: u64 = 0; // sentinel: slot is unoccupied
+const ROW_MAP_EMPTY: ghostty.RowId = 0; // sentinel: slot is unoccupied
 const PaneCacheEntry = struct {
     pane: *const Pane,
     cache: PaneCache,
@@ -417,12 +417,9 @@ const PaneCacheEntry = struct {
     /// one full clear so the padding and any untouched pixels match the new theme.
     last_bg_color: ghostty.ColorRgb = .{ .r = 0, .g = 0, .b = 0 },
     has_bg_color: bool = false,
-    /// Open-addressing hash map: GhosttyRow raw value → cell-content hash.
-    /// Scroll-stable: the same row's raw value is invariant across screen shifts,
-    /// so hashes survive scrolling and only rows with genuinely changed content
-    /// are re-rendered.
+    /// Open-addressing map: opaque, scroll-stable row ID → cell-content hash.
     /// Slot is empty when key == ROW_MAP_EMPTY (0).
-    row_map_keys: [ROW_MAP_CAP]u64 = @splat(ROW_MAP_EMPTY),
+    row_map_keys: [ROW_MAP_CAP]ghostty.RowId = @splat(ROW_MAP_EMPTY),
     row_map_vals: [ROW_MAP_CAP]u64 = @splat(0),
     /// Cursor row from the *previous* rendered frame (0-based).
     /// Used to force-clear old cursor pixels when the cursor moves to a new row
@@ -3257,6 +3254,11 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     var offscreen_bar_preraster_ns: i128 = 0;
 
     if (g_ft_renderer) |*renderer| renderer.beginFrame();
+    if (g_ft_renderer) |*renderer| if (app.ghostty) |*runtime| {
+        if (leaves.len > 0) {
+            for (leaves) |leaf| renderer.prepareKittyTextures(runtime, leaf.pane.terminal, leaf.pane.render_state);
+        } else if (app.activePane()) |pane| renderer.prepareKittyTextures(runtime, pane.terminal, pane.render_state);
+    };
 
     // Decide once whether to use direct rendering.
     // renderer_safe_mode forces the simpler direct path for all panes as a
@@ -3917,9 +3919,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                     const ph_u: u32 = @max(1, @as(u32, @intFromFloat(ph)));
                     if (getOrCreatePaneCacheEntry(leaf.pane, pw_u, ph_u)) |entry| {
                         renderer.blitCache(&entry.cache, ox, oy, pw, ph, width, height);
-                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_bg, ox, oy, pw, ph, width, height);
-                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .below_text, ox, oy, pw, ph, width, height);
-                        renderer.queueKittyLayerInPane(runtime, leaf.pane.terminal, .above_text, ox, oy, pw, ph, width, height);
                     }
                 }
             } else if (app.activePane()) |pane| {
@@ -3966,9 +3965,6 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
                         const ph_u: u32 = @max(1, @as(u32, @intFromFloat(height)));
                         if (getOrCreatePaneCacheEntry(pane, pw_u, ph_u)) |entry| {
                             renderer.blitCache(&entry.cache, 0, 0, width, height, width, height);
-                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_bg, 0, 0, width, height, width, height);
-                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .below_text, 0, 0, width, height, width, height);
-                            renderer.queueKittyLayerInPane(runtime, pane.terminal, .above_text, 0, 0, width, height, width, height);
                         }
                     }
                 }
@@ -4183,7 +4179,10 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     }
 
     // Flush all queued geometry — exactly once per frame.
+    c.sgl_draw_layer(-3);
+    c.sgl_draw_layer(-2);
     c.sgl_draw();
+    c.sgl_draw_layer(-1);
     swapchain_ui_ns += io.nanoTimestamp() - swapchain_ui_start_ns;
 
     // Draw glyph quads through the custom gamma-correct pipeline.
@@ -4209,6 +4208,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         }
     }
     swapchain_glyph_ns += io.nanoTimestamp() - swapchain_glyph_start_ns;
+    c.sgl_draw_layer(1);
 
     const swapchain_submit_start_ns = io.nanoTimestamp();
     c.sg_end_pass();

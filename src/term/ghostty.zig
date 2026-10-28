@@ -4,6 +4,58 @@ pub const success = 0;
 pub const out_of_space = -3;
 pub const no_value = -4;
 
+pub const RowId = u128;
+const NativeRowId = extern struct { bits: [2]u64 };
+const CellsView = extern struct { ptr: ?[*]const u64, len: usize };
+const SelectWordOptions = extern struct {
+    size: usize = @sizeOf(SelectWordOptions),
+    ref: GridRef,
+    boundary_codepoints: ?[*]const u32 = null,
+    boundary_codepoints_len: usize = 0,
+};
+const SelectLineOptions = extern struct {
+    size: usize = @sizeOf(SelectLineOptions),
+    ref: GridRef,
+    whitespace: ?[*]const u32 = null,
+    whitespace_len: usize = 0,
+    semantic_prompt_boundary: bool = false,
+};
+
+const Writer = extern struct {
+    write: *const fn (?*anyopaque, [*]const u8, usize) callconv(.c) bool,
+    userdata: ?*anyopaque,
+};
+const MimeReader = extern struct {
+    read: *const fn (?*anyopaque, String, Writer) callconv(.c) bool,
+    userdata: ?*anyopaque,
+};
+const Paste = extern struct {
+    size: usize = @sizeOf(Paste),
+    location: c_int = 0,
+    source: c_int = 0,
+    mimes: [*]const String,
+    mimes_len: usize = 1,
+    reader: MimeReader,
+    allow_unsafe: bool = false,
+};
+
+/// Stages the native paste's callback chunks for one atomic PTY queue admission.
+pub const PasteOutput = struct {
+    allocator: std.mem.Allocator,
+    bytes: std.ArrayList(u8) = .empty,
+    failure: ?error{OutOfMemory} = null,
+
+    pub fn append(self: *PasteOutput, bytes: []const u8) void {
+        if (self.failure != null) return;
+        self.bytes.appendSlice(self.allocator, bytes) catch {
+            self.failure = error.OutOfMemory;
+        };
+    }
+    pub fn deinit(self: *PasteOutput) void {
+        self.bytes.deinit(self.allocator);
+    }
+};
+
 pub const ColorRgb = extern struct {
     r: u8,
     g: u8,
@@ -132,6 +184,11 @@ pub const ProgramStatus = extern struct {
     title: String,
     message: String,
 };
+
+pub const DesktopNotification = extern struct { size: usize, title: String, body: String };
+pub const ProgressReport = extern struct { size: usize, state: c_int, progress: i8 };
+pub const DesktopNotificationCallback = *const fn (?*anyopaque, ?*anyopaque, *const DesktopNotification) callconv(.c) void;
+pub const ProgressReportCallback = *const fn (?*anyopaque, ?*anyopaque, *const ProgressReport) callconv(.c) void;
 
 pub const SemanticPrompt = extern struct {
     size: usize,
@@ -270,6 +327,8 @@ pub const TerminalOpt = enum(u32) {
     pwd_changed = 25,
     clipboard_write = 26,
     scrollback_max_bytes = 27,
+    desktop_notification = 29,
+    progress_report = 30,
     mode = 34,
     clipboard_write_max_bytes = 39,
     render_hold = 41,
@@ -320,38 +379,6 @@ pub const SysOpt = enum(u32) {
     log = 2,
 };
 
-pub const KittyGraphicsData = enum(u32) {
-    invalid = 0,
-    placement_iterator = 1,
-};
-
-pub const KittyGraphicsPlacementData = enum(u32) {
-    invalid = 0,
-    image_id = 1,
-    placement_id = 2,
-    is_virtual = 3,
-    x_offset = 4,
-    y_offset = 5,
-    source_x = 6,
-    source_y = 7,
-    source_width = 8,
-    source_height = 9,
-    columns = 10,
-    rows = 11,
-    z = 12,
-};
-
-pub const KittyPlacementLayer = enum(u32) {
-    all = 0,
-    below_bg = 1,
-    below_text = 2,
-    above_text = 3,
-};
-
-pub const KittyGraphicsPlacementIteratorOption = enum(u32) {
-    layer = 0,
-};
-
 pub const KittyImageFormat = enum(u32) {
     rgb = 0,
     rgba = 1,
@@ -370,6 +397,59 @@ pub const KittyImageData = enum(u32) {
     compression = 6,
     data_ptr = 7,
     data_len = 8,
+    generation = 9,
+};
+
+pub const ImageLayer = enum(c_int) { below_bg, below_text, above_text };
+pub const RenderImage = struct {
+    protocol: c_int = 0,
+    image_id: u32 = 0,
+    generation: u64 = 0,
+    layer: c_int = 0,
+    z: i32 = 0,
+    col: i32 = 0,
+    row: i32 = 0,
+    offset_x: u32 = 0,
+    offset_y: u32 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
+    source_x: u32 = 0,
+    source_y: u32 = 0,
+    source_width: u32 = 0,
+    source_height: u32 = 0,
+
+    fn lessThan(_: void, a: RenderImage, b: RenderImage) bool {
+        return if (a.layer != b.layer) a.layer < b.layer else a.z < b.z;
+    }
+};
+
+/// Reusable, owned list of resolved fixed, relative and placeholder placements.
+pub const RenderImages = struct {
+    iterator: ?*anyopaque = null,
+    items: std.ArrayList(RenderImage) = .empty,
+
+    pub fn deinit(self: *RenderImages, allocator: std.mem.Allocator) void {
+        ghostty_render_state_image_iterator_free(self.iterator);
+        self.items.deinit(allocator);
+        self.* = .{};
+    }
+
+    pub fn update(self: *RenderImages, allocator: std.mem.Allocator, state: ?*anyopaque) !void {
+        self.items.clearRetainingCapacity();
+        errdefer self.items.clearRetainingCapacity();
+        if (state == null) return;
+        if (self.iterator == null and ghostty_render_state_image_iterator_new(null, &self.iterator) != success) return error.OutOfMemory;
+        var iterator = self.iterator;
+        if (ghostty_render_state_get(state, 22, @ptrCast(&iterator)) != success) return error.ImageIteratorFailed;
+        while (ghostty_render_state_image_iterator_next(self.iterator)) {
+            var image: RenderImage = .{};
+            const keys = [_]c_int{ 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17 };
+            const values = [_]*anyopaque{ &image.protocol, &image.image_id, &image.generation, &image.layer, &image.z, &image.col, &image.row, &image.offset_x, &image.offset_y, &image.width, &image.height, &image.source_x, &image.source_y, &image.source_width, &image.source_height };
+            if (ghostty_render_state_image_get_multi(self.iterator, keys.len, &keys, &values, null) != success or image.protocol != 0) continue;
+            try self.items.append(allocator, image);
+        }
+        std.mem.sort(RenderImage, self.items.items, {}, RenderImage.lessThan);
+    }
 };
 
 pub const SysImage = extern struct {
@@ -392,21 +472,6 @@ pub const Allocator = extern struct {
 };
 
 pub const DecodePngFn = *const fn (?*anyopaque, ?*const Allocator, [*]const u8, usize, *SysImage) callconv(.c) bool;
-
-pub const KittyGraphicsPlacementRenderInfo = extern struct {
-    size: usize,
-    pixel_width: u32,
-    pixel_height: u32,
-    grid_cols: u32,
-    grid_rows: u32,
-    viewport_col: i32,
-    viewport_row: i32,
-    viewport_visible: bool,
-    source_x: u32,
-    source_y: u32,
-    source_width: u32,
-    source_height: u32,
-};
 
 pub const TerminalScreen = enum(u32) {
     primary = 0,
@@ -439,6 +504,7 @@ pub const RenderStateData = enum(u32) {
     cursor_viewport_y = 16,
     cursor_viewport_wide_tail = 17,
     colors = 19,
+    image_placements_generation = 23,
 };
 
 pub const CursorVisualStyle = enum(u32) {
@@ -463,6 +529,8 @@ pub const RowData = enum(u32) {
     dirty = 1,
     raw = 2,
     cells = 3,
+    cells_raw = 5,
+    id = 7,
 };
 
 pub const RowOpt = enum(u32) {
@@ -719,10 +787,14 @@ const TitleChangedCallback = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) v
 extern fn ghostty_terminal_new(?*anyopaque, *?*anyopaque, u16, u16) callconv(.c) i32;
 extern fn ghostty_terminal_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_terminal_vt_write(?*anyopaque, [*]const u8, usize) callconv(.c) void;
+extern fn ghostty_terminal_paste(?*anyopaque, *const Paste, ?*bool) callconv(.c) i32;
 extern fn ghostty_terminal_resize(?*anyopaque, u16, u16, u32, u32) callconv(.c) void;
 extern fn ghostty_terminal_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_terminal_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
 extern fn ghostty_terminal_grid_ref(?*anyopaque, Point, *GridRef) callconv(.c) i32;
+extern fn ghostty_terminal_point_from_grid_ref(?*anyopaque, *const GridRef, PointTag, *PointCoordinate) callconv(.c) i32;
+extern fn ghostty_terminal_select_word(?*anyopaque, *const SelectWordOptions, *Selection) callconv(.c) i32;
+extern fn ghostty_terminal_select_line(?*anyopaque, *const SelectLineOptions, *Selection) callconv(.c) i32;
 extern fn ghostty_terminal_selection_format_buf(?*anyopaque, TerminalSelectionFormatOptions, ?[*]u8, usize, *usize) callconv(.c) i32;
 extern fn ghostty_terminal_scroll_viewport(?*anyopaque, ScrollViewport) callconv(.c) void;
 extern fn ghostty_terminal_compression_activity(?*anyopaque, *u64) callconv(.c) i32;
@@ -732,16 +804,15 @@ extern fn ghostty_alloc(?*const Allocator, usize) callconv(.c) ?[*]u8;
 extern fn ghostty_kitty_graphics_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_kitty_graphics_image(?*anyopaque, u32) callconv(.c) ?*const anyopaque;
 extern fn ghostty_kitty_graphics_image_get(?*const anyopaque, u32, ?*anyopaque) callconv(.c) i32;
-extern fn ghostty_kitty_graphics_placement_iterator_new(?*const Allocator, *?*anyopaque) callconv(.c) i32;
-extern fn ghostty_kitty_graphics_placement_iterator_free(?*anyopaque) callconv(.c) void;
-extern fn ghostty_kitty_graphics_placement_iterator_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
-extern fn ghostty_kitty_graphics_placement_next(?*anyopaque) callconv(.c) bool;
-extern fn ghostty_kitty_graphics_placement_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
-extern fn ghostty_kitty_graphics_placement_render_info(?*anyopaque, ?*const anyopaque, ?*anyopaque, *KittyGraphicsPlacementRenderInfo) callconv(.c) i32;
 extern fn ghostty_render_state_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_free(?*anyopaque) callconv(.c) void;
 extern fn ghostty_render_state_update(?*anyopaque, ?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_get(?*anyopaque, u32, ?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_image_iterator_new(?*const Allocator, *?*anyopaque) callconv(.c) i32;
+extern fn ghostty_render_state_image_iterator_free(?*anyopaque) callconv(.c) void;
+extern fn ghostty_render_state_image_iterator_next(?*anyopaque) callconv(.c) bool;
+extern fn ghostty_render_state_image_get_multi(?*anyopaque, usize, [*]const c_int, [*]const *anyopaque, ?*usize) callconv(.c) i32;
+extern fn ghostty_kitty_graphics_animation_tick(?*anyopaque, u64, *u64) callconv(.c) i32;
 extern fn ghostty_render_state_set(?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_row_iterator_new(?*anyopaque, *?*anyopaque) callconv(.c) i32;
 extern fn ghostty_render_state_row_iterator_free(?*anyopaque) callconv(.c) void;
@@ -802,6 +873,8 @@ pub const TerminalCallbacks = struct {
     semantic_prompt: ?SemanticPromptCallback = null,
     reset: ?TitleChangedCallback = null,
     program_status: ?ProgramStatusCallback = null,
+    desktop_notification: ?DesktopNotificationCallback = null,
+    progress_report: ?ProgressReportCallback = null,
 };
 
 pub const Runtime = struct {
@@ -823,12 +896,6 @@ pub const Runtime = struct {
     kitty_graphics_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
     kitty_graphics_image: *const fn (?*anyopaque, u32) callconv(.c) ?*const anyopaque,
     kitty_graphics_image_get: *const fn (?*const anyopaque, u32, ?*anyopaque) callconv(.c) i32,
-    kitty_graphics_placement_iterator_new: *const fn (?*const Allocator, *?*anyopaque) callconv(.c) i32,
-    kitty_graphics_placement_iterator_free: *const fn (?*anyopaque) callconv(.c) void,
-    kitty_graphics_placement_iterator_set: *const fn (?*anyopaque, u32, ?*const anyopaque) callconv(.c) i32,
-    kitty_graphics_placement_next: *const fn (?*anyopaque) callconv(.c) bool,
-    kitty_graphics_placement_get: *const fn (?*anyopaque, u32, ?*anyopaque) callconv(.c) i32,
-    kitty_graphics_placement_render_info: *const fn (?*anyopaque, ?*const anyopaque, ?*anyopaque, *KittyGraphicsPlacementRenderInfo) callconv(.c) i32,
 
     render_state_new: *const fn (?*anyopaque, *?*anyopaque) callconv(.c) i32,
     render_state_free: *const fn (?*anyopaque) callconv(.c) void,
@@ -909,12 +976,6 @@ pub const Runtime = struct {
             .kitty_graphics_get = ghostty_kitty_graphics_get,
             .kitty_graphics_image = ghostty_kitty_graphics_image,
             .kitty_graphics_image_get = ghostty_kitty_graphics_image_get,
-            .kitty_graphics_placement_iterator_new = ghostty_kitty_graphics_placement_iterator_new,
-            .kitty_graphics_placement_iterator_free = ghostty_kitty_graphics_placement_iterator_free,
-            .kitty_graphics_placement_iterator_set = ghostty_kitty_graphics_placement_iterator_set,
-            .kitty_graphics_placement_next = ghostty_kitty_graphics_placement_next,
-            .kitty_graphics_placement_get = ghostty_kitty_graphics_placement_get,
-            .kitty_graphics_placement_render_info = ghostty_kitty_graphics_placement_render_info,
             .render_state_new = ghostty_render_state_new,
             .render_state_free = ghostty_render_state_free,
             .render_state_update = ghostty_render_state_update,
@@ -1232,7 +1293,7 @@ pub const Runtime = struct {
         self.setColorSchemeCallback(handle, cbs.color_scheme);
         self.setDeviceAttributesCallback(handle, cbs.device_attributes);
         self.setTitleChangedCallback(handle, cbs.title_changed);
-        inline for (.{ "pwd_changed", "clipboard_write", "render_hold", "semantic_prompt", "reset", "program_status" }) |name| {
+        inline for (.{ "pwd_changed", "clipboard_write", "render_hold", "semantic_prompt", "reset", "program_status", "desktop_notification", "progress_report" }) |name| {
             const cb = @field(cbs, name);
             _ = self.terminal_set(handle, @backingInt(@field(TerminalOpt, name)), if (cb) |value| @ptrCast(value) else null);
         }
@@ -1298,6 +1359,14 @@ pub const Runtime = struct {
         if (render_state) |state| {
             var rows: u16 = 0;
             if (self.render_state_get(state, @backingInt(RenderStateData.rows), &rows) == success) return rows;
+        }
+        return null;
+    }
+
+    pub fn renderStateImagePlacementsGeneration(self: *Runtime, render_state: ?*anyopaque) ?u64 {
+        if (render_state) |state| {
+            var generation: u64 = 0;
+            if (self.render_state_get(state, @backingInt(RenderStateData.image_placements_generation), &generation) == success) return generation;
         }
         return null;
     }
@@ -1572,39 +1641,15 @@ pub const Runtime = struct {
         return null;
     }
 
-    pub fn createKittyPlacementIterator(self: *Runtime) !?*anyopaque {
-        var handle: ?*anyopaque = null;
-        if (self.kitty_graphics_placement_iterator_new(null, &handle) != success or handle == null) return error.KittyPlacementIteratorCreateFailed;
-        return handle;
+    pub fn kittyStorageGeneration(self: *Runtime, graphics: ?*anyopaque) u64 {
+        var generation: u64 = 0;
+        _ = self.kitty_graphics_get(graphics, 2, &generation);
+        return generation;
     }
 
-    pub fn freeKittyPlacementIterator(self: *Runtime, handle: ?*anyopaque) void {
-        if (handle) |iterator| self.kitty_graphics_placement_iterator_free(iterator);
-    }
-
-    pub fn populateKittyPlacementIterator(self: *Runtime, graphics: ?*anyopaque, iterator: ?*anyopaque) bool {
-        if (graphics == null or iterator == null) return false;
-        var handle = iterator;
-        const result = self.kitty_graphics_get(graphics, @backingInt(KittyGraphicsData.placement_iterator), @ptrCast(&handle));
-        return result == success;
-    }
-
-    pub fn setKittyPlacementLayer(self: *Runtime, iterator: ?*anyopaque, layer: KittyPlacementLayer) bool {
-        if (iterator) |it| {
-            var copy = layer;
-            return self.kitty_graphics_placement_iterator_set(it, @backingInt(KittyGraphicsPlacementIteratorOption.layer), &copy) == success;
-        }
-        return false;
-    }
-
-    pub fn nextKittyPlacement(self: *Runtime, iterator: ?*anyopaque) bool {
-        if (iterator) |it| return self.kitty_graphics_placement_next(it);
-        return false;
-    }
-
-    pub fn kittyPlacementData(self: *Runtime, iterator: ?*anyopaque, data: KittyGraphicsPlacementData, out: ?*anyopaque) bool {
-        if (iterator) |it| return self.kitty_graphics_placement_get(it, @backingInt(data), out) == success;
-        return false;
+    pub fn tickKittyAnimation(_: *Runtime, graphics: ?*anyopaque, now_ms: u64) ?u64 {
+        var next_ms: u64 = 0;
+        return if (ghostty_kitty_graphics_animation_tick(graphics, now_ms, &next_ms) == success) next_ms else null;
     }
 
     pub fn kittyGraphicsImage(self: *Runtime, graphics: ?*anyopaque, image_id: u32) ?*const anyopaque {
@@ -1615,15 +1660,6 @@ pub const Runtime = struct {
     pub fn kittyImageData(self: *Runtime, image: ?*const anyopaque, data: KittyImageData, out: ?*anyopaque) bool {
         if (image) |value| return self.kitty_graphics_image_get(value, @backingInt(data), out) == success;
         return false;
-    }
-
-    pub fn kittyPlacementRenderInfo(self: *Runtime, iterator: ?*anyopaque, image: ?*const anyopaque, terminal: ?*anyopaque) ?KittyGraphicsPlacementRenderInfo {
-        if (iterator == null or image == null or terminal == null) return null;
-        var info = std.mem.zeroes(KittyGraphicsPlacementRenderInfo);
-        info.size = @sizeOf(KittyGraphicsPlacementRenderInfo);
-        const result = self.kitty_graphics_placement_render_info(iterator, image, terminal, &info);
-        if (result == success) return info;
-        return null;
     }
 
     pub fn cursorPos(self: *Runtime, render_state: ?*anyopaque) ?struct { x: u16, y: u16 } {
@@ -1787,49 +1823,72 @@ pub const Runtime = struct {
         return null;
     }
 
-    /// Get the raw GhosttyRow value for the current row in the render-state iterator,
-    /// with the dirty bit (bit 40 of the packed Row struct) masked out.
-    ///
-    /// The GhosttyRow value is a bitcast of the packed Row struct.  The dirty bit
-    /// changes each frame (set by ghostty, cleared by the renderer) so we must strip
-    /// it to get a frame-stable key for the content-hash map.
-    ///
-    /// The resulting u64 uniquely identifies a physical row's cell-data slot in
-    /// ghostty's page allocator, surviving scrolling where screen Y changes but the
-    /// underlying memory is the same.
-    ///
-    /// Returns 0 on failure (used as the map's empty-slot sentinel, so 0 means
-    /// "skip hashing for this row").
+    /// Raw row for typed row queries only, never a cache identity.
     pub fn rowRaw(self: *Runtime, row_iterator: ?*anyopaque) u64 {
         if (row_iterator) |iterator| {
             var raw: u64 = 0;
             if (self.row_get(iterator, @backingInt(RowData.raw), &raw) != success) return 0;
-            // Dirty bit is bit 40 in the Row packed struct (after the 32-bit cells offset
-            // and 8 boolean/enum flags).  Mask it out so the key is stable across frames.
-            const dirty_bit: u64 = @as(u64, 1) << 40;
-            return raw & ~dirty_bit;
+            return raw;
         }
         return 0;
     }
 
-    /// Compute a fast hash of all raw cell u64 values in the current row.
-    /// Uses the row_cells iterator: populates it from the row_iterator, then
-    /// iterates all cells collecting cellRaw() values into a wyhash-style mix.
-    /// Returns null if the row cells cannot be populated.
-    ///
-    /// NOTE: This consumes the row_cells iterator position — callers must call
-    /// populateRowCells() again before iterating cells for rendering.
+    /// Opaque identity: retain both words, including across viewport scrolls.
+    pub fn rowId(self: *Runtime, iterator: ?*anyopaque) RowId {
+        var id: NativeRowId = .{ .bits = .{ 0, 0 } };
+        if (self.row_get(iterator, @backingInt(RowData.id), &id) != success) return 0;
+        return @bitCast(id.bits);
+    }
+
+    /// Bulk view avoids mutating the cell iterator and one FFI call per cell.
     pub fn rowHashCells(self: *Runtime, row_iterator: ?*anyopaque, row_cells: *?*anyopaque) ?u64 {
-        if (!self.populateRowCells(row_iterator, row_cells)) return null;
+        _ = row_cells;
+        var view: CellsView = undefined;
+        if (self.row_get(row_iterator, @backingInt(RowData.cells_raw), &view) != success) return null;
         var h: u64 = 0x517CC1B727220A95; // FNV-like seed
-        while (self.nextCell(row_cells.*)) {
-            const raw = self.cellRaw(row_cells.*);
+        const cells = if (view.ptr) |ptr| ptr[0..view.len] else &.{};
+        for (cells) |raw| {
             // Wyhash-inspired mixing: fast and avalanche well
             h ^= raw;
             h = h *% 0x9E3779B97F4A7C15;
             h ^= h >> 30;
         }
         return h;
+    }
+
+    /// Native mode-aware paste. Output goes through the terminal's write callback.
+    pub fn pasteText(_: *Runtime, terminal: ?*anyopaque, text: []const u8) !void {
+        const Source = struct {
+            fn read(context: ?*anyopaque, _: String, writer: Writer) callconv(.c) bool {
+                const bytes: *const []const u8 = @ptrCast(@alignCast(context.?));
+                return bytes.len == 0 or writer.write(writer.userdata, bytes.ptr, bytes.len);
+            }
+        };
+        var source = text;
+        const mime: String = .{ .ptr = "text/plain", .len = "text/plain".len };
+        const paste: Paste = .{ .mimes = @ptrCast(&mime), .reader = .{ .read = Source.read, .userdata = @ptrCast(&source) } };
+        switch (ghostty_terminal_paste(terminal, &paste, null)) {
+            success => {},
+            -7 => return error.UnsafePaste,
+            -1 => return error.OutOfMemory,
+            else => return error.PasteFailed,
+        }
+    }
+
+    pub fn selectAt(self: *Runtime, terminal: ?*anyopaque, point: Point, line: bool) ?Selection {
+        var ref: GridRef = .{ .size = @sizeOf(GridRef), .node = null, .x = 0, .y = 0 };
+        if (self.terminal_grid_ref(terminal, point, &ref) != success) return null;
+        var selected: Selection = .{ .size = @sizeOf(Selection), .start = ref, .end = ref, .rectangle = false };
+        const result = if (line)
+            ghostty_terminal_select_line(terminal, &.{ .ref = ref }, &selected)
+        else
+            ghostty_terminal_select_word(terminal, &.{ .ref = ref }, &selected);
+        return if (result == success) selected else null;
+    }
+
+    pub fn gridRefPoint(_: *Runtime, terminal: ?*anyopaque, ref: *const GridRef, tag: PointTag) ?PointCoordinate {
+        var point: PointCoordinate = undefined;
+        return if (ghostty_terminal_point_from_grid_ref(terminal, ref, tag, &point) == success) point else null;
     }
 };
 
@@ -1878,6 +1937,183 @@ test "callback bindings match upstream C layouts" {
     try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWrite), @sizeOf(ClipboardWrite));
     try std.testing.expectEqual(@offsetOf(headers.GhosttyClipboardWrite, "reply"), @offsetOf(ClipboardWrite, "reply"));
     try std.testing.expectEqual(@sizeOf(headers.GhosttyClipboardWriteReply), @sizeOf(ClipboardWriteReply));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyPaste), @sizeOf(Paste));
+    try std.testing.expectEqual(@offsetOf(headers.GhosttyPaste, "reader"), @offsetOf(Paste, "reader"));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyRenderStateRowId), @sizeOf(NativeRowId));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyCellsView), @sizeOf(CellsView));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalSelectWordOptions), @sizeOf(SelectWordOptions));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalSelectLineOptions), @sizeOf(SelectLineOptions));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalDesktopNotification), @sizeOf(DesktopNotification));
+    try std.testing.expectEqual(@sizeOf(headers.GhosttyTerminalProgressReport), @sizeOf(ProgressReport));
+}
+
+test "native image iteration resolves placements and tracks replacement generations" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(20, 6, 4096);
+    defer runtime.freeTerminal(terminal);
+    runtime.resizeTerminal(terminal, 20, 6, 8, 16);
+    const state = try runtime.createRenderState();
+    defer runtime.freeRenderState(state);
+    var images: RenderImages = .{};
+    defer images.deinit(std.testing.allocator);
+
+    runtime.terminalWrite(terminal, "\x1b_Ga=T,f=32,i=1,s=1,v=1,c=2,r=1,z=-1,q=2;/wAA/w==\x1b\\");
+    try runtime.updateRenderState(state, terminal);
+    try images.update(std.testing.allocator, state);
+    try std.testing.expectEqual(@as(usize, 1), images.items.items.len);
+    const original = images.items.items[0];
+    try std.testing.expectEqual(@as(u32, 1), original.image_id);
+    try std.testing.expectEqual(@as(c_int, @backingInt(ImageLayer.below_text)), original.layer);
+    try std.testing.expectEqual(@as(u32, 16), original.width);
+    try std.testing.expectEqual(@as(u32, 16), original.height);
+    try std.testing.expect(original.generation != 0);
+
+    runtime.terminalWrite(terminal, "\x1b_Ga=T,f=32,i=1,s=1,v=1,c=2,r=1,q=2;AAD//w==\x1b\\");
+    try runtime.updateRenderState(state, terminal);
+    try images.update(std.testing.allocator, state);
+    try std.testing.expect(images.items.items.len > 0);
+    for (images.items.items) |image| try std.testing.expect(image.generation != original.generation);
+
+    // Virtual placements are visible only through their Unicode placeholder cells.
+    runtime.terminalWrite(terminal, "\x1b_Ga=T,U=1,f=32,i=3,s=1,v=1,c=2,r=1,q=2;AP8A/w==\x1b\\" ++
+        "\r\n\x1b[38;5;3m\xf4\x8e\xbb\xae\xcc\x85\xcc\x85\xf4\x8e\xbb\xae\xcc\x85\xcc\x8d\x1b[39m");
+    try runtime.updateRenderState(state, terminal);
+    try images.update(std.testing.allocator, state);
+    var placeholders: usize = 0;
+    for (images.items.items) |image| {
+        if (image.image_id == 3) {
+            placeholders += 1;
+            try std.testing.expectEqual(@as(i32, 1), image.row);
+            try std.testing.expect(image.width > 0 and image.height > 0);
+        }
+    }
+    try std.testing.expect(placeholders > 0);
+    // Relative placements follow their parent, not the terminal cursor.
+    runtime.terminalWrite(terminal, "\x1b_Ga=T,f=32,i=4,p=1,s=1,v=1,c=1,r=1,C=1,q=2;/wAA/w==\x1b\\" ++
+        "\x1b_Ga=T,f=32,i=5,s=1,v=1,c=1,r=1,P=4,Q=1,H=2,V=1,q=2;AAD//w==\x1b\\");
+    try runtime.updateRenderState(state, terminal);
+    try images.update(std.testing.allocator, state);
+    var parent: ?RenderImage = null;
+    var child: ?RenderImage = null;
+    for (images.items.items) |image| {
+        if (image.image_id == 4) parent = image;
+        if (image.image_id == 5) child = image;
+    }
+    try std.testing.expect(parent != null and child != null);
+    try std.testing.expectEqual(parent.?.col + 2, child.?.col);
+    try std.testing.expectEqual(parent.?.row + 1, child.?.row);
+    try images.update(std.testing.allocator, null);
+    try std.testing.expectEqual(@as(usize, 0), images.items.items.len);
+}
+
+test "native animation deadlines change image generations and stop cleanly" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(20, 6, 0);
+    defer runtime.freeTerminal(terminal);
+    runtime.terminalWrite(terminal, "\x1b_Ga=T,f=32,i=2,s=1,v=1,q=2;/wAA/w==\x1b\\" ++
+        "\x1b_Ga=f,f=32,i=2,s=1,v=1,z=40,q=2;AAD//w==\x1b\\" ++
+        "\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
+    const graphics = runtime.terminalKittyGraphics(terminal).?;
+    const deadline = runtime.tickKittyAnimation(graphics, 1000).?;
+    try std.testing.expectEqual(@as(u64, 1030), deadline);
+    var generation: u64 = 0;
+    try std.testing.expect(runtime.kittyImageData(runtime.kittyGraphicsImage(graphics, 2), .generation, &generation));
+    const storage_generation = runtime.kittyStorageGeneration(graphics);
+    try std.testing.expectEqual(@as(u64, 1070), runtime.tickKittyAnimation(graphics, deadline).?);
+    var next_generation: u64 = 0;
+    try std.testing.expect(runtime.kittyImageData(runtime.kittyGraphicsImage(graphics, 2), .generation, &next_generation));
+    try std.testing.expect(next_generation != generation);
+    try std.testing.expect(runtime.kittyStorageGeneration(graphics) != storage_generation);
+    runtime.terminalWrite(terminal, "\x1b_Ga=a,i=2,s=1,q=2\x1b\\");
+    try std.testing.expectEqual(@as(?u64, null), runtime.tickKittyAnimation(runtime.terminalKittyGraphics(terminal), 1070));
+}
+
+test "native paste sanitizes controls and refuses command injection without output" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(80, 24, 0);
+    defer runtime.freeTerminal(terminal);
+    var output: PasteOutput = .{ .allocator = std.testing.allocator };
+    defer output.deinit();
+    const Sink = struct {
+        fn write(_: ?*anyopaque, context: ?*anyopaque, bytes: [*]const u8, len: usize) callconv(.c) void {
+            const sink: *PasteOutput = @ptrCast(@alignCast(context.?));
+            sink.append(bytes[0..len]);
+        }
+    };
+    runtime.setTerminalUserdata(terminal, &output);
+    runtime.setWritePtyCallback(terminal, Sink.write);
+    try runtime.pasteText(terminal, "hello\x1bworld");
+    try std.testing.expectEqualStrings("hello world", output.bytes.items);
+    output.bytes.clearRetainingCapacity();
+    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "echo safe\necho unsafe"));
+    try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
+    runtime.terminalWrite(terminal, "\x1b[?2004h");
+    try runtime.pasteText(terminal, "a\nb");
+    try std.testing.expectEqualStrings("\x1b[200~a\nb\x1b[201~", output.bytes.items);
+    output.bytes.clearRetainingCapacity();
+    try std.testing.expectError(error.UnsafePaste, runtime.pasteText(terminal, "evil\x1b[201~command"));
+    try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
+}
+
+test "paste staging retains allocation failure and discards subsequent chunks" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
+    var output: PasteOutput = .{ .allocator = failing.allocator() };
+    defer output.deinit();
+    output.append("\x1b[200~");
+    output.append("payload");
+    output.append("\x1b[201~");
+    try std.testing.expectEqual(error.OutOfMemory, output.failure.?);
+    try std.testing.expectEqual(@as(usize, 0), output.bytes.items.len);
+}
+
+test "native word selection handles Unicode and soft wraps" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(5, 4, 1000);
+    defer runtime.freeTerminal(terminal);
+    runtime.terminalWrite(terminal, "h\xc3\xa9lloworld next");
+    const selected = runtime.selectAt(terminal, .{ .tag = .viewport, .value = .{ .coordinate = .{ .x = 1, .y = 1 } } }, false).?;
+    var bytes: [64]u8 = undefined;
+    var written: usize = 0;
+    try std.testing.expectEqual(success, runtime.formatSelectionInto(terminal, &selected, &bytes, &written));
+    try std.testing.expectEqualStrings("h\xc3\xa9lloworld", bytes[0..written]);
+}
+
+test "documented row identities survive scrolling and bulk hashes match cell iteration" {
+    var runtime = try Runtime.init(std.testing.allocator, null);
+    defer runtime.deinit();
+    const terminal = try runtime.createTerminal(8, 3, 4096);
+    defer runtime.freeTerminal(terminal);
+    runtime.terminalWrite(terminal, "one\r\ntwo\r\nthree");
+    const state = try runtime.createRenderState();
+    defer runtime.freeRenderState(state);
+    var rows = try runtime.createRowIterator();
+    defer runtime.freeRowIterator(rows);
+    var cells = try runtime.createRowCells();
+    defer runtime.freeRowCells(cells);
+    try runtime.updateRenderState(state, terminal);
+    try std.testing.expect(runtime.populateRowIterator(state, &rows));
+    try std.testing.expect(runtime.nextRow(rows));
+    const id = runtime.rowId(rows);
+    try std.testing.expect(id != 0);
+    const bulk_hash = runtime.rowHashCells(rows, &cells).?;
+    try std.testing.expect(runtime.populateRowCells(rows, &cells));
+    var hash: u64 = 0x517CC1B727220A95;
+    while (runtime.nextCell(cells)) {
+        hash ^= runtime.cellRaw(cells);
+        hash *%= 0x9E3779B97F4A7C15;
+        hash ^= hash >> 30;
+    }
+    try std.testing.expectEqual(hash, bulk_hash);
+    runtime.terminalWrite(terminal, "\r\nfour");
+    runtime.terminalScrollTop(terminal);
+    try runtime.updateRenderState(state, terminal);
+    try std.testing.expect(runtime.populateRowIterator(state, &rows));
+    try std.testing.expect(runtime.nextRow(rows));
+    try std.testing.expectEqual(id, runtime.rowId(rows));
 }
 
 test "terminal default colors are exposed through render state" {

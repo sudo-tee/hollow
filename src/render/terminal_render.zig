@@ -106,7 +106,7 @@ pub const QueueOptions = struct {
     overlay_label_fn: ?OverlayLabelFn = null,
     hovered_hyperlink: ?HoveredRange,
     prev_cursor_row: usize,
-    row_map_keys: ?[]u64 = null,
+    row_map_keys: ?[]ghostty.RowId = null,
     row_map_vals: ?[]u64 = null,
     row_map_skip: bool = false,
     colors: QueueColors,
@@ -172,6 +172,12 @@ pub fn queueTerminal(
     self.last_bg_rects = 0;
     self.last_atlas_flushed = false;
     const queue = options;
+
+    inline for (.{ ghostty.ImageLayer.below_bg, .below_text, .above_text }, .{ @as(c_int, -2), -1, 1 }) |layer, draw_layer| {
+        c.sgl_layer(draw_layer);
+        self.queueKittyLayerInPane(runtime, queue.render_state, layer, queue.offset_x, queue.offset_y, queue.viewport_width, queue.viewport_height);
+    }
+    c.sgl_layer(0);
 
     self.glyph_origin_x = queue.offset_x;
     self.glyph_origin_y = queue.offset_y;
@@ -283,13 +289,17 @@ pub fn queueBackgroundAndRasterPass(
     var row_y: usize = 0;
     var quads_open = false;
     if (queue.force_full) {
+        // Default background sits behind every image layer. Explicit cell
+        // backgrounds remain on layer 0, above below-background images.
+        c.sgl_layer(-3);
         c.sgl_begin_quads();
-        quads_open = true;
         c.sgl_c4b(queue.colors.default_bg.r, queue.colors.default_bg.g, queue.colors.default_bg.b, 255);
         c.sgl_v2f(0.0, 0.0);
         c.sgl_v2f(pane_w, 0.0);
         c.sgl_v2f(pane_w, pane_h);
         c.sgl_v2f(0.0, pane_h);
+        c.sgl_end();
+        c.sgl_layer(0);
     }
     while (runtime.nextRow(queue.row_iterator.*)) : (row_y += 1) {
         if (!queue.force_full and !queue.rowNeedsRedraw(row_y) and !runtime.rowDirty(queue.row_iterator.*) and row_y != queue.prev_cursor_row and row_y != queue.cursor_row) continue;
@@ -852,7 +862,7 @@ pub fn shouldSkipRowByHash(
     }
     if (!queue.useRowMap() or row_y == queue.cursor_row or row_y == queue.prev_cursor_row) return false;
 
-    const row_raw = runtime.rowRaw(queue.row_iterator.*);
+    const row_raw = runtime.rowId(queue.row_iterator.*);
     if (row_raw == 0) return false;
 
     const keys = queue.row_map_keys.?;
@@ -1115,10 +1125,10 @@ pub inline fn skipSetGet(bits: *const HashSkipBits, row: usize) bool {
     return (bits[row / 64] >> @intCast(row % 64)) & 1 != 0;
 }
 
-pub fn rowMapProbe(keys: []u64, key: u64) usize {
+pub fn rowMapProbe(keys: []ghostty.RowId, key: ghostty.RowId) usize {
     const cap = keys.len;
     const mask = cap - 1;
-    var idx = @as(usize, @truncate(key)) & mask;
+    var idx = @as(usize, @truncate(key ^ (key >> 64))) & mask;
     var i: usize = 0;
     while (i < cap) : (i += 1) {
         const existing = keys[idx];

@@ -227,6 +227,8 @@ pub const FtRenderer = struct {
     prepared_cache: std.HashMap(PreparedKey, PreparedCacheEntry, PreparedCacheContext, std.hash_map.default_max_load_percentage),
     recent_prepared: [RECENT_PREPARED_CACHE_LEN]?RecentPreparedEntry = @splat(null),
     kitty_textures: [KITTY_TEXTURE_CACHE_LEN]?KittyTexture = @splat(null),
+    kitty_texture_cursor: usize = 0,
+    render_images: ghostty.RenderImages = .{},
 
     // Metrics (all in physical pixels)
     cell_w: f32,
@@ -741,6 +743,7 @@ pub const FtRenderer = struct {
     pub fn deinit(self: *FtRenderer) void {
         if (self.run_buf.len > 0) self.allocator.free(self.run_buf);
         if (self.grapheme_buf.len > 0) self.allocator.free(self.grapheme_buf);
+        self.render_images.deinit(self.allocator);
         for (&self.kitty_textures) |*slot| {
             if (slot.*) |*tex| tex.deinit();
             slot.* = null;
@@ -834,11 +837,19 @@ pub const FtRenderer = struct {
         self: *FtRenderer,
         cache: *PaneCache,
         runtime: *ghostty.Runtime,
-        options: terminal_render.QueueOptions,
+        queue_options: terminal_render.QueueOptions,
         clear_r: f32,
         clear_g: f32,
         clear_b: f32,
     ) void {
+        var options = queue_options;
+        self.render_images.update(self.allocator, options.render_state) catch {};
+        if (self.render_images.items.items.len > 0) {
+            // Replaying translucent images over LOAD-preserved pixels compounds
+            // alpha outside dirty rows. Recompose image panes from a clean RT.
+            options.force_full = true;
+            options.row_map_skip = false;
+        }
         // Reset per-call diagnostic counters.
         self.last_rows_rendered = 0;
         self.last_rows_skipped = 0;
@@ -888,12 +899,16 @@ pub const FtRenderer = struct {
         c.sg_begin_pass(&self.offscreen_pass_scratch);
 
         // Flush the pane's sgl context into the offscreen pass.
+        c.sgl_context_draw_layer(cache.sgl_ctx, -3);
+        c.sgl_context_draw_layer(cache.sgl_ctx, -2);
         c.sgl_context_draw(cache.sgl_ctx);
+        c.sgl_context_draw_layer(cache.sgl_ctx, -1);
 
         // Draw glyph quads through the custom gamma-correct pipeline.
         // Must happen after sgl_context_draw (avoids interleaving sgl and raw sg_*).
         // Vertices were already uploaded above via uploadGlyphVerts().
         self.drawGlyphQuads(options.viewport_width, options.viewport_height, true, srgbToLinearBg(clear_r, clear_g, clear_b));
+        c.sgl_context_draw_layer(cache.sgl_ctx, 1);
         c.sg_end_pass();
         const t_gpu_end = if (options.debug_timing) io.nanoTimestamp() else 0;
 
@@ -953,16 +968,18 @@ pub const FtRenderer = struct {
     pub fn queueKittyLayerInPane(
         self: *FtRenderer,
         runtime: *ghostty.Runtime,
-        terminal: ?*anyopaque,
-        layer: ghostty.KittyPlacementLayer,
+        state: ?*anyopaque,
+        layer: ghostty.ImageLayer,
         ox: f32,
         oy: f32,
         pw: f32,
         ph: f32,
-        fb_w: f32,
-        fb_h: f32,
     ) void {
-        kitty_graphics.queueKittyLayerInPane(self, runtime, terminal, layer, ox, oy, pw, ph, fb_w, fb_h);
+        kitty_graphics.queueKittyLayerInPane(self, runtime, state, layer, ox, oy, pw, ph);
+    }
+
+    pub fn prepareKittyTextures(self: *FtRenderer, runtime: *ghostty.Runtime, terminal: ?*anyopaque, state: ?*anyopaque) void {
+        kitty_graphics.prepareKittyTextures(self, runtime, terminal, state);
     }
 
     /// Queue geometry for one pane into its viewport sub-rect.
