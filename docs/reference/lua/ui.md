@@ -34,7 +34,7 @@ hollow.ui.when(cond, then_, else_)  -- choose/evaluate one child branch
 hollow.ui.each(list, fn)            -- map dense list to child fragment
 hollow.ui.join(items, sep)          -- join truthy children
 hollow.ui.style(...)                -- merge style layers
-hollow.ui.themed_style(theme, ...)  -- merge and resolve tokens now
+hollow.ui.styled(theme, ...)  -- merge and resolve tokens now
 ```
 
 Widget `render` functions return exactly one `row` or `column`. Rows
@@ -206,7 +206,7 @@ never interpreted as tokens. Dotted paths work, for example
 Lazy token lookup uses the widget kind's palette, or `"all"` when no specific kind
 is available. Overrides from `theme.ui.widgets.all` and that widget kind apply;
 bar items additionally receive bar tokens. If a render holds a custom theme,
-use `ui.themed_style(theme, ...)` so it takes precedence over lazy lookup.
+use `ui.styled(theme, ...)` so it takes precedence over lazy lookup.
 
 Default widget tokens available from `theme.resolve_widget(...)`:
 
@@ -238,10 +238,10 @@ local ACTIVE = { fg = "selected_fg", bg = "selected_bg" }
 local style = ui.style(BASE, active and ACTIVE)
 ```
 
-`ui.themed_style(theme, ...)` applies the same merge and eagerly resolves
+`ui.styled(theme, ...)` applies the same merge and eagerly resolves
 tokens against supplied theme. With `theme == nil`, it behaves like `ui.style`
-and leaves tokens for normal rendering-time resolution. `ui.styled` remains
-an alias for compatibility; use `ui.themed_style` in new code. `style.hover` is
+and leaves tokens for normal rendering-time resolution. `ui.themed_style` remains
+an alias for compatibility; use `ui.styled` in new code. `style.hover` is
 applied by overlay rendering when an identified node is hovered. Give overlay
 spans a non-empty `style.id`, or use `ui.button({ id = ..., ... })`. Bars may
 assign automatic ids. Row-level hover remains controlled separately through
@@ -282,7 +282,7 @@ through real overlay/bar serialization; native drawing still needs visual QA.
 
 Built-in presets are plain style tables: `ui.styles.muted`, `.title`, `.pill`,
 `.badge`, `.kbd`. Treat them as constants; derive modified styles with
-`ui.style(ui.styles.badge, { bg = color })` or `ui.themed_style(...)` rather
+`ui.style(ui.styles.badge, { bg = color })` or `ui.styled(...)` rather
 than mutating a preset. Pass a fresh copy to spans, for example
 `ui.text("ready", ui.style(ui.styles.muted))`: bar registration may write ids
 into span styles.
