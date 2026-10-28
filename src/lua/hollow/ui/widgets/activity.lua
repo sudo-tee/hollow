@@ -493,59 +493,37 @@ function ui.activity.open(opts)
       refresh()
       local summary = hollow.activity.summary()
       local worst
-      for _, entry in ipairs(view == "inbox" and hollow.activity.list({ view = "inbox" }) or {}) do
+      for _, entry in ipairs(hollow.activity.list({ view = "inbox" })) do
         if (LEVEL_RANK[entry.level] or 0) > (LEVEL_RANK[worst] or 0) then
           worst = entry.level
         end
       end
-      local function tab(name, label, badge)
-        local active = view == name
-        local segments = {
-          ui.button({
-            id = "activity:" .. name,
-            text = label,
-            style = {
-              fg = active and theme.selection_fg or theme.muted,
-              bg = active and theme.selection_bg or nil,
-              bold = active,
-              radius = 4,
-              padding = PILL_PADDING,
-            },
-            on_click = function()
-              set_view(name)
-            end,
-          }),
-        }
-        if badge then
-          segments[#segments + 1] = ui.text(" ")
-          segments[#segments + 1] = ui.button({
-            id = "activity:" .. name .. ":badge",
-            text = badge.text,
-            style = {
-              fg = theme.panel_bg,
-              bg = badge.color,
-              bold = true,
-              radius = 4,
-              padding = { left = 5, right = 5, top = 1, bottom = 1 },
-            },
-            on_click = function()
-              set_view(name)
-            end,
-          })
-        end
-        return ui.group(segments)
-      end
       local content = {
         ui.row({
           ui.text("Activity  ", { fg = theme.title, bold = true }),
-          tab("inbox", "Inbox", summary.count > 0 and {
-            text = tostring(summary.count),
-            color = worst == "error" and theme.notify_levels.error
-              or worst == "warn" and theme.notify_levels.warn
-              or theme.title,
-          } or nil),
-          ui.text("  "),
-          tab("history", "History"),
+          ui.tab_bar({
+            theme = theme,
+            tabs = {
+              {
+                id = "activity:inbox",
+                label = "Inbox",
+                active = view == "inbox",
+                badge = summary.count > 0 and {
+                  text = tostring(summary.count),
+                  color = worst == "error" and theme.notify_levels.error
+                    or worst == "warn" and theme.notify_levels.warn
+                    or theme.title,
+                } or nil,
+                on_click = function() set_view("inbox") end,
+              },
+              {
+                id = "activity:history",
+                label = "History",
+                active = view == "history",
+                on_click = function() set_view("history") end,
+              },
+            },
+          }),
           ui.spacer(),
           summary.count > 0 and ui.action_button({
             id = "activity:dismiss-all",

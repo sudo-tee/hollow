@@ -151,7 +151,7 @@ describe("activity center", function()
     emit("window:blurred", {})
     notify("info")
     report("blocked")
-    hollow.ui.activity.open()
+    hollow.ui.activity.open({ view = "history" })
     local badge
     for _, overlay in ipairs(hollow.ui._overlay_state()) do
       for _, row in ipairs(overlay.rows or {}) do
@@ -164,6 +164,30 @@ describe("activity center", function()
     end
     assert.equals("2", badge.text)
     assert.equals(require("hollow.theme").resolve_widget("select").notify_levels.warn, badge.bg)
+  end)
+
+  it("includes the count inside the active Inbox tab", function()
+    emit("window:blurred", {})
+    notify("info")
+    hollow.ui.activity.open({ view = "inbox" })
+    local tab, badge
+    for _, overlay in ipairs(hollow.ui._overlay_state()) do
+      for _, row in ipairs(overlay.rows or {}) do
+        for _, item in ipairs(row.segments or {}) do
+          if item.id == "activity:inbox" then
+            tab = item
+          end
+          if item.id == "activity:inbox:badge" then
+            badge = item
+          end
+        end
+      end
+    end
+    assert.equals("Inbox ", tab.text)
+    assert.equals(require("hollow.theme").resolve_widget("select").selection_bg, tab.bg)
+    assert.equals("1", badge.text)
+    assert.equals(require("hollow.theme").resolve_widget("select").title, badge.bg)
+    assert.equals(2, tab.background_extend)
   end)
 
   it("groups history under a Today section", function()

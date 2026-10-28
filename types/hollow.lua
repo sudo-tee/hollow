@@ -653,6 +653,18 @@
 ---@field state? { hovered_id?: string } Modal render state, used to highlight hover.
 ---@field hover_style? HollowUiNodeStyle Overrides applied while hovered.
 
+---@class HollowUiTabOptions
+---@field id string
+---@field label string
+---@field active? boolean
+---@field badge? { text: string|number, color: HollowColor }
+---@field theme? table Select widget theme by default.
+---@field on_click? fun(e: { id: string })
+
+---@class HollowUiTabBarOptions
+---@field tabs HollowUiTabOptions[]
+---@field theme? table Default theme for tabs.
+
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
 
@@ -2140,6 +2152,14 @@ function ui.button(opts) end
 ---@param opts HollowUiActionButtonOptions
 ---@return HollowUiSpanNode
 function ui.action_button(opts) end
+
+---@param opts HollowUiTabOptions
+---@return HollowUiGroupNode
+function ui.tab(opts) end
+
+---@param opts HollowUiTabBarOptions
+---@return HollowUiGroupNode
+function ui.tab_bar(opts) end
 
 ---@param spec HollowUiModalSpec
 ---@return HollowUiModalHandle|nil Returns nil if another modal is already open.

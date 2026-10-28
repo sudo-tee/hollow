@@ -507,6 +507,9 @@ function M.style_to_segment(text, style)
     if style.radius ~= nil then
       segment.radius = style.radius
     end
+    if style.background_extend ~= nil then
+      segment.background_extend = style.background_extend
+    end
     if color.is_hex_color(style.border) then
       segment.border = style.border
     end

@@ -19,6 +19,7 @@ pub const Segment = struct {
     id: ?[]const u8 = null,
     spacer: bool = false,
     radius: f32 = 0,
+    background_extend: usize = 0,
     border: ?ghostty.ColorRgb = null,
     border_size: f32 = 1.0,
     padding: Padding = .{},

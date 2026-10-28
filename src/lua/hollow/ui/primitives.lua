@@ -197,6 +197,62 @@ function ui.action_button(opts)
   })
 end
 
+--- A selectable tab with an optional count badge.
+---@param opts HollowUiTabOptions
+---@return HollowUiGroupNode
+function ui.tab(opts)
+  local theme = opts.theme or require("hollow.theme").resolve_widget("select")
+  local active = opts.active == true
+  local badge = opts.badge
+  local nodes = {
+    ui.button({
+      id = opts.id,
+      text = badge and (opts.label .. " ") or opts.label,
+      style = {
+        fg = active and theme.selection_fg or theme.muted,
+        bg = active and theme.selection_bg or nil,
+        bold = active,
+        radius = 4,
+        background_extend = active and badge and 2 or nil,
+        padding = { left = 8, right = badge and 0 or 8, top = 3, bottom = 3 },
+      },
+      on_click = opts.on_click,
+    }),
+  }
+  if badge then
+    nodes[#nodes + 1] = ui.button({
+      id = opts.id .. ":badge",
+      text = tostring(badge.text),
+      style = {
+        fg = theme.panel_bg,
+        bg = badge.color,
+        bold = true,
+        radius = 4,
+        padding = { left = 5, right = 5, top = 1, bottom = 1 },
+      },
+      on_click = opts.on_click,
+    })
+    nodes[#nodes + 1] = ui.text(" ")
+  end
+  return ui.group(nodes)
+end
+
+--- Compose tabs with consistent spacing.
+---@param opts HollowUiTabBarOptions
+---@return HollowUiGroupNode
+function ui.tab_bar(opts)
+  local nodes = {}
+  for index, tab in ipairs(opts.tabs or {}) do
+    if index > 1 then
+      nodes[#nodes + 1] = ui.text("  ")
+    end
+    local tab_opts = util.clone_value(tab)
+    tab_opts.theme = tab_opts.theme or opts.theme
+    nodes[#nodes + 1] = ui.tab(tab_opts)
+  end
+  return ui.group(nodes)
+end
+
 ---@param opts HollowUiBarTabsOptions|nil
 ---@return HollowUiBarTabsNode
 function bar.tabs(opts)

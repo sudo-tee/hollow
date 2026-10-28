@@ -5349,6 +5349,13 @@ pub fn parseSegmentArray(api: Api, state: *State, seg_buf: []bar.Segment, text_b
         }
         pop(api, state, 1);
 
+        api.get_field(state, -1, "background_extend");
+        if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .number) {
+            const count = api.to_number(state, -1);
+            if (std.math.isFinite(count)) seg.background_extend = @intFromFloat(std.math.clamp(count, 0, 32));
+        }
+        pop(api, state, 1);
+
         seg.border = parseColorField(api, state, -1, "border");
         api.get_field(state, -1, "padding");
         if (@as(LuaType, @enumFromInt(api.value_type(state, -1))) == .table) {

@@ -1332,7 +1332,7 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
 
     const right_edge = x + max_width;
     var cursor_x = x;
-    for (segments) |seg| {
+    for (segments, 0..) |seg, seg_index| {
         if (seg.spacer) {
             cursor_x = right_edge - right_w;
             continue;
@@ -1343,15 +1343,21 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         if (seg_x + seg_w > right_edge) break;
         const bg_y = text_y - seg.padding.top + 1.0;
         const bg_h = cell_h + seg.padding.top + seg.padding.bottom;
+        var bg_w = seg_w;
+        for (segments[seg_index + 1 .. @min(segments.len, seg_index + 1 + seg.background_extend)]) |next| {
+            if (next.spacer) break;
+            bg_w += @as(f32, @floatFromInt(countCodepoints(next.text))) * renderer.cell_w + next.padding.left + next.padding.right;
+        }
+        bg_w = @min(bg_w, right_edge - seg_x);
         if (seg.radius > 0) {
             if (seg.bg) |bg| {
-                drawRoundedRect(seg_x, bg_y, seg_w, bg_h, seg.radius, bg.r, bg.g, bg.b, 220);
+                drawRoundedRect(seg_x, bg_y, bg_w, bg_h, seg.radius, bg.r, bg.g, bg.b, 220);
             }
             if (seg.border) |border| {
                 drawRoundedRectOutline(seg_x, bg_y, seg_w, bg_h, seg.radius, seg.border_size, border.r, border.g, border.b, 220);
             }
         } else if (seg.bg) |bg| {
-            drawBorderRect(seg_x, bg_y, seg_w, bg_h, bg.r, bg.g, bg.b, 220);
+            drawBorderRect(seg_x, bg_y, bg_w, bg_h, bg.r, bg.g, bg.b, 220);
         }
         const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
         renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);

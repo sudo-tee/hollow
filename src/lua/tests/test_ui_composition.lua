@@ -11,6 +11,26 @@ describe("UI composition test suite", function()
   end)
 
   describe("unified composition API", function()
+    it("composes selectable tabs with count badges", function()
+      local theme = { selection_fg = "#ffffff", selection_bg = "#111111", muted = "#888888", panel_bg = "#000000" }
+      local click = function() end
+      local tabs = hollow.ui.tab_bar({ theme = theme, tabs = {
+        { id = "one", label = "One", active = true, badge = { text = 3, color = "#ff0000" }, on_click = click },
+        { id = "two", label = "Two", badge = { text = 2, color = "#ff0000" }, on_click = click },
+      } })
+      local nodes = require("hollow.ui.shared").flatten_span_nodes(tabs.children)
+      assert.equals("One ", nodes[1].text)
+      assert.equals(theme.selection_bg, nodes[1].style.bg)
+      assert.equals("3", nodes[2].text)
+      assert.equals("#ff0000", nodes[2].style.bg)
+      assert.equals(2, nodes[1].style.background_extend)
+      assert.equals("Two ", nodes[5].text)
+      assert.equals(nodes[1].style.padding.right, nodes[5].style.padding.right)
+      assert.equals("two:badge", nodes[6].style.id)
+      assert.equals("2", nodes[6].text)
+      assert.equals(click, nodes[6].style.on_click)
+    end)
+
     it("provides opt-in action button defaults and hover overrides", function()
       local theme = { fg = "#111111", hover_fg = "#eeeeee", hover_bg = "#222222" }
       local style = { fg = "#333333", padding = { left = 9 } }
