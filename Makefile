@@ -39,7 +39,7 @@ launch:
 	./launch.sh $(ARGS)
 
 bench:
-	@./bench.sh $(ARGS)
+	@HOLLOW_BENCH_PROG='make bench' ./bench.sh $(ARGS)
 
 test:
 	$(ZIG) build test $(ARGS)

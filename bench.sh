@@ -5,16 +5,21 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-prog="$(basename -- "${BASH_SOURCE[0]}")"
+prog="${HOLLOW_BENCH_PROG:-$(basename -- "${BASH_SOURCE[0]}")}"
 
 usage() {
+  local prefix="$prog " suffix=""
+  if [[ "$prog" == "make bench" ]]; then
+    prefix='make bench ARGS="'
+    suffix='"'
+  fi
   cat <<EOF
 $prog: router for Hollow's terminal benchmarks. Workload modes live in scripts/.
 
 Workload modes only emit terminal traffic on stdout; run them inside the
 terminal under test (e.g. a Hollow pane).
 
-  $prog WORKLOAD [COUNT] [RATE_HZ] [UPDATES_PER_BATCH] [CHUNK_BYTES] [WRITE_DELAY_MS]
+  ${prefix}WORKLOAD [COUNT] [RATE_HZ] [UPDATES_PER_BATCH] [CHUNK_BYTES] [WRITE_DELAY_MS]${suffix}
 
   scroll        flat colored line scrolling
   repaint       full-viewport repaint, measured end-to-end via DSR drain
@@ -26,21 +31,21 @@ terminal under test (e.g. a Hollow pane).
   codex-flash   sparse timer-driven status-row updates
   image         visible Kitty image placement and composition workload
   image-animation visible Kitty animated-image workload
-  $prog image [COUNT] [RATE_HZ] [IMAGES] [PIXELS] [CHUNK_BYTES]
-  $prog image-animation [TICKS] [RATE_HZ] [IMAGES] [ANIMATION_FRAMES] [FRAME_DELAY_MS]
+  ${prefix}image [COUNT] [RATE_HZ] [IMAGES] [PIXELS] [CHUNK_BYTES]${suffix}
+  ${prefix}image-animation [TICKS] [RATE_HZ] [IMAGES] [ANIMATION_FRAMES] [FRAME_DELAY_MS]${suffix}
 
 Headless renderer modes:
 
-  $prog renderer-image [renderer-bench ARGS...]
-  $prog renderer-image-animation [renderer-bench ARGS...]
+  ${prefix}renderer-image [renderer-bench ARGS...]${suffix}
+  ${prefix}renderer-image-animation [renderer-bench ARGS...]${suffix}
 
 Workflow modes:
 
-  $prog cpu COMMAND [ARGS...]
-  $prog bypass-blocking [CHUNKS] [TIMEOUT_S]
-  $prog nvim-restart [OUT_PATH] [DELAY_FRAMES]
-  $prog minimize-restore [OUT_PATH] [PRE_MS] [MINIMIZED_MS] [POST_MS]
-  $prog blocking-child RESULT_PATH READY_PATH [CHUNKS]   (internal)
+  ${prefix}cpu COMMAND [ARGS...]${suffix}
+  ${prefix}bypass-blocking [CHUNKS] [TIMEOUT_S]${suffix}
+  ${prefix}nvim-restart [OUT_PATH] [DELAY_FRAMES]${suffix}
+  ${prefix}minimize-restore [OUT_PATH] [PRE_MS] [MINIMIZED_MS] [POST_MS]${suffix}
+  ${prefix}blocking-child RESULT_PATH READY_PATH [CHUNKS]${suffix}   (internal)
 EOF
 }
 
@@ -106,7 +111,11 @@ case "$mode" in
     ;;
   *)
     echo "$prog: unknown mode '$mode'" >&2
-    echo "usage: $prog [WORKLOAD|MODE] [ARGS...]  (see $prog --help)" >&2
+    if [[ "$prog" == "make bench" ]]; then
+      echo 'See make bench ARGS=--help for usage.' >&2
+    else
+      echo "See $prog --help for usage." >&2
+    fi
     exit 2
     ;;
 esac
