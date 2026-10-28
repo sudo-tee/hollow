@@ -466,21 +466,19 @@ pub const WindowsPty = struct {
         if (self.process != windows.INVALID_HANDLE_VALUE and @intFromPtr(self.process) != 0 and WaitForSingleObject(self.process, 0) != WAIT_OBJECT_0) {
             _ = TerminateProcess(self.process, 0);
         }
-        // ClosePseudoConsole MUST come before closing read_pipe and before
-        // thread.join().  It tears down the ConPTY, which causes the in-flight
-        // ReadFile on read_pipe (in the reader thread) to return immediately with
-        // an error — unblocking the thread.  Closing read_pipe first leaves
-        // ReadFile in an undefined state and can hang the join forever.
+        // Keep the reader draining until ClosePseudoConsole returns: ConPTY can
+        // write final output while closing and block if its output pipe fills.
+        // The reader discards output once closing is set, then exits at EOF.
         if (self.hpc) |hpc| {
             ClosePseudoConsole(hpc);
             self.hpc = null;
         }
         closeHandleIfValid(self.input_pipe_pty);
         closeHandleIfValid(self.output_pipe_pty);
-        closeHandleIfValid(self.read_pipe);
         closeHandleIfValid(self.write_pipe);
         self.write_pipe = windows.INVALID_HANDLE_VALUE;
         if (self.reader_thread) |thread| thread.join();
+        closeHandleIfValid(self.read_pipe);
         closeHandleIfValid(self.process);
         closeHandleIfValid(self.thread);
         self.pending_input.deinit(self.allocator);
@@ -615,6 +613,10 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
             markReaderEof(reader_state);
             return;
         }
+        if (read_count == 0) {
+            markReaderEof(reader_state);
+            return;
+        }
         // Log every 60 seconds to show reader thread is still alive
         if (loop_count == 1 or loop_count % 100 == 0) {
             std.log.info("conpty reader alive loop={d}", .{loop_count});
@@ -637,7 +639,7 @@ fn readerLoop(read_pipe: windows.HANDLE, reader_state: *ReaderState) void {
             std.log.info("conpty first-read hex={s}", .{hex_buf[0..hex_len]});
         }
 
-        if (!pushReaderBytes(reader_state, temp[0..read_count])) return;
+        pushReaderBytes(reader_state, temp[0..read_count]);
     }
 }
 
@@ -648,13 +650,15 @@ fn createPipe(read_pipe: *windows.HANDLE, write_pipe: *windows.HANDLE) !void {
     if (CreatePipe(read_pipe, write_pipe, &sa, 0) == .FALSE) return error.CreatePipeFailed;
 }
 
-fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) bool {
+fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) void {
     reader_state.mutex.lock();
     defer reader_state.mutex.unlock();
-    while (!reader_state.closing and reader_state.buf.items.len - reader_state.start + bytes.len > READER_HIGH_WATER_BYTES) {
+    while (!reader_state.closing and !reader_state.out_of_memory and reader_state.buf.items.len - reader_state.start + bytes.len > READER_HIGH_WATER_BYTES) {
         reader_state.ready.wait(&reader_state.mutex);
     }
-    if (reader_state.closing) return false;
+    // Stopping reads here can deadlock ClosePseudoConsole on a full output
+    // pipe. Keep draining without buffering, including after allocation failure.
+    if (reader_state.closing or reader_state.out_of_memory) return;
     reader_state.saw_read = true;
     if (reader_state.start > 0 and reader_state.start + bytes.len > reader_state.buf.capacity) {
         const remaining = reader_state.buf.items.len - reader_state.start;
@@ -665,10 +669,25 @@ fn pushReaderBytes(reader_state: *ReaderState, bytes: []const u8) bool {
     reader_state.buf.appendSlice(std.heap.page_allocator, bytes) catch {
         reader_state.out_of_memory = true;
         reader_state.wake.signal();
-        return false;
+        return;
     };
     reader_state.wake.signal();
-    return true;
+}
+
+test "closing reader drains output without buffering or backpressure" {
+    var state: ReaderState = .{ .closing = true };
+    defer state.buf.deinit(std.heap.page_allocator);
+    // Even a full buffer must not stop the reader during ConPTY teardown.
+    try state.buf.resize(std.heap.page_allocator, READER_HIGH_WATER_BYTES);
+    pushReaderBytes(&state, "final output");
+    try std.testing.expectEqual(READER_HIGH_WATER_BYTES, state.buf.items.len);
+    try std.testing.expect(!state.saw_read);
+}
+
+test "reader keeps draining after allocation failure" {
+    var state: ReaderState = .{ .out_of_memory = true };
+    pushReaderBytes(&state, "discarded output");
+    try std.testing.expectEqual(@as(usize, 0), state.buf.items.len);
 }
 
 fn markReaderEof(reader_state: *ReaderState) void {

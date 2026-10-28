@@ -251,6 +251,12 @@ fn watchdog(c: *Connection) void {
         const stalled = if (c.writing_since) |since| now - since >= grace else false;
         if (!any_open or timed_out or stalled or overdue) {
             c.control.cancel(io.get());
+            if (timed_out or stalled or overdue) {
+                // EOF is not guaranteed after killing a connector. Wake the
+                // owner so it can cancel transport IO even before hello.
+                c.dead = true;
+                c.changed.broadcast();
+            }
             if (c.child) |child| {
                 // Closing one stream never kills a healthy shared connector.
                 if (timed_out or stalled or overdue) deploy.terminate(child);
@@ -289,7 +295,7 @@ fn run(c: *Connection, argv: []const []const u8) !bool {
     c.started = io.nanoTimestamp();
     c.reader_done = false;
     c.mutex.unlock();
-    const reader_thread = std.Thread.spawn(.{}, reader, .{ c, child.stdout.? }) catch |err| {
+    var reader_task = runtime.concurrent(reader, .{ c, child.stdout.? }) catch |err| {
         c.mutex.lock();
         c.child = null;
         c.mutex.unlock();
@@ -305,13 +311,15 @@ fn run(c: *Connection, argv: []const []const u8) !bool {
     child.stdin = null;
     c.mutex.lock();
     const deadline = io.nanoTimestamp() + grace;
-    while (!c.reader_done and io.nanoTimestamp() < deadline) {
+    while (!c.reader_done and !c.dead and !c.stopping and io.nanoTimestamp() < deadline) {
         io.waitTimeout(&c.changed.inner, &c.mutex.inner, @intCast(@max(1, deadline - io.nanoTimestamp()))) catch {};
     }
     if (!c.reader_done) deploy.terminate(child.id.?);
     c.child = null; // Never retain a reaped/recyclable process id.
     c.mutex.unlock();
-    reader_thread.join();
+    // Killing the connector does not guarantee EOF when a descendant or WSL
+    // relay still owns stdout. Cancel pending IO before joining the reader.
+    reader_task.cancel(runtime);
     _ = child.wait(runtime) catch child.kill(runtime);
     c.mutex.lock();
     defer c.mutex.unlock();
@@ -342,8 +350,8 @@ fn writeFrame(c: *Connection, file: std.Io.File, kind: p.pty.Kind, id: u32, byte
 
 fn sendLoop(c: *Connection, file: std.Io.File) !void {
     c.mutex.lock();
-    while (!c.hello and !c.reader_done and !c.stopping) c.changed.wait(&c.mutex);
-    const ready = c.hello and !c.reader_done and !c.stopping;
+    while (!c.hello and !c.reader_done and !c.dead and !c.stopping) c.changed.wait(&c.mutex);
+    const ready = c.hello and !c.reader_done and !c.dead and !c.stopping;
     c.mutex.unlock();
     if (!ready) return;
     try writeFrame(c, file, p.negotiate, 0, p.hello_ack);

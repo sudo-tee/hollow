@@ -517,6 +517,56 @@ test "a stalled bootstrap is bounded by the host timeout and by close" {
     try std.testing.expect(io.nanoTimestamp() - started < 2 * std.time.ns_per_s);
 }
 
+test "agent shutdown cancels reads when connector descendants retain stdout" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io.get(), ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ directory, "holder-pid" });
+    defer std.testing.allocator.free(marker);
+    const script =
+        \\import pathlib,subprocess,sys,time
+        \\child=subprocess.Popen(['sleep','30'])
+        \\pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+        \\time.sleep(30)
+    ;
+    const Mode = enum { dedicated, mux_pane, mux_app };
+    for ([_]Mode{ .dedicated, .mux_pane, .mux_app }) |mode| {
+        var host: agent.Host = .{
+            .connector = .{ .argv = &.{ "python3", "-c", script, marker } },
+            .agent = .{ .path = "/unused-agent" },
+        };
+        if (mode != .dedicated) host.multiplex = .{};
+        var pty = try agent.AgentPty.init(std.testing.allocator, request("/bin/sh", host), .{});
+        defer pty.closeAndJoin();
+        try pty.start();
+        const deadline = io.nanoTimestamp() + 5 * std.time.ns_per_s;
+        const holder_pid = while (true) {
+            if (tmp.dir.readFileAlloc(io.get(), "holder-pid", std.testing.allocator, .limited(64))) |bytes| {
+                defer std.testing.allocator.free(bytes);
+                if (bytes.len != 0) break try std.fmt.parseInt(std.posix.pid_t, bytes, 10);
+            } else |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            }
+            if (io.nanoTimestamp() >= deadline) return error.Timeout;
+            try std.Io.sleep(io.get(), .fromMilliseconds(5), .awake);
+        };
+        defer std.posix.kill(holder_pid, .KILL) catch {};
+        const started = io.nanoTimestamp();
+        if (mode == .mux_app) {
+            pty.close();
+            @import("pty/agent_mux.zig").shutdown();
+        } else {
+            pty.closeAndJoin();
+            if (mode == .mux_pane) @import("pty/agent_mux.zig").shutdown();
+        }
+        try std.testing.expect(io.nanoTimestamp() - started < 5 * std.time.ns_per_s);
+        try tmp.dir.deleteFile(io.get(), "holder-pid");
+    }
+}
+
 test "agent pty close is bounded while output is backpressured" {
     const path = try agentPath();
     defer std.testing.allocator.free(path);

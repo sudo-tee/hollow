@@ -533,7 +533,7 @@ fn run(s: *Session, argv: []const []const u8) !bool {
     s.exit_status = null;
     s.mutex.unlock();
 
-    const reader = std.Thread.spawn(.{}, readerMain, .{ s, child.stdout.? }) catch |err| {
+    var reader = runtime.concurrent(readerMain, .{ s, child.stdout.? }) catch |err| {
         s.mutex.lock();
         s.child_id = null;
         s.mutex.unlock();
@@ -546,7 +546,7 @@ fn run(s: *Session, argv: []const []const u8) !bool {
         terminate(child.id.?);
         s.child_id = null;
         s.mutex.unlock();
-        reader.join();
+        reader.cancel(runtime);
         child.kill(runtime);
         return err;
     };
@@ -567,7 +567,9 @@ fn run(s: *Session, argv: []const []const u8) !bool {
         if (!s.reader_done) terminate(child.id.?);
         s.child_id = null;
     }
-    reader.join();
+    // A connector's descendants (or WSL relay) can retain stdout after the
+    // connector dies. Cancel the read itself rather than relying on pipe EOF.
+    reader.cancel(runtime);
     watchdog.join();
     _ = child.wait(runtime) catch child.kill(runtime);
 
