@@ -2193,6 +2193,12 @@ function ui.style(...) end
 ---@param theme table|nil
 ---@param ... HollowStyle|false|nil
 ---@return HollowStyle
+function ui.themed_style(theme, ...) end
+
+--- Compatibility alias for ui.themed_style.
+---@param theme table|nil
+---@param ... HollowStyle|false|nil
+---@return HollowStyle
 function ui.styled(theme, ...) end
 
 ---@param opts HollowUiButtonOptions
