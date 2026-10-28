@@ -40,6 +40,9 @@ describe("UI palette test suite", function()
         end,
       })
       scroll_palette_overlay = hollow.ui._overlay_state()
+      assert.equals(8, scroll_palette_overlay[1].rows[5].segments[1].padding.top)
+      assert.equals(4, scroll_palette_overlay[1].rows[5].segments[1].padding.left)
+      assert.equals(8, scroll_palette_overlay[1].rows[5].segments[2].padding.top)
       harness.assert_true(
         scroll_palette_overlay ~= nil,
         "scrollable command palette should serialize"

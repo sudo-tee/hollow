@@ -107,6 +107,8 @@ function ui.row(children, opts)
     id = opts.id,
     hoverable = hoverable == true,
     fill_bg = opts.fill_bg,
+    fill_radius = opts.fill_radius,
+    accent_bar = opts.accent_bar,
     divider = opts.divider,
     scrollbar_track = opts.scrollbar_track == true,
     scrollbar_thumb = opts.scrollbar_thumb == true,

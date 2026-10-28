@@ -173,6 +173,7 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
+    .{ .name = "hollow.ui.widgets.list_style", .source = @embedFile("lua/hollow/ui/widgets/list_style.lua") },
     .{ .name = "hollow.ui.widgets.attention", .source = @embedFile("lua/hollow/ui/widgets/attention.lua") },
     .{ .name = "hollow.activity", .source = @embedFile("lua/hollow/activity.lua") },
     .{ .name = "hollow.activity.store", .source = @embedFile("lua/hollow/activity/store.lua") },

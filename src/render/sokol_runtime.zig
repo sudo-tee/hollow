@@ -2300,7 +2300,11 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             }
                         }
                         if (row_fill_bg) |bg| {
-                            drawBorderRect(row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0), bg.r, bg.g, bg.b, 255);
+                            const radius = overlayRowNumberField(api, state, row_idx, "fill_radius") orelse 0;
+                            drawRoundedRect(row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0), radius, bg.r, bg.g, bg.b, 255);
+                        }
+                        if (overlayRowColorField(api, state, row_idx, "accent_bar")) |accent| {
+                            drawBorderRect(row_x, text_y + 2.0, 2.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), accent.r, accent.g, accent.b, 255);
                         }
                         if (row_divider) |divider| {
                             drawBorderRect(row_x, text_y + ctx.renderer.cell_h * 0.5, row_w, 1.0, divider.r, divider.g, divider.b, 255);

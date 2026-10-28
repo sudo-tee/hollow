@@ -1,3 +1,4 @@
+local list_style = require("hollow.ui.widgets.list_style")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -156,14 +157,6 @@ local function render_empty_row(theme)
   return ui.row({ ui.text("No matches", { fg = theme.empty }) })
 end
 
-local function styled_row_options(row_options, theme, fill_bg)
-  return util.merge_tables(hollow.tbl(row_options):entries(), {
-    fill_bg = fill_bg,
-    scrollbar_track_color = theme.scrollbar_track,
-    scrollbar_thumb_color = theme.scrollbar_thumb,
-  })
-end
-
 ---@param entry HollowUiSelectEntry
 ---@param is_selected boolean
 ---@param is_hovered boolean
@@ -172,23 +165,18 @@ end
 ---@param query string
 ---@return HollowUiRows
 local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options, query)
-  local emphasized = is_selected or is_hovered
-  local indicator = util.state_value(is_selected, is_hovered, "> ", "▎ ", "  ")
-  local indicator_fg =
-    util.state_value(is_selected, is_hovered, theme.selection_fg, theme.selection_fg, theme.fg)
   local row_fg =
     util.state_value(is_selected, is_hovered, theme.selection_fg, theme.hover_fg, theme.fg)
-  local row_bg = util.state_value(is_selected, is_hovered, theme.selection_bg, theme.hover_bg)
   local match_style = { fg = theme.panel_border, bold = true }
   local label_nodes = hollow
-    .tbl({ ui.span(indicator, { fg = indicator_fg, bold = emphasized }) })
+    .tbl({ list_style.indicator(ui, theme, is_selected, is_hovered) })
     :concat(shared.highlight_inline_nodes(entry.label_nodes, query, match_style))
     :get()
 
   local rows = {
     ui.row(
       { ui.group(label_nodes, { fg = row_fg }) },
-      styled_row_options(row_options, theme, row_bg)
+      list_style.row(row_options, theme, is_selected, is_hovered)
     ),
   }
 
@@ -200,15 +188,13 @@ local function render_entry_rows(entry, is_selected, is_hovered, theme, row_opti
       theme.selected_muted,
       theme.detail
     )
-    local detail_bg =
-      util.state_value(is_selected, is_hovered, theme.selected_detail_bg, theme.hover_bg)
     local detail_nodes = hollow
-      .tbl({ ui.span("   ", { fg = detail_fg }) })
+      .tbl({ ui.span("   ", { fg = detail_fg, padding = list_style.row_padding }) })
       :concat(shared.highlight_inline_nodes(entry.detail_nodes, query, match_style))
       :get()
     rows[#rows + 1] = ui.row(
       { ui.group(detail_nodes, { fg = detail_fg }) },
-      styled_row_options(row_options, theme, detail_bg)
+      list_style.row(row_options, theme, is_selected, is_hovered)
     )
   end
 

@@ -1,5 +1,6 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
+local list_style = require("hollow.ui.widgets.list_style")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
@@ -322,10 +323,8 @@ function ui.mux_navigator.open(opts)
                 and theme.notify_levels.success
               or row_fg
             local row_nodes = {
-              ui.text((selected and "> " or "  ") .. indent, {
-                fg = selected and theme.selection_fg or theme.muted,
-                bold = selected,
-              }),
+              list_style.indicator(ui, theme, selected, hovered),
+              ui.text(indent),
               ui.text(branch, {
                 fg = prefix_fg,
                 bold = is_workspace or selected or active,
@@ -352,16 +351,13 @@ function ui.mux_navigator.open(opts)
               })
             end
 
-            options.fill_bg = util.state_value(
+            list_style.row(
+              options,
+              theme,
               selected,
               hovered,
-              theme.selection_bg,
-              theme.hover_bg,
               is_workspace and (theme.selected_detail_bg or theme.panel_bg) or nil
             )
-
-            options.scrollbar_track_color = theme.scrollbar_track
-            options.scrollbar_thumb_color = theme.scrollbar_thumb
 
             local detail = row_detail(row)
             if detail ~= "" then

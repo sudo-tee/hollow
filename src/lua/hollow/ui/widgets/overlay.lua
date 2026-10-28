@@ -36,6 +36,8 @@ local function serialize_overlay_row(row)
 
   if type(row) == "table" and row._type == "row" then
     serialized.fill_bg = row.fill_bg
+    serialized.fill_radius = row.fill_radius
+    serialized.accent_bar = row.accent_bar
     serialized.divider = row.divider
     serialized.scrollbar_track = row.scrollbar_track == true
     serialized.scrollbar_thumb = row.scrollbar_thumb == true

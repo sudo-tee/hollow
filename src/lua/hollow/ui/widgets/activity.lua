@@ -2,6 +2,7 @@ local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
+local list_style = require("hollow.ui.widgets.list_style")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 local hollow = _G.hollow
@@ -13,7 +14,7 @@ local DEFAULT_WIDTH = 100
 local DEFAULT_HEIGHT = 24
 local PILL_PADDING = { left = 8, right = 8, top = 3, bottom = 3 }
 
-local SECTION_GAP = { top = 8 }
+local SECTION_GAP = list_style.section_padding
 local LEVEL_RANK = { info = 1, success = 1, warn = 2, error = 3 }
 local SECTIONS = {
   tasks = "Tasks",
@@ -585,14 +586,13 @@ function ui.activity.open(opts)
         local selected = index == list.nav.index
         local hovered = state.hovered_id == id
         local fg = util.state_value(selected, hovered, theme.selection_fg, theme.hover_fg, theme.fg)
-        options.fill_bg = util.state_value(selected, hovered, theme.selection_bg, theme.hover_bg)
-        options.scrollbar_track_color = theme.scrollbar_track
-        options.scrollbar_thumb_color = theme.scrollbar_thumb
+        list_style.row(options, theme, selected, hovered)
         if entry.header_category then
           content[#content + 1] = ui.row({
+            list_style.indicator(ui, theme, selected, hovered, nil, list_style.section_indicator_padding),
             ui.text((entry.expanded and icons.expanded or icons.collapsed) .. " ", {
               fg = selected and fg or theme.muted,
-              padding = index > 1 and SECTION_GAP or nil,
+              padding = SECTION_GAP,
             }),
             ui.text(entry.title, { fg = selected and fg or theme.title, bold = true }),
             ui.text(" (" .. entry.count .. ")", { fg = selected and fg or theme.counter }),
@@ -618,7 +618,8 @@ function ui.activity.open(opts)
             or selected and theme.selected_muted
             or theme.muted
           local segments = {
-            ui.text((selected and "> " or "  ") .. indent, { fg = selected and theme.title or fg }),
+            list_style.indicator(ui, theme, selected, hovered),
+            ui.text(indent),
             ui.text(marker(entry), { fg = read and theme.muted or accent or fg }),
             ui.text(primary, {
               fg = read and not selected and theme.muted or fg,

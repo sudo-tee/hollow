@@ -33,11 +33,16 @@ describe("UI select test suite", function()
       on_key("arrow_down", 0)
       items = { "alpha one", "alpha updated" }
       local overlay = hollow.ui._overlay_state()
+      assert.equals(4, overlay[1].rows[6].fill_radius)
+      assert.equals(require("hollow.theme").resolve_widget("select").panel_border, overlay[1].rows[6].accent_bar)
+      assert.equals(4, overlay[1].rows[6].segments[1].padding.left)
+      assert.equals(2, overlay[1].rows[6].segments[1].padding.top)
+      assert.equals(2, overlay[1].rows[6].segments[1].padding.bottom)
       local text = ""
       for _, segment in ipairs(overlay[1].rows[6].segments) do
         text = text .. (segment.text or "")
       end
-      assert.is_truthy(text:find("> alpha updated", 1, true))
+      assert.is_truthy(text:find("  alpha updated", 1, true))
       on_key("enter", 0)
       assert.equals("alpha updated", selected)
       hollow.ui.overlay.clear()

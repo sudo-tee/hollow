@@ -1,4 +1,5 @@
 local icons = require("hollow.ui.icons")
+local list_style = require("hollow.ui.widgets.list_style")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -27,15 +28,6 @@ local function category_order(cat)
   return CATEGORIES[cat] and CATEGORIES[cat].order or 99
 end
 
-local MARKER_SELECTED = "> "
-local MARKER_HOVERED = "\226\150\142 " -- ▎
-local MARKER_NONE = "  "
-
-local function marker(is_selected, is_hovered, indent)
-  return (indent or "")
-    .. util.state_value(is_selected, is_hovered, MARKER_SELECTED, MARKER_HOVERED, MARKER_NONE)
-end
-
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
 
@@ -52,14 +44,6 @@ local function resolve_theme(opts)
     util.merge_tables(theme, util.clone_value(opts.theme))
   end
   return theme
-end
-
-local function styled_row_options(row_options, theme, fill_bg)
-  return util.merge_tables(hollow.tbl(row_options):entries(), {
-    fill_bg = fill_bg,
-    scrollbar_track_color = theme.scrollbar_track,
-    scrollbar_thumb_color = theme.scrollbar_thumb,
-  })
 end
 
 local ENTRY_DEFAULTS = {
@@ -266,21 +250,19 @@ local function render_section_header(
   local arrow = is_collapsed and icons.collapsed or icons.expanded
   return ui.row(
     {
-      ui.text(marker(is_selected, is_hovered) .. arrow .. " " .. label, {
+      list_style.indicator(ui, theme, is_selected, is_hovered, nil, list_style.section_indicator_padding),
+      ui.text(arrow .. " " .. label, {
         fg = theme.title,
         bold = true,
+        padding = list_style.section_padding,
       }),
     },
-    styled_row_options(
+    list_style.row(
       row_options,
       theme,
-      util.state_value(
-        is_selected,
-        is_hovered,
-        theme.selection_bg,
-        theme.hover_bg,
-        theme.selected_detail_bg or theme.panel_bg
-      )
+      is_selected,
+      is_hovered,
+      theme.selected_detail_bg or theme.panel_bg
     )
   )
 end
@@ -300,14 +282,13 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
       entry.domain_name and entry.display_name
       or (entry.desc ~= "" and entry.desc or entry.display_name)
     )
-  local emphasize = is_selected or is_hovered
   local fg =
     util.state_value(is_selected, is_hovered, theme.selected_fg, theme.selected_fg, theme.fg)
   local active_color = shared.resolve_theme().palette.bright_green
   local label_fg = entry.domain_name and entry.is_active and active_color or fg
   local label_nodes = hollow
     .tbl({
-      ui.span(marker(is_selected, is_hovered, "  "), { fg = fg, bold = emphasize }),
+      list_style.indicator(ui, theme, is_selected, is_hovered, "  "),
     })
     :concat(entry.domain_name and {
       ui.span(entry.is_active and "• " or "  ", {
@@ -333,8 +314,10 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
       ),
     } or {})
     :get()
-  local fill_bg = util.state_value(is_selected, is_hovered, theme.selection_bg, theme.hover_bg)
-  return ui.row({ ui.group(label_nodes) }, styled_row_options(row_options, theme, fill_bg))
+  return ui.row(
+    { ui.group(label_nodes) },
+    list_style.row(row_options, theme, is_selected, is_hovered)
+  )
 end
 
 ---@param opts table|nil

@@ -666,6 +666,8 @@
 ---@field id? string
 ---@field hoverable? boolean
 ---@field fill_bg? HollowColor
+---@field fill_radius? number
+---@field accent_bar? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
@@ -681,6 +683,8 @@
 ---@field id? string
 ---@field hoverable boolean
 ---@field fill_bg? HollowColor
+---@field fill_radius? number
+---@field accent_bar? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
@@ -817,6 +821,8 @@
 ---@field segments HollowUiSegment[]
 ---@field hoverable boolean
 ---@field fill_bg? HollowColor
+---@field fill_radius? number
+---@field accent_bar? HollowColor
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean

@@ -60,6 +60,29 @@ describe("activity center", function()
     assert.equals("󰂜 ", require("hollow.ui.widgets.attention").topbar_button().render().text)
   end)
 
+  it("uses padded headers and rounded row highlights in both views", function()
+    report("working", 10)
+    notify("finished")
+    hollow.ui.activity.open()
+    local function check_header(label)
+      for _, overlay in ipairs(hollow.ui._overlay_state()) do
+        for _, row in ipairs(overlay.rows or {}) do
+          for _, segment in ipairs(row.segments or {}) do
+            if segment.text == label then
+              assert.equals(8, row.segments[1].padding.top)
+              assert.equals(4, row.fill_radius)
+              return
+            end
+          end
+        end
+      end
+      error("missing header: " .. label)
+    end
+    check_header("Tasks")
+    env.get_key_handler()("tab", 0)
+    check_header("Today")
+  end)
+
   it("copies full notification content without acknowledging or closing", function()
     emit("window:blurred", {})
     local message = string.rep("long message ✓ ", 30) .. "\nsecond line"
@@ -469,7 +492,7 @@ describe("activity center", function()
     local marker
     for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
       if row.id and row.id:find("command:101", 1, true) then
-        marker = row.segments[2]
+        marker = row.segments[3]
       end
     end
     assert.equals("▸ ", marker.text)
