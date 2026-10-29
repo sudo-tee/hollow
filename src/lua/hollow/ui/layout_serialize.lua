@@ -17,6 +17,18 @@ end
 
 return function(root, palette, namespace)
   local nodes, callbacks, ids, local_ids, subtree_ends = {}, {}, {}, {}, {}
+  local default_scrollbar_colors = {}
+  local default_scrollbar_resolved = {}
+  local function scrollbar_color(key, value, fallback)
+    if value then
+      return shared.resolve_tokens({ [key] = value }, palette)[key]
+    end
+    if not default_scrollbar_resolved[key] then
+      default_scrollbar_colors[key] = shared.resolve_tokens({ [key] = fallback }, palette)[key]
+      default_scrollbar_resolved[key] = true
+    end
+    return default_scrollbar_colors[key]
+  end
   local function visit(node, depth)
     assert(type(node) == "table" and node.kind ~= nil, "expected layout node")
     assert(depth <= 32 and #nodes < 512, "layout tree exceeds prototype limits")
@@ -31,7 +43,7 @@ return function(root, palette, namespace)
     assert(not ids[id], "duplicate layout id: " .. id)
     ids[id] = #nodes + 1
     local style = shared.resolve_tokens(node.style or {}, palette)
-    local paint = shared.normalize_surface_style(style, palette) or {}
+    local paint = shared.normalize_surface_style(style) or {}
     local padding_value = node.padding
     if padding_value == nil then
       padding_value = style.padding
@@ -45,10 +57,8 @@ return function(root, palette, namespace)
     assert(node.wrap == nil or wraps[node.wrap] ~= nil, "invalid text wrap mode")
     assert(node.full_bleed_x == nil or type(node.full_bleed_x) == "boolean", "invalid full_bleed_x")
     assert(node.scrollbar_id == nil or (type(node.scrollbar_id) == "string" and #node.scrollbar_id > 0 and #namespace + #node.scrollbar_id <= 128), "invalid scrollbar id")
-    local scrollbar_colors = shared.resolve_tokens({
-      scrollbar_track_color = node.scrollbar_track_color or "parts.scrollbar.track|scrollbar_track|#5a6375",
-      scrollbar_thumb_color = node.scrollbar_thumb_color or "parts.scrollbar.thumb|scrollbar_thumb|panel_border",
-    }, palette)
+    local track_color = scrollbar_color("scrollbar_track_color", node.scrollbar_track_color, "parts.scrollbar.track|scrollbar_track|#5a6375")
+    local thumb_color = scrollbar_color("scrollbar_thumb_color", node.scrollbar_thumb_color, "parts.scrollbar.thumb|scrollbar_thumb|panel_border")
     assert(
       node.reveal == nil or (type(node.reveal) == "string" and #node.reveal > 0),
       "invalid reveal target"
@@ -77,8 +87,8 @@ return function(root, palette, namespace)
       scrollbar_id = node.scrollbar_id and (namespace .. node.scrollbar_id),
       scrollbar_thumb_ratio = math.max(0, math.min(1, tonumber(node.scrollbar_thumb_ratio) or 0)),
       scrollbar_thumb_size = math.max(0, math.min(1, tonumber(node.scrollbar_thumb_size) or 1)),
-      scrollbar_track_color = scrollbar_colors.scrollbar_track_color,
-      scrollbar_thumb_color = scrollbar_colors.scrollbar_thumb_color,
+      scrollbar_track_color = track_color,
+      scrollbar_thumb_color = thumb_color,
       reveal = node.reveal and (namespace .. node.reveal),
       reveal_start = node.reveal_start == true,
       measure = node.measure == true,

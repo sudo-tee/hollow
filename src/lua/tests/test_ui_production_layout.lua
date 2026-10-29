@@ -139,6 +139,50 @@ describe("production Clay pickers", function()
     assert.equals(name.id, find(":select:item:1:name").id)
   end)
 
+  it(
+    "uses identical unstyled Clay accessibility labels without resolving legacy palette",
+    function()
+      local items = {
+        {
+          name = "a very long workspace name to truncate",
+          cwd = "/some/long/path",
+          domain = "remote",
+          is_active = true,
+          program_status_badge = "✓ ",
+        },
+        { name = "other", cwd = "", domain = "local", has_bell = true },
+      }
+      require("hollow.ui.workspace.source").items = function()
+        return items
+      end
+      local open = ui.select.open
+      local opts
+      ui.select.open = function(value)
+        opts = value
+      end
+      local shared = require("hollow.ui.shared")
+      ui.workspace.open_switcher({ layout = "legacy" })
+      local legacy = {}
+      for i, item in ipairs(items) do
+        legacy[i] = shared.nodes_plain_text(opts.label(item))
+      end
+      ui.workspace.open_switcher({ layout = "clay" })
+      local theme = require("hollow.theme")
+      local resolve = theme.resolve_widget
+      local calls = 0
+      theme.resolve_widget = function(...)
+        calls = calls + 1
+        return resolve(...)
+      end
+      for i, item in ipairs(items) do
+        assert.equals(legacy[i], shared.nodes_plain_text(opts.label(item)))
+      end
+      theme.resolve_widget = resolve
+      ui.select.open = open
+      assert.equals(0, calls)
+    end
+  )
+
   it("preserves custom workspace formatters and rename/create keyboard flows", function()
     workspaces(1)
     require("hollow.ui.workspace.source").items = function()

@@ -27,7 +27,12 @@ dialogs in. Explicit per-call `layout = "legacy"` or `"clay"` wins over this set
 Changes apply to subsequently opened dialogs. Workspace switcher options, including
 `layout`, retain their existing persistent `workspace.configure`/`open_switcher`
 behavior. Native caches are reset when configuration reload replaces the Lua runtime.
-Performance parity has not yet been benchmarked.
+Full rendering performance parity has not yet been benchmarked. A reproducible
+[Lua-only picker baseline](renderer-bench.md#picker-lua-snapshot-benchmark)
+compares event handling and snapshot/serialization costs without native layout
+or drawing.
+A separate [Lua memory baseline](renderer-bench.md#picker-lua-memory-baseline)
+measures heap retention and uncollected growth; native/GPU memory is not included.
 
 ## Try it
 
@@ -198,7 +203,9 @@ Each instance owns callbacks and its serialized snapshot. Rendering happens only
 when dirty or when host dimensions, font metrics or the theme generation change.
 Opt-in (`measure = true`) scroll viewport measurements appear in read-only `ctx.metrics`, keyed
 by local ID. Changed dimensions invalidate once; unchanged measurements do not
-rebuild the tree. Live select providers are the explicit per-frame exception.
+rebuild the tree. Live select providers, mux navigator and activity picker are
+explicit per-frame exceptions so terminal state and elapsed/status labels stay
+current.
 Modal surfaces are mounted and destroyed by the existing overlay shell. The
 native adapter currently renders one active Clay surface at a time; this is not
 yet a simultaneous multi-pane renderer. Demo content lives in `layout_demo.lua`,

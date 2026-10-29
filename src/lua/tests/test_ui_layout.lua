@@ -45,6 +45,29 @@ describe("experimental hierarchical layout", function()
     assert.equals("#abcdef", node.scrollbar_thumb_color)
   end)
 
+  it("resolves scrollbar defaults per snapshot and preserves nested overrides", function()
+    local serialize = require("hollow.ui.layout_serialize")
+    local palette = { fg = "#111111", panel_border = "#222222", parts = {
+      scrollbar = { track = "#333333", thumb = "#444444" },
+    } }
+    local root = layout.column({
+      layout.column({}, { scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }),
+      layout.column({}, { style = { fg = "fg" } }),
+    })
+    local first = serialize(root, palette, "test:")
+    assert.equals("#333333", first[1].scrollbar_track_color)
+    assert.equals("#444444", first[1].scrollbar_thumb_color)
+    assert.equals("#111111", first[2].scrollbar_track_color)
+    assert.equals("#abcdef", first[2].scrollbar_thumb_color)
+    assert.equals("#111111", first[3].fg)
+    palette.parts.scrollbar.track = "#555555"
+    palette.fg = "#666666"
+    local second = serialize(root, palette, "test:")
+    assert.equals("#555555", second[1].scrollbar_track_color)
+    assert.equals("#666666", second[2].scrollbar_track_color)
+    assert.equals("#666666", second[3].fg)
+  end)
+
   it("serializes explicit full bleed without changing padding", function()
     layout.show(layout.column({
       layout.column({}, { width = "grow", height = 1, full_bleed_x = true }),
