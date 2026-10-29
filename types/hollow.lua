@@ -889,10 +889,8 @@
 ---@field max_width? number
 ---@field tabs HollowUiSegment[]
 
----@class HollowUiOverlaySerializedRow
+---@class HollowUiRowPaint
 ---@field hover_bg? HollowColor Lua-owned hover paint, with native compatibility fallback.
----@field segments HollowUiSegment[]
----@field hoverable boolean
 ---@field fill_bg? HollowColor
 ---@field fill_radius? number
 ---@field accent_bar? HollowColor|false
@@ -904,6 +902,10 @@
 ---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
+
+---@class HollowUiOverlaySerializedRow: HollowUiRowPaint
+---@field segments HollowUiSegment[]
+---@field hoverable boolean
 
 ---@class HollowUiOverlaySerializedWidget
 ---@field stack_context "overlay"|"modal"|"notification"
@@ -917,7 +919,7 @@
 
 ---@class HollowUiSidebarState
 ---@field style? {fg?: HollowColor, bg?: HollowColor, border?: HollowColor, alpha?: number}
----@field row_styles? HollowUiOverlaySerializedRow[] Optional row-paint metadata; rows retain their legacy segment-array shape.
+---@field row_styles? HollowUiRowPaint[] Optional row-paint metadata; rows retain their legacy segment-array shape.
 ---@field side "left"|"right"
 ---@field width integer
 ---@field reserve boolean

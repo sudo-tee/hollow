@@ -174,6 +174,21 @@ allocated bytes per row. Component-only groups used 13636 bytes before and
 13720 after (about 0.6% more). Host scheduling and GC vary; these values do not
 establish a universal tolerance or native frame-time claim.
 
+Phase 4 adapter comparison against the preceding head (`75c083f`), using the
+same `--overlay` workload sequentially on the same host:
+
+| Rows | Before ms | Phase 4 ms | Before bytes/row | Phase 4 bytes/row |
+| --- | ---: | ---: | ---: | ---: |
+| 25 | 0.727 | 0.730 | 16802 | 16961 |
+| 100 | 2.904 | 2.682 | 16363 | 16505 |
+| 500 | 14.280 | 14.054 | 16238 | 16375 |
+
+Allocation growth is under 1% per row in this sample. The same timing/GC caveats
+apply. Native tests for Phase 4 code commit `01592d6` passed
+[CI](https://github.com/sudo-tee/hollow/actions/runs/40853968458), including the tab
+paint/layout/cache regression test. Release builds and agent checks are tracked
+on the same PR; desktop visual acceptance remains separate.
+
 GitHub CI for implementation commit `f898a9c` passed native/Lua tests
 (`zig build test-all`), Linux and Windows builds, and agent conformance:
 [Test](https://github.com/sudo-tee/hollow/actions/runs/40777176646),
