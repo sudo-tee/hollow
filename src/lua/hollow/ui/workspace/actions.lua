@@ -1,5 +1,5 @@
-local source = require("hollow.ui.workspace.source")
 local project = require("hollow.workspace.project")
+local source = require("hollow.ui.workspace.source")
 
 ---@type Hollow
 local hollow = _G.hollow
@@ -107,21 +107,23 @@ end
 
 local function open_create_input(opts)
   opts = opts or {}
-  ui.input.open({
-    prompt = opts.prompt or "New workspace name",
-    on_confirm = function(value)
-      local name = trim_string(value)
-      if name == "" then
-        notify_warn("Workspace name cannot be empty")
-        return
-      end
+  local input_opts = hollow.util.clone_value(opts)
+  input_opts.layout =
+    ui.layout.resolve_backend(opts.layout or source.switcher_state().layout, "clay")
+  input_opts.prompt = opts.prompt or "New workspace name"
+  input_opts.on_confirm = function(value)
+    local name = trim_string(value)
+    if name == "" then
+      notify_warn("Workspace name cannot be empty")
+      return
+    end
 
-      open_new_workspace_from_item({ name = name, cwd = "" })
-      if type(opts.on_confirm) == "function" then
-        opts.on_confirm(name)
-      end
-    end,
-  })
+    open_new_workspace_from_item({ name = name, cwd = "" })
+    if type(opts.on_confirm) == "function" then
+      opts.on_confirm(name)
+    end
+  end
+  ui.input.open(input_opts)
 end
 
 local function open_rename_input(workspace, opts)
@@ -138,23 +140,25 @@ local function open_rename_input(workspace, opts)
     return
   end
 
-  ui.input.open({
-    prompt = opts.prompt or "Rename workspace",
-    default = target_name,
-    on_confirm = function(value)
-      local name = trim_string(value)
-      if name == "" then
-        notify_warn("Workspace name cannot be empty")
-        return
-      end
+  local input_opts = hollow.util.clone_value(opts)
+  input_opts.layout =
+    ui.layout.resolve_backend(opts.layout or source.switcher_state().layout, "clay")
+  input_opts.prompt = opts.prompt or "Rename workspace"
+  input_opts.default = target_name
+  input_opts.on_confirm = function(value)
+    local name = trim_string(value)
+    if name == "" then
+      notify_warn("Workspace name cannot be empty")
+      return
+    end
 
-      hollow.term.set_workspace_name(name)
-      source.ensure_last_opened(name)
-      if type(opts.on_confirm) == "function" then
-        opts.on_confirm(name, target)
-      end
-    end,
-  })
+    hollow.term.set_workspace_name(name)
+    source.ensure_last_opened(name)
+    if type(opts.on_confirm) == "function" then
+      opts.on_confirm(name, target)
+    end
+  end
+  ui.input.open(input_opts)
 end
 
 local function close_workspace(workspace)

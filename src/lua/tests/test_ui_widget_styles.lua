@@ -37,7 +37,12 @@ describe("widget style recipes", function()
   end)
 
   it("keeps palette header and hints on its custom theme", function()
-    hollow.ui.command_palette.open({ prompt = "Styled", entries = {}, theme = theme })
+    hollow.ui.command_palette.open({
+      layout = "legacy",
+      prompt = "Styled",
+      entries = {},
+      theme = theme,
+    })
     assert.equals(theme.title, segment("Styled:").fg)
     assert.is_true(segment("Styled:").bold)
     assert.equals(theme.title, segment("Filter: ").fg)
@@ -45,14 +50,14 @@ describe("widget style recipes", function()
   end)
 
   it("keeps mux search styles on its custom theme", function()
-    hollow.ui.mux_navigator.open({ theme = theme })
+    hollow.ui.mux_navigator.open({ layout = "legacy", theme = theme })
     assert.equals(theme.title, segment("/ ").fg)
     assert.is_true(segment("/ ").bold)
     assert.equals(theme.muted, segment("search panes").fg)
   end)
 
   it("keeps activity header and hints on its custom theme", function()
-    hollow.ui.activity.open({ theme = theme })
+    hollow.ui.activity.open({ layout = "legacy", theme = theme })
     assert.equals(theme.title, segment("Activity  ").fg)
     assert.is_true(segment("Activity  ").bold)
     assert.equals(theme.muted, segment(" views   ").fg)

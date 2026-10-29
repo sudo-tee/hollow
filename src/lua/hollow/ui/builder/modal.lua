@@ -71,6 +71,9 @@ function M.modal(spec)
       end
 
       local consumed = spec.on_event and spec.on_event(name, payload)
+      if surface and (consumed or name == "overlay:click") then
+        surface:invalidate()
+      end
       local scroll_delta = payload and payload.delta or 0
       if name == "overlay:scroll" and scroll_delta ~= 0 and not consumed and spec.keys then
         spec.keys(scroll_delta < 0 and "arrow_down" or "arrow_up", 0)
@@ -87,6 +90,7 @@ function M.modal(spec)
   widget._palette = theme
   widget._theme_backdrop = spec.theme_backdrop == true
   widget._modal = true
+  widget._layout_live = spec.layout_live == true
   if spec.layout_render then
     local align = shared.normalize_overlay_align(widget.align)
     widget._layout_surface = ui.layout.new({
@@ -95,16 +99,22 @@ function M.modal(spec)
         width = shared.normalize_overlay_size(spec.width),
         height = shared.normalize_overlay_size(spec.height),
         align_x = align:find("left") and 0 or (align:find("right") and 2 or 1),
-        align_y = align:find("top") and 0 or (align:find("bottom") and 2 or 1),
+        align_y = (align == "center" or align:find("top")) and 0
+          or (align:find("bottom") and 2 or 1),
       },
       render = function(ctx)
         local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
         widget._layout_surface.frame.margin = box.normalize(chrome.margin)
         local padding = box.normalize(chrome.padding)
         local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
-        padding.left, padding.right = padding.left + cell_w * 0.5, padding.right + cell_w * 0.5
+        padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
         padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
-        return ui.layout.column({ spec.layout_render(theme, state, ctx) }, {
+        local content, preferred_height = spec.layout_render(theme, state, ctx)
+        if preferred_height and not shared.normalize_overlay_size(spec.height) then
+          widget._layout_surface.frame.height = (preferred_height + padding.top + padding.bottom)
+            / cell_h
+        end
+        return ui.layout.column({ content }, {
           id = "dialog",
           label = spec.title or "Confirmation",
           padding = padding,

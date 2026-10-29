@@ -20,6 +20,7 @@ pub const Surface = struct {
     revision: f64 = -1,
     surface_id: f64 = -1,
     owner_index: usize = 0,
+    runtime_generation: u64 = 0,
     frame: c.HollowClayFrame = std.mem.zeroes(c.HollowClayFrame),
 
     pub fn deinit(self: *Surface) void {
@@ -78,6 +79,10 @@ pub const Surface = struct {
 
     /// Must run before atlas upload / swapchain rendering. Own all Lua strings until next prepare.
     pub fn prepare(self: *Surface, runtime: *lua.Runtime, renderer: anytype, width: f32, height: f32) void {
+        if (self.runtime_generation != runtime.generation) {
+            self.deinit();
+            self.* = .{ .runtime_generation = runtime.generation };
+        }
         const api = runtime.context.api;
         const state = runtime.state;
         const top = api.get_top(state);
@@ -156,6 +161,12 @@ pub const Surface = struct {
             node.id = self.string(api, state, idx, "id") catch return;
             node.text = self.string(api, state, idx, "text") catch return;
             node.label = self.string(api, state, idx, "label") catch return;
+            node.reveal = self.string(api, state, idx, "reveal") catch return;
+            node.scrollbar_id = self.string(api, state, idx, "scrollbar_id") catch return;
+            node.scrollbar_thumb_ratio = std.math.clamp(number(api, state, idx, "scrollbar_thumb_ratio"), 0, 1);
+            node.scrollbar_thumb_size = std.math.clamp(number(api, state, idx, "scrollbar_thumb_size"), 0, 1);
+            node.scrollbar_track_color = color(api, state, idx, "scrollbar_track_color");
+            node.scrollbar_thumb_color = color(api, state, idx, "scrollbar_thumb_color");
             node.kind = @intFromFloat(number(api, state, idx, "kind"));
             node.children = @intFromFloat(@max(0, number(api, state, idx, "children")));
             node.width = number(api, state, idx, "width");
@@ -171,6 +182,13 @@ pub const Surface = struct {
             node.hover_bg = color(api, state, idx, "hover_bg");
             node.bold = boolean(api, state, idx, "bold");
             node.scroll = boolean(api, state, idx, "scroll");
+            node.scroll_x = boolean(api, state, idx, "scroll_x");
+            node.reveal_start = boolean(api, state, idx, "reveal_start");
+            node.list_item = boolean(api, state, idx, "list_item");
+            node.measure = boolean(api, state, idx, "measure");
+            node.full_bleed_x = boolean(api, state, idx, "full_bleed_x");
+            node.align_y = @intFromFloat(std.math.clamp(number(api, state, idx, "align_y"), 0, 2));
+            node.wrap = @intFromFloat(std.math.clamp(number(api, state, idx, "wrap"), 0, 2));
             node.clickable = boolean(api, state, idx, "clickable");
             api.get_field(state, idx, "padding");
             if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {

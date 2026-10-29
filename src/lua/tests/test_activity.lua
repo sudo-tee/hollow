@@ -46,6 +46,9 @@ describe("activity center", function()
   before_each(function()
     env = harness.boot()
     hollow, host = env.hollow, env.host_api
+    -- This suite inspects legacy row IDs, paint segments and text-view rows.
+    -- Production-default native rendering has dedicated layout regressions.
+    hollow.ui.layout.configure({ backend = "legacy" })
     status = {}
     host.get_pane_program_status = function()
       return status

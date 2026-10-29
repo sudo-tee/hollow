@@ -1051,6 +1051,7 @@
 ---@field theme? HollowUiTheme
 
 ---@class HollowUiInputOptions
+---@field layout? 'legacy'|'clay' Opt-in Clay geometry with the existing text-input behavior.
 ---@field prompt? string
 ---@field default? string
 ---@field backdrop? HollowOverlayBackdropValue
@@ -1174,6 +1175,8 @@
 ---@field score number
 
 ---@class HollowUiSelectOptions
+---@field layout? 'legacy'|'clay' Opt-in bounded Clay list viewport; legacy remains default.
+---@field layout_label? fun(item: any, ctx: HollowUiLayoutContext, view: { id: string, query: string, selected: boolean, hovered: boolean, theme: HollowUiTheme }): HollowUiLayoutNode|nil Optional Clay label tree; nil uses the normal label, which still supplies search/semantics.
 ---@field items any[]|fun(): any[] Live providers are evaluated on each render; avoid blocking work.
 ---@field label? fun(item: any): HollowUiInlineNode|HollowUiInlineNode[]
 ---@field search_text? fun(item: any): string|nil
@@ -1184,6 +1187,7 @@
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field width? integer
 ---@field height? integer
+---@field max_height? integer
 ---@field chrome? HollowUiChrome|boolean
 ---@field theme? HollowUiTheme
 ---@field actions HollowUiSelectAction[]
@@ -2041,6 +2045,7 @@ function command_palette.open(opts) end
 function command_palette.close() end
 
 ---@class HollowUiMuxNavigatorOptions
+---@field layout? 'legacy'|'clay' Defaults to Clay; explicit choice overrides ui.layout.configure.
 ---@field query? string
 ---@field filter? "all"|"pane_bell"
 ---@field title? string
@@ -2099,6 +2104,7 @@ function mux_navigator.close() end
 ---@field ignore? string[] Lua patterns hiding shell commands from live listings and task badges, overriding both lists.
 
 ---@class HollowUiActivityOptions
+---@field layout? 'legacy'|'clay' Defaults to Clay; explicit choice overrides ui.layout.configure.
 ---@field view? HollowActivityView
 ---@field width? integer
 ---@field height? integer
@@ -2168,6 +2174,7 @@ function select.close() end
 ---@field default? boolean
 
 ---@class HollowUiWorkspaceSwitcherOptions
+---@field layout? 'legacy'|'clay' Defaults to Clay unless ui.layout.configure selects legacy.
 ---@field prompt? string
 ---@field width? integer
 ---@field height? integer
@@ -2239,12 +2246,24 @@ local workspace = {}
 ---@class HollowUiLayoutOptions
 ---@field id? string Required for clickable nodes; unique within the surface.
 ---@field label? string Automation label for clickable containers.
+---@field role? 'button'|'listitem' Automation role for clickable containers.
 ---@field width? number|'fit'|'grow' Pixel count, content size, or remaining space.
 ---@field height? number|'fit'|'grow'
 ---@field padding? HollowUiBoxValue
 ---@field gap? number
 ---@field style? HollowUiNodeStyle
 ---@field scroll? boolean Vertical scrolling.
+---@field scroll_x? boolean Horizontal scrolling; children may exceed the viewport width.
+---@field reveal? string Local ID of a descendant container to keep visible, e.g. a caret.
+---@field reveal_start? boolean Align the reveal target with the viewport start instead of nearest-edge reveal.
+---@field measure? boolean Report scroll viewport dimensions through ctx.metrics; opt-in to avoid per-node feedback.
+---@field scrollbar_id? string Local selectable-list scrollbar ID; enables overlay scrollbar paint and drag routing.
+---@field scrollbar_thumb_ratio? number Full-list scroll position from 0 to 1.
+---@field scrollbar_thumb_size? number Visible fraction of the full logical list.
+---@field scrollbar_track_color? string
+---@field scrollbar_thumb_color? string
+---@field align_y? 'start'|'center'|'end' Vertical alignment of container children.
+---@field full_bleed_x? boolean Paint background to framed overlay's inner horizontal edges without changing layout.
 ---@field on_click? fun(event: { id: string })
 
 ---@class HollowUiLayoutNode
@@ -2253,10 +2272,12 @@ local workspace = {}
 ---@field text? string
 
 ---@class HollowUiLayout
+---@field configure fun(opts?: { backend?: 'auto'|'legacy'|'clay' }) Set defaults for subsequently opened widgets; auto restores widget-specific defaults. Explicit layout options take precedence.
+---@field resolve_backend fun(override?: 'legacy'|'clay', default?: 'legacy'|'clay'): 'legacy'|'clay'
 ---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
 ---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
 ---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
----@field text fun(value: any, style?: HollowUiNodeStyle): HollowUiLayoutNode
+---@field text fun(value: any, style?: HollowUiNodeStyle, opts?: { wrap?: 'words'|'newlines'|'none' }): HollowUiLayoutNode
 ---@field button fun(opts: HollowUiButtonOptions): HollowUiLayoutNode
 ---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
 ---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
@@ -2264,6 +2285,7 @@ local workspace = {}
 ---@field demo fun()
 
 ---@class HollowUiLayoutContext
+---@field metrics? table<string, { width: number, height: number }> Latest measured overlay viewport dimensions by local ID. Read-only; changes invalidate the surface.
 ---@field width? number Host window width in pixels.
 ---@field height? number Host window height in pixels.
 ---@field cell_w? number Existing renderer cell width.

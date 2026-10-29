@@ -293,19 +293,35 @@ end
 ---@param opts table|nil
 function ui.command_palette.open(opts)
   opts = opts or {}
+  local clay = ui.layout.resolve_backend(opts.layout, "clay") == "clay"
   local theme = resolve_theme(opts)
   local backdrop = opts.backdrop
   if backdrop == nil then
     backdrop = theme.backdrop
   end
-  local all_entries = opts.entries or providers.actions()
+  local category_keys = {}
+  local all_entries = hollow
+    .tbl(opts.entries or providers.actions())
+    :map(function(entry, index)
+      local copy = new_entry(entry)
+      copy._palette_key = index
+      category_keys[copy.category] = category_keys[copy.category] or index
+      return copy
+    end)
+    :get()
   local filter = ui.text_input({ initial = opts.query or "" })
   local collapsed = {}
   local nav
   local modal
+  local clay_budget, section_units, reveal_start = math.min(20, list_row_budget(opts)), 1, false
 
   local function current_flat()
     return grouped_entries(filtered_entries(all_entries, filter.value), collapsed)
+  end
+
+  local function entry_key(entry)
+    return entry._type == "header" and ("section:" .. category_keys[entry.category])
+      or ("entry:" .. entry.item._palette_key)
   end
 
   local function activate(index)
@@ -327,7 +343,10 @@ function ui.command_palette.open(opts)
     id_prefix = "palette",
     items = current_flat,
     row_budget = function()
-      return list_row_budget(opts)
+      return clay and clay_budget or list_row_budget(opts)
+    end,
+    row_count_fn = function(entry)
+      return clay and entry._type == "header" and section_units or 1
     end,
     on_activate = activate,
   })
@@ -396,25 +415,141 @@ function ui.command_palette.open(opts)
     return ui.column(rows)
   end
 
+  local keys = ui.keys(filter, nav, {
+    ["escape|<C-[>"] = function()
+      modal.close()
+      util.safe_call(opts.on_cancel)
+    end,
+    ["arrow_down|<C-j>"] = function()
+      nav.index = util.cycle_index(nav.index, 1, #current_flat())
+    end,
+    ["arrow_up|<C-k>"] = function()
+      nav.index = util.cycle_index(nav.index, -1, #current_flat())
+    end,
+    enter = function()
+      activate(nav.index)
+    end,
+  })
   modal = ui.modal({
+    title = opts.prompt or "Command Palette",
     theme = theme,
+    layout_render = clay
+        and function(render_theme, state, ctx)
+          local component = require("hollow.ui.builder.components.layout_select")
+          local flat = current_flat()
+          nav.index = math.max(1, math.min(#flat, nav.index or 1))
+          local item_idx, total_items = item_position(flat, nav.index)
+          local line_h = component.line_height(render_theme, ctx)
+          section_units = component.row_height(
+            render_section_header(render_theme, "", false, false, false, {}),
+            ctx
+          ) / line_h
+          local measured = ctx.metrics and ctx.metrics["select:viewport"]
+          if measured then
+            clay_budget = math.max(1, math.min(20, measured.height / line_h))
+          end
+          local entries = hollow
+            .tbl(flat)
+            :map(function(entry)
+              return { item = entry, source_index = entry_key(entry) }
+            end)
+            :get()
+          local s = styles(render_theme)
+          local units = 0
+          for _, entry in ipairs(flat) do
+            units = math.min(
+              list_row_budget(opts),
+              units + (entry._type == "header" and section_units or 1)
+            )
+            if units >= list_row_budget(opts) then
+              break
+            end
+          end
+          local list_height = #flat == 0 and (ctx.cell_h or 19) or units * line_h
+          local content_height = 6 * (ctx.cell_h or 19) + list_height
+          return component.render({
+            prompt = opts.prompt or "Command Palette",
+            entries = entries,
+            selected = nav.index,
+            id_prefix = "palette",
+            counter = total_items > 0 and string.format("   %d/%d", item_idx, total_items) or "",
+            filter = filter,
+            viewport = selectable.visible_range(),
+            reveal_start = reveal_start,
+            styles = s,
+            hints = {
+              ui.divider(render_theme.divider),
+              ui.row({
+                ui.text("<CR>", s.key_hint),
+                ui.text(" execute  ", s.muted),
+                ui.text("<Esc>", s.key_hint),
+                ui.text(" dismiss", s.muted),
+              }),
+            },
+            render_item = function(adapted, index, id, plain)
+              local entry = adapted.item
+              local selected, hovered = index == nav.index, state and state.hovered_id == id
+              local row = entry._type == "header"
+                  and render_section_header(
+                    render_theme,
+                    entry.label,
+                    selected,
+                    hovered,
+                    collapsed[entry.category],
+                    { id = id }
+                  )
+                or render_entry_row(
+                  entry.item,
+                  selected,
+                  hovered,
+                  render_theme,
+                  { id = id },
+                  filter.value
+                )
+              return component.from_row(
+                row,
+                id,
+                shared.nodes_plain_text(row.children),
+                render_theme,
+                ctx,
+                function()
+                  for current_index, current in ipairs(current_flat()) do
+                    if entry_key(current) == adapted.source_index then
+                      nav.index, reveal_start = current_index, false
+                      activate(current_index)
+                      return
+                    end
+                  end
+                end,
+                plain
+              )
+            end,
+          }, render_theme, ctx),
+            content_height
+        end
+      or nil,
     render = render_content,
-    keys = ui.keys(filter, nav, {
-      ["escape|<C-[>"] = function()
-        modal.close()
-        util.safe_call(opts.on_cancel)
-      end,
-      ["arrow_down|<C-j>"] = function()
-        nav.index = util.cycle_index(nav.index, 1, #current_flat())
-      end,
-      ["arrow_up|<C-k>"] = function()
-        nav.index = util.cycle_index(nav.index, -1, #current_flat())
-      end,
-      enter = function()
-        activate(nav.index)
-      end,
-    }),
-    on_event = selectable.on_event,
+    keys = function(key, mods)
+      local consumed = keys(key, mods)
+      if consumed then
+        reveal_start = false
+      end
+      return consumed
+    end,
+    on_event = function(name, payload)
+      local consumed = selectable.on_event(name, payload)
+      if
+        clay
+        and consumed
+        and (
+          name == "overlay:scrollbar"
+          or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)
+        )
+      then
+        reveal_start = true
+      end
+      return consumed
+    end,
     width = opts.width or DEFAULT_WIDTH,
     height = opts.height,
     max_height = opts.max_height,

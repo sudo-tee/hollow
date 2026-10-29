@@ -41,6 +41,31 @@ fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
     g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
 }
 
+fn reportClayMeasurements(runtime: *lua_mod.Runtime, ui_idx: c_int) void {
+    const api = runtime.context.api;
+    const state = runtime.state;
+    const top = api.get_top(state);
+    defer api.set_top(state, top);
+    for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
+        if (!node.measure or (!node.scroll and !node.scroll_x)) continue;
+        const element = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(index));
+        if (!element.found or node.id.length == 0) continue;
+        api.get_field(state, ui_idx, "_layout_measure");
+        if (api.value_type(state, -1) != @backingInt(lua_mod.LuaType.function)) {
+            lua_mod.pop(api, state, 1);
+            return;
+        }
+        api.push_number(state, g_clay_surface.surface_id);
+        api.push_lstring(state, node.id.chars, @intCast(node.id.length));
+        api.push_number(state, element.boundingBox.width);
+        api.push_number(state, element.boundingBox.height);
+        if (api.pcall(state, 4, 0, 0) != 0) {
+            std.log.err("Clay viewport measurement callback failed", .{});
+            lua_mod.pop(api, state, 1);
+        }
+    }
+}
+
 fn clayChannel(value: f32) u8 {
     return @intFromFloat(std.math.clamp(value, 0, 255));
 }
@@ -54,6 +79,21 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
     const commands = g_clay_surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
     var clips: [34]clay.Clay_BoundingBox = undefined;
     clips[0] = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
+    if (g_clay_surface.frame.enabled) {
+        // Paint clipping must not enable Clay's horizontal overflow sizing.
+        const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
+        const x = @max(0, panel.x);
+        const y = @max(0, panel.y);
+        clips[0] = .{
+            .x = offset_x + x,
+            .y = offset_y + y,
+            .width = @max(0, @min(width, panel.x + panel.width) - x),
+            .height = @max(0, @min(height, panel.y + panel.height) - y),
+        };
+    }
+    const initial_clip = clips[0];
+    c.sgl_scissor_rect(@intFromFloat(initial_clip.x), @intFromFloat(initial_clip.y), @intFromFloat(initial_clip.width), @intFromFloat(initial_clip.height), true);
+    defer c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
     var depth: usize = 0;
     for (commands.internalArray[0..@intCast(commands.length)]) |command| {
         var b = command.boundingBox;
@@ -63,12 +103,29 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
             clay.CLAY_RENDER_COMMAND_TYPE_RECTANGLE => {
                 const rect = command.renderData.rectangle;
                 const color = rect.backgroundColor;
+                if (g_clay_surface.owner_index > 0 and g_clay_surface.frame.enabled) {
+                    if (command.userData) |data| {
+                        const node: *const clay.HollowClayNode = @ptrCast(@alignCast(data));
+                        var panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
+                        panel.x += offset_x;
+                        panel.y += offset_y;
+                        b = @import("../ui/clay_paint.zig").rectangleBounds(b, panel, @floatFromInt(g_clay_surface.nodes[0].border_size), g_clay_surface.owner_index, g_clay_surface.frame.enabled, node.full_bleed_x);
+                    }
+                }
                 drawRoundedRect(b.x, b.y, b.width, b.height, rect.cornerRadius.topLeft, clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
             },
             clay.CLAY_RENDER_COMMAND_TYPE_BORDER => {
                 const border = command.renderData.border;
                 const color = border.color;
-                drawRoundedRectOutline(b.x, b.y, b.width, b.height, border.cornerRadius.topLeft, @floatFromInt(border.width.top), clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
+                // Rounded legacy overlay chrome deliberately uses a subdued
+                // outline. Preserve that paint policy for the Clay panel only,
+                // not nested component borders or standalone surfaces.
+                const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
+                const is_panel = g_clay_surface.owner_index > 0 and g_clay_surface.frame.enabled and
+                    command.boundingBox.x == panel.x and command.boundingBox.y == panel.y and
+                    command.boundingBox.width == panel.width and command.boundingBox.height == panel.height;
+                const alpha: u8 = if (is_panel and border.cornerRadius.topLeft > 0) 72 else clayChannel(color.a);
+                drawRoundedRectOutline(b.x, b.y, b.width, b.height, border.cornerRadius.topLeft, @floatFromInt(border.width.top), clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), alpha);
             },
             clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
                 const text = command.renderData.text;
@@ -102,26 +159,42 @@ fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32
         }
     }
     if (g_clay_surface.owner_index > 0) {
+        for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
+            if (node.scrollbar_id.length <= 0) continue;
+            const element = clay.hollow_clay_visible_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(g_clay_surface.len), @intCast(index));
+            if (!element.found) continue;
+            const b = element.boundingBox;
+            const hit_width = @min(b.width, @max(@as(f32, 8), renderer.cell_w));
+            const track = node.scrollbar_track_color;
+            const thumb = node.scrollbar_thumb_color;
+            cacheOverlayScrollbarRow(
+                node.scrollbar_id.chars[0..@intCast(node.scrollbar_id.length)],
+                offset_x + b.x + b.width - hit_width,
+                offset_y + b.y,
+                hit_width,
+                b.height,
+                false,
+                node.scrollbar_thumb_ratio,
+                node.scrollbar_thumb_size,
+                if (track.a > 0) .{ .r = clayChannel(track.r), .g = clayChannel(track.g), .b = clayChannel(track.b) } else .{ .r = 90, .g = 99, .b = 117 },
+                if (thumb.a > 0) .{ .r = clayChannel(thumb.r), .g = clayChannel(thumb.g), .b = clayChannel(thumb.b) } else .{ .r = 90, .g = 99, .b = 117 },
+            );
+        }
+        finalizeAndDrawOverlayScrollbars(g_clay_surface.owner_index);
         if (g_widget_render_ctx) |ctx| {
-            const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
             for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
                 if (index != 0 and !node.clickable) continue;
-                const element = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(index));
+                const element = clay.hollow_clay_visible_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(g_clay_surface.len), @intCast(index));
                 if (!element.found or node.id.length == 0) continue;
                 const b = element.boundingBox;
-                const x = @max(@max(0, panel.x), b.x);
-                const y = @max(@max(0, panel.y), b.y);
-                const w = @max(0, @min(@min(width, panel.x + panel.width), b.x + b.width) - x);
-                const h = @max(0, @min(@min(height, panel.y + panel.height), b.y + b.height) - y);
                 const id = node.id.chars[0..@intCast(node.id.length)];
                 const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
                 if (index == 0) {
-                    ctx.app.appendUiSemanticNode(.overlay, .dialog, false, id, label, .{ .x = x + offset_x, .y = y + offset_y, .width = w, .height = h });
-                } else cacheOverlayHitRegion(id, label, x + offset_x, y + offset_y, w, h);
+                    ctx.app.appendUiSemanticNode(.overlay, .dialog, false, id, label, .{ .x = b.x + offset_x, .y = b.y + offset_y, .width = b.width, .height = b.height });
+                } else cacheOverlayHitRegionWithRole(id, label, b.x + offset_x, b.y + offset_y, b.width, b.height, if (node.list_item) .listitem else .button);
             }
         }
     }
-    c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
 }
 
 // The experimental surface is modal. Never leak its pointer/keyboard input to PTYs.
@@ -349,6 +422,7 @@ var g_overlay_scrollbar_cache: struct {
     count: usize = 0,
     scrollbars: [MAX_OVERLAY_SCROLLBARS]CachedOverlayScrollbar = @splat(.{}),
 } = .{};
+var g_overlay_scrollbar_cached_ids: [MAX_OVERLAY_SCROLLBARS][ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id: [ui_semantics.max_id_len]u8 = undefined;
 var g_overlay_scrollbar_drag_id_len: usize = 0;
 var g_overlay_scrollbar_drag_grab_y: f32 = 0;
@@ -1373,6 +1447,10 @@ fn overlaySegmentsLabel(segments: []const bar.Segment, out: []u8) []const u8 {
 }
 
 fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32) void {
+    cacheOverlayHitRegionWithRole(id, label, x, y, width, height, .button);
+}
+
+fn cacheOverlayHitRegionWithRole(id: []const u8, label: []const u8, x: f32, y: f32, width: f32, height: f32, role: ui_semantics.Role) void {
     if (!g_overlay_hit_cache.enabled or id.len == 0 or width <= 0 or height <= 0) return;
     if (g_overlay_hit_cache.hit_count >= g_overlay_hit_cache.hits.len) return;
     if (id.len > g_overlay_cached_ids[0].len) return;
@@ -1388,7 +1466,7 @@ fn cacheOverlayHitRegion(id: []const u8, label: []const u8, x: f32, y: f32, widt
     };
     g_overlay_hit_cache.hit_count += 1;
     if (g_widget_render_ctx) |ctx| {
-        ctx.app.appendUiSemanticNode(.overlay, .button, true, id, label, .{
+        ctx.app.appendUiSemanticNode(.overlay, role, true, id, label, .{
             .x = x,
             .y = y,
             .width = width,
@@ -1430,9 +1508,11 @@ fn cacheOverlayScrollbarRow(
         }
         if (g_overlay_scrollbar_cache.count >= MAX_OVERLAY_SCROLLBARS) return;
         const cached = &g_overlay_scrollbar_cache.scrollbars[g_overlay_scrollbar_cache.count];
+        const owned_id = g_overlay_scrollbar_cached_ids[g_overlay_scrollbar_cache.count][0..id.len];
+        fastmem.copy(u8, owned_id, id);
         g_overlay_scrollbar_cache.count += 1;
         cached.* = .{
-            .id = id,
+            .id = owned_id,
             .x = x,
             .width = width,
             .y = y,
@@ -2243,6 +2323,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
                         }
                         drawClaySurface(ctx.renderer, content_w, content_h, content_x, top_h);
+                        reportClayMeasurements(runtime, ui_idx);
                     }
                     pop(api, state, 1);
                     continue;
@@ -2849,6 +2930,37 @@ fn hitTestOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScro
         return scrollbar;
     }
     return null;
+}
+
+fn hitTestRoutableOverlayScrollbar(mouse_x: f32, mouse_y: f32) ?*const CachedOverlayScrollbar {
+    const scrollbar = hitTestOverlayScrollbar(mouse_x, mouse_y) orelse return null;
+    if (hitTestOverlay(mouse_x, mouse_y)) |hit| {
+        if (hit.stack_index > scrollbar.stack_index) return null;
+    }
+    return scrollbar;
+}
+
+test "overlay scrollbar routes without clickable row and owns its id" {
+    g_overlay_hit_cache = .{ .enabled = true };
+    g_overlay_scrollbar_cache = .{};
+    g_overlay_render_stack_index = 1;
+    defer {
+        g_overlay_hit_cache = .{};
+        g_overlay_scrollbar_cache = .{};
+        g_overlay_render_stack_index = 0;
+    }
+    var id = "workspace:scrollbar".*;
+    cacheOverlayScrollbarRow(&id, 10, 20, 8, 100, false, 0.0, 0.5, .{ .r = 0, .g = 0, .b = 0 }, .{ .r = 0, .g = 0, .b = 0 });
+    @memset(&id, 'x');
+    const scrollbar = hitTestRoutableOverlayScrollbar(12, 30).?;
+    try std.testing.expectEqualStrings("workspace:scrollbar", scrollbar.id.?);
+    try std.testing.expect(findOverlayScrollbar("workspace:scrollbar", 1) != null);
+    try std.testing.expect(hitTestRoutableOverlayScrollbar(30, 30) == null);
+    cacheOverlayHitRegion("row", "", 0, 0, 30, 150);
+    try std.testing.expect(hitTestRoutableOverlayScrollbar(12, 30) != null);
+    g_overlay_render_stack_index = 2;
+    cacheOverlayHitRegion("upper", "", 0, 0, 30, 150);
+    try std.testing.expect(hitTestRoutableOverlayScrollbar(12, 30) == null);
 }
 
 fn overlayScrollbarRatio(scrollbar: *const CachedOverlayScrollbar, pointer_y: f32, grab_y: f32) f32 {
@@ -5452,25 +5564,22 @@ fn handleMouseButton(app: *App, event: c.sapp_event, action: ghostty.MouseAction
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
 
     if (action == .press and event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) {
-        if (hitTestOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
-            const overlay_hit = hitTestOverlay(event.mouse_x, event.mouse_y);
-            if (overlay_hit != null and overlay_hit.?.stack_index == scrollbar.stack_index) {
-                const id = scrollbar.id orelse return;
-                g_overlay_scrollbar_drag_id_len = id.len;
-                fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
-                g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
-                const on_thumb = scrollbar.has_thumb and event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
-                g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
-                if (builtin.os.tag == .windows) {
-                    const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
-                    if (hwnd_raw) |raw| {
-                        const hwnd: win32.HWND = @ptrCast(@constCast(raw));
-                        _ = win32.SetCapture(hwnd);
-                    }
+        if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y)) |scrollbar| {
+            const id = scrollbar.id orelse return;
+            g_overlay_scrollbar_drag_id_len = id.len;
+            fastmem.copy(u8, g_overlay_scrollbar_drag_id[0..id.len], id);
+            g_overlay_scrollbar_drag_stack_index = scrollbar.stack_index;
+            const on_thumb = scrollbar.has_thumb and event.mouse_y >= scrollbar.thumb_y and event.mouse_y < scrollbar.thumb_y + scrollbar.thumb_height;
+            g_overlay_scrollbar_drag_grab_y = if (on_thumb) event.mouse_y - scrollbar.thumb_y else scrollbar.thumb_height * 0.5;
+            if (builtin.os.tag == .windows) {
+                const hwnd_raw = c.sapp_win32_get_hwnd() orelse null;
+                if (hwnd_raw) |raw| {
+                    const hwnd: win32.HWND = @ptrCast(@constCast(raw));
+                    _ = win32.SetCapture(hwnd);
                 }
-                emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
-                return;
             }
+            emitOverlayScrollbar(app, scrollbar, event.mouse_y, g_overlay_scrollbar_drag_grab_y);
+            return;
         }
         if (hitTestOverlay(event.mouse_x, event.mouse_y)) |hit| {
             app.emitLuaBuiltInEvent("overlay:click", .{ .overlay_node = .{
@@ -5729,7 +5838,9 @@ fn handleMouseMove(app: *App, event: c.sapp_event) void {
     }
 
     updateOverlayHover(app, event.mouse_x, event.mouse_y);
-    if (hitTestOverlay(event.mouse_x, event.mouse_y)) |_| {
+    if (hitTestRoutableOverlayScrollbar(event.mouse_x, event.mouse_y) != null or
+        hitTestOverlay(event.mouse_x, event.mouse_y) != null)
+    {
         g_scrollbar_hover_pane = null;
         g_hover_hyperlink = false;
         setTextSelectionCursor(.arrow);

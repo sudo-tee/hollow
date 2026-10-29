@@ -15,6 +15,8 @@ describe("activity composition", function()
   before_each(function()
     env = harness.boot()
     hollow = env.hollow
+    -- Preserve the legacy inline-segment/column serialization contract.
+    hollow.ui.layout.configure({ backend = "legacy" })
     env.recorded.now_ms = 3601234
     local entries = {
       {

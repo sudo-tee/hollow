@@ -24,6 +24,40 @@ describe("experimental hierarchical layout", function()
     assert.equals("right", tree[5].text)
   end)
 
+  it("serializes scrollbar metadata and maps its event ID to the local ID", function()
+    local surface = layout.new({
+      render = function()
+        return layout.column({}, {
+          scrollbar_id = "picker:scrollbar",
+          scrollbar_thumb_ratio = 0.25,
+          scrollbar_thumb_size = 0.5,
+          scrollbar_track_color = "#123456",
+          scrollbar_thumb_color = "#abcdef",
+        })
+      end,
+    })
+    local node = surface:snapshot()[1]
+    assert.equals(surface.namespace .. "picker:scrollbar", node.scrollbar_id)
+    assert.equals("picker:scrollbar", surface:local_id(node.scrollbar_id))
+    assert.equals(0.25, node.scrollbar_thumb_ratio)
+    assert.equals(0.5, node.scrollbar_thumb_size)
+    assert.equals("#123456", node.scrollbar_track_color)
+    assert.equals("#abcdef", node.scrollbar_thumb_color)
+  end)
+
+  it("serializes explicit full bleed without changing padding", function()
+    layout.show(layout.column({
+      layout.column({}, { width = "grow", height = 1, full_bleed_x = true }),
+      layout.column({}, { width = "grow", height = 1 }),
+    }, { padding = { x = 12, y = 3 } }))
+    local tree = ui._layout_tree
+    assert.equals(12, tree[1].padding.left)
+    assert.equals(12, tree[1].padding.right)
+    assert.is_true(tree[2].full_bleed_x)
+    assert.is_false(tree[3].full_bleed_x)
+    assert.has_error(function() layout.show(layout.column({}, { full_bleed_x = "yes" })) end)
+  end)
+
   it("reuses button recipes, padding, tokens and click callbacks", function()
     local clicked
     layout.show(layout.button({
@@ -171,5 +205,27 @@ describe("experimental hierarchical layout", function()
     require("hollow.ui.shared").invalidate_palettes()
     surface:snapshot({ width = 600, cell_w = 10 })
     assert.equals(4, renders)
+  end)
+
+  it("namespaces reveal targets and rejects targets outside the scroll subtree", function()
+    layout.show(layout.row({ layout.column({}, { id = "caret", width = 8, height = 19 }) }, {
+      scroll_x = true,
+      reveal = "caret",
+      width = "grow",
+      height = 19,
+    }))
+    assert.equals(ui._layout_tree[2].id, ui._layout_tree[1].reveal)
+    assert.has_error(function()
+      layout.show(layout.column({}, { scroll_x = true, reveal = "missing" }))
+    end)
+    assert.has_error(function()
+      layout.show(layout.column({
+        layout.column({}, { id = "sibling" }),
+        layout.column({}, { scroll_x = true, reveal = "sibling" }),
+      }))
+    end)
+    assert.has_error(function()
+      layout.show(layout.text("Bad", {}, { wrap = "invalid" }))
+    end)
   end)
 end)

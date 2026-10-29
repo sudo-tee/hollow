@@ -1,6 +1,8 @@
 -- Tree validation and native-boundary serialization. No mounting or global callbacks.
 local box = require("hollow.ui.style.box")
 local shared = require("hollow.ui.shared")
+local wraps = { words = 0, newlines = 1, none = 2 }
+local alignments = { start = 0, center = 1, ["end"] = 2 }
 
 local function size(value)
   if value == "grow" then
@@ -14,7 +16,7 @@ local function size(value)
 end
 
 return function(root, palette, namespace)
-  local nodes, callbacks, ids, local_ids = {}, {}, {}, {}
+  local nodes, callbacks, ids, local_ids, subtree_ends = {}, {}, {}, {}, {}
   local function visit(node, depth)
     assert(type(node) == "table" and node.kind ~= nil, "expected layout node")
     assert(depth <= 32 and #nodes < 512, "layout tree exceeds prototype limits")
@@ -27,7 +29,7 @@ return function(root, palette, namespace)
     local id = namespace .. local_id
     assert(type(id) == "string" and #id > 0 and #id <= 128, "invalid layout id")
     assert(not ids[id], "duplicate layout id: " .. id)
-    ids[id] = true
+    ids[id] = #nodes + 1
     local style = shared.resolve_tokens(node.style or {}, palette)
     local paint = shared.normalize_surface_style(style, palette) or {}
     local padding_value = node.padding
@@ -35,15 +37,33 @@ return function(root, palette, namespace)
       padding_value = style.padding
     end
     local padding = box.normalize(padding_value, true)
+    assert(node.align_y == nil or alignments[node.align_y] ~= nil, "invalid vertical alignment")
+    assert(
+      node.role == nil or node.role == "button" or node.role == "listitem",
+      "invalid layout role"
+    )
+    assert(node.wrap == nil or wraps[node.wrap] ~= nil, "invalid text wrap mode")
+    assert(node.full_bleed_x == nil or type(node.full_bleed_x) == "boolean", "invalid full_bleed_x")
+    assert(node.scrollbar_id == nil or (type(node.scrollbar_id) == "string" and #node.scrollbar_id > 0 and #namespace + #node.scrollbar_id <= 128), "invalid scrollbar id")
+    local scrollbar_colors = shared.resolve_tokens({
+      scrollbar_track_color = node.scrollbar_track_color or "parts.scrollbar.track|scrollbar_track|#5a6375",
+      scrollbar_thumb_color = node.scrollbar_thumb_color or "parts.scrollbar.thumb|scrollbar_thumb|panel_border",
+    }, palette)
+    assert(
+      node.reveal == nil or (type(node.reveal) == "string" and #node.reveal > 0),
+      "invalid reveal target"
+    )
     local serialized = {
       kind = node.kind,
       id = id,
       text = node.text,
       label = node.label,
+      list_item = node.role == "listitem",
       width = size(node.width),
       height = size(node.height),
       gap = math.min(65535, box.px(node.gap, 0, true)),
       padding = padding,
+      full_bleed_x = node.full_bleed_x == true,
       fg = paint.fg or palette.fg,
       bg = paint.bg,
       alpha = paint.alpha or 255,
@@ -53,6 +73,17 @@ return function(root, palette, namespace)
       bold = style.bold == true,
       hover_bg = type(style.hover) == "table" and style.hover.bg or nil,
       scroll = node.scroll == true,
+      scroll_x = node.scroll_x == true,
+      scrollbar_id = node.scrollbar_id and (namespace .. node.scrollbar_id),
+      scrollbar_thumb_ratio = math.max(0, math.min(1, tonumber(node.scrollbar_thumb_ratio) or 0)),
+      scrollbar_thumb_size = math.max(0, math.min(1, tonumber(node.scrollbar_thumb_size) or 1)),
+      scrollbar_track_color = scrollbar_colors.scrollbar_track_color,
+      scrollbar_thumb_color = scrollbar_colors.scrollbar_thumb_color,
+      reveal = node.reveal and (namespace .. node.reveal),
+      reveal_start = node.reveal_start == true,
+      measure = node.measure == true,
+      align_y = alignments[node.align_y or "start"],
+      wrap = wraps[node.wrap or "words"],
       clickable = type(node.on_click) == "function",
       value = math.max(0, math.min(1, tonumber(node.value) or 0)),
       children = 0,
@@ -61,10 +92,13 @@ return function(root, palette, namespace)
       padding[side] = math.min(65535, padding[side])
     end
     nodes[#nodes + 1] = serialized
+    local_ids[id] = local_id
+    if serialized.scrollbar_id then
+      local_ids[serialized.scrollbar_id] = node.scrollbar_id
+    end
     if serialized.clickable then
       assert(node.id, "clickable layout nodes require stable explicit ids")
       callbacks[id] = node.on_click
-      local_ids[id] = local_id
     end
     local function children(list, fragment_depth)
       assert(
@@ -84,8 +118,21 @@ return function(root, palette, namespace)
       end
     end
     children(node.children or {}, 0)
+    subtree_ends[id] = #nodes
     assert(node.kind ~= 2 or serialized.children == 0, "text cannot have children")
   end
   visit(root, 0)
+  for _, node in ipairs(nodes) do
+    if node.reveal then
+      assert(node.scroll or node.scroll_x, "reveal requires a scroll container")
+      assert(ids[node.reveal], "unknown layout reveal target: " .. node.reveal)
+      local target = ids[node.reveal]
+      assert(
+        target > ids[node.id] and target <= subtree_ends[node.id],
+        "reveal target must be a descendant"
+      )
+      assert(nodes[target].kind ~= 2, "reveal target must be a container")
+    end
+  end
   return nodes, callbacks, local_ids
 end

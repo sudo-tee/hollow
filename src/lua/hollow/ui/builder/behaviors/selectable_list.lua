@@ -23,6 +23,7 @@ function M.selectable_list(opts)
       start_idx = start_idx,
       end_idx = end_idx,
       show_scrollbar = show_scrollbar,
+      scrollbar_id = scrollbar_id,
       thumb_index = thumb_index,
       thumb_ratio = thumb_ratio,
       thumb_size = thumb_size,

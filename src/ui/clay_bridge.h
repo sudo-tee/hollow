@@ -4,16 +4,21 @@
 
 // A bounded preorder tree. Width/height: -1 = grow, 0 = fit, positive = pixels.
 typedef struct HollowClayNode {
-    Clay_String id, text, label;
+    Clay_String id, text, label, reveal;
+    Clay_String scrollbar_id;
     int children;
     int kind; // 0 column, 1 row, 2 text, 3 custom progress
     float width, height;
     Clay_Padding padding;
     uint16_t gap;
     Clay_Color fg, bg, border, hover_bg;
+    Clay_Color scrollbar_track_color, scrollbar_thumb_color;
+    float scrollbar_thumb_ratio, scrollbar_thumb_size;
     float radius;
     uint16_t border_size;
-    bool bold, scroll, clickable;
+    bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure, full_bleed_x;
+    int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
+    int align_y; // Child alignment: 0 start, 1 center, 2 end.
     float value;
 } HollowClayNode;
 
@@ -35,4 +40,5 @@ bool hollow_clay_failed(HollowClay *surface);
 int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y);
 void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame);
 Clay_ElementData hollow_clay_bounds(HollowClay *surface, HollowClayNode *nodes, int index);
+Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode *nodes, int count, int index);
 #endif

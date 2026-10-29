@@ -1,25 +1,39 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
-local function overlay_text(hollow)
-  local lines = {}
-  for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-    local text = ""
-    for _, segment in ipairs(row.segments or {}) do
-      text = text .. (segment.text or "")
-    end
-    lines[#lines + 1] = text
+local function overlay_segments(hollow)
+  local overlay = hollow.ui._overlay_state()[1]
+  if overlay.clay then
+    hollow.ui._layout_prepare(1200, 900, 8, 19)
+    return hollow
+      .tbl(hollow.ui._layout_tree)
+      :filter(function(node)
+        return node.kind == 2
+      end)
+      :get()
   end
-  return table.concat(lines, "\n")
+  return hollow
+    .tbl(overlay.rows)
+    :flat_map(function(row)
+      return row.segments or {}
+    end)
+    :get()
+end
+
+local function overlay_text(hollow)
+  return hollow
+    .tbl(overlay_segments(hollow))
+    :map(function(node)
+      return node.text or ""
+    end)
+    :join("")
 end
 
 local function bell_colors(hollow)
   local colors = {}
-  for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-    for _, segment in ipairs(row.segments or {}) do
-      if (segment.text or ""):find("󰂚", 1, true) then
-        colors[#colors + 1] = segment.fg
-      end
+  for _, segment in ipairs(overlay_segments(hollow)) do
+    if (segment.text or ""):find("󰂚", 1, true) then
+      colors[#colors + 1] = segment.fg
     end
   end
   return colors
@@ -85,11 +99,9 @@ describe("program status in navigation overlays", function()
     assert.is_truthy(overlay_text(hollow):find("⠹ 25%", 1, true))
     local palette = hollow.theme.current().palette
     local function indicator_color(text)
-      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        for _, segment in ipairs(row.segments or {}) do
-          if segment.text == text then
-            return segment.fg
-          end
+      for _, segment in ipairs(overlay_segments(hollow)) do
+        if segment.text == text then
+          return segment.fg
         end
       end
     end

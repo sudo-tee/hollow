@@ -75,7 +75,7 @@ describe("built-in declarative authoring parity", function()
     source.switcher_state().workspace_color_fn = function()
       return colors
     end
-    ui.workspace.open_switcher()
+    ui.workspace.open_switcher({ layout = "legacy" })
     local found = false
     for _, row in ipairs(ui._overlay_state()[1].rows) do
       for index, segment in ipairs(row.segments) do

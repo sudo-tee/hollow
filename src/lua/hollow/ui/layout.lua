@@ -6,6 +6,18 @@ local M, Surface = {}, {}
 Surface.__index = Surface
 local next_id, revision = 0, 0
 local shown, active
+local configured_backend
+
+function M.configure(opts)
+  local backend = opts and opts.backend or "auto"
+  assert(backend == "auto" or backend == "clay" or backend == "legacy", "invalid layout backend")
+  configured_backend = backend ~= "auto" and backend or nil
+end
+
+function M.resolve_backend(override, default)
+  assert(override == nil or override == "clay" or override == "legacy", "invalid layout backend")
+  return override or configured_backend or default or "legacy"
+end
 
 local function container(kind, children, opts)
   opts = opts or {}
@@ -14,12 +26,24 @@ local function container(kind, children, opts)
     children = children or {},
     id = opts.id,
     label = opts.label,
+    role = opts.role,
     width = opts.width,
     height = opts.height,
     gap = opts.gap,
     padding = opts.padding,
+    full_bleed_x = opts.full_bleed_x,
     style = opts.style,
     scroll = opts.scroll,
+    scroll_x = opts.scroll_x,
+    scrollbar_id = opts.scrollbar_id,
+    scrollbar_thumb_ratio = opts.scrollbar_thumb_ratio,
+    scrollbar_thumb_size = opts.scrollbar_thumb_size,
+    scrollbar_track_color = opts.scrollbar_track_color,
+    scrollbar_thumb_color = opts.scrollbar_thumb_color,
+    reveal = opts.reveal,
+    reveal_start = opts.reveal_start,
+    measure = opts.measure,
+    align_y = opts.align_y,
     on_click = opts.on_click,
   }
 end
@@ -30,8 +54,8 @@ end
 function M.column(children, opts)
   return container(0, children, opts)
 end
-function M.text(text, style)
-  return { kind = 2, text = tostring(text or ""), style = style }
+function M.text(text, style, opts)
+  return { kind = 2, text = tostring(text or ""), style = style, wrap = opts and opts.wrap }
 end
 
 -- Custom-paint demonstration; not an arbitrary Lua drawing API.
@@ -67,6 +91,7 @@ function M.new(opts)
     dirty = true,
     callbacks = {},
     local_ids = {},
+    metrics = {},
   }, Surface)
 end
 
@@ -90,8 +115,13 @@ function Surface:snapshot(ctx)
     end
   end
   if self.dirty then
+    local render_ctx = {}
+    for key, value in pairs(ctx) do
+      render_ctx[key] = value
+    end
+    render_ctx.metrics = self.metrics
     local nodes, callbacks, local_ids =
-      serialize(self.render(ctx), self.palette or shared.palette("select"), self.namespace)
+      serialize(self.render(render_ctx), self.palette or shared.palette("select"), self.namespace)
     revision = revision + 1
     self.nodes, self.callbacks, self.local_ids = nodes, callbacks, local_ids
     self.revision, self.context, self.dirty =
@@ -123,6 +153,7 @@ end
 function Surface:destroy()
   self.destroyed, self.nodes, self.callbacks, self.local_ids = true, nil, {}, {}
   self.render, self.palette, self.frame, self.context = nil, nil, nil, nil
+  self.metrics = {}
   if shown == self then
     shown = nil
   end
@@ -159,6 +190,9 @@ function ui._layout_prepare(width, height, cell_w, cell_h)
   for index = #stack, 1, -1 do
     local widget = stack[index]
     if widget._layout_surface and not widget._layout_surface.destroyed then
+      if widget._layout_live then
+        widget._layout_surface:invalidate()
+      end
       publish(widget._layout_surface, index, ctx)
       return
     end
@@ -191,6 +225,23 @@ function M.hide()
 end
 
 ui._layout_hide = M.hide
+-- Native feedback is delivered under the Lua lock after layout. Only changed
+-- viewport dimensions invalidate a snapshot; ordinary scrolling does not.
+function ui._layout_measure(surface_id, id, width, height)
+  if not active or active.destroyed or active.id ~= surface_id then
+    return
+  end
+  local local_id = active:local_id(id)
+  if not local_id then
+    return
+  end
+  local previous = active.metrics[local_id]
+  if not previous or previous.width ~= width or previous.height ~= height then
+    active.metrics[local_id] = { width = width, height = height }
+    active:invalidate()
+  end
+end
+
 function ui._layout_click(id)
   if active then
     -- Accept local IDs for the original standalone convenience API.

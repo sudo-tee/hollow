@@ -102,14 +102,11 @@ describe("actions test suite", function()
       harness.assert_true(hidden, "action.list should retain unavailable action metadata")
 
       hollow.ui.command_palette.open({ query = "contextual" })
+      hollow.ui._layout_prepare(1000, 800, 8, 19)
       local has_visible_row, has_hidden_row = false, false
-      for row_index, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        if row_index > 4 then
-          local text = {}
-          for _, segment in ipairs(row.segments or {}) do
-            text[#text + 1] = segment.text or ""
-          end
-          local row_text = table.concat(text)
+      for _, row in ipairs(hollow.ui._layout_tree) do
+        if row.list_item then
+          local row_text = row.label or ""
           has_visible_row = has_visible_row
             or row_text:find("Contextual visible marker", 1, true) ~= nil
           has_hidden_row = has_hidden_row
@@ -144,15 +141,12 @@ describe("actions test suite", function()
       harness.assert_true(found, "action.list should retain actions whose check fails")
 
       hollow.ui.command_palette.open({ query = "Contextual broken marker" })
+      hollow.ui._layout_prepare(1000, 800, 8, 19)
       local has_broken_row = false
-      for row_index, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        if row_index > 4 then
-          local text = {}
-          for _, segment in ipairs(row.segments or {}) do
-            text[#text + 1] = segment.text or ""
-          end
+      for _, row in ipairs(hollow.ui._layout_tree) do
+        if row.list_item then
           has_broken_row = has_broken_row
-            or table.concat(text):find("Contextual broken marker", 1, true) ~= nil
+            or (row.label or ""):find("Contextual broken marker", 1, true) ~= nil
         end
       end
       harness.assert_true(not has_broken_row, "failed availability check should fail closed")

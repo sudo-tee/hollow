@@ -214,6 +214,8 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
     .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
     .{ .name = "hollow.ui.builder.components.layout_dialog", .source = @embedFile("lua/hollow/ui/builder/components/layout_dialog.lua") },
+    .{ .name = "hollow.ui.builder.components.layout_input", .source = @embedFile("lua/hollow/ui/builder/components/layout_input.lua") },
+    .{ .name = "hollow.ui.builder.components.layout_select", .source = @embedFile("lua/hollow/ui/builder/components/layout_select.lua") },
     .{ .name = "hollow.ui.builder.components.button", .source = @embedFile("lua/hollow/ui/builder/components/button.lua") },
     .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
@@ -842,7 +844,10 @@ fn childRunResultToLua(state: *State, api: Api, result: std.process.RunResult, e
     return 3;
 }
 
+var next_runtime_generation: std.atomic.Value(u64) = .init(1);
+
 pub const Runtime = struct {
+    generation: u64 = 0,
     allocator: std.mem.Allocator,
     state: *State,
     context: *BridgeContext,
@@ -907,6 +912,7 @@ pub const Runtime = struct {
         };
         ctx.lua_sources = lua_sources;
         var runtime = Runtime{
+            .generation = next_runtime_generation.fetchAdd(1, .monotonic),
             .allocator = allocator,
             .state = state,
             .context = ctx,
@@ -7716,9 +7722,12 @@ test "activity state crosses Lua reload in memory with IDs and acknowledgement i
     var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
     var saved: std.json.Value = undefined;
+    var previous_generation: u64 = 0;
     {
         var runtime = try Runtime.init(std.testing.allocator, &cfg);
         defer runtime.deinit();
+        previous_generation = runtime.generation;
+        try std.testing.expect(previous_generation != 0);
         try runtime.runString(@embedFile("lua/core.lua"));
         try runtime.runString(
             \\hollow._emit_builtin_event("window:blurred", {})
@@ -7731,6 +7740,8 @@ test "activity state crosses Lua reload in memory with IDs and acknowledgement i
     defer deinitJsonValue(std.testing.allocator, saved);
     var runtime = try Runtime.init(std.testing.allocator, &cfg);
     defer runtime.deinit();
+    // Surface IDs/revisions restart in Lua, but native cache identity must not.
+    try std.testing.expect(runtime.generation > previous_generation);
     try runtime.runString(@embedFile("lua/core.lua"));
     try runtime.restoreActivityState(saved);
     try runtime.runString(

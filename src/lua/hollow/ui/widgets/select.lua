@@ -219,6 +219,9 @@ function ui.select.open(opts)
   end
   local prepared = prepare_entries(opts)
   local actions = opts.actions or {}
+  local clay = ui.layout.resolve_backend(opts.layout, "legacy") == "clay"
+  local clay_row_budget = math.min(20, list_row_budget(opts))
+  local reveal_start = false
 
   local selectable
   local filter = ui.text_input({
@@ -248,7 +251,7 @@ function ui.select.open(opts)
     id_prefix = "select",
     items = current_entries,
     row_budget = function()
-      return list_row_budget(opts)
+      return clay and clay_row_budget or list_row_budget(opts)
     end,
     row_count_fn = entry_row_count,
     on_activate = function(index)
@@ -275,8 +278,76 @@ function ui.select.open(opts)
 
   ---@type HollowUiModalHandle
   local modal
+  local keys = ui.keys(filter, nav, {
+    ["escape|<C-[>"] = function()
+      modal.close()
+      ui.fire(opts.on_cancel)
+    end,
+    ["arrow_down|<C-j>"] = function()
+      move_selection(1)
+    end,
+    ["arrow_up|<C-k>"] = function()
+      move_selection(-1)
+    end,
+    enter = function()
+      activate(1, nav.index)
+    end,
+  }, action_keys)
   modal = ui.modal({
+    title = opts.prompt or "Select",
     theme = theme,
+    layout_live = clay and type(opts.items) == "function",
+    layout_render = clay
+        and function(render_theme, state, ctx)
+          if type(opts.items) == "function" then
+            prepared = prepare_entries(opts)
+          end
+          local entries = current_entries()
+          nav.index = clamp_index(nav.index, entries)
+          local component = require("hollow.ui.builder.components.layout_select")
+          local measured = ctx.metrics and ctx.metrics["select:viewport"]
+          if measured then
+            clay_row_budget = math.max(
+              1,
+              math.min(20, math.floor(measured.height / component.line_height(render_theme, ctx)))
+            )
+          end
+          local hints = render_hint_rows(actions, render_theme)
+          local units = 0
+          for _, entry in ipairs(entries) do
+            units = math.min(list_row_budget(opts), units + entry_row_count(entry))
+            if units >= list_row_budget(opts) then
+              break
+            end
+          end
+          local list_height = #entries == 0 and (ctx.cell_h or 19)
+            or units * component.line_height(render_theme, ctx)
+          local content_height = (4 + (hints and 2 or 0)) * (ctx.cell_h or 19) + list_height
+          return component.render({
+            prompt = opts.prompt,
+            entries = entries,
+            selected = nav.index,
+            query = filter.value,
+            filter = filter,
+            viewport = selectable.visible_range(),
+            hovered_id = state and state.hovered_id,
+            hints = hints,
+            reveal_start = reveal_start,
+            render_label = opts.layout_label,
+            on_activate = function(_, source_index)
+              -- Ignore stale hits when a filter removed the previously painted row.
+              for index, entry in ipairs(current_entries()) do
+                if entry.source_index == source_index then
+                  nav.index, reveal_start = index, false
+                  activate(1, index)
+                  return
+                end
+              end
+            end,
+          }, render_theme, ctx),
+            content_height
+        end
+      or nil,
     render = function(render_theme, state)
       if type(opts.items) == "function" then
         prepared = prepare_entries(opts)
@@ -328,22 +399,27 @@ function ui.select.open(opts)
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
     theme_backdrop = opts.backdrop == nil,
-    keys = ui.keys(filter, nav, {
-      ["escape|<C-[>"] = function()
-        modal.close()
-        ui.fire(opts.on_cancel)
-      end,
-      ["arrow_down|<C-j>"] = function()
-        move_selection(1)
-      end,
-      ["arrow_up|<C-k>"] = function()
-        move_selection(-1)
-      end,
-      enter = function()
-        activate(1, nav.index)
-      end,
-    }, action_keys),
-    on_event = selectable.on_event,
+    keys = function(key, mods)
+      local consumed = keys(key, mods)
+      if consumed then
+        reveal_start = false
+      end
+      return consumed
+    end,
+    on_event = function(name, payload)
+      local consumed = selectable.on_event(name, payload)
+      if
+        clay
+        and consumed
+        and (
+          name == "overlay:scrollbar"
+          or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)
+        )
+      then
+        reveal_start = true
+      end
+      return consumed
+    end,
   })
 end
 

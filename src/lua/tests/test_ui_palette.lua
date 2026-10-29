@@ -8,6 +8,8 @@ describe("UI palette test suite", function()
   setup(function()
     env = harness.boot()
     hollow = env.hollow
+    -- Preserve coverage of the legacy row/scrollbar serialization contract.
+    hollow.ui.layout.configure({ backend = "legacy" })
   end)
 
   describe("command palette", function()

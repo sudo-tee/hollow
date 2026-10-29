@@ -34,7 +34,16 @@ function ui.input.open(opts)
   end
 
   m = ui.modal({
+    title = opts.prompt or "Text input",
     theme = base_theme,
+    layout_render = ui.layout.resolve_backend(opts.layout, "legacy") == "clay"
+        and function(theme, _, ctx)
+          return require("hollow.ui.builder.components.layout_dialog")({
+            title = opts.prompt,
+            body = require("hollow.ui.builder.components.layout_input")(input, theme, ctx),
+          }, theme, ctx)
+        end
+      or nil,
     render = function(theme)
       return ui.dialog({
         title = opts.prompt,

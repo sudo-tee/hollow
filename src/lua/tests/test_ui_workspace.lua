@@ -11,6 +11,8 @@ describe("UI workspace test suite", function()
   setup(function()
     env = harness.boot()
     hollow = env.hollow
+    -- These assertions intentionally cover legacy serialized rows/columns.
+    hollow.ui.layout.configure({ backend = "legacy" })
     recorded = env.recorded
     on_key = env.get_key_handler()
     workspace_actions = require("hollow.ui.workspace.actions")
@@ -19,14 +21,24 @@ describe("UI workspace test suite", function()
   describe("workspace switcher", function()
     it("configures switcher sources", function()
       local function resolved(value)
-        return { next = function(_, ok) ok(value) end }
+        return {
+          next = function(_, ok)
+            ok(value)
+          end,
+        }
       end
-      local host = { id = "workspace-test", generation = "g1", fs = {
-        list = function()
-          return resolved({ entries = { { name = "alpha" }, { name = "_scratch" } }, eof = true })
-        end,
-        stat = function() return resolved({ kind = "directory" }) end,
-      } }
+      local host = {
+        id = "workspace-test",
+        generation = "g1",
+        fs = {
+          list = function()
+            return resolved({ entries = { { name = "alpha" }, { name = "_scratch" } }, eof = true })
+          end,
+          stat = function()
+            return resolved({ kind = "directory" })
+          end,
+        },
+      }
       hollow.ui.workspace.configure({
         cache_ttl_ms = 0,
         sources = {
@@ -84,7 +96,9 @@ describe("UI workspace test suite", function()
       hollow.workspace.bootstrap_project_async = function(dir, domain)
         bootstrapped_dir = dir
         bootstrapped_domain = domain
-        return hollow.async.promise(function(resolve) resolve(true) end)
+        return hollow.async.promise(function(resolve)
+          resolve(true)
+        end)
       end
 
       workspace_actions.switch_to_workspace({
@@ -111,7 +125,9 @@ describe("UI workspace test suite", function()
       local original_bootstrap_project = hollow.workspace.bootstrap_project_async
       hollow.workspace.bootstrap_project_async = function(dir)
         bootstrapped_dir = dir
-        return hollow.async.promise(function(resolve) resolve(true) end)
+        return hollow.async.promise(function(resolve)
+          resolve(true)
+        end)
       end
 
       workspace_actions.switch_to_workspace({
@@ -276,12 +292,23 @@ describe("Workspace switcher cross-domain metadata", function()
   before_each(function()
     env = harness.boot()
     hollow = env.hollow
+    hollow.ui.layout.configure({ backend = "legacy" })
     env.host_api.split_pane({ domain = "UbuntuWSL", cwd = "/srv/remote" })
-    env.host_api.get_workspace_count = function() return 2 end
-    env.host_api.get_workspace_name = function(index) return index == 0 and "main" or "remote" end
-    env.host_api.get_workspace_id = function(index) return index + 41 end
-    env.host_api.get_workspace_tab_count = function() return 1 end
-    env.host_api.get_workspace_tab_id_at = function(index) return index == 0 and 201 or 202 end
+    env.host_api.get_workspace_count = function()
+      return 2
+    end
+    env.host_api.get_workspace_name = function(index)
+      return index == 0 and "main" or "remote"
+    end
+    env.host_api.get_workspace_id = function(index)
+      return index + 41
+    end
+    env.host_api.get_workspace_tab_count = function()
+      return 1
+    end
+    env.host_api.get_workspace_tab_id_at = function(index)
+      return index == 0 and 201 or 202
+    end
     env.host_api.get_tab_active_pane_id = function(tab_id)
       return tab_id == 202 and 102 or 101
     end
@@ -293,8 +320,12 @@ describe("Workspace switcher cross-domain metadata", function()
     env.host_api.get_pane_cwd = function(pane_id)
       return pane_id == 102 and "/srv/remote" or pane_cwd(pane_id)
     end
-    env.host_api.get_tab_pane_count = function() return 1 end
-    env.host_api.get_tab_pane_id_at = function(tab_id) return tab_id == 202 and 102 or 101 end
+    env.host_api.get_tab_pane_count = function()
+      return 1
+    end
+    env.host_api.get_tab_pane_id_at = function(tab_id)
+      return tab_id == 202 and 102 or 101
+    end
   end)
 
   it("snapshots each workspace's own domain", function()
@@ -306,13 +337,19 @@ describe("Workspace switcher cross-domain metadata", function()
   it("keeps nested pane paths and domains when focus changes", function()
     local function remote_item()
       for _, item in ipairs(hollow.ui.workspace.items()) do
-        if item.name == "remote" then return item end
+        if item.name == "remote" then
+          return item
+        end
       end
     end
     assert.equal("/srv/remote", remote_item().cwd)
     assert.equal("UbuntuWSL", remote_item().domain)
-    env.host_api.get_active_workspace_index = function() return 1 end
-    env.host_api.current_tab_id = function() return 202 end
+    env.host_api.get_active_workspace_index = function()
+      return 1
+    end
+    env.host_api.current_tab_id = function()
+      return 202
+    end
     assert.equal("/srv/remote", remote_item().cwd)
     assert.equal("UbuntuWSL", remote_item().domain)
   end)
@@ -324,7 +361,9 @@ describe("Workspace switcher cross-domain metadata", function()
       local saw_path, saw_spacer = false, false
       for _, segment in ipairs(row.segments or {}) do
         local text = segment.text or ""
-        if segment.spacer then saw_spacer = true end
+        if segment.spacer then
+          saw_spacer = true
+        end
         if text:find("UbuntuWSL", 1, true) then
           found_domain = true
           assert.is_not_nil(segment.bg)
@@ -354,7 +393,9 @@ describe("Workspace switcher cross-domain metadata", function()
     for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
       local saw_spacer = false
       for _, segment in ipairs(row.segments or {}) do
-        if segment.spacer then saw_spacer = true end
+        if segment.spacer then
+          saw_spacer = true
+        end
         if (segment.text or ""):find("UbuntuWSL", 1, true) then
           found_domain = true
           assert.is_true(saw_spacer)
@@ -378,7 +419,9 @@ describe("Workspace switcher cross-domain metadata", function()
     hollow.ui.workspace.open_switcher()
     local multi_domain_width = path_width()
     hollow.ui.select.close()
-    env.host_api.get_pane_domain = function() return "UbuntuWSL" end
+    env.host_api.get_pane_domain = function()
+      return "UbuntuWSL"
+    end
     hollow.ui.workspace.open_switcher()
     assert.is_true(path_width() > multi_domain_width)
     for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
@@ -396,6 +439,7 @@ describe("Workspace switcher bell attention", function()
 
   before_each(function()
     hollow = harness.boot().hollow
+    hollow.ui.layout.configure({ backend = "legacy" })
     tree = {
       {
         id = 41,
@@ -437,8 +481,15 @@ describe("Workspace switcher bell attention", function()
 
   it("prioritizes attention from any pane in any tab", function()
     local items = hollow.ui.workspace.items()
-    harness.assert_equal(items[1].name, "zulu", "bell workspace should sort before quiet workspaces")
-    harness.assert_true(items[1].has_bell, "bell state should include inactive tabs and split panes")
+    harness.assert_equal(
+      items[1].name,
+      "zulu",
+      "bell workspace should sort before quiet workspaces"
+    )
+    harness.assert_true(
+      items[1].has_bell,
+      "bell state should include inactive tabs and split panes"
+    )
     harness.assert_equal(items[2].name, "alpha", "quiet inactive workspace should retain its order")
     harness.assert_equal(items[3].name, "main", "quiet active workspace should retain its order")
     harness.assert_equal(
@@ -449,33 +500,40 @@ describe("Workspace switcher bell attention", function()
     harness.assert_equal(items[4].has_bell, false, "closed known workspaces should have no bell")
   end)
 
-  it("prioritizes active workspace attention and refreshes cleared bells without cache invalidation", function()
-    tree[1].tabs[1].panes[1].has_bell = true
-    local items = hollow.ui.workspace.items()
-    harness.assert_equal(items[1].name, "zulu", "inactive bell workspace should remain first")
-    harness.assert_equal(
-      items[2].name,
-      "main",
-      "active bell workspace should precede quiet workspaces"
-    )
-    harness.assert_equal(items[3].name, "alpha", "quiet workspace should follow bell workspaces")
+  it(
+    "prioritizes active workspace attention and refreshes cleared bells without cache invalidation",
+    function()
+      tree[1].tabs[1].panes[1].has_bell = true
+      local items = hollow.ui.workspace.items()
+      harness.assert_equal(items[1].name, "zulu", "inactive bell workspace should remain first")
+      harness.assert_equal(
+        items[2].name,
+        "main",
+        "active bell workspace should precede quiet workspaces"
+      )
+      harness.assert_equal(items[3].name, "alpha", "quiet workspace should follow bell workspaces")
 
-    tree[1].tabs[1].panes[1].has_bell = false
-    tree[3].tabs[2].panes[2].has_bell = false
-    items = hollow.ui.workspace.items()
-    harness.assert_equal(items[1].name, "alpha", "clearing bells should restore existing ordering")
-    harness.assert_equal(items[2].name, "zulu", "cleared workspace should use normal ordering")
-    harness.assert_equal(
-      items[2].has_bell,
-      false,
-      "bell state should not be cached with discovered items"
-    )
-    harness.assert_equal(
-      items[3].name,
-      "main",
-      "quiet active workspace should remain last among open workspaces"
-    )
-  end)
+      tree[1].tabs[1].panes[1].has_bell = false
+      tree[3].tabs[2].panes[2].has_bell = false
+      items = hollow.ui.workspace.items()
+      harness.assert_equal(
+        items[1].name,
+        "alpha",
+        "clearing bells should restore existing ordering"
+      )
+      harness.assert_equal(items[2].name, "zulu", "cleared workspace should use normal ordering")
+      harness.assert_equal(
+        items[2].has_bell,
+        false,
+        "bell state should not be cached with discovered items"
+      )
+      harness.assert_equal(
+        items[3].name,
+        "main",
+        "quiet active workspace should remain last among open workspaces"
+      )
+    end
+  )
 
   it("renders a warning-colored bell icon on the first workspace row", function()
     hollow.ui.workspace.open_switcher()

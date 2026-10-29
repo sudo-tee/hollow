@@ -131,6 +131,79 @@ local function default_format_item(workspace, domain_width)
   })
 end
 
+-- Native counterpart of the default formatter: retain column settings/paint,
+-- but let Clay allocate the remaining cwd width instead of padding strings.
+local function layout_format_item(workspace, domain_width, ctx, view)
+  local layout = ui.layout
+  local component = require("hollow.ui.builder.components.layout_select")
+  local switcher = switcher_state()
+  ctx._workspace_palette = ctx._workspace_palette or derived_palette()
+  local palette = ctx._workspace_palette
+  local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
+  local s = styles(palette, { variant = variant })
+  local match = require("hollow.ui.styles.select")(view.theme).match
+  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+  local status_width =
+    math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
+  local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
+  local gap = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP) * cell_w
+  local attention = workspace.has_bell or workspace.program_status_attention
+  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
+    or palette.bell
+  local cwd = source.trim_string(workspace.cwd)
+  if cwd == "" then
+    cwd = CWD_FALLBACK[variant]
+  end
+  local function column(text, style, width, suffix)
+    return component.inline(
+      shared.highlight_inline_nodes({ ui.text(text, style) }, view.query, match),
+      nil,
+      {
+        id = view.id .. ":" .. suffix,
+        width = width,
+        height = cell_h,
+        scroll_x = true,
+        align_y = "center",
+      }
+    )
+  end
+  local columns = {
+    layout.column({
+      layout.text(
+        attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
+        ui.style(s.status, attention and { fg = bell, bold = true }),
+        { wrap = "none" }
+      ),
+    }, { width = status_width * cell_w }),
+    layout.column({}, { width = gap }),
+    column(util.truncate_end(workspace.name, name_width), s.name, name_width * cell_w, "name"),
+    layout.column({}, { width = gap }),
+  }
+  local badge = workspace.program_status_badge or ""
+  if badge ~= "" then
+    columns[#columns + 1] = layout.text(
+      badge,
+      ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
+      { wrap = "none" }
+    )
+  end
+  columns[#columns + 1] = column(cwd, s.cwd, "grow", "cwd")
+  local domain = source.normalize_domain(workspace.domain)
+  if domain and domain_width > 0 then
+    local colors = workspace_name_color(domain)
+    columns[#columns + 1] = layout.column({
+      layout.text(
+        " " .. util.truncate_end(domain, domain_width - 3) .. " ",
+        { fg = colors.fg },
+        { wrap = "none" }
+      ),
+    }, {
+      style = ui.style(s.domain_pill, { fg = colors.fg, bg = colors.bg }),
+    })
+  end
+  return layout.row(columns, { width = "grow", height = cell_h, align_y = "center" })
+end
+
 ---@param items HollowUiWorkspaceItem[]
 ---@return integer
 local function domain_column_width(items)
@@ -274,6 +347,7 @@ function ui.workspace.open_switcher(opts)
   local switcher = switcher_state()
   local host_revision = switcher.host_scan_revision or 0
   ui.select.open({
+    layout = ui.layout.resolve_backend(switcher.layout, "clay"),
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
       local current_revision = switcher_state().host_scan_revision or 0
@@ -313,6 +387,12 @@ function ui.workspace.open_switcher(opts)
         return formatter(item)
       end
       return default_format_item(item, domain_width)
+    end,
+    layout_label = function(item, ctx, view)
+      if switcher_state().format_item then
+        return nil
+      end
+      return layout_format_item(item, domain_width, ctx, view)
     end,
     search_text = search_text_for_item,
     actions = switcher_actions(),

@@ -31,6 +31,7 @@ describe("UI mux navigator test suite", function()
       hollow.term.set_pane_foreground_process(101, "zig build")
       host_api.set_pane_bell(101, true)
       hollow.ui.mux_navigator.open({
+        layout = "legacy",
         filter = "pane_bell",
         title = "Attention",
         max_height = 12,
@@ -123,7 +124,7 @@ describe("UI mux navigator test suite", function()
   describe("mux navigator search", function()
     it("searches by pane id", function()
       host_api.set_pane_bell(101, true)
-      hollow.ui.mux_navigator.open({ max_height = 12 })
+      hollow.ui.mux_navigator.open({ layout = "legacy", max_height = 12 })
       harness.assert_true(on_key("slash", 0), "mux navigator should enter search mode")
       harness.assert_true(on_key("1", 0), "mux navigator should search pane ids")
       harness.assert_true(on_key("0", 0), "mux navigator should continue searching pane ids")
