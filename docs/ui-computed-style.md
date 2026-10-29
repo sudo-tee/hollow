@@ -87,6 +87,8 @@ The existing host records are retained and extended with optional paint data:
 adapters project their existing supported fields from it: chrome keeps alpha
 and border size; bars keep text identity and close-button part fields. This
 preserves their distinct host contracts without separate color/box rules.
+`overlay_surface_style` owns compatibility precedence, including whole-box
+replacement by explicit chrome, before projecting the normalized surface.
 
 Palette `parts` holds concrete defaults that previously lived in native drawing:
 
@@ -99,6 +101,7 @@ theme = { ui = { widgets = { all = { parts = {
     selection_accent = "accent",
   },
   scrollbar = { track = "scrollbar_track", thumb = "scrollbar_thumb" },
+  list_row = { accent = "panel_border" },
 } } } } }
 ```
 
@@ -109,6 +112,14 @@ paint and legacy row aliases win last. Parts and output snapshots are never
 mutated by adapters. Theme changes invalidate palettes and therefore part paint.
 Sidebar surface style exposes `fg`, `bg`, `border`, `alpha`; unsupported geometry
 fields error. Sidebar width/reserve/side retain their existing units and behavior.
+
+Built-in list recipes and selectable raw rows share part-color resolution.
+`list_row.accent` also colors the built-in selection indicator; `false` disables
+that accent. Scrollbar part overrides apply to both raw rows and built-in lists.
+Without overrides, built-in lists retain their semantic `scrollbar_track` /
+`scrollbar_thumb` colors. Raw rows retain the old literal track color and native
+panel-border thumb fallback (including explicit chrome borders). This distinction
+preserves existing visuals rather than imposing a new theme on either producer.
 
 Intentional remaining UI fallbacks in `src/render/sokol_runtime.zig`:
 
@@ -145,6 +156,9 @@ precedence, shared bar styles, runtime theme changes, and bar part tokens.
 Presentation fixtures compare bar/chrome normalization, sidebar/overlay row
 paint, component-part defaults, output immutability and theme invalidation. A
 native test covers tab paint precedence, layout isolation and cache resets.
+Additional fixtures cover explicit tab-close spans across bar/overlay hover and
+leave, shared list accent/scrollbar overrides, partial palettes, and whole-box
+chrome precedence. Close spans retain their existing IDs, text and padding.
 Existing serialized fixtures cover tabs/dialogs/lists and action paint in both
 bars and overlays. Four-theme parity fixtures cover Hollow, Kanagawa Wave,
 Nord and Rose Pine.
@@ -203,3 +217,17 @@ The follow-up compatibility pass covers explicit `backdrop = false`, removing
 and restoring theme-owned backdrops on open dialogs, retaining instance-owned
 backdrops, and resolving child text tokens with a row's own partial palette on
 both overlay and sidebar surfaces.
+
+## Public customization handoff
+
+The public authoring surface is existing `ui.style` / `ui.styled`, plain presets,
+button variants/sizes/disabled, explicit row selection, palette tokens and
+documented paint parts. Recipes, computed-style snapshots and host adapters stay
+private; no registration API or general variants DSL is needed for built-in use.
+
+See [Custom UI](custom-ui.md#customization-contract) for ownership and partial
+palette rules, [Themes](themes.md#token-and-override-ownership) for token scope,
+and the runnable [`examples/ui-styling.lua`](../examples/ui-styling.lua).
+The example has regression tests for rendering, callbacks, theme refresh and
+closing. Desktop visual behavior was confirmed by the maintainer; automated
+native/DPI/performance acceptance remains separate from this documentation pass.

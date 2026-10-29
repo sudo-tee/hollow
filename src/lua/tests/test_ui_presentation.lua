@@ -232,6 +232,117 @@ describe("shared presentation adapters", function()
       assert.equals("#161b22", shared.sidebar_surface_style(nil, palette).bg)
       assert.equals("#373a48", shared.tab_fallback_style(true, palette).bg)
       assert.equals("#23252e", shared.tab_fallback_style(false, palette).bg)
+      local list = require("hollow.ui.widgets.list_style")
+      local row = list.row({}, palette, true, false)
+      assert.equals(palette.panel_border, row.accent_bar)
+      assert.equals(palette.scrollbar_track, row.scrollbar_track_color)
+      assert.equals(palette.scrollbar_thumb, row.scrollbar_thumb_color)
+      assert.equals(
+        "#5a6375",
+        shared.serialize_row_paint({ scrollbar_track = true }, palette).scrollbar_track_color
+      )
+    end
+  end)
+
+  it("shares accent and scrollbar parts with built-in list recipes", function()
+    local list = require("hollow.ui.widgets.list_style")
+    local palette = shared.merge_styles(shared.palette("overlay"), {
+      parts = {
+        list_row = { accent = "muted" },
+        scrollbar = { track = "divider", thumb = "primary_bg" },
+      },
+    })
+    local before = hollow.util.clone_value(palette)
+    local built = list.row({ scrollbar_track = true }, palette, true, false)
+    local raw = ui.row({}, { variant = "selectable", selected = true, scrollbar_track = true })
+    local paint = shared.serialize_row_paint(raw, palette)
+    for _, key in ipairs({ "accent_bar", "scrollbar_track_color", "scrollbar_thumb_color" }) do
+      assert.equals(built[key], paint[key])
+    end
+    assert.equals(palette.muted, paint.accent_bar)
+    assert.equals(palette.muted, list.indicator(ui, palette, true).style.fg)
+    assert.same(before, palette)
+
+    palette.parts.list_row.accent = false
+    assert.is_false(list.row({}, palette, true).accent_bar)
+    assert.is_false(shared.serialize_row_paint(raw, palette).accent_bar)
+    raw.accent_bar = "primary_bg"
+    assert.equals(palette.primary_bg, shared.serialize_row_paint(raw, palette).accent_bar)
+  end)
+
+  it(
+    "retains semantic list scrollbars and literal raw-track fallback on partial palettes",
+    function()
+      local list = require("hollow.ui.widgets.list_style")
+      local palette = { scrollbar_track = "#123456", scrollbar_thumb = "#234567" }
+      local built = list.row({}, palette, false, false)
+      assert.equals("#123456", built.scrollbar_track_color)
+      assert.equals("#234567", built.scrollbar_thumb_color)
+      local paint = shared.serialize_row_paint({ scrollbar_track = true }, palette)
+      assert.equals("#5a6375", paint.scrollbar_track_color)
+      -- Raw thumbs still inherit final native panel border, including explicit chrome.
+      assert.is_nil(paint.scrollbar_thumb_color)
+    end
+  )
+
+  it("keeps panel chrome whole-box precedence in the shared surface adapter", function()
+    local palette = shared.palette("overlay")
+    local style = { bg = "panel_bg", padding = 8, margin = 9, radius = 6 }
+    local chrome = { bg = false, padding = { right = 2 }, margin = false, border = "muted" }
+    local before_style, before_chrome =
+      hollow.util.clone_value(style), hollow.util.clone_value(chrome)
+    local expected = shared.overlay_surface_style(style, chrome, palette)
+    ui.overlay.push(ui.overlay.new({
+      style = style,
+      chrome = chrome,
+      render = function()
+        return ui.row({})
+      end,
+    }))
+    assert.same(expected, ui._overlay_state()[1].chrome)
+    assert.is_nil(expected.bg)
+    assert.is_nil(expected.margin)
+    assert.same({ top = 0, right = 2, bottom = 0, left = 2 }, expected.padding)
+    assert.equals(palette.muted, expected.border)
+    assert.equals(6, expected.radius)
+    assert.same(before_style, style)
+    assert.same(before_chrome, chrome)
+  end)
+
+  it("paints explicit tab close spans identically in bars and overlays on hover", function()
+    local events = require("hollow.ui.widgets.bars.bar_events")
+    local state = require("hollow.state").get()
+    local function close()
+      return ui.button({
+        id = "tab:close",
+        text = " ×",
+        style = { fg = "muted", padding = { x = 3 }, hover = { fg = "fg", bg = "hover_bg" } },
+        on_click = function() end,
+      })
+    end
+    ui.topbar.mount(ui.topbar.new({
+      render = function()
+        return { close() }
+      end,
+    }))
+    local overlay = ui.overlay.new({
+      render = function()
+        return ui.row({ close() })
+      end,
+    })
+    ui.overlay.push(overlay)
+    for _, hovered in ipairs({ false, true, false }) do
+      local id = hovered and "tab:close" or nil
+      state.ui[events.hovered_key("topbar")] = id
+      require("hollow.ui.widgets.bars.bar_cache").invalidate("topbar")
+      overlay.on_event("overlay:hover", { id = id })
+      local bar = ui._topbar_state().items[1].segments[1]
+      local span = ui._overlay_state()[1].rows[1].segments[1]
+      for _, key in ipairs({ "text", "id", "fg", "bg", "padding" }) do
+        assert.same(bar[key], span[key])
+      end
+      assert.equals(" ×", span.text)
+      assert.equals(hovered and shared.palette("overlay").hover_bg or nil, span.bg)
     end
   end)
 end)

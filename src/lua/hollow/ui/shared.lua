@@ -1502,6 +1502,33 @@ function M.normalize_overlay_chrome(value, palette)
   return next(chrome) and chrome or nil
 end
 
+--- Compatibility chrome fields replace whole boxes, unlike style layers.
+function M.overlay_surface_style(style, chrome, palette)
+  if type(style) ~= "table" then
+    return M.normalize_overlay_chrome(chrome, palette)
+  end
+  local source = util.clone_value(style)
+  for key, value in pairs(type(chrome) == "table" and chrome or {}) do
+    source[key] = util.clone_value(value)
+  end
+  return M.normalize_overlay_chrome(source, palette)
+end
+
+--- Resolve component-part paint once at the compatibility boundary. False is
+--- an explicit suppression, not a request to restore the legacy default.
+function M.part_color(palette, component, name, fallback)
+  local part = palette.parts and palette.parts[component]
+  local value
+  if type(part) == "table" then
+    value = part[name]
+  end
+  if value == nil then
+    value = fallback
+  end
+  return type(value) == "string" and resolve_color(value, component .. "." .. name, palette)
+    or value
+end
+
 --- The same row paint contract is consumed by overlay and sidebar adapters.
 function M.serialize_row_paint(row, palette, hovered_id)
   palette = row.theme or palette
@@ -1522,14 +1549,13 @@ function M.serialize_row_paint(row, palette, hovered_id)
   if row.accent_bar ~= nil then
     result.accent_bar = row.accent_bar
   elseif row.variant == "selectable" and row.selected then
-    result.accent_bar = palette.panel_border
+    result.accent_bar = M.part_color(palette, "list_row", "accent", palette.panel_border)
   end
-  local parts = palette.parts and palette.parts.scrollbar or {}
   if result.scrollbar_track and result.scrollbar_track_color == nil then
-    result.scrollbar_track_color = parts.track
+    result.scrollbar_track_color = M.part_color(palette, "scrollbar", "track", "#5a6375")
   end
   if result.scrollbar_track and result.scrollbar_thumb_color == nil then
-    result.scrollbar_thumb_color = parts.thumb
+    result.scrollbar_thumb_color = M.part_color(palette, "scrollbar", "thumb")
   end
   -- Legacy color aliases remain literal-or-token inputs at this boundary.
   for _, key in ipairs({

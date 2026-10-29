@@ -260,7 +260,11 @@ ui.button({
 ### Component styling
 
 `ui.styled(theme, ...)` remains the public style helper. Recipes are internal;
-plugins customize instances with normal style tables.
+plugins customize instances with normal style tables. These helpers, button
+variants/sizes, row selection and documented palette parts are the customization
+surface; `hollow.ui.shared` and computed-style/host records are private.
+See the [runnable example](../../../examples/ui-styling.lua) for a complete
+modal using buttons, tabs, selectable rows and theme-owned panel chrome.
 
 ```lua
 ui.button({
@@ -311,7 +315,7 @@ Unsupported sidebar surface geometry fields error.
 
 `theme.ui.widgets.all.parts` and per-widget `parts` overrides own default paint
 for sidebar surfaces, raw tab active/inactive colors and their selection stripe,
-and raw scrollbar tracks. Defaults preserve the previous native colors. For
+scrollbars and selected-row accents. Defaults preserve previous colors. For
 example, bind sidebar colors to the current widget palette:
 
 ```lua
@@ -325,7 +329,12 @@ Tab part `active`/`inactive` support `fg` and `bg`, plus a top-level
 active-tab stripe when that stripe would already be drawn. Fallback colors never
 supply layout or suppress explicit instance paint. Scrollbar `track`/`thumb`
 parts remain separate from row text; explicit legacy scrollbar color options
-win. See [the internal presentation contract](../../ui-computed-style.md) for
+win. Without part overrides, built-in lists keep their semantic scrollbar tokens;
+raw rows keep the legacy literal track and final panel-border thumb fallback.
+`parts.list_row.accent` supplies selectable-row accents and built-in selection
+indicator colors; it accepts a literal color, token, or `false`. Per-row
+`accent_bar` wins, including `false` to suppress the accent.
+See [the internal presentation contract](../../ui-computed-style.md) for
 compatibility record mappings and remaining native safety fallbacks.
 
 ### Compatibility precedence

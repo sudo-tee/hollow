@@ -54,18 +54,11 @@ local function serialize_overlay_widget(widget)
   if widget._theme_backdrop then
     backdrop = palette.backdrop
   end
-  local chrome = widget.chrome
-  if type(widget.style) == "table" then
-    chrome = util.clone_value(widget.style)
-    for key, value in pairs(type(widget.chrome) == "table" and widget.chrome or {}) do
-      chrome[key] = util.clone_value(value)
-    end
-  end
   return {
     stack_context = widget._notify and "notification" or (widget._modal and "modal" or "overlay"),
     align = shared.normalize_overlay_align(widget.align),
     backdrop = shared.normalize_overlay_backdrop(backdrop),
-    chrome = shared.normalize_overlay_chrome(chrome, palette),
+    chrome = shared.overlay_surface_style(widget.style, widget.chrome, palette),
     width = shared.normalize_overlay_size(widget.width),
     height = shared.normalize_overlay_size(widget.height),
     max_height = shared.normalize_overlay_size(widget.max_height),

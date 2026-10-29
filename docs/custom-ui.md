@@ -80,6 +80,28 @@ can use `variant = "selectable"`, explicit `selected`, and per-instance `style`.
 See [component styling](reference/lua/ui.md#component-styling) for supported
 fields, disabled behavior, theme overrides and compatibility precedence.
 
+### Customization contract
+
+| Customize | Use |
+| --- | --- |
+| Shared colors | `theme.ui.widgets.all` |
+| One widget kind | `theme.ui.widgets.select`, `.notify`, etc. |
+| Component-part paint | Palette `parts.sidebar`, `.tab`, `.scrollbar`, `.list_row` |
+| One instance | `style`, row aliases, or overlay `chrome` |
+| Reusable local styles | Plain tables composed with `ui.style` / `ui.styled` |
+
+Recipes and computed-style adapters are private. Plugins should not require
+`hollow.ui.shared`, register recipes, or depend on serialized host records.
+Only supported button variants/sizes and explicit row selection are public;
+pressed/focus-visible states are not an authoring API.
+
+For a complete buttons/tabs/list/panel example, load
+[`examples/ui-styling.lua`](../examples/ui-styling.lua) with
+`dofile("/path/to/hollow/examples/ui-styling.lua")()` from your config.
+It opens an example modal without replacing any bars or sidebars. Click tabs or
+choices, then Done (or Escape) to close. It uses public APIs only and refreshes
+while open when the theme changes.
+
 ## The four surfaces
 
 ### Top bar
@@ -228,8 +250,8 @@ milliseconds.
 ## Widget theming
 
 Widgets read colors from the active theme.
-`theme.widgets.all` is the shared palette for all built-in widgets; each
-widget can also override per-kind (e.g. `theme.widgets.select`).
+`theme.ui.widgets.all` is the shared palette for all built-in widgets; each
+widget can also override per-kind (e.g. `theme.ui.widgets.select`).
 
 ```lua
 hollow.ui.select.open({
@@ -249,8 +271,17 @@ Use token names in style `fg`, `bg`, and `border` fields, including nested
 style fields are not tokens. Unknown token names error with a suggestion.
 See the [full widget and bar token list](reference/lua/ui.md#styles) for
 available defaults and their theme sources. `ui.styles` presets are plain
-constants; use `ui.style` or `ui.themed_style` to derive styles rather than
+constants; use `ui.style` or `ui.styled` to derive styles rather than
 changing preset tables.
+
+Raw token styles resolve at serialization against their surface palette. Button
+and tab primitives default to the `select` palette; when composing a modal,
+pass its render callback's `theme` into these primitives so they match the panel.
+Resolve concrete colors inside render, not once at module load, to follow runtime
+theme changes. `ui.modal({ theme = "select", render = ... })` maintains a live
+palette. A table passed as a modal theme or primitive `opts.theme` is authoritative,
+not implicitly merged; include every token used by your explicit styles. Built-in
+picker `opts.theme` overrides, by contrast, merge with that picker's palette.
 
 ## Workspace switcher
 

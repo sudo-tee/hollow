@@ -35,7 +35,6 @@ local DEFAULT_WIDGET_THEME = {
       inactive = { fg = "#b9b9b9", bg = "#23252e" },
       selection_accent = "#7896dc",
     },
-    scrollbar = { track = "#5a6375" },
   },
   panel_bg = "#1f2430",
   panel_border = "#88c0d0",

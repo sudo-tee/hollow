@@ -77,7 +77,7 @@
 ---@field brights? HollowColor[]
 
 ---@class HollowThemeUiSpec
----@field widgets? table
+---@field widgets? table<string, HollowUiTheme> Shared `all` defaults followed by widget-kind overrides.
 ---@field top_bar? { height?: integer, background?: HollowColor }
 ---@field tab_bar? table
 ---@field scrollbar? HollowScrollbarConfig
@@ -110,6 +110,7 @@
 ---@field sidebar? {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken, border?: HollowColor|HollowStyleToken, alpha?: number}
 ---@field tab? {active?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, inactive?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, selection_accent?: HollowColor|HollowStyleToken}
 ---@field scrollbar? {track?: HollowColor|HollowStyleToken, thumb?: HollowColor|HollowStyleToken}
+---@field list_row? {accent?: HollowColor|HollowStyleToken|false} Selected row accent and built-in selection indicator; false suppresses accent.
 
 ---@class HollowUiTheme
 ---@field parts? HollowUiPaintParts Native component paint defaults, separate from geometry.
@@ -682,7 +683,7 @@
 ---@field variant? HollowUiButtonVariant Opts into the themed button recipe; raw buttons otherwise retain their style.
 ---@field size? HollowUiControlSize Opts into recipe spacing.
 ---@field disabled? boolean Suppresses click/hover callbacks and hover paint.
----@field theme? table Select palette by default for recipe buttons.
+---@field theme? HollowUiTheme Select palette by default for recipe buttons; explicit partial palettes are authoritative.
 ---@field id string
 ---@field text? string
 ---@field style? HollowUiNodeStyle
@@ -691,7 +692,7 @@
 ---@field on_mouse_leave? fun(e: { id: string })
 
 ---@class HollowUiActionButtonOptions: HollowUiButtonOptions
----@field theme? table Select widget theme by default.
+---@field theme? HollowUiTheme Select widget theme by default.
 ---@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
 ---@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
 
@@ -700,12 +701,12 @@
 ---@field label string
 ---@field active? boolean
 ---@field badge? { text: string|number, color: HollowColor }
----@field theme? table Select widget theme by default.
+---@field theme? HollowUiTheme Select widget theme by default.
 ---@field on_click? fun(e: { id: string })
 
 ---@class HollowUiTabBarOptions
 ---@field tabs HollowUiTabOptions[]
----@field theme? table Default theme for tabs.
+---@field theme? HollowUiTheme Default theme for tabs.
 
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
@@ -729,41 +730,41 @@
 ---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
 ---@field variant? "selectable"
 ---@field selected? boolean Explicit model selection, independent of pointer hover.
----@field theme? table Optional partial palette for this row.
+---@field theme? HollowUiTheme Optional partial palette for this row.
 ---@field id? string
 ---@field hoverable? boolean
----@field fill_bg? HollowColor
+---@field fill_bg? HollowColor|HollowStyleToken|false
 ---@field fill_radius? number
----@field accent_bar? HollowColor|false
----@field divider? HollowColor
+---@field accent_bar? HollowColor|HollowStyleToken|false
+---@field divider? HollowColor|HollowStyleToken
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
 ---@field scrollbar_id? string
 ---@field scrollbar_thumb_ratio? number
 ---@field scrollbar_thumb_size? number
----@field scrollbar_track_color? HollowColor
----@field scrollbar_thumb_color? HollowColor
+---@field scrollbar_track_color? HollowColor|HollowStyleToken
+---@field scrollbar_thumb_color? HollowColor|HollowStyleToken
 
 ---@class HollowUiRowNode
 ---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
 ---@field variant? "selectable"
 ---@field selected? boolean Explicit model selection, independent of pointer hover.
----@field theme? table Optional partial palette for this row.
+---@field theme? HollowUiTheme Optional partial palette for this row.
 ---@field _type "row"
 ---@field children HollowUiRenderableNode[]
 ---@field id? string
 ---@field hoverable boolean
----@field fill_bg? HollowColor
+---@field fill_bg? HollowColor|HollowStyleToken|false
 ---@field fill_radius? number
----@field accent_bar? HollowColor|false
----@field divider? HollowColor
+---@field accent_bar? HollowColor|HollowStyleToken|false
+---@field divider? HollowColor|HollowStyleToken
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
 ---@field scrollbar_id? string
 ---@field scrollbar_thumb_ratio? number
 ---@field scrollbar_thumb_size? number
----@field scrollbar_track_color? HollowColor
----@field scrollbar_thumb_color? HollowColor
+---@field scrollbar_track_color? HollowColor|HollowStyleToken
+---@field scrollbar_thumb_color? HollowColor|HollowStyleToken
 
 ---@class HollowUiColumnNode
 ---@field _type "column"
@@ -1116,8 +1117,8 @@
 ---@field hovered? integer
 
 ---@class HollowUiModalSpec
----@field theme? table|string
----@field render fun(theme: table, state?: table): any
+---@field theme? HollowUiTheme|string Widget-kind name for a live palette, or an authoritative explicit palette table.
+---@field render fun(theme: HollowUiTheme, state?: table): HollowUiRowNode|HollowUiColumnNode
 ---@field keys? function
 ---@field width? integer
 ---@field height? integer
