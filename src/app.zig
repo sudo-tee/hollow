@@ -940,13 +940,16 @@ pub const App = struct {
         self.automation_changed.broadcast(io.get());
         self.automation_mutex.unlock(io.get());
 
+        std.log.info("App.shutdownRuntime pending commands", .{});
         cmd_ipc.shutdownPendingCommands(self);
         if (self.command_ipc_server) |*server| {
+            std.log.info("App.shutdownRuntime command-ipc stop", .{});
             server.deinit();
             self.command_ipc_server = null;
         }
 
         if (self.renderer) |*renderer| {
+            std.log.info("App.shutdownRuntime renderer.deinit", .{});
             renderer.deinit();
             self.renderer = null;
         }
@@ -961,9 +964,11 @@ pub const App = struct {
             self.ghostty = null;
         }
 
+        std.log.info("App.shutdownRuntime agent_mux.shutdown", .{});
         @import("pty/agent_mux.zig").shutdown();
 
         if (self.lua) |*lua| {
+            std.log.info("App.shutdownRuntime lua.deinit", .{});
             lua.deinit();
             self.lua = null;
         }

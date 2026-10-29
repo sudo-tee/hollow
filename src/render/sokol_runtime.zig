@@ -147,6 +147,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
     extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+    extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: c_int) callconv(.c) i32;
+    const SW_HIDE: c_int = 0;
     extern "dwmapi" fn DwmExtendFrameIntoClientArea(hWnd: HWND, pMarInset: *const MARGINS) callconv(.c) i32;
     extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.c) i32;
     // winmm — multimedia timer resolution
@@ -4575,10 +4577,58 @@ fn seamCoveredByFloating(leaves: []const LayoutLeaf, seam: PaneBounds) bool {
     return false;
 }
 
+/// Force-exits if app teardown stalls, so a hidden window cannot linger as a
+/// background process holding PTYs and the command-ipc address.
+const ShutdownWatchdog = struct {
+    const timeout_ns: u64 = 5 * std.time.ns_per_s;
+
+    mutex: std.Io.Mutex = .init,
+    done_condition: std.Io.Condition = .init,
+    done: bool = false,
+    thread: ?std.Thread = null,
+
+    fn start(self: *ShutdownWatchdog) void {
+        self.thread = std.Thread.spawn(.{}, watch, .{self}) catch null;
+    }
+
+    fn finish(self: *ShutdownWatchdog) void {
+        self.mutex.lockUncancelable(io.get());
+        self.done = true;
+        self.done_condition.signal(io.get());
+        self.mutex.unlock(io.get());
+        if (self.thread) |thread| thread.join();
+    }
+
+    fn watch(self: *ShutdownWatchdog) void {
+        self.mutex.lockUncancelable(io.get());
+        defer self.mutex.unlock(io.get());
+        const deadline = io.nanoTimestamp() + timeout_ns;
+        while (!self.done) {
+            const now = io.nanoTimestamp();
+            if (now >= deadline) {
+                std.log.err("shutdown watchdog: app teardown exceeded {d}ms; forcing exit", .{timeout_ns / std.time.ns_per_ms});
+                std.process.exit(0);
+            }
+            io.waitTimeout(&self.done_condition, &self.mutex, @intCast(deadline - now)) catch {};
+        }
+    }
+};
+
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
+    if (builtin.os.tag == .windows) {
+        // Sokol stops pumping messages before cleanup but destroys the window
+        // after it. Hide it so slow teardown cannot show a white
+        // "Not Responding" window.
+        if (c.sapp_win32_get_hwnd()) |hwnd_raw| {
+            _ = win32.ShowWindow(@ptrCast(@constCast(hwnd_raw)), win32.SW_HIDE);
+        }
+    }
     if (appFromUserData(user_data)) |app| {
         std.log.info("sokol cleanup: deinit via callback context", .{});
+        var watchdog: ShutdownWatchdog = .{};
+        watchdog.start();
+        defer watchdog.finish();
         app.deinit();
     }
     if (builtin.os.tag == .windows) {
