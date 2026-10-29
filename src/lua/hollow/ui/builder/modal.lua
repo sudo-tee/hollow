@@ -41,6 +41,13 @@ function M.modal(spec)
       local rows = spec.render(theme, state)
       return rows
     end,
+    on_unmount = function()
+      -- The registry holds render callbacks strongly. Once the last overlay
+      -- closes they cannot be dispatched, and may keep the modal alive.
+      if #overlay_stack == 0 then
+        click_registry.reset()
+      end
+    end,
     on_key = function(key, mods)
       if spec.keys then
         local consumed = spec.keys(key, mods)

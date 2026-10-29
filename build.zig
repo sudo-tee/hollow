@@ -369,6 +369,17 @@ pub fn build(b: *std.Build) void {
     const clay_test_run = b.addRunArtifact(clay_tests);
     b.step("test-clay", "Run isolated Clay layout contracts").dependOn(&clay_test_run.step);
     test_step.dependOn(&clay_test_run.step);
+    const clay_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/clay_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_bench_module, target, optimize);
+    const clay_bench = b.addExecutable(.{ .name = "clay-bench", .root_module = clay_bench_module });
+    const clay_bench_run = b.addRunArtifact(clay_bench);
+    clay_bench_run.addPassthruArgs();
+    b.step("bench-clay", "Run headless native Clay layout benchmark").dependOn(&clay_bench_run.step);
     const luajit_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/luajit_syntax_test.zig"),
         .target = target,

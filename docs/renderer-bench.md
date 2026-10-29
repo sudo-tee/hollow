@@ -208,3 +208,54 @@ Lifecycle batch deltas, in order, KiB:
 
 Several later lifecycle batches still grow; longer isolated runs and retained
 object analysis are needed to distinguish ongoing retention from warmup or caches.
+
+### Isolated lifecycle diagnosis
+
+Run one combination per fresh process, with the same harness dependencies:
+
+```sh
+luajit scripts/diagnose-picker-lifecycle.lua palette legacy off 20 20 15
+luajit scripts/diagnose-picker-lifecycle.lua palette clay on 20 20 15
+```
+
+Arguments select picker (`palette`/`workspace`), backend, JIT mode, warmup cycles,
+cycles per batch and batch count. Two full collections precede measurements.
+Weak references track widgets, palettes, chrome and surfaces, not every possible
+retained object. Compare all combinations, including JIT-off runs, before treating
+positive heap deltas as leaks.
+
+This exposed bounded retention of one closed legacy palette modal through the
+click registry. Modal unmount now clears callbacks when the final overlay closes;
+other active overlays retain their callbacks. After cleanup, the legacy palette
+JIT-off diagnostic measured 1318.6 to 1319.1 KiB over 300 cycles, with no tracked
+survivors. Other combinations also had no tracked survivors and approximately flat
+JIT-off heaps; JIT-on growth generally slowed. This is consistent with warmup but
+does not attribute trace memory or rule out retention of untracked objects.
+
+## Headless native Clay baseline
+
+```sh
+zig build bench-clay -Doptimize=ReleaseFast -- 2000
+```
+
+Runs 200 warmup layouts and seven timed batches of a synthetic 166-node framed
+workspace-like tree with 23 rows and two clipped columns per row. JSON lines
+report median microseconds per layout for unchanged layout, alternating first/last
+row reveal, and alternating host width. Reveal includes the adapter's second
+layout pass when scrolling changes. Idle still performs native layout; it is not
+an application idle-frame measurement.
+
+2026-10-29, same Linux host, 2000 layouts per batch:
+
+| Workload | Median µs/layout |
+| --- | ---: |
+| Unchanged | 27.77 |
+| Alternating reveal | 50.16 |
+| Alternating width | 26.32 |
+
+Clay reports a minimum library arena of 1,496,768 bytes for this configured
+context. This excludes adapter structures, input nodes/text, allocator overhead,
+Lua heap, font atlas and GPU memory. Timings use monotonic wall time and exclude
+Lua snapshots, native tree parsing/copying, glyph work, drawing and frame
+scheduling. There is no matched legacy native geometry workload here, so these
+numbers cannot establish backend parity or end-to-end rendering speed.

@@ -29,7 +29,25 @@ return function(root, palette, namespace)
     end
     return default_scrollbar_colors[key]
   end
-  local function visit(node, depth)
+  local visit
+  local function children(list, fragment_depth, serialized, depth)
+    assert(
+      type(list) == "table" and fragment_depth <= 32,
+      "invalid or excessively nested layout children"
+    )
+    for i = 1, table.maxn(list) do
+      local child = list[i]
+      if child ~= nil and type(child) ~= "boolean" then
+        if type(child) == "table" and child.kind == nil then
+          children(child, fragment_depth + 1, serialized, depth)
+        else
+          serialized.children = serialized.children + 1
+          visit(child, depth + 1)
+        end
+      end
+    end
+  end
+  visit = function(node, depth)
     assert(type(node) == "table" and node.kind ~= nil, "expected layout node")
     assert(depth <= 32 and #nodes < 512, "layout tree exceeds prototype limits")
     assert(
@@ -56,9 +74,25 @@ return function(root, palette, namespace)
     )
     assert(node.wrap == nil or wraps[node.wrap] ~= nil, "invalid text wrap mode")
     assert(node.full_bleed_x == nil or type(node.full_bleed_x) == "boolean", "invalid full_bleed_x")
-    assert(node.scrollbar_id == nil or (type(node.scrollbar_id) == "string" and #node.scrollbar_id > 0 and #namespace + #node.scrollbar_id <= 128), "invalid scrollbar id")
-    local track_color = scrollbar_color("scrollbar_track_color", node.scrollbar_track_color, "parts.scrollbar.track|scrollbar_track|#5a6375")
-    local thumb_color = scrollbar_color("scrollbar_thumb_color", node.scrollbar_thumb_color, "parts.scrollbar.thumb|scrollbar_thumb|panel_border")
+    assert(
+      node.scrollbar_id == nil
+        or (
+          type(node.scrollbar_id) == "string"
+          and #node.scrollbar_id > 0
+          and #namespace + #node.scrollbar_id <= 128
+        ),
+      "invalid scrollbar id"
+    )
+    local track_color = scrollbar_color(
+      "scrollbar_track_color",
+      node.scrollbar_track_color,
+      "parts.scrollbar.track|scrollbar_track|#5a6375"
+    )
+    local thumb_color = scrollbar_color(
+      "scrollbar_thumb_color",
+      node.scrollbar_thumb_color,
+      "parts.scrollbar.thumb|scrollbar_thumb|panel_border"
+    )
     assert(
       node.reveal == nil or (type(node.reveal) == "string" and #node.reveal > 0),
       "invalid reveal target"
@@ -110,24 +144,9 @@ return function(root, palette, namespace)
       assert(node.id, "clickable layout nodes require stable explicit ids")
       callbacks[id] = node.on_click
     end
-    local function children(list, fragment_depth)
-      assert(
-        type(list) == "table" and fragment_depth <= 32,
-        "invalid or excessively nested layout children"
-      )
-      for i = 1, table.maxn(list) do
-        local child = list[i]
-        if child ~= nil and type(child) ~= "boolean" then
-          if type(child) == "table" and child.kind == nil then
-            children(child, fragment_depth + 1)
-          else
-            serialized.children = serialized.children + 1
-            visit(child, depth + 1)
-          end
-        end
-      end
+    if node.children then
+      children(node.children, 0, serialized, depth)
     end
-    children(node.children or {}, 0)
     subtree_ends[id] = #nodes
     assert(node.kind ~= 2 or serialized.children == 0, "text cannot have children")
   end
