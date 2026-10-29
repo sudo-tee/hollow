@@ -4,12 +4,26 @@
 --- Raw footer specs are normalized into themed dialog buttons.
 --- Supports selected/hovered styling on footer buttons.
 
+local button_styles = require("hollow.ui.styles.button")
+local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local ui = _G.hollow.ui
 local button_component = require("hollow.ui.builder.components.button")
 local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
+
+local DIALOG_VARIANTS = { default = true, primary = true, destructive = true }
+
+-- Partial palettes (tests, custom dialogs) lack the derived emphasis field.
+local function button_palette(theme)
+  if theme.button_emphasis_bg ~= nil then
+    return theme
+  end
+  return setmetatable({
+    button_emphasis_bg = color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg),
+  }, { __index = theme })
+end
 
 local function title_style(theme)
   -- Dialog themes may be partial; absent optional paint retains native defaults.
@@ -106,11 +120,20 @@ function M.dialog(opts, theme)
     end),
     body_rows,
     ui.when(#footer > 0, function()
+      local palette = button_palette(theme)
+      local radius = { radius = theme.radius }
       local buttons = ui.join(
         ui.each(footer, function(btn, i)
           local is_selected = selected and i == selected
           local is_hovered = hovered and i == hovered
-          local style = button_component.button_style(theme, btn, is_selected, is_hovered)
+          local style = ui.style(
+            button_styles(palette, {
+              variant = DIALOG_VARIANTS[btn.kind] and btn.kind or "default",
+              selected = is_selected,
+              hovered = is_hovered,
+            }).dialog,
+            radius
+          )
           style.id = btn.id or ("dialog:btn:" .. i)
           style.on_click = btn.on_click
 

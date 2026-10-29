@@ -49,6 +49,10 @@ describe("UI styles", function()
     assert.same({
       muted = { fg = "muted" },
       title = { fg = "title", bold = true },
+      label = { fg = "title" },
+      empty = { fg = "empty" },
+      counter = { fg = "counter" },
+      key_hint = { fg = "panel_border", bold = true },
       pill = { radius = 4, padding = { x = 4 } },
       badge = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } },
       kbd = { fg = "fg", bg = "input_bg", radius = 3, padding = { x = 4 } },
@@ -86,14 +90,9 @@ describe("UI styles", function()
     assert.equals("muted", base.fg)
   end)
 
-  it("retains themed_style as the same helper for existing configs", function()
-    assert.equals(hollow.ui.styled, hollow.ui.themed_style)
+  it("resolves styled tokens into fresh tables", function()
     local base = { fg = "muted", hover = { bg = "hover_bg" }, padding = { x = 4 } }
     local palette = { muted = "#111111", hover_bg = "#222222" }
-    assert.same(
-      hollow.ui.styled(palette, base, false, { padding = { right = 0 } }),
-      hollow.ui.themed_style(palette, base, false, { padding = { right = 0 } })
-    )
     local resolved = hollow.ui.styled(palette, base)
     resolved.hover.bg = "#ffffff"
     resolved.padding.left = 99

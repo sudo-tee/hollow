@@ -1,4 +1,5 @@
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.notify")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -11,7 +12,8 @@ local overlay_stack = state.ui.overlay_stack
 ui.notify = ui.notify or {}
 
 local function notification_style(theme, level)
-  return { fg = theme.notify_levels[level] or theme.title, bold = true }
+  local variant = styles.slots.message.variants[level] and level or nil
+  return styles(theme, { variant = variant }).message
 end
 
 ---@param level string|nil

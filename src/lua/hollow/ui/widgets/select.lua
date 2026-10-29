@@ -1,5 +1,6 @@
-local list_style = require("hollow.ui.widgets.list_style")
+local list_row = require("hollow.ui.styles.list_row")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.select")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -10,30 +11,6 @@ local ui = hollow.ui
 ui.select = ui.select or {}
 
 local DEFAULT_TOTAL_ROWS = 14
-local TITLE = ui.styles.title
-local KEY_HINT = { fg = "panel_border", bold = true }
-local MUTED = ui.styles.muted
-local EMPTY = { fg = "empty" }
-local DETAIL_INDENT = { padding = list_style.row_padding }
-local COUNTER = { fg = "counter" }
-local HINT_SEPARATOR = { fg = "divider" }
-
-local function entry_styles(theme, selected, hovered)
-  return {
-    label = {
-      fg = util.state_value(selected, hovered, theme.selection_fg, theme.hover_fg, theme.fg),
-    },
-    detail = {
-      fg = util.state_value(
-        selected,
-        hovered,
-        theme.selected_muted,
-        theme.selected_muted,
-        theme.detail
-      ),
-    },
-  }
-end
 
 ---@param opts HollowUiSelectOptions
 ---@return HollowUiTheme
@@ -173,7 +150,7 @@ end
 ---@param theme HollowUiTheme
 ---@return HollowUiRowNode
 local function render_empty_row(theme)
-  return ui.row({ ui.text("No matches", ui.styled(theme, EMPTY)) })
+  return ui.row({ ui.text("No matches", styles(theme).empty) })
 end
 
 ---@param entry HollowUiSelectEntry
@@ -184,25 +161,22 @@ end
 ---@param query string
 ---@return HollowUiRows
 local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options, query)
-  local styles = entry_styles(theme, is_selected, is_hovered)
-  local match_style = ui.styled(theme, KEY_HINT)
+  local s = styles(theme, { selected = is_selected, hovered = is_hovered })
+  local row_s = list_row(theme, { selected = is_selected, hovered = is_hovered })
   local label_nodes = {
-    list_style.indicator(ui, theme, is_selected, is_hovered),
-    shared.highlight_inline_nodes(entry.label_nodes, query, match_style),
+    ui.text("  ", row_s.indicator),
+    shared.highlight_inline_nodes(entry.label_nodes, query, s.match),
   }
 
   return ui.column({
-    ui.row(
-      { ui.group(label_nodes, styles.label) },
-      list_style.row(row_options, theme, is_selected, is_hovered)
-    ),
+    ui.row({ ui.group(label_nodes, s.label) }, util.merge_tables(row_options, row_s.paint)),
     ui.when(entry.detail_text and entry.detail_text ~= "", function()
       return ui.row({
         ui.group({
-          ui.span("   ", ui.style(DETAIL_INDENT, styles.detail)),
-          shared.highlight_inline_nodes(entry.detail_nodes, query, match_style),
-        }, styles.detail),
-      }, list_style.row(row_options, theme, is_selected, is_hovered))
+          ui.span("   ", s.detail_indent),
+          shared.highlight_inline_nodes(entry.detail_nodes, query, s.match),
+        }, s.detail),
+      }, util.merge_tables(row_options, row_s.paint))
     end),
   }).children
 end
@@ -211,6 +185,7 @@ end
 ---@param theme HollowUiTheme
 ---@return HollowUiRows|nil
 local function render_hint_rows(actions, theme)
+  local s = styles(theme)
   local hints = hollow
     .tbl(actions)
     :filter_map(function(action, index)
@@ -219,8 +194,8 @@ local function render_hint_rows(actions, theme)
         return
       end
       return {
-        ui.text(normalize_hint_chord(key_hint), ui.styled(theme, KEY_HINT)),
-        ui.text(" " .. (action.desc or action.name or "action"), ui.styled(theme, MUTED)),
+        ui.text(normalize_hint_chord(key_hint), s.key_hint),
+        ui.text(" " .. (action.desc or action.name or "action"), s.muted),
       }
     end)
     :get()
@@ -229,7 +204,7 @@ local function render_hint_rows(actions, theme)
     return nil
   end
 
-  local hint_nodes = ui.join(hints, ui.text("  ", ui.styled(theme, HINT_SEPARATOR)))
+  local hint_nodes = ui.join(hints, ui.text("  ", s.hint_separator))
   return { ui.divider(theme.divider), ui.row(hint_nodes) }
 end
 
@@ -309,6 +284,7 @@ function ui.select.open(opts)
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
       local viewport = selectable.visible_range()
+      local s = styles(render_theme)
       local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
       local entry_rows = hollow.tbl
         .range(viewport.start_idx, viewport.end_idx)
@@ -319,7 +295,7 @@ function ui.select.open(opts)
           return render_entry_rows(
             entry,
             index == nav.index,
-            list_style.hovered(state, row_id),
+            shared.node_state(state, row_id).hovered,
             render_theme,
             row_options,
             filter.value
@@ -329,12 +305,12 @@ function ui.select.open(opts)
 
       local rows = {
         ui.row({
-          ui.text((opts.prompt or "Select") .. ":", ui.styled(render_theme, TITLE)),
-          ui.text(counter and ("  " .. counter) or "", ui.styled(render_theme, COUNTER)),
+          ui.text((opts.prompt or "Select") .. ":", s.title),
+          ui.text(counter and ("  " .. counter) or "", s.counter),
         }),
         ui.divider(render_theme.divider),
         ui.row({
-          ui.text("Filter: ", ui.styled(render_theme, TITLE)),
+          ui.text("Filter: ", s.title),
           ui.group(filter.render(render_theme)),
         }),
         ui.divider(render_theme.divider),

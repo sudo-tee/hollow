@@ -7,9 +7,20 @@ local hollow = require("tests.harness").boot().hollow
 local shared = require("hollow.ui.shared")
 local palette = shared.palette("select")
 local style = hollow.ui.action_button({ id = "run", text = "Run" }).style
+-- Older branches paint list rows through `hollow.ui.widgets.list_style`.
+local has_list_style, list_style = pcall(require, "hollow.ui.widgets.list_style")
+local function row_paint(options, selected, hovered)
+  if has_list_style then
+    return list_style.row(options, palette, selected, hovered)
+  end
+  local paint = require("hollow.ui.styles.list_row")(palette, {
+    selected = selected,
+    hovered = hovered,
+  }).paint
+  return hollow.util.merge_tables(options, paint)
+end
 -- --components is also runnable on the pre-unification branch for comparison.
 if arg[1] == "--components" then
-  local list = require("hollow.ui.widgets.list_style")
   local function render(count)
     for i = 1, count do
       local action = hollow.ui.action_button({ id = "run", text = "Run", theme = palette })
@@ -24,7 +35,7 @@ if arg[1] == "--components" then
       for _, node in ipairs(shared.flatten_span_nodes(tab.children)) do
         shared.style_to_segment(node.text, node.style, palette)
       end
-      list.row({}, palette, i % 2 == 0, i % 3 == 0)
+      row_paint({}, i % 2 == 0, i % 3 == 0)
     end
   end
   for _, count in ipairs({ 25, 100, 500 }) do
@@ -60,7 +71,6 @@ if arg[1] == "--components" then
 end
 if arg[1] == "--overlay" then
   local ui = hollow.ui
-  local list = require("hollow.ui.widgets.list_style")
   for _, count in ipairs({ 25, 100, 500 }) do
     ui.overlay.push(ui.overlay.new({
       chrome = shared.theme_overlay_chrome(palette),
@@ -76,7 +86,7 @@ if arg[1] == "--overlay" then
               theme = palette,
               badge = { text = 2, color = "#123456" },
             }),
-          }, list.row({ id = "row:" .. i }, palette, i % 2 == 0, i % 3 == 0))
+          }, row_paint({ id = "row:" .. i }, i % 2 == 0, i % 3 == 0))
         end
         return ui.column(rows)
       end,
@@ -112,17 +122,10 @@ if arg[1] == "--overlay" then
   end
   return
 end
-local snapshot = shared.compute_style(palette, style)
-local function measure(count, mode)
+local function measure(count)
   local function run()
     for _ = 1, count do
-      if mode == "recompute" then
-        shared.computed_style_to_segment("Run", shared.compute_style(palette, style), "run")
-      elseif mode == "reuse" then
-        shared.computed_style_to_segment("Run", snapshot, "run")
-      else
-        shared.style_to_segment("Run", style, palette)
-      end
+      shared.style_to_segment("Run", style, palette)
     end
   end
   for _ = 1, 100 do
@@ -149,10 +152,6 @@ local function measure(count, mode)
   return samples[4], bytes
 end
 for _, count in ipairs({ 25, 100, 500 }) do
-  for _, mode in ipairs({ "legacy", "recompute", "reuse" }) do
-    local ms, bytes = measure(count, mode)
-    print(
-      string.format("%d nodes %s: %.3f ms/batch, %.0f allocated bytes/node", count, mode, ms, bytes)
-    )
-  end
+  local ms, bytes = measure(count)
+  print(string.format("%d nodes: %.3f ms/batch, %.0f allocated bytes/node", count, ms, bytes))
 end

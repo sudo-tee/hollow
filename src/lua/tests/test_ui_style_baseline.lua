@@ -10,17 +10,20 @@ describe("styling unification baseline", function()
 
   it("preserves legacy row paint with selection taking priority over hover", function()
     local ui = hollow.ui
-    local list_style = require("hollow.ui.widgets.list_style")
+    local list_row = require("hollow.ui.styles.list_row")
     local theme = {
       selection_bg = "#112233",
       hover_bg = "#223344",
       panel_border = "#334455",
+      selected_detail_bg = "#010203",
       scrollbar_track = "#445566",
       scrollbar_thumb = "#556677",
     }
     for _, selected in ipairs({ false, true }) do
       for _, hovered in ipairs({ false, true }) do
-        local options = list_style.row({ id = "row" }, theme, selected, hovered, "#010203")
+        local paint =
+          list_row(theme, { variant = "section", selected = selected, hovered = hovered })
+        local options = hollow.util.merge_tables({ id = "row" }, paint.paint)
         ui.overlay.push(ui.overlay.new({
           render = function()
             return ui.row({ ui.text("Choice", { fg = "#abcdef" }) }, options)

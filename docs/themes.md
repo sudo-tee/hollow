@@ -42,6 +42,30 @@ See [surface and native part paint](reference/lua/ui.md#surface-and-native-part-
   accents to the palette's primary color. Inline styles and legacy paint aliases
   retain their documented final precedence.
 
+- `styles` overrides built-in component slots, keyed by stylesheet then slot.
+  It merges like `parts` (`widgets.all.styles`, then the widget kind):
+
+  ```lua
+  widgets = {
+    all = { styles = { button = { root = { radius = 6 } } } },
+    select = {
+      styles = {
+        select = { label = { fg = "title", selected = { bold = true } } },
+        list_row = { paint = { selected = { fill_bg = "primary_bg" } } },
+      },
+    },
+  }
+  ```
+
+  A slot layer may nest `variants`, `sizes` and the states `hovered`,
+  `selected`, `pressed`, `focus_visible` and `disabled`. Each step applies the
+  sheet's rule first, then the theme's, so a themed base color does not mask
+  state colors. Call-site paint (status colors, workspace hashes, explicit
+  `style` options) stays final. Unknown sheets, slots, variants and tokens raise.
+  Sheets and slots are listed in `src/lua/hollow/ui/styles/`; the workspace
+  switcher and bottom bar resolve against their derived palettes and read
+  `widgets.select.styles` and `widgets.all.styles` respectively.
+
 `selection_bg` / `selection_fg` color tabs and selectable-row recipes.
 `selected_bg` / `selected_fg` are distinct tokens used by dialog-button emphasis;
 they are not aliases. Set the pair appropriate to the control you are restyling.

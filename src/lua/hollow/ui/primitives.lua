@@ -1,4 +1,6 @@
+local button_styles = require("hollow.ui.styles.button")
 local shared = require("hollow.ui.shared")
+local tab_styles = require("hollow.ui.styles.tab")
 local util = require("hollow.util")
 
 ---@type Hollow
@@ -7,14 +9,7 @@ local hollow = _G.hollow
 local ui = hollow.ui
 ui.style = shared.merge_styles
 
----@type HollowUiStylePresets
-ui.styles = {
-  muted = { fg = "muted" },
-  title = { fg = "title", bold = true },
-  pill = { radius = 4, padding = { x = 4 } },
-  badge = { fg = "panel_bg", bold = true, radius = 4, padding = { x = 5, y = 1 } },
-  kbd = { fg = "fg", bg = "input_bg", radius = 3, padding = { x = 4 } },
-}
+ui.styles = require("hollow.ui.styles.common")
 
 local bar = ui.bar or {}
 ui.bar = bar
@@ -209,9 +204,13 @@ function ui.button(opts)
 
   local style
   if opts.variant or opts.size then
-    style = shared.resolve_component_style("button", opts.theme or shared.palette("select"), opts, {
+    local theme = opts.theme or shared.palette("select")
+    local s = button_styles(theme, {
+      variant = opts.variant,
+      size = opts.size,
       disabled = opts.disabled == true,
-    }, opts.style)
+    })
+    style = ui.styled(theme, s.root, opts.style)
   else
     style = type(opts.style) == "table" and clone_table(opts.style) or {}
   end
@@ -240,18 +239,17 @@ function ui.styled(theme, ...)
   return theme and shared.resolve_tokens(style, theme) or style
 end
 
---- Compatibility alias for the alternate documented helper name.
-ui.themed_style = ui.styled
-
 --- A padded overlay action with theme-aware hover styling.
 ---@param opts HollowUiActionButtonOptions
 ---@return HollowUiSpanNode
 function ui.action_button(opts)
   opts = opts or {}
   local theme = select_theme(opts)
-  local style = shared.resolve_component_style("button", theme, opts, {
+  local style = button_styles(theme, {
+    variant = opts.variant,
+    size = opts.size,
     disabled = opts.disabled == true,
-  })
+  }).root
   local hover = style.hover
   for key, value in pairs(opts.style or {}) do
     if key ~= "hover" then
@@ -297,12 +295,10 @@ function ui.tab(opts)
     ui.button({
       id = opts.id,
       text = badge and (opts.label .. " ") or opts.label,
-      style = shared.resolve_component_style(
-        "tab",
-        theme,
-        { badged = not not badge },
-        { selected = active }
-      ),
+      style = tab_styles(theme, {
+        variant = badge and "badged" or nil,
+        selected = active,
+      }).root,
       on_click = opts.on_click,
     }),
     ui.when(badge, function()

@@ -9,32 +9,14 @@ describe("unified component styling", function()
     shared = require("hollow.ui.shared")
   end)
 
-  it("has deterministic state priority with final instance overrides", function()
-    local layers = {}
-    local state = {}
-    for i, key in ipairs({ "hovered", "selected", "pressed", "focus_visible", "disabled" }) do
-      layers[key] = { radius = i, padding = { right = i } }
-      state[key] = true
-      local actual = shared.resolve_style_states({ radius = 0, padding = 8 }, layers, state)
-      assert.equals(i, actual.radius)
-      assert.same({ top = 8, right = i, bottom = 8, left = 8 }, actual.padding)
-    end
-    local override = { radius = 9, bold = false }
-    local actual = shared.resolve_style_states({}, layers, state, override)
-    assert.equals(9, actual.radius)
-    assert.is_false(actual.bold)
-    actual.radius = 99
-    assert.equals(9, override.radius)
-  end)
-
   it("preserves legacy row states for partial themes, including missing selected paint", function()
-    local list = require("hollow.ui.widgets.list_style")
+    local list_row = require("hollow.ui.styles.list_row")
     local partial = { hover_bg = "#112233" }
-    local row = list.row({}, partial, true, true, "#abcdef")
+    local row = list_row(partial, { variant = "section", selected = true, hovered = true }).paint
     assert.is_nil(row.fill_bg)
     assert.is_nil(row.accent_bar)
     assert.equals(4, row.fill_radius)
-    assert.equals("#112233", list.row({}, partial, false, true).fill_bg)
+    assert.equals("#112233", list_row(partial, { hovered = true }).paint.fill_bg)
   end)
 
   it("supports semantic variants and sizes while preserving raw buttons", function()
@@ -64,7 +46,7 @@ describe("unified component styling", function()
       ui.action_button({ size = "large" })
     end, "hollow.ui: unknown button size large")
     assert.has_error(function()
-      shared.resolve_component_style("list_row", palette, { variant = "typo" })
+      local _ = require("hollow.ui.styles.list_row")(palette, { variant = "typo" }).paint
     end, "hollow.ui: unknown list_row variant typo")
   end)
 
@@ -248,26 +230,13 @@ describe("unified component styling", function()
     local palette = shared.palette("select")
     local expected = require("hollow.color").brighten_hex_color("#102030", 0.25, "#000000")
     assert.equals(expected, palette.button_emphasis_bg)
-    assert.equals(
-      expected,
-      shared.resolve_component_style(
-        "button",
-        palette,
-        { presentation = "dialog" },
-        { selected = true }
-      ).bg
-    )
+    assert.equals(expected, harness.dialog_button_style(palette, "default", true, false).bg)
     hollow.config.set({
       theme = { ui = { widgets = { all = { button_emphasis_bg = "#abcdef" } } } },
     })
     assert.equals(
       "#abcdef",
-      shared.resolve_component_style(
-        "button",
-        shared.palette("select"),
-        { presentation = "dialog" },
-        { selected = true }
-      ).bg
+      harness.dialog_button_style(shared.palette("select"), "default", true, false).bg
     )
   end)
 
@@ -423,14 +392,12 @@ describe("unified component styling", function()
   end)
 
   it("shares finite surface pixel normalization without changing span fractions", function()
-    assert.equals(2, shared.normalize_surface_px(2.9, 0))
-    assert.equals(0, shared.normalize_surface_px(-1, 0))
-    assert.equals(7, shared.normalize_surface_px(math.huge, 7))
-    assert.equals(7, shared.normalize_surface_px(0 / 0, 7))
-    assert.same(
-      { top = 2, bottom = 2, left = 5, right = 5 },
-      shared.normalize_surface_box({ 2.9, 5.8 })
-    )
+    local box = require("hollow.ui.style.box")
+    assert.equals(2, box.px(2.9, 0, true))
+    assert.equals(0, box.px(-1, 0, true))
+    assert.equals(7, box.px(math.huge, 7, true))
+    assert.equals(7, box.px(0 / 0, 7, true))
+    assert.same({ top = 2, bottom = 2, left = 5, right = 5 }, box.normalize({ 2.9, 5.8 }, true))
     assert.equals(2.9, shared.normalize_segment_padding(2.9).top)
   end)
 end)

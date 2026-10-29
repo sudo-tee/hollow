@@ -3,8 +3,6 @@
 --- Returns a normalized button spec with auto-generated id.
 --- Ids are stable when provided, allowing dynamic widget usage.
 
-local shared = require("hollow.ui.shared")
-
 local M = {}
 
 local counter = 0
@@ -34,22 +32,6 @@ function M.button(opts)
     kind = opts.kind or "default",
     on_click = opts.on_click,
   }
-end
-
----@param theme table
----@param btn HollowUiDialogButton
----@param selected boolean
----@param hovered boolean
----@return { fg: string, bg?: string, bold?: boolean, radius: integer }
-function M.button_style(theme, btn, selected, hovered)
-  local variant = btn.kind
-  if variant ~= "primary" and variant ~= "destructive" then
-    variant = "default"
-  end
-  return shared.resolve_component_style("button", theme, {
-    presentation = "dialog",
-    variant = variant,
-  }, { selected = selected, hovered = hovered })
 end
 
 return M

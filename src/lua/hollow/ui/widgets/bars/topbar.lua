@@ -1,5 +1,6 @@
 local attention = require("hollow.ui.widgets.attention")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.topbar")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui
@@ -11,15 +12,6 @@ local DEFAULT_SHIFTED_NEW_TAB_TEXT = ""
 local DEFAULT_TOPBAR_LAYOUT = {
   padding = { left = 1, right = 1, top = 1, bottom = 1 },
 }
-local NEW_TAB = {
-  bg = "tab_inactive_bg",
-  fg = "tab_inactive_fg",
-  radius = 4,
-  padding = { left = 5, right = 5, top = 1, bottom = 2 },
-  margin = { left = 1 },
-  hover = { bg = "tab_hover_bg", fg = "tab_hover_fg" },
-}
-local NEW_TAB_SHIFTED = { padding = { left = 2, right = 7 } }
 
 function M.resolved_theme()
   return shared.resolve_topbar_theme()
@@ -69,10 +61,7 @@ local function configured_topbar_separator(value)
     return nil
   end
 
-  local theme = shared.resolve_theme()
-  value.style = M.merge_tables({
-    fg = theme.ui.widgets.all.divider,
-  }, value.style)
+  value.style = M.merge_tables(styles(shared.bar_palette()).divider, value.style)
   return ui.text(text, value.style)
 end
 
@@ -122,7 +111,8 @@ local function configured_topbar_new_tab(value)
 
   local options = type(value) == "table" and value or {}
   local id = options.id or "new-tab-button"
-  local style = M.merge_tables(ui.styled(shared.bar_palette(), NEW_TAB), options.style)
+  local s = styles(shared.bar_palette())
+  local style = M.merge_tables(s.new_tab, options.style)
   style.id = id
 
   return ui.bar.custom({
@@ -131,10 +121,7 @@ local function configured_topbar_new_tab(value)
     render = function()
       local shifted = state.ui.topbar_hovered_id == id and state.ui.topbar_hovered_shifted
       if shifted then
-        return ui.span(
-          options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT,
-          ui.style(NEW_TAB_SHIFTED)
-        )
+        return ui.span(options.shifted_text or DEFAULT_SHIFTED_NEW_TAB_TEXT, s.new_tab_shifted)
       end
       return options.text or DEFAULT_NEW_TAB_TEXT
     end,

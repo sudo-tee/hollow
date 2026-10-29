@@ -3,13 +3,11 @@ local harness = require("tests.harness")
 
 describe("UI builder styles", function()
   local hollow
-  local button_component
   local color
 
   before_each(function()
     local env = harness.boot()
     hollow = env.hollow
-    button_component = require("hollow.ui.builder.components.button")
     color = require("hollow.color")
   end)
 
@@ -56,15 +54,15 @@ describe("UI builder styles", function()
     }
 
     for _, case in ipairs(cases) do
-      local button = { kind = case.kind }
-      assert.same(case.normal, button_component.button_style(theme, button, false, false))
-      assert.same(case.emphasized, button_component.button_style(theme, button, true, false))
-      assert.same(case.emphasized, button_component.button_style(theme, button, false, true))
+      local style = harness.dialog_button_style
+      assert.same(case.normal, style(theme, case.kind, false, false))
+      assert.same(case.emphasized, style(theme, case.kind, true, false))
+      assert.same(case.emphasized, style(theme, case.kind, false, true))
     end
   end)
 
   it("uses default radius when theme radius is absent", function()
-    assert.equals(4, button_component.button_style({ fg = "#010203" }, {}, false, false).radius)
+    assert.equals(4, harness.dialog_button_style({ fg = "#010203" }, nil, false, false).radius)
   end)
 
   it("adapts legacy dialog body forms with default foreground", function()

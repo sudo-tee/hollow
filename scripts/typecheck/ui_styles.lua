@@ -1,9 +1,10 @@
 -- EmmyLua Rust authoring fixture. Not an application module or runtime test.
 ---@param ui HollowUi
 ---@param palette HollowUiTheme
----@param styles HollowWorkspaceItemStyles
+---@param styles table<string, HollowUiNodeStyle>
 ---@param color HollowColorModule
-local function check(ui, palette, styles, color)
+---@param sheet HollowUiStylesheet
+local function check(ui, palette, styles, color, sheet)
   ---@type HollowUiNodeStyle
   local base = {
     fg = "muted",
@@ -35,7 +36,12 @@ local function check(ui, palette, styles, color)
   -- EmmyLua widens a generic boolean fallback to boolean, not a literal false.
   ---@type string|boolean|nil
   local suppressed = color.brighten_hex_color(false, 0.2, false)
-  return { group, themed, button, row, colors, hex, suppressed }
+  local view = sheet(palette, { selected = true })
+  ---@type HollowUiNodeStyle
+  local label = view.label
+  ---@type HollowUiNodeStyle
+  local detail = ui.style(view.detail, { fg = "#ff0000", bold = true })
+  return { group, themed, button, row, colors, hex, suppressed, label, detail }
 end
 
 return check

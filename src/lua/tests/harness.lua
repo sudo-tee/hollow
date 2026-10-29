@@ -784,6 +784,37 @@ local function make_host_api()
     end
 end
 
+-- Render a one-button dialog footer and return the button's paint style.
+function harness.dialog_button_style(theme, kind, selected, hovered)
+  local dialog = require("hollow.ui.builder.components.dialog")
+  local tree = dialog.dialog({
+    footer = { { text = "B", kind = kind } },
+    selected = selected and 1 or nil,
+    hovered = hovered and 1 or nil,
+  }, theme)
+  local function find(node)
+    if type(node) ~= "table" then
+      return nil
+    end
+    if node.text == " B " then
+      return node.style
+    end
+    for _, child in ipairs(node.children or node) do
+      local found = find(child)
+      if found then
+        return found
+      end
+    end
+  end
+  local style = {}
+  for k, v in pairs(assert(find(tree), "dialog button not found")) do
+    if k ~= "id" and k ~= "on_click" then
+      style[k] = v
+    end
+  end
+  return style
+end
+
 function harness.boot()
   reset_modules()
 

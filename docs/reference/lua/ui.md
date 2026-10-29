@@ -241,8 +241,7 @@ local style = ui.style(BASE, active and ACTIVE)
 
 `ui.styled(theme, ...)` applies the same merge and eagerly resolves
 tokens against supplied theme. With `theme == nil`, it behaves like `ui.style`
-and leaves tokens for normal rendering-time resolution. `ui.themed_style` remains
-an alias for compatibility; use `ui.styled` in new code. `style.hover` is
+and leaves tokens for normal rendering-time resolution. `style.hover` is
 applied by overlay rendering when an identified node is hovered. Give overlay
 spans a non-empty `style.id`, or use `ui.button({ id = ..., ... })`. Bars may
 assign automatic ids. Row-level hover remains controlled separately through

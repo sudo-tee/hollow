@@ -1,42 +1,102 @@
 # Shared UI styling
 
 The styling unification lives in one PR against `feat/declarative-ui`.
-`ui.styled` is the canonical public merge/token helper; `ui.themed_style` is a
-compatibility alias. There is no public recipe registry or variants DSL.
+`ui.style` / `ui.styled` are the public merge/token helpers. There is no public
+recipe registry or variants DSL.
 
-## Flat computed style
+## Style core
 
-The initial nested `text`/`box`/`layout` prototype added copying and allocation
-cost. The implementation instead uses a flat internal visual contract matching
-the existing span protocol: `fg`, `bg`, `bold`, `border`, `border_size`, `radius`,
-`background_extend`, and normalized `padding`. Pure snapshots can also contain
-`margin`; the span adapter omits that field because spans have no margin.
+The style core lives in `src/lua/hollow/ui/style/`:
 
-`shared.compute_style(palette, ...)` merges explicit layers and returns a fresh
-visual snapshot. It reuses the same normalization function as live
-`style_to_segment`; that serializer writes directly into its final output, with
-no intermediate snapshot. Identity and callbacks stay on nodes, outside paint.
-`computed_style_to_segment` copies snapshots before attaching text and identity.
-These are private helpers, also useful for inspecting styles in Lua tests.
+| Module | Owns |
+| --- | --- |
+| `box.lua` | One CSS-like box parser (`parse`, `normalize`, `px`). Spans keep fractions; surfaces pass `integer = true`. |
+| `tokens.lua` | The single color-field list, dotted-token lookup, typo hints. |
+| `sheet.lua` | Layer merging (`merge`, behind `ui.style`) and per-component stylesheets. |
 
-Colors use the existing strict token resolver, including dotted paths and typo
-hints. A supplied partial palette is authoritative: explicit unknown tokens
-error. Recipe defaults read optional palette fields directly so missing optional
-colors preserve legacy behavior. `nil` means absent, never clear; false color
-overrides suppress earlier colors. False boxes reset spacing to zero. Absent
-boxes stay absent. Constants, palettes and caller style tables are not mutated.
+Spans serialize through `shared.style_to_segment` with the flat span protocol:
+`fg`, `bg`, `bold`, `border`, `border_size`, `radius`, `background_extend` and
+normalized `padding`. Identity and callbacks stay on nodes, outside paint.
 
-Span padding retains fractions. Bar/chrome pixel dimensions floor values and
-clamp negative or non-finite input through one shared surface normalizer.
-Their existing sizing units, hit geometry and truncation rules are unchanged.
+Colors use the strict token resolver, including dotted paths and typo hints.
+`nil` means absent, never clear; false color overrides suppress earlier colors.
+False boxes reset spacing to zero. Absent boxes stay absent. Constants,
+palettes and caller style tables are not mutated.
+
+## Stylesheets
+
+A component's visual policy lives in a plain Lua table of named slots under
+`src/lua/hollow/ui/styles/<component>.lua`. Slot colors are palette tokens.
+Slots can nest state layers (`hovered`, `selected`, `pressed`,
+`focus_visible`, `disabled`), `variants` and `sizes`:
+
+```lua
+local common = require("hollow.ui.styles.common")
+local sheet = require("hollow.ui.style.sheet")
+
+return sheet.define("select", {
+  title = common.title,
+  label = {
+    fg = "fg",
+    hovered = { fg = "hover_fg" },
+    selected = { fg = "selection_fg" },
+  },
+})
+```
+
+Components bind a palette and props, then read slots:
+
+```lua
+local s = styles(theme, { selected = is_selected, hovered = is_hovered })
+ui.text(label, s.label)                         -- memoized for this view
+ui.span(name, ui.style(s.pill, { bg = colors.bg }))  -- dynamic hex color
+```
+
+Resolution order is base, variant, size, then each state in the order above
+(base/variant/size layer of that state). Sheet tokens missing from a partial
+palette resolve to nil, matching old optional-field reads. A palette is
+required. `sheet:check(palette)` strictly validates every token; tests run it
+against the bundled themes. `hollow.ui.styles` exposes the shared presets from
+`styles/common.lua`.
+
+Sheets hold tokens; call sites only layer concrete hex colors. Keep layout
+math, node construction, dynamic colors (workspace hashes, program status) and
+event handling in the component, and layer dynamic colors with
+`ui.style(s.slot, { fg = hex })`. A token-based choice that depends on state
+belongs in the sheet as a variant. `ui.styled(theme, ...)` is for plugins and
+user-supplied styles that may carry tokens (e.g. `ui.button`'s `style`). Tokens accept `"a|b"` fallbacks for optional palette fields
+(`"muted|fg"`), ending in a literal if needed (`"parts.scrollbar.track|#5a6375"`).
+Palette values that are themselves tokens resolve again, so theme `parts` work
+as tokens (`"parts.list_row.accent|panel_border"`); a `false` part suppresses
+the color.
+
+| Sheet | Used by |
+| --- | --- |
+| `button` | `ui.button` variants/sizes, `ui.action_button` (`root`), dialog buttons (`dialog`) |
+| `tab` | `ui.tab` (`badged` variant) |
+| `list_row` | built-in list rows (`paint` options, `indicator`, `section_indicator`), raw row `variant`s (`root`), shared `row_gap`/`section_gap` |
+| `panel` | overlay chrome from `shared.theme_overlay_chrome` |
+| `select`, `palette`, `mux_navigator`, `activity` | the matching widgets |
+| `workspace`, `bottombar` | widgets resolving against their derived palettes |
+| `topbar` | top-bar divider, new-tab button and attention button (bar palette; `attention` label against the select palette, `variant` = level) |
+| `notify` | notification text (`variant` = level) |
+
+Themes override slots through `palette.styles.<sheet>.<slot>` (from
+`theme.ui.widgets.<kind>.styles`, see [themes](themes.md)). At each step
+(base, variant, size, each state) the theme layer follows the sheet's; call-site
+layers follow both. Theme sections are validated strictly the first time a
+sheet resolves against a palette.
+
+Partial dialog palettes lacking `button_emphasis_bg` get it derived in
+`builder/components/dialog.lua` before resolving. Sheets compose through
+`other.slots.<slot>` (e.g. `list_row.slots.section_gap`).
 
 ## Recipes and states
 
-Private `shared.resolve_component_style` owns button, tab, list-row and panel
-recipes. Dialog buttons and action buttons use the same button recipe with
-legacy presentation defaults; their existing colors and geometry are retained.
-Select, palette and mux-navigator rows share the list-row recipe. Panel chrome
-uses the panel recipe. Presets remain plain constants where that is simpler.
+The `button`, `tab`, `list_row` and `panel` sheets own the shared component
+recipes. Dialog buttons use the `dialog` slot; their existing colors and
+geometry are retained. Select, palette, activity and mux-navigator rows share
+`list_row`. Presets remain plain constants where that is simpler.
 
 State order is base/variant/size, hovered, selected, pressed, focus-visible,
 disabled, then explicit instance override. State comes from existing event or
@@ -265,32 +325,9 @@ the supported false override. Spacing annotations include fractional pixels,
 CSS-order arrays and false resets. Token completions list built-in names while
 still allowing custom palette keys.
 
-A private stylesheet module per substantial component is a useful next step,
-not a new styling framework. It should export typed constants or pure functions
-returning named style slots, keep constants immutable, and resolve supplied
-palettes at render time. Keep layout calculations, node construction and event
-handlers in the component. For example:
-
-```lua
--- A private workspace_styles.lua module; extraction is separate from typing.
-local ui = _G.hollow.ui
-local M = {}
----@type HollowUiNodeStyle
-local DOMAIN_PILL = { radius = 4 }
-
----@param colors HollowUiColorPair
----@return HollowUiNodeStyle
-function M.domain_pill(colors)
-  return ui.style(DOMAIN_PILL, { fg = colors.fg, bg = colors.bg })
-end
-
-return M
-```
-
-Do not create a file for every one-field style. Extract when it meaningfully
-separates a component's visual policy from its structure. New embedded Lua
-modules must also be registered in `src/lua_bridge.zig`. No runtime extraction
-or public recipe API is introduced by this typing pass.
+Per-component stylesheets are described in [Stylesheets](#stylesheets).
+`attention` and `notify` keep one-line dynamic color helpers. New embedded Lua
+modules must be registered in `src/lua_bridge.zig`.
 
 Run `emmylua_check scripts/typecheck --warnings-as-errors` for focused authoring
 fixtures. Repository-wide analysis still has unrelated existing diagnostics.

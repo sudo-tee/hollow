@@ -1,3 +1,4 @@
+local box = require("hollow.ui.style.box")
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
@@ -26,9 +27,6 @@ local function next_bar_auto_id()
   bar_auto_id_counter = bar_auto_id_counter + 1
   return "bar:auto:" .. bar_auto_id_counter
 end
--- Keep one surface normalization contract for bars and overlays.
-local normalize_px = shared.normalize_surface_px
-local normalize_box = shared.normalize_surface_box
 
 ---@param style any
 ---@return table|nil
@@ -82,7 +80,7 @@ local function serialize_bar_value(surface, value, fallback_text, style)
   local text_style = serialize_bar_text_style(resolved_style)
   if type(value) == "table" and type(value.style) == "table" then
     merged_style =
-      shared.merge_style_tables(resolved_style, resolve_bar_hover_style(surface, value.style))
+      shared.merge_styles(resolved_style, resolve_bar_hover_style(surface, value.style))
   end
 
   local segments =
@@ -102,8 +100,8 @@ end
 function M.layout(widget)
   local layout = type(widget.layout) == "table" and widget.layout or {}
   return {
-    padding = normalize_box(layout.padding),
-    margin = normalize_box(layout.margin),
+    padding = box.normalize(layout.padding, true),
+    margin = box.normalize(layout.margin, true),
   }
 end
 
@@ -354,7 +352,7 @@ local function serialize_workspace(surface, node, ctx, handlers)
   end
   style = resolve_bar_hover_style(surface, style)
   if format_style.bg ~= nil or format_style.fg ~= nil then
-    style = shared.merge_style_tables(style, format_style)
+    style = shared.merge_styles(style, format_style)
   end
 
   local segment = serialize_bar_value(surface, text, workspace_state.name, style)

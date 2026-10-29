@@ -1,8 +1,9 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_style = require("hollow.ui.widgets.list_style")
+local list_row = require("hollow.ui.styles.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.activity")
 local util = require("hollow.util")
 local hollow = _G.hollow
 local ui = hollow.ui
@@ -11,22 +12,7 @@ ui.activity = {}
 
 local DEFAULT_WIDTH = 100
 local DEFAULT_HEIGHT = 24
-local PILL_PADDING = { left = 8, right = 8, top = 3, bottom = 3 }
-local PILL = { radius = 4, padding = PILL_PADDING }
-local TITLE = ui.styles.title
-local MUTED = ui.styles.muted
-local LABEL = { fg = "title" }
-local COUNTER = { fg = "counter" }
-local READ = { fg = "muted", bold = false }
-local PRIMARY = { bold = true }
-local SELECTED_DETAIL = { fg = "selected_muted" }
-local EMPTY = { fg = "empty" }
-local SUCCESS = { fg = "notify_levels.success" }
-local BADGE_COLORS = { error = "notify_levels.error", warn = "notify_levels.warn" }
-local PILL_GAP = { padding = PILL_PADDING }
-local DISMISS_GAP = { padding = { left = 4, right = 4 } }
-
-local SECTION_GAP = list_style.section_padding
+local BADGE_LEVELS = { error = true, warn = true }
 local LEVEL_RANK = { info = 1, success = 1, warn = 2, error = 3 }
 local SECTIONS = { tasks = "Tasks", commands = "Commands", today = "Today", earlier = "Earlier" }
 
@@ -113,10 +99,11 @@ local function hint_row(theme, text)
   for key, label in text:gmatch("(%S+) ([^%s]+)") do
     hints[#hints + 1] = { key = key, label = label }
   end
+  local s = styles(theme)
   return ui.row(ui.each(hints, function(hint)
     return {
-      ui.text(hint.key, ui.styled(theme, TITLE)),
-      ui.text(" " .. hint.label .. "   ", ui.styled(theme, MUTED)),
+      ui.text(hint.key, s.title),
+      ui.text(" " .. hint.label .. "   ", s.muted),
     }
   end))
 end
@@ -151,29 +138,18 @@ local function entry_styles(theme, entry, row_state, columns, seconds)
   local read = entry.pending == false and not entry.started_ms
   local accent = state_color(theme, entry)
   local status_like = entry.kind == "program" or entry.source == "shell_command"
-  local selected, fg = row_state.selected, row_state.fg
+  local selected = row_state.selected
+  local s = styles(theme, {
+    variant = read and "read" or nil,
+    selected = selected,
+    hovered = row_state.hovered,
+  })
   return {
-    marker = ui.styled(theme, MUTED, not read and { fg = accent or fg }),
-    primary = ui.styled(
-      theme,
-      PRIMARY,
-      { fg = fg },
-      read and READ,
-      read and selected and { fg = fg }
-    ),
-    secondary = ui.styled(
-      theme,
-      MUTED,
-      selected and SELECTED_DETAIL,
-      status_like and accent and { fg = accent }
-    ),
+    marker = ui.style(s.marker, not read and { fg = accent or row_state.fg }),
+    primary = s.primary,
+    secondary = ui.style(s.secondary, status_like and accent and { fg = accent }),
     stale = { fg = columns.stale },
-    time = ui.styled(
-      theme,
-      MUTED,
-      seconds >= 3600 and { fg = columns.stale },
-      selected and { fg = fg }
-    ),
+    time = ui.style(s.time, seconds >= 3600 and not selected and { fg = columns.stale }),
   }
 end
 
@@ -483,13 +459,13 @@ function ui.activity.open(opts)
   local function render_details()
     return ui.column({
       ui.row({
-        ui.text("Activity details", ui.styled(theme, TITLE)),
+        ui.text("Activity details", styles(theme).title),
         ui.spacer(),
         ui.action_button({
           id = "activity:copy",
           text = copy_feedback or "Copy",
           theme = theme,
-          style = LABEL,
+          style = styles(theme).label,
           on_click = copy,
         }),
       }),
@@ -509,7 +485,7 @@ function ui.activity.open(opts)
       end
     end
     return ui.row({
-      ui.text("Activity  ", ui.styled(theme, TITLE)),
+      ui.text("Activity  ", styles(theme).title),
       ui.tab_bar({
         theme = theme,
         tabs = {
@@ -519,7 +495,7 @@ function ui.activity.open(opts)
             active = view == "inbox",
             badge = summary.count > 0 and {
               text = tostring(summary.count),
-              color = BADGE_COLORS[worst] or "title",
+              color = BADGE_LEVELS[worst] and theme.notify_levels[worst] or theme.title,
             } or nil,
             on_click = function()
               return set_view("inbox")
@@ -541,7 +517,7 @@ function ui.activity.open(opts)
           id = "activity:dismiss-all",
           text = "Dismiss all",
           theme = theme,
-          style = MUTED,
+          style = styles(theme).muted,
           on_click = function()
             return hollow.activity.dismiss_all()
           end,
@@ -573,15 +549,13 @@ function ui.activity.open(opts)
   end
 
   local function render_category_row(entry, row_state)
-    local selected, hovered, fg = row_state.selected, row_state.hovered, row_state.fg
+    local selected, hovered = row_state.selected, row_state.hovered
+    local s = styles(theme, { selected = selected })
     return ui.row({
-      list_style.indicator(ui, theme, selected, hovered, nil, list_style.section_indicator_padding),
-      ui.text(
-        (entry.expanded and icons.expanded or icons.collapsed) .. " ",
-        ui.styled(theme, MUTED, { padding = SECTION_GAP }, selected and { fg = fg })
-      ),
-      ui.text(entry.title, ui.styled(theme, TITLE, selected and { fg = fg })),
-      ui.text(" (" .. entry.count .. ")", ui.styled(theme, COUNTER, selected and { fg = fg })),
+      ui.text("  ", list_row(theme, { selected = selected }).section_indicator),
+      ui.text((entry.expanded and icons.expanded or icons.collapsed) .. " ", s.category_arrow),
+      ui.text(entry.title, s.category_title),
+      ui.text(" (" .. entry.count .. ")", s.category_count),
     }, row_state.options)
   end
 
@@ -590,11 +564,11 @@ function ui.activity.open(opts)
       return ui.when(workspace ~= "", function()
         local colors = shared.workspace_colors(entry.workspace, columns.color_fn)
         return {
-          ui.text(workspace, ui.style(PILL, { fg = colors.fg, bg = colors.bg })),
+          ui.text(workspace, ui.style(styles(theme).pill, { fg = colors.fg, bg = colors.bg })),
           ui.text(string.rep(" ", columns.pill_width - util.utf8_len(workspace))),
         }
       end, function()
-        return ui.text(string.rep(" ", columns.pill_width), ui.style(PILL_GAP))
+        return ui.text(string.rep(" ", columns.pill_width), styles(theme).pill_gap)
       end)
     end)
   end
@@ -605,13 +579,13 @@ function ui.activity.open(opts)
         id = "activity:dismiss:" .. entry.id,
         text = "×",
         theme = theme,
-        style = ui.styled(theme, MUTED, row_state.selected and { fg = row_state.fg }),
+        style = styles(theme, { selected = row_state.selected }).dismiss,
         on_click = function()
           return hollow.activity.dismiss(entry.id)
         end,
       })
     end, function()
-      return ui.text(" ", ui.style(DISMISS_GAP))
+      return ui.text(" ", styles(theme).dismiss_gap)
     end)
   end
 
@@ -630,20 +604,20 @@ function ui.activity.open(opts)
     primary = util.truncate_end(primary, budget)
     local rest = budget - util.utf8_len(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
-    local styles = entry_styles(theme, entry, row_state, columns, seconds)
+    local entry_s = entry_styles(theme, entry, row_state, columns, seconds)
     return ui.row({
-      list_style.indicator(ui, theme, selected, hovered),
+      ui.text("  ", list_row(theme, { selected = selected }).indicator),
       ui.text(indent),
-      ui.text(marker(entry), styles.marker),
-      ui.text(primary, styles.primary),
-      ui.text(secondary and " · " or "", ui.styled(theme, MUTED)),
-      ui.text(secondary or "", styles.secondary),
+      ui.text(marker(entry), entry_s.marker),
+      ui.text(primary, entry_s.primary),
+      ui.text(secondary and " · " or "", styles(theme).muted),
+      ui.text(secondary or "", entry_s.secondary),
       ui.spacer(),
-      ui.text(entry.pane_closed and "pane closed  " or "", styles.stale),
+      ui.text(entry.pane_closed and "pane closed  " or "", entry_s.stale),
       render_workspace_pill(entry, workspace, columns),
       ui.text(
         "  " .. string.rep(" ", columns.time_width - util.utf8_len(time)) .. time,
-        styles.time
+        entry_s.time
       ),
       ui.text("  "),
       render_dismiss_button(entry, row_state),
@@ -660,9 +634,9 @@ function ui.activity.open(opts)
         options = options,
         selected = selected,
         hovered = hovered,
-        fg = util.state_value(selected, hovered, theme.selection_fg, theme.hover_fg, theme.fg),
+        fg = styles(theme, { selected = selected, hovered = hovered }).row.fg,
       }
-      list_style.row(options, theme, selected, hovered)
+      util.merge_tables(options, list_row(theme, { selected = selected, hovered = hovered }).paint)
       if entry.header_category then
         return render_category_row(entry, row_state)
       end
@@ -673,7 +647,7 @@ function ui.activity.open(opts)
   local function render_search()
     return ui.when(searching, function()
       return {
-        ui.row({ ui.text("/ ", ui.styled(theme, LABEL)), ui.group(filter.render(theme)) }),
+        ui.row({ ui.text("/ ", styles(theme).label), ui.group(filter.render(theme)) }),
         ui.divider(theme.divider),
       }
     end)
@@ -686,7 +660,7 @@ function ui.activity.open(opts)
           filter.value ~= "" and "No matching activity"
             or view == "inbox" and "All caught up"
             or "No activity recorded",
-          ui.styled(theme, EMPTY)
+          styles(theme).empty
         ),
       })
     end)
@@ -694,7 +668,7 @@ function ui.activity.open(opts)
 
   local function render_footer()
     return ui.when(copy_feedback, function()
-      return ui.row({ ui.text(copy_feedback, ui.styled(theme, SUCCESS)) })
+      return ui.row({ ui.text(copy_feedback, styles(theme).success) })
     end, function()
       return hint_row(
         theme,

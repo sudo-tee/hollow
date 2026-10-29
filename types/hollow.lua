@@ -111,9 +111,11 @@
 ---@field tab? {active?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, inactive?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, selection_accent?: HollowColor|HollowStyleToken}
 ---@field scrollbar? {track?: HollowColor|HollowStyleToken, thumb?: HollowColor|HollowStyleToken}
 ---@field list_row? {accent?: HollowColor|HollowStyleToken|false} Selected row accent and built-in selection indicator; false suppresses accent.
+---@alias HollowUiThemeStyles table<string, table<string, HollowUiNodeStyle|table>> Built-in stylesheet slot overrides by sheet then slot; layers may nest `variants`, `sizes` and state tables.
 
 ---@class HollowUiTheme
 ---@field parts? HollowUiPaintParts Native component paint defaults, separate from geometry.
+---@field styles? HollowUiThemeStyles Built-in component slot overrides, e.g. `{ select = { label = { fg = "title" } } }`.
 ---@field button_emphasis_bg? HollowColor Default dialog-button emphasis, derived after widget overrides.
 ---@field panel_bg? HollowColor
 ---@field panel_border? HollowColor
@@ -2224,6 +2226,10 @@ local workspace = {}
 ---@class HollowUiStylePresets
 ---@field muted HollowStyle
 ---@field title HollowStyle
+---@field label HollowStyle
+---@field empty HollowStyle
+---@field counter HollowStyle
+---@field key_hint HollowStyle
 ---@field pill HollowStyle
 ---@field badge HollowStyle
 ---@field kbd HollowStyle
@@ -2304,12 +2310,6 @@ function ui.style(...) end
 ---@param ... HollowStyleLayer
 ---@return HollowStyle
 function ui.styled(theme, ...) end
-
---- Compatibility alias for ui.styled.
----@param theme HollowUiTheme|nil
----@param ... HollowStyleLayer
----@return HollowStyle
-function ui.themed_style(theme, ...) end
 
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode

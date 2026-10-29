@@ -5,6 +5,7 @@ local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
 local source = require("hollow.ui.workspace.source")
+local styles = require("hollow.ui.styles.workspace")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
 
@@ -24,12 +25,11 @@ local DEFAULT_COLUMN_GAP = 2
 local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
----@type HollowUiNodeStyle
-local DOMAIN_PILL = { radius = 4 }
----@type HollowUiNodeStyle
-local BOLD = { bold = true }
----@type HollowUiNodeStyle
-local PLAIN = { bold = false }
+local CWD_FALLBACK = {
+  active = "Current workspace",
+  open = "Open workspace",
+  known = "Known workspace",
+}
 
 ---@class (exact) HollowWorkspaceItemPalette
 ---@field fg? HollowColor
@@ -39,17 +39,7 @@ local PLAIN = { bold = false }
 ---@field user? HollowColor
 ---@field bell? HollowColor
 ---@field bell_error? HollowColor
-
----@class (exact) HollowWorkspaceItemStyles
----@field status HollowUiNodeStyle
----@field gap HollowUiNodeStyle
----@field name HollowUiNodeStyle
----@field badge HollowUiNodeStyle
----@field cwd HollowUiNodeStyle
-
----@class (exact) HollowWorkspaceTopbarStyles
----@field edge HollowUiNodeStyle
----@field name HollowUiNodeStyle
+---@field styles? HollowUiThemeStyles
 
 ---@return HollowUiWorkspaceSwitcherState
 local function switcher_state()
@@ -66,50 +56,17 @@ end
 local function derived_palette()
   local theme = shared.resolve_theme()
   local palette = theme.palette
+  local select = theme_api.resolve_widget("select")
   return {
     fg = palette.foreground,
     muted = color.darken_hex_color(palette.foreground, 0.35, palette.foreground),
     subtle = color.brighten_hex_color(palette.background, 0.35, palette.foreground),
     open = palette.bright_green,
     user = palette.bright_blue,
-    bell = theme_api.resolve_widget("select").notify_levels.warn,
-    bell_error = theme_api.resolve_widget("select").notify_levels.error,
+    bell = select.notify_levels.warn,
+    bell_error = select.notify_levels.error,
+    styles = select.styles,
   }
-end
-
----@param workspace HollowUiWorkspaceItem
----@param palette HollowWorkspaceItemPalette
----@return HollowWorkspaceItemStyles
-local function item_styles(workspace, palette)
-  local attention = workspace.has_bell or workspace.program_status_attention
-  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
-    or palette.bell
-  return {
-    status = {
-      fg = attention and bell or (workspace.is_active and palette.open or palette.subtle),
-      bold = attention or workspace.is_active,
-    },
-    gap = { fg = palette.subtle },
-    name = {
-      fg = util.state_value(
-        workspace.is_active,
-        workspace.is_open,
-        palette.open,
-        palette.user,
-        palette.muted
-      ),
-      bold = workspace.is_active,
-    },
-    badge = ui.style(BOLD, { fg = program_status.color(workspace.program_status_state) }),
-    cwd = ui.style(PLAIN, { fg = palette.subtle }),
-  }
-end
-
----@param colors HollowUiColorPair
----@return HollowUiNodeStyle
-local function domain_pill_style(colors)
-  -- Color callbacks supply paint only, never pill geometry or interaction.
-  return ui.style(DOMAIN_PILL, { fg = colors.fg, bg = colors.bg })
 end
 
 ---@param workspace HollowUiWorkspaceItem
@@ -119,7 +76,10 @@ local function default_format_item(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local palette = derived_palette()
-  local styles = item_styles(workspace, palette)
+  local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
+  local s = styles(palette, { variant = variant })
+  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
+    or palette.bell
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
@@ -135,13 +95,7 @@ local function default_format_item(workspace, domain_width)
 
   local cwd_text = source.trim_string(workspace.cwd)
   if cwd_text == "" then
-    cwd_text = util.state_value(
-      workspace.is_active,
-      workspace.is_open,
-      "Current workspace",
-      "Open workspace",
-      "Known workspace"
-    )
+    cwd_text = CWD_FALLBACK[variant]
   end
 
   local domain = source.normalize_domain(workspace.domain)
@@ -151,21 +105,17 @@ local function default_format_item(workspace, domain_width)
     {
       text = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
       width = status_width,
-      style = styles.status,
+      style = ui.style(s.status, attention and { fg = bell, bold = true }),
     },
-    { text = "", width = gap_width, style = styles.gap },
-    {
-      text = workspace.name,
-      width = name_width,
-      style = styles.name,
-    },
-    { text = "", width = gap_width, style = styles.gap },
+    { text = "", width = gap_width, style = s.gap },
+    { text = workspace.name, width = name_width, style = s.name },
+    { text = "", width = gap_width, style = s.gap },
     {
       text = badge,
       width = badge_width,
-      style = styles.badge,
+      style = ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
     },
-    { text = cwd_text, width = cwd_width, style = styles.cwd },
+    { text = cwd_text, width = cwd_width, style = s.cwd },
   })
   return shared.normalize_inline_nodes({
     columns,
@@ -174,7 +124,7 @@ local function default_format_item(workspace, domain_width)
         ui.spacer(),
         ui.span(
           " " .. util.truncate_end(domain, domain_width - 3) .. " ",
-          domain_pill_style(domain_colors)
+          ui.style(s.domain_pill, { fg = domain_colors.fg, bg = domain_colors.bg })
         ),
       }
     end),
@@ -369,15 +319,6 @@ function ui.workspace.open_switcher(opts)
   })
 end
 
----@param style HollowUiNodeStyle
----@return HollowWorkspaceTopbarStyles
-local function topbar_part_styles(style)
-  return {
-    edge = { bg = style.bg, fg = color.brighten_hex_color(style.bg, 0.3, style.fg) },
-    name = ui.style(BOLD, { bg = style.bg, fg = style.fg }),
-  }
-end
-
 ---@param opts? HollowUiWorkspaceTopbarOptions
 ---@return HollowUiSpanNode|HollowUiSpanNode[]
 function ui.workspace.topbar_button(opts)
@@ -401,18 +342,18 @@ function ui.workspace.topbar_button(opts)
   end
 
   local parts = workspace_parts(opts.prefix, opts.suffix)
-  local styles = topbar_part_styles(style)
+  local edge = { bg = style.bg, fg = color.brighten_hex_color(style.bg, 0.3, style.fg) }
   return {
-    ui.span(parts.prefix, ui.style(styles.edge)),
+    ui.span(parts.prefix, ui.style(edge)),
     ui.button({
       text = parts.name,
-      style = styles.name,
+      style = ui.style({ bold = true, bg = style.bg, fg = style.fg }),
       id = opts.id or "workspace-switcher-button",
       on_click = function()
         ui.workspace.open_switcher(opts.switcher or {})
       end,
     }),
-    ui.span(parts.suffix, ui.style(styles.edge)),
+    ui.span(parts.suffix, ui.style(edge)),
   }
 end
 

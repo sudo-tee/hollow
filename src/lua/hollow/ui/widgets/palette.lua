@@ -1,6 +1,7 @@
 local icons = require("hollow.ui.icons")
-local list_style = require("hollow.ui.widgets.list_style")
+local list_row = require("hollow.ui.styles.list_row")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.palette")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -29,34 +30,6 @@ end
 
 local DEFAULT_TOTAL_ROWS = 24
 local DEFAULT_WIDTH = 100
-local SECTION_TITLE = { fg = "title", bold = true, padding = list_style.section_padding }
-local TITLE = ui.styles.title
-local MUTED = ui.styles.muted
-local KEY_HINT = { fg = "panel_border", bold = true }
-local DOMAIN_BULLET = { fg = "muted", bold = false }
-local DOMAIN_ACTIVE = { bold = true }
-local EMPTY = { fg = "empty" }
-local COUNTER = { fg = "counter" }
-
-local function entry_styles(theme, entry, selected, hovered)
-  local fg = util.state_value(selected, hovered, theme.selected_fg, theme.selected_fg, theme.fg)
-  local active_color = shared.resolve_theme().palette.bright_green
-  return {
-    bullet = ui.styled(
-      theme,
-      DOMAIN_BULLET,
-      entry.is_active and DOMAIN_ACTIVE,
-      entry.is_active and { fg = active_color }
-    ),
-    label = {
-      fg = entry.domain_name and entry.is_active and active_color or fg,
-      bold = entry.domain_name and entry.is_active,
-    },
-    right = { fg = theme.panel_border or theme.muted },
-    match = ui.styled(theme, KEY_HINT),
-  }
-end
-
 local function list_row_budget(opts)
   local total = shared.normalize_overlay_size(opts.height)
     or shared.normalize_overlay_size(opts.max_height)
@@ -270,26 +243,12 @@ local function render_section_header(
   row_options
 )
   local arrow = is_collapsed and icons.collapsed or icons.expanded
-  return ui.row(
-    {
-      list_style.indicator(
-        ui,
-        theme,
-        is_selected,
-        is_hovered,
-        nil,
-        list_style.section_indicator_padding
-      ),
-      ui.text(arrow .. " " .. label, ui.styled(theme, SECTION_TITLE)),
-    },
-    list_style.row(
-      row_options,
-      theme,
-      is_selected,
-      is_hovered,
-      theme.selected_detail_bg or theme.panel_bg
-    )
-  )
+  local row_s =
+    list_row(theme, { variant = "section", selected = is_selected, hovered = is_hovered })
+  return ui.row({
+    ui.text("  ", row_s.section_indicator),
+    ui.text(arrow .. " " .. label, styles(theme).section_title),
+  }, util.merge_tables(row_options, row_s.paint))
 end
 
 ---@param entry table
@@ -307,26 +266,28 @@ local function render_entry_row(entry, is_selected, is_hovered, theme, row_optio
       entry.domain_name and entry.display_name
       or (entry.desc ~= "" and entry.desc or entry.display_name)
     )
-  local styles = entry_styles(theme, entry, is_selected, is_hovered)
+  local s = styles(theme, { selected = is_selected, hovered = is_hovered })
+  local row_s = list_row(theme, { selected = is_selected, hovered = is_hovered })
+  local active = entry.is_active
+    and { fg = shared.resolve_theme().palette.bright_green, bold = true }
   local label_nodes = {
-    list_style.indicator(ui, theme, is_selected, is_hovered, "  "),
+    ui.text("    ", row_s.indicator),
     ui.when(entry.domain_name, function()
-      return ui.span(entry.is_active and "• " or "  ", styles.bullet)
+      return ui.span(entry.is_active and "• " or "  ", ui.style(s.bullet, active))
     end),
-    shared.highlight_inline_nodes({ ui.span(label_text, styles.label) }, query, styles.match),
+    shared.highlight_inline_nodes(
+      { ui.span(label_text, ui.style(s.label, entry.domain_name and active)) },
+      query,
+      s.match
+    ),
     ui.when(right_text ~= "", function()
       return {
         ui.spacer(),
-        ui.group(
-          shared.highlight_inline_nodes({ ui.span(right_text, styles.right) }, query, styles.match)
-        ),
+        ui.group(shared.highlight_inline_nodes({ ui.span(right_text, s.right) }, query, s.match)),
       }
     end),
   }
-  return ui.row(
-    { ui.group(label_nodes) },
-    list_style.row(row_options, theme, is_selected, is_hovered)
-  )
+  return ui.row({ ui.group(label_nodes) }, util.merge_tables(row_options, row_s.paint))
 end
 
 ---@param opts table|nil
@@ -385,7 +346,7 @@ function ui.command_palette.open(opts)
           local entry = flat[index]
           local row_id, row_options = selectable.row(index, index, visible_index, viewport)
           local is_selected = index == nav.index
-          local is_hovered = list_style.hovered(state, row_id)
+          local is_hovered = shared.node_state(state, row_id).hovered
           if entry._type == "header" then
             return render_section_header(
               theme,
@@ -408,27 +369,28 @@ function ui.command_palette.open(opts)
         end
       )
     end, function()
-      return ui.row({ ui.text("No matches", ui.styled(theme, EMPTY)) })
+      return ui.row({ ui.text("No matches", styles(theme).empty) })
     end)
 
+    local s = styles(theme)
     local rows = {
       ui.row({
-        ui.text((opts.prompt or "Command Palette") .. ":", ui.styled(theme, TITLE)),
-        ui.text(counter and ("  " .. counter) or "", ui.styled(theme, COUNTER)),
+        ui.text((opts.prompt or "Command Palette") .. ":", s.title),
+        ui.text(counter and ("  " .. counter) or "", s.counter),
       }),
       ui.divider(theme.divider),
       ui.row({
-        ui.text("Filter: ", ui.styled(theme, TITLE)),
+        ui.text("Filter: ", s.title),
         ui.group(filter.render(theme)),
       }),
       ui.divider(theme.divider),
       entry_rows,
       ui.divider(theme.divider),
       ui.row({
-        ui.text("<CR>", ui.styled(theme, KEY_HINT)),
-        ui.text(" execute  ", ui.styled(theme, MUTED)),
-        ui.text("<Esc>", ui.styled(theme, KEY_HINT)),
-        ui.text(" dismiss", ui.styled(theme, MUTED)),
+        ui.text("<CR>", s.key_hint),
+        ui.text(" execute  ", s.muted),
+        ui.text("<Esc>", s.key_hint),
+        ui.text(" dismiss", s.muted),
       }),
     }
     return ui.column(rows)

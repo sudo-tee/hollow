@@ -73,7 +73,7 @@ make run                  # non-Windows build + run
 
 Run `make help` for build, test, and benchmark commands. Pass options with
 `ARGS`, for example `make dev ARGS="--build-only"` or
-`make bench scroll ARGS="100"`. Existing scripts remain available directly.
+`make bench ARGS="scroll 100"`. Existing scripts remain available directly.
 
 Full build docs in [Development](docs/development.md).
 

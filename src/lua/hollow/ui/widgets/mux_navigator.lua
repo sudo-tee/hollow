@@ -1,8 +1,9 @@
 local color = require("hollow.color")
 local icons = require("hollow.ui.icons")
-local list_style = require("hollow.ui.widgets.list_style")
+local list_row = require("hollow.ui.styles.list_row")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.mux_navigator")
 local util = require("hollow.util")
 
 local hollow = _G.hollow
@@ -13,35 +14,25 @@ ui.mux_navigator = ui.mux_navigator or {}
 local DEFAULT_TOTAL_ROWS = 30
 local DEFAULT_WIDTH = 100
 local FILTER_ORDER = { "all", "pane_bell" }
-local TITLE = ui.styles.title
-local MUTED = ui.styles.muted
-local EMPTY = { fg = "empty" }
-local SUBTLE = { fg = "subtle" }
-local STATUS = { bold = true }
-
-local function row_styles(theme, row, selected, hovered, active, attention, value)
-  local row_fg = util.state_value(selected, hovered, theme.selected_fg, theme.hover_fg, theme.fg)
-  local base_prefix = row.kind == "pane" and theme.muted or theme.title
-  local prefix = util.state_value(selected, hovered, theme.selected_fg, theme.title, base_prefix)
-  local marker = row.kind == "pane"
-      and (attention and theme.notify_levels[program_status.attention_level({ row.item })] or (row.item.is_focused and theme.notify_levels.success or theme.muted))
-    or prefix
-  local value_fg = row.kind == "pane"
-      and value
-      and not selected
-      and not hovered
-      and theme.notify_levels.success
-    or row_fg
+local function row_styles(theme, row, selected, hovered, active, attention)
+  local s = styles(theme, { variant = row.kind, selected = selected, hovered = hovered })
+  local marker_fg
+  if row.kind == "pane" then
+    marker_fg = attention and theme.notify_levels[program_status.attention_level({ row.item })]
+      or (row.item.is_focused and theme.notify_levels.success or nil)
+  end
+  local emphasis = active and { bold = true }
   return {
-    prefix = { fg = prefix, bold = row.kind == "workspace" or selected or active },
-    marker = { fg = marker, bold = attention or active },
-    status = row.status_badge and ui.style(STATUS, { fg = program_status.color(row.status_state) }),
-    value = { fg = value_fg, bold = selected or active },
+    prefix = ui.style(s.prefix, emphasis),
+    marker = ui.style(
+      s.marker,
+      marker_fg and { fg = marker_fg },
+      (attention or active) and { bold = true }
+    ),
+    status = row.status_badge
+      and ui.style(s.status, { fg = program_status.color(row.status_state) }),
+    value = ui.style(s.value, emphasis),
   }
-end
-
-local function filter_style(theme, id)
-  return { fg = id == "pane_bell" and theme.notify_levels.warn or theme.muted }
 end
 
 local FILTERS = {
@@ -314,7 +305,7 @@ function ui.mux_navigator.open(opts)
           local row = rows[index]
           local row_id, options = selectable.row(index, row.key, visible_index, viewport)
           local selected = index == nav.index
-          local hovered = list_style.hovered(state, row_id)
+          local hovered = shared.node_state(state, row_id).hovered
           local active = row.item.is_active or row.item.is_focused
           local is_workspace = row.kind == "workspace"
           local branch = row.kind == "pane" and ""
@@ -331,60 +322,58 @@ function ui.mux_navigator.open(opts)
           local value = row.kind == "workspace" and nil
             or row.kind == "tab" and (row.item.title ~= "" and row.item.title or nil)
             or pane_value(row.item)
-          local styles = row_styles(theme, row, selected, hovered, active, pane_attention, value)
+          local row_s = row_styles(theme, row, selected, hovered, active, pane_attention)
           local detail = row_detail(row)
           local row_nodes = {
-            list_style.indicator(ui, theme, selected, hovered),
+            ui.text("  ", list_row(theme, { selected = selected }).indicator),
             ui.text(indent),
-            ui.text(branch, styles.prefix),
-            ui.text(marker, styles.marker),
-            ui.text(label, styles.prefix),
+            ui.text(branch, row_s.prefix),
+            ui.text(marker, row_s.marker),
+            ui.text(label, row_s.prefix),
             ui.when(row.status_badge, function()
-              return ui.text(" " .. row.status_badge, styles.status)
+              return ui.text(" " .. row.status_badge, row_s.status)
             end),
             ui.when(value ~= nil, function()
-              return ui.text(": " .. value, styles.value)
+              return ui.text(": " .. value, row_s.value)
             end),
             ui.when(detail ~= "", function()
               return {
                 ui.spacer(),
-                ui.text(detail, ui.styled(theme, MUTED)),
+                ui.text(detail, styles(theme).muted),
               }
             end, function()
               return ui.when(row.kind == "pane" and row.item.cwd ~= "", function()
-                return { ui.spacer(), ui.text(row.item.cwd, ui.styled(theme, SUBTLE)) }
+                return { ui.spacer(), ui.text(row.item.cwd, styles(theme).subtle) }
               end)
             end),
           }
 
-          list_style.row(
-            options,
-            theme,
-            selected,
-            hovered,
-            is_workspace and (theme.selected_detail_bg or theme.panel_bg) or nil
-          )
-
-          return ui.row(row_nodes, options)
+          local paint = list_row(theme, {
+            variant = is_workspace and "section" or nil,
+            selected = selected,
+            hovered = hovered,
+          }).paint
+          return ui.row(row_nodes, util.merge_tables(options, paint))
         end
       )
     end, function()
-      return ui.row({ ui.text("No matching panes", ui.styled(theme, EMPTY)) })
+      return ui.row({ ui.text("No matching panes", styles(theme).empty) })
     end)
 
+    local s = styles(theme)
     local search_row = ui.row({
-      ui.text("/ ", ui.styled(theme, TITLE)),
+      ui.text("/ ", s.title),
       ui.when(search_mode, function()
         return ui.group(filter.render(theme))
       end, function()
-        return ui.text("search panes", ui.styled(theme, MUTED))
+        return ui.text("search panes", s.muted)
       end),
       ui.spacer(),
       ui.text(
         filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
-        filter_style(theme, filter_id)
+        filter_id == "pane_bell" and s.filter_bell or s.filter
       ),
-      ui.text(pane_filter.label, ui.styled(theme, MUTED)),
+      ui.text(pane_filter.label, s.muted),
     })
     return ui.column({ search_row, ui.divider(theme.divider), tree_rows })
   end

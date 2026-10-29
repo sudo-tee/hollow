@@ -1,36 +1,11 @@
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.bottombar")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui
 local tbl = hollow.tbl
 local M = {}
-local CHIP = {
-  bold = true,
-  radius = 4,
-  padding = { left = 2, right = 2, top = 1, bottom = 1 },
-  margin = { right = 1 },
-}
-local KEY = { fg = "fg", bg = "hint_key_bg", bold = true, radius = 4, padding = { x = 1, y = 0 } }
-local SEARCH = {
-  bg = "copy_bg",
-  radius = 4,
-  padding = { x = 2, y = 1 },
-  margin = { right = 1 },
-}
-local MODE_STYLES = {
-  copy = ui.style(CHIP, { bg = "copy_bg", fg = "accent" }),
-  quick_select = ui.style(CHIP, { bg = "quick_select_bg", fg = "accent" }),
-  action = ui.style(CHIP, { bg = "chip_bg", fg = "chip_fg" }),
-  leader = ui.style(CHIP, { bg = "leader_bg", fg = "fg" }),
-}
-local LABEL = { fg = "muted" }
-local QUERY = { fg = "chip_fg" }
-local SELECTION = { fg = "accent", bold = true }
-local function counter_style(theme)
-  -- Special-mode palettes may omit counter; preserve the native text fallback.
-  return { fg = theme.counter }
-end
 function M.leader_state()
   local value = hollow.keymap.get_leader_state()
   return value and value.active and value or nil
@@ -68,6 +43,7 @@ local function special_mode_theme()
     muted = color.normalize_hex_color(all.muted, all.fg),
     divider = color.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
     counter = color.normalize_hex_color(all.counter, all.muted),
+    styles = all.styles,
     copy_bg = mode_copy_bg,
     quick_select_bg = color.normalize_hex_color(
       color.brighten_hex_color(base_bg, 0.12, base_bg),
@@ -79,39 +55,40 @@ local function special_mode_theme()
 end
 
 local function special_mode_chip(text, theme, kind)
-  return ui.span(text, ui.styled(theme, MODE_STYLES[kind]))
+  return ui.span(text, styles(theme, { variant = kind }).chip)
 end
 
 local function special_mode_key(text, theme)
-  return ui.span(text, ui.styled(theme, KEY))
+  return ui.span(text, styles(theme).key)
 end
 
 local function special_mode_hint(key, label, theme)
   return {
     special_mode_key(key, theme),
-    ui.span(" " .. label .. " ", ui.styled(theme, LABEL)),
+    ui.span(" " .. label .. " ", styles(theme).label),
   }
 end
 
 local function copy_mode_search_chip(copy_mode, theme)
+  local s = styles(theme)
   return ui.group({
     special_mode_key("/", theme),
-    ui.span(copy_mode.query ~= "" and copy_mode.query or "search", ui.styled(theme, QUERY)),
+    ui.span(copy_mode.query ~= "" and copy_mode.query or "search", s.query),
     ui.when(copy_mode.match_count > 0, function()
       return ui.span(
         string.format("  %d/%d", copy_mode.match_index or 0, copy_mode.match_count),
-        counter_style(theme)
+        s.counter
       )
     end, function()
       return ui.when(copy_mode.query ~= "", function()
-        return ui.span("  0/0", counter_style(theme))
+        return ui.span("  0/0", s.counter)
       end)
     end),
     ui.when(copy_mode.selecting, function()
-      return ui.span(copy_mode.block and "  BLK" or "  SEL", ui.styled(theme, SELECTION))
+      return ui.span(copy_mode.block and "  BLK" or "  SEL", s.selection)
     end),
     ui.span(" "),
-  }, ui.styled(theme, SEARCH))
+  }, s.search)
 end
 
 local function special_mode_legend(copy_mode, quick_select, theme)

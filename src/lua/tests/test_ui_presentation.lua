@@ -232,8 +232,8 @@ describe("shared presentation adapters", function()
       assert.equals("#161b22", shared.sidebar_surface_style(nil, palette).bg)
       assert.equals("#373a48", shared.tab_fallback_style(true, palette).bg)
       assert.equals("#23252e", shared.tab_fallback_style(false, palette).bg)
-      local list = require("hollow.ui.widgets.list_style")
-      local row = list.row({}, palette, true, false)
+      local list_row = require("hollow.ui.styles.list_row")
+      local row = list_row(palette, { selected = true }).paint
       assert.equals(palette.panel_border, row.accent_bar)
       assert.equals(palette.scrollbar_track, row.scrollbar_track_color)
       assert.equals(palette.scrollbar_thumb, row.scrollbar_thumb_color)
@@ -245,7 +245,7 @@ describe("shared presentation adapters", function()
   end)
 
   it("shares accent and scrollbar parts with built-in list recipes", function()
-    local list = require("hollow.ui.widgets.list_style")
+    local list_row = require("hollow.ui.styles.list_row")
     local palette = shared.merge_styles(shared.palette("overlay"), {
       parts = {
         list_row = { accent = "muted" },
@@ -253,19 +253,19 @@ describe("shared presentation adapters", function()
       },
     })
     local before = hollow.util.clone_value(palette)
-    local built = list.row({ scrollbar_track = true }, palette, true, false)
+    local built = list_row(palette, { selected = true }).paint
     local raw = ui.row({}, { variant = "selectable", selected = true, scrollbar_track = true })
     local paint = shared.serialize_row_paint(raw, palette)
     for _, key in ipairs({ "accent_bar", "scrollbar_track_color", "scrollbar_thumb_color" }) do
       assert.equals(built[key], paint[key])
     end
     assert.equals(palette.muted, paint.accent_bar)
-    assert.equals(palette.muted, list.indicator(ui, palette, true).style.fg)
+    assert.equals(palette.muted, list_row(palette, { selected = true }).indicator.fg)
     assert.same(before, palette)
 
     palette.parts.list_row.accent = false
-    assert.is_false(list.row({}, palette, true).accent_bar)
-    assert.is_false(shared.serialize_row_paint(raw, palette).accent_bar)
+    assert.is_nil(list_row(palette, { selected = true }).paint.accent_bar)
+    assert.is_nil(shared.serialize_row_paint(raw, palette).accent_bar)
     raw.accent_bar = "primary_bg"
     assert.equals(palette.primary_bg, shared.serialize_row_paint(raw, palette).accent_bar)
   end)
@@ -273,9 +273,9 @@ describe("shared presentation adapters", function()
   it(
     "retains semantic list scrollbars and literal raw-track fallback on partial palettes",
     function()
-      local list = require("hollow.ui.widgets.list_style")
+      local list_row = require("hollow.ui.styles.list_row")
       local palette = { scrollbar_track = "#123456", scrollbar_thumb = "#234567" }
-      local built = list.row({}, palette, false, false)
+      local built = list_row(palette).paint
       assert.equals("#123456", built.scrollbar_track_color)
       assert.equals("#234567", built.scrollbar_thumb_color)
       local paint = shared.serialize_row_paint({ scrollbar_track = true }, palette)
