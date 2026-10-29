@@ -3,8 +3,6 @@
 --- Returns a normalized button spec with auto-generated id.
 --- Ids are stable when provided, allowing dynamic widget usage.
 
-local color = require("hollow.color")
-
 local M = {}
 
 local counter = 0
@@ -34,40 +32,6 @@ function M.button(opts)
     kind = opts.kind or "default",
     on_click = opts.on_click,
   }
-end
-
----@param theme table
----@param btn HollowUiDialogButton
----@param selected boolean
----@param hovered boolean
----@return { fg: string, bg?: string, bold?: boolean, radius: integer }
-function M.button_style(theme, btn, selected, hovered)
-  local kind = btn.kind or "default"
-  local result = { radius = theme.radius or 4 }
-
-  if selected or hovered then
-    result.bold = true
-    if kind == "primary" then
-      result.fg = theme.primary_fg
-      result.bg = theme.primary_bg
-    elseif kind == "destructive" then
-      result.fg = theme.destructive_fg
-      result.bg = theme.destructive_bg
-    else
-      result.fg = theme.selected_fg
-      result.bg = color.brighten_hex_color(theme.selected_bg, 0.25, theme.panel_bg)
-    end
-  else
-    if kind == "primary" then
-      result.fg = theme.primary_bg
-    elseif kind == "destructive" then
-      result.fg = theme.destructive_bg
-    else
-      result.fg = theme.fg
-    end
-  end
-
-  return result
 end
 
 return M

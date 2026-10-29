@@ -147,6 +147,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "user32" fn SendMessageW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) isize;
     extern "user32" fn CallWindowProcW(lpPrevWndFunc: ?WNDPROC, hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
     extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: u32, wParam: usize, lParam: isize) callconv(.c) LRESULT;
+    extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: c_int) callconv(.c) i32;
+    const SW_HIDE: c_int = 0;
     extern "dwmapi" fn DwmExtendFrameIntoClientArea(hWnd: HWND, pMarInset: *const MARGINS) callconv(.c) i32;
     extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.c) i32;
     // winmm — multimedia timer resolution
@@ -656,6 +658,8 @@ const BarStyle = struct {
     fg: ?ghostty.ColorRgb = null,
     bg: ?ghostty.ColorRgb = null,
     border: ?ghostty.ColorRgb = null,
+    selection_accent: ?ghostty.ColorRgb = null,
+    alpha: ?u8 = null,
     close_fg: ?ghostty.ColorRgb = null,
     close_bg: ?ghostty.ColorRgb = null,
     close_hover_fg: ?ghostty.ColorRgb = null,
@@ -686,6 +690,7 @@ const BarSegmentView = struct {
 const BarTabView = struct {
     segment: bar.Segment = .{ .text = "" },
     style: BarStyle = .{},
+    fallback_style: BarStyle = .{},
     segments: [16]bar.Segment = @splat(.{ .text = "" }),
     segments_len: usize = 0,
     text_storage: [512]u8 = @splat(0),
@@ -693,6 +698,49 @@ const BarTabView = struct {
     segments_text_storage: [1024]u8 = @splat(0),
     segments_id_storage: [16][128]u8 = @splat(@splat(0)),
 };
+
+// Resolve paint independently of layout. Fallback metadata never supplies
+// padding, margins, radius or hit-target geometry.
+fn resolvedTabPaint(tab: *const BarTabView, active: bool) BarStyle {
+    var style = tab.style;
+    style.bg = style.bg orelse tab.segment.bg orelse tab.fallback_style.bg orelse ghostty.ColorRgb{
+        .r = if (active) 55 else 35,
+        .g = if (active) 58 else 37,
+        .b = if (active) 72 else 46,
+    };
+    style.fg = style.fg orelse tab.segment.fg orelse tab.fallback_style.fg orelse ghostty.ColorRgb{
+        .r = if (active) 255 else 185,
+        .g = if (active) 255 else 185,
+        .b = if (active) 255 else 185,
+    };
+    style.selection_accent = style.selection_accent orelse tab.fallback_style.selection_accent orelse ghostty.ColorRgb{ .r = 120, .g = 150, .b = 220 };
+    return style;
+}
+
+test "tab paint fallback precedence preserves explicit layout and resets cached paint" {
+    const testing = std.testing;
+    var tab = BarTabView{};
+    tab.style.padding.left = 7;
+    tab.style.margin.right = 3;
+    tab.segment.bg = .{ .r = 1, .g = 2, .b = 3 };
+    tab.fallback_style.bg = .{ .r = 4, .g = 5, .b = 6 };
+    tab.fallback_style.fg = .{ .r = 7, .g = 8, .b = 9 };
+    tab.fallback_style.padding.left = 100;
+    tab.fallback_style.radius = 20;
+    const paint = resolvedTabPaint(&tab, true);
+    try testing.expectEqual(tab.segment.bg.?, paint.bg.?);
+    try testing.expectEqual(tab.fallback_style.fg.?, paint.fg.?);
+    try testing.expectEqual(@as(f32, 7), paint.padding.left);
+    try testing.expectEqual(@as(f32, 3), paint.margin.right);
+    try testing.expectEqual(@as(f32, 0), paint.radius);
+    tab.style.bg = .{ .r = 10, .g = 11, .b = 12 };
+    try testing.expectEqual(tab.style.bg.?, resolvedTabPaint(&tab, false).bg.?);
+    resetBarTabView(&tab);
+    try testing.expect(tab.fallback_style.bg == null);
+    try testing.expect(tab.fallback_style.fg == null);
+    try testing.expectEqual(@as(u8, 55), resolvedTabPaint(&tab, true).bg.?.r);
+    try testing.expectEqual(@as(u8, 35), resolvedTabPaint(&tab, false).bg.?.r);
+}
 
 const BarItemKind = enum {
     spacer,
@@ -738,6 +786,7 @@ fn resetBarSegmentView(dst: *BarSegmentView) void {
 }
 
 fn resetBarTabView(dst: *BarTabView) void {
+    dst.fallback_style = .{};
     dst.segment = .{ .text = "" };
     dst.style = .{};
     dst.segments_len = 0;
@@ -793,6 +842,10 @@ fn barStyleField(api: Api, state: *State, table_idx: c_int, field: [*:0]const u8
     style.fg = lua_mod.parseColorField(api, state, style_idx, "fg");
     style.bg = lua_mod.parseColorField(api, state, style_idx, "bg");
     style.border = lua_mod.parseColorField(api, state, style_idx, "border");
+    style.selection_accent = lua_mod.parseColorField(api, state, style_idx, "selection_accent");
+    if (overlayRowNumberField(api, state, style_idx, "alpha")) |alpha| {
+        if (std.math.isFinite(alpha)) style.alpha = @as(u8, @intFromFloat(std.math.clamp(alpha, 0, 255)));
+    }
     style.close_fg = lua_mod.parseColorField(api, state, style_idx, "close_fg");
     style.close_bg = lua_mod.parseColorField(api, state, style_idx, "close_bg");
     style.close_hover_fg = lua_mod.parseColorField(api, state, style_idx, "close_hover_fg");
@@ -862,6 +915,7 @@ fn fillBarSegmentView(dst: *BarSegmentView, api: Api, state: *State, item_idx: c
 fn fillBarTabView(dst: *BarTabView, api: Api, state: *State, item_idx: c_int, text_buf: []u8, scratch: *BarWidgetScratch) void {
     resetBarTabView(dst);
     dst.style = barStyleField(api, state, item_idx, "style");
+    dst.fallback_style = barStyleField(api, state, item_idx, "fallback_style");
     const parsed = topBarSegmentFromLuaItem(api, state, item_idx, text_buf);
     const text_len = @min(parsed.text.len, dst.text_storage.len);
     fastmem.copy(u8, dst.text_storage[0..text_len], parsed.text[0..text_len]);
@@ -1314,7 +1368,37 @@ fn finalizeAndDrawOverlayScrollbars(stack_index: usize) void {
     }
 }
 
-fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment) void {
+// Shared paint interpretation for overlay and sidebar rows. Callers retain
+// their existing geometry and interaction ownership.
+const RowPaint = struct {
+    bg: ?ghostty.ColorRgb = null,
+    radius: f32 = 0,
+    accent: ?ghostty.ColorRgb = null,
+    divider: ?ghostty.ColorRgb = null,
+};
+
+fn rowPaintField(api: Api, state: *State, row_idx: c_int) RowPaint {
+    return .{
+        .bg = overlayRowColorField(api, state, row_idx, "fill_bg"),
+        .radius = overlayRowNumberField(api, state, row_idx, "fill_radius") orelse 0,
+        .accent = overlayRowColorField(api, state, row_idx, "accent_bar"),
+        .divider = overlayRowColorField(api, state, row_idx, "divider"),
+    };
+}
+
+fn drawRowPaint(renderer: *FtRenderer, x: f32, y: f32, text_y: f32, width: f32, height: f32, paint: RowPaint) void {
+    if (paint.bg) |bg| {
+        drawRoundedRect(x, y + 1.0, width, @max(@as(f32, 1.0), height - 2.0), paint.radius, bg.r, bg.g, bg.b, 255);
+    }
+    if (paint.accent) |accent| {
+        drawBorderRect(x, text_y + 2.0, 2.0, @max(@as(f32, 1.0), renderer.cell_h - 4.0), accent.r, accent.g, accent.b, 255);
+    }
+    if (paint.divider) |divider| {
+        drawBorderRect(x, text_y + renderer.cell_h * 0.5, width, 1.0, divider.r, divider.g, divider.b, 255);
+    }
+}
+
+fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segments: []const bar.Segment, default_fg: ?ghostty.ColorRgb) void {
     const cell_h = @max(@as(f32, 1.0), renderer.cell_h - 2.0);
     const text_y = y + bar.rowPadding(segments).top;
     var right_w: f32 = 0;
@@ -1356,7 +1440,7 @@ fn drawRowSegments(renderer: *FtRenderer, x: f32, y: f32, max_width: f32, segmen
         } else if (seg.bg) |bg| {
             drawBorderRect(seg_x, bg_y, bg_w, bg_h, bg.r, bg.g, bg.b, 220);
         }
-        const fg = seg.fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
+        const fg = seg.fg orelse default_fg orelse ghostty.ColorRgb{ .r = 220, .g = 220, .b = 220 };
         renderer.drawLabelFace(seg_x + seg.padding.left, text_y, seg.text, fg.r, fg.g, fg.b, if (seg.bold) 1 else 0);
         c.sgl_load_default_pipeline();
         cursor_x += seg_w;
@@ -1749,29 +1833,16 @@ fn renderBarWidgetSurface(surface: BarSurface, renderer: *FtRenderer, app: *App,
                     const bg_y = content_y + tab.style.margin.top + @max(@as(f32, 0.0), (content_h - tab.style.margin.vertical() - bg_h) * 0.5);
                     const bg_w = @max(@as(f32, 0.0), tab_w - tab.style.margin.horizontal());
 
-                    var bg_style = tab.style;
-                    if (bg_style.bg == null) {
-                        bg_style.bg = tab.segment.bg orelse ghostty.ColorRgb{
-                            .r = if (ti == active_idx) 55 else 35,
-                            .g = if (ti == active_idx) 58 else 37,
-                            .b = if (ti == active_idx) 72 else 46,
-                        };
-                    }
-                    if (bg_style.fg == null) {
-                        bg_style.fg = tab.segment.fg orelse ghostty.ColorRgb{
-                            .r = if (ti == active_idx) 255 else 185,
-                            .g = if (ti == active_idx) 255 else 185,
-                            .b = if (ti == active_idx) 255 else 185,
-                        };
-                    }
+                    const bg_style = resolvedTabPaint(tab, ti == active_idx);
 
                     cacheBarHitRegion(cache, tx, tab_w, null, 0.0, ti, tab.segment.id);
                     drawBarBackground(bg_x, bg_y, bg_w, bg_h, bg_style);
                     if (tab.style.radius <= 0 and tab.style.bg == null and tab.segment.bg == null and ti == active_idx) {
+                        const accent = bg_style.selection_accent.?;
                         if (surface == .top) {
-                            drawBorderRect(bg_x, bg_y, bg_w, @min(@as(f32, 2.0), bg_h), 120, 150, 220, 255);
+                            drawBorderRect(bg_x, bg_y, bg_w, @min(@as(f32, 2.0), bg_h), accent.r, accent.g, accent.b, 255);
                         } else {
-                            drawBorderRect(bg_x, bg_y + @max(@as(f32, 0.0), bg_h - 2.0), bg_w, @min(@as(f32, 2.0), bg_h), 120, 150, 220, 255);
+                            drawBorderRect(bg_x, bg_y + @max(@as(f32, 0.0), bg_h - 2.0), bg_w, @min(@as(f32, 2.0), bg_h), accent.r, accent.g, accent.b, 255);
                         }
                     }
 
@@ -1950,8 +2021,11 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
         const panel_x: f32 = if (sidebar_on_right) ctx.width - sidebar_width else 0.0;
         const panel_y: f32 = top_h;
         const panel_h: f32 = ctx.height - panel_y - bottom_h;
-        drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, 22, 27, 34, 235);
-        drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, 122, 162, 247, 255);
+        const sidebar_style = barStyleField(api, state, sidebar_idx, "style");
+        const sidebar_bg = sidebar_style.bg orelse ghostty.ColorRgb{ .r = 22, .g = 27, .b = 34 };
+        const sidebar_border = sidebar_style.border orelse ghostty.ColorRgb{ .r = 122, .g = 162, .b = 247 };
+        drawBorderRect(panel_x, panel_y, sidebar_width, panel_h, sidebar_bg.r, sidebar_bg.g, sidebar_bg.b, sidebar_style.alpha orelse 235);
+        drawBorderRect(panel_x, panel_y, sidebar_width, 1.0, sidebar_border.r, sidebar_border.g, sidebar_border.b, 255);
 
         api.get_field(state, sidebar_idx, "rows");
         if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
@@ -1966,7 +2040,18 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
                     const row_segments = lua_mod.parseSegmentArray(api, state, scratch.seg_buf_32[0..], scratch.text_buf[0..], absoluteIndex(api, state, -1));
                     const text_y = panel_y + ctx.renderer.cell_h * @as(f32, @floatFromInt(row_i));
-                    drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments);
+                    var row_paint = RowPaint{};
+                    api.get_field(state, sidebar_idx, "row_styles");
+                    if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
+                        api.rawgeti(state, -1, row_i);
+                        if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .table) {
+                            row_paint = rowPaintField(api, state, absoluteIndex(api, state, -1));
+                        }
+                        pop(api, state, 1);
+                    }
+                    pop(api, state, 1);
+                    drawRowPaint(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, text_y + bar.rowPadding(row_segments).top, sidebar_width - ctx.renderer.cell_w, ctx.renderer.cell_h, row_paint);
+                    drawRowSegments(ctx.renderer, panel_x + ctx.renderer.cell_w * 0.5, text_y, sidebar_width - ctx.renderer.cell_w, row_segments, sidebar_style.fg);
                 }
                 pop(api, state, 1);
             }
@@ -2266,7 +2351,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const padding = bar.rowPadding(row_segments);
                         const row_height = ctx.renderer.cell_h + padding.top + padding.bottom;
                         const text_y = row_y + padding.top;
-                        const row_divider = overlayRowColorField(api, state, row_idx, "divider");
+                        var row_paint = rowPaintField(api, state, row_idx);
                         const row_scrollbar_track = overlayRowBoolField(api, state, row_idx, "scrollbar_track");
                         const row_scrollbar_thumb = overlayRowBoolField(api, state, row_idx, "scrollbar_thumb");
                         const row_scrollbar_id = overlayRowStringField(api, state, row_idx, "scrollbar_id");
@@ -2277,13 +2362,14 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                         const row_x = content_x;
                         var label_buf: [ui_semantics.max_label_len]u8 = undefined;
                         const label = overlaySegmentsLabel(row_segments, &label_buf);
-                        var row_fill_bg = overlayRowColorField(api, state, row_idx, "fill_bg");
+                        var row_fill_bg = row_paint.bg;
+                        const row_hover_bg = overlayRowColorField(api, state, row_idx, "hover_bg") orelse OVERLAY_HOVER_BG;
                         const row_id = overlayRowStringField(api, state, row_idx, "id");
                         if (overlayRowBoolField(api, state, row_idx, "hoverable")) {
                             if (row_id) |id| {
                                 cacheOverlayHitRegion(id, label, row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0));
                                 if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, id, g_overlay_hovered_id.?)) {
-                                    row_fill_bg = OVERLAY_HOVER_BG;
+                                    row_fill_bg = row_hover_bg;
                                 }
                             } else {
                                 const pool_idx = g_overlay_hit_cache.hit_count;
@@ -2297,21 +2383,13 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                                         .height = @max(@as(f32, 1.0), row_height - 2.0),
                                     });
                                     if (row_fill_bg == null and g_overlay_hovered_id != null and std.mem.eql(u8, auto_id, g_overlay_hovered_id.?)) {
-                                        row_fill_bg = OVERLAY_HOVER_BG;
+                                        row_fill_bg = row_hover_bg;
                                     }
                                 }
                             }
                         }
-                        if (row_fill_bg) |bg| {
-                            const radius = overlayRowNumberField(api, state, row_idx, "fill_radius") orelse 0;
-                            drawRoundedRect(row_x, row_y + 1.0, row_w, @max(@as(f32, 1.0), row_height - 2.0), radius, bg.r, bg.g, bg.b, 255);
-                        }
-                        if (overlayRowColorField(api, state, row_idx, "accent_bar")) |accent| {
-                            drawBorderRect(row_x, text_y + 2.0, 2.0, @max(@as(f32, 1.0), ctx.renderer.cell_h - 4.0), accent.r, accent.g, accent.b, 255);
-                        }
-                        if (row_divider) |divider| {
-                            drawBorderRect(row_x, text_y + ctx.renderer.cell_h * 0.5, row_w, 1.0, divider.r, divider.g, divider.b, 255);
-                        }
+                        row_paint.bg = row_fill_bg;
+                        drawRowPaint(ctx.renderer, row_x, row_y, text_y, row_w, row_height, row_paint);
                         if (row_scrollbar_track) {
                             if (row_scrollbar_id) |id| {
                                 const hit_width = @max(@as(f32, 8.0), ctx.renderer.cell_w);
@@ -2333,7 +2411,7 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                             }
                         }
                         const seg_right_pad = if (row_scrollbar_track) @max(@as(f32, 8.0), ctx.renderer.cell_w) else 0.0;
-                        drawRowSegments(ctx.renderer, row_x, row_y, row_w - seg_right_pad, row_segments);
+                        drawRowSegments(ctx.renderer, row_x, row_y, row_w - seg_right_pad, row_segments, null);
                         row_y += row_height;
                         if (row_segments_idx != row_idx) pop(api, state, 1);
                     }
@@ -4499,10 +4577,58 @@ fn seamCoveredByFloating(leaves: []const LayoutLeaf, seam: PaneBounds) bool {
     return false;
 }
 
+/// Force-exits if app teardown stalls, so a hidden window cannot linger as a
+/// background process holding PTYs and the command-ipc address.
+const ShutdownWatchdog = struct {
+    const timeout_ns: u64 = 5 * std.time.ns_per_s;
+
+    mutex: std.Io.Mutex = .init,
+    done_condition: std.Io.Condition = .init,
+    done: bool = false,
+    thread: ?std.Thread = null,
+
+    fn start(self: *ShutdownWatchdog) void {
+        self.thread = std.Thread.spawn(.{}, watch, .{self}) catch null;
+    }
+
+    fn finish(self: *ShutdownWatchdog) void {
+        self.mutex.lockUncancelable(io.get());
+        self.done = true;
+        self.done_condition.signal(io.get());
+        self.mutex.unlock(io.get());
+        if (self.thread) |thread| thread.join();
+    }
+
+    fn watch(self: *ShutdownWatchdog) void {
+        self.mutex.lockUncancelable(io.get());
+        defer self.mutex.unlock(io.get());
+        const deadline = io.nanoTimestamp() + timeout_ns;
+        while (!self.done) {
+            const now = io.nanoTimestamp();
+            if (now >= deadline) {
+                std.log.err("shutdown watchdog: app teardown exceeded {d}ms; forcing exit", .{timeout_ns / std.time.ns_per_ms});
+                std.process.exit(0);
+            }
+            io.waitTimeout(&self.done_condition, &self.mutex, @intCast(deadline - now)) catch {};
+        }
+    }
+};
+
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
+    if (builtin.os.tag == .windows) {
+        // Sokol stops pumping messages before cleanup but destroys the window
+        // after it. Hide it so slow teardown cannot show a white
+        // "Not Responding" window.
+        if (c.sapp_win32_get_hwnd()) |hwnd_raw| {
+            _ = win32.ShowWindow(@ptrCast(@constCast(hwnd_raw)), win32.SW_HIDE);
+        }
+    }
     if (appFromUserData(user_data)) |app| {
         std.log.info("sokol cleanup: deinit via callback context", .{});
+        var watchdog: ShutdownWatchdog = .{};
+        watchdog.start();
+        defer watchdog.finish();
         app.deinit();
     }
     if (builtin.os.tag == .windows) {

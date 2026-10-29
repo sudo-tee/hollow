@@ -8,6 +8,72 @@ inline theme spec or load a custom module.
 For the API see [`hollow.theme`](reference/lua/theme.md).
 For UI colors used by widgets see
 [Custom UI → Widget theming](custom-ui.md#widget-theming).
+The full default widget-token list and bar-token sources are in the
+[`hollow.ui` styles reference](reference/lua/ui.md#styles).
+
+Widget palettes supply colors; internal component recipes decide when to use
+them. Override `theme.ui.widgets.all` for shared values and a widget-kind table
+for that kind. Per-instance styles are applied afterwards. The concrete
+`button_emphasis_bg` token defaults to the existing dialog-button emphasis,
+derived after widget overrides; explicit values win. Bar close-button part
+colors accept the same widget/bar token namespace as ordinary bar paint.
+Runtime theme changes invalidate cached palettes; component results are
+recomputed from the current palette. Already-open built-in widgets refresh their
+palette and default chrome while keeping explicit instance theme overrides.
+
+Native component-part paints can be overridden through
+`theme.ui.widgets.all.parts` or a widget-kind `parts` table. Sidebar surfaces,
+raw tab fallback colors/selection stripes, list accents and scrollbars consume
+these defaults. Their bundled values preserve the previous native appearance;
+colors can also bind to existing tokens. Explicit instance styles remain final.
+See [surface and native part paint](reference/lua/ui.md#surface-and-native-part-paint).
+
+### Token and override ownership
+
+- `theme.ui` owns application chrome and bar colors. Bar styles additionally
+  expose these through their documented bar tokens.
+- `theme.ui.widgets.all` supplies shared widget defaults; widget-kind palettes
+  override those values. Existing tokens such as `panel_bg`, `selected_bg` and
+  `primary_bg` describe colors, not component behavior.
+- Recipes privately select colors for supported component states. Use public
+  button variants/sizes and explicit row `selected`, not private recipe helpers.
+- `parts` customizes separate paint parts without changing placement or hit
+  targets. For example, `parts.list_row = { accent = "primary_bg" }` binds row
+  accents to the palette's primary color. Inline styles and legacy paint aliases
+  retain their documented final precedence.
+
+- `styles` overrides built-in component slots, keyed by stylesheet then slot.
+  It merges like `parts` (`widgets.all.styles`, then the widget kind):
+
+  ```lua
+  widgets = {
+    all = { styles = { button = { root = { radius = 6 } } } },
+    select = {
+      styles = {
+        select = { label = { fg = "title", selected = { bold = true } } },
+        list_row = { paint = { selected = { fill_bg = "primary_bg" } } },
+      },
+    },
+  }
+  ```
+
+  A slot layer may nest `variants`, `sizes` and the states `hovered`,
+  `selected`, `pressed`, `focus_visible` and `disabled`. Each step applies the
+  sheet's rule first, then the theme's, so a themed base color does not mask
+  state colors. Call-site paint (status colors, workspace hashes, explicit
+  `style` options) stays final. Unknown sheets, slots, variants and tokens raise.
+  Sheets and slots are listed in `src/lua/hollow/ui/styles/`; the workspace
+  switcher and bottom bar resolve against their derived palettes and read
+  `widgets.select.styles` and `widgets.all.styles` respectively.
+
+`selection_bg` / `selection_fg` color tabs and selectable-row recipes.
+`selected_bg` / `selected_fg` are distinct tokens used by dialog-button emphasis;
+they are not aliases. Set the pair appropriate to the control you are restyling.
+
+For plugin-local reuse, compose plain style constants with `ui.style` or
+`ui.styled`. No global recipe registration API is required. The
+[styling example](../examples/ui-styling.lua) shows public composition and live
+theme switching without copying theme-derivation code.
 
 ## Built-in themes
 
@@ -98,7 +164,7 @@ local theme = hollow.theme.current()
 `hollow.theme.resolve_widget(kind)` returns the resolved widget palette
 for `kind` (e.g. `"notify"`, `"input"`, `"select"`, `"workspace"`).
 The shipped notify, input, and select helpers resolve their colors from
-`theme.widgets.all` and per-widget sections, and can be overridden per
+`theme.ui.widgets.all` and per-widget sections, and can be overridden per
 call with `opts.theme` or `opts.chrome`.
 
 ## Hot tips

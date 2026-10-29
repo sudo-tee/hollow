@@ -1,0 +1,11 @@
+{
+  "runtime": {
+    "version": "LuaJIT"
+  },
+  "workspace": {
+    "library": ["../../types", "../../src/lua"]
+  },
+  "diagnostics": {
+    "libraryFiles": "Disable"
+  }
+}

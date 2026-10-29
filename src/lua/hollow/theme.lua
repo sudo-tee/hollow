@@ -26,6 +26,16 @@ local BRIGHT_COLOR_NAMES = {
 }
 
 local DEFAULT_WIDGET_THEME = {
+  -- Component-part defaults mirror the legacy native paints. They can be
+  -- overridden through widgets.all / widget-kind palettes without changing layout.
+  parts = {
+    sidebar = { fg = "#dcdcdc", bg = "#161b22", border = "#7aa2f7", alpha = 235 },
+    tab = {
+      active = { fg = "#ffffff", bg = "#373a48" },
+      inactive = { fg = "#b9b9b9", bg = "#23252e" },
+      selection_accent = "#7896dc",
+    },
+  },
   panel_bg = "#1f2430",
   panel_border = "#88c0d0",
   divider = "#2b3240",
@@ -154,14 +164,18 @@ local function create_ui(spec, palette)
   all.cursor_fg = color_or(all.cursor_fg, palette.background)
   all.divider = color_or(all.divider, palette.bright_black)
 
-  widgets.input.backdrop = widgets.input.backdrop or { color = palette.black, alpha = 168 }
+  if widgets.input.backdrop == nil then
+    widgets.input.backdrop = { color = palette.black, alpha = 168 }
+  end
 
   local select = widgets.select
   local select_bg = color.brighten_hex_color(all.panel_bg, 0.4, all.panel_bg)
   select.selected_bg = color_or(select.selected_bg, select_bg)
   select.selected_detail_bg = color_or(select.selected_detail_bg, all.panel_bg)
   select.scrollbar_thumb = color_or(select.scrollbar_thumb, palette.bright_yellow)
-  select.backdrop = select.backdrop or { color = palette.black, alpha = 168 }
+  if select.backdrop == nil then
+    select.backdrop = { color = palette.black, alpha = 168 }
+  end
 
   local levels = widgets.notify.notify_levels
   levels.info = color_or(levels.info, palette.bright_blue)
@@ -298,7 +312,7 @@ end
 
 ---@param kind string
 ---@param theme HollowResolvedTheme|nil
----@return HollowUiTheme
+---@return HollowUiResolvedTheme
 function M.resolve_widget(kind, theme)
   theme = type(theme) == "table" and theme or M.current()
   local ui = theme.ui
@@ -394,6 +408,11 @@ function M.resolve_widget(kind, theme)
         ),
       }
     end
+  end
+
+  -- Derive after widget overrides so recipes share the same semantic paint.
+  if result.button_emphasis_bg == nil then
+    result.button_emphasis_bg = color.brighten_hex_color(result.selected_bg, 0.25, result.panel_bg)
   end
 
   return result

@@ -77,7 +77,7 @@
 ---@field brights? HollowColor[]
 
 ---@class HollowThemeUiSpec
----@field widgets? table
+---@field widgets? table<string, HollowUiTheme> Shared `all` defaults followed by widget-kind overrides.
 ---@field top_bar? { height?: integer, background?: HollowColor }
 ---@field tab_bar? table
 ---@field scrollbar? HollowScrollbarConfig
@@ -95,18 +95,28 @@
 ---@field palette? HollowPalette|table
 
 ---@class HollowUiBox
----@field top? integer
----@field right? integer
----@field bottom? integer
----@field left? integer
----@field x? integer
----@field y? integer
----@field horizontal? integer
----@field vertical? integer
+---@field top? number
+---@field right? number
+---@field bottom? number
+---@field left? number
+---@field x? number
+---@field y? number
+---@field horizontal? number
+---@field vertical? number
 
----@alias HollowUiBoxValue integer|HollowUiBox
+---@alias HollowUiBoxValue number|HollowUiBox|number[]|false Pixel shorthand, CSS-order array, sparse box, or false to reset spacing.
 ---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowUiThemeBackdrop
+---@class HollowUiPaintParts
+---@field sidebar? {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken, border?: HollowColor|HollowStyleToken, alpha?: number}
+---@field tab? {active?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, inactive?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, selection_accent?: HollowColor|HollowStyleToken}
+---@field scrollbar? {track?: HollowColor|HollowStyleToken, thumb?: HollowColor|HollowStyleToken}
+---@field list_row? {accent?: HollowColor|HollowStyleToken|false} Selected row accent and built-in selection indicator; false suppresses accent.
+---@alias HollowUiThemeStyles table<string, table<string, HollowUiNodeStyle|table>> Built-in stylesheet slot overrides by sheet then slot; layers may nest `variants`, `sizes` and state tables.
+
 ---@class HollowUiTheme
+---@field parts? HollowUiPaintParts Native component paint defaults, separate from geometry.
+---@field styles? HollowUiThemeStyles Built-in component slot overrides, e.g. `{ select = { label = { fg = "title" } } }`.
+---@field button_emphasis_bg? HollowColor Default dialog-button emphasis, derived after widget overrides.
 ---@field panel_bg? HollowColor
 ---@field panel_border? HollowColor
 ---@field divider? HollowColor
@@ -120,6 +130,10 @@
 ---@field selected_bg? HollowColor
 ---@field selected_detail_bg? HollowColor
 ---@field selected_fg? HollowColor
+---@field selection_bg? HollowColor
+---@field selection_fg? HollowColor
+---@field hover_bg? HollowColor
+---@field hover_fg? HollowColor
 ---@field primary_bg? HollowColor
 ---@field primary_fg? HollowColor
 ---@field destructive_bg? HollowColor
@@ -137,6 +151,16 @@
 ---@field margin? HollowUiBoxValue
 ---@field backdrop? HollowOverlayBackdropValue
 ---@field notify_levels? { info?: HollowColor, warn?: HollowColor, error?: HollowColor, success?: HollowColor }
+
+--- Theme resolution fills these defaults; explicit partial overrides use HollowUiTheme.
+---@class HollowUiResolvedTheme: HollowUiTheme
+---@field fg HollowColor
+---@field muted HollowColor
+---@field panel_bg HollowColor
+---@field panel_border HollowColor
+---@field title HollowColor
+---@field divider HollowColor
+---@field notify_levels {info: HollowColor, warn: HollowColor, error: HollowColor, success: HollowColor}
 ---@alias HollowNotifyLevel "info"|"warn"|"error"|"success"
 ---@alias HollowKeyMode "normal"|"copy_mode"|(string & {})
 
@@ -239,10 +263,31 @@
 ---@alias HollowHtpValue nil|boolean|number|string|table
 ---@alias HollowEventHandle integer
 
+--- Built-in token completions; custom palette keys and dotted paths remain valid.
+---@alias HollowStyleToken
+---| "fg"|"muted"|"detail"|"subtle"|"title"|"panel_bg"|"panel_border"|"divider"
+---| "input_bg"|"input_fg"|"cursor_bg"|"cursor_fg"
+---| "selected_bg"|"selected_fg"|"selected_detail_bg"|"selected_muted"
+---| "selection_bg"|"selection_fg"|"hover_bg"|"hover_fg"
+---| "primary_bg"|"primary_fg"|"destructive_bg"|"destructive_fg"|"button_emphasis_bg"
+---| "notify_fg"|"notify_levels.info"|"notify_levels.warn"|"notify_levels.error"|"notify_levels.success"
+---| "counter"|"empty"|"scrollbar_track"|"scrollbar_thumb"
+---| "bar_bg"|"bar_fg"|"status_bg"|"status_fg"|"tab_bar_bg"
+---| "tab_active_bg"|"tab_active_fg"|"tab_inactive_bg"|"tab_inactive_fg"|"tab_hover_bg"|"tab_hover_fg"
+---| "accent"|"warm"
+---| (string & {})
+---@alias HollowStyleColor HollowColor|HollowStyleToken|false False suppresses an earlier color layer.
+---@alias HollowStyleLayer HollowStyle|false|nil Conditional layer; true is not a style.
+
+---@class (exact) HollowUiColorPair
+---@field fg? HollowStyleColor
+---@field bg? HollowStyleColor
+
 ---@class HollowStyle
 ---@field padding? HollowUiBoxValue Overlay span padding in pixels; included in row sizing and click targets.
----@field fg? HollowColor
----@field bg? HollowColor
+---@field margin? HollowUiBoxValue
+---@field fg? HollowStyleColor
+---@field bg? HollowStyleColor
 ---@field bold? boolean
 ---@field italic? boolean
 ---@field underline? boolean
@@ -250,13 +295,34 @@
 ---@field dim? boolean
 ---@field id? string
 ---@field radius? number Rounded corner radius for bg/border rect
----@field border? HollowColor Border color for bg rect outline
+---@field border? HollowStyleColor Border color for bg rect outline
 ---@field border_size? number Border thickness in pixels
+---@field background_extend? number
+---@field close_fg? HollowStyleColor Bar tab close-button part.
+---@field close_bg? HollowStyleColor Bar tab close-button part.
+---@field close_hover_fg? HollowStyleColor Bar tab close-button part.
+---@field close_hover_bg? HollowStyleColor Bar tab close-button part.
+---@field close_radius? number Bar tab close-button part.
+---@field selection_accent? HollowStyleColor Unrounded active tab selection stripe.
+---@field hover? HollowStyle|false Overrides applied to hovered spans; false removes an earlier hover layer.
 ---@field on_click? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_enter? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_leave? fun(e: { id: string, mods?: HollowKeyMods })
 
 ---@alias HollowStyleValue HollowStyle|HollowColor
+--- Internal flat visual snapshot. Identity and callbacks remain on nodes.
+--- Surface adapters retain their existing pixel/unit rules.
+---@class HollowUiComputedStyle
+---@field fg? HollowColor
+---@field bold boolean
+---@field bg? HollowColor
+---@field border? HollowColor
+---@field border_size? number
+---@field radius? number
+---@field background_extend? number
+---@field padding? { top: number, right: number, bottom: number, left: number }
+---@field margin? { top: number, right: number, bottom: number, left: number }
+
 ---@alias HollowUiNodeStyle HollowStyle
 
 ---@class HollowUiStyleWrapper
@@ -265,8 +331,8 @@
 ---@alias HollowUiNodeEventPayload table<string, any>
 
 ---@class HollowUiChrome
----@field bg? HollowColor
----@field border? HollowColor
+---@field bg? HollowStyleColor
+---@field border? HollowStyleColor
 ---@field border_size? integer
 ---@field alpha? integer
 ---@field radius? integer
@@ -640,7 +706,14 @@
 ---@class HollowUiTextShorthand: HollowStyle
 ---@field [1] string
 
+---@alias HollowUiButtonVariant "default"|"primary"|"destructive"|"ghost"
+---@alias HollowUiControlSize "sm"|"md"
+
 ---@class HollowUiButtonOptions
+---@field variant? HollowUiButtonVariant Opts into the themed button recipe; raw buttons otherwise retain their style.
+---@field size? HollowUiControlSize Opts into recipe spacing.
+---@field disabled? boolean Suppresses click/hover callbacks and hover paint.
+---@field theme? HollowUiTheme Select palette by default for recipe buttons; explicit partial palettes are authoritative.
 ---@field id string
 ---@field text? string
 ---@field style? HollowUiNodeStyle
@@ -649,62 +722,79 @@
 ---@field on_mouse_leave? fun(e: { id: string })
 
 ---@class HollowUiActionButtonOptions: HollowUiButtonOptions
----@field theme? table Select widget theme by default.
----@field state? { hovered_id?: string } Modal render state, used to highlight hover.
----@field hover_style? HollowUiNodeStyle Overrides applied while hovered.
+---@field theme? HollowUiTheme Select widget theme by default.
+---@field state? { hovered_id?: string } Legacy option; hover is resolved by the overlay and this value is unused.
+---@field hover_style? HollowUiNodeStyle Legacy hover overrides applied while hovered.
 
 ---@class HollowUiTabOptions
 ---@field id string
 ---@field label string
 ---@field active? boolean
 ---@field badge? { text: string|number, color: HollowColor }
----@field theme? table Select widget theme by default.
+---@field theme? HollowUiTheme Select widget theme by default.
 ---@field on_click? fun(e: { id: string })
 
 ---@class HollowUiTabBarOptions
 ---@field tabs HollowUiTabOptions[]
----@field theme? table Default theme for tabs.
+---@field theme? HollowUiTheme Default theme for tabs.
 
 ---@alias HollowUiRenderableNode HollowUiSpanNode|HollowUiSpacerNode|HollowUiIconNode|HollowUiGroupNode
 ---@alias HollowUiInlineNode string|HollowUiRenderableNode|HollowUiTextShorthand
+---@alias HollowUiChild HollowUiInlineNode|number|boolean|nil|HollowUiChild[]
+---@alias HollowUiRowChild HollowUiRowNode|HollowUiColumnNode|boolean|nil|HollowUiRowChild[]
 
 ---@class HollowUiFormatColumnSpec
 ---@field text? string
 ---@field style? HollowUiNodeStyle|HollowHexColor
----@field width? integer
+---@field width? number
 ---@field align? "left"|"right"
 
+---@class HollowUiRowStyle
+---@field fg? HollowStyleColor
+---@field bg? HollowStyleColor
+---@field bold? boolean
+---@field radius? number
+---@field hover? HollowUiRowStyle|false
+
 ---@class HollowUiRowOptions
+---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
+---@field variant? "selectable"
+---@field selected? boolean Explicit model selection, independent of pointer hover.
+---@field theme? HollowUiTheme Optional partial palette for this row.
 ---@field id? string
 ---@field hoverable? boolean
----@field fill_bg? HollowColor
+---@field fill_bg? HollowColor|HollowStyleToken|false
 ---@field fill_radius? number
----@field accent_bar? HollowColor
----@field divider? HollowColor
+---@field accent_bar? HollowColor|HollowStyleToken|false
+---@field divider? HollowColor|HollowStyleToken
 ---@field scrollbar_track? boolean
 ---@field scrollbar_thumb? boolean
 ---@field scrollbar_id? string
 ---@field scrollbar_thumb_ratio? number
 ---@field scrollbar_thumb_size? number
----@field scrollbar_track_color? HollowColor
----@field scrollbar_thumb_color? HollowColor
+---@field scrollbar_track_color? HollowStyleColor
+---@field scrollbar_thumb_color? HollowStyleColor
 
 ---@class HollowUiRowNode
+---@field style? HollowUiRowStyle Row paint; only fg/bold inherit into children.
+---@field variant? "selectable"
+---@field selected? boolean Explicit model selection, independent of pointer hover.
+---@field theme? HollowUiTheme Optional partial palette for this row.
 ---@field _type "row"
 ---@field children HollowUiRenderableNode[]
 ---@field id? string
 ---@field hoverable boolean
----@field fill_bg? HollowColor
+---@field fill_bg? HollowColor|HollowStyleToken|false
 ---@field fill_radius? number
----@field accent_bar? HollowColor
----@field divider? HollowColor
+---@field accent_bar? HollowColor|HollowStyleToken|false
+---@field divider? HollowColor|HollowStyleToken
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
 ---@field scrollbar_id? string
 ---@field scrollbar_thumb_ratio? number
 ---@field scrollbar_thumb_size? number
----@field scrollbar_track_color? HollowColor
----@field scrollbar_thumb_color? HollowColor
+---@field scrollbar_track_color? HollowStyleColor
+---@field scrollbar_thumb_color? HollowStyleColor
 
 ---@class HollowUiColumnNode
 ---@field _type "column"
@@ -810,6 +900,7 @@
 ---@field style? HollowStyle
 
 ---@class HollowUiSegment
+---@field fallback_style? {fg?: HollowColor, bg?: HollowColor, selection_accent?: HollowColor} Optional native-tab paint defaults, independent of layout.
 ---@field padding? {top:number,right:number,bottom:number,left:number} Normalized overlay span padding in pixels.
 ---@field text string
 ---@field fg? HollowColor
@@ -829,12 +920,11 @@
 ---@field max_width? number
 ---@field tabs HollowUiSegment[]
 
----@class HollowUiOverlaySerializedRow
----@field segments HollowUiSegment[]
----@field hoverable boolean
+---@class HollowUiRowPaint
+---@field hover_bg? HollowColor Lua-owned hover paint, with native compatibility fallback.
 ---@field fill_bg? HollowColor
 ---@field fill_radius? number
----@field accent_bar? HollowColor
+---@field accent_bar? HollowColor|false
 ---@field divider? HollowColor
 ---@field scrollbar_track boolean
 ---@field scrollbar_thumb boolean
@@ -843,6 +933,10 @@
 ---@field scrollbar_thumb_size? number
 ---@field scrollbar_track_color? HollowColor
 ---@field scrollbar_thumb_color? HollowColor
+
+---@class HollowUiOverlaySerializedRow: HollowUiRowPaint
+---@field segments HollowUiSegment[]
+---@field hoverable boolean
 
 ---@class HollowUiOverlaySerializedWidget
 ---@field stack_context "overlay"|"modal"|"notification"
@@ -855,6 +949,8 @@
 ---@field rows HollowUiOverlaySerializedRow[]
 
 ---@class HollowUiSidebarState
+---@field style? {fg?: HollowColor, bg?: HollowColor, border?: HollowColor, alpha?: number}
+---@field row_styles? HollowUiRowPaint[] Optional row-paint metadata; rows retain their legacy segment-array shape.
 ---@field side "left"|"right"
 ---@field width integer
 ---@field reserve boolean
@@ -863,7 +959,11 @@
 ---@alias HollowWidgetRenderResult HollowUiColumnNode|HollowUiRowNode|nil
 
 ---@class HollowWidget
+---@field style? HollowStyle|HollowUiChrome Surface paint; explicit overlay chrome fields win.
+---@field layout? { padding?: HollowUiBoxValue, margin?: HollowUiBoxValue }
 ---@field _kind? string
+---@field _palette? table Internal resolved palette, including instance overrides.
+---@field _theme_backdrop? boolean Internal marker for a theme-owned default backdrop.
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_event? fun(name: string, e: any)
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
@@ -917,11 +1017,13 @@
 ---@field height? integer
 
 ---@class HollowUiSidebarOptions: HollowWidget
+---@field style? {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken, border?: HollowColor|HollowStyleToken, alpha?: number} Sidebar surface paint, independent of layout.
 ---@field side? HollowSidebarSide
 ---@field width? integer
 ---@field reserve? boolean
 
 ---@class HollowUiOverlayOptions
+---@field style? HollowUiChrome Surface paint below explicit chrome fields.
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean
 ---@field on_mount? fun()
@@ -1045,8 +1147,8 @@
 ---@field hovered? integer
 
 ---@class HollowUiModalSpec
----@field theme? table|string
----@field render fun(theme: table, state?: table): any
+---@field theme? HollowUiTheme|string Widget-kind name for a live palette, or an authoritative explicit palette table.
+---@field render fun(theme: HollowUiTheme, state?: table): HollowUiRowNode|HollowUiColumnNode
 ---@field keys? function
 ---@field width? integer
 ---@field height? integer
@@ -1351,7 +1453,7 @@ function theme.current() end
 
 ---@param kind string
 ---@param resolved? HollowResolvedTheme
----@return HollowUiTheme
+---@return HollowUiResolvedTheme
 function theme.resolve_widget(kind, resolved) end
 
 ---@class HollowJsonNamespace
@@ -2029,7 +2131,7 @@ function select.close() end
 ---@field program_status_badge? string Aggregated OSC 7501 badge for open workspaces, including trailing space.
 ---@field program_status_state? string State of the aggregated visible OSC 7501 indicator; idle is hidden.
 ---@field program_status_attention? boolean True when any pane in an open workspace has unread blocked/error attention; independent of OSC bell state.
----@field open_index? integer
+---@field program_status_attention_level? "warn"|"error"
 ---@field open_index? integer Used only for switching to an already-open workspace
 ---@field last_opened_at? integer
 
@@ -2082,6 +2184,7 @@ function select.close() end
 ---@field status_column_width? integer
 ---@field name_column_width? integer
 ---@field column_gap? integer
+---@field workspace_color_fn? fun(name: string): HollowUiColorPair Workspace/domain paint only; geometry and event fields are ignored.
 ---@field rename_key? string
 ---@field rename_desc? string
 ---@field close_key? string
@@ -2096,13 +2199,43 @@ function select.close() end
 ---@field items fun(force_refresh?: boolean): HollowUiWorkspaceItem[]
 ---@field open_switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
 ---@field switcher fun(opts?: HollowUiWorkspaceSwitcherOptions)
----@field topbar_button fun(opts?: { id?: string, text?: string, prefix?: string, suffix?: string, style?: HollowUiNodeStyle, switcher?: HollowUiWorkspaceSwitcherOptions, colorize?: boolean }): HollowUiSpanNode|HollowUiSpanNode[]
+---@field topbar_button fun(opts?: HollowUiWorkspaceTopbarOptions): HollowUiSpanNode|HollowUiSpanNode[]
 ---@field create fun(opts?: { prompt?: string, on_confirm?: fun(name: string) })
 ---@field rename fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem, opts?: { prompt?: string, on_confirm?: fun(name: string, workspace: any) })
 ---@field close fun(workspace?: HollowWorkspaceSnapshot|HollowUiWorkspaceItem)
+---@field open fun(opts?: HollowUiWorkspaceOpenOptions)
 local workspace = {}
 
+---@class HollowUiWorkspaceOpenOptions: HollowNewWorkspaceOpts
+---@field source? string Configured discovery source name.
+---@field item? HollowUiWorkspaceItem
+
+---@class HollowUiWorkspaceTopbarOptions
+---@field id? string
+---@field text? string
+---@field prefix? string
+---@field suffix? string
+---@field style? HollowUiNodeStyle
+---@field switcher? HollowUiWorkspaceSwitcherOptions
+---@field colorize? boolean
+
+--- Private discovery state; not an additional public configuration API.
+---@class HollowUiWorkspaceSwitcherState: HollowUiWorkspaceSwitcherOptions
+---@field host_scan_revision? integer
+
+---@class HollowUiStylePresets
+---@field muted HollowStyle
+---@field title HollowStyle
+---@field label HollowStyle
+---@field empty HollowStyle
+---@field counter HollowStyle
+---@field key_hint HollowStyle
+---@field pill HollowStyle
+---@field badge HollowStyle
+---@field kbd HollowStyle
+
 ---@class HollowUi
+---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 
 --- True when Hollow's window has OS focus, not merely when a pane is active.
@@ -2114,17 +2247,19 @@ function ui.is_focused() end
 ---@return HollowUiSpanNode
 function ui.span(text, style) end
 
----@param value HollowUiInlineNode
+---@generic T: HollowUiRenderableNode
+---@overload fun(value: T, style?: nil): T
+---@param value HollowUiInlineNode|number|boolean|nil
 ---@param style? HollowUiNodeStyle|HollowHexColor
----@return HollowUiRenderableNode
+---@return HollowUiSpanNode
 function ui.text(value, style) end
 
----@param children HollowUiInlineNode[]
+---@param children HollowUiChild[]
 ---@param opts? HollowUiRowOptions
 ---@return HollowUiRowNode
 function ui.row(children, opts) end
 
----@param children HollowUiRowNode[]
+---@param children HollowUiRowChild[]
 ---@return HollowUiColumnNode
 function ui.column(children) end
 
@@ -2140,10 +2275,41 @@ function ui.spacer() end
 ---@return HollowUiIconNode
 function ui.icon(name, style) end
 
----@param children HollowUiRenderableNode[]
+---@param children HollowUiChild[]|nil
 ---@param style? HollowUiNodeStyle|HollowHexColor
 ---@return HollowUiGroupNode
 function ui.group(children, style) end
+
+--- Select a branch, evaluating it only when it is a function.
+---@param cond any
+---@param then_ any
+---@param else_? any
+---@return any
+function ui.when(cond, then_, else_) end
+
+--- Map an array or HollowTbl wrapper into a fragment.
+---@generic T, R
+---@param list T[]|HollowTbl|nil
+---@param fn fun(item: T, index: integer): R|nil|false
+---@return (R|false)[]
+function ui.each(list, fn) end
+
+--- Join truthy items with a separator or separator factory.
+---@param items any[]
+---@param sep any|fun(index: integer): any
+---@return any[]
+function ui.join(items, sep) end
+
+--- Merge style layers into a fresh table, skipping nil and false layers.
+---@param ... HollowStyleLayer
+---@return HollowStyle
+function ui.style(...) end
+
+--- Merge styles and resolve tokens against theme; nil theme leaves tokens unresolved.
+---@param theme HollowUiTheme|nil
+---@param ... HollowStyleLayer
+---@return HollowStyle
+function ui.styled(theme, ...) end
 
 ---@param opts HollowUiButtonOptions
 ---@return HollowUiSpanNode
@@ -2661,12 +2827,12 @@ hollow.platform = {
 }
 
 ---@class HollowColorModule
----@field is_hex_color fun(value:string): boolean
----@field normalize_hex_color fun(value:string, fallback:string|nil): string|nil
----@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field contrast_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field is_hex_color fun(value:any): boolean
+---@field normalize_hex_color fun<F>(value:any, fallback:F|nil): string|F|nil
+---@field adjust_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field brighten_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field darken_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field contrast_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
 ---@field hex_from_hsl fun(h:number, s:number, l:number): string
 ---@field hex_luminance fun(hex:string): number
 

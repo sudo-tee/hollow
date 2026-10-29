@@ -2,30 +2,24 @@ local hollow = _G.hollow
 local ui = hollow.ui
 local icons = require("hollow.ui.icons")
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
+local styles = require("hollow.ui.styles.topbar")
 
 local M = {}
+local LEVELS = styles.slots.attention.variants
 
 function M.topbar_button()
+  local style = styles(shared.bar_palette()).attention_button
+  style.id = "attention-button"
   return ui.bar.custom({
     id = "attention-button",
-    style = {
-      id = "attention-button",
-      padding = { left = 6, right = 6 },
-      margin = { right = 6 },
-      radius = 4,
-      hover = { bg = shared.resolve_theme().ui.tab_bar.hover_tab.bg },
-    },
+    style = style,
     render = function()
       local summary = hollow.activity.summary()
       local pending = summary.count > 0
-      local theme = theme_api.resolve_widget("select")
+      local level = pending and LEVELS[summary.level] and summary.level or nil
       return ui.span(
         pending and (icons.bell .. " " .. summary.count .. " ") or (icons.bell_outline .. " "),
-        {
-          fg = pending and theme.notify_levels[summary.level] or theme.muted,
-          bold = pending,
-        }
+        styles(shared.palette("select"), { variant = level }).attention
       )
     end,
     on_click = function()

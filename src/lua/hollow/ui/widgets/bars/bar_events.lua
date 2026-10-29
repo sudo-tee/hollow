@@ -24,6 +24,10 @@ function M.register(value, handlers, next_auto_id)
           return type(style[field]) == "function"
         end)
         if has_handler or type(style.hover) == "table" then
+          -- The node gets its own style before assigning identity. Configs may
+          -- reuse a preset or the same style table on several sibling spans.
+          style = util.clone_value(style)
+          node.style = style
           style.id = next_auto_id()
         end
       end
@@ -66,37 +70,10 @@ end
 
 ---@param surface string|nil
 ---@param style any
----@return boolean
-local function is_hovered_bar_style(surface, style)
-  if surface ~= "topbar" and surface ~= "bottombar" then
-    return false
-  end
-  if type(style) ~= "table" or type(style.id) ~= "string" or style.id == "" then
-    return false
-  end
-
-  local hovered_key = M.hovered_key(surface)
-  return hovered_key ~= nil and state.ui[hovered_key] == style.id
-end
-
----@param surface string|nil
----@param style any
 ---@return any
 function M.resolve_style(surface, style)
-  if type(style) ~= "table" then
-    return style
-  end
-
-  if not is_hovered_bar_style(surface, style) then
-    return style
-  end
-
-  local hover = type(style.hover) == "table" and style.hover or nil
-  if hover == nil then
-    return style
-  end
-
-  return shared.merge_style_tables(style, hover)
+  local key = M.hovered_key(surface)
+  return key and shared.apply_hover(style, state.ui[key]) or style
 end
 
 ---@param surface string|nil

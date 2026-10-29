@@ -1,3 +1,4 @@
+local box = require("hollow.ui.style.box")
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
@@ -26,110 +27,17 @@ local function next_bar_auto_id()
   bar_auto_id_counter = bar_auto_id_counter + 1
   return "bar:auto:" .. bar_auto_id_counter
 end
----@param value any
----@param fallback integer
----@return integer
-local function normalize_px(value, fallback)
-  local number = tonumber(value)
-  if number == nil then
-    return fallback
-  end
-
-  number = math.floor(number)
-  if number < 0 then
-    return 0
-  end
-  return number
-end
-
----@param value any
----@return {top:integer,right:integer,bottom:integer,left:integer}
-local function normalize_box(value)
-  if type(value) == "number" then
-    local px = normalize_px(value, 0)
-    return { top = px, right = px, bottom = px, left = px }
-  end
-
-  if type(value) ~= "table" then
-    return { top = 0, right = 0, bottom = 0, left = 0 }
-  end
-
-  local y = value.y or value.vertical
-  local x = value.x or value.horizontal
-  local top = value.top or y or value[1] or 0
-  local right = value.right or x or value[2] or top
-  local bottom = value.bottom or y or value[3] or top
-  local left = value.left or x or value[4] or right
-  return {
-    top = normalize_px(top, 0),
-    right = normalize_px(right, 0),
-    bottom = normalize_px(bottom, 0),
-    left = normalize_px(left, 0),
-  }
-end
 
 ---@param style any
 ---@return table|nil
 local function serialize_bar_style(style)
-  style = type(style) == "table" and style or nil
-  if style == nil then
+  local serialized = shared.normalize_surface_style(style, shared.bar_palette())
+  if not serialized then
     return nil
   end
-
-  local bg = color.normalize_hex_color(style.bg, nil)
-  local fg = color.normalize_hex_color(style.fg, nil)
-  local border = color.normalize_hex_color(style.border, nil)
-  local close_bg = color.normalize_hex_color(style.close_bg, nil)
-  local close_fg = color.normalize_hex_color(style.close_fg, nil)
-  local close_hover_bg = color.normalize_hex_color(style.close_hover_bg, nil)
-  local close_hover_fg = color.normalize_hex_color(style.close_hover_fg, nil)
-  local radius = normalize_px(style.radius, 0)
-  local close_radius = normalize_px(style.close_radius, 0)
-  local padding = normalize_box(style.padding)
-  local margin = normalize_box(style.margin)
-  local serialized = {}
-
-  if bg ~= nil then
-    serialized.bg = bg
-  end
-  if fg ~= nil then
-    serialized.fg = fg
-  end
-  if border ~= nil then
-    serialized.border = border
-  end
-  if close_bg ~= nil then
-    serialized.close_bg = close_bg
-  end
-  if close_fg ~= nil then
-    serialized.close_fg = close_fg
-  end
-  if close_hover_bg ~= nil then
-    serialized.close_hover_bg = close_hover_bg
-  end
-  if close_hover_fg ~= nil then
-    serialized.close_hover_fg = close_hover_fg
-  end
-  if radius > 0 then
-    serialized.radius = radius
-  end
-  if close_radius > 0 then
-    serialized.close_radius = close_radius
-  end
-  if style.bold == true then
-    serialized.bold = true
-  end
-  if type(style.id) == "string" and style.id ~= "" then
-    serialized.id = style.id
-  end
-  if padding.top > 0 or padding.right > 0 or padding.bottom > 0 or padding.left > 0 then
-    serialized.padding = padding
-  end
-  if margin.top > 0 or margin.right > 0 or margin.bottom > 0 or margin.left > 0 then
-    serialized.margin = margin
-  end
-
-  return next(serialized) ~= nil and serialized or nil
+  -- These fields belong to overlay chrome, not the legacy BarStyle contract.
+  serialized.alpha, serialized.border_size = nil, nil
+  return next(serialized) and serialized or nil
 end
 
 ---@param style any
@@ -139,6 +47,7 @@ local function serialize_bar_text_style(style)
   if style == nil then
     return nil
   end
+  style = shared.resolve_tokens(style, shared.bar_palette())
 
   local serialized = {}
   local fg = color.normalize_hex_color(style.fg, nil)
@@ -171,11 +80,16 @@ local function serialize_bar_value(surface, value, fallback_text, style)
   local text_style = serialize_bar_text_style(resolved_style)
   if type(value) == "table" and type(value.style) == "table" then
     merged_style =
-      shared.merge_style_tables(resolved_style, resolve_bar_hover_style(surface, value.style))
+      shared.merge_styles(resolved_style, resolve_bar_hover_style(surface, value.style))
   end
 
-  local segments = shared.bar_value_to_segments(value, fallback_text, text_style)
-  local segment = shared.style_to_segment(shared.segments_plain_text(segments), merged_style)
+  local segments =
+    shared.bar_value_to_segments(value, fallback_text, text_style, shared.bar_palette())
+  local segment = shared.style_to_segment(
+    shared.segments_plain_text(segments),
+    merged_style,
+    shared.bar_palette()
+  )
   segment.segments = segments
   segment.style = serialize_bar_style(merged_style)
   return segment
@@ -186,8 +100,8 @@ end
 function M.layout(widget)
   local layout = type(widget.layout) == "table" and widget.layout or {}
   return {
-    padding = normalize_box(layout.padding),
-    margin = normalize_box(layout.margin),
+    padding = box.normalize(layout.padding, true),
+    margin = box.normalize(layout.margin, true),
   }
 end
 
@@ -379,6 +293,7 @@ local function serialize_tabs(surface, node, ctx, handlers)
       end
 
       local segment = serialize_bar_value(surface, label, tab_state.title, style)
+      segment.fallback_style = shared.tab_fallback_style(tab_state.is_active, shared.bar_palette())
       if type(node.max_width) == "number" and node.max_width > 0 then
         segment = clamp_tab_segment_width(segment, math.floor(node.max_width))
       end
@@ -437,7 +352,7 @@ local function serialize_workspace(surface, node, ctx, handlers)
   end
   style = resolve_bar_hover_style(surface, style)
   if format_style.bg ~= nil or format_style.fg ~= nil then
-    style = shared.merge_style_tables(style, format_style)
+    style = shared.merge_styles(style, format_style)
   end
 
   local segment = serialize_bar_value(surface, text, workspace_state.name, style)
@@ -450,7 +365,8 @@ end
 ---@return HollowUiSegment
 local function serialize_time(surface, node)
   local style = resolve_bar_hover_style(surface, node.style)
-  local segment = shared.style_to_segment(os.date(node.format or "%H:%M"), style)
+  local segment =
+    shared.style_to_segment(os.date(node.format or "%H:%M"), style, shared.bar_palette())
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
   local next_tick_ms = (math.floor(current_time_ms() / 1000) + 1) * 1000
@@ -479,7 +395,7 @@ local function serialize_key_legend(surface, node)
   end
 
   local style = resolve_bar_hover_style(surface, node.style)
-  local segment = shared.style_to_segment(text, style)
+  local segment = shared.style_to_segment(text, style, shared.bar_palette())
   segment.kind = "segment"
   segment.style = serialize_bar_style(style)
   local expires_at = leader_state
@@ -576,6 +492,13 @@ function M.serialize(widget, surface)
   local serialized = tbl(items)
     :filter_map(function(item)
       local ok, value, item_expires_at = pcall(serialize_bar_item, surface, item, ctx, handlers)
+      if
+        not ok
+        and type(value) == "string"
+        and value:find("hollow.ui: unknown style token", 1, true)
+      then
+        error(value, 0)
+      end
       if ok and value ~= nil then
         expires_at = min_expiry(expires_at, item_expires_at)
         return value

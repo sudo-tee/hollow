@@ -11,7 +11,7 @@
 ---   on_cancel = function() end,
 --- })
 --- ```
-local theme_api = require("hollow.theme")
+local shared = require("hollow.ui.shared")
 local util = require("hollow.util")
 local ui = _G.hollow.ui
 
@@ -46,10 +46,7 @@ function ui.confirm.open(opts)
     error("hollow.ui.confirm.open() requires a 'prompt' string")
   end
 
-  local base_theme = theme_api.resolve_widget("confirm")
-  if type(opts.theme) == "table" then
-    util.merge_tables(base_theme, util.clone_value(opts.theme))
-  end
+  local base_theme = shared.widget_theme("confirm", opts.theme)
 
   local raw_buttons = type(opts.buttons) == "table" and #opts.buttons > 0 and opts.buttons
     or default_buttons()
@@ -76,6 +73,11 @@ function ui.confirm.open(opts)
 
   local nav = ui.list_nav(#footer_buttons)
 
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = true
+  end
+
   m = ui.modal({
     theme = base_theme,
     render = function(theme, state)
@@ -92,7 +94,7 @@ function ui.confirm.open(opts)
     height = opts.height,
     chrome = opts.chrome,
     align = opts.align or "center",
-    backdrop = opts.backdrop ~= nil and opts.backdrop or true,
+    backdrop = backdrop,
     keys = ui.keys(nav, {
       enter = function()
         local btn = raw_buttons[nav.index]

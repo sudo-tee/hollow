@@ -1,10 +1,10 @@
 local color = require("hollow.color")
 local shared = require("hollow.ui.shared")
+local styles = require("hollow.ui.styles.bottombar")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local ui = hollow.ui
 local tbl = hollow.tbl
-local util = hollow.util
 local M = {}
 function M.leader_state()
   local value = hollow.keymap.get_leader_state()
@@ -43,6 +43,7 @@ local function special_mode_theme()
     muted = color.normalize_hex_color(all.muted, all.fg),
     divider = color.normalize_hex_color(all.divider, resolved.status and resolved.status.fg),
     counter = color.normalize_hex_color(all.counter, all.muted),
+    styles = all.styles,
     copy_bg = mode_copy_bg,
     quick_select_bg = color.normalize_hex_color(
       color.brighten_hex_color(base_bg, 0.12, base_bg),
@@ -53,92 +54,41 @@ local function special_mode_theme()
   }
 end
 
-local function special_mode_chip(text, style)
-  return ui.span(
-    text,
-    util.merge_tables(util.clone_value({
-      bold = true,
-      radius = 4,
-      padding = { left = 2, right = 2, top = 1, bottom = 1 },
-      margin = { right = 1 },
-    }), style)
-  )
+local function special_mode_chip(text, theme, kind)
+  return ui.span(text, styles(theme, { variant = kind }).chip)
 end
 
-local function special_mode_key(text, style)
-  return ui.span(
-    text,
-    util.merge_tables(util.clone_value({
-      bold = true,
-      radius = 4,
-      padding = { left = 1, right = 1, top = 0, bottom = 0 },
-    }), style)
-  )
+local function special_mode_key(text, theme)
+  return ui.span(text, styles(theme).key)
 end
 
 local function special_mode_hint(key, label, theme)
   return {
-    special_mode_key(key, {
-      fg = theme.fg,
-      bg = theme.hint_key_bg,
-    }),
-    ui.span(" " .. label .. " ", {
-      fg = theme.muted,
-    }),
+    special_mode_key(key, theme),
+    ui.span(" " .. label .. " ", styles(theme).label),
   }
 end
 
-local function flatten_nodes(items)
-  return tbl(items)
-    :flat_map(function(item)
-      if type(item) == "table" and item[1] ~= nil and item._type == nil then
-        return item
-      end
-      return { item }
-    end)
-    :get()
-end
-
 local function copy_mode_search_chip(copy_mode, theme)
-  local pieces = tbl({
-    special_mode_key("/", {
-      fg = theme.fg,
-      bg = theme.hint_key_bg,
-    }),
-    ui.span(copy_mode.query ~= "" and copy_mode.query or "search", {
-      fg = theme.chip_fg,
-    }),
-  })
-
-  if copy_mode.match_count > 0 then
-    pieces:concat({
-      ui.span(string.format("  %d/%d", copy_mode.match_index or 0, copy_mode.match_count), {
-        fg = theme.counter,
-      }),
-    })
-  elseif copy_mode.query ~= "" then
-    pieces:concat({
-      ui.span("  0/0", {
-        fg = theme.counter,
-      }),
-    })
-  end
-
-  if copy_mode.selecting then
-    pieces:concat({
-      ui.span(copy_mode.block and "  BLK" or "  SEL", {
-        fg = theme.accent,
-        bold = true,
-      }),
-    })
-  end
-
-  return ui.group(flatten_nodes(pieces:concat({ ui.span(" ") }):get()), {
-    bg = theme.copy_bg,
-    radius = 4,
-    padding = { left = 2, right = 2, top = 1, bottom = 1 },
-    margin = { right = 1 },
-  })
+  local s = styles(theme)
+  return ui.group({
+    special_mode_key("/", theme),
+    ui.span(copy_mode.query ~= "" and copy_mode.query or "search", s.query),
+    ui.when(copy_mode.match_count > 0, function()
+      return ui.span(
+        string.format("  %d/%d", copy_mode.match_index or 0, copy_mode.match_count),
+        s.counter
+      )
+    end, function()
+      return ui.when(copy_mode.query ~= "", function()
+        return ui.span("  0/0", s.counter)
+      end)
+    end),
+    ui.when(copy_mode.selecting, function()
+      return ui.span(copy_mode.block and "  BLK" or "  SEL", s.selection)
+    end),
+    ui.span(" "),
+  }, s.search)
 end
 
 local function special_mode_legend(copy_mode, quick_select, theme)
@@ -172,7 +122,7 @@ local function special_mode_legend(copy_mode, quick_select, theme)
       or "mode:leader-legend",
     cache_ttl_ms = leader ~= nil and math.max(1, tonumber(leader.remaining_ms) or 0) or nil,
     render = function()
-      return flatten_nodes(hints)
+      return shared.normalize_inline_nodes(hints)
     end,
   })
 end
@@ -199,10 +149,7 @@ function M.widget()
           ui.bar.custom({
             id = "mode:copy",
             render = function()
-              return special_mode_chip(" COPY ", {
-                bg = theme.copy_bg,
-                fg = theme.accent,
-              })
+              return special_mode_chip(" COPY ", theme, "copy")
             end,
           }),
           ui.bar.custom({
@@ -217,10 +164,7 @@ function M.widget()
           ui.bar.custom({
             id = "mode:quick-select",
             render = function()
-              return special_mode_chip(" QUICK SELECT ", {
-                bg = theme.quick_select_bg,
-                fg = theme.accent,
-              })
+              return special_mode_chip(" QUICK SELECT ", theme, "quick_select")
             end,
           }),
           ui.bar.custom({
@@ -228,7 +172,8 @@ function M.widget()
             render = function()
               return special_mode_chip(
                 " " .. (quick_select.action == "copy" and "copy" or "open/copy") .. " ",
-                { bg = theme.chip_bg, fg = theme.chip_fg }
+                theme,
+                "action"
               )
             end,
           }),
@@ -238,10 +183,7 @@ function M.widget()
           ui.bar.custom({
             id = "mode:leader",
             render = function()
-              return special_mode_chip(" LEADER ", {
-                bg = theme.leader_bg,
-                fg = theme.fg,
-              })
+              return special_mode_chip(" LEADER ", theme, "leader")
             end,
           }),
         }

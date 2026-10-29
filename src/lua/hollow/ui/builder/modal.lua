@@ -3,7 +3,6 @@
 --- Creates an overlay widget, pushes it, returns a handle with close/invalidate.
 
 local shared = require("hollow.ui.shared")
-local theme_api = require("hollow.theme")
 local ui = _G.hollow.ui
 local overlay_stack = require("hollow.state").get().ui.overlay_stack
 local button_component = require("hollow.ui.builder.components.button")
@@ -11,7 +10,7 @@ local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
----@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any }
+---@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any, theme_backdrop?: boolean }
 ---@return HollowUiModalHandle|nil
 function M.modal(spec)
   -- Preserve unfinished input and questions; never replace an active modal.
@@ -25,7 +24,7 @@ function M.modal(spec)
   if type(spec.theme) == "table" then
     theme = spec.theme
   else
-    theme = theme_api.resolve_widget(spec.theme or "default")
+    theme = shared.widget_theme(spec.theme or "default")
   end
 
   local state = {
@@ -66,6 +65,8 @@ function M.modal(spec)
     backdrop = spec.backdrop,
   })
 
+  widget._palette = theme
+  widget._theme_backdrop = spec.theme_backdrop == true
   widget._modal = true
   ui.overlay.push(widget)
 

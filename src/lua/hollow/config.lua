@@ -4,10 +4,15 @@ local THEME_KEYS = { "theme" }
 
 local function invalidate_bars()
   if type(_G.hollow) == "table" and type(_G.hollow.ui) == "table" then
-    if type(_G.hollow.ui.topbar) == "table" and type(_G.hollow.ui.topbar.invalidate) == "function" then
+    if
+      type(_G.hollow.ui.topbar) == "table" and type(_G.hollow.ui.topbar.invalidate) == "function"
+    then
       _G.hollow.ui.topbar.invalidate()
     end
-    if type(_G.hollow.ui.bottombar) == "table" and type(_G.hollow.ui.bottombar.invalidate) == "function" then
+    if
+      type(_G.hollow.ui.bottombar) == "table"
+      and type(_G.hollow.ui.bottombar.invalidate) == "function"
+    then
       _G.hollow.ui.bottombar.invalidate()
     end
     return
@@ -61,7 +66,7 @@ function M.setup(hollow, host_api, state)
 
   local function sync_runtime_package_paths(values)
     local config_dir = type(host_api.default_config_path) == "function"
-      and hollow.util.basepath(host_api.default_config_path())
+        and hollow.util.basepath(host_api.default_config_path())
       or nil
     add_runtime_package_dir(config_dir, hollow.util)
     add_runtime_package_dir(values.lib_dir, hollow.util)
@@ -123,15 +128,21 @@ function M.setup(hollow, host_api, state)
       if hollow.util.has_any_key(opts, THEME_KEYS) then
         forwarded.terminal_theme = hollow.util.clone_value(resolved_theme.terminal)
         forwarded.ui_theme = hollow.util.clone_value(resolved_theme.ui)
-        forwarded.theme = type(state.config.values.theme) == "table" and {
-          terminal = hollow.util.clone_value(resolved_theme.terminal),
-          ui = hollow.util.clone_value(resolved_theme.ui),
-          palette = hollow.util.clone_value(resolved_theme.palette),
-        } or forwarded.theme
+        forwarded.theme = type(state.config.values.theme) == "table"
+            and {
+              terminal = hollow.util.clone_value(resolved_theme.terminal),
+              ui = hollow.util.clone_value(resolved_theme.ui),
+              palette = hollow.util.clone_value(resolved_theme.palette),
+            }
+          or forwarded.theme
       end
     end
 
     if hollow.util.has_any_key(opts, THEME_KEYS) then
+      local shared = package.loaded["hollow.ui.shared"]
+      if type(shared) == "table" then
+        shared.invalidate_palettes()
+      end
       invalidate_bars()
     end
 

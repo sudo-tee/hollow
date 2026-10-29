@@ -7,6 +7,27 @@ For the widget model see [Custom UI](../custom-ui.md).
 For the API see [`hollow.ui`](../reference/lua/ui.md) and
 [`hollow.ui.workspace`](../reference/lua/workspace.md).
 
+## Theme-aware buttons, tabs, lists and panels
+
+[`examples/ui-styling.lua`](../../examples/ui-styling.lua) is a runnable,
+public-API-only example. From your config:
+
+```lua
+dofile("/path/to/hollow/examples/ui-styling.lua")()
+```
+
+It opens a modal with theme-owned panel chrome, tabs, selectable rows and a
+primary action. Tab and choice clicks update model state; Done or Escape closes
+the modal. Runtime theme changes refresh the open panel and controls. No bars
+are replaced. The path above must point to your checkout.
+
+The authoring pattern: select a widget palette with `ui.modal({ theme = "select",
+... })`, pass its render callback's palette to button/tab primitives, and leave
+row selection paint to `variant = "selectable"`. Use `ui.style` for local
+overrides; do not import private recipe helpers. For disabled actions, set
+`disabled = true` on `ui.button` or `ui.action_button` rather than only dimming
+their colors.
+
 ## Replace the top bar entirely
 
 A minimal top bar with a workspace button, a spacer, and a clock.

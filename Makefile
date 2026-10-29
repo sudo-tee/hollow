@@ -3,6 +3,16 @@
 # ARGS are passed to the selected command; quote them as shell arguments.
 ARGS ?=
 ZIG ?= zig
+BENCH_MODES := scroll repaint keypress split-scroll sync-output chunked chunked-raw codex-flash image image-animation renderer-image renderer-image-animation cpu blocking-child bypass-blocking nvim-restart minimize-restore
+ifneq ($(filter bench,$(MAKECMDGOALS)),)
+BENCH_MODE := $(filter $(BENCH_MODES),$(MAKECMDGOALS))
+ifneq ($(word 2,$(BENCH_MODE)),)
+$(error Specify only one benchmark mode)
+endif
+.PHONY: $(BENCH_MODES)
+$(BENCH_MODES):
+	@:
+endif
 
 .PHONY: help setup build run dev launch bench test test-all test-lua test-launch
 
@@ -21,7 +31,7 @@ help:
 	  '  make test-launch  Run launch script tests' \
 	  '' \
 	  'Pass options with ARGS, e.g. make dev ARGS="--build-only"' \
-	  'or make bench ARGS="scroll 100". See each command for its options.'
+	  'or make bench scroll ARGS="100". See each command for its options.'
 
 setup:
 	./scripts/setup.sh $(ARGS)
@@ -39,7 +49,7 @@ launch:
 	./launch.sh $(ARGS)
 
 bench:
-	@HOLLOW_BENCH_PROG='make bench' ./bench.sh $(ARGS)
+	@HOLLOW_BENCH_PROG='make bench' ./bench.sh $(BENCH_MODE) $(ARGS)
 
 test:
 	$(ZIG) build test $(ARGS)

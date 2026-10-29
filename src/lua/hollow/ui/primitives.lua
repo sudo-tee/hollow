@@ -1,10 +1,15 @@
+local button_styles = require("hollow.ui.styles.button")
 local shared = require("hollow.ui.shared")
+local tab_styles = require("hollow.ui.styles.tab")
 local util = require("hollow.util")
 
 ---@type Hollow
 local hollow = _G.hollow
 ---@type HollowUi
 local ui = hollow.ui
+ui.style = shared.merge_styles
+
+ui.styles = require("hollow.ui.styles.common")
 
 local bar = ui.bar or {}
 ui.bar = bar
@@ -40,9 +45,11 @@ function ui.span(text, style)
   return { _type = "span", text = text, style = style }
 end
 
+---@generic T: HollowUiRenderableNode
+---@overload fun(value: T, style?: nil): T
 ---@param value any
 ---@param style HollowUiNodeStyle|HollowHexColor|nil
----@return HollowUiSpanNode|HollowUiRenderableNode
+---@return HollowUiSpanNode
 function ui.text(value, style)
   if style == nil and shared.is_text_shorthand(value) then
     return shared.normalize_text_shorthand(value)
@@ -67,20 +74,71 @@ function ui.icon(name, style)
   return { _type = "icon", name = tostring(name or ""), style = style }
 end
 
----@param children HollowUiRenderableNode[]|nil
+---@param children HollowUiChild[]|nil
 ---@param style HollowUiNodeStyle|HollowHexColor|nil
 ---@return HollowUiGroupNode
 function ui.group(children, style)
-  local normalized = {}
-  for _, child in ipairs(children or {}) do
-    for _, node in ipairs(shared.normalize_inline_nodes(child)) do
-      normalized[#normalized + 1] = node
-    end
-  end
+  local normalized = shared.collect_inline(children or {}, "hollow.ui.group()", true)
   return { _type = "group", children = normalized, style = style }
 end
 
----@param children HollowUiInlineNode[]
+--- Select a branch, evaluating it only if it is a function.
+---@param cond any
+---@param then_ any
+---@param else_ any
+---@return any
+function ui.when(cond, then_, else_)
+  local value = cond and then_ or else_
+  if type(value) == "function" then
+    value = value()
+  end
+  return value or false
+end
+
+--- Map a list into a fragment, preserving indices for falsy results.
+---@generic T
+---@param list T[]|HollowTbl|nil
+---@param fn fun(item: T, i: integer): any
+---@return any[]
+function ui.each(list, fn)
+  local out = {}
+  if list == nil then
+    return out
+  end
+  if type(list.get) == "function" then
+    list = list:get()
+  end
+  for i, item in ipairs(list) do
+    out[i] = fn(item, i) or false
+  end
+  return out
+end
+
+--- Join truthy items into a fragment. Function separators receive their 1-based separator index.
+---@param items any[]
+---@param sep any|fun(i: integer): any
+---@return any[]
+function ui.join(items, sep)
+  local out = {}
+  local count = 0
+  for i = 1, table.maxn(items) do
+    local item = items[i]
+    if item then
+      if count > 0 then
+        local separator = sep
+        if type(sep) == "function" then
+          separator = sep(count)
+        end
+        out[#out + 1] = separator
+      end
+      out[#out + 1] = item
+      count = count + 1
+    end
+  end
+  return out
+end
+
+---@param children HollowUiChild[]
 ---@param opts HollowUiRowOptions|nil
 ---@return HollowUiRowNode
 function ui.row(children, opts)
@@ -89,12 +147,7 @@ function ui.row(children, opts)
   end
 
   opts = opts or {}
-  local nodes = {}
-  for _, value in ipairs(children) do
-    for _, node in ipairs(shared.normalize_inline_nodes(value)) do
-      nodes[#nodes + 1] = node
-    end
-  end
+  local nodes = shared.collect_inline(children, "hollow.ui.row()", true)
 
   local hoverable = opts.hoverable
   if hoverable == nil then
@@ -103,6 +156,10 @@ function ui.row(children, opts)
 
   return {
     _type = "row",
+    style = opts.style,
+    variant = opts.variant,
+    selected = opts.selected,
+    theme = opts.theme,
     children = nodes,
     id = opts.id,
     hoverable = hoverable == true,
@@ -120,20 +177,14 @@ function ui.row(children, opts)
   }
 end
 
----@param children HollowUiRowNode[]
+---@param children HollowUiRowChild[]
 ---@return HollowUiColumnNode
 function ui.column(children)
   if type(children) ~= "table" then
     error("hollow.ui.column() expects a list of rows")
   end
 
-  local rows = {}
-  for _, child in ipairs(children) do
-    if type(child) ~= "table" or child._type ~= "row" then
-      error("hollow.ui.column() children must be ui.row() or ui.divider() nodes")
-    end
-    rows[#rows + 1] = child
-  end
+  local rows = shared.collect_rows(children, "hollow.ui.column()")
   return { _type = "column", children = rows }
 end
 
@@ -151,23 +202,41 @@ function ui.button(opts)
     error("hollow.ui.button() requires an id when on_click is set")
   end
 
-  local style = opts.style
-  if type(style) == "table" then
-    style = clone_table(style)
-    style.id = opts.id
-    style.on_click = opts.on_click
-    style.on_mouse_enter = opts.on_mouse_enter
-    style.on_mouse_leave = opts.on_mouse_leave
+  local style
+  if opts.variant or opts.size then
+    local theme = opts.theme or shared.palette("select")
+    local s = button_styles(theme, {
+      variant = opts.variant,
+      size = opts.size,
+      disabled = opts.disabled == true,
+    })
+    style = ui.styled(theme, s.root, opts.style)
   else
-    style = {
-      id = opts.id,
-      on_click = opts.on_click,
-      on_mouse_enter = opts.on_mouse_enter,
-      on_mouse_leave = opts.on_mouse_leave,
-    }
+    style = type(opts.style) == "table" and clone_table(opts.style) or {}
+  end
+  style.id = opts.id
+  style.on_click = opts.on_click
+  style.on_mouse_enter = opts.on_mouse_enter
+  style.on_mouse_leave = opts.on_mouse_leave
+  if opts.disabled then
+    style.on_click, style.on_mouse_enter, style.on_mouse_leave, style.hover = nil, nil, nil, nil
   end
 
   return ui.span(opts.text or "", style)
+end
+
+local function select_theme(opts)
+  return opts.theme or shared.palette("select")
+end
+
+--- Merge style layers like `ui.style`, then resolve tokens against `theme`.
+--- Without a theme, tokens stay unresolved for serialization.
+---@param theme HollowUiTheme|nil
+---@vararg HollowStyleLayer
+---@return HollowUiNodeStyle
+function ui.styled(theme, ...)
+  local style = ui.style(...)
+  return theme and shared.resolve_tokens(style, theme) or style
 end
 
 --- A padded overlay action with theme-aware hover styling.
@@ -175,20 +244,38 @@ end
 ---@return HollowUiSpanNode
 function ui.action_button(opts)
   opts = opts or {}
-  local theme = opts.theme or require("hollow.theme").resolve_widget("select")
-  local style = { fg = theme.fg, radius = 4, padding = { left = 4, right = 4 } }
+  local theme = select_theme(opts)
+  local style = button_styles(theme, {
+    variant = opts.variant,
+    size = opts.size,
+    disabled = opts.disabled == true,
+  }).root
+  local hover = style.hover
   for key, value in pairs(opts.style or {}) do
-    style[key] = util.clone_value(value)
-  end
-  if opts.state and opts.state.hovered_id == opts.id and opts.id ~= nil then
-    style.fg = theme.hover_fg
-    style.bg = theme.hover_bg
-    for key, value in pairs(opts.hover_style or {}) do
+    if key ~= "hover" then
       style[key] = util.clone_value(value)
+    elseif type(value) == "table" then
+      hover = shared.merge_styles(hover, value)
+    else
+      hover = value
     end
+  end
+  if type(opts.hover_style) == "table" then
+    hover = shared.merge_styles(hover, opts.hover_style)
+    if opts.hover_style.padding ~= nil then
+      -- Legacy hover overrides replace the whole box, rather than inherit its sides.
+      hover.padding = shared.normalize_segment_padding(opts.hover_style.padding)
+    end
+  end
+  style.hover = hover
+  -- The recipe owns and resolves its defaults. Resolve again only when local
+  -- overrides may have introduced tokens, avoiding a redundant clone per render.
+  if type(opts.style) == "table" or type(opts.hover_style) == "table" then
+    style = shared.resolve_tokens(style, theme)
   end
   return ui.button({
     id = opts.id,
+    disabled = opts.disabled,
     text = opts.text,
     style = style,
     on_click = opts.on_click,
@@ -201,56 +288,45 @@ end
 ---@param opts HollowUiTabOptions
 ---@return HollowUiGroupNode
 function ui.tab(opts)
-  local theme = opts.theme or require("hollow.theme").resolve_widget("select")
+  local theme = select_theme(opts)
   local active = opts.active == true
   local badge = opts.badge
-  local nodes = {
+  return ui.group({
     ui.button({
       id = opts.id,
       text = badge and (opts.label .. " ") or opts.label,
-      style = {
-        fg = active and theme.selection_fg or theme.muted,
-        bg = active and theme.selection_bg or nil,
-        bold = active,
-        radius = 4,
-        background_extend = active and badge and 2 or nil,
-        padding = { left = 8, right = badge and 0 or 8, top = 3, bottom = 3 },
-      },
+      style = tab_styles(theme, {
+        variant = badge and "badged" or nil,
+        selected = active,
+      }).root,
       on_click = opts.on_click,
     }),
-  }
-  if badge then
-    nodes[#nodes + 1] = ui.button({
-      id = opts.id .. ":badge",
-      text = tostring(badge.text),
-      style = {
-        fg = theme.panel_bg,
-        bg = badge.color,
-        bold = true,
-        radius = 4,
-        padding = { left = 5, right = 5, top = 1, bottom = 1 },
-      },
-      on_click = opts.on_click,
-    })
-    nodes[#nodes + 1] = ui.text(" ")
-  end
-  return ui.group(nodes)
+    ui.when(badge, function()
+      return {
+        ui.button({
+          id = opts.id .. ":badge",
+          text = tostring(badge.text),
+          style = ui.styled(theme, ui.styles.badge, { bg = badge.color }),
+          on_click = opts.on_click,
+        }),
+        " ",
+      }
+    end),
+  })
 end
 
 --- Compose tabs with consistent spacing.
 ---@param opts HollowUiTabBarOptions
 ---@return HollowUiGroupNode
 function ui.tab_bar(opts)
-  local nodes = {}
-  for index, tab in ipairs(opts.tabs or {}) do
-    if index > 1 then
-      nodes[#nodes + 1] = ui.text("  ")
-    end
-    local tab_opts = util.clone_value(tab)
-    tab_opts.theme = tab_opts.theme or opts.theme
-    nodes[#nodes + 1] = ui.tab(tab_opts)
-  end
-  return ui.group(nodes)
+  return ui.group(ui.join(
+    ui.each(opts.tabs or {}, function(tab)
+      local tab_opts = util.clone_value(tab)
+      tab_opts.theme = tab_opts.theme or opts.theme
+      return ui.tab(tab_opts)
+    end),
+    "  "
+  ))
 end
 
 ---@param opts HollowUiBarTabsOptions|nil

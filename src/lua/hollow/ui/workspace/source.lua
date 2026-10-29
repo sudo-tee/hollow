@@ -12,6 +12,7 @@ local ui = hollow.ui
 local M = {}
 
 local DEFAULT_CACHE_TTL_MS = 5000
+
 local HOST_PAGE_SIZE = 256
 local HOST_ENTRY_LIMIT = 4096
 local HOST_STAT_CONCURRENCY = 4
@@ -702,10 +703,14 @@ local function merged_workspace_items(force_refresh)
   return merged
 end
 
+---@param value any
+---@return string
 function M.trim_string(value)
   return trim_string(value)
 end
 
+---@param value any
+---@return string|nil
 function M.normalize_domain(value)
   return normalize_domain(value)
 end
@@ -749,6 +754,7 @@ function M.remember_workspace_cwd(name, cwd, domain)
   remember_workspace_cwd(name, cwd, domain)
 end
 
+---@param opts? HollowUiWorkspaceSwitcherOptions
 function M.configure(opts)
   opts = opts or {}
   local switcher = switcher_state()
@@ -773,14 +779,19 @@ function M.clear_cache()
   switcher.host_signature = host_signature(configured_sources())
 end
 
+---@param force_refresh? boolean
+---@return HollowUiWorkspaceItem[]
 function M.known_workspaces(force_refresh)
   return cached_known_workspaces(force_refresh == true)
 end
 
+---@param force_refresh? boolean
+---@return HollowUiWorkspaceItem[]
 function M.items(force_refresh)
   return merged_workspace_items(force_refresh == true)
 end
 
+---@return HollowUiWorkspaceSwitcherState
 function M.switcher_state()
   return switcher_state()
 end
