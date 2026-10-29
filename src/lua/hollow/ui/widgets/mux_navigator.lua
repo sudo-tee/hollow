@@ -440,6 +440,11 @@ function ui.mux_navigator.open(opts)
     chrome = opts.chrome
   end
 
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = theme.backdrop
+  end
+
   modal = ui.modal({
     theme = theme,
     render = render_content,
@@ -449,7 +454,8 @@ function ui.mux_navigator.open(opts)
     height = opts.height,
     max_height = opts.max_height,
     chrome = chrome,
-    backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop,
+    backdrop = backdrop,
+    theme_backdrop = opts.backdrop == nil,
   })
 end
 

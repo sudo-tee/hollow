@@ -331,7 +331,10 @@ end
 function ui.command_palette.open(opts)
   opts = opts or {}
   local theme = resolve_theme(opts)
-  local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = theme.backdrop
+  end
   local all_entries = opts.entries or providers.actions()
   local filter = ui.text_input({ initial = opts.query or "" })
   local collapsed = {}
@@ -453,6 +456,7 @@ function ui.command_palette.open(opts)
     max_height = opts.max_height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
+    theme_backdrop = opts.backdrop == nil,
   })
 end
 

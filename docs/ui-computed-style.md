@@ -131,7 +131,17 @@ allocated bytes per row. Component-only groups used 13636 bytes before and
 13720 after (about 0.6% more). Host scheduling and GC vary; these values do not
 establish a universal tolerance or native frame-time claim.
 
-Native visual acceptance across DPI/window sizes, screenshots and complete
-native timing remain unverified in this environment. Zig 0.17 formatting passes;
-both build test commands are blocked while fetching external dependencies with
-`HttpConnectionClosing`. The Lua suite runs directly through LuaJIT/Busted.
+GitHub CI for implementation commit `f898a9c` passed native/Lua tests
+(`zig build test-all`), Linux and Windows builds, and agent conformance:
+[Test](https://github.com/sudo-tee/hollow/actions/runs/40777176646),
+[Build](https://github.com/sudo-tee/hollow/actions/runs/40777176397),
+[Agent conformance](https://github.com/sudo-tee/hollow/actions/runs/40777176440).
+This supersedes the local dependency-download blocker. Subsequent Lua-only
+compatibility fixes have regression tests and run through the same PR checks.
+Native screenshots/DPI/hit-region acceptance and complete native timing still
+require a running desktop session.
+
+The follow-up compatibility pass covers explicit `backdrop = false`, removing
+and restoring theme-owned backdrops on open dialogs, retaining instance-owned
+backdrops, and resolving child text tokens with a row's own partial palette on
+both overlay and sidebar surfaces.

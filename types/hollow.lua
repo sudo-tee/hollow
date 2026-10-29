@@ -920,6 +920,7 @@
 ---@field layout? { padding?: HollowUiBoxValue, margin?: HollowUiBoxValue }
 ---@field _kind? string
 ---@field _palette? table Internal resolved palette, including instance overrides.
+---@field _theme_backdrop? boolean Internal marker for a theme-owned default backdrop.
 ---@field render fun(ctx: HollowWidgetCtx): HollowWidgetRenderResult
 ---@field on_event? fun(name: string, e: any)
 ---@field on_key? fun(key: string, mods: HollowKeyMods): boolean

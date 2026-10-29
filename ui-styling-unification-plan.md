@@ -1,7 +1,7 @@
 # Hollow UI styling unification plan
 
 **Target:** `feat/declarative-ui`
-**Status:** implemented Lua styling unification; native build/visual acceptance pending
+**Status:** implemented Lua styling unification; native CI passed, desktop visual acceptance pending
 **Scope:** Lua widget styling, theme resolution, interaction states, the Lua-to-Zig presentation contract, and future Lua-view reuse.
 **Companion plans:** `ui-master-plan.md`, `ui-styles-plan.md`, `ui-composition-plan.md`.
 **Out of scope:** changes to the mux split tree, terminal cell styling, and choosing a layout engine.
@@ -354,5 +354,7 @@ an alias.
 
 See `docs/ui-computed-style.md` for the final contract and verification details.
 Native screenshots/DPI/hit-region acceptance and full native timing remain
-pending. Zig 0.17 formatting passes; build tests cannot fetch external packages
-in this environment (`HttpConnectionClosing`). The Lua suite runs directly.
+pending. Native/Lua tests, Linux/Windows builds and agent conformance passed
+GitHub CI for `f898a9c`; follow-up Lua-only fixes run through the same PR checks.
+The compatibility pass also covers explicit false/default backdrop semantics,
+live backdrop removal/restoration and per-row child-token palettes.

@@ -230,7 +230,10 @@ function ui.select.open(opts)
   opts = opts or {} --[[@as HollowUiSelectOptions]]
 
   local theme = resolve_select_theme(opts)
-  local backdrop = opts.backdrop ~= nil and opts.backdrop or theme.backdrop
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = theme.backdrop
+  end
   local prepared = prepare_entries(opts)
   local actions = opts.actions or {}
 
@@ -340,6 +343,7 @@ function ui.select.open(opts)
     max_height = opts.max_height,
     chrome = opts.chrome or shared.theme_overlay_chrome(theme),
     backdrop = backdrop,
+    theme_backdrop = opts.backdrop == nil,
     keys = ui.keys(filter, nav, {
       ["escape|<C-[>"] = function()
         modal.close()

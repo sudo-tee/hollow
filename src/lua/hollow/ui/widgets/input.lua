@@ -28,6 +28,11 @@ function ui.input.open(opts)
 
   local m
 
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = base_theme.backdrop
+  end
+
   m = ui.modal({
     theme = base_theme,
     render = function(theme)
@@ -42,7 +47,8 @@ function ui.input.open(opts)
     height = opts.height,
     chrome = opts.chrome,
     align = opts.align or "center",
-    backdrop = opts.backdrop ~= nil and opts.backdrop or base_theme.backdrop,
+    backdrop = backdrop,
+    theme_backdrop = opts.backdrop == nil,
     keys = ui.keys(input, {
       enter = function()
         m.close()

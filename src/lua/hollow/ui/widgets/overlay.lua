@@ -16,6 +16,7 @@ ui.overlay = ui.overlay or {}
 ---@param row HollowUiRow
 ---@return HollowUiOverlaySerializedRow
 local function serialize_overlay_row(row, palette, hovered_id)
+  palette = row.theme or palette
   local serialized = { segments = {}, id = row.id, hoverable = row.hoverable ~= false }
   local paint = shared.resolve_row_style(row, palette, hovered_id)
   local inherited = paint and { fg = paint.fg, bold = paint.bold } or nil
@@ -72,6 +73,10 @@ local function serialize_overlay_widget(widget)
     serialized_rows[index] = serialize_overlay_row(row, palette, widget._hovered_id)
   end
 
+  local backdrop = widget.backdrop
+  if widget._theme_backdrop then
+    backdrop = palette.backdrop
+  end
   local chrome = widget.chrome
   if type(widget.style) == "table" then
     chrome = util.clone_value(widget.style)
@@ -82,7 +87,7 @@ local function serialize_overlay_widget(widget)
   return {
     stack_context = widget._notify and "notification" or (widget._modal and "modal" or "overlay"),
     align = shared.normalize_overlay_align(widget.align),
-    backdrop = shared.normalize_overlay_backdrop(widget.backdrop),
+    backdrop = shared.normalize_overlay_backdrop(backdrop),
     chrome = shared.normalize_overlay_chrome(chrome, palette),
     width = shared.normalize_overlay_size(widget.width),
     height = shared.normalize_overlay_size(widget.height),

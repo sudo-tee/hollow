@@ -73,6 +73,11 @@ function ui.confirm.open(opts)
 
   local nav = ui.list_nav(#footer_buttons)
 
+  local backdrop = opts.backdrop
+  if backdrop == nil then
+    backdrop = true
+  end
+
   m = ui.modal({
     theme = base_theme,
     render = function(theme, state)
@@ -89,7 +94,7 @@ function ui.confirm.open(opts)
     height = opts.height,
     chrome = opts.chrome,
     align = opts.align or "center",
-    backdrop = opts.backdrop ~= nil and opts.backdrop or true,
+    backdrop = backdrop,
     keys = ui.keys(nav, {
       enter = function()
         local btn = raw_buttons[nav.index]

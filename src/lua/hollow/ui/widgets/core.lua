@@ -59,7 +59,8 @@ end
 ---@param max_chars number|nil
 ---@return HollowUiSegment[]
 local function trim_row_for_width(row, max_chars)
-  local paint = shared.resolve_row_style(row, shared.palette("all"))
+  local palette = row.theme or shared.palette("all")
+  local paint = shared.resolve_row_style(row, palette)
   local flattened =
     shared.flatten_span_nodes(row.children or {}, paint and { fg = paint.fg, bold = paint.bold })
   local segments = {}
@@ -76,7 +77,7 @@ local function trim_row_for_width(row, max_chars)
         text = text:sub(1, remaining)
       end
       if #text > 0 then
-        segments[#segments + 1] = shared.style_to_segment(text, node.style)
+        segments[#segments + 1] = shared.style_to_segment(text, node.style, palette)
         remaining = remaining - #text
       end
     end

@@ -699,6 +699,7 @@ function ui.activity.open(opts)
     max_height = opts.max_height or height,
     chrome = chrome,
     backdrop = backdrop,
+    theme_backdrop = opts.backdrop == nil,
     on_event = function(name, event)
       return (details and detail_view or list).on_event(name, event)
     end,

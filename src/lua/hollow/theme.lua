@@ -154,14 +154,18 @@ local function create_ui(spec, palette)
   all.cursor_fg = color_or(all.cursor_fg, palette.background)
   all.divider = color_or(all.divider, palette.bright_black)
 
-  widgets.input.backdrop = widgets.input.backdrop or { color = palette.black, alpha = 168 }
+  if widgets.input.backdrop == nil then
+    widgets.input.backdrop = { color = palette.black, alpha = 168 }
+  end
 
   local select = widgets.select
   local select_bg = color.brighten_hex_color(all.panel_bg, 0.4, all.panel_bg)
   select.selected_bg = color_or(select.selected_bg, select_bg)
   select.selected_detail_bg = color_or(select.selected_detail_bg, all.panel_bg)
   select.scrollbar_thumb = color_or(select.scrollbar_thumb, palette.bright_yellow)
-  select.backdrop = select.backdrop or { color = palette.black, alpha = 168 }
+  if select.backdrop == nil then
+    select.backdrop = { color = palette.black, alpha = 168 }
+  end
 
   local levels = widgets.notify.notify_levels
   levels.info = color_or(levels.info, palette.bright_blue)

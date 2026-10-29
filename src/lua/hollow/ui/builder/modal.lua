@@ -10,7 +10,7 @@ local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
----@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any }
+---@param spec { theme?: string, render: function, keys?: function, width?: integer, height?: integer, max_height?: integer, chrome?: table, align?: string, backdrop?: any, theme_backdrop?: boolean }
 ---@return HollowUiModalHandle|nil
 function M.modal(spec)
   -- Preserve unfinished input and questions; never replace an active modal.
@@ -66,6 +66,7 @@ function M.modal(spec)
   })
 
   widget._palette = theme
+  widget._theme_backdrop = spec.theme_backdrop == true
   widget._modal = true
   ui.overlay.push(widget)
 

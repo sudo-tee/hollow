@@ -356,6 +356,72 @@ describe("unified component styling", function()
     assert.is_nil(weak[2])
   end)
 
+  it("honors explicit false backdrops across built-in dialogs", function()
+    local openers = {
+      function()
+        ui.select.open({ items = { "one" }, backdrop = false })
+      end,
+      function()
+        ui.command_palette.open({ entries = {}, backdrop = false })
+      end,
+      function()
+        ui.mux_navigator.open({ backdrop = false })
+      end,
+      function()
+        ui.activity.open({ backdrop = false })
+      end,
+      function()
+        ui.input.open({ prompt = "Input", backdrop = false })
+      end,
+      function()
+        ui.confirm.open({ prompt = "Confirm", backdrop = false })
+      end,
+    }
+    for _, open in ipairs(openers) do
+      ui.overlay.clear()
+      open()
+      assert.is_nil(ui._overlay_state()[1].backdrop)
+    end
+  end)
+
+  it("removes and restores an open picker's theme backdrop", function()
+    ui.select.open({ items = { "one" } })
+    assert.is_table(ui._overlay_state()[1].backdrop)
+    hollow.config.set({ theme = { ui = { widgets = { select = { backdrop = false } } } } })
+    assert.is_nil(ui._overlay_state()[1].backdrop)
+    hollow.config.set({
+      theme = { ui = { widgets = { select = { backdrop = { color = "#123456", alpha = 81 } } } } },
+    })
+    assert.same({ color = "#123456", alpha = 81 }, ui._overlay_state()[1].backdrop)
+  end)
+
+  it("preserves a disabled input backdrop through theme resolution and refresh", function()
+    hollow.config.set({ theme = { ui = { widgets = { input = { backdrop = false } } } } })
+    assert.is_nil(hollow.theme.resolve_widget("input").backdrop)
+    ui.input.open({ prompt = "Input" })
+    assert.is_nil(ui._overlay_state()[1].backdrop)
+    hollow.config.set({
+      theme = { ui = { widgets = { input = { backdrop = { color = "#234567", alpha = 82 } } } } },
+    })
+    assert.same({ color = "#234567", alpha = 82 }, ui._overlay_state()[1].backdrop)
+  end)
+
+  it("retains an explicit instance backdrop across theme changes", function()
+    ui.select.open({ items = { "one" }, backdrop = { color = "#abcdef", alpha = 91 } })
+    hollow.config.set({ theme = { ui = { widgets = { select = { backdrop = false } } } } })
+    assert.same({ color = "#abcdef", alpha = 91 }, ui._overlay_state()[1].backdrop)
+  end)
+
+  it("resolves child tokens against a row's partial palette on both row surfaces", function()
+    local function row()
+      return ui.row({ ui.text("detail", { fg = "muted" }) }, { theme = { muted = "#123456" } })
+    end
+    ui.overlay.push(ui.overlay.new({ render = row }))
+    assert.equals("#123456", ui._overlay_state()[1].rows[1].segments[1].fg)
+    ui.sidebar.mount(ui.sidebar.new({ width = 20, render = row }))
+    assert.equals("#123456", ui._sidebar_state().rows[1][1].fg)
+  end)
+
   it("shares finite surface pixel normalization without changing span fractions", function()
     assert.equals(2, shared.normalize_surface_px(2.9, 0))
     assert.equals(0, shared.normalize_surface_px(-1, 0))
