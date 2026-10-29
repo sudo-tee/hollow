@@ -124,6 +124,34 @@ pub fn boundsForNode(
     return null;
 }
 
+/// Pixel bounds of a split node's two children, separated by a one-pixel
+/// divider and snapped to whole cells when cell metrics are known.
+pub fn splitChildBounds(node: *const SplitNode, bounds: PaneBounds, cell_w: u32, cell_h: u32) struct { PaneBounds, PaneBounds } {
+    const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
+    switch (node.direction) {
+        .vertical => {
+            const divider: u32 = if (bounds.width > 1) 1 else 0;
+            const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
+            const first_w = splitSpan(usable_w, cell_w, ratio);
+            const second_w = if (usable_w > first_w) usable_w - first_w else 0;
+            return .{
+                .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height },
+                .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height },
+            };
+        },
+        .horizontal => {
+            const divider: u32 = if (bounds.height > 1) 1 else 0;
+            const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
+            const first_h = splitSpan(usable_h, cell_h, ratio);
+            const second_h = if (usable_h > first_h) usable_h - first_h else 0;
+            return .{
+                .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h },
+                .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h },
+            };
+        },
+    }
+}
+
 /// Walk a SplitNode tree and fill `out` with one LayoutLeaf per pane leaf.
 /// Returns the number of entries written.
 /// `bounds` is the pixel rectangle available to `node`.
@@ -145,41 +173,7 @@ pub fn layoutSplitTree(
         .split => {
             const first = node.first orelse return;
             const second = node.second orelse return;
-            const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
-            var first_bounds: PaneBounds = undefined;
-            var second_bounds: PaneBounds = undefined;
-            switch (node.direction) {
-                .vertical => {
-                    const divider: u32 = if (bounds.width > 1) 1 else 0;
-                    const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
-                    if (cell_w > 0) {
-                        const first_w = splitSpan(usable_w, cell_w, ratio);
-                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
-                    } else {
-                        const first_w = splitSpan(usable_w, cell_w, ratio);
-                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
-                    }
-                },
-                .horizontal => {
-                    const divider: u32 = if (bounds.height > 1) 1 else 0;
-                    const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
-                    if (cell_h > 0) {
-                        const first_h = splitSpan(usable_h, cell_h, ratio);
-                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
-                    } else {
-                        const first_h = splitSpan(usable_h, cell_h, ratio);
-                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
-                    }
-                },
-            }
+            const first_bounds, const second_bounds = splitChildBounds(node, bounds, cell_w, cell_h);
             layoutSplitTree(first, first_bounds, out, written, cell_w, cell_h);
             layoutSplitTree(second, second_bounds, out, written, cell_w, cell_h);
         },
@@ -206,41 +200,7 @@ pub fn layoutVisibleTree(
         .split => {
             const first = node.first orelse return;
             const second = node.second orelse return;
-            const ratio = std.math.clamp(node.ratio, 0.0, 1.0);
-            var first_bounds: PaneBounds = undefined;
-            var second_bounds: PaneBounds = undefined;
-            switch (node.direction) {
-                .vertical => {
-                    const divider: u32 = if (bounds.width > 1) 1 else 0;
-                    const usable_w = if (bounds.width > divider) bounds.width - divider else bounds.width;
-                    if (cell_w > 0) {
-                        const first_w = splitSpan(usable_w, cell_w, ratio);
-                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
-                    } else {
-                        const first_w = splitSpan(usable_w, cell_w, ratio);
-                        const second_w = if (usable_w > first_w) usable_w - first_w else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = first_w, .height = bounds.height };
-                        second_bounds = .{ .x = bounds.x + first_w + divider, .y = bounds.y, .width = second_w, .height = bounds.height };
-                    }
-                },
-                .horizontal => {
-                    const divider: u32 = if (bounds.height > 1) 1 else 0;
-                    const usable_h = if (bounds.height > divider) bounds.height - divider else bounds.height;
-                    if (cell_h > 0) {
-                        const first_h = splitSpan(usable_h, cell_h, ratio);
-                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
-                    } else {
-                        const first_h = splitSpan(usable_h, cell_h, ratio);
-                        const second_h = if (usable_h > first_h) usable_h - first_h else 0;
-                        first_bounds = .{ .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_h };
-                        second_bounds = .{ .x = bounds.x, .y = bounds.y + first_h + divider, .width = bounds.width, .height = second_h };
-                    }
-                },
-            }
+            const first_bounds, const second_bounds = splitChildBounds(node, bounds, cell_w, cell_h);
             layoutVisibleTree(first, first_bounds, out, written, skip_pane, cell_w, cell_h);
             layoutVisibleTree(second, second_bounds, out, written, skip_pane, cell_w, cell_h);
         },
