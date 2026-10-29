@@ -24,15 +24,45 @@ local DEFAULT_COLUMN_GAP = 2
 local DEFAULT_RENAME_KEY = "<C-r>"
 local DEFAULT_CLOSE_KEY = "<C-x>"
 local DEFAULT_CREATE_KEY = "<C-n>"
+---@type HollowUiNodeStyle
+local DOMAIN_PILL = { radius = 4 }
+---@type HollowUiNodeStyle
+local BOLD = { bold = true }
+---@type HollowUiNodeStyle
+local PLAIN = { bold = false }
 
+---@class (exact) HollowWorkspaceItemPalette
+---@field fg? HollowColor
+---@field muted? HollowColor
+---@field subtle? HollowColor
+---@field open? HollowColor
+---@field user? HollowColor
+---@field bell? HollowColor
+---@field bell_error? HollowColor
+
+---@class (exact) HollowWorkspaceItemStyles
+---@field status HollowUiNodeStyle
+---@field gap HollowUiNodeStyle
+---@field name HollowUiNodeStyle
+---@field badge HollowUiNodeStyle
+---@field cwd HollowUiNodeStyle
+
+---@class (exact) HollowWorkspaceTopbarStyles
+---@field edge HollowUiNodeStyle
+---@field name HollowUiNodeStyle
+
+---@return HollowUiWorkspaceSwitcherState
 local function switcher_state()
   return source.switcher_state()
 end
 
+---@param name string
+---@return HollowUiColorPair
 local function workspace_name_color(name)
   return shared.workspace_colors(name, switcher_state().workspace_color_fn)
 end
 
+---@return HollowWorkspaceItemPalette
 local function derived_palette()
   local theme = shared.resolve_theme()
   local palette = theme.palette
@@ -47,19 +77,49 @@ local function derived_palette()
   }
 end
 
+---@param workspace HollowUiWorkspaceItem
+---@param palette HollowWorkspaceItemPalette
+---@return HollowWorkspaceItemStyles
+local function item_styles(workspace, palette)
+  local attention = workspace.has_bell or workspace.program_status_attention
+  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
+    or palette.bell
+  return {
+    status = {
+      fg = attention and bell or (workspace.is_active and palette.open or palette.subtle),
+      bold = attention or workspace.is_active,
+    },
+    gap = { fg = palette.subtle },
+    name = {
+      fg = util.state_value(
+        workspace.is_active,
+        workspace.is_open,
+        palette.open,
+        palette.user,
+        palette.muted
+      ),
+      bold = workspace.is_active,
+    },
+    badge = ui.style(BOLD, { fg = program_status.color(workspace.program_status_state) }),
+    cwd = ui.style(PLAIN, { fg = palette.subtle }),
+  }
+end
+
+---@param colors HollowUiColorPair
+---@return HollowUiNodeStyle
+local function domain_pill_style(colors)
+  -- Color callbacks supply paint only, never pill geometry or interaction.
+  return ui.style(DOMAIN_PILL, { fg = colors.fg, bg = colors.bg })
+end
+
+---@param workspace HollowUiWorkspaceItem
+---@param domain_width? integer
+---@return HollowUiRenderableNode[]
 local function default_format_item(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
   local palette = derived_palette()
-  local bell_color = workspace.program_status_attention_level == "error" and palette.bell_error
-    or palette.bell
-  local name_color = util.state_value(
-    workspace.is_active,
-    workspace.is_open,
-    palette.open,
-    palette.user,
-    palette.muted
-  )
+  local styles = item_styles(workspace, palette)
   local total_width = tonumber(switcher.width) or DEFAULT_SELECT_WIDTH
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
@@ -91,36 +151,38 @@ local function default_format_item(workspace, domain_width)
     {
       text = attention and icons.bell or (workspace.is_active and icons.workspace_active or " "),
       width = status_width,
-      style = {
-        fg = attention and bell_color or (workspace.is_active and palette.open or palette.subtle),
-        bold = attention or workspace.is_active,
-      },
+      style = styles.status,
     },
-    { text = "", width = gap_width, style = { fg = palette.subtle } },
+    { text = "", width = gap_width, style = styles.gap },
     {
       text = workspace.name,
       width = name_width,
-      style = { fg = name_color, bold = workspace.is_active },
+      style = styles.name,
     },
-    { text = "", width = gap_width, style = { fg = palette.subtle } },
+    { text = "", width = gap_width, style = styles.gap },
     {
       text = badge,
       width = badge_width,
-      style = { fg = program_status.color(workspace.program_status_state), bold = true },
+      style = styles.badge,
     },
-    { text = cwd_text, width = cwd_width, style = { fg = palette.subtle, bold = false } },
+    { text = cwd_text, width = cwd_width, style = styles.cwd },
   })
-  if domain and domain_width > 0 then
-    columns[#columns + 1] = ui.spacer()
-    columns[#columns + 1] = ui.span(" " .. util.truncate_end(domain, domain_width - 3) .. " ", {
-      fg = domain_colors.fg,
-      bg = domain_colors.bg,
-      radius = 4,
-    })
-  end
-  return columns
+  return shared.normalize_inline_nodes({
+    columns,
+    ui.when(domain and domain_width > 0, function()
+      return {
+        ui.spacer(),
+        ui.span(
+          " " .. util.truncate_end(domain, domain_width - 3) .. " ",
+          domain_pill_style(domain_colors)
+        ),
+      }
+    end),
+  })
 end
 
+---@param items HollowUiWorkspaceItem[]
+---@return integer
 local function domain_column_width(items)
   local width = 0
   local domains = {}
@@ -138,6 +200,9 @@ local function domain_column_width(items)
   return count > 1 and width or 0
 end
 
+---@param prefix? string
+---@param suffix? string
+---@return {prefix: string, name: string, suffix: string}
 local function workspace_parts(prefix, suffix)
   local current = hollow.term.current_workspace()
   local name = current and current.name or "workspace"
@@ -151,6 +216,8 @@ local function workspace_parts(prefix, suffix)
   return { prefix = p, name = name, suffix = s }
 end
 
+---@param workspace HollowUiWorkspaceItem
+---@return string
 local function search_text_for_item(workspace)
   local cwd = source.trim_string(workspace.cwd)
   local basename = source.trim_string(cwd ~= "" and util.basename(cwd) or nil)
@@ -164,6 +231,7 @@ local function search_text_for_item(workspace)
     :join("\n")
 end
 
+---@return HollowUiSelectAction[]
 local function switcher_actions()
   local switcher = switcher_state()
   return {
@@ -205,6 +273,7 @@ local function switcher_actions()
   }
 end
 
+---@param opts? HollowUiWorkspaceSwitcherOptions
 function ui.workspace.configure(opts)
   source.configure(opts)
 end
@@ -213,10 +282,14 @@ function ui.workspace.clear_cache()
   source.clear_cache()
 end
 
+---@param force_refresh? boolean
+---@return HollowUiWorkspaceItem[]
 function ui.workspace.known_workspaces(force_refresh)
   return source.known_workspaces(force_refresh)
 end
 
+---@param force_refresh? boolean
+---@return HollowUiWorkspaceItem[]
 function ui.workspace.items(force_refresh)
   return source.items(force_refresh)
 end
@@ -237,6 +310,7 @@ function ui.workspace.open(opts)
   actions.open_workspace(opts)
 end
 
+---@param opts? HollowUiWorkspaceSwitcherOptions
 function ui.workspace.open_switcher(opts)
   opts = opts or {}
   local force_refresh = opts.force_refresh == true
@@ -284,8 +358,9 @@ function ui.workspace.open_switcher(opts)
     chrome = switcher.chrome,
     theme = switcher.theme,
     label = function(item)
-      if switcher_state().format_item then
-        return switcher_state().format_item(item)
+      local formatter = switcher_state().format_item
+      if formatter then
+        return formatter(item)
       end
       return default_format_item(item, domain_width)
     end,
@@ -294,6 +369,17 @@ function ui.workspace.open_switcher(opts)
   })
 end
 
+---@param style HollowUiNodeStyle
+---@return HollowWorkspaceTopbarStyles
+local function topbar_part_styles(style)
+  return {
+    edge = { bg = style.bg, fg = color.brighten_hex_color(style.bg, 0.3, style.fg) },
+    name = ui.style(BOLD, { bg = style.bg, fg = style.fg }),
+  }
+end
+
+---@param opts? HollowUiWorkspaceTopbarOptions
+---@return HollowUiSpanNode|HollowUiSpanNode[]
 function ui.workspace.topbar_button(opts)
   opts = opts or {}
   local style = hollow.tbl(type(opts.style) == "table" and opts.style or {}):entries()
@@ -315,24 +401,18 @@ function ui.workspace.topbar_button(opts)
   end
 
   local parts = workspace_parts(opts.prefix, opts.suffix)
+  local styles = topbar_part_styles(style)
   return {
-    ui.span(parts.prefix, {
-      bg = style.bg,
-      fg = color.brighten_hex_color(style.bg, 0.3, style.fg),
-    }),
-    ui.span(parts.name, {
-      bg = style.bg,
-      fg = style.fg,
-      bold = true,
+    ui.span(parts.prefix, ui.style(styles.edge)),
+    ui.button({
+      text = parts.name,
+      style = styles.name,
       id = opts.id or "workspace-switcher-button",
       on_click = function()
         ui.workspace.open_switcher(opts.switcher or {})
       end,
     }),
-    ui.span(parts.suffix, {
-      bg = style.bg,
-      fg = color.brighten_hex_color(style.bg, 0.3, style.fg),
-    }),
+    ui.span(parts.suffix, ui.style(styles.edge)),
   }
 end
 

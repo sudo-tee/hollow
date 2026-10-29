@@ -50,9 +50,11 @@ function ui.span(text, style)
   return { _type = "span", text = text, style = style }
 end
 
+---@generic T: HollowUiRenderableNode
+---@overload fun(value: T, style?: nil): T
 ---@param value any
 ---@param style HollowUiNodeStyle|HollowHexColor|nil
----@return HollowUiSpanNode|HollowUiRenderableNode
+---@return HollowUiSpanNode
 function ui.text(value, style)
   if style == nil and shared.is_text_shorthand(value) then
     return shared.normalize_text_shorthand(value)
@@ -230,8 +232,8 @@ end
 
 --- Merge style layers like `ui.style`, then resolve tokens against `theme`.
 --- Without a theme, tokens stay unresolved for serialization.
----@param theme table|nil
----@vararg HollowUiNodeStyle|false|nil
+---@param theme HollowUiTheme|nil
+---@vararg HollowStyleLayer
 ---@return HollowUiNodeStyle
 function ui.styled(theme, ...)
   local style = ui.style(...)

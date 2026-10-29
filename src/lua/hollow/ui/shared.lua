@@ -199,9 +199,11 @@ local function resolve_owned_tokens(style, palette)
   return style
 end
 
----@param style HollowUiNodeStyle|nil
----@param palette table
----@return HollowUiNodeStyle
+---@generic T: table
+---@overload fun(style: nil, palette: HollowUiTheme): HollowUiNodeStyle
+---@param style T
+---@param palette HollowUiTheme
+---@return T
 function M.resolve_tokens(style, palette)
   return resolve_owned_tokens(util.clone_value(style or {}), palette)
 end
@@ -767,6 +769,9 @@ function M.style_to_segment(text, style, palette)
 end
 
 -- Shared by the workspace selector and activity workspace pills.
+---@param name string
+---@param custom_fn? fun(name: string): HollowUiColorPair
+---@return HollowUiColorPair
 function M.workspace_colors(name, custom_fn)
   if custom_fn then
     return custom_fn(name)
@@ -896,7 +901,7 @@ local function merge_into(result, layer)
   end
 end
 
----@vararg HollowUiNodeStyle|boolean|nil
+---@vararg HollowStyleLayer
 ---@return HollowUiNodeStyle
 function M.merge_styles(...)
   local result = {}
@@ -980,6 +985,33 @@ local BUTTON_SIZES = {
 }
 local STATE_ORDER = { "hovered", "selected", "pressed", "focus_visible", "disabled" }
 
+--- Private recipe inputs. These describe existing paint resolution, not a
+--- public state/recipe registration API.
+---@class (exact) HollowUiVisualState
+---@field hovered? boolean
+---@field selected? boolean
+---@field pressed? boolean
+---@field focus_visible? boolean
+---@field disabled? boolean
+
+---@class (exact) HollowUiNodeState
+---@field hovered boolean
+---@field selected boolean
+
+---@class (exact) HollowUiStyleStateLayers
+---@field hovered? HollowUiNodeStyle
+---@field selected? HollowUiNodeStyle
+---@field pressed? HollowUiNodeStyle
+---@field focus_visible? HollowUiNodeStyle
+---@field disabled? HollowUiNodeStyle
+
+---@class HollowUiComponentStyleOptions
+---@field variant? HollowUiButtonVariant|"selectable"
+---@field size? HollowUiControlSize
+---@field presentation? "dialog"
+---@field badged? boolean
+---@field default_bg? HollowStyleColor
+
 --- Merge explicit states in a single deterministic order. Instance styles win
 --- last. This only resolves paint; callers must enforce disabled interaction.
 local function apply_style_states(result, layers, visual_state, override)
@@ -994,12 +1026,23 @@ local function apply_style_states(result, layers, visual_state, override)
   return result
 end
 
+---@param base? HollowUiNodeStyle
+---@param layers HollowUiStyleStateLayers
+---@param visual_state? HollowUiVisualState
+---@param override? HollowUiNodeStyle
+---@return HollowUiNodeStyle
 function M.resolve_style_states(base, layers, visual_state, override)
   return apply_style_states(M.merge_styles(base), layers, visual_state, override)
 end
 
 --- Pure, private component resolver. Returns the existing flat style contract
 --- so live components do not allocate nested computed snapshots every render.
+---@param component "button"|"tab"|"list_row"|"panel"
+---@param palette HollowUiTheme
+---@param opts? HollowUiComponentStyleOptions|HollowUiButtonOptions
+---@param visual_state? HollowUiVisualState
+---@param override? HollowUiNodeStyle
+---@return HollowUiSurfacePaint
 function M.resolve_component_style(component, palette, opts, visual_state, override)
   opts, visual_state = opts or {}, visual_state or {}
   local base, layers = {}, {}
@@ -1095,6 +1138,10 @@ end
 
 --- Normalize row paint while retaining legacy aliases as final overrides.
 --- Rows have their own boxes; only text properties are inherited by children.
+---@param row HollowUiRow
+---@param palette HollowUiTheme
+---@param hovered_id? string
+---@return HollowUiNodeStyle|nil
 function M.resolve_row_style(row, palette, hovered_id)
   if row.style == nil and row.variant == nil then
     return nil
@@ -1137,6 +1184,10 @@ function M.resolve_row_style(row, palette, hovered_id)
 end
 
 --- Existing event owners supply selection; hover is looked up in one place.
+---@param hover_state? {hovered_id?: string}
+---@param id? string
+---@param selected? boolean
+---@return HollowUiNodeState
 function M.node_state(hover_state, id, selected)
   return {
     selected = selected == true,
@@ -1444,6 +1495,12 @@ M.normalize_hex_color = color.normalize_hex_color
 --- Common flat surface boundary. Surface pixels retain integer semantics;
 --- span padding still uses normalize_segment_padding. Identity is copied only
 --- for adapters that support it; callbacks never cross the paint boundary.
+---@class HollowUiSurfacePaint: HollowStyle
+---@field alpha? number
+
+---@param value HollowUiSurfacePaint|HollowUiNodeStyle|nil
+---@param palette? HollowUiTheme
+---@return HollowUiSurfacePaint|nil
 function M.normalize_surface_style(value, palette)
   if type(value) ~= "table" then
     return nil
@@ -1503,6 +1560,10 @@ function M.normalize_overlay_chrome(value, palette)
 end
 
 --- Compatibility chrome fields replace whole boxes, unlike style layers.
+---@param style? HollowUiSurfacePaint
+---@param chrome? HollowUiChrome|boolean
+---@param palette HollowUiTheme
+---@return HollowUiChrome|nil
 function M.overlay_surface_style(style, chrome, palette)
   if type(style) ~= "table" then
     return M.normalize_overlay_chrome(chrome, palette)
@@ -1516,6 +1577,11 @@ end
 
 --- Resolve component-part paint once at the compatibility boundary. False is
 --- an explicit suppression, not a request to restore the legacy default.
+---@param palette HollowUiTheme
+---@param component "list_row"|"scrollbar"
+---@param name "accent"|"track"|"thumb"
+---@param fallback? HollowStyleColor
+---@return HollowStyleColor|nil
 function M.part_color(palette, component, name, fallback)
   local part = palette.parts and palette.parts[component]
   local value

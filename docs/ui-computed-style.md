@@ -231,3 +231,66 @@ and the runnable [`examples/ui-styling.lua`](../examples/ui-styling.lua).
 The example has regression tests for rendering, callbacks, theme refresh and
 closing. Desktop visual behavior was confirmed by the maintainer; automated
 native/DPI/performance acceptance remains separate from this documentation pass.
+
+## Built-in authoring cleanup
+
+Presentation normalization and widget-source migration are separate milestones.
+The follow-up authoring pass covers workspace columns/domain pills and its bar
+button, select detail rows, palette and mux rows, activity text/padding,
+notifications, attention/new-tab buttons, special-mode bar chips, dialog titles,
+and text-input/text-view rendering.
+
+Conditional children use `ui.when`, repeated render lists use `ui.each`, and
+repeated paint/geometry lives in module-level style constants or small named
+style functions. State-dependent colors remain explicit conditional layers;
+dynamic workspace/program colors are not forced into a new token vocabulary.
+Optional colors on partial palettes are read directly where token lookup would
+turn an existing native fallback into an error. Render-time resolution is kept
+for live themes; extracted constants never capture a concrete theme at load time.
+
+This is not a rule to replace every `if` or table. Data discovery, filtering,
+tree flattening, viewport/column math, lifecycle/interaction branching and host
+serialization retain ordinary algorithms. Local one-off color overrides passed
+to `ui.style` / `ui.styled` are still supported and intentional. No public recipe
+registry, new variants DSL, or native geometry rewrite is part of this pass.
+
+## Typed component style boundaries
+
+The project uses EmmyLua Rust for analysis. Workspace's palette, named style
+slots, color callbacks and top-bar options now have explicit input/output types;
+shared recipe/state/paint helpers also declare their contracts. Partial widget
+overrides use `HollowUiTheme`; resolved defaults use `HollowUiResolvedTheme`.
+`HollowStyleLayer` describes conditional layers, and `HollowStyleColor` includes
+the supported false override. Spacing annotations include fractional pixels,
+CSS-order arrays and false resets. Token completions list built-in names while
+still allowing custom palette keys.
+
+A private stylesheet module per substantial component is a useful next step,
+not a new styling framework. It should export typed constants or pure functions
+returning named style slots, keep constants immutable, and resolve supplied
+palettes at render time. Keep layout calculations, node construction and event
+handlers in the component. For example:
+
+```lua
+-- A private workspace_styles.lua module; extraction is separate from typing.
+local ui = _G.hollow.ui
+local M = {}
+---@type HollowUiNodeStyle
+local DOMAIN_PILL = { radius = 4 }
+
+---@param colors HollowUiColorPair
+---@return HollowUiNodeStyle
+function M.domain_pill(colors)
+  return ui.style(DOMAIN_PILL, { fg = colors.fg, bg = colors.bg })
+end
+
+return M
+```
+
+Do not create a file for every one-field style. Extract when it meaningfully
+separates a component's visual policy from its structure. New embedded Lua
+modules must also be registered in `src/lua_bridge.zig`. No runtime extraction
+or public recipe API is introduced by this typing pass.
+
+Run `emmylua_check scripts/typecheck --warnings-as-errors` for focused authoring
+fixtures. Repository-wide analysis still has unrelated existing diagnostics.

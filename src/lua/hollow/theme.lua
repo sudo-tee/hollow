@@ -312,7 +312,7 @@ end
 
 ---@param kind string
 ---@param theme HollowResolvedTheme|nil
----@return HollowUiTheme
+---@return HollowUiResolvedTheme
 function M.resolve_widget(kind, theme)
   theme = type(theme) == "table" and theme or M.current()
   local ui = theme.ui

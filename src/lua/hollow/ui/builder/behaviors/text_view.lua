@@ -4,6 +4,10 @@ local ui = _G.hollow.ui
 local util = require("hollow.util")
 local M = {}
 
+local function body_style(theme)
+  return { fg = theme.fg }
+end
+
 local function wrap(text, width)
   local lines = {}
   for paragraph in (text .. "\n"):gmatch("(.-)\n") do
@@ -60,15 +64,16 @@ function M.text_view(opts)
   end
 
   function self.render(theme)
-    local rows = {}
     local viewport = list.visible_range()
-    for index = viewport.start_idx, viewport.end_idx do
-      local _, options = list.row(index, index, index - viewport.start_idx + 1, viewport)
-      options.scrollbar_track_color = theme.scrollbar_track
-      options.scrollbar_thumb_color = theme.scrollbar_thumb
-      rows[#rows + 1] = ui.row({ ui.text(lines[index], { fg = theme.fg }) }, options)
-    end
-    return rows
+    return ui.each(
+      _G.hollow.tbl.range(viewport.start_idx, viewport.end_idx),
+      function(index, visible_index)
+        local _, options = list.row(index, index, visible_index, viewport)
+        options.scrollbar_track_color = theme.scrollbar_track
+        options.scrollbar_thumb_color = theme.scrollbar_thumb
+        return ui.row({ ui.text(lines[index], body_style(theme)) }, options)
+      end
+    )
   end
 
   self.set(opts.text or "")

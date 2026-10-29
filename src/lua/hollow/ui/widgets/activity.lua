@@ -23,6 +23,8 @@ local SELECTED_DETAIL = { fg = "selected_muted" }
 local EMPTY = { fg = "empty" }
 local SUCCESS = { fg = "notify_levels.success" }
 local BADGE_COLORS = { error = "notify_levels.error", warn = "notify_levels.warn" }
+local PILL_GAP = { padding = PILL_PADDING }
+local DISMISS_GAP = { padding = { left = 4, right = 4 } }
 
 local SECTION_GAP = list_style.section_padding
 local LEVEL_RANK = { info = 1, success = 1, warn = 2, error = 3 }
@@ -143,6 +145,36 @@ local function state_color(theme, entry)
     return theme.muted
   end
   return program_status.color(entry.state) or theme.notify_levels[entry.level]
+end
+
+local function entry_styles(theme, entry, row_state, columns, seconds)
+  local read = entry.pending == false and not entry.started_ms
+  local accent = state_color(theme, entry)
+  local status_like = entry.kind == "program" or entry.source == "shell_command"
+  local selected, fg = row_state.selected, row_state.fg
+  return {
+    marker = ui.styled(theme, MUTED, not read and { fg = accent or fg }),
+    primary = ui.styled(
+      theme,
+      PRIMARY,
+      { fg = fg },
+      read and READ,
+      read and selected and { fg = fg }
+    ),
+    secondary = ui.styled(
+      theme,
+      MUTED,
+      selected and SELECTED_DETAIL,
+      status_like and accent and { fg = accent }
+    ),
+    stale = { fg = columns.stale },
+    time = ui.styled(
+      theme,
+      MUTED,
+      seconds >= 3600 and { fg = columns.stale },
+      selected and { fg = fg }
+    ),
+  }
 end
 
 ---@param opts? HollowUiActivityOptions
@@ -562,7 +594,7 @@ function ui.activity.open(opts)
           ui.text(string.rep(" ", columns.pill_width - util.utf8_len(workspace))),
         }
       end, function()
-        return ui.text(string.rep(" ", columns.pill_width), { padding = PILL_PADDING })
+        return ui.text(string.rep(" ", columns.pill_width), ui.style(PILL_GAP))
       end)
     end)
   end
@@ -579,12 +611,12 @@ function ui.activity.open(opts)
         end,
       })
     end, function()
-      return ui.text(" ", { padding = { left = 4, right = 4 } })
+      return ui.text(" ", ui.style(DISMISS_GAP))
     end)
   end
 
   local function render_entry_row(entry, row_state, columns)
-    local selected, hovered, fg = row_state.selected, row_state.hovered, row_state.fg
+    local selected, hovered = row_state.selected, row_state.hovered
     local workspace = util.truncate_end(entry.workspace or "", columns.pill_cap)
     local time, seconds = age(entry)
     local indent = row_group[entry] and "  " or ""
@@ -598,38 +630,20 @@ function ui.activity.open(opts)
     primary = util.truncate_end(primary, budget)
     local rest = budget - util.utf8_len(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
-    local read = entry.pending == false and not entry.started_ms
-    local accent = state_color(theme, entry)
-    local status_like = entry.kind == "program" or entry.source == "shell_command"
+    local styles = entry_styles(theme, entry, row_state, columns, seconds)
     return ui.row({
       list_style.indicator(ui, theme, selected, hovered),
       ui.text(indent),
-      ui.text(marker(entry), ui.styled(theme, MUTED, not read and { fg = accent or fg })),
-      ui.text(
-        primary,
-        ui.styled(theme, PRIMARY, { fg = fg }, read and READ, read and selected and { fg = fg })
-      ),
+      ui.text(marker(entry), styles.marker),
+      ui.text(primary, styles.primary),
       ui.text(secondary and " · " or "", ui.styled(theme, MUTED)),
-      ui.text(
-        secondary or "",
-        ui.styled(
-          theme,
-          MUTED,
-          selected and SELECTED_DETAIL,
-          status_like and accent and { fg = accent }
-        )
-      ),
+      ui.text(secondary or "", styles.secondary),
       ui.spacer(),
-      ui.text(entry.pane_closed and "pane closed  " or "", { fg = columns.stale }),
+      ui.text(entry.pane_closed and "pane closed  " or "", styles.stale),
       render_workspace_pill(entry, workspace, columns),
       ui.text(
         "  " .. string.rep(" ", columns.time_width - util.utf8_len(time)) .. time,
-        ui.styled(
-          theme,
-          MUTED,
-          seconds >= 3600 and { fg = columns.stale },
-          selected and { fg = fg }
-        )
+        styles.time
       ),
       ui.text("  "),
       render_dismiss_button(entry, row_state),

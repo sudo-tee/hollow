@@ -6,7 +6,15 @@ M.row_padding = { left = 4, top = 2, bottom = 2 }
 M.section_indicator_padding = { left = 4, top = 8, bottom = 2 }
 
 -- Keep the indicator column stable as selection and hover move between rows.
+---@param ui HollowUi
+---@param theme HollowUiTheme
+---@param selected? boolean
+---@param hovered? boolean
+---@param indent? string
+---@param padding? HollowUiBoxValue
+---@return HollowUiSpanNode
 function M.indicator(ui, theme, selected, hovered, indent, padding)
+  ---@type HollowStyleColor|nil
   local fg = theme.muted
   if selected then
     fg = shared.part_color(theme, "list_row", "accent", theme.panel_border)
@@ -17,6 +25,12 @@ function M.indicator(ui, theme, selected, hovered, indent, padding)
   })
 end
 
+---@param options HollowUiRowOptions
+---@param theme HollowUiTheme
+---@param selected? boolean
+---@param hovered? boolean
+---@param default_bg? HollowStyleColor
+---@return HollowUiRowOptions
 function M.row(options, theme, selected, hovered, default_bg)
   local style = shared.resolve_component_style("list_row", theme, { default_bg = default_bg }, {
     selected = selected,
@@ -35,6 +49,9 @@ function M.row(options, theme, selected, hovered, default_bg)
   return options
 end
 
+---@param state? {hovered_id?: string}
+---@param id? string
+---@return boolean
 function M.hovered(state, id)
   return shared.node_state(state, id).hovered
 end

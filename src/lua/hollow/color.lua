@@ -1,12 +1,12 @@
 local M = {}
 
 ---@class HollowColorModule
----@field is_hex_color fun(value:string): boolean
----@field normalize_hex_color fun(value:string, fallback:string|nil): string|nil
----@field adjust_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field brighten_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field darken_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
----@field contrast_hex_color fun(value:string, amount:number|string, fallback:string|nil): string|nil
+---@field is_hex_color fun(value:any): boolean
+---@field normalize_hex_color fun<F>(value:any, fallback:F|nil): string|F|nil
+---@field adjust_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field brighten_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field darken_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
+---@field contrast_hex_color fun<F>(value:any, amount:number|string, fallback:F|nil): string|F|nil
 ---@field hex_from_hsl fun(h:number, s:number, l:number): string
 ---@field hex_luminance fun(hex:string): number
 
@@ -37,15 +37,16 @@ local function split_hex_channels(color)
   return tonumber(color:sub(2, 3), 16), tonumber(color:sub(4, 5), 16), tonumber(color:sub(6, 7), 16)
 end
 
----@param value string
+---@param value any
 ---@return boolean
 function M.is_hex_color(value)
   return type(value) == "string" and value:match(HEX_COLOR_PATTERN) ~= nil
 end
 
----@param value string
----@param fallback string|nil
----@return string|nil
+---@generic F
+---@param value any
+---@param fallback F|nil
+---@return string|F|nil
 function M.normalize_hex_color(value, fallback)
   if M.is_hex_color(value) then
     return value
@@ -53,10 +54,11 @@ function M.normalize_hex_color(value, fallback)
   return fallback
 end
 
----@param value string
+---@generic F
+---@param value any
 ---@param amount number|string
----@param fallback string|nil
----@return string|nil
+---@param fallback F|nil
+---@return string|F|nil
 function M.adjust_hex_color(value, amount, fallback)
   local color = M.normalize_hex_color(value, nil)
   local normalized_amount = normalize_amount(amount)
@@ -77,26 +79,29 @@ function M.adjust_hex_color(value, amount, fallback)
   return string.format("#%02x%02x%02x", adjust(red), adjust(green), adjust(blue))
 end
 
----@param value string
+---@generic F
+---@param value any
 ---@param amount number|string
----@param fallback string|nil
----@return string|nil
+---@param fallback F|nil
+---@return string|F|nil
 function M.brighten_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, math.abs(tonumber(amount) or 0), fallback)
 end
 
----@param value string
+---@generic F
+---@param value any
 ---@param amount number|string
----@param fallback string|nil
----@return string|nil
+---@param fallback F|nil
+---@return string|F|nil
 function M.darken_hex_color(value, amount, fallback)
   return M.adjust_hex_color(value, -math.abs(tonumber(amount) or 0), fallback)
 end
 
----@param value string
+---@generic F
+---@param value any
 ---@param amount number|string
----@param fallback string|nil
----@return string|nil
+---@param fallback F|nil
+---@return string|F|nil
 function M.contrast_hex_color(value, amount, fallback)
   local color = M.normalize_hex_color(value, nil)
   local norm_amount = normalize_amount(amount)

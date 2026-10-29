@@ -7,6 +7,15 @@ local ui = _G.hollow.ui
 
 local M = {}
 
+-- Read optional colors directly: callers may provide partial input palettes.
+local function input_style(theme)
+  return { fg = theme.input_fg, bg = theme.input_bg }
+end
+
+local function cursor_style(theme)
+  return { fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }
+end
+
 local function backspace(value, cursor)
   if cursor <= 0 then
     return value, 0
@@ -45,9 +54,9 @@ function M.text_input(opts)
     end
 
     return {
-      ui.text(before, { fg = theme.input_fg, bg = theme.input_bg }),
-      ui.text(cursor_char, { fg = theme.cursor_fg, bg = theme.cursor_bg, bold = true }),
-      ui.text(after, { fg = theme.input_fg, bg = theme.input_bg }),
+      ui.text(before, input_style(theme)),
+      ui.text(cursor_char, cursor_style(theme)),
+      ui.text(after, input_style(theme)),
     }
   end
 

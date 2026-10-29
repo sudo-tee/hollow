@@ -10,6 +10,10 @@ local overlay_stack = state.ui.overlay_stack
 
 ui.notify = ui.notify or {}
 
+local function notification_style(theme, level)
+  return { fg = theme.notify_levels[level] or theme.title, bold = true }
+end
+
 ---@param level string|nil
 ---@param title string|nil
 ---@param message string
@@ -51,10 +55,7 @@ function ui.notify.show(message, opts)
   widget = ui.overlay.new({
     render = function()
       return ui.row({
-        ui.text(notify_text(level, opts.title, message, action), {
-          fg = theme.notify_levels[level] or theme.title,
-          bold = true,
-        }),
+        ui.text(notify_text(level, opts.title, message, action), notification_style(theme, level)),
       })
     end,
     align = opts.align or "top_right",

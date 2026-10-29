@@ -11,6 +11,11 @@ local click_registry = require("hollow.ui.builder.internal.click_registry")
 
 local M = {}
 
+local function title_style(theme)
+  -- Dialog themes may be partial; absent optional paint retains native defaults.
+  return { fg = theme.title, bold = true }
+end
+
 ---@param items (HollowUiDialogButton|{ text: string, kind?: "default"|"primary"|"destructive", id?: string, on_click?: fun(e: { id: string }) })[]
 ---@return HollowUiDialogButton[]
 local function normalize_footer_items(items)
@@ -95,7 +100,7 @@ function M.dialog(opts, theme)
   return ui.column({
     ui.when(title and title ~= "", function()
       return {
-        ui.row({ ui.text(title, { fg = theme.title, bold = true }) }),
+        ui.row({ ui.text(title, title_style(theme)) }),
         ui.divider(theme.divider),
       }
     end),
