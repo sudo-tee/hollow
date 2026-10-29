@@ -289,8 +289,8 @@ explicit instance styles remain final overrides. Row
 styles accept `fg`, `bg`, `bold`, `radius`, and `hover`. Only `fg`/`bold` inherit
 into text. Legacy `fill_bg` and `fill_radius` take precedence over `style`;
 `accent_bar` stays a separate part; explicit `false` suppresses it. Unsupported row geometry fields error;
-continue using segment padding for row content spacing. Sidebar rows use the
-same text rules and retain their existing text-only presentation.
+continue using segment padding for row content spacing. Sidebar rows share these text rules and the same background/radius/accent/divider
+paint. Their original positioning and segment-array representation are retained.
 
 Overlay widget `style` can supply surface paint and spacing. Explicit `chrome`
 fields win; their boxes replace the entire corresponding style box. Both accept
@@ -301,6 +301,32 @@ The internal state resolver orders hover, selection, pressed, focus-visible,
 disabled, then explicit instance overrides. Pressed and focus-visible remain
 internal until actual event owners supply those states. No public selector,
 recipe-registration or general variants API is introduced.
+
+### Surface and native part paint
+
+Bars and overlay chrome share surface color and integer-pixel normalization.
+Sidebar surfaces accept `fg`, `bg`, `border` and background `alpha` through
+`sidebar.new({ style = ... })`; sidebar width, reserve and side are independent.
+Unsupported sidebar surface geometry fields error.
+
+`theme.ui.widgets.all.parts` and per-widget `parts` overrides own default paint
+for sidebar surfaces, raw tab active/inactive colors and their selection stripe,
+and raw scrollbar tracks. Defaults preserve the previous native colors. For
+example, bind sidebar colors to the current widget palette:
+
+```lua
+hollow.config.set({ theme = { ui = { widgets = { all = { parts = {
+  sidebar = { bg = "panel_bg", fg = "fg", border = "panel_border" },
+} } } } } })
+```
+
+Tab part `active`/`inactive` support `fg` and `bg`, plus a top-level
+`selection_accent` color. Bar `style.selection_accent` overrides the unrounded
+active-tab stripe when that stripe would already be drawn. Fallback colors never
+supply layout or suppress explicit instance paint. Scrollbar `track`/`thumb`
+parts remain separate from row text; explicit legacy scrollbar color options
+win. See [the internal presentation contract](../../ui-computed-style.md) for
+compatibility record mappings and remaining native safety fallbacks.
 
 ### Compatibility precedence
 

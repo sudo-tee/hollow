@@ -17,8 +17,8 @@ ui.overlay = ui.overlay or {}
 ---@return HollowUiOverlaySerializedRow
 local function serialize_overlay_row(row, palette, hovered_id)
   palette = row.theme or palette
-  local serialized = { segments = {}, id = row.id, hoverable = row.hoverable ~= false }
-  local paint = shared.resolve_row_style(row, palette, hovered_id)
+  local serialized, paint = shared.serialize_row_paint(row, palette, hovered_id)
+  serialized.segments, serialized.id, serialized.hoverable = {}, row.id, row.hoverable ~= false
   local inherited = paint and { fg = paint.fg, bold = paint.bold } or nil
 
   for _, node in ipairs(shared.flatten_span_nodes(row.children or {}, inherited)) do
@@ -34,29 +34,6 @@ local function serialize_overlay_row(row, palette, hovered_id)
         palette
       )
     end
-  end
-
-  if type(row) == "table" and row._type == "row" then
-    serialized.fill_bg = paint and paint.bg or row.fill_bg
-    serialized.fill_radius = paint and paint.radius or row.fill_radius
-    if row.accent_bar ~= nil then
-      serialized.accent_bar = row.accent_bar
-    else
-      serialized.accent_bar = row.variant == "selectable"
-          and row.selected
-          and (row.theme or palette).panel_border
-        or nil
-    end
-    -- Native hover keeps a safe fallback for old producers; Lua owns the paint.
-    serialized.hover_bg = (row.theme or palette).hover_bg
-    serialized.divider = row.divider
-    serialized.scrollbar_track = row.scrollbar_track == true
-    serialized.scrollbar_thumb = row.scrollbar_thumb == true
-    serialized.scrollbar_id = row.scrollbar_id
-    serialized.scrollbar_thumb_ratio = row.scrollbar_thumb_ratio
-    serialized.scrollbar_thumb_size = row.scrollbar_thumb_size
-    serialized.scrollbar_track_color = row.scrollbar_track_color
-    serialized.scrollbar_thumb_color = row.scrollbar_thumb_color
   end
 
   return serialized

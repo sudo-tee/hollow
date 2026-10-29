@@ -106,7 +106,13 @@
 
 ---@alias HollowUiBoxValue integer|HollowUiBox
 ---@alias HollowOverlayBackdropValue boolean|HollowColor|HollowUiThemeBackdrop
+---@class HollowUiPaintParts
+---@field sidebar? {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken, border?: HollowColor|HollowStyleToken, alpha?: number}
+---@field tab? {active?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, inactive?: {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken}, selection_accent?: HollowColor|HollowStyleToken}
+---@field scrollbar? {track?: HollowColor|HollowStyleToken, thumb?: HollowColor|HollowStyleToken}
+
 ---@class HollowUiTheme
+---@field parts? HollowUiPaintParts Native component paint defaults, separate from geometry.
 ---@field button_emphasis_bg? HollowColor Default dialog-button emphasis, derived after widget overrides.
 ---@field panel_bg? HollowColor
 ---@field panel_border? HollowColor
@@ -266,6 +272,7 @@
 ---@field close_hover_fg? HollowColor|HollowStyleToken Bar tab close-button part.
 ---@field close_hover_bg? HollowColor|HollowStyleToken Bar tab close-button part.
 ---@field close_radius? number Bar tab close-button part.
+---@field selection_accent? HollowColor|HollowStyleToken Unrounded active tab selection stripe.
 ---@field hover? HollowStyle Overrides applied to hovered spans.
 ---@field on_click? fun(e: { id: string, mods?: HollowKeyMods })
 ---@field on_mouse_enter? fun(e: { id: string, mods?: HollowKeyMods })
@@ -862,6 +869,7 @@
 ---@field style? HollowStyle
 
 ---@class HollowUiSegment
+---@field fallback_style? {fg?: HollowColor, bg?: HollowColor, selection_accent?: HollowColor} Optional native-tab paint defaults, independent of layout.
 ---@field padding? {top:number,right:number,bottom:number,left:number} Normalized overlay span padding in pixels.
 ---@field text string
 ---@field fg? HollowColor
@@ -908,6 +916,8 @@
 ---@field rows HollowUiOverlaySerializedRow[]
 
 ---@class HollowUiSidebarState
+---@field style? {fg?: HollowColor, bg?: HollowColor, border?: HollowColor, alpha?: number}
+---@field row_styles? HollowUiOverlaySerializedRow[] Optional row-paint metadata; rows retain their legacy segment-array shape.
 ---@field side "left"|"right"
 ---@field width integer
 ---@field reserve boolean
@@ -974,6 +984,7 @@
 ---@field height? integer
 
 ---@class HollowUiSidebarOptions: HollowWidget
+---@field style? {fg?: HollowColor|HollowStyleToken, bg?: HollowColor|HollowStyleToken, border?: HollowColor|HollowStyleToken, alpha?: number} Sidebar surface paint, independent of layout.
 ---@field side? HollowSidebarSide
 ---@field width? integer
 ---@field reserve? boolean

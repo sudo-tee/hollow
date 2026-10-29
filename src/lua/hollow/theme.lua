@@ -26,6 +26,17 @@ local BRIGHT_COLOR_NAMES = {
 }
 
 local DEFAULT_WIDGET_THEME = {
+  -- Component-part defaults mirror the legacy native paints. They can be
+  -- overridden through widgets.all / widget-kind palettes without changing layout.
+  parts = {
+    sidebar = { fg = "#dcdcdc", bg = "#161b22", border = "#7aa2f7", alpha = 235 },
+    tab = {
+      active = { fg = "#ffffff", bg = "#373a48" },
+      inactive = { fg = "#b9b9b9", bg = "#23252e" },
+      selection_accent = "#7896dc",
+    },
+    scrollbar = { track = "#5a6375" },
+  },
   panel_bg = "#1f2430",
   panel_border = "#88c0d0",
   divider = "#2b3240",

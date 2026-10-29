@@ -341,9 +341,12 @@ an alias.
   Stale overlay callbacks and auto-ID mutations of shared bar styles are fixed.
   Pressed/focus state is not fabricated where input owners do not provide it.
 - Adapters: row style/legacy aliases and overlay style/chrome have documented
-  precedence. Bars/chrome share surface pixel normalization. Native rows consume
-  optional palette-owned hover paint; other native fallbacks are intentionally
-  retained for incomplete/old producers and inventoried in the implementation doc.
+  precedence. Bar/chrome adapters now project one normalized surface contract.
+  Overlay/sidebar rows share canonical paint metadata and native row drawing.
+  Optional sidebar surface/row records and raw-tab fallback records move paint
+  ownership to palette parts while preserving legacy arrays, geometry and safe
+  native fallbacks. A native test guards tab layout isolation and cache resets.
+  Remaining native fallbacks are inventoried in the implementation document.
 - Themes/docs/types: existing tokens and partial palettes remain supported;
   dialog emphasis has a concrete derived theme token. Open widget palettes and
   default chrome refresh on theme changes without retaining closed widgets. No global recipe registry
@@ -358,3 +361,9 @@ pending. Native/Lua tests, Linux/Windows builds and agent conformance passed
 GitHub CI for `f898a9c`; follow-up Lua-only fixes run through the same PR checks.
 The compatibility pass also covers explicit false/default backdrop semantics,
 live backdrop removal/restoration and per-row child-token palettes.
+
+Phase 4 follow-up: the additive presentation records and component parts are
+implemented in the same PR. Lua parity fixtures cover defaults, explicit
+precedence, theme switching, shared-style ownership and both row surfaces.
+Native build/visual acceptance of this follow-up runs through the same PR checks;
+screenshots and DPI/hit-target inspection still require a desktop session.

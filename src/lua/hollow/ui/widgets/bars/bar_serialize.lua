@@ -33,66 +33,13 @@ local normalize_box = shared.normalize_surface_box
 ---@param style any
 ---@return table|nil
 local function serialize_bar_style(style)
-  style = type(style) == "table" and style or nil
-  if style == nil then
+  local serialized = shared.normalize_surface_style(style, shared.bar_palette())
+  if not serialized then
     return nil
   end
-  style = shared.resolve_tokens(style, shared.bar_palette())
-
-  local bg = color.normalize_hex_color(style.bg, nil)
-  local fg = color.normalize_hex_color(style.fg, nil)
-  local border = color.normalize_hex_color(style.border, nil)
-  local close_bg = color.normalize_hex_color(style.close_bg, nil)
-  local close_fg = color.normalize_hex_color(style.close_fg, nil)
-  local close_hover_bg = color.normalize_hex_color(style.close_hover_bg, nil)
-  local close_hover_fg = color.normalize_hex_color(style.close_hover_fg, nil)
-  local radius = normalize_px(style.radius, 0)
-  local close_radius = normalize_px(style.close_radius, 0)
-  local padding = normalize_box(style.padding)
-  local margin = normalize_box(style.margin)
-  local serialized = {}
-
-  if bg ~= nil then
-    serialized.bg = bg
-  end
-  if fg ~= nil then
-    serialized.fg = fg
-  end
-  if border ~= nil then
-    serialized.border = border
-  end
-  if close_bg ~= nil then
-    serialized.close_bg = close_bg
-  end
-  if close_fg ~= nil then
-    serialized.close_fg = close_fg
-  end
-  if close_hover_bg ~= nil then
-    serialized.close_hover_bg = close_hover_bg
-  end
-  if close_hover_fg ~= nil then
-    serialized.close_hover_fg = close_hover_fg
-  end
-  if radius > 0 then
-    serialized.radius = radius
-  end
-  if close_radius > 0 then
-    serialized.close_radius = close_radius
-  end
-  if style.bold == true then
-    serialized.bold = true
-  end
-  if type(style.id) == "string" and style.id ~= "" then
-    serialized.id = style.id
-  end
-  if padding.top > 0 or padding.right > 0 or padding.bottom > 0 or padding.left > 0 then
-    serialized.padding = padding
-  end
-  if margin.top > 0 or margin.right > 0 or margin.bottom > 0 or margin.left > 0 then
-    serialized.margin = margin
-  end
-
-  return next(serialized) ~= nil and serialized or nil
+  -- These fields belong to overlay chrome, not the legacy BarStyle contract.
+  serialized.alpha, serialized.border_size = nil, nil
+  return next(serialized) and serialized or nil
 end
 
 ---@param style any
@@ -348,6 +295,7 @@ local function serialize_tabs(surface, node, ctx, handlers)
       end
 
       local segment = serialize_bar_value(surface, label, tab_state.title, style)
+      segment.fallback_style = shared.tab_fallback_style(tab_state.is_active, shared.bar_palette())
       if type(node.max_width) == "number" and node.max_width > 0 then
         segment = clamp_tab_segment_width(segment, math.floor(node.max_width))
       end

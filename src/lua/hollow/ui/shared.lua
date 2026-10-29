@@ -11,8 +11,16 @@ local palettes = {}
 local cached_bar_palette
 
 local COLOR_FIELDS = { "fg", "bg", "border" }
-local TOKEN_COLOR_FIELDS =
-  { "fg", "bg", "border", "close_fg", "close_bg", "close_hover_fg", "close_hover_bg" }
+local TOKEN_COLOR_FIELDS = {
+  "fg",
+  "bg",
+  "border",
+  "close_fg",
+  "close_bg",
+  "close_hover_fg",
+  "close_hover_bg",
+  "selection_accent",
+}
 
 -- Open widgets keep palette/chrome references. Refresh their contents on theme
 -- changes, without retaining closed widgets or resolving a theme per span.
@@ -1433,54 +1441,127 @@ end
 
 M.normalize_hex_color = color.normalize_hex_color
 
+--- Common flat surface boundary. Surface pixels retain integer semantics;
+--- span padding still uses normalize_segment_padding. Identity is copied only
+--- for adapters that support it; callbacks never cross the paint boundary.
+function M.normalize_surface_style(value, palette)
+  if type(value) ~= "table" then
+    return nil
+  end
+  local source = palette and M.resolve_tokens(value, palette) or value
+  local result = {}
+  for _, key in ipairs(TOKEN_COLOR_FIELDS) do
+    result[key] = color.normalize_hex_color(source[key], nil)
+  end
+  for _, key in ipairs({ "radius", "close_radius" }) do
+    local px = normalize_px(source[key], 0)
+    if px > 0 then
+      result[key] = px
+    end
+  end
+  for _, key in ipairs({ "padding", "margin" }) do
+    local box = normalize_box(source[key])
+    if has_box_spacing(box) then
+      result[key] = box
+    end
+  end
+  if source.border_size ~= nil then
+    result.border_size = normalize_px(source.border_size, 1)
+  end
+  local alpha = tonumber(source.alpha)
+  if alpha and alpha == alpha and alpha ~= math.huge and alpha ~= -math.huge then
+    result.alpha = math.max(0, math.min(255, math.floor(alpha)))
+  end
+  if source.bold == true then
+    result.bold = true
+  end
+  if type(source.id) == "string" and source.id ~= "" then
+    result.id = source.id
+  end
+  return next(result) and result or nil
+end
+
 ---@param value any
 ---@return HollowUiChrome|nil
 function M.normalize_overlay_chrome(value, palette)
-  value = type(value) == "table" and value or {}
-  if palette then
-    value = M.resolve_tokens(value, palette)
-  end
-
-  local bg = color.normalize_hex_color(value.bg, nil)
-  local border = color.normalize_hex_color(value.border, nil)
-  local has_border_size = value.border_size ~= nil
-  local border_size = has_border_size and normalize_px(value.border_size, 1) or 1
-  local alpha = tonumber(value.alpha)
-  local radius = normalize_px(value.radius, 0)
-  local padding = normalize_box(value.padding)
-  local margin = normalize_box(value.margin)
-  if alpha ~= nil then
-    alpha = math.max(0, math.min(255, math.floor(alpha)))
-  end
-  if
-    bg == nil
-    and border == nil
-    and not has_border_size
-    and alpha == nil
-    and radius <= 0
-    and not has_box_spacing(padding)
-    and not has_box_spacing(margin)
-  then
+  local surface = M.normalize_surface_style(value, palette)
+  if not surface then
     return nil
   end
+  local chrome = {
+    bg = surface.bg,
+    border = surface.border,
+    alpha = surface.alpha,
+    radius = surface.radius,
+    padding = surface.padding,
+    margin = surface.margin,
+  }
+  if surface.border_size ~= nil or surface.border ~= nil then
+    chrome.border_size = surface.border_size or 1
+  end
+  return next(chrome) and chrome or nil
+end
 
-  local chrome = { bg = bg, border = border }
-  if has_border_size or border ~= nil then
-    chrome.border_size = border_size
+--- The same row paint contract is consumed by overlay and sidebar adapters.
+function M.serialize_row_paint(row, palette, hovered_id)
+  palette = row.theme or palette
+  local paint = M.resolve_row_style(row, palette, hovered_id)
+  local result = {
+    fill_bg = paint and paint.bg or row.fill_bg,
+    fill_radius = paint and paint.radius or row.fill_radius,
+    divider = row.divider,
+    hover_bg = palette.hover_bg,
+    scrollbar_track = row.scrollbar_track == true,
+    scrollbar_thumb = row.scrollbar_thumb == true,
+    scrollbar_id = row.scrollbar_id,
+    scrollbar_thumb_ratio = row.scrollbar_thumb_ratio,
+    scrollbar_thumb_size = row.scrollbar_thumb_size,
+    scrollbar_track_color = row.scrollbar_track_color,
+    scrollbar_thumb_color = row.scrollbar_thumb_color,
+  }
+  if row.accent_bar ~= nil then
+    result.accent_bar = row.accent_bar
+  elseif row.variant == "selectable" and row.selected then
+    result.accent_bar = palette.panel_border
   end
-  if alpha ~= nil then
-    chrome.alpha = alpha
+  local parts = palette.parts and palette.parts.scrollbar or {}
+  if result.scrollbar_track and result.scrollbar_track_color == nil then
+    result.scrollbar_track_color = parts.track
   end
-  if radius > 0 then
-    chrome.radius = radius
+  if result.scrollbar_track and result.scrollbar_thumb_color == nil then
+    result.scrollbar_thumb_color = parts.thumb
   end
-  if has_box_spacing(padding) then
-    chrome.padding = padding
+  -- Legacy color aliases remain literal-or-token inputs at this boundary.
+  for _, key in ipairs({
+    "fill_bg",
+    "accent_bar",
+    "divider",
+    "scrollbar_track_color",
+    "scrollbar_thumb_color",
+  }) do
+    local value = result[key]
+    if type(value) == "string" then
+      result[key] = resolve_color(value, key, palette)
+    end
   end
-  if has_box_spacing(margin) then
-    chrome.margin = margin
+  return result, paint
+end
+
+function M.sidebar_surface_style(style, palette)
+  for key in pairs(style or {}) do
+    if key ~= "fg" and key ~= "bg" and key ~= "border" and key ~= "alpha" then
+      error("hollow.ui: unsupported sidebar surface field " .. tostring(key))
+    end
   end
-  return chrome
+  local base = palette.parts and palette.parts.sidebar or {}
+  return M.normalize_surface_style(M.merge_styles(base, style), palette)
+end
+
+function M.tab_fallback_style(active, palette)
+  local part = palette.parts and palette.parts.tab or {}
+  local style = M.merge_styles(active and part.active or part.inactive)
+  style.selection_accent = part.selection_accent
+  return M.normalize_surface_style(style, palette)
 end
 
 ---@param theme HollowUiTheme

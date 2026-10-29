@@ -21,6 +21,13 @@ Runtime theme changes invalidate cached palettes; component results are
 recomputed from the current palette. Already-open built-in widgets refresh their
 palette and default chrome while keeping explicit instance theme overrides.
 
+Native component-part paints can be overridden through
+`theme.ui.widgets.all.parts` or a widget-kind `parts` table. Sidebar surfaces,
+raw tab fallback colors/selection stripes and raw scrollbar tracks consume
+these defaults. Their bundled values preserve the previous native appearance;
+colors can also bind to existing tokens. Explicit instance styles remain final.
+See [surface and native part paint](reference/lua/ui.md#surface-and-native-part-paint).
+
 ## Built-in themes
 
 Hollow ships with the following themes, all under

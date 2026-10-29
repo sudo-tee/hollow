@@ -50,9 +50,12 @@ function M.install()
     end
 
     local width = math.max(1, math.floor(tonumber(widget.width) or 24))
-    local rows = {}
+    local rows, row_styles = {}, {}
+    local palette = widget._palette or shared.palette("sidebar")
     for index, row in ipairs(shared.render_widget_rows(widget)) do
-      rows[index] = ui.trim_row_for_width(row, width)
+      local paint, text_style = shared.serialize_row_paint(row, palette)
+      rows[index] = ui.trim_row_for_width(row, width, palette, text_style)
+      row_styles[index] = paint
     end
 
     return {
@@ -60,6 +63,8 @@ function M.install()
       width = width,
       reserve = widget.reserve == true,
       rows = rows,
+      row_styles = row_styles,
+      style = shared.sidebar_surface_style(widget.style, palette),
     }
   end
 end

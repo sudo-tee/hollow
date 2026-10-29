@@ -55,8 +55,10 @@ contract: foreground, background, bold, radius and hover. Only foreground/bold
 inherit into text. Row padding, border and other unsupported fields error rather
 than silently promising geometry support. Existing segment padding remains the
 way to size list-row content. Legacy `fill_bg`/`fill_radius` are final overrides;
-selection accents remain separate parts. Sidebar rows share text normalization;
-their existing text-only host representation does not gain overlay row boxes.
+selection accents remain separate parts. Sidebar rows now consume the same row
+paint metadata for backgrounds, radii, accents and dividers. Their original
+segment arrays and fixed row positioning are retained; hover routing and
+scrollbar interaction remain owned by their existing surfaces.
 
 Overlay `style` supplies surface values; explicitly present `chrome` fields
 win, replacing whole padding/margin boxes as before. Bars and overlays share
@@ -66,20 +68,58 @@ so shared styles cannot leak IDs or hover mutations between siblings.
 
 ## Native boundary and fallback inventory
 
-The host schema is retained, with one additive optional row field: `hover_bg`.
-Lua supplies widget-palette hover paint; native code uses it and keeps the old
-fallback for older or incomplete producers. Native placement and hit-region
-math are untouched.
+The existing host records are retained and extended with optional paint data:
+
+- Bar tab `fallback_style`: foreground/background and selection-accent colors.
+  These remain separate from explicit style and segment paint, so a fallback
+  background does not suppress the existing active selection stripe or alter
+  padding, margins, radius, fitting or hit targets. Native cache resets clear
+  fallback paint independently.
+- Sidebar `style`: background, foreground, border and background alpha.
+- Sidebar `row_styles`: row-paint records alongside the original `rows` segment
+  arrays. Older consumers still read those original arrays. The same native row
+  painter handles fill/radius/accent/divider for overlays and sidebars, using each
+  surface's original row geometry.
+- Overlay row `hover_bg` and explicit scrollbar colors: paint supplied by Lua.
+  Native scroll/hit-region calculations are unchanged.
+
+`normalize_surface_style` is the common flat surface boundary. Bar and chrome
+adapters project their existing supported fields from it: chrome keeps alpha
+and border size; bars keep text identity and close-button part fields. This
+preserves their distinct host contracts without separate color/box rules.
+
+Palette `parts` holds concrete defaults that previously lived in native drawing:
+
+```lua
+theme = { ui = { widgets = { all = { parts = {
+  sidebar = { bg = "panel_bg", fg = "fg", border = "panel_border", alpha = 235 },
+  tab = {
+    active = { bg = "tab_active_bg", fg = "tab_active_fg" },
+    inactive = { bg = "tab_inactive_bg", fg = "tab_inactive_fg" },
+    selection_accent = "accent",
+  },
+  scrollbar = { track = "scrollbar_track", thumb = "scrollbar_thumb" },
+} } } } }
+```
+
+These optional bindings opt into theme-derived colors. The bundled default
+part values exactly match the old native paints across all four tested themes.
+A widget-kind `parts` table overrides `widgets.all.parts`; explicit instance
+paint and legacy row aliases win last. Parts and output snapshots are never
+mutated by adapters. Theme changes invalidate palettes and therefore part paint.
+Sidebar surface style exposes `fg`, `bg`, `border`, `alpha`; unsupported geometry
+fields error. Sidebar width/reserve/side retain their existing units and behavior.
 
 Intentional remaining UI fallbacks in `src/render/sokol_runtime.zig`:
 
 | Area | Fallback ownership |
 | --- | --- |
-| `OVERLAY_HOVER_BG` | Old producers without row `hover_bg`; new Lua rows supply palette paint |
-| Overlay panel background, border, alpha and geometry | Raw overlays without chrome; built-in modal/notification/picker chrome is supplied by Lua recipes |
-| Tab active/inactive colors and selection stripe | Raw bar tabs without explicit paint; existing configured bars retain their supplied theme styles |
-| Segment/sidebar default foreground | Spans that omit foreground; explicit colors/tokens win |
-| Scrollbar track/thumb colors | Incomplete rows; built-in list rows supply palette colors |
+| `OVERLAY_HOVER_BG` | Old producers without row `hover_bg` |
+| Overlay panel background, border, alpha and geometry | Raw overlays without chrome; built-in chrome comes from Lua recipes |
+| Tab active/inactive colors and selection stripe | Old producers without `fallback_style`; new Lua sends palette part paint |
+| Sidebar surface paint | Old producers without `style`; new Lua sends palette part paint |
+| Segment default foreground | Unstyled spans; sidebar surface foreground can now supply it |
+| Scrollbar track/thumb colors | Old/incomplete rows; new raw tracks get part paint and explicit aliases win |
 
 Keeping these fallbacks preserves custom configs and older producers. Removing
 all native defaults or replacing the protocol/layout engine is outside this
@@ -102,6 +142,9 @@ zig build test
 Tests cover state precedence, input immutability, missing partial-theme fields,
 button variants/sizes, disabled activation, row text/box separation, chrome
 precedence, shared bar styles, runtime theme changes, and bar part tokens.
+Presentation fixtures compare bar/chrome normalization, sidebar/overlay row
+paint, component-part defaults, output immutability and theme invalidation. A
+native test covers tab paint precedence, layout isolation and cache resets.
 Existing serialized fixtures cover tabs/dialogs/lists and action paint in both
 bars and overlays. Four-theme parity fixtures cover Hollow, Kanagawa Wave,
 Nord and Rose Pine.
