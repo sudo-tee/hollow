@@ -1086,6 +1086,7 @@
 ---@field on_click? fun(e: { id: string })
 
 ---@class HollowUiConfirmOptions
+---@field layout? 'legacy'|'clay' Opt-in Clay geometry; legacy remains default during comparison.
 ---@field prompt string
 ---@field title? string
 ---@field buttons? HollowUiConfirmButton[]
@@ -2234,7 +2235,54 @@ local workspace = {}
 ---@field badge HollowStyle
 ---@field kbd HollowStyle
 
+--- Experimental tree layout; separate from legacy flattened row/column nodes.
+---@class HollowUiLayoutOptions
+---@field id? string Required for clickable nodes; unique within the surface.
+---@field label? string Automation label for clickable containers.
+---@field width? number|'fit'|'grow' Pixel count, content size, or remaining space.
+---@field height? number|'fit'|'grow'
+---@field padding? HollowUiBoxValue
+---@field gap? number
+---@field style? HollowUiNodeStyle
+---@field scroll? boolean Vertical scrolling.
+---@field on_click? fun(event: { id: string })
+
+---@class HollowUiLayoutNode
+---@field kind integer
+---@field children? table
+---@field text? string
+
+---@class HollowUiLayout
+---@field new fun(opts: HollowUiLayoutSurfaceOptions): HollowUiLayoutSurface
+---@field row fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field column fun(children: table, opts?: HollowUiLayoutOptions): HollowUiLayoutNode
+---@field text fun(value: any, style?: HollowUiNodeStyle): HollowUiLayoutNode
+---@field button fun(opts: HollowUiButtonOptions): HollowUiLayoutNode
+---@field progress fun(value: number, opts?: HollowUiLayoutOptions): HollowUiLayoutNode Custom-painted native progress element.
+---@field show fun(root: HollowUiLayoutNode) Replace the single modal surface with a validated snapshot.
+---@field hide fun()
+---@field demo fun()
+
+---@class HollowUiLayoutContext
+---@field width? number Host window width in pixels.
+---@field height? number Host window height in pixels.
+---@field cell_w? number Existing renderer cell width.
+---@field cell_h? number Existing renderer cell height.
+
+---@class HollowUiLayoutSurfaceOptions
+---@field render fun(ctx: HollowUiLayoutContext): HollowUiLayoutNode
+---@field theme? HollowUiTheme Token palette for this surface.
+
+---@class HollowUiLayoutSurface
+---@field id integer
+---@field namespace string
+---@field show fun(self: HollowUiLayoutSurface): HollowUiLayoutSurface Show as the standalone surface.
+---@field invalidate fun(self: HollowUiLayoutSurface) Rebuild on the next frame.
+---@field destroy fun(self: HollowUiLayoutSurface) Drop cached nodes and callbacks.
+---@field snapshot fun(self: HollowUiLayoutSurface, ctx?: HollowUiLayoutContext): table[] Validate and serialize only when dirty.
+
 ---@class HollowUi
+---@field layout HollowUiLayout Experimental Clay-backed hierarchical surface API.
 ---@field styles HollowUiStylePresets Shared presets; do not mutate. Clone with ui.style before modifying.
 local ui = {}
 

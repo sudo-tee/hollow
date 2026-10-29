@@ -1,0 +1,175 @@
+package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local harness = require("tests.harness")
+
+describe("experimental hierarchical layout", function()
+  local ui, layout
+  before_each(function()
+    ui = harness.boot().hollow.ui
+    layout = ui.layout
+  end)
+
+  it("preserves nested containers and splices fragments without flattening boxes", function()
+    layout.show(layout.row({
+      layout.column({ layout.text("left") }, { width = 120 }),
+      false,
+      { layout.column({ layout.text("right") }, { width = "grow" }) },
+    }, { width = "grow", height = "grow" }))
+    local tree = ui._layout_tree
+    assert.equals(5, #tree)
+    assert.equals(2, tree[1].children)
+    assert.equals(1, tree[2].children)
+    assert.equals(120, tree[2].width)
+    assert.equals("left", tree[3].text)
+    assert.equals(-1, tree[4].width)
+    assert.equals("right", tree[5].text)
+  end)
+
+  it("reuses button recipes, padding, tokens and click callbacks", function()
+    local clicked
+    layout.show(layout.button({
+      id = "save",
+      text = "Save",
+      size = "md",
+      variant = "primary",
+      on_click = function(event)
+        clicked = event.id
+      end,
+    }))
+    assert.equals(8, ui._layout_tree[1].padding.left)
+    assert.equals(3, ui._layout_tree[1].padding.top)
+    assert.matches("^#%x%x%x%x%x%x$", ui._layout_tree[1].bg)
+    assert.equals("Save", ui._layout_tree[2].text)
+    ui._layout_click("save")
+    assert.equals("save", clicked)
+  end)
+
+  it("does not register disabled buttons and clears callbacks on hide", function()
+    local clicks = 0
+    layout.show(layout.button({
+      id = "disabled",
+      disabled = true,
+      text = "No",
+      on_click = function()
+        clicks = clicks + 1
+      end,
+    }))
+    ui._layout_click("disabled")
+    assert.equals(0, clicks)
+    layout.show(layout.button({
+      id = "enabled",
+      text = "Yes",
+      on_click = function()
+        clicks = clicks + 1
+      end,
+    }))
+    layout.hide()
+    ui._layout_click("enabled")
+    assert.is_nil(ui._layout_tree)
+    assert.equals(0, clicks)
+  end)
+
+  it("rejects duplicate IDs, invalid sizes and oversized trees atomically", function()
+    layout.show(layout.text("previous"))
+    local previous = ui._layout_tree
+    assert.has_error(function()
+      layout.show(
+        layout.row({ layout.column({}, { id = "same" }), layout.column({}, { id = "same" }) })
+      )
+    end)
+    assert.equals(previous, ui._layout_tree)
+    assert.has_error(function()
+      layout.show(layout.column({}, { width = math.huge }))
+    end)
+    local nodes = {}
+    for i = 1, 512 do
+      nodes[i] = layout.text(i)
+    end
+    assert.has_error(function()
+      layout.show(layout.column(nodes))
+    end)
+    assert.equals(previous, ui._layout_tree)
+  end)
+
+  it("caches demo until interaction and keeps custom paint and scroll nodes", function()
+    layout.demo()
+    local tree = ui._layout_tree
+    local scrolls, custom = 0, 0
+    for _, node in ipairs(tree) do
+      if node.scroll then
+        scrolls = scrolls + 1
+      end
+      if node.kind == 3 then
+        custom = custom + 1
+      end
+    end
+    assert.equals(1, scrolls)
+    assert.equals(41, custom)
+    ui._layout_click("clay.count")
+    assert.not_equals(tree, ui._layout_tree)
+    local found = false
+    for _, node in ipairs(ui._layout_tree) do
+      if node.text == "Clicked 1 times" then
+        found = true
+      end
+    end
+    assert.is_true(found)
+    ui._layout_click("clay.close")
+    assert.is_nil(ui._layout_tree)
+  end)
+
+  it("isolates identical local IDs and invalidates only the owning snapshot", function()
+    local renders, clicks = { 0, 0 }, { 0, 0 }
+    local surfaces = {}
+    for i = 1, 2 do
+      surfaces[i] = layout.new({
+        render = function()
+          renders[i] = renders[i] + 1
+          return layout.button({
+            id = "same",
+            text = "Action",
+            on_click = function(event)
+              assert.equals("same", event.id)
+              clicks[i] = clicks[i] + 1
+            end,
+          })
+        end,
+      })
+    end
+    local ctx = { width = 800, height = 600, cell_w = 8, cell_h = 19 }
+    local first, second = surfaces[1]:snapshot(ctx), surfaces[2]:snapshot(ctx)
+    assert.not_equals(first[1].id, second[1].id)
+    surfaces[1]:dispatch(first[1].id)
+    surfaces[2]:dispatch(first[1].id)
+    assert.same({ 1, 0 }, clicks)
+    assert.equals(first, surfaces[1]:snapshot(ctx))
+    assert.same({ 1, 1 }, renders)
+    surfaces[1]:invalidate()
+    assert.not_equals(first, surfaces[1]:snapshot(ctx))
+    assert.same({ 2, 1 }, renders)
+    surfaces[1]:destroy()
+    surfaces[1]:dispatch(first[1].id)
+    assert.same({ 1, 0 }, clicks)
+    assert.has_error(function()
+      surfaces[1]:snapshot(ctx)
+    end)
+  end)
+
+  it("invalidates on viewport or font metrics changes but not idle preparation", function()
+    local renders = 0
+    local surface = layout.new({
+      render = function()
+        renders = renders + 1
+        return layout.column({ layout.text("Hello") })
+      end,
+    })
+    surface:snapshot({ width = 800, cell_w = 8 })
+    surface:snapshot({ width = 800, cell_w = 8 })
+    assert.equals(1, renders)
+    surface:snapshot({ width = 600, cell_w = 8 })
+    surface:snapshot({ width = 600, cell_w = 10 })
+    assert.equals(3, renders)
+    require("hollow.ui.shared").invalidate_palettes()
+    surface:snapshot({ width = 600, cell_w = 10 })
+    assert.equals(4, renders)
+  end)
+end)

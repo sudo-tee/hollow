@@ -42,6 +42,13 @@ end
 ---@param widget HollowUiWidget
 ---@return HollowUiOverlaySerializedWidget
 local function serialize_overlay_widget(widget)
+  if widget._layout_surface then
+    return {
+      clay = true,
+      backdrop = shared.normalize_overlay_backdrop(widget.backdrop),
+      stack_context = "modal",
+    }
+  end
   local rows = shared.render_widget_rows(widget)
   local serialized_rows = {}
   local palette = widget._palette or shared.palette(widget._kind or "all")

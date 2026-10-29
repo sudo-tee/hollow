@@ -119,6 +119,7 @@ pub fn build(b: *std.Build) void {
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
     root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
     @import("src/c_build.zig").addPosix(b, root_module, target, optimize);
+    @import("src/c_build.zig").addClay(b, root_module, target, optimize);
     const ghostty_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/term/ghostty_bindings.h"),
         .target = target,
@@ -207,6 +208,7 @@ pub fn build(b: *std.Build) void {
         gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
+        @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize);
         if (emit_pdb) gui_root_module.strip = false;
 
         const gui_exe = b.addExecutable(.{
@@ -356,6 +358,17 @@ pub fn build(b: *std.Build) void {
     const test_cmd = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run native rewrite unit tests");
     test_step.dependOn(&test_cmd.step);
+    const clay_test_module = b.createModule(.{
+        .root_source_file = b.path("src/ui/clay_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_test_module, target, optimize);
+    const clay_tests = b.addTest(.{ .root_module = clay_test_module });
+    const clay_test_run = b.addRunArtifact(clay_tests);
+    b.step("test-clay", "Run isolated Clay layout contracts").dependOn(&clay_test_run.step);
+    test_step.dependOn(&clay_test_run.step);
     const luajit_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/luajit_syntax_test.zig"),
         .target = target,

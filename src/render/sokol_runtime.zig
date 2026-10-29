@@ -32,6 +32,130 @@ const input = @import("../app/input.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
 const color_math = @import("color_math.zig");
+const clay = @import("clay_c");
+const ClaySurface = @import("../ui/clay_surface.zig").Surface;
+var g_clay_surface: ClaySurface = .{};
+
+fn prepareClaySurface(runtime: *lua_mod.Runtime) void {
+    const ctx = g_widget_pre_raster_ctx orelse return;
+    g_clay_surface.prepare(runtime, ctx.renderer, c.sapp_widthf(), c.sapp_heightf());
+}
+
+fn clayChannel(value: f32) u8 {
+    return @intFromFloat(std.math.clamp(value, 0, 255));
+}
+
+fn drawClaySurface(renderer: *FtRenderer, width: f32, height: f32, offset_x: f32, offset_y: f32) void {
+    if (!g_clay_surface.active) return;
+    if (g_clay_surface.owner_index > 0) {
+        g_clay_surface.mouse_x = g_mouse_x - offset_x;
+        g_clay_surface.mouse_y = g_mouse_y - offset_y;
+    }
+    const commands = g_clay_surface.layout(width, height, renderer.cell_w, renderer.cell_h, @floatCast(c.sapp_frame_duration()));
+    var clips: [34]clay.Clay_BoundingBox = undefined;
+    clips[0] = .{ .x = offset_x, .y = offset_y, .width = width, .height = height };
+    var depth: usize = 0;
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        var b = command.boundingBox;
+        b.x += offset_x;
+        b.y += offset_y;
+        switch (command.commandType) {
+            clay.CLAY_RENDER_COMMAND_TYPE_RECTANGLE => {
+                const rect = command.renderData.rectangle;
+                const color = rect.backgroundColor;
+                drawRoundedRect(b.x, b.y, b.width, b.height, rect.cornerRadius.topLeft, clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_BORDER => {
+                const border = command.renderData.border;
+                const color = border.color;
+                drawRoundedRectOutline(b.x, b.y, b.width, b.height, border.cornerRadius.topLeft, @floatFromInt(border.width.top), clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), clayChannel(color.a));
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_TEXT => {
+                const text = command.renderData.text;
+                const color = text.textColor;
+                if (text.stringContents.length > 0) renderer.drawLabelFace(b.x, b.y, text.stringContents.chars[0..@intCast(text.stringContents.length)], clayChannel(color.r), clayChannel(color.g), clayChannel(color.b), if (text.fontId == 1) 1 else 0);
+                c.sgl_load_default_pipeline();
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_CUSTOM => {
+                const node: *const clay.HollowClayNode = @ptrCast(@alignCast(command.renderData.custom.customData orelse continue));
+                drawRoundedRect(b.x, b.y, b.width, b.height, 4, 48, 58, 76, 255);
+                drawRoundedRect(b.x, b.y, b.width * node.value, b.height, 4, 136, 192, 208, 255);
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_START => {
+                if (depth + 1 >= clips.len) return;
+                const previous = clips[depth];
+                const clip = command.renderData.clip;
+                const x = if (clip.horizontal) @max(previous.x, b.x) else previous.x;
+                const y = if (clip.vertical) @max(previous.y, b.y) else previous.y;
+                const right = if (clip.horizontal) @min(previous.x + previous.width, b.x + b.width) else previous.x + previous.width;
+                const bottom = if (clip.vertical) @min(previous.y + previous.height, b.y + b.height) else previous.y + previous.height;
+                depth += 1;
+                clips[depth] = .{ .x = x, .y = y, .width = @max(0, right - x), .height = @max(0, bottom - y) };
+                c.sgl_scissor_rect(@intFromFloat(x), @intFromFloat(y), @intFromFloat(clips[depth].width), @intFromFloat(clips[depth].height), true);
+            },
+            clay.CLAY_RENDER_COMMAND_TYPE_SCISSOR_END => {
+                depth -|= 1;
+                const clip = clips[depth];
+                c.sgl_scissor_rect(@intFromFloat(clip.x), @intFromFloat(clip.y), @intFromFloat(clip.width), @intFromFloat(clip.height), true);
+            },
+            else => {}, // Images and transitions are intentionally outside this prototype.
+        }
+    }
+    if (g_clay_surface.owner_index > 0) {
+        if (g_widget_render_ctx) |ctx| {
+            const panel = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, 0).boundingBox;
+            for (g_clay_surface.nodes[0..g_clay_surface.len], 0..) |node, index| {
+                if (index != 0 and !node.clickable) continue;
+                const element = clay.hollow_clay_bounds(g_clay_surface.context, &g_clay_surface.nodes, @intCast(index));
+                if (!element.found or node.id.length == 0) continue;
+                const b = element.boundingBox;
+                const x = @max(@max(0, panel.x), b.x);
+                const y = @max(@max(0, panel.y), b.y);
+                const w = @max(0, @min(@min(width, panel.x + panel.width), b.x + b.width) - x);
+                const h = @max(0, @min(@min(height, panel.y + panel.height), b.y + b.height) - y);
+                const id = node.id.chars[0..@intCast(node.id.length)];
+                const label = if (node.label.length > 0) node.label.chars[0..@intCast(node.label.length)] else "";
+                if (index == 0) {
+                    ctx.app.appendUiSemanticNode(.overlay, .dialog, false, id, label, .{ .x = x + offset_x, .y = y + offset_y, .width = w, .height = h });
+                } else cacheOverlayHitRegion(id, label, x + offset_x, y + offset_y, w, h);
+            }
+        }
+    }
+    c.sgl_scissor_rect(0, 0, c.sapp_width(), c.sapp_height(), true);
+}
+
+// The experimental surface is modal. Never leak its pointer/keyboard input to PTYs.
+fn claySurfaceEvent(event: c.sapp_event) bool {
+    if (!g_clay_surface.active or g_clay_surface.owner_index > 0) return false;
+    switch (event.type) {
+        c.SAPP_EVENTTYPE_MOUSE_MOVE => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+        },
+        c.SAPP_EVENTTYPE_MOUSE_DOWN, c.SAPP_EVENTTYPE_MOUSE_UP => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+            if (event.mouse_button == c.SAPP_MOUSEBUTTON_LEFT) g_clay_surface.pointerButton(event.type == c.SAPP_EVENTTYPE_MOUSE_DOWN, event.mouse_x, event.mouse_y);
+        },
+        c.SAPP_EVENTTYPE_MOUSE_SCROLL => {
+            g_clay_surface.mouse_x = event.mouse_x;
+            g_clay_surface.mouse_y = event.mouse_y;
+            g_clay_surface.scroll_y += event.scroll_y;
+        },
+        c.SAPP_EVENTTYPE_KEY_DOWN => {
+            if (event.key_code == c.SAPP_KEYCODE_ESCAPE) g_clay_surface.close = true;
+        },
+        c.SAPP_EVENTTYPE_KEY_UP, c.SAPP_EVENTTYPE_CHAR => {},
+        c.SAPP_EVENTTYPE_UNFOCUSED => {
+            g_clay_surface.pressed_len = 0;
+            return false;
+        },
+        else => return false,
+    }
+    setMouseCursorHidden(false);
+    c.sapp_consume_event();
+    return true;
+}
 
 fn enqueueQuickSelectInput(app: *App, value: quick_select.Input) void {
     if (!app.enqueueMouse(.{ .quick_select_input = value })) quick_select.disarmInput(app);
@@ -2107,6 +2231,23 @@ fn renderLuaWidgets(runtime: *lua_mod.Runtime) void {
                 }
                 pop(api, state, 1);
 
+                api.get_field(state, overlay_idx, "clay");
+                const is_clay = api.to_boolean(state, -1) != 0;
+                pop(api, state, 1);
+                if (is_clay) {
+                    if (g_clay_surface.active and g_clay_surface.owner_index == @as(usize, @intCast(stack_i))) {
+                        const content_x = if (reserved_sidebar_width > 0 and !reserved_sidebar_side_right) reserved_sidebar_width else 0;
+                        const content_w = @max(1, ctx.width - reserved_sidebar_width);
+                        const content_h = @max(1, ctx.height - top_h - bottom_h);
+                        if (backdrop_color) |bg| {
+                            if (backdrop_alpha > 0) drawBorderRect(content_x, top_h, content_w, content_h, bg.r, bg.g, bg.b, backdrop_alpha);
+                        }
+                        drawClaySurface(ctx.renderer, content_w, content_h, content_x, top_h);
+                    }
+                    pop(api, state, 1);
+                    continue;
+                }
+
                 api.get_field(state, overlay_idx, "width");
                 var width_rows: usize = 0;
                 if (@as(LuaType, @fromBackingInt(@intCast(api.value_type(state, -1)))) == .number) {
@@ -3938,6 +4079,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
 
         if (app.lua) |*lua| {
             const now_ns = io.nanoTimestamp();
+            g_widget_pre_raster_ctx = .{ .app = app, .renderer = renderer };
+            lua.withLockedState(void, prepareClaySurface);
+            g_widget_pre_raster_ctx = null;
             const needs_topbar = app.barCacheNeedsRefresh(.topbar, now_ns);
             const needs_bottombar = app.barCacheNeedsRefresh(.bottombar, now_ns);
             const offscreen_bar_preraster_start_ns = if (app.config.debug_overlay) io.nanoTimestamp() else 0;
@@ -4249,6 +4393,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
             defer g_widget_render_ctx = null;
             lua.withLockedState(void, renderLuaWidgets);
         }
+        if (g_clay_surface.owner_index == 0) drawClaySurface(renderer, width, height, 0, 0);
     }
     if (@atomicLoad(bool, &g_window_iconified, .acquire)) {
         app.invalidateUiSemanticFrame();
@@ -4615,6 +4760,7 @@ const ShutdownWatchdog = struct {
 };
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
+    g_clay_surface.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
     if (builtin.os.tag == .windows) {
         // Sokol stops pumping messages before cleanup but destroys the window
@@ -4880,6 +5026,8 @@ fn linuxResizeDirection(x: f32, y: f32) ?c_int {
 fn eventCb(ev: [*c]const c.sapp_event, user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
     const event = ev.*;
+
+    if (claySurfaceEvent(event)) return;
 
     if (event.type == c.SAPP_EVENTTYPE_MOUSE_MOVE) {
         g_pending_mouse_move = event;

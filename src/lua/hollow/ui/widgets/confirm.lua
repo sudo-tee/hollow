@@ -79,7 +79,17 @@ function ui.confirm.open(opts)
   end
 
   m = ui.modal({
+    title = opts.title,
     theme = base_theme,
+    layout_render = opts.layout == "clay" and function(theme, state, ctx)
+      return require("hollow.ui.builder.components.layout_dialog")({
+        title = opts.title,
+        prompt = opts.prompt,
+        footer = footer_buttons,
+        selected = nav.index,
+        hovered = state and find_hovered_index(state.hovered_id, footer_buttons),
+      }, theme, ctx)
+    end or nil,
     render = function(theme, state)
       local hovered = state and find_hovered_index(state.hovered_id, footer_buttons)
       return ui.dialog({

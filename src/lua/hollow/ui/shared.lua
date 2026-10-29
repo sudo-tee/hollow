@@ -14,6 +14,7 @@ local host_api = state.host_api
 local M = {}
 local palettes = {}
 local cached_bar_palette
+local palette_generation = 0
 
 -- Open widgets keep palette/chrome references. Refresh their contents on theme
 -- changes, without retaining closed widgets or resolving a theme per span.
@@ -62,6 +63,7 @@ function M.widget_theme(kind, overrides, decorate)
 end
 
 function M.invalidate_palettes()
+  palette_generation = palette_generation + 1
   palettes = {}
   cached_bar_palette = nil
   for palette, spec in pairs(live_palettes) do
@@ -70,6 +72,10 @@ function M.invalidate_palettes()
   for chrome, build in pairs(live_chrome) do
     replace_contents(chrome, build() or {})
   end
+end
+
+function M.palette_generation()
+  return palette_generation
 end
 
 ---@param kind string|nil

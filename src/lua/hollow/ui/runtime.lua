@@ -3,6 +3,7 @@
 
 require("hollow.ui.shared")
 require("hollow.ui.primitives")
+require("hollow.ui.layout")
 require("hollow.ui.widgets.core")
 require("hollow.ui.widgets.bars.init")
 require("hollow.ui.widgets.overlay")
