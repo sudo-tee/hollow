@@ -222,7 +222,7 @@ pub const FontFamilyInfoBuilder = struct {
     }
 
     pub fn toOwnedInfo(self: *FontFamilyInfoBuilder, allocator: std.mem.Allocator) !FontFamilyInfo {
-        std.mem.sort([]u8, self.styles.items, {}, struct {
+        std.sort.insertion([]u8, self.styles.items, {}, struct {
             fn lessThan(_: void, a: []u8, b: []u8) bool {
                 return std.ascii.lessThanIgnoreCase(a, b);
             }

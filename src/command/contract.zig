@@ -343,28 +343,37 @@ pub fn Result(comptime kind: Kind) type {
     };
 }
 
-pub fn describeValue(allocator: std.mem.Allocator, kind: Kind) !std.json.Value {
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    switch (kind) {
-        inline else => |tag| writeDescription(tag, &out.writer) catch |err| {
-            // The allocating writer's only write failure is allocation failure.
-            return if (err == error.WriteFailed) error.OutOfMemory else err;
-        },
+// Descriptions depend only on types, so they are rendered at comptime. This
+// keeps one specialized writer per command kind out of the runtime binary.
+const description_json = blk: {
+    @setEvalBranchQuota(10_000_000);
+    const names = @typeInfo(Kind).@"enum".field_names;
+    var out: [names.len][]const u8 = undefined;
+    for (names, 0..) |field, i| {
+        var buf: [64 * 1024]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        writeDescription(@field(Kind, field), &writer) catch |err| @compileError(@errorName(err));
+        const text = buf[0..writer.end].*;
+        out[i] = &text;
     }
-    return jsonValue(allocator, out.written());
+    break :blk out;
+};
+
+const list_json = blk: {
+    var text: []const u8 = "[";
+    for (description_json, 0..) |description_text, i| {
+        if (i != 0) text = text ++ ",";
+        text = text ++ description_text;
+    }
+    break :blk text ++ "]";
+};
+
+pub fn describeValue(allocator: std.mem.Allocator, kind: Kind) !std.json.Value {
+    return jsonValue(allocator, description_json[@intFromEnum(kind)]);
 }
 
 pub fn listValue(allocator: std.mem.Allocator) !std.json.Value {
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    try out.writer.writeByte('[');
-    inline for (@typeInfo(Kind).@"enum".field_names, 0..) |field, i| {
-        if (i != 0) try out.writer.writeByte(',');
-        try writeDescription(@field(Kind, field), &out.writer);
-    }
-    try out.writer.writeByte(']');
-    return jsonValue(allocator, out.written());
+    return jsonValue(allocator, list_json);
 }
 
 pub fn capabilitiesValue(allocator: std.mem.Allocator) !std.json.Value {
@@ -412,6 +421,17 @@ test "every command has a discoverable contract and a parseable example" {
         defer parsed.deinit(a);
         try std.testing.expectEqualStrings(entry.object.get("name").?.string, @tagName(parsed.request.kind()));
         try std.testing.expect(!entry.object.get("input_schema").?.object.get("additionalProperties").?.bool);
+    }
+}
+
+test "comptime descriptions match runtime rendering" {
+    const a = std.testing.allocator;
+    inline for (@typeInfo(Kind).@"enum".field_names) |field| {
+        const kind = @field(Kind, field);
+        var out: std.Io.Writer.Allocating = .init(a);
+        defer out.deinit();
+        try writeDescription(kind, &out.writer);
+        try std.testing.expectEqualStrings(out.written(), description_json[@intFromEnum(kind)]);
     }
 }
 

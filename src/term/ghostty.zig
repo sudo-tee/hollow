@@ -448,7 +448,7 @@ pub const RenderImages = struct {
             if (ghostty_render_state_image_get_multi(self.iterator, keys.len, &keys, &values, null) != success or image.protocol != 0) continue;
             try self.items.append(allocator, image);
         }
-        std.mem.sort(RenderImage, self.items.items, {}, RenderImage.lessThan);
+        std.sort.insertion(RenderImage, self.items.items, {}, RenderImage.lessThan);
     }
 };
 

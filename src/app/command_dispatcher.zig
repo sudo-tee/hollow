@@ -553,7 +553,7 @@ pub fn getPaneTags(self: *App, pane_id: usize) !std.json.Value {
 
     var it = entry.tags.iterator();
     while (it.next()) |item| try tags.append(self.allocator, item.key_ptr.*);
-    std.mem.sort([]const u8, tags.items, {}, sortStringsAsc);
+    std.sort.insertion([]const u8, tags.items, {}, sortStringsAsc);
     for (tags.items) |tag| try appendOwnedJsonString(&array, self.allocator, tag);
     return .{ .array = array };
 }

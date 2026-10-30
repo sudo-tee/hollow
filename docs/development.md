@@ -149,6 +149,14 @@ these are single-run observations, not a statistical benchmark.
 | --- | ---: |
 | Original: symbols enabled, two launchers | 83.72 s |
 | Symbols omitted, redundant launcher removed | 59.72 s |
+| Plus comptime command descriptions, shared log writer, insertion sorts | 45.5 s |
+
+The last row is the mean of three runs interleaved with the previous
+configuration (59.8 s mean on the same machine). It removes code that is
+generated per command kind, per `std.log` call site, and per `std.mem.sort`
+call site. The command description and log changes alone cut optimized LLVM IR
+for `hollow-native` from about 655k to about 498k instructions. Embedded fonts were also tested and do not affect
+rebuild time.
 
 The combined change reduced this rebuild by about 29%, without lowering the
 optimization level. Separate instrumented app compilations measured LLVM at

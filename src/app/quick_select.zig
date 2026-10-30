@@ -332,7 +332,7 @@ fn capture(self: *App, pane: *Pane) !void {
         try captureRow(self, pane, row, ascii_cols[0..col_count], covered[0..col_count]);
     }
 
-    std.mem.sort(Candidate, self.quick_select_candidates.items, {}, struct {
+    std.sort.insertion(Candidate, self.quick_select_candidates.items, {}, struct {
         fn lessThan(_: void, a: Candidate, b: Candidate) bool {
             return a.row < b.row or (a.row == b.row and a.start_col < b.start_col);
         }
@@ -465,7 +465,7 @@ fn captureConfiguredPatterns(self: *App, row: usize, ascii_cols: []const u8, cov
     var matches: std.ArrayListUnmanaged(lua_bridge.QuickSelectMatch) = .empty;
     defer matches.deinit(self.allocator);
     lua.resolveQuickSelectMatches(ascii_cols, &matches);
-    std.mem.sort(lua_bridge.QuickSelectMatch, matches.items, {}, struct {
+    std.sort.insertion(lua_bridge.QuickSelectMatch, matches.items, {}, struct {
         fn lessThan(_: void, a: lua_bridge.QuickSelectMatch, b: lua_bridge.QuickSelectMatch) bool {
             return a.pattern_index < b.pattern_index or (a.pattern_index == b.pattern_index and a.start_col < b.start_col);
         }
