@@ -342,7 +342,7 @@ Done when: no widget computes scrollbar gutters or base insets, and
 | Phase                     | State       |
 | ------------------------- | ----------- |
 | 1 Foundations             | Implemented |
-| 2 Atoms and controls      | Not started |
+| 2 Atoms and controls      | In progress |
 | 3 Containers              | Not started |
 | 4 Lists and picker        | Not started |
 | 5 Composites, cleanup     | Not started |

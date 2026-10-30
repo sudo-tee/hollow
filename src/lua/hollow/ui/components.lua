@@ -9,8 +9,11 @@ local M = {}
 -- Composites require this module, so they load on first access.
 local lazy = {
   dialog = "hollow.ui.components.dialog",
+  icon = "hollow.ui.components.icon",
   input = "hollow.ui.components.input",
+  label = "hollow.ui.components.label",
   select = "hollow.ui.components.select",
+  title = "hollow.ui.components.title",
 }
 setmetatable(M, {
   __index = function(self, key)

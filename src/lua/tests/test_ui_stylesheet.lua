@@ -96,6 +96,7 @@ describe("ui stylesheets", function()
       for _, sheet_name in ipairs({
         "select",
         "button",
+        "label",
         "tab",
         "list_row",
         "panel",

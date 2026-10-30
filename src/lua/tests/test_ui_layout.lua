@@ -30,6 +30,36 @@ describe("hierarchical Clay layout", function()
     assert.equals(ui.join, c.join)
   end)
 
+  it("renders text atoms with scoped recipes and one node each", function()
+    local theme = {
+      fg = "#111111",
+      title = "#222222",
+      muted = "#333333",
+      styles = { label = { root = { variants = { muted = { fg = "title" } } } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.column({
+          c.label({ "hint", tone = "muted" }),
+          c.title("heading"),
+          c.icon({ name = "bell", style = { fg = "#abcdef" } }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(4, #nodes)
+    assert.equals("#222222", nodes[2].fg)
+    assert.equals(2, nodes[2].wrap)
+    assert.equals("#222222", nodes[3].fg)
+    assert.is_true(nodes[3].bold)
+    assert.equals(require("hollow.ui.icons").bell, nodes[4].text)
+    assert.equals("#abcdef", nodes[4].fg)
+    assert.has_error(function()
+      c.icon("unknown")
+    end, "unknown icon: unknown")
+  end)
+
   it("resolves cell units and reports invalid fields", function()
     local surface = layout.new({
       render = function()
