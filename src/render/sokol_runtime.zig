@@ -31,6 +31,7 @@ const cmd_ipc = @import("../app/command_dispatcher.zig");
 const input = @import("../app/input.zig");
 const text_helpers = @import("../app/text_helpers.zig");
 const debug_timing = @import("debug_timing.zig");
+const app_profile = @import("app_profile.zig");
 const color_math = @import("color_math.zig");
 const clay = @import("clay_c");
 const ClaySurface = @import("../ui/clay_surface.zig").Surface;
@@ -3593,6 +3594,7 @@ pub fn run(app: *App) !void {
 }
 
 fn initCb(user_data: ?*anyopaque) callconv(.c) void {
+    app_profile.init();
     const app = appFromUserData(user_data) orelse return;
     std.log.info("sokol init callback", .{});
 
@@ -3725,9 +3727,14 @@ pub fn invalidatePaneCacheForPane(pane: *const Pane) void {
 
 fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
     const app = appFromUserData(user_data) orelse return;
+    const profile_start = app_profile.start();
+    var profile_rendered = false;
+    var profile_active_wall: ?i128 = null;
+    defer app_profile.finish(profile_start, profile_rendered, profile_active_wall);
     flushPendingMouseMove(app);
     const frame_start_ns = io.nanoTimestamp();
     var busy_start_ns = frame_start_ns;
+    var profile_before_idle_ns: i128 = 0;
     var frame_busy_recorded = false;
     defer if (!frame_busy_recorded) {
         app.previous_frame_slow = io.nanoTimestamp() - busy_start_ns > frameDeadlineNs(app);
@@ -3795,6 +3802,7 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         const fps_deadline_ns = frame_start_ns + idle_frame_ns;
         const timed_wake_ns = app.nextIdleWakeNs();
         const idle_deadline_ns = if (timed_wake_ns != 0 and timed_wake_ns < fps_deadline_ns) timed_wake_ns else fps_deadline_ns;
+        if (profile_start != null) profile_before_idle_ns = io.nanoTimestamp() - frame_start_ns;
         sleepUntilWakeOrDeadline(app, frame_wake_generation, idle_deadline_ns);
         busy_start_ns = io.nanoTimestamp();
         // Returning without also suppressing the backend present rotates to an
@@ -4842,7 +4850,9 @@ fn frameCb(user_data: ?*anyopaque) callconv(.c) void {
         } else cmd_ipc.finishScreenshot(app, null, 0, 0);
     }
     c.sg_commit();
+    profile_rendered = true;
     const after_commit_ns = io.nanoTimestamp();
+    if (profile_start != null) profile_active_wall = profile_before_idle_ns + after_commit_ns - busy_start_ns;
     const swapchain_submit_ns = after_commit_ns - swapchain_submit_start_ns;
     const frame_cap_fps = if (use_idle_frame_cap)
         app.config.idle_max_fps
@@ -5157,6 +5167,7 @@ const ShutdownWatchdog = struct {
 };
 
 fn cleanupCb(user_data: ?*anyopaque) callconv(.c) void {
+    app_profile.deinit();
     g_clay_surface.deinit();
     g_grid_debug.deinit();
     std.log.info("sokol cleanup callback frame_count={d}", .{g_frame_index});
