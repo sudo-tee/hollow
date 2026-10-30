@@ -508,7 +508,12 @@ function ui.mux_navigator.open(opts)
       end
       local s = styles(render_theme)
       if #rows == 0 then
-        nodes[1] = c.text("No matching panes", s.empty)
+        nodes[1] = c.empty({
+          text = "No matching panes",
+          style = s.empty,
+          wrap = "words",
+          _legacy_style = true,
+        })
       end
       local search = ui.row({
         ui.text("/ ", s.title),

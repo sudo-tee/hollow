@@ -775,12 +775,14 @@ function ui.activity.open(opts)
       items[farthest], costs[farthest], simplified[farthest] = item, count(item), true
     end
     if #rows == 0 then
-      items[1] = c.text(
-        filter.value ~= "" and "No matching activity"
+      items[1] = c.empty({
+        text = filter.value ~= "" and "No matching activity"
           or view == "inbox" and "All caught up"
           or "No activity recorded",
-        styles(theme).empty
-      )
+        style = styles(theme).empty,
+        wrap = "words",
+        _legacy_style = true,
+      })
     end
     local target = rows[reveal_start and viewport.start_idx or list.nav.index]
     local children = { line(render_header()) }

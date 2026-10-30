@@ -279,7 +279,8 @@ function M.render(opts, theme, ctx)
   end
   local s = opts.styles or styles(theme)
   if #entries == 0 then
-    rows[1] = c.text("No matches", s.empty)
+    rows[1] =
+      c.empty({ text = "No matches", style = s.empty, wrap = "words", _legacy_style = true })
   end
   local target = opts.reveal_start and viewport.start_idx or opts.selected
   local reveal = entries[target]

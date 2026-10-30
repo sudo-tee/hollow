@@ -122,6 +122,29 @@ describe("hierarchical Clay layout", function()
     end, "invalid stack direction")
   end)
 
+  it("preserves legacy empty paint under label theme overrides", function()
+    local theme = {
+      fg = "#111111",
+      empty = "#222222",
+      styles = { label = { root = { bold = true, variants = { empty = { fg = "#333333" } } } } },
+    }
+    local surface = layout.new({
+      theme = theme,
+      render = function()
+        return c.empty({
+          text = "Empty",
+          style = { fg = "#444444" },
+          wrap = "words",
+          _legacy_style = true,
+        })
+      end,
+    })
+    local node = surface:snapshot()[1]
+    assert.equals("#444444", node.fg)
+    assert.is_nil(node.bold)
+    assert.is_nil(node.wrap)
+  end)
+
   it("renders panel chrome and inset with unit-aware padding", function()
     local theme = { fg = "#111111", panel_bg = "#222222", panel_border = "#333333", radius = 3 }
     local surface = layout.new({
