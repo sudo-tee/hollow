@@ -1,10 +1,11 @@
 -- Clay-backed composition; behavior stays with the modal and navigation helpers.
 local c = require("hollow.ui.components")
 local color = require("hollow.color")
+local props = require("hollow.ui.components.props")
 local variants = { default = true, primary = true, destructive = true }
 
 return function(opts, theme, ctx)
-  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+  local cell_w, cell_h = props.cell_w(ctx), props.cell_h(ctx)
   local children = {}
   children[#children + 1] = opts.body or c.text(opts.prompt, { fg = theme.fg })
   if opts.footer and #opts.footer > 0 then

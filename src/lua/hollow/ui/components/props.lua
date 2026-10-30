@@ -22,6 +22,14 @@ function M.scope()
   return M._scope or { theme = shared.palette("select"), ctx = {} }
 end
 
+function M.cell_w(ctx)
+  return (ctx and ctx.cell_w) or 8
+end
+
+function M.cell_h(ctx)
+  return (ctx and ctx.cell_h) or 19
+end
+
 function M.unit(value, field, ctx)
   if type(value) ~= "string" then
     return value
@@ -29,7 +37,7 @@ function M.unit(value, field, ctx)
   ctx = ctx or {}
   local number, suffix = value:match("^(%d*%.?%d+)(%a+)$")
   assert(number and (suffix == "ch" or suffix == "lh"), "invalid " .. field .. " unit: " .. value)
-  return tonumber(number) * (suffix == "ch" and (ctx.cell_w or 8) or (ctx.cell_h or 19))
+  return tonumber(number) * (suffix == "ch" and M.cell_w(ctx) or M.cell_h(ctx))
 end
 
 return M

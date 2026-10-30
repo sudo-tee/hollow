@@ -56,7 +56,7 @@ return function(value)
     -- Box shorthand mirrors right onto left; capture that before adding the gutter.
     padding.left = padding.left or padding.right or padding.top or 0
     local right = padding_right(padding.right or padding.top, ctx)
-    padding.right = right + math.max(8, ctx.cell_w or 8)
+    padding.right = right + math.max(8, props.cell_w(ctx))
     options.padding = padding
   end
   if options.disabled then

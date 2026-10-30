@@ -2,6 +2,7 @@
 -- keeps its existing filtering, navigation and action state.
 local box = require("hollow.ui.style.box")
 local list_row = require("hollow.ui.recipes.list_row")
+local props = require("hollow.ui.components.props")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.recipes.select")
 local util = require("hollow.util")
@@ -180,14 +181,14 @@ local function item(entry, index, opts, theme, ctx, plain)
       width = "grow",
       prefix = id .. ":detail",
       height = line_h,
-      padding = { left = ctx.cell_w or 8, top = padding.top, bottom = padding.bottom },
+      padding = { left = props.cell_w(ctx), top = padding.top, bottom = padding.bottom },
     })
   end
   return c.row({
     accent_gutter(paint.paint.accent_bar, paint.paint.fill_radius),
     c.column(
       lines,
-      { width = "grow", padding = { left = (ctx.cell_w or 8) * 2 + padding.left - 2 } }
+      { width = "grow", padding = { left = props.cell_w(ctx) * 2 + padding.left - 2 } }
     ),
   }, {
     id = id,

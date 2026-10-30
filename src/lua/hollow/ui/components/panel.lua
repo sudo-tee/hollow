@@ -37,8 +37,8 @@ return function(value)
   local style = shared.resolve_tokens(sheet.merge(chrome, options.style), theme)
   local padding = resolve_padding(options.padding ~= nil and options.padding or style.padding, ctx)
   if inset ~= "none" then
-    local x = (ctx.cell_w or 8) * (inset == "modal" and 1.5 or 0.5)
-    local h = ctx.cell_h or 19
+    local x = props.cell_w(ctx) * (inset == "modal" and 1.5 or 0.5)
+    local h = props.cell_h(ctx)
     padding.left, padding.right = padding.left + x, padding.right + x
     padding.top, padding.bottom = padding.top + h, padding.bottom + h * 0.5
   end

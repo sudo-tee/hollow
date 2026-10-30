@@ -22,7 +22,7 @@ return function(input, theme, ctx, inline)
   assert(type(input) == "table" and type(input.render) == "function", "input requires a behavior")
   ctx = ctx or {}
   local prefix = options.id or "input"
-  local cell_h = ctx.cell_h or 19
+  local cell_h = props.cell_h(ctx)
   local runs = {}
   for index, span in ipairs(input.render(theme)) do
     runs[index] = c.column({ c.text(span.text, span.style, { wrap = "none" }) }, {
@@ -36,7 +36,7 @@ return function(input, theme, ctx, inline)
     root[key] = value
   end
   root.width = options.width or "grow"
-  root.padding = options.padding or (not inline and { x = (ctx.cell_w or 8) * 0.5, y = 2 } or nil)
+  root.padding = options.padding or (not inline and { x = props.cell_w(ctx) * 0.5, y = 2 } or nil)
   local default_style = not inline and { bg = theme.input_bg } or nil
   root.style = options.style and sheet.merge(default_style, options.style) or default_style
   if options.disabled then
