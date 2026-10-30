@@ -1,4 +1,3 @@
-local click_registry = require("hollow.ui.builder.internal.click_registry")
 local scroll_nav = require("hollow.ui.builder.behaviors.scroll_nav").scroll_nav
 
 local M = {}
@@ -32,13 +31,13 @@ function M.selectable_list(opts)
 
   function self.row(index, key, visible_index, viewport)
     local row_id = row_id_prefix .. tostring(key)
-    click_registry.register(row_id, function()
-      nav.index = index
-      opts.on_activate(index)
-    end)
     return row_id,
       {
         id = row_id,
+        on_click = function()
+          nav.index = index
+          opts.on_activate(index)
+        end,
         scrollbar_track = viewport.show_scrollbar,
         scrollbar_thumb = viewport.show_scrollbar and visible_index == viewport.thumb_index,
         scrollbar_id = scrollbar_id,

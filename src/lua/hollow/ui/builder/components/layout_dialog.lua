@@ -28,6 +28,13 @@ return function(opts, theme, ctx)
         hovered = opts.hovered == index,
       }).dialog
       style.radius = theme.radius
+      style.hover = {
+        bg = button_styles(palette, {
+          variant = variants[button.kind] and button.kind or "default",
+          selected = opts.selected == index,
+          hovered = true,
+        }).dialog.bg,
+      }
       buttons[#buttons + 1] = layout.column(
         { layout.text(button.text, style, { wrap = "none" }) },
         {

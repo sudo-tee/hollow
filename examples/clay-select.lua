@@ -22,7 +22,6 @@ tasks[3].name =
   "A deliberately long task label to exercise horizontal clipping without expanding the panel or wrapping list rows"
 
 hollow.ui.select.open({
-  layout = "clay",
   prompt = "Select task",
   items = tasks,
   width = 65,

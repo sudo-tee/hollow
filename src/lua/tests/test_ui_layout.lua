@@ -1,7 +1,7 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
 local harness = require("tests.harness")
 
-describe("experimental hierarchical layout", function()
+describe("hierarchical Clay layout", function()
   local ui, layout
   before_each(function()
     ui = harness.boot().hollow.ui
@@ -26,8 +26,12 @@ describe("experimental hierarchical layout", function()
     assert.equals(400, layout.debug_width())
     layout.debug_width(640)
     assert.equals(640, layout.debug_width())
-    assert.has_error(function() layout.debug_width("wide") end)
-    assert.has_error(function() layout.debug_width(0 / 0) end)
+    assert.has_error(function()
+      layout.debug_width("wide")
+    end)
+    assert.has_error(function()
+      layout.debug_width(0 / 0)
+    end)
     ui._layout_debug_width = nil
   end)
 
@@ -37,7 +41,9 @@ describe("experimental hierarchical layout", function()
     surface = layout.new({
       render = function()
         renders = renders + 1
-        if renders == 1 then surface:invalidate() end
+        if renders == 1 then
+          surface:invalidate()
+        end
         return layout.text("snapshot " .. renders)
       end,
     })
@@ -65,6 +71,36 @@ describe("experimental hierarchical layout", function()
     assert.equals("right", tree[5].text)
   end)
 
+  it("serializes fit/grow bounds, per-side borders and text alignment", function()
+    layout.show(
+      layout.column(
+        {
+          layout.text("Aligned", nil, { text_align = "right" }),
+        },
+        {
+          width = "grow",
+          height = "fit",
+          min_width = 20,
+          max_width = 200,
+          min_height = 10,
+          max_height = 100,
+          style = { border = "#123456" },
+          border_width = { left = 1, right = 2, top = 3, bottom = 4, between_children = 5 },
+        }
+      )
+    )
+    local root, text = ui._layout_tree[1], ui._layout_tree[2]
+    assert.equals(20, root.min_width)
+    assert.equals(200, root.max_width)
+    assert.equals(10, root.min_height)
+    assert.equals(100, root.max_height)
+    assert.same(
+      { left = 1, right = 2, top = 3, bottom = 4, between_children = 5 },
+      root.border_width
+    )
+    assert.equals(2, text.text_align)
+  end)
+
   it("serializes scrollbar metadata and maps its event ID to the local ID", function()
     local surface = layout.new({
       render = function()
@@ -88,11 +124,18 @@ describe("experimental hierarchical layout", function()
 
   it("resolves scrollbar defaults per snapshot and preserves nested overrides", function()
     local serialize = require("hollow.ui.layout_serialize")
-    local palette = { fg = "#111111", panel_border = "#222222", parts = {
-      scrollbar = { track = "#333333", thumb = "#444444" },
-    } }
+    local palette = {
+      fg = "#111111",
+      panel_border = "#222222",
+      parts = {
+        scrollbar = { track = "#333333", thumb = "#444444" },
+      },
+    }
     local root = layout.column({
-      layout.column({}, { scrollbar_id = "bar", scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }),
+      layout.column(
+        {},
+        { scrollbar_id = "bar", scrollbar_track_color = "fg", scrollbar_thumb_color = "#abcdef" }
+      ),
       layout.text("label", { fg = "fg" }),
     }, { scrollbar_id = "root" })
     local first = serialize(root, palette, "test:")
@@ -119,7 +162,9 @@ describe("experimental hierarchical layout", function()
     assert.equals(12, tree[1].padding.right)
     assert.is_true(tree[2].full_bleed_x)
     assert.is_nil(tree[3].full_bleed_x)
-    assert.has_error(function() layout.show(layout.column({}, { full_bleed_x = "yes" })) end)
+    assert.has_error(function()
+      layout.show(layout.column({}, { full_bleed_x = "yes" }))
+    end)
   end)
 
   it("reuses button recipes, padding, tokens and click callbacks", function()

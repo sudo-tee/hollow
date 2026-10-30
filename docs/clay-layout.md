@@ -1,11 +1,10 @@
-# Experimental Clay layout
+# Clay layout
 
-Command palette, workspace picker, mux navigator and activity picker use Clay by
-default, including workspace create/rename inputs. Existing shortcuts and
+All overlays use Clay, including confirmation, input, select, notifications,
+command palette, workspace picker, mux navigator and activity picker. Existing shortcuts and
 configuration need no changes.
 Mux geometry, terminal rendering and bars retain their current implementation.
-Direct confirmation, input and select APIs remain opt-in, keeping their overlay
-shell and keyboard behavior.
+Dialogs keep their overlay shell and keyboard behavior.
 
 ## Test normal workflows
 
@@ -16,20 +15,10 @@ Custom themes, workspace column settings and `format_item` remain supported.
 Use the usual mux navigator and activity shortcuts to test tree/category collapse,
 search, attention filters, inbox/history switching, detail views and actions.
 
-To compare or fall back globally, add this to your configuration:
-
-```lua
-hollow.ui.layout.configure({ backend = "legacy" })
-```
-
-`backend = "auto"` restores widget-specific defaults; `"clay"` opts all supported
-dialogs in. Explicit per-call `layout = "legacy"` or `"clay"` wins over this setting.
-Changes apply to subsequently opened dialogs. Workspace switcher options, including
-`layout`, retain their existing persistent `workspace.configure`/`open_switcher`
-behavior. Native caches are reset when configuration reload replaces the Lua runtime.
-Full rendering performance parity has not yet been benchmarked. A reproducible
+No backend configuration or per-call layout flag is needed. Native caches reset
+when configuration reload replaces the Lua runtime. A reproducible
 [Lua-only picker baseline](renderer-bench.md#picker-lua-snapshot-benchmark)
-compares event handling and snapshot/serialization costs without native layout
+measures event handling and snapshot/serialization costs without native layout
 or drawing.
 A separate [Lua memory baseline](renderer-bench.md#picker-lua-memory-baseline)
 measures heap retention and uncollected growth; native/GPU memory is not included.
@@ -56,14 +45,13 @@ An existing configuration can bind `hollow.ui.layout.demo` to an action instead.
 The running executable must include the new native adapter; Lua-only reload is
 not sufficient when upgrading from an older binary.
 
-## Confirmation dialog comparison
+## Confirmation dialogs
 
 Launch `examples/clay-confirm.lua` with the same command (replace the example
 filename), or add this call to an existing configuration/action:
 
 ```lua
 hollow.ui.confirm.open({
-  layout = "clay",
   title = "Delete file?",
   prompt = "This action cannot be undone.",
   on_confirm = function(value) hollow.log("Confirmed:", value) end,
@@ -71,25 +59,20 @@ hollow.ui.confirm.open({
 })
 ```
 
-Omit `layout` for the original confirmation renderer under the default `auto`
-policy, or explicitly set `layout = "legacy"`.
-
 Tab/arrow navigation, Enter, Escape, custom button values, callback ordering,
-modal ownership and overlay cleanup use the existing implementations. The Clay
-branch bypasses legacy row serialization and the panel/row geometry loop.
+modal ownership and overlay cleanup use the existing implementations.
 Namespaced dialog/button IDs and Clay-calculated bounds populate existing overlay
 hit regions and CLI semantic nodes. Width/height retain confirmation-dialog cell
 units; alignment and sizing are calculated by Clay inside the host content rect.
 
 ## Text-input dialogs
 
-`hollow.ui.input.open` also accepts `layout = "clay"`. Run
+Run
 `examples/clay-input.lua` to try a deliberately long default value, arrow-key
-editing, Backspace, Enter and Escape. Omit the flag for the legacy renderer.
+editing, Backspace, Enter and Escape.
 
 ```lua
 hollow.ui.input.open({
-  layout = "clay",
   prompt = "Rename workspace",
   default = "tasks",
   width = 50,
@@ -109,7 +92,7 @@ and limitations. Generic text selection/editing is outside the layout adapter.
 
 ## Selectable lists
 
-`hollow.ui.select.open({ layout = "clay", ... })` reuses the existing fuzzy/plain
+`hollow.ui.select.open(opts)` reuses the existing fuzzy/plain
 ranking, query input, custom search text, action chords, cancellation and list
 navigation. `examples/clay-select.lua` demonstrates styled labels, optional detail
 lines, a long clipped label, wheel scrolling and action hints.
@@ -126,7 +109,7 @@ not the entire result set. All entries remain searchable and reachable with
 Home/End and navigation. Column-based labels use a conservative 23-entry window.
 To stay inside the 512-node arena, the farthest overscan rows simplify first when
 the combined row budget exceeds 410 nodes; very fragmented hint/label lines also
-simplify. Normal styled runs and nested `ui.button` callbacks are preserved.
+simplify. Normal styled runs and nested clickable spans are preserved.
 Panel height remains bounded. Clay pickers use the existing overlay scrollbar
 paint and pointer-drag routing, with logical full-list thumb ratios rather than
 ratios for the small native overscan window. Actions continue to decide whether
@@ -147,8 +130,8 @@ text and default search behavior. `view.id` supplies a stable row-local ID prefi
 
 ## Components are functions
 
-`hollow.ui.layout` is an experimental namespace, deliberately separate from
-legacy `ui.row` / `ui.column`, whose flattening behavior is unchanged.
+`hollow.ui.layout` preserves geometry hierarchy. Inline `ui.row` / `ui.column`
+helpers remain available for bar/sidebar content and rich label adapters.
 
 ```lua
 local layout = hollow.ui.layout
@@ -174,12 +157,20 @@ layout.show(layout.row({
 - `row(children, opts)` / `column(children, opts)` preserve container hierarchy.
   Fragments, holes and boolean children are accepted.
 - Width/height accept `"fit"` (default), `"grow"`, or a positive pixel count.
+- `min_width`, `max_width`, `min_height` and `max_height` constrain fit/grow
+  containers in pixels. Surface `frame.width` uses terminal cells;
+  `frame.height`/`frame.max_height` use rows. The frame cap applies to fit and
+  fixed-height surfaces, independently of container pixel limits.
+- `border_width` accepts a pixel number or `{ left, right, top, bottom,
+  between_children }`; color comes from `style.border`. This enables dividers
+  between children without spacer nodes.
 - Options: `id`, `padding`, `gap`, `style`, `scroll` (vertical), `scroll_x`,
   `reveal` (local ID of a descendant container), `reveal_start`, `on_click`,
   `align_y` (`"start"`, `"center"`, `"end"`), and `measure` (scroll viewport feedback).
 - `text(value, style, opts)` uses the existing monospace label renderer. Its
   `opts.wrap` accepts `"words"` (default), `"newlines"` or `"none"`.
-- `button(opts)` reuses `ui.button` recipes, variants, sizes and disabled state.
+  `opts.text_align` accepts `"left"`, `"center"`, `"right"` (or `0`, `1`, `2`).
+- `button(opts)` supports button recipes, variants, sizes and disabled state.
 - `progress(value, opts)` demonstrates a Clay `CUSTOM` command. It is a native
   proof of custom painting, not an API for arbitrary Lua drawing callbacks.
 - `show(tree)` validates and serializes a snapshot. Call again to update content.
@@ -250,7 +241,6 @@ Clay errors are logged once per snapshot revision.
 
 Overlay invalidation (`layout_events`, timed refreshes) calls the host's
 `request_redraw`, which wakes the frame loop without recomputing pane layout.
-Legacy overlays register no layout listeners.
 
 `ui.layout.debug(true)` enables Clay's built-in inspector for the active surface;
 the framed panel paint clip is lifted while it is open. The inspector adds
@@ -313,15 +303,14 @@ revisited each frame to handle atlas changes safely.
   input dialogs reuse existing behaviors; semantics cover panels, buttons and
   visible select list items.
 - Very small fixed heights can clip dialog content/buttons. Long-prompt and tiny
-  viewport parity need visual checks before making Clay the default.
+  viewport behavior needs visual checks.
 - Scroll offsets and explicit descendant reveal are supported; picker scrollbar
   controls reuse the overlay shell. Reveal targets one container per viewport.
 - Opaque custom widgets need explicit size constraints; Clay cannot measure their
   painted contents.
 
 Next: compare production picker visuals and hit bounds, benchmark idle/resize/scrolling.
-Existing geometry remains available for
-comparison; no legacy geometry has been deleted yet.
+Overlay geometry uses Clay exclusively.
 
 ## Tests
 

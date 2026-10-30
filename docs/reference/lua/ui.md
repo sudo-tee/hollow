@@ -327,9 +327,9 @@ Tab part `active`/`inactive` support `fg` and `bg`, plus a top-level
 `selection_accent` color. Bar `style.selection_accent` overrides the unrounded
 active-tab stripe when that stripe would already be drawn. Fallback colors never
 supply layout or suppress explicit instance paint. Scrollbar `track`/`thumb`
-parts remain separate from row text; explicit legacy scrollbar color options
-win. Without part overrides, built-in lists keep their semantic scrollbar tokens;
-raw rows keep the legacy literal track and final panel-border thumb fallback.
+parts remain separate from text; explicit scrollbar color options win.
+Built-in Clay lists keep their semantic scrollbar tokens. Row-paint metadata
+continues to serve sidebar rows, not overlay geometry.
 `parts.list_row.accent` supplies selectable-row accents and built-in selection
 indicator colors; it accepts a literal color, token, or `false`. Per-row
 `accent_bar` wins, including `false` to suppress the accent.
@@ -350,7 +350,8 @@ These are the existing rules preserved during styling unification:
   wins over that hover table, and its padding replaces the whole hover box.
   Tokens in these overrides resolve against the same palette.
 - Hover on an identified span overrides its base style only while that span
-  is hovered. List rows have a separate legacy state policy: selected paint
+  is hovered in bar/sidebar adapters. Clay overlays publish native `hover_bg`
+  paint instead of reserializing spans on hover. List rows use a separate state policy: selected paint
   wins over hovered paint, followed by the default row background.
 - `ui.button` copies styles before assigning `opts.id` and event callbacks;
   those explicit options win over event fields in the supplied style.
@@ -358,7 +359,7 @@ These are the existing rules preserved during styling unification:
 These rules describe today's API, not a new recipe or state API. The baseline
 fixtures in `src/lua/tests/test_ui_style_baseline.lua` lock row paint and action
 segment geometry/paint across normal, hovered and selected states. They run
-through real overlay/bar serialization; native drawing still needs visual QA.
+through Clay snapshots and bar serialization; native drawing still needs visual QA.
 
 Built-in presets are plain style tables: `ui.styles.muted`, `.title`, `.pill`,
 `.badge`, `.kbd`. Treat them as constants; derive modified styles with
@@ -480,8 +481,11 @@ built-in pickers and dialogs; notifications and direct overlays remain independe
 ```lua
 local m = hollow.ui.modal({
   theme  = theme,              -- resolved theme table or widget name
-  render = function(theme, state)
-    return hollow.ui.dialog({ ... }, theme)
+  render = function(theme, state, ctx)
+    return hollow.ui.layout.column({
+      hollow.ui.layout.text("Custom dialog", { fg = theme.fg }),
+      hollow.ui.layout.button({ id = "save", text = "Save", on_click = save }),
+    }, { width = "grow", gap = 8 })
   end,
   width   = 50,
   height  = nil,
@@ -496,6 +500,10 @@ if m then m.close() end
 
 `state` tracks hover state: `state.hovered_id` is the id of the
 currently hovered node or `nil`.
+Set `semantic_hover = true` when render output depends on this state. Native
+background hover needs no Lua snapshot rebuild. `render` returns a Clay tree;
+optional second result is preferred content height in pixels. Existing width,
+height and max-height options use cells/rows. No backend or layout selector exists.
 
 ### Behaviors
 
@@ -539,21 +547,9 @@ input.handlers         -- arrow_left, arrow_right, backspace, _else
 
 ### Components
 
-**`hollow.ui.dialog(opts, theme)`** — Layout helper for a title, body,
-and footer with styled buttons. Returns a `column`.
-
-```lua
-hollow.ui.dialog({
-  title    = "Confirm",
-  body     = { hollow.ui.text("Are you sure?") },
-  footer   = {
-    { id = "save", text = "Save", kind = "primary", on_click = save },
-    { id = "cancel", text = "Cancel", on_click = cancel },
-  },
-  selected = nav.index,      -- highlighted button index
-  hovered  = hovered_idx,    -- hovered button index
-}, theme)
-```
+Compose custom overlays with `hollow.ui.layout.column`, `row`, `text` and
+`button`. Inline `ui.row`/`ui.column` payloads remain for bars, sidebars and rich
+list labels, not direct overlay render roots. See [Clay layout](../../clay-layout.md).
 
 ### Key composition
 

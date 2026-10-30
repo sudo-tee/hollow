@@ -117,9 +117,8 @@ pub fn build(b: *std.Build) void {
     root_module.addOptions("build_options", build_options);
     root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
     root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
-    root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
     @import("src/c_build.zig").addPosix(b, root_module, target, optimize);
-    @import("src/c_build.zig").addClay(b, root_module, target, optimize);
+    @import("src/c_build.zig").addClay(b, root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
     const ghostty_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/term/ghostty_bindings.h"),
         .target = target,
@@ -178,7 +177,7 @@ pub fn build(b: *std.Build) void {
     bench_root_module.addOptions("build_options", bench_build_options);
     bench_root_module.addImport("sokol_c", headless_translate.createModule());
     bench_root_module.addImport("ft_c", ft_translate.createModule());
-    bench_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addTextWidth(b, bench_root_module, ghostty_dep.artifact("ghostty-vt-static"));
 
     var run_artifact: *std.Build.Step.Compile = undefined;
     if (target.result.os.tag == .windows) {
@@ -205,10 +204,9 @@ pub fn build(b: *std.Build) void {
         gui_root_module.addOptions("build_options", gui_build_options);
         gui_root_module.addImport("zluajit", zluajit_dep.module("zluajit"));
         gui_root_module.addImport("nightwatch", nightwatch_dep.module("nightwatch"));
-        gui_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
         gui_root_module.addImport("sokol_c", translate.createModule());
         gui_root_module.addImport("ft_c", ft_translate.createModule());
-        @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize);
+        @import("src/c_build.zig").addClay(b, gui_root_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
         if (emit_pdb) gui_root_module.strip = false;
 
         const gui_exe = b.addExecutable(.{
@@ -364,18 +362,44 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    @import("src/c_build.zig").addClay(b, clay_test_module, target, optimize);
+    @import("src/c_build.zig").addClay(b, clay_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
     const clay_tests = b.addTest(.{ .root_module = clay_test_module });
     const clay_test_run = b.addRunArtifact(clay_tests);
     b.step("test-clay", "Run isolated Clay layout contracts").dependOn(&clay_test_run.step);
     test_step.dependOn(&clay_test_run.step);
+    const width_test_module = b.createModule(.{
+        .root_source_file = b.path("src/text_width_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, width_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    const width_tests = b.addTest(.{ .root_module = width_test_module });
+    const width_test_run = b.addRunArtifact(width_tests);
+    b.step("test-text-width", "Run shared Ghostty grapheme width contracts").dependOn(&width_test_run.step);
+    test_step.dependOn(&width_test_run.step);
+    const clay_surface_test_module = b.createModule(.{
+        .root_source_file = b.path("src/clay_surface_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    @import("src/c_build.zig").addClay(b, clay_surface_test_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
+    clay_surface_test_module.linkLibrary(zluajit_dep.artifact("lua"));
+    const clay_surface_tests = b.addTest(.{
+        .root_module = clay_surface_test_module,
+        .filters = &.{"Clay snapshot parser"},
+    });
+    const clay_surface_test_run = b.addRunArtifact(clay_surface_tests);
+    b.step("test-clay-surface", "Run headless Clay snapshot parser contracts").dependOn(&clay_surface_test_run.step);
+    test_step.dependOn(&clay_surface_test_run.step);
     const clay_bench_module = b.createModule(.{
         .root_source_file = b.path("src/clay_bench.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    @import("src/c_build.zig").addClay(b, clay_bench_module, target, optimize);
+    @import("src/c_build.zig").addClay(b, clay_bench_module, target, optimize, ghostty_dep.artifact("ghostty-vt-static"));
     const clay_bench = b.addExecutable(.{ .name = "clay-bench", .root_module = clay_bench_module });
     const clay_bench_run = b.addRunArtifact(clay_bench);
     clay_bench_run.addPassthruArgs();
@@ -438,7 +462,7 @@ pub fn build(b: *std.Build) void {
     bench_test_root_module.addOptions("build_options", bench_test_build_options);
     bench_test_root_module.addImport("sokol_c", headless_translate.createModule());
     bench_test_root_module.addImport("ft_c", ft_translate.createModule());
-    bench_test_root_module.linkLibrary(ghostty_dep.artifact("ghostty-vt-static"));
+    @import("src/c_build.zig").addTextWidth(b, bench_test_root_module, ghostty_dep.artifact("ghostty-vt-static"));
     const renderer_bench_tests = b.addTest(.{ .root_module = bench_test_root_module });
     bench_test_root_module.addImport("ghostty_c", ghostty_translate.createModule());
     renderer_bench_tests.root_module.linkLibrary(fontdeps_dep.artifact("freetype"));

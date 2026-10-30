@@ -332,10 +332,7 @@ function console.open(opts)
     on_unmount = function()
       active = nil
     end,
-    render = function()
-      return {}
-    end,
-    layout_render = function(theme, _, ctx)
+    render = function(theme, _, ctx)
       local h = ctx.cell_h or 19
       local muted = { fg = theme.muted or theme.fg }
       local assist = {}
@@ -478,11 +475,9 @@ function console.open(opts)
         layout.row({
           layout.text("Lua REPL", { fg = theme.title, bold = true }),
           layout.column({}, { width = "grow" }),
-          below > 0 and layout.text(
-            below .. " more below · Ctrl+End latest",
-            muted,
-            { wrap = "none" }
-          ) or false,
+          below > 0
+              and layout.text(below .. " more below · Ctrl+End latest", muted, { wrap = "none" })
+            or false,
         }, { width = "grow", height = h }),
         #lines > 0
             and layout.column(lines, {

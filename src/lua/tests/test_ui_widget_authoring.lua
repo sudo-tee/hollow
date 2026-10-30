@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("built-in declarative authoring parity", function()
@@ -75,19 +76,17 @@ describe("built-in declarative authoring parity", function()
     source.switcher_state().workspace_color_fn = function()
       return colors
     end
-    ui.workspace.open_switcher({ layout = "legacy" })
+    ui.workspace.open_switcher()
     local found = false
-    for _, row in ipairs(ui._overlay_state()[1].rows) do
-      for index, segment in ipairs(row.segments) do
-        if segment.text == " remote " then
-          found = true
-          assert.equals("#123456", segment.fg)
-          assert.equals("#234567", segment.bg)
-          assert.equals(4, segment.radius)
-          assert.is_nil(segment.padding)
-          assert.is_nil(segment.id)
-          assert.is_true(row.segments[index - 1].spacer)
-        end
+    local nodes = clay.nodes(ui)
+    for index, segment in ipairs(nodes) do
+      if segment.text == " remote " then
+        found = true
+        assert.equals("#123456", segment.fg)
+        assert.equals("#234567", nodes[index - 1].bg)
+        assert.equals(4, nodes[index - 1].radius)
+        assert.is_nil(segment.padding)
+        assert.is_nil(segment.id)
       end
     end
     assert.is_true(found)
@@ -103,12 +102,15 @@ describe("built-in declarative authoring parity", function()
       end,
       theme = { selection_fg = "#123456", selected_muted = "#234567" },
     })
-    local rows = ui._overlay_state()[1].rows
-    assert.equals("one", rows[5].segments[2].text)
-    assert.equals("#123456", rows[5].segments[2].fg)
-    assert.equals("detail", rows[6].segments[2].text)
-    assert.equals("#234567", rows[6].segments[2].fg)
-    assert.equals("two", rows[7].segments[2].text)
-    assert.is_nil(rows[8])
+    assert.equals("#123456", assert(clay.text_node(ui, "one")).fg)
+    assert.equals("#234567", assert(clay.text_node(ui, "detail")).fg)
+    assert.is_not_nil(clay.text_node(ui, "two"))
+    local details = 0
+    for _, node in ipairs(clay.nodes(ui)) do
+      if node.text == "detail" then
+        details = details + 1
+      end
+    end
+    assert.equals(1, details)
   end)
 end)

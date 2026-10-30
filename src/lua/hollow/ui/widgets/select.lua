@@ -1,4 +1,3 @@
-local list_row = require("hollow.ui.styles.list_row")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.styles.select")
 local util = require("hollow.util")
@@ -147,40 +146,6 @@ local function clamp_index(index, entries)
   return index
 end
 
----@param theme HollowUiTheme
----@return HollowUiRowNode
-local function render_empty_row(theme)
-  return ui.row({ ui.text("No matches", styles(theme).empty) })
-end
-
----@param entry HollowUiSelectEntry
----@param is_selected boolean
----@param is_hovered boolean
----@param theme HollowUiTheme
----@param row_options table
----@param query string
----@return HollowUiRows
-local function render_entry_rows(entry, is_selected, is_hovered, theme, row_options, query)
-  local s = styles(theme, { selected = is_selected, hovered = is_hovered })
-  local row_s = list_row(theme, { selected = is_selected, hovered = is_hovered })
-  local label_nodes = {
-    ui.text("  ", row_s.indicator),
-    shared.highlight_inline_nodes(entry.label_nodes, query, s.match),
-  }
-
-  return ui.column({
-    ui.row({ ui.group(label_nodes, s.label) }, util.merge_tables(row_options, row_s.paint)),
-    ui.when(entry.detail_text and entry.detail_text ~= "", function()
-      return ui.row({
-        ui.group({
-          ui.span("   ", s.detail_indent),
-          shared.highlight_inline_nodes(entry.detail_nodes, query, s.match),
-        }, s.detail),
-      }, util.merge_tables(row_options, row_s.paint))
-    end),
-  }).children
-end
-
 ---@param actions HollowUiSelectAction[]
 ---@param theme HollowUiTheme
 ---@return HollowUiRows|nil
@@ -219,7 +184,6 @@ function ui.select.open(opts)
   end
   local prepared = prepare_entries(opts)
   local actions = opts.actions or {}
-  local clay = ui.layout.resolve_backend(opts.layout, "legacy") == "clay"
   local clay_row_budget = math.min(20, list_row_budget(opts))
   local reveal_start = false
 
@@ -251,7 +215,7 @@ function ui.select.open(opts)
     id_prefix = "select",
     items = current_entries,
     row_budget = function()
-      return clay and clay_row_budget or list_row_budget(opts)
+      return clay_row_budget
     end,
     row_count_fn = entry_row_count,
     on_activate = function(index)
@@ -296,106 +260,61 @@ function ui.select.open(opts)
   modal = ui.modal({
     title = opts.prompt or "Select",
     theme = theme,
-    layout_live = clay and (opts.layout_live == true or (opts.layout_live == nil and type(opts.items) == "function")),
+    layout_live = opts.layout_live == true
+      or (opts.layout_live == nil and type(opts.items) == "function"),
     layout_events = opts.layout_events,
+    semantic_hover = opts.semantic_hover ~= false and type(opts.layout_label) == "function",
     on_mount = opts.on_mount,
     layout_refresh_after = opts.layout_refresh_after,
     on_unmount = opts.on_unmount,
-    layout_render = clay
-        and function(render_theme, state, ctx)
-          if type(opts.items) == "function" then
-            prepared = prepare_entries(opts)
-          end
-          local entries = current_entries()
-          nav.index = clamp_index(nav.index, entries)
-          local component = require("hollow.ui.builder.components.layout_select")
-          local measured = ctx.metrics and ctx.metrics["select:viewport"]
-          if measured then
-            clay_row_budget = math.max(
-              1,
-              math.min(20, math.floor(measured.height / component.line_height(render_theme, ctx)))
-            )
-          end
-          local hints = render_hint_rows(actions, render_theme)
-          local units = 0
-          for _, entry in ipairs(entries) do
-            units = math.min(list_row_budget(opts), units + entry_row_count(entry))
-            if units >= list_row_budget(opts) then
-              break
-            end
-          end
-          local list_height = #entries == 0 and (ctx.cell_h or 19)
-            or units * component.line_height(render_theme, ctx)
-          local content_height = (4 + (hints and 2 or 0)) * (ctx.cell_h or 19) + list_height
-          return component.render({
-            prompt = opts.prompt,
-            entries = entries,
-            selected = nav.index,
-            query = filter.value,
-            filter = filter,
-            viewport = selectable.visible_range(),
-            hovered_id = state and state.hovered_id,
-            hints = hints,
-            reveal_start = reveal_start,
-            render_label = opts.layout_label,
-            on_activate = function(_, source_index)
-              -- Ignore stale hits when a filter removed the previously painted row.
-              for index, entry in ipairs(current_entries()) do
-                if entry.source_index == source_index then
-                  nav.index, reveal_start = index, false
-                  activate(1, index)
-                  return
-                end
-              end
-            end,
-          }, render_theme, ctx),
-            content_height
-        end
-      or nil,
-    render = function(render_theme, state)
+    render = function(render_theme, state, ctx)
       if type(opts.items) == "function" then
         prepared = prepare_entries(opts)
       end
       local entries = current_entries()
       nav.index = clamp_index(nav.index, entries)
-      local viewport = selectable.visible_range()
-      local s = styles(render_theme)
-      local counter = (#entries > 0) and string.format(" %d/%d", nav.index, #entries) or nil
-      local entry_rows = hollow.tbl
-        .range(viewport.start_idx, viewport.end_idx)
-        :flat_map(function(index, visible_index)
-          local entry = entries[index] --[[@as HollowUiSelectEntry]]
-          local row_id, row_options =
-            selectable.row(index, entry.source_index, visible_index, viewport)
-          return render_entry_rows(
-            entry,
-            index == nav.index,
-            shared.node_state(state, row_id).hovered,
-            render_theme,
-            row_options,
-            filter.value
-          )
-        end)
-        :get()
-
-      local rows = {
-        ui.row({
-          ui.text((opts.prompt or "Select") .. ":", s.title),
-          ui.text(counter and ("  " .. counter) or "", s.counter),
-        }),
-        ui.divider(render_theme.divider),
-        ui.row({
-          ui.text("Filter: ", s.title),
-          ui.group(filter.render(render_theme)),
-        }),
-        ui.divider(render_theme.divider),
-        ui.when(#entries == 0, function()
-          return render_empty_row(render_theme)
-        end),
-        entry_rows,
-        render_hint_rows(actions, render_theme),
-      }
-      return ui.column(rows)
+      local component = require("hollow.ui.builder.components.layout_select")
+      local measured = ctx.metrics and ctx.metrics["select:viewport"]
+      if measured then
+        clay_row_budget = math.max(
+          1,
+          math.min(20, math.floor(measured.height / component.line_height(render_theme, ctx)))
+        )
+      end
+      local hints = render_hint_rows(actions, render_theme)
+      local units = 0
+      for _, entry in ipairs(entries) do
+        units = math.min(list_row_budget(opts), units + entry_row_count(entry))
+        if units >= list_row_budget(opts) then
+          break
+        end
+      end
+      local list_height = #entries == 0 and (ctx.cell_h or 19)
+        or units * component.line_height(render_theme, ctx)
+      local content_height = (4 + (hints and 2 or 0)) * (ctx.cell_h or 19) + list_height
+      return component.render({
+        prompt = opts.prompt,
+        entries = entries,
+        selected = nav.index,
+        query = filter.value,
+        filter = filter,
+        viewport = selectable.visible_range(),
+        hovered_id = state and state.hovered_id,
+        hints = hints,
+        reveal_start = reveal_start,
+        render_label = opts.layout_label,
+        on_activate = function(_, source_index)
+          -- Ignore stale hits when a filter removed the previously painted row.
+          for index, entry in ipairs(current_entries()) do
+            if entry.source_index == source_index then
+              nav.index, reveal_start = index, false
+              activate(1, index)
+              return
+            end
+          end
+        end,
+      }, render_theme, ctx),
+        content_height
     end,
     width = opts.width,
     height = opts.height,
@@ -413,8 +332,7 @@ function ui.select.open(opts)
     on_event = function(name, payload)
       local consumed = selectable.on_event(name, payload)
       if
-        clay
-        and consumed
+        consumed
         and (
           name == "overlay:scrollbar"
           or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)

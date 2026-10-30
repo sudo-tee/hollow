@@ -1,4 +1,4 @@
--- Compare this with the same confirm.open call without `layout = "clay"`.
+-- Confirmation dialog rendered with Clay.
 local hollow = require("hollow")
 hollow.config.set({
   default_domain = "demo",
@@ -13,7 +13,6 @@ hollow.config.set({
 })
 
 hollow.ui.confirm.open({
-  layout = "clay",
   title = "Delete archived tasks?",
   prompt = "This is the existing confirmation dialog using Clay geometry. Tab or arrow keys change the selected action. Enter confirms; Escape cancels. The same callbacks and overlay shell are retained.",
   width = 65,

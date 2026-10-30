@@ -1,4 +1,4 @@
-local click_registry = require("hollow.ui.builder.internal.click_registry")
+local box = require("hollow.ui.style.box")
 local shared = require("hollow.ui.shared")
 local theme_api = require("hollow.theme")
 local util = require("hollow.util")
@@ -13,32 +13,6 @@ local overlay_stack = state.ui.overlay_stack
 
 ui.overlay = ui.overlay or {}
 
----@param row HollowUiRow
----@return HollowUiOverlaySerializedRow
-local function serialize_overlay_row(row, palette, hovered_id)
-  palette = row.theme or palette
-  local serialized, paint = shared.serialize_row_paint(row, palette, hovered_id)
-  serialized.segments, serialized.id, serialized.hoverable = {}, row.id, row.hoverable ~= false
-  local inherited = paint and { fg = paint.fg, bold = paint.bold } or nil
-
-  for _, node in ipairs(shared.flatten_span_nodes(row.children or {}, inherited)) do
-    if node.spacer then
-      serialized.segments[#serialized.segments + 1] = { spacer = true }
-    else
-      if type(node.style) == "table" and type(node.style.id) == "string" then
-        click_registry.register(node.style.id, node.style.on_click)
-      end
-      serialized.segments[#serialized.segments + 1] = shared.style_to_segment(
-        node.text or "",
-        shared.apply_hover(node.style, hovered_id),
-        palette
-      )
-    end
-  end
-
-  return serialized
-end
-
 ---@param widget HollowUiWidget
 ---@return HollowUiOverlaySerializedWidget
 local function serialize_overlay_widget(widget)
@@ -47,33 +21,15 @@ local function serialize_overlay_widget(widget)
   if widget._theme_backdrop then
     backdrop = palette.backdrop
   end
-  if widget._layout_surface then
-    return {
-      clay = true,
-      backdrop = shared.normalize_overlay_backdrop(backdrop),
-      stack_context = "modal",
-    }
-  end
-  local rows = shared.render_widget_rows(widget)
-  local serialized_rows = {}
-
-  for index, row in ipairs(rows) do
-    serialized_rows[index] = serialize_overlay_row(row, palette, widget._hovered_id)
-  end
-
   return {
+    clay = true,
+    layout = widget._layout_snapshot,
     stack_context = widget._notify and "notification" or (widget._modal and "modal" or "overlay"),
-    align = shared.normalize_overlay_align(widget.align),
     backdrop = shared.normalize_overlay_backdrop(backdrop),
-    chrome = shared.overlay_surface_style(widget.style, widget.chrome, palette),
-    width = shared.normalize_overlay_size(widget.width),
-    height = shared.normalize_overlay_size(widget.height),
-    max_height = shared.normalize_overlay_size(widget.max_height),
-    rows = serialized_rows,
   }
 end
 
-local function expire_timed_overlays()
+function ui._expire_overlays()
   local now = util.host_now_ms(state.host_api)
 
   for index = #overlay_stack, 1, -1 do
@@ -86,36 +42,75 @@ end
 
 ---@param opts HollowUiWidgetOptions
 function ui.overlay.new(opts)
-  local hover_state = { hovered_id = nil }
-  local orig_render = opts.render
-  local orig_on_event = opts.on_event
+  local on_event = opts.on_event
   local widget
-  opts.render = function()
-    return orig_render(hover_state)
-  end
   opts.on_event = function(name, payload)
-    if name == "overlay:hover" then
-      hover_state.hovered_id = payload and payload.id or nil
-      widget._hovered_id = hover_state.hovered_id
-    elseif name == "overlay:leave" then
-      hover_state.hovered_id = nil
-      widget._hovered_id = nil
-    elseif name == "overlay:click" then
-      if payload and payload.id then
-        click_registry.dispatch(payload.id, payload)
-      end
+    if
+      not widget._modal
+      and name == "overlay:click"
+      and payload
+      and payload.id
+      and widget._layout_surface
+    then
+      widget._layout_surface:dispatch(payload.id)
     end
-
-    if orig_on_event then
-      return orig_on_event(name, payload)
+    if on_event then
+      return on_event(name, payload)
     end
   end
   widget = ui.new_widget("overlay", opts)
   return widget
 end
 
+--- Compatibility chrome fields replace whole boxes, unlike style layers.
+---@param style? HollowUiSurfacePaint
+---@param chrome? HollowUiChrome|boolean
+---@param palette HollowUiTheme
+---@return HollowUiChrome|nil
+local function overlay_surface_style(style, chrome, palette)
+  if type(style) ~= "table" then
+    return shared.normalize_overlay_chrome(chrome, palette)
+  end
+  local source = util.clone_value(style)
+  for key, value in pairs(type(chrome) == "table" and chrome or {}) do
+    source[key] = util.clone_value(value)
+  end
+  return shared.normalize_overlay_chrome(source, palette)
+end
+
 ---@param widget HollowUiWidget
 function ui.overlay.push(widget)
+  if not widget._layout_surface then
+    local align = shared.normalize_overlay_align(widget.align)
+    local surface
+    surface = ui.layout.new({
+      theme = widget._palette,
+      frame = {
+        width = shared.normalize_overlay_size(widget.width),
+        height = shared.normalize_overlay_size(widget.height),
+        max_height = shared.normalize_overlay_size(widget.max_height),
+        align_x = align:find("left") and 0 or (align:find("right") and 2 or 1),
+        align_y = (align == "center" or align:find("top")) and 0
+          or (align:find("bottom") and 2 or 1),
+      },
+      render = function(ctx)
+        local palette = widget._palette or shared.palette(widget._kind or "overlay")
+        local chrome = overlay_surface_style(widget.style, widget.chrome, palette) or {}
+        surface.frame.margin = box.normalize(chrome.margin)
+        -- Base insets match the former native overlay panel.
+        local padding = box.normalize(chrome.padding)
+        local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+        padding.left, padding.right = padding.left + cell_w * 0.5, padding.right + cell_w * 0.5
+        padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
+        return ui.layout.column({ widget.render(ctx) }, {
+          id = "dialog",
+          padding = padding,
+          style = chrome,
+        })
+      end,
+    })
+    widget._layout_surface = surface
+  end
   table.insert(overlay_stack, widget)
   widget_core.mount_widget(widget)
 end
@@ -148,11 +143,6 @@ function ui.resolve_theme(kind)
 end
 
 function ui._overlay_state()
-  if #overlay_stack == 0 then
-    return nil
-  end
-
-  expire_timed_overlays()
   if #overlay_stack == 0 then
     return nil
   end

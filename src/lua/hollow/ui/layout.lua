@@ -6,18 +6,6 @@ local M, Surface = {}, {}
 Surface.__index = Surface
 local next_id, revision = 0, 0
 local shown, active
-local configured_backend
-
-function M.configure(opts)
-  local backend = opts and opts.backend or "auto"
-  assert(backend == "auto" or backend == "clay" or backend == "legacy", "invalid layout backend")
-  configured_backend = backend ~= "auto" and backend or nil
-end
-
-function M.resolve_backend(override, default)
-  assert(override == nil or override == "clay" or override == "legacy", "invalid layout backend")
-  return override or configured_backend or default or "legacy"
-end
 
 local function container(kind, children, opts)
   opts = opts or {}
@@ -29,6 +17,11 @@ local function container(kind, children, opts)
     role = opts.role,
     width = opts.width,
     height = opts.height,
+    min_width = opts.min_width,
+    max_width = opts.max_width,
+    min_height = opts.min_height,
+    max_height = opts.max_height,
+    border_width = opts.border_width,
     gap = opts.gap,
     padding = opts.padding,
     full_bleed_x = opts.full_bleed_x,
@@ -55,7 +48,13 @@ function M.column(children, opts)
   return container(0, children, opts)
 end
 function M.text(text, style, opts)
-  return { kind = 2, text = tostring(text or ""), style = style, wrap = opts and opts.wrap }
+  return {
+    kind = 2,
+    text = tostring(text or ""),
+    style = style,
+    wrap = opts and opts.wrap,
+    text_align = opts and opts.text_align,
+  }
 end
 
 -- Custom-paint demonstration; not an arbitrary Lua drawing API.
@@ -132,7 +131,7 @@ function Surface:snapshot(ctx)
         height = ctx.height,
         cell_w = ctx.cell_w,
         cell_h = ctx.cell_h,
-       }, self.invalidation_revision ~= invalidation_revision
+      }, self.invalidation_revision ~= invalidation_revision
     self.palette_generation = palette_generation
   end
   return self.nodes
@@ -174,6 +173,24 @@ local function publish(surface, owner, ctx)
   ui._layout_frame = surface and surface.frame
 end
 
+-- Native renderer selects each overlay before reading the existing globals.
+-- False means this entry belongs to another toast's combined column.
+function ui._layout_prepare_overlay(index, width, height, cell_w, cell_h)
+  local widget = require("hollow.state").get().ui.overlay_stack[index]
+  if
+    not widget
+    or not widget._layout_surface
+    or widget._layout_surface.destroyed
+    or (widget._layout_visible and not widget._layout_visible())
+  then
+    publish(nil)
+    return false
+  end
+  local ctx = { width = width, height = height, cell_w = cell_w, cell_h = cell_h }
+  publish(widget._layout_surface, index, ctx)
+  return true
+end
+
 -- Standalone mounting convenience; modal surfaces are mounted by the overlay shell.
 function Surface:show()
   self:snapshot(self.context)
@@ -187,14 +204,34 @@ end
 
 -- Called before atlas upload. Overlay ownership remains with the existing stack.
 function ui._layout_prepare(width, height, cell_w, cell_h)
+  if ui._expire_overlays then
+    ui._expire_overlays()
+  end
   local stack = require("hollow.state").get().ui.overlay_stack
   local ctx = { width = width, height = height, cell_w = cell_w, cell_h = cell_h }
+  for _, widget in ipairs(stack) do
+    local surface = widget._layout_surface
+    widget._layout_snapshot = nil
+    if
+      surface
+      and not surface.destroyed
+      and (not widget._layout_visible or widget._layout_visible())
+    then
+      if widget._layout_live then
+        surface:invalidate()
+      end
+      local nodes = surface:snapshot(ctx)
+      widget._layout_snapshot = {
+        nodes = nodes,
+        revision = surface.revision,
+        surface_id = surface.id,
+        frame = surface.frame,
+      }
+    end
+  end
   for index = #stack, 1, -1 do
     local widget = stack[index]
-    if widget._layout_surface and not widget._layout_surface.destroyed then
-      if widget._layout_live then
-        widget._layout_surface:invalidate()
-      end
+    if widget._layout_snapshot then
       publish(widget._layout_surface, index, ctx)
       return
     end
@@ -206,7 +243,7 @@ function ui._layout_prepare(width, height, cell_w, cell_h)
   publish(shown, 0, ctx)
 end
 
--- Compatibility convenience for the initial standalone experiment.
+-- Convenience for standalone layouts.
 function M.show(root)
   local candidate = M.new({
     render = function()
@@ -230,17 +267,26 @@ ui._layout_hide = M.hide
 -- Native feedback is delivered under the Lua lock after layout. Only changed
 -- viewport dimensions invalidate a snapshot; ordinary scrolling does not.
 function ui._layout_measure(surface_id, id, width, height)
-  if not active or active.destroyed or active.id ~= surface_id then
+  local surface = active
+  if not surface or surface.id ~= surface_id then
+    for _, widget in ipairs(require("hollow.state").get().ui.overlay_stack) do
+      if widget._layout_surface and widget._layout_surface.id == surface_id then
+        surface = widget._layout_surface
+        break
+      end
+    end
+  end
+  if not surface or surface.destroyed or surface.id ~= surface_id then
     return
   end
-  local local_id = active:local_id(id)
+  local local_id = surface:local_id(id)
   if not local_id then
     return
   end
-  local previous = active.metrics[local_id]
+  local previous = surface.metrics[local_id]
   if not previous or previous.width ~= width or previous.height ~= height then
-    active.metrics[local_id] = { width = width, height = height }
-    active:invalidate()
+    surface.metrics[local_id] = { width = width, height = height }
+    surface:invalidate()
   end
 end
 
@@ -264,7 +310,9 @@ end
 -- Inspector panel width in pixels, shared by both inspectors. The host clamps
 -- it to the window and writes the applied width back, including after drags.
 function M.debug_width(width)
-  if width == nil then return ui._layout_debug_width or 400 end
+  if width == nil then
+    return ui._layout_debug_width or 400
+  end
   assert(type(width) == "number" and width == width, "inspector width must be a number")
   ui._layout_debug_width = width
 end

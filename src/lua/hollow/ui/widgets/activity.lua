@@ -174,14 +174,13 @@ function ui.activity.open(opts)
   local width = opts.width or DEFAULT_WIDTH
   local height = opts.height or opts.max_height or DEFAULT_HEIGHT
   height = math.min(height, opts.max_height or height)
-  local clay = ui.layout.resolve_backend(opts.layout, "clay") == "clay"
   local clay_budget = math.min(20, math.max(1, height - 6))
   local reveal_start = false
   local modal, list, details
   local copy_feedback
   local detail_options = {
     width = width - 6,
-    row_budget = clay and math.min(20, math.max(1, height - 4)) or height - 4,
+    row_budget = math.min(20, math.max(1, height - 4)),
   }
   local detail_view = ui.text_view(detail_options)
   local rows = {}
@@ -372,7 +371,7 @@ function ui.activity.open(opts)
       return rows
     end,
     row_budget = function()
-      return clay and clay_budget or math.max(2, height - (searching and 6 or 4))
+      return clay_budget
     end,
     on_activate = activate,
   })
@@ -538,9 +537,11 @@ function ui.activity.open(opts)
     local pill_width, time_width = 0, 0
     for _, entry in ipairs(rows) do
       if not entry.header_category then
-        pill_width =
-          math.max(pill_width, util.utf8_len(util.truncate_end(entry.workspace or "", pill_cap)))
-        time_width = math.max(time_width, util.utf8_len((age(entry))))
+        pill_width = math.max(
+          pill_width,
+          util.display_width(util.truncate_end(entry.workspace or "", pill_cap))
+        )
+        time_width = math.max(time_width, util.display_width((age(entry))))
       end
     end
     return {
@@ -569,7 +570,7 @@ function ui.activity.open(opts)
         local colors = shared.workspace_colors(entry.workspace, columns.color_fn)
         return {
           ui.text(workspace, ui.style(styles(theme).pill, { fg = colors.fg, bg = colors.bg })),
-          ui.text(string.rep(" ", columns.pill_width - util.utf8_len(workspace))),
+          ui.text(string.rep(" ", columns.pill_width - util.display_width(workspace))),
         }
       end, function()
         return ui.text(string.rep(" ", columns.pill_width), styles(theme).pill_gap)
@@ -599,14 +600,14 @@ function ui.activity.open(opts)
     local time, seconds = age(entry)
     local indent = row_group[entry] and "  " or ""
     local reserved = 11
-      + util.utf8_len(indent)
+      + util.display_width(indent)
       + columns.time_width
       + (columns.pill_width > 0 and columns.pill_width + 4 or 0)
       + (entry.pane_closed and 13 or 0)
     local budget = math.max(8, width - reserved)
     local primary, secondary = row_parts(entry)
     primary = util.truncate_end(primary, budget)
-    local rest = budget - util.utf8_len(primary) - 3
+    local rest = budget - util.display_width(primary) - 3
     secondary = secondary and rest > 0 and util.truncate_end(secondary, rest) or nil
     local entry_s = entry_styles(theme, entry, row_state, columns, seconds)
     return ui.row({
@@ -620,68 +621,12 @@ function ui.activity.open(opts)
       ui.text(entry.pane_closed and "pane closed  " or "", entry_s.stale),
       render_workspace_pill(entry, workspace, columns),
       ui.text(
-        "  " .. string.rep(" ", columns.time_width - util.utf8_len(time)) .. time,
+        "  " .. string.rep(" ", columns.time_width - util.display_width(time)) .. time,
         entry_s.time
       ),
       ui.text("  "),
       render_dismiss_button(entry, row_state),
     }, row_state.options)
-  end
-
-  local function render_rows(state, columns, viewport)
-    return ui.each(hollow.tbl.range(viewport.start_idx, viewport.end_idx), function(index)
-      local entry = rows[index]
-      local id, options = list.row(index, entry.id, index - viewport.start_idx + 1, viewport)
-      local selected = index == list.nav.index
-      local hovered = state.hovered_id == id
-      local row_state = {
-        options = options,
-        selected = selected,
-        hovered = hovered,
-        fg = styles(theme, { selected = selected, hovered = hovered }).row.fg,
-      }
-      util.merge_tables(options, list_row(theme, { selected = selected, hovered = hovered }).paint)
-      if entry.header_category then
-        return render_category_row(entry, row_state)
-      end
-      return render_entry_row(entry, row_state, columns)
-    end)
-  end
-
-  local function render_search()
-    return ui.when(searching, function()
-      return {
-        ui.row({ ui.text("/ ", styles(theme).label), ui.group(filter.render(theme)) }),
-        ui.divider(theme.divider),
-      }
-    end)
-  end
-
-  local function render_empty()
-    return ui.when(#rows == 0, function()
-      return ui.row({
-        ui.text(
-          filter.value ~= "" and "No matching activity"
-            or view == "inbox" and "All caught up"
-            or "No activity recorded",
-          styles(theme).empty
-        ),
-      })
-    end)
-  end
-
-  local function render_footer()
-    return ui.when(copy_feedback, function()
-      return ui.row({ ui.text(copy_feedback, styles(theme).success) })
-    end, function()
-      return hint_row(
-        theme,
-        rows[list.nav.index]
-            and rows[list.nav.index].header_category
-            and (view == "history" and "Enter/Space toggle   / search   Tab views" or "Enter/Space toggle   t tasks   c commands   / search   Tab views")
-          or "Enter open   v details   y copy   d dismiss   / search   Tab views"
-      )
-    end)
   end
 
   local function render_layout(render_theme, state, ctx)
@@ -696,10 +641,7 @@ function ui.activity.open(opts)
       )
     end
     local function divider()
-      return layout.column(
-        { layout.column({}, { width = "grow", height = 1, full_bleed_x = true, style = { bg = theme.divider } }) },
-        { width = "grow", height = cell_h, padding = { top = math.floor(cell_h / 2) } }
-      )
+      return component.divider(theme, cell_h)
     end
     if details then
       local measured = ctx.metrics and ctx.metrics["activity:details"]
@@ -880,14 +822,32 @@ function ui.activity.open(opts)
     backdrop = backdrop,
     theme_backdrop = opts.backdrop == nil,
     layout_events = {
-      "activity:changed", "term:program_status_changed", "term:bell", "term:pane_focused",
-      "term:pane_created", "term:pane_exited", "term:pane_closed", "term:pane_layout_changed",
-      "term:title_changed", "term:cwd_changed", "term:foreground_process_changed",
-      "term:tab_activated", "term:tab_closed", "workspace:new", "workspace:changed",
-      "workspace:closed", "term:command_started", "term:command_finished", "config:reloaded", "config:changed", "theme:changed",
+      "activity:changed",
+      "term:program_status_changed",
+      "term:bell",
+      "term:pane_focused",
+      "term:pane_created",
+      "term:pane_exited",
+      "term:pane_closed",
+      "term:pane_layout_changed",
+      "term:title_changed",
+      "term:cwd_changed",
+      "term:foreground_process_changed",
+      "term:tab_activated",
+      "term:tab_closed",
+      "workspace:new",
+      "workspace:changed",
+      "workspace:closed",
+      "term:command_started",
+      "term:command_finished",
+      "config:reloaded",
+      "config:changed",
+      "theme:changed",
     },
     layout_refresh_after = function()
-      if details then return nil end
+      if details then
+        return nil
+      end
       local now = now_ms()
       local delay
       for _, entry in ipairs(rows) do
@@ -895,7 +855,8 @@ function ui.activity.open(opts)
         if not entry.header_category and timestamp then
           local seconds = math.max(0, math.floor((now - timestamp) / 1000))
           local interval = seconds < 60 and (entry.started_ms and 1000 or 60000)
-            or seconds < 3600 and 60000 or 3600000
+            or seconds < 3600 and 60000
+            or 3600000
           local next_delay = interval - math.max(0, now - timestamp) % interval
           delay = math.min(delay or next_delay, next_delay)
         end
@@ -905,12 +866,11 @@ function ui.activity.open(opts)
       end
       return delay
     end,
-    layout_render = clay and render_layout or nil,
+    render = render_layout,
     on_event = function(name, event)
       local consumed = (details and detail_view or list).on_event(name, event)
       if
-        clay
-        and not details
+        not details
         and consumed
         and (
           name == "overlay:scrollbar"
@@ -935,24 +895,6 @@ function ui.activity.open(opts)
         return true
       end
       return detail_view.keys(key, mods)
-    end,
-    render = function(_, state)
-      if details then
-        return render_details()
-      end
-      refresh()
-      local header = render_header()
-      local columns = measure_columns()
-      local viewport = list.visible_range()
-      return ui.column({
-        header,
-        ui.divider(theme.divider),
-        render_search(),
-        render_rows(state, columns, viewport),
-        render_empty(),
-        ui.divider(theme.divider),
-        render_footer(),
-      })
     end,
   })
   return modal

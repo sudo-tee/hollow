@@ -1,6 +1,5 @@
 local actions = require("hollow.ui.workspace.actions")
 local color = require("hollow.color")
-local format = require("hollow.ui.widgets.format")
 local icons = require("hollow.ui.icons")
 local program_status = require("hollow.program_status")
 local shared = require("hollow.ui.shared")
@@ -69,7 +68,7 @@ local function derived_palette()
   }
 end
 
--- Shared text and widths keep Clay accessibility labels identical to legacy.
+-- Retain the original padded accessibility labels independently of layout.
 local function default_item_columns(workspace, domain_width)
   local attention = workspace.has_bell or workspace.program_status_attention
   local switcher = switcher_state()
@@ -80,7 +79,7 @@ local function default_item_columns(workspace, domain_width)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
   local gap_width = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)
   local badge = workspace.program_status_badge or ""
-  local badge_width = util.utf8_len(badge)
+  local badge_width = util.display_width(badge)
   domain_width = domain_width or 0
   local cwd_width = math.max(
     12,
@@ -124,52 +123,6 @@ local function default_plain_item(workspace, domain_width)
     .. pad(c.badge, c.badge_width)
     .. pad(c.cwd, c.cwd_width)
     .. (c.domain_text or "")
-end
-
----@param workspace HollowUiWorkspaceItem
----@param domain_width? integer
----@return HollowUiRenderableNode[]
-local function default_format_item(workspace, domain_width, render)
-  local c = default_item_columns(workspace, domain_width)
-  local palette = render.palette
-  local s = render.styles[c.variant]
-  if not s then
-    s = styles(palette, { variant = c.variant })
-    render.styles[c.variant] = s
-  end
-  local bell = workspace.program_status_attention_level == "error" and palette.bell_error
-    or palette.bell
-  local domain = c.domain
-  local domain_colors = workspace_name_color(domain or "default")
-
-  local columns = format.columns({
-    {
-      text = c.status,
-      width = c.status_width,
-      style = ui.style(s.status, c.attention and { fg = bell, bold = true }),
-    },
-    { text = "", width = c.gap_width, style = s.gap },
-    { text = workspace.name, width = c.name_width, style = s.name },
-    { text = "", width = c.gap_width, style = s.gap },
-    {
-      text = c.badge,
-      width = c.badge_width,
-      style = ui.style(s.badge, { fg = program_status.color(workspace.program_status_state) }),
-    },
-    { text = c.cwd, width = c.cwd_width, style = s.cwd },
-  })
-  return shared.normalize_inline_nodes({
-    columns,
-    ui.when(c.domain_text, function()
-      return {
-        ui.spacer(),
-        ui.span(
-          c.domain_text,
-          ui.style(s.domain_pill, { fg = domain_colors.fg, bg = domain_colors.bg })
-        ),
-      }
-    end),
-  })
 end
 
 -- Native counterpart of the default formatter: retain column settings/paint,
@@ -390,35 +343,53 @@ function ui.workspace.open_switcher(opts)
   local dirty = false
   local deadline
   local events = {
-    "term:program_status_changed", "term:bell", "term:pane_focused", "term:pane_created",
-    "term:pane_exited", "term:pane_closed", "term:pane_layout_changed", "term:title_changed",
-    "term:cwd_changed", "term:foreground_process_changed", "term:tab_activated", "term:tab_closed",
-    "workspace:new", "workspace:changed", "workspace:closed", "workspace:items_changed",
-    "config:reloaded", "config:changed", "theme:changed", "term:command_started", "term:command_finished",
+    "term:program_status_changed",
+    "term:bell",
+    "term:pane_focused",
+    "term:pane_created",
+    "term:pane_exited",
+    "term:pane_closed",
+    "term:pane_layout_changed",
+    "term:title_changed",
+    "term:cwd_changed",
+    "term:foreground_process_changed",
+    "term:tab_activated",
+    "term:tab_closed",
+    "workspace:new",
+    "workspace:changed",
+    "workspace:closed",
+    "workspace:items_changed",
+    "config:reloaded",
+    "config:changed",
+    "theme:changed",
+    "term:command_started",
+    "term:command_finished",
   }
   local listeners = {}
-  local render
-  local backend = ui.layout.resolve_backend(switcher.layout, "clay")
   ui.select.open({
-    layout = backend,
     layout_live = type(switcher.format_item) == "function",
+    semantic_hover = false,
     layout_events = events,
     layout_refresh_after = function()
-      return deadline and math.max(1, deadline - util.host_now_ms(require("hollow.state").get().host_api))
+      return deadline
+        and math.max(1, deadline - util.host_now_ms(require("hollow.state").get().host_api))
     end,
     on_mount = function()
       for _, name in ipairs(events) do
         if name ~= "term:program_status_changed" and name ~= "term:bell" then
-          listeners[#listeners + 1] = hollow.events.on(name, function() dirty = true end)
+          listeners[#listeners + 1] = hollow.events.on(name, function()
+            dirty = true
+          end)
         end
       end
     end,
     on_unmount = function()
-      for _, listener in ipairs(listeners) do hollow.events.off(listener) end
+      for _, listener in ipairs(listeners) do
+        hollow.events.off(listener)
+      end
     end,
     prompt = switcher.prompt or DEFAULT_PROMPT,
     items = function()
-      render = nil
       local current_revision = switcher_state().host_scan_revision or 0
       if dirty or current_revision ~= host_revision then
         items = source.items()
@@ -434,8 +405,11 @@ function ui.workspace.open_switcher(opts)
       deadline = nil
       for _, workspace in ipairs(hollow.term.mux_tree()) do
         local next_frame
-        badges[workspace.id], states[workspace.id], next_frame = program_status.workspace_badge(workspace)
-        if next_frame then deadline = math.min(deadline or next_frame, next_frame) end
+        badges[workspace.id], states[workspace.id], next_frame =
+          program_status.workspace_badge(workspace)
+        if next_frame then
+          deadline = math.min(deadline or next_frame, next_frame)
+        end
         attention[workspace.id] = program_status.workspace_needs_attention(workspace)
         attention_levels[workspace.id] = program_status.workspace_attention_level(workspace)
       end
@@ -459,11 +433,7 @@ function ui.workspace.open_switcher(opts)
       if formatter then
         return formatter(item)
       end
-      if backend == "clay" then
-        return default_plain_item(item, domain_width)
-      end
-      render = render or { palette = derived_palette(), styles = {} }
-      return default_format_item(item, domain_width, render)
+      return default_plain_item(item, domain_width)
     end,
     layout_label = function(item, ctx, view)
       if switcher_state().format_item then

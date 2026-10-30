@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("UI styles", function()
@@ -260,12 +261,12 @@ describe("UI styles", function()
     hollow.config.set({ theme = { ui = { widgets = { select = { muted = "#142536" } } } } })
     local widget = ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("detail", { fg = "muted" }) })
+        return ui.layout.row({ ui.layout.text("detail", { fg = "muted" }) })
       end,
     })
     widget._kind = "select"
     ui.overlay.push(widget)
-    local segment = ui._overlay_state()[1].rows[1].segments[1]
+    local segment = assert(clay.text_node(ui, "detail"))
     ui.overlay.pop()
     assert.equals("#142536", segment.fg)
   end)

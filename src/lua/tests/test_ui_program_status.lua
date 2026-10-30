@@ -277,50 +277,43 @@ describe("program status in navigation overlays", function()
     assert.equals("󰒃 ", seen)
   end)
 
-  for _, backend in ipairs({ "legacy", "clay" }) do
-    it(
-      "refreshes workspace status and theme without losing navigation (" .. backend .. ")",
-      function()
-        hollow.ui.workspace.open_switcher({
-          layout = backend,
-          known_workspaces = function()
-            return { "m-other" }
-          end,
-        })
-        env.get_key_handler()("m", 0)
-        env.get_key_handler()("arrow_down", 0)
-        local before = overlay_text(hollow)
-        assert.is_truthy(before:find("Filter: m", 1, true))
-        assert.is_truthy(before:find("2/2", 1, true))
-        failed[1].attention = false
-        failed[1].state = "done"
-        hollow.config.set({
-          theme = { ui = { widgets = { select = { notify_levels = { warn = "#123456" } } } } },
-        })
-        local after = overlay_text(hollow)
-        assert.is_truthy(after:find("Filter: m", 1, true))
-        assert.is_truthy(after:find("2/2", 1, true))
-        assert.is_nil(after:find("✗", 1, true))
-        assert.same({ "#123456" }, bell_colors(hollow))
-      end
-    )
+  it("refreshes workspace status and theme without losing navigation", function()
+    hollow.ui.workspace.open_switcher({
+      known_workspaces = function()
+        return { "m-other" }
+      end,
+    })
+    env.get_key_handler()("m", 0)
+    env.get_key_handler()("arrow_down", 0)
+    local before = overlay_text(hollow)
+    assert.is_truthy(before:find("Filter: m", 1, true))
+    assert.is_truthy(before:find("2/2", 1, true))
+    failed[1].attention = false
+    failed[1].state = "done"
+    hollow.config.set({
+      theme = { ui = { widgets = { select = { notify_levels = { warn = "#123456" } } } } },
+    })
+    local after = overlay_text(hollow)
+    assert.is_truthy(after:find("Filter: m", 1, true))
+    assert.is_truthy(after:find("2/2", 1, true))
+    assert.is_nil(after:find("✗", 1, true))
+    assert.same({ "#123456" }, bell_colors(hollow))
+  end)
 
-    it("reformats mutated workspace items live (" .. backend .. ")", function()
-      local items = { { name = "main", cwd = "first", workspace_id = 41 } }
-      require("hollow.ui.workspace.source").items = function()
-        return items
-      end
-      hollow.ui.workspace.open_switcher({
-        layout = backend,
-        format_item = function(item)
-          return item.name .. ":" .. item.cwd
-        end,
-      })
-      assert.is_truthy(overlay_text(hollow):find("main:first", 1, true))
-      items[1].cwd = "second"
-      assert.is_truthy(overlay_text(hollow):find("main:second", 1, true))
-    end)
-  end
+  it("reformats mutated workspace items live", function()
+    local items = { { name = "main", cwd = "first", workspace_id = 41 } }
+    require("hollow.ui.workspace.source").items = function()
+      return items
+    end
+    hollow.ui.workspace.open_switcher({
+      format_item = function(item)
+        return item.name .. ":" .. item.cwd
+      end,
+    })
+    assert.is_truthy(overlay_text(hollow):find("main:first", 1, true))
+    items[1].cwd = "second"
+    assert.is_truthy(overlay_text(hollow):find("main:second", 1, true))
+  end)
 
   it(
     "acknowledges picker bells without losing badges, preserves real bells, and re-arms",

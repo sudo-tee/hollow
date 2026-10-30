@@ -185,7 +185,6 @@ end
 
 function ui.mux_navigator.open(opts)
   opts = opts or {}
-  local clay = ui.layout.resolve_backend(opts.layout, "clay") == "clay"
   local theme = resolve_theme(opts)
   local clay_budget, reveal_start = math.min(20, row_budget(opts)), false
   local tree = hollow.term.mux_tree()
@@ -258,7 +257,7 @@ function ui.mux_navigator.open(opts)
     id_prefix = "mux-navigator",
     items = current_rows,
     row_budget = function()
-      return clay and clay_budget or row_budget(opts)
+      return clay_budget
     end,
     on_activate = activate,
   })
@@ -347,42 +346,6 @@ function ui.mux_navigator.open(opts)
     return ui.row(row_nodes, util.merge_tables(options, paint))
   end
 
-  local function render_content(_, state)
-    tree = hollow.term.mux_tree()
-    local rows = current_rows()
-    nav.index = math.max(1, math.min(#rows, nav.index or 1))
-    local viewport = selectable.visible_range()
-    local tree_rows = ui.when(#rows > 0, function()
-      return ui.each(
-        hollow.tbl.range(viewport.start_idx, viewport.end_idx),
-        function(index, visible_index)
-          local row = rows[index]
-          local row_id, options = selectable.row(index, row.key, visible_index, viewport)
-          return render_row(row, index, shared.node_state(state, row_id).hovered, options)
-        end
-      )
-    end, function()
-      return ui.row({ ui.text("No matching panes", styles(theme).empty) })
-    end)
-
-    local s = styles(theme)
-    local search_row = ui.row({
-      ui.text("/ ", s.title),
-      ui.when(search_mode, function()
-        return ui.group(filter.render(theme))
-      end, function()
-        return ui.text("search panes", s.muted)
-      end),
-      ui.spacer(),
-      ui.text(
-        filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
-        filter_id == "pane_bell" and s.filter_bell or s.filter
-      ),
-      ui.text(pane_filter.label, s.muted),
-    })
-    return ui.column({ search_row, ui.divider(theme.divider), tree_rows })
-  end
-
   local handlers = {
     page_down = function()
       nav.page_down()
@@ -460,125 +423,129 @@ function ui.mux_navigator.open(opts)
   modal = ui.modal({
     title = opts.title or "Mux Navigator",
     theme = theme,
-    render = render_content,
     layout_events = {
-      "term:program_status_changed", "term:bell", "term:pane_focused", "term:pane_created",
-      "term:pane_exited", "term:pane_closed", "term:pane_layout_changed", "term:title_changed",
-      "term:cwd_changed", "term:foreground_process_changed", "term:tab_activated", "term:tab_closed",
-      "workspace:new", "workspace:changed", "workspace:closed", "config:reloaded", "config:changed", "theme:changed",
-      "term:command_started", "term:command_finished",
+      "term:program_status_changed",
+      "term:bell",
+      "term:pane_focused",
+      "term:pane_created",
+      "term:pane_exited",
+      "term:pane_closed",
+      "term:pane_layout_changed",
+      "term:title_changed",
+      "term:cwd_changed",
+      "term:foreground_process_changed",
+      "term:tab_activated",
+      "term:tab_closed",
+      "workspace:new",
+      "workspace:changed",
+      "workspace:closed",
+      "config:reloaded",
+      "config:changed",
+      "theme:changed",
+      "term:command_started",
+      "term:command_finished",
     },
-    layout_refresh_after = function() return refresh_after end,
-    layout_render = clay
-        and function(render_theme, state, ctx)
-          local component = require("hollow.ui.builder.components.layout_select")
-          local layout = ui.layout
-          tree = hollow.term.mux_tree()
-          local rows = current_rows()
-          refresh_after = nil
-          for _, row in ipairs(rows) do
-            if row.status_state == "working" then
-              local now = util.host_now_ms(require("hollow.state").get().host_api)
-              refresh_after = 100 - now % 100
-              break
+    layout_refresh_after = function()
+      return refresh_after
+    end,
+    render = function(render_theme, state, ctx)
+      local component = require("hollow.ui.builder.components.layout_select")
+      local layout = ui.layout
+      tree = hollow.term.mux_tree()
+      local rows = current_rows()
+      refresh_after = nil
+      for _, row in ipairs(rows) do
+        if row.status_state == "working" then
+          local now = util.host_now_ms(require("hollow.state").get().host_api)
+          refresh_after = 100 - now % 100
+          break
+        end
+      end
+      nav.index = math.max(1, math.min(#rows, nav.index or 1))
+      local sample = rows[1] and render_row(rows[1], 1, false, {})
+      local line_h = sample and component.row_height(sample, ctx)
+        or component.line_height(render_theme, ctx)
+      local measured = ctx.metrics and ctx.metrics["mux:viewport"]
+      if measured then
+        clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
+      end
+      local viewport = selectable.visible_range()
+      local start = math.max(
+        1,
+        viewport.start_idx - math.floor((24 - (viewport.end_idx - viewport.start_idx + 1)) / 2)
+      )
+      local finish = math.min(#rows, start + 23)
+      start = math.max(1, finish - 23)
+      local nodes = {}
+      for index = start, finish do
+        local row = rows[index]
+        local id = "mux-navigator:item:" .. row.key
+        local row_node = render_row(row, index, state and state.hovered_id == id, { id = id })
+        nodes[#nodes + 1] = component.from_row(
+          row_node,
+          id,
+          shared.nodes_plain_text(row_node.children),
+          render_theme,
+          ctx,
+          function()
+            for current_index, current in ipairs(current_rows()) do
+              if current.key == row.key then
+                nav.index, reveal_start = current_index, false
+                activate(current_index)
+                return
+              end
             end
           end
-          nav.index = math.max(1, math.min(#rows, nav.index or 1))
-          local sample = rows[1] and render_row(rows[1], 1, false, {})
-          local line_h = sample and component.row_height(sample, ctx)
-            or component.line_height(render_theme, ctx)
-          local measured = ctx.metrics and ctx.metrics["mux:viewport"]
-          if measured then
-            clay_budget = math.max(1, math.min(20, math.floor(measured.height / line_h)))
-          end
-          local viewport = selectable.visible_range()
-          local start = math.max(
-            1,
-            viewport.start_idx - math.floor((24 - (viewport.end_idx - viewport.start_idx + 1)) / 2)
-          )
-          local finish = math.min(#rows, start + 23)
-          start = math.max(1, finish - 23)
-          local nodes = {}
-          for index = start, finish do
-            local row = rows[index]
-            local id = "mux-navigator:item:" .. row.key
-            local legacy = render_row(row, index, state and state.hovered_id == id, { id = id })
-            nodes[#nodes + 1] = component.from_row(
-              legacy,
-              id,
-              shared.nodes_plain_text(legacy.children),
-              render_theme,
-              ctx,
-              function()
-                for current_index, current in ipairs(current_rows()) do
-                  if current.key == row.key then
-                    nav.index, reveal_start = current_index, false
-                    activate(current_index)
-                    return
-                  end
-                end
-              end
-            )
-          end
-          local s = styles(render_theme)
-          if #rows == 0 then
-            nodes[1] = layout.text("No matching panes", s.empty)
-          end
-          local search = ui.row({
-            ui.text("/ ", s.title),
-            search_mode and ui.group(filter.render(render_theme))
-              or ui.text("search panes", s.muted),
-            ui.spacer(),
-            ui.text(
-              filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
-              filter_id == "pane_bell" and s.filter_bell or s.filter
-            ),
-            ui.text(pane_filter.label, s.muted),
-          })
-          local target = rows[reveal_start and viewport.start_idx or nav.index]
-          local scrollbar = viewport.show_scrollbar
-              and shared.serialize_row_paint({ scrollbar_track = true }, render_theme)
-            or {}
-          local cell_h = ctx.cell_h or 19
-          return layout.column({
-            component.inline(
-              search.children,
-              nil,
-              { width = "grow", height = cell_h, scroll_x = true }
-            ),
-            layout.column({
-              layout.column(
-                {},
-                { width = "grow", height = 1, full_bleed_x = true, style = { bg = render_theme.divider } }
-              ),
-            }, {
-              width = "grow",
-              height = cell_h,
-              padding = { top = math.floor(cell_h * 0.5) },
-            }),
-            layout.column(nodes, {
-              id = "mux:viewport",
-              width = "grow",
-              height = "grow",
-              scroll = true,
-              scroll_x = true,
-              measure = true,
-              reveal = target and ("mux-navigator:item:" .. target.key) or nil,
-              reveal_start = reveal_start,
-              padding = {
-                left = 0,
-                right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0,
-              },
-              scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
-              scrollbar_thumb_ratio = viewport.thumb_ratio,
-              scrollbar_thumb_size = viewport.thumb_size,
-              scrollbar_track_color = scrollbar.scrollbar_track_color,
-              scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
-            }),
-          }, { width = "grow", height = "grow" }),
-            2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
-        end
-      or nil,
+        )
+      end
+      local s = styles(render_theme)
+      if #rows == 0 then
+        nodes[1] = layout.text("No matching panes", s.empty)
+      end
+      local search = ui.row({
+        ui.text("/ ", s.title),
+        search_mode and ui.group(filter.render(render_theme)) or ui.text("search panes", s.muted),
+        ui.spacer(),
+        ui.text(
+          filter_id == "pane_bell" and (icons.bell .. " ") or "  ",
+          filter_id == "pane_bell" and s.filter_bell or s.filter
+        ),
+        ui.text(pane_filter.label, s.muted),
+      })
+      local target = rows[reveal_start and viewport.start_idx or nav.index]
+      local scrollbar = viewport.show_scrollbar
+          and shared.serialize_row_paint({ scrollbar_track = true }, render_theme)
+        or {}
+      local cell_h = ctx.cell_h or 19
+      return layout.column({
+        component.inline(
+          search.children,
+          nil,
+          { width = "grow", height = cell_h, scroll_x = true }
+        ),
+        component.divider(render_theme, cell_h),
+        layout.column(nodes, {
+          id = "mux:viewport",
+          width = "grow",
+          height = "grow",
+          scroll = true,
+          scroll_x = true,
+          measure = true,
+          reveal = target and ("mux-navigator:item:" .. target.key) or nil,
+          reveal_start = reveal_start,
+          padding = {
+            left = 0,
+            right = viewport.show_scrollbar and math.max(8, ctx.cell_w or 8) or 0,
+          },
+          scrollbar_id = viewport.show_scrollbar and viewport.scrollbar_id or nil,
+          scrollbar_thumb_ratio = viewport.thumb_ratio,
+          scrollbar_thumb_size = viewport.thumb_size,
+          scrollbar_track_color = scrollbar.scrollbar_track_color,
+          scrollbar_thumb_color = scrollbar.scrollbar_thumb_color,
+        }),
+      }, { width = "grow", height = "grow" }),
+        2 * cell_h + math.max(1, math.min(#rows, row_budget(opts))) * line_h
+    end,
     keys = function(key, mods)
       local consumed = ui.keys(handlers)(key, mods)
       if consumed then
@@ -589,8 +556,7 @@ function ui.mux_navigator.open(opts)
     on_event = function(name, payload)
       local consumed = selectable.on_event(name, payload)
       if
-        clay
-        and consumed
+        consumed
         and (
           name == "overlay:scrollbar"
           or (name == "overlay:scroll" and (payload and payload.delta or 0) ~= 0)

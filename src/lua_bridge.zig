@@ -181,7 +181,6 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.composition", .source = @embedFile("lua/hollow/ui/composition.lua") },
     .{ .name = "hollow.ui.widgets.notify", .source = @embedFile("lua/hollow/ui/widgets/notify.lua") },
     .{ .name = "hollow.ui.widgets.input", .source = @embedFile("lua/hollow/ui/widgets/input.lua") },
-    .{ .name = "hollow.ui.widgets.format", .source = @embedFile("lua/hollow/ui/widgets/format.lua") },
     .{ .name = "hollow.ui.widgets.scroll_view", .source = @embedFile("lua/hollow/ui/widgets/scroll_view.lua") },
     .{ .name = "hollow.ui.widgets.select", .source = @embedFile("lua/hollow/ui/widgets/select.lua") },
     .{ .name = "hollow.ui.styles.select", .source = @embedFile("lua/hollow/ui/styles/select.lua") },
@@ -209,17 +208,14 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.builder.modal", .source = @embedFile("lua/hollow/ui/builder/modal.lua") },
     .{ .name = "hollow.ui.builder.keys", .source = @embedFile("lua/hollow/ui/builder/keys.lua") },
     .{ .name = "hollow.ui.builder.fire", .source = @embedFile("lua/hollow/ui/builder/fire.lua") },
-    .{ .name = "hollow.ui.builder.internal.click_registry", .source = @embedFile("lua/hollow/ui/builder/internal/click_registry.lua") },
     .{ .name = "hollow.ui.builder.behaviors.scroll_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/scroll_nav.lua") },
     .{ .name = "hollow.ui.builder.behaviors.selectable_list", .source = @embedFile("lua/hollow/ui/builder/behaviors/selectable_list.lua") },
     .{ .name = "hollow.ui.builder.behaviors.text_view", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_view.lua") },
     .{ .name = "hollow.ui.builder.behaviors.text_input", .source = @embedFile("lua/hollow/ui/builder/behaviors/text_input.lua") },
     .{ .name = "hollow.ui.builder.behaviors.list_nav", .source = @embedFile("lua/hollow/ui/builder/behaviors/list_nav.lua") },
-    .{ .name = "hollow.ui.builder.components.dialog", .source = @embedFile("lua/hollow/ui/builder/components/dialog.lua") },
     .{ .name = "hollow.ui.builder.components.layout_dialog", .source = @embedFile("lua/hollow/ui/builder/components/layout_dialog.lua") },
     .{ .name = "hollow.ui.builder.components.layout_input", .source = @embedFile("lua/hollow/ui/builder/components/layout_input.lua") },
     .{ .name = "hollow.ui.builder.components.layout_select", .source = @embedFile("lua/hollow/ui/builder/components/layout_select.lua") },
-    .{ .name = "hollow.ui.builder.components.button", .source = @embedFile("lua/hollow/ui/builder/components/button.lua") },
     .{ .name = "hollow.ui.runtime", .source = @embedFile("lua/hollow/ui/runtime.lua") },
     .{ .name = "hollow.ui", .source = @embedFile("lua/hollow/ui.lua") },
 };
@@ -2662,6 +2658,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_now_ms, 1);
         api.set_field(self.state, -2, "now_ms");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_text_graphemes, 1);
+        api.set_field(self.state, -2, "text_graphemes");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_pane_is_floating, 1);
@@ -6719,6 +6719,31 @@ fn l_window_is_focused(state: *State) callconv(.c) c_int {
     };
     const focused = cbs.window_is_focused(cbs.app);
     ctx.api.push_boolean(state, if (focused) 1 else 0);
+    return 1;
+}
+
+// Kept independent of app callbacks so startup/config-time text uses the same widths.
+fn l_text_graphemes(state: *State) callconv(.c) c_int {
+    const api = bridgeContext(state).api;
+    var len: usize = 0;
+    const ptr = api.to_lstring(state, 1, &len) orelse {
+        api.create_table(state, 0, 0);
+        return 1;
+    };
+    const text = ptr[0..len];
+    api.create_table(state, 0, 0);
+    var offset: usize = 0;
+    var index: c_int = 1;
+    while (@import("text_width.zig").next(text[offset..])) |cluster| {
+        api.create_table(state, 0, 2);
+        api.push_lstring(state, cluster.text.ptr, cluster.text.len);
+        api.set_field(state, -2, "text");
+        api.push_number(state, @floatFromInt(cluster.width));
+        api.set_field(state, -2, "width");
+        api.rawseti(state, -2, index);
+        index += 1;
+        offset += cluster.len;
+    }
     return 1;
 }
 

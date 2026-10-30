@@ -3,7 +3,6 @@ param(
     [Parameter(Mandatory=$true)][string]$Fixture,
     [Parameter(Mandatory=$true)][string]$OutputDir,
     [Parameter(Mandatory=$true)][ValidateSet('palette','workspace')][string]$Picker,
-    [Parameter(Mandatory=$true)][ValidateSet('clay','legacy')][string]$Backend,
     [Parameter(Mandatory=$true)][ValidateSet('idle','selection','scroll','resize')][string]$Scenario,
     [ValidateRange(1,300)][int]$Seconds=10
 )
@@ -24,7 +23,7 @@ public static class HollowProfileInput {
 }
 '@
 }
-$names = @('APPDATA','LOCALAPPDATA','HOLLOW_CONFIG_PATH','HOLLOW_PROFILE_FRAMES','HOLLOW_PROFILE_PICKER','HOLLOW_PROFILE_BACKEND','HOLLOW_COMMAND_ADDR')
+$names = @('APPDATA','LOCALAPPDATA','HOLLOW_CONFIG_PATH','HOLLOW_PROFILE_FRAMES','HOLLOW_PROFILE_PICKER','HOLLOW_COMMAND_ADDR')
 $old = @{}
 foreach ($name in $names) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $env:APPDATA = Join-Path $OutputDir 'roaming'
@@ -32,7 +31,6 @@ $env:LOCALAPPDATA = Join-Path $OutputDir 'local'
 $env:HOLLOW_CONFIG_PATH = $Fixture
 $env:HOLLOW_PROFILE_FRAMES = Join-Path $OutputDir 'frames.csv'
 $env:HOLLOW_PROFILE_PICKER = $Picker
-$env:HOLLOW_PROFILE_BACKEND = $Backend
 Remove-Item Env:HOLLOW_COMMAND_ADDR -ErrorAction SilentlyContinue
 $foreground = [HollowBenchWindow]::GetForegroundWindow()
 $process = $null
@@ -55,9 +53,9 @@ try {
     $initial = Get-HollowBenchWindow $process.Id
     $initial = Set-HollowBenchWindow -GuiPid $process.Id -Monitor $initial.monitor -ClientWidth 1200 -ClientHeight 800 -PreviousForeground $foreground
     $log = Join-Path $OutputDir 'roaming\hollow\hollow.log'
-    $marker = "HOLLOW_PROFILE_FIXTURE_READY $Picker $Backend"
+    $marker = "HOLLOW_PROFILE_FIXTURE_READY $Picker"
     if (-not (Test-Path -LiteralPath $log) -or -not (Select-String -LiteralPath $log -SimpleMatch $marker -Quiet)) {
-        throw "Fixture did not confirm picker/backend; inspect $log."
+        throw "Fixture did not confirm picker; inspect $log."
     }
     $addressLine = Select-String -LiteralPath $log -Pattern 'command-ipc: listening on (127\.0\.0\.1:\d+)' | Select-Object -First 1
     if ($null -eq $addressLine) { throw 'Owned process command endpoint unavailable.' }
@@ -136,7 +134,7 @@ try {
     if ($Scenario -eq 'resize' -and @((Select-String -LiteralPath $log -SimpleMatch 'HOLLOW_PROFILE_RESIZED')).Count -lt 2) { throw 'Fewer than two native window:resized sizes observed.' }
     Save-Semantics (Join-Path $OutputDir 'semantics-after.json')
     $samples | Export-Csv -LiteralPath (Join-Path $OutputDir 'memory.csv') -NoTypeInformation -Encoding UTF8
-    @{ picker=$Picker; backend=$Backend; scenario=$Scenario; seconds=$Seconds; pid=$process.Id; executable=$Exe; fixture=$Fixture; phase_start_ns=$phaseStartNs; phase_end_ns=$phaseEndNs; initial_window=$initial; start_utc=[DateTime]::UtcNow.AddMilliseconds(-$clock.Elapsed.TotalMilliseconds).ToString('o') } |
+    @{ picker=$Picker; scenario=$Scenario; seconds=$Seconds; pid=$process.Id; executable=$Exe; fixture=$Fixture; phase_start_ns=$phaseStartNs; phase_end_ns=$phaseEndNs; initial_window=$initial; start_utc=[DateTime]::UtcNow.AddMilliseconds(-$clock.Elapsed.TotalMilliseconds).ToString('o') } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDir 'metadata.json')
 } finally {
     if ($null -ne $process) {

@@ -12,6 +12,8 @@ typedef struct HollowClayNode {
     int children;
     int kind; // 0 column, 1 row, 2 text, 3 custom progress
     float width, height;
+    // Pixel constraints for FIT/GROW. Zero maximum is unbounded; FIXED wins.
+    float min_width, max_width, min_height, max_height;
     Clay_Padding padding;
     uint16_t gap;
     Clay_Color fg, bg, border, hover_bg;
@@ -19,8 +21,12 @@ typedef struct HollowClayNode {
     float scrollbar_thumb_ratio, scrollbar_thumb_size;
     float radius;
     uint16_t border_size;
+    // When set, replaces border_size entirely (including explicit zero sides).
+    Clay_BorderWidth border_width;
+    bool border_width_set;
     bool bold, scroll, scroll_x, clickable, reveal_start, list_item, measure, full_bleed_x;
     int wrap; // Clay text wrapping: 0 words, 1 newlines, 2 none.
+    int text_align; // Wrapped line alignment: 0 left, 1 center, 2 right.
     int align_y; // Child alignment: 0 start, 1 center, 2 end.
     float value;
 } HollowClayNode;
@@ -28,6 +34,7 @@ typedef struct HollowClayNode {
 typedef struct HollowClayFrame {
     bool enabled;
     float width, height; // Pixels; zero fits content.
+    float max_height; // Pixels; zero unbounded. Caps FIT and explicit frame height.
     Clay_Padding margin;
     int align_x, align_y; // 0 start, 1 center, 2 end.
 } HollowClayFrame;
@@ -44,6 +51,11 @@ Clay_RenderCommandArray hollow_clay_layout(HollowClay *surface,
 bool hollow_clay_failed(HollowClay *surface);
 // First Clay error reported by the latest layout; empty when none.
 Clay_String hollow_clay_error(HollowClay *surface);
+// Updates Clay's pointer position against the latest successful layout and
+// returns its last-painted clickable node, or -1. Clay clips/capture apply;
+// visible_bounds remains a separate paint/accessibility geometry query.
+// Like Clay_SetPointerState, this runs hover callbacks and advances button state.
+// Restores the previously current Clay context before returning.
 int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y);
 void hollow_clay_frame(HollowClay *surface, HollowClayFrame frame);
 void hollow_clay_set_debug(HollowClay *surface, bool enabled);

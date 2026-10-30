@@ -4,7 +4,6 @@ local shared = require("hollow.ui.shared")
 local hollow = _G.hollow
 local state = require("hollow.state").get()
 local tbl = hollow.tbl
-local util = hollow.util
 local cache = require("hollow.ui.widgets.bars.bar_cache")
 local events = require("hollow.ui.widgets.bars.bar_events")
 local modes = require("hollow.ui.widgets.bars.bottombar")
@@ -35,7 +34,7 @@ local function serialize_bar_style(style)
   if not serialized then
     return nil
   end
-  -- These fields belong to overlay chrome, not the legacy BarStyle contract.
+  -- These fields belong to overlay chrome, not the BarStyle contract.
   serialized.alpha, serialized.border_size = nil, nil
   return next(serialized) and serialized or nil
 end
@@ -129,124 +128,6 @@ local function serialize_bar_widget_style(widget)
   return next(style) ~= nil and style or nil
 end
 
----@param text string
----@param width integer
----@return string
-local function truncate_text_end(text, width)
-  text = tostring(text or "")
-  if width <= 0 then
-    return ""
-  end
-  if util.utf8_len(text) <= width then
-    return text
-  end
-
-  if utf8 and type(utf8.offset) == "function" then
-    if width <= 3 then
-      local byte_end = utf8.offset(text, width + 1)
-      return byte_end and text:sub(1, byte_end - 1) or text
-    end
-
-    local byte_end = utf8.offset(text, width - 3 + 1)
-    local prefix = byte_end and text:sub(1, byte_end - 1) or text
-    return prefix .. "..."
-  end
-
-  return util.truncate_end(text, width)
-end
-
----@param segments HollowUiSegment[]|nil
----@param width integer
----@return HollowUiSegment[]|nil
-local function truncate_segments_end(segments, width)
-  if type(segments) ~= "table" or width <= 0 then
-    return nil
-  end
-
-  local out = {}
-  local remaining = width
-  for _, segment in ipairs(segments) do
-    if remaining <= 0 then
-      break
-    end
-
-    local text = tostring(segment.text or "")
-    local seg_len = util.utf8_len(text)
-    if seg_len == 0 then
-      goto continue
-    end
-
-    local clipped = truncate_text_end(text, remaining)
-    if clipped ~= "" then
-      local copy = util.clone_value(segment)
-      copy.text = clipped
-      out[#out + 1] = copy
-      remaining = remaining - util.utf8_len(clipped)
-    end
-
-    if util.utf8_len(clipped) < seg_len then
-      break
-    end
-
-    ::continue::
-  end
-
-  return #out > 0 and out or nil
-end
-
----@param segment HollowUiSegment
----@param width integer
----@return HollowUiSegment
-local function clamp_tab_segment_width(segment, width)
-  if width <= 0 then
-    return segment
-  end
-
-  if util.utf8_len(segment.text or "") <= width then
-    return segment
-  end
-
-  local segments = segment.segments
-  if type(segments) == "table" and #segments > 1 then
-    local suffix_index
-    for index = #segments, 1, -1 do
-      if type(segments[index].id) == "string" and segments[index].id ~= "" then
-        suffix_index = index
-        break
-      end
-    end
-
-    if suffix_index ~= nil then
-      local suffix_width = 0
-      for index = suffix_index, #segments do
-        suffix_width = suffix_width + util.utf8_len(segments[index].text or "")
-      end
-
-      if suffix_width <= width then
-        local prefix = {}
-        for index = 1, suffix_index - 1 do
-          prefix[#prefix + 1] = segments[index]
-        end
-
-        local clamped = util.clone_value(segment)
-        clamped.segments = truncate_segments_end(prefix, width - suffix_width) or {}
-        for index = suffix_index, #segments do
-          clamped.segments[#clamped.segments + 1] = util.clone_value(segments[index])
-        end
-        clamped.text = shared.segments_plain_text(clamped.segments)
-        return clamped
-      end
-    end
-  end
-
-  local text = truncate_text_end(segment.text or "", width)
-
-  local clamped = util.clone_value(segment)
-  clamped.text = text
-  clamped.segments = truncate_segments_end(segment.segments, width)
-  return clamped
-end
-
 ---@param surface string|nil
 ---@param node HollowUiBarTabsNode
 ---@param ctx HollowWidgetCtx
@@ -294,9 +175,6 @@ local function serialize_tabs(surface, node, ctx, handlers)
 
       local segment = serialize_bar_value(surface, label, tab_state.title, style)
       segment.fallback_style = shared.tab_fallback_style(tab_state.is_active, shared.bar_palette())
-      if type(node.max_width) == "number" and node.max_width > 0 then
-        segment = clamp_tab_segment_width(segment, math.floor(node.max_width))
-      end
       return segment
     end)
     :get()

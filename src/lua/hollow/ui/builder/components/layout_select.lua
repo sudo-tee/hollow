@@ -151,19 +151,32 @@ local function item(entry, index, opts, theme, ctx, plain)
       or entry.label_text,
     width = "grow",
     height = line_h * #lines,
-    style = { bg = paint.paint.fill_bg, radius = paint.paint.fill_radius },
+    style = {
+      bg = paint.paint.fill_bg,
+      radius = paint.paint.fill_radius,
+      hover = { bg = list_row(theme, { selected = selected, hovered = true }).paint.fill_bg },
+    },
     on_click = function()
       opts.on_activate(index, entry.source_index)
     end,
   })
 end
 
+-- Clay borders cannot reach into the panel padding, so the rule stays a
+-- full-bleed 1px node centred in one row.
+function M.divider(theme, cell_h)
+  return layout.column({
+    layout.column(
+      {},
+      { width = "grow", height = 1, full_bleed_x = true, style = { bg = theme.divider } }
+    ),
+  }, { width = "grow", height = cell_h, padding = { top = math.floor(cell_h * 0.5) } })
+end
+
 function M.render(opts, theme, ctx)
   local cell_h = ctx.cell_h or 19
   local function divider()
-    return layout.column({
-      layout.column({}, { width = "grow", height = 1, full_bleed_x = true, style = { bg = theme.divider } }),
-    }, { width = "grow", height = cell_h, padding = { top = math.floor(cell_h * 0.5) } })
+    return M.divider(theme, cell_h)
   end
   local entries = opts.entries
   local viewport = opts.viewport
@@ -268,8 +281,8 @@ function M.render(opts, theme, ctx)
   return layout.column(children, { width = "grow", height = "grow" })
 end
 
--- Adapter for existing row components. Layout is rebuilt as boxes/text; the
--- legacy row serializer and Zig row-positioning path are not involved.
+-- Adapter for existing row components. Layout is rebuilt as boxes/text;
+-- Segment serialization and native row positioning are not involved.
 function M.from_row(row, id, label, theme, ctx, on_click, plain)
   local serialized = shared.serialize_row_paint(row, theme)
   local flat = shared.flatten_span_nodes(row.children)
@@ -310,7 +323,14 @@ function M.from_row(row, id, label, theme, ctx, on_click, plain)
     label = label,
     width = "grow",
     height = (ctx.cell_h or 19) + top + bottom,
-    style = { bg = serialized.fill_bg, radius = serialized.fill_radius },
+    style = {
+      bg = serialized.fill_bg,
+      radius = serialized.fill_radius,
+      hover = {
+        bg = serialized.accent_bar and serialized.fill_bg
+          or list_row(theme, { hovered = true }).paint.fill_bg,
+      },
+    },
     on_click = on_click,
   })
 end

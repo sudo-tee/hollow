@@ -24,7 +24,7 @@ describe("Clay confirmation overlay", function()
   end
 
   it("uses the overlay shell and cached tree without serializing legacy rows", function()
-    ui.confirm.open({ title = "Delete", prompt = "Delete this file?", layout = "clay", width = 60 })
+    ui.confirm.open({ title = "Delete", prompt = "Delete this file?", width = 60 })
     local state = ui._overlay_state()
     assert.equals(1, #state)
     assert.is_true(state[1].clay)
@@ -42,7 +42,6 @@ describe("Clay confirmation overlay", function()
     local value, cancelled
     ui.confirm.open({
       prompt = "Continue?",
-      layout = "clay",
       on_confirm = function(v)
         value = v
       end,
@@ -54,7 +53,6 @@ describe("Clay confirmation overlay", function()
     assert.equals(0, #stack)
     ui.confirm.open({
       prompt = "Continue?",
-      layout = "clay",
       on_cancel = function()
         cancelled = true
       end,
@@ -70,7 +68,6 @@ describe("Clay confirmation overlay", function()
     local value, button_value
     ui.confirm.open({
       prompt = "Choose",
-      layout = "clay",
       buttons = {
         {
           text = "Keep",
@@ -92,7 +89,7 @@ describe("Clay confirmation overlay", function()
     ui.dispatch_widget_event("overlay:hover", hover)
     assert.equals(button.id, hover.id)
     prepare()
-    assert.is_true(ui._layout_revision > revision)
+    assert.equals(revision, ui._layout_revision)
     local keep = find_button("Keep")
     ui.dispatch_widget_event("overlay:click", { id = keep.id, index = 1 })
     assert.equals(42, value)
@@ -104,32 +101,32 @@ describe("Clay confirmation overlay", function()
     local calls = 0
     ui.confirm.open({
       prompt = "First",
-      layout = "clay",
       on_confirm = function()
         calls = calls + 1
       end,
     })
     local button = find_button("Yes")
     local surface = stack[1]._layout_surface
-    ui.confirm.open({ prompt = "Second", layout = "clay" })
+    ui.confirm.open({ prompt = "Second" })
     assert.equals(1, #stack)
     assert.equals(surface, stack[1]._layout_surface)
     ui.overlay.clear()
     assert.is_true(surface.destroyed)
     surface:dispatch(button.id)
     assert.equals(0, calls)
-    ui.confirm.open({ prompt = "Third", layout = "clay" })
+    ui.confirm.open({ prompt = "Third" })
     assert.not_equals(surface.namespace, stack[1]._layout_surface.namespace)
     ui.confirm.close()
     assert.equals(0, #stack)
   end)
 
-  it("retains legacy rendering by default and suspends standalone demo behind a modal", function()
+  it("suspends standalone demo behind a Clay modal", function()
     ui.layout.show(ui.layout.text("demo"))
-    ui.confirm.open({ prompt = "Legacy confirmation" })
+    ui.confirm.open({ prompt = "Confirmation" })
     prepare()
-    assert.is_nil(ui._layout_tree)
-    assert.is_nil(ui._overlay_state()[1].clay)
+    assert.is_not_nil(ui._layout_tree)
+    assert.is_true(ui._overlay_state()[1].clay)
+    assert.is_not_nil(find_button("Yes"))
     ui.confirm.close()
     assert.equals("demo", prepare()[1].text)
   end)

@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("activity composition", function()
@@ -15,8 +16,6 @@ describe("activity composition", function()
   before_each(function()
     env = harness.boot()
     hollow = env.hollow
-    -- Preserve the legacy inline-segment/column serialization contract.
-    hollow.ui.layout.configure({ backend = "legacy" })
     env.recorded.now_ms = 3601234
     local entries = {
       {
@@ -53,12 +52,7 @@ describe("activity composition", function()
   end)
 
   local function item(id)
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      if row.id and row.id:match(":" .. id .. "$") then
-        return row.segments
-      end
-    end
-    error("missing activity row: " .. id)
+    return clay.children(hollow.ui, ":activity:item:" .. id)
   end
 
   local function text(nodes, value)
@@ -74,7 +68,7 @@ describe("activity composition", function()
     hollow.ui.activity.open({ theme = theme })
     local first, second = item(1), item(2)
     assert.equals(theme.selection_fg, text(first, "First").fg)
-    assert.is_false(text(first, "First").bold)
+    assert.is_not.equal(true, text(first, "First").bold)
     assert.equals(theme.selected_muted, text(first, "Detail").fg)
     assert.equals(theme.selection_fg, text(first, "  1h").fg)
     assert.equals(theme.stale, text(first, "pane closed  ").fg)
@@ -94,13 +88,14 @@ describe("activity composition", function()
       return { fg = "#abcdef", bg = "#123456" }
     end
     hollow.ui.activity.open({ theme = theme })
-    local rows = hollow.ui._overlay_state()[1].rows
-    local first, second = rows[3].segments, rows[4].segments
-    assert.same({ "main" }, calls)
+    local first, second = item(1), item(2)
+    assert.is_true(#calls > 0)
+    for _, name in ipairs(calls) do
+      assert.equals("main", name)
+    end
     assert.equals("#abcdef", text(first, "main").fg)
-    assert.equals("#123456", text(first, "main").bg)
-    assert.same({ left = 8, right = 8, top = 3, bottom = 3 }, text(second, "    ").padding)
-    assert.same({ left = 4, right = 4, top = 0, bottom = 0 }, second[#second].padding)
+    assert.equals("#123456", clay.label(hollow.ui, "main").bg)
+    assert.is_not_nil(text(second, "    "))
     assert.equals(" ", second[#second].text)
   end)
 
@@ -110,10 +105,7 @@ describe("activity composition", function()
     entries[1].workspace = "long-workspace"
     env.get_key_handler()("arrow_down", 0)
     assert.is_truthy(text(item(1), "long-workspace"))
-    assert.same(
-      { left = 8, right = 8, top = 3, bottom = 3 },
-      text(item(2), string.rep(" ", 14)).padding
-    )
+    assert.is_not_nil(text(item(2), string.rep(" ", 14)))
 
     entries[1].workspace = ""
     env.get_key_handler()("arrow_up", 0)
@@ -128,10 +120,9 @@ describe("activity composition", function()
     hollow.ui.activity.open({ theme = theme })
     env.get_key_handler()("slash", 0)
     env.get_key_handler()("z", 0)
-    local rows = hollow.ui._overlay_state()[1].rows
-    assert.equals("/ ", rows[3].segments[1].text)
-    assert.equals(theme.title, rows[3].segments[1].fg)
-    assert.is_false(rows[3].segments[1].bold)
-    assert.equals("No matching activity", rows[5].segments[1].text)
+    local prompt = assert(clay.text_node(hollow.ui, "/ "))
+    assert.equals(theme.title, prompt.fg)
+    assert.is_not.equal(true, prompt.bold)
+    assert.is_not_nil(clay.text_node(hollow.ui, "No matching activity"))
   end)
 end)

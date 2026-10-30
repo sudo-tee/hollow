@@ -186,7 +186,6 @@ return {
   ["hollow.ui.command_palette.open"] = "fun(opts?: HollowUiCommandPaletteOptions)",
   ["hollow.ui.confirm.close"] = "fun()",
   ["hollow.ui.confirm.open"] = "fun(opts: HollowUiConfirmOptions)",
-  ["hollow.ui.dialog"] = "fun(opts: HollowUiDialogOptions, theme: table): HollowUiColumnNode",
   ["hollow.ui.dispatch_overlay_key"] = "fun(key: string, mods: HollowUiKeyMods): boolean",
   ["hollow.ui.dispatch_widget_event"] = "fun(name: string, payload: HollowUiNodeEventPayload)",
   ["hollow.ui.divider"] = "fun(color?: HollowColor): HollowUiRowNode",

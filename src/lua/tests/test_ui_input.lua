@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("UI input test suite", function()
@@ -26,13 +27,7 @@ describe("UI input test suite", function()
       harness.assert_true(on_key("x", 0), "input overlay should insert text at the moved cursor")
       local input_overlay = hollow.ui._overlay_state()
       harness.assert_true(input_overlay ~= nil, "input overlay should stay open while editing")
-      local input_overlay_text = ""
-      for _, row in ipairs(input_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          input_overlay_text = input_overlay_text .. (segment.text or "")
-        end
-        input_overlay_text = input_overlay_text .. "\n"
-      end
+      local input_overlay_text = clay.text(hollow.ui)
       harness.assert_true(
         input_overlay_text:find("maixn", 1, true) ~= nil,
         "input overlay should insert at the caret after moving left"

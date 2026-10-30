@@ -7,10 +7,18 @@ describe("modal layout invalidation", function()
     env = harness.boot()
     hollow, ui = env.hollow, env.hollow.ui
     queue, now, requests = {}, 1000, 0
-    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
-    env.host_api.now_ms = function() return now end
-    env.host_api.request_redraw = function() requests = requests + 1 end
-    env.host_api.request_layout_refresh = function() error("overlay invalidation must not relayout panes") end
+    env.host_api.defer = function(fn, delay)
+      queue[#queue + 1] = { fn = fn, delay = delay }
+    end
+    env.host_api.now_ms = function()
+      return now
+    end
+    env.host_api.request_redraw = function()
+      requests = requests + 1
+    end
+    env.host_api.request_layout_refresh = function()
+      error("overlay invalidation must not relayout panes")
+    end
   end)
 
   local function prepare()
@@ -21,10 +29,14 @@ describe("modal layout invalidation", function()
   it("reuses snapshots and invalidates on events, cleaning listeners on close", function()
     local renders, unmounted = 0, 0
     local handle = require("hollow.ui.builder.modal").modal({
-      render = function() return {} end,
+      render = function()
+        return {}
+      end,
       layout_events = { "test:changed" },
-      on_unmount = function() unmounted = unmounted + 1 end,
-      layout_render = function()
+      on_unmount = function()
+        unmounted = unmounted + 1
+      end,
+      render = function()
         renders = renders + 1
         return ui.layout.text("value")
       end,
@@ -45,9 +57,13 @@ describe("modal layout invalidation", function()
   it("schedules one refresh and ignores stale callbacks after close", function()
     local delay, renders = 100, 0
     local handle = require("hollow.ui.builder.modal").modal({
-      render = function() return {} end,
-      layout_refresh_after = function() return delay end,
-      layout_render = function()
+      render = function()
+        return {}
+      end,
+      layout_refresh_after = function()
+        return delay
+      end,
+      render = function()
         renders = renders + 1
         return ui.layout.text("timer")
       end,
@@ -68,11 +84,15 @@ describe("modal layout invalidation", function()
   end)
 
   it("does not retain workspace listeners when another modal rejects opening", function()
-    require("hollow.ui.workspace.source").items = function() return {} end
+    require("hollow.ui.workspace.source").items = function()
+      return {}
+    end
     ui.input.open({ default = "unfinished" })
     local function listener_count()
       local count = 0
-      for _ in pairs(require("hollow.state").get().events.handles) do count = count + 1 end
+      for _ in pairs(require("hollow.state").get().events.handles) do
+        count = count + 1
+      end
       return count
     end
     local before = listener_count()

@@ -1,6 +1,7 @@
 #define CLAY_IMPLEMENTATION
 #include "clay_bridge.h"
 #include <stdlib.h>
+#include "../text_width.h"
 
 struct HollowClay {
     Clay_Context *context;
@@ -26,10 +27,8 @@ static void on_error(Clay_ErrorData error) {
 static Clay_Dimensions measure(Clay_StringSlice text, Clay_TextElementConfig *config, void *data) {
     (void)config;
     HollowClay *surface = data;
-    int codepoints = 0;
-    for (int i = 0; i < text.length; ++i)
-        if (((unsigned char)text.chars[i] & 0xc0) != 0x80) ++codepoints;
-    return (Clay_Dimensions){ codepoints * surface->cell_w, surface->cell_h };
+    size_t columns = hollow_text_width(text.chars, (size_t)text.length);
+    return (Clay_Dimensions){ columns * surface->cell_w, surface->cell_h };
 }
 
 // Plain layouts stay small; Clay's inspector adds several elements per
@@ -75,10 +74,14 @@ void hollow_clay_destroy(HollowClay *surface) {
     free(surface);
 }
 
-static Clay_SizingAxis sizing(float value) {
-    if (value < 0) return CLAY_SIZING_GROW(0);
+static Clay_SizingAxis sizing(float value, float min, float max) {
     if (value > 0) return CLAY_SIZING_FIXED(value);
-    return CLAY_SIZING_FIT(0);
+    if (min < 0) min = 0;
+    if (max < 0) max = 0;
+    // Maximum is a hard cap, including the framed host's available size.
+    if (max > 0 && min > max) min = max;
+    if (value < 0) return CLAY_SIZING_GROW(min, max);
+    return CLAY_SIZING_FIT(min, max);
 }
 
 static float min_size(float value, float max) { return value < max ? value : max; }
@@ -95,17 +98,22 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
     if (node->kind == 2) {
         CLAY_TEXT(node->text, { .textColor = node->fg, .fontId = node->bold ? 1 : 0,
             .fontSize = (uint16_t)surface->cell_h, .lineHeight = (uint16_t)surface->cell_h,
+            .textAlignment = node->text_align == 1 ? CLAY_TEXT_ALIGN_CENTER : (node->text_align == 2 ? CLAY_TEXT_ALIGN_RIGHT : CLAY_TEXT_ALIGN_LEFT),
             .wrapMode = (Clay_TextElementConfigWrapMode)node->wrap });
         return;
     }
-    Clay_Sizing sizes = { sizing(node->width), sizing(node->height) };
+    Clay_Sizing sizes = { sizing(node->width, node->min_width, node->max_width),
+        sizing(node->height, node->min_height, node->max_height) };
     if (index == 0 && surface->frame.enabled) {
         float max_w = surface->width - surface->frame.margin.left - surface->frame.margin.right;
         float max_h = surface->height - surface->frame.margin.top - surface->frame.margin.bottom;
         if (max_w < 1) max_w = 1;
         if (max_h < 1) max_h = 1;
-        sizes.width = surface->frame.width > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.width, max_w)) : CLAY_SIZING_FIT(0, max_w);
-        sizes.height = surface->frame.height > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.height, max_h)) : CLAY_SIZING_FIT(0, max_h);
+        if (surface->frame.max_height > 0) max_h = min_size(max_h, surface->frame.max_height);
+        float fit_max_w = node->max_width > 0 ? min_size(max_w, node->max_width) : max_w;
+        float fit_max_h = node->max_height > 0 ? min_size(max_h, node->max_height) : max_h;
+        sizes.width = surface->frame.width > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.width, max_w)) : sizing(0, node->min_width, fit_max_w);
+        sizes.height = surface->frame.height > 0 ? CLAY_SIZING_FIXED(min_size(surface->frame.height, max_h)) : sizing(0, node->min_height, fit_max_h);
     }
     // CLAY() opens the element before evaluating its declaration, so
     // Clay_Hovered() refers to this node.
@@ -117,7 +125,7 @@ static void declare_node(HollowClayNode *nodes, int count, int *cursor, int dept
             .layoutDirection = node->kind == 1 ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM },
         .backgroundColor = node->hover_bg.a && Clay_Hovered() ? node->hover_bg : node->bg,
         .cornerRadius = CLAY_CORNER_RADIUS(node->radius),
-        .border = { .color = node->border, .width = CLAY_BORDER_ALL(node->border_size) },
+        .border = { .color = node->border, .width = node->border_width_set ? node->border_width : (Clay_BorderWidth)CLAY_BORDER_ALL(node->border_size) },
         // Clay clip flags opt into overflow sizing on that axis. Only scroll
         // viewports use them; the renderer clips framed panels independently.
         .clip = { .horizontal = node->scroll_x,
@@ -285,16 +293,29 @@ Clay_ElementData hollow_clay_visible_bounds(HollowClay *surface, HollowClayNode 
     return surface->visible[index];
 }
 
-// Topmost clickable node under the point. Nodes are painted in preorder and
-// visible bounds already include every clipping ancestor.
+// Clay owns pointer clipping and floating capture (including the inspector).
+// This bridge's ordinary nodes paint in preorder, so the last clickable node
+// in Clay's overlap set wins. Do not use the paint/accessibility bounds here.
 int hollow_clay_hit(HollowClay *surface, HollowClayNode *nodes, int count, float x, float y) {
+    if (surface->failed || surface->count == 0 || count <= 0) return -1;
     if (count > surface->count) count = surface->count;
+    Clay_Context *previous = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(surface->context);
+    Clay_SetPointerState((Clay_Vector2){x, y}, surface->debug && surface->pointer_down);
+    Clay_ElementIdArray over = Clay_GetPointerOverIds();
+    int hit = -1;
     for (int i = count - 1; i >= 0; --i) {
-        if (!nodes[i].clickable || !surface->visible[i].found) continue;
-        Clay_BoundingBox b = surface->visible[i].boundingBox;
-        if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) return i;
+        if (!nodes[i].clickable) continue;
+        for (int32_t j = 0; j < over.length; ++j) {
+            if (over.internalArray[j].id == nodes[i].element_id.id) {
+                hit = i;
+                break;
+            }
+        }
+        if (hit >= 0) break;
     }
-    return -1;
+    Clay_SetCurrentContext(previous);
+    return hit;
 }
 
 #define HOLLOW_CLAY_DEBUG_DEPTH 32

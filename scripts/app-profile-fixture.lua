@@ -1,16 +1,16 @@
 -- Isolated synthetic picker fixture for app profiling; no workspace actions.
 local hollow = require("hollow")
 local picker = assert(os.getenv("HOLLOW_PROFILE_PICKER"))
-local backend = assert(os.getenv("HOLLOW_PROFILE_BACKEND"))
 assert(picker == "palette" or picker == "workspace")
-assert(backend == "clay" or backend == "legacy")
 hollow.config.set({ default_domain = "cmd", vsync = false, debug_overlay = false })
 local entries = {}
 for i = 1, 100 do
   if picker == "palette" then
-    entries[i] = { name = "command_" .. i, desc = "Command " .. i, category = "general", chords = {} }
+    entries[i] =
+      { name = "command_" .. i, desc = "Command " .. i, category = "general", chords = {} }
   else
-    entries[i] = { name = "workspace " .. i, cwd = "/srv/project/" .. i, domain = "remote", workspace_id = i }
+    entries[i] =
+      { name = "workspace " .. i, cwd = "/srv/project/" .. i, domain = "remote", workspace_id = i }
   end
 end
 local list
@@ -26,7 +26,14 @@ hollow.ui.selectable_list = function(opts)
       local after = list.visible_range().start_idx
       if before ~= after then
         reported = true
-        hollow.log(string.format("HOLLOW_PROFILE_SCROLL_CHANGED before=%d after=%d delta=%s", before, after, tostring(payload.delta)))
+        hollow.log(
+          string.format(
+            "HOLLOW_PROFILE_SCROLL_CHANGED before=%d after=%d delta=%s",
+            before,
+            after,
+            tostring(payload.delta)
+          )
+        )
       end
       return consumed
     end
@@ -42,7 +49,9 @@ hollow.ui.dispatch_overlay_key = function(key, mods)
   local after = list and list.nav.index
   if not key_reported and before and after and before ~= after then
     key_reported = true
-    hollow.log(string.format("HOLLOW_PROFILE_KEY_CHANGED key=%s before=%d after=%d", key, before, after))
+    hollow.log(
+      string.format("HOLLOW_PROFILE_KEY_CHANGED key=%s before=%d after=%d", key, before, after)
+    )
   end
   return consumed
 end
@@ -57,12 +66,14 @@ hollow.events.on("window:resized", function(event)
 end)
 hollow.events.on("gui:ready", function()
   if picker == "palette" then
-    hollow.ui.command_palette.open({ entries = entries, layout = backend })
+    hollow.ui.command_palette.open({ entries = entries })
   else
-    require("hollow.ui.workspace.source").items = function() return entries end
-    hollow.ui.workspace.open_switcher({ layout = backend })
+    require("hollow.ui.workspace.source").items = function()
+      return entries
+    end
+    hollow.ui.workspace.open_switcher()
   end
   local overlay = hollow.ui._overlay_state()
-  assert(list and overlay[1] and (overlay[1].clay == true) == (backend == "clay"), "profile picker/backend did not open")
-  hollow.log("HOLLOW_PROFILE_FIXTURE_READY " .. picker .. " " .. backend)
+  assert(list and overlay[1] and overlay[1].clay == true, "profile picker did not open")
+  hollow.log("HOLLOW_PROFILE_FIXTURE_READY " .. picker)
 end)

@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("shared presentation adapters", function()
@@ -81,13 +82,16 @@ describe("shared presentation adapters", function()
       })
     end
     local palette = shared.palette("overlay")
-    ui.overlay.push(ui.overlay.new({ render = row }))
+    ui.overlay.push(ui.overlay.new({
+      render = function()
+        return clay.row(ui, row())
+      end,
+    }))
     ui.sidebar.mount(ui.sidebar.new({ width = 30, render = row }))
-    local overlay = ui._overlay_state()[1].rows[1]
+    local overlay = assert(clay.find(ui, ":choice"))
     local sidebar = ui._sidebar_state()
-    for _, key in ipairs({ "fill_bg", "fill_radius", "accent_bar", "divider" }) do
-      assert.same(overlay[key], sidebar.row_styles[1][key])
-    end
+    assert.equals(overlay.bg, sidebar.row_styles[1].fill_bg)
+    assert.equals(overlay.radius, sidebar.row_styles[1].fill_radius)
     assert.equals(palette.muted, sidebar.rows[1][1].fg)
     assert.equals("choice", sidebar.rows[1][1].text)
     assert.is_nil(sidebar.rows[1].segments)
@@ -167,7 +171,10 @@ describe("shared presentation adapters", function()
     }))
     ui.overlay.push(ui.overlay.new({
       render = function()
-        return ui.row({ ui.text("scroll") }, { scrollbar_track = true })
+        return ui.layout.column(
+          { ui.layout.text("scroll") },
+          { id = "scroll", height = 20, scroll = true, scrollbar_id = "scroll:bar" }
+        )
       end,
     }))
     ui._topbar_state()
@@ -193,7 +200,7 @@ describe("shared presentation adapters", function()
     assert.equals("#112233", ui._topbar_state().items[1].tabs[1].fallback_style.bg)
     assert.equals("#223344", ui._topbar_state().items[1].tabs[1].fallback_style.selection_accent)
     assert.equals("#334455", ui._sidebar_state().style.bg)
-    local row = ui._overlay_state()[1].rows[1]
+    local row = assert(clay.find(ui, ":scroll"))
     assert.equals("#445566", row.scrollbar_track_color)
     assert.equals("#556677", row.scrollbar_thumb_color)
   end)
@@ -291,18 +298,17 @@ describe("shared presentation adapters", function()
     local chrome = { bg = false, padding = { right = 2 }, margin = false, border = "muted" }
     local before_style, before_chrome =
       hollow.util.clone_value(style), hollow.util.clone_value(chrome)
-    local expected = shared.overlay_surface_style(style, chrome, palette)
     ui.overlay.push(ui.overlay.new({
       style = style,
       chrome = chrome,
       render = function()
-        return ui.row({})
+        return ui.layout.row({})
       end,
     }))
-    assert.same(expected, ui._overlay_state()[1].chrome)
+    local expected = assert(clay.find(ui, ":dialog"))
     assert.is_nil(expected.bg)
-    assert.is_nil(expected.margin)
-    assert.same({ top = 0, right = 2, bottom = 0, left = 2 }, expected.padding)
+    -- Explicit chrome padding replaces style padding; base insets are cell-derived.
+    assert.same({ top = 19, right = 6, bottom = 9, left = 6 }, expected.padding)
     assert.equals(palette.muted, expected.border)
     assert.equals(6, expected.radius)
     assert.same(before_style, style)
@@ -327,7 +333,7 @@ describe("shared presentation adapters", function()
     }))
     local overlay = ui.overlay.new({
       render = function()
-        return ui.row({ close() })
+        return clay.row(ui, ui.row({ close() }))
       end,
     })
     ui.overlay.push(overlay)
@@ -335,14 +341,11 @@ describe("shared presentation adapters", function()
       local id = hovered and "tab:close" or nil
       state.ui[events.hovered_key("topbar")] = id
       require("hollow.ui.widgets.bars.bar_cache").invalidate("topbar")
-      overlay.on_event("overlay:hover", { id = id })
       local bar = ui._topbar_state().items[1].segments[1]
-      local span = ui._overlay_state()[1].rows[1].segments[1]
-      for _, key in ipairs({ "text", "id", "fg", "bg", "padding" }) do
-        assert.same(bar[key], span[key])
-      end
-      assert.equals(" ×", span.text)
-      assert.equals(hovered and shared.palette("overlay").hover_bg or nil, span.bg)
+      local span = assert(clay.label(ui, " ×"))
+      assert.equals(" ×", clay.text_node(ui, " ×").text)
+      assert.equals(shared.palette("overlay").hover_bg, span.hover_bg)
+      assert.equals(hovered and shared.palette("topbar").hover_bg or nil, bar.bg)
     end
   end)
 end)

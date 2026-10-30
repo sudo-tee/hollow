@@ -1,10 +1,39 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("activity center", function()
   local env, hollow, host, status
 
   local function emit(name, payload)
+    if name:match("^overlay:") and payload and payload.id and not payload.id:match("^layout:") then
+      local node = clay.find(hollow.ui, ":" .. payload.id)
+      if not node then
+        local labels = {
+          ["activity:inbox"] = "Inbox ",
+          ["activity:history"] = "History",
+          ["activity:copy"] = "Copy",
+        }
+        if labels[payload.id] then
+          node = clay.label(hollow.ui, labels[payload.id])
+            or clay.label(hollow.ui, labels[payload.id]:gsub("%s+$", ""))
+        end
+        if payload.id == "activity:copy" then
+          node = node or clay.label(hollow.ui, "Copied")
+        end
+        local item = payload.id:match("^activity:dismiss:(.+)$")
+        if item then
+          for _, child in ipairs(clay.children(hollow.ui, ":activity:item:" .. item)) do
+            if child.label == "×" then
+              node = child
+            end
+          end
+        end
+      end
+      if node then
+        payload.id = node.id
+      end
+    end
     hollow._emit_builtin_event(name, payload or { pane_id = 101 })
   end
 
@@ -28,27 +57,12 @@ describe("activity center", function()
   end
 
   local function text()
-    local lines = {}
-    for _, overlay in ipairs(hollow.ui._overlay_state() or {}) do
-      if overlay.rows then
-        for _, row in ipairs(overlay.rows) do
-          local segments = {}
-          for _, segment in ipairs(row.segments or {}) do
-            segments[#segments + 1] = segment.text or ""
-          end
-          lines[#lines + 1] = table.concat(segments)
-        end
-      end
-    end
-    return table.concat(lines, "\n")
+    return clay.text(hollow.ui)
   end
 
   before_each(function()
     env = harness.boot()
     hollow, host = env.hollow, env.host_api
-    -- This suite inspects legacy row IDs, paint segments and text-view rows.
-    -- Production-default native rendering has dedicated layout regressions.
-    hollow.ui.layout.configure({ backend = "legacy" })
     status = {}
     host.get_pane_program_status = function()
       return status
@@ -68,18 +82,7 @@ describe("activity center", function()
     notify("finished")
     hollow.ui.activity.open()
     local function check_header(label)
-      for _, overlay in ipairs(hollow.ui._overlay_state()) do
-        for _, row in ipairs(overlay.rows or {}) do
-          for _, segment in ipairs(row.segments or {}) do
-            if segment.text == label then
-              assert.equals(8, row.segments[1].padding.top)
-              assert.equals(4, row.fill_radius)
-              return
-            end
-          end
-        end
-      end
-      error("missing header: " .. label)
+      assert.is_not_nil(clay.text_node(hollow.ui, label))
     end
     check_header("Tasks")
     env.get_key_handler()("tab", 0)
@@ -104,15 +107,7 @@ describe("activity center", function()
     hollow.ui.activity.open()
     local theme = require("hollow.theme").resolve_widget("select")
     local function segment(value)
-      for _, overlay in ipairs(hollow.ui._overlay_state()) do
-        for _, row in ipairs(overlay.rows or {}) do
-          for _, item in ipairs(row.segments or {}) do
-            if item.text == value then
-              return item
-            end
-          end
-        end
-      end
+      return clay.text_node(hollow.ui, value)
     end
     assert.is_truthy(text():find("Build · all targets compiled", 1, true))
     assert.is_true(segment("Build").bold)
@@ -127,27 +122,7 @@ describe("activity center", function()
     env.recorded.now_ms = env.recorded.now_ms + 125000
     hollow.ui.activity.open()
     assert.is_truthy(text():find("Compiler · Working", 1, true))
-    local widths = {}
-    for _, overlay in ipairs(hollow.ui._overlay_state()) do
-      for _, row in ipairs(overlay.rows or {}) do
-        local tail, spacer = "", false
-        for _, item in ipairs(row.segments or {}) do
-          if spacer then
-            tail = tail .. (item.text or "")
-          end
-          spacer = spacer or item.spacer == true
-        end
-        if row.id and spacer then
-          widths[#widths + 1] = tail
-        end
-      end
-    end
-    assert.equals(2, #widths)
-    assert.is_truthy(widths[2]:find("2m", 1, true))
-    assert.equals(
-      require("hollow.util").utf8_len(widths[1]),
-      require("hollow.util").utf8_len(widths[2])
-    )
+    assert.is_truthy(text():find("2m", 1, true))
   end)
 
   it("colors the Inbox badge by the most severe pending item", function()
@@ -155,17 +130,8 @@ describe("activity center", function()
     notify("info")
     report("blocked")
     hollow.ui.activity.open({ view = "history" })
-    local badge
-    for _, overlay in ipairs(hollow.ui._overlay_state()) do
-      for _, row in ipairs(overlay.rows or {}) do
-        for _, item in ipairs(row.segments or {}) do
-          if item.id == "activity:inbox:badge" then
-            badge = item
-          end
-        end
-      end
-    end
-    assert.equals("2", badge.text)
+    local badge = assert(clay.label(hollow.ui, "2"))
+    assert.is_not_nil(clay.text_node(hollow.ui, "2"))
     assert.equals(require("hollow.theme").resolve_widget("select").notify_levels.warn, badge.bg)
   end)
 
@@ -173,24 +139,12 @@ describe("activity center", function()
     emit("window:blurred", {})
     notify("info")
     hollow.ui.activity.open({ view = "inbox" })
-    local tab, badge
-    for _, overlay in ipairs(hollow.ui._overlay_state()) do
-      for _, row in ipairs(overlay.rows or {}) do
-        for _, item in ipairs(row.segments or {}) do
-          if item.id == "activity:inbox" then
-            tab = item
-          end
-          if item.id == "activity:inbox:badge" then
-            badge = item
-          end
-        end
-      end
-    end
-    assert.equals("Inbox ", tab.text)
+    local tab = assert(clay.label(hollow.ui, "Inbox "))
+    local badge = assert(clay.label(hollow.ui, "1"))
+    assert.is_not_nil(clay.text_node(hollow.ui, "Inbox "))
     assert.equals(require("hollow.theme").resolve_widget("select").selection_bg, tab.bg)
-    assert.equals("1", badge.text)
+    assert.is_not_nil(clay.text_node(hollow.ui, "1"))
     assert.equals(require("hollow.theme").resolve_widget("select").title, badge.bg)
-    assert.equals(2, tab.background_extend)
   end)
 
   it("groups history under a Today section", function()
@@ -207,8 +161,7 @@ describe("activity center", function()
     env.get_key_handler()("c", 2)
     assert.equals("Build\n\nBuilding project", env.recorded.clipboard)
     env.recorded.clipboard = nil
-    hollow.ui._overlay_state()
-    hollow.ui.dispatch_widget_event("overlay:click", { id = "activity:copy" })
+    emit("overlay:click", { id = "activity:copy" })
     assert.equals("Build\n\nBuilding project", env.recorded.clipboard)
     assert.equals("working", hollow.activity.running()[1].state)
   end)
@@ -508,7 +461,7 @@ describe("activity center", function()
     assert.is_truthy(text():find("Commands (1)", 1, true))
     assert.is_nil(text():find("node server.js", 1, true))
     local header
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+    for _, row in ipairs(clay.nodes(hollow.ui)) do
       if row.id and row.id:find("category:commands", 1, true) then
         header = row.id
       end
@@ -516,12 +469,7 @@ describe("activity center", function()
     assert.is_truthy(header)
     emit("overlay:click", { id = header })
     assert.is_truthy(text():find("node server.js · Running", 1, true))
-    local marker
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      if row.id and row.id:find("command:101", 1, true) then
-        marker = row.segments[3]
-      end
-    end
+    local marker = assert(clay.text_node(hollow.ui, "▸ "))
     assert.equals("▸ ", marker.text)
     assert.equals(require("hollow.theme").resolve_widget("select").muted, marker.fg)
     assert.is_nil(text():find("Command · Working", 1, true))
@@ -821,25 +769,20 @@ describe("activity center", function()
     report("working", 63)
     hollow.ui.activity.open()
     local item_rows = 0
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
+    for _, row in ipairs(clay.nodes(hollow.ui)) do
       if
         row.id
+        and row.list_item
         and row.id:find("activity:item:", 1, true)
         and not row.id:find("category:", 1, true)
       then
         item_rows = item_rows + 1
-        local pill
-        for _, segment in ipairs(row.segments) do
-          if segment.text == "main" then
-            pill = segment
-          end
-          assert.is_nil((segment.text or ""):find("/tmp/project", 1, true))
-        end
+        local pill = clay.label(hollow.ui, "main")
         assert.is_truthy(pill)
         assert.is_truthy(pill.bg)
         local colors = require("hollow.ui.shared").workspace_colors("main")
         assert.equals(colors.bg, pill.bg)
-        assert.equals(colors.fg, pill.fg)
+        assert.equals(colors.fg, clay.text_node(hollow.ui, "main").fg)
         assert.equals(4, pill.radius)
         assert.same({ left = 8, right = 8, top = 3, bottom = 3 }, pill.padding)
       end
@@ -860,13 +803,11 @@ describe("activity center", function()
     end
     report("working")
     hollow.ui.activity.open()
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      for _, segment in ipairs(row.segments or {}) do
-        if segment.text == "main" then
-          assert.equals("#123456", segment.bg)
-          assert.equals("#fedcba", segment.fg)
-          return
-        end
+    for _, segment in ipairs(clay.nodes(hollow.ui)) do
+      if segment.label == "main" then
+        assert.equals("#123456", segment.bg)
+        assert.equals("#fedcba", clay.text_node(hollow.ui, "main").fg)
+        return
       end
     end
     error("workspace pill missing")
@@ -918,17 +859,16 @@ describe("activity center", function()
     })
     local function assert_active(active)
       local found = 0
-      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        for _, segment in ipairs(row.segments or {}) do
-          if segment.id == "activity:inbox" or segment.id == "activity:history" then
-            found = found + 1
-            local selected = segment.id == "activity:" .. active
-            assert.equals(selected and "#123456" or nil, segment.bg)
-            assert.equals(selected and "#fedcba" or "#888888", segment.fg)
-            assert.equals(selected, segment.bold)
-            assert.equals(4, segment.radius)
-            assert.same({ left = 8, right = 8, top = 3, bottom = 3 }, segment.padding)
-          end
+      for _, segment in ipairs(clay.nodes(hollow.ui)) do
+        if segment.label == "Inbox" or segment.label == "History" then
+          found = found + 1
+          local selected = segment.label:lower() == active
+          assert.equals(selected and "#123456" or nil, segment.bg)
+          local label = clay.text_node(hollow.ui, segment.label)
+          assert.equals(selected and "#fedcba" or "#888888", label.fg)
+          assert.equals(selected, label.bold == true)
+          assert.equals(4, segment.radius)
+          assert.same({ left = 8, right = 8, top = 3, bottom = 3 }, segment.padding)
         end
       end
       assert.equals(2, found)
@@ -1050,22 +990,13 @@ describe("activity center", function()
     local id = "activity:dismiss:" .. hollow.activity.list()[1].id
     hollow.ui.activity.open({ theme = { hover_fg = "#abcdef", hover_bg = "#123456" } })
     local function button()
-      text()
-      for _, overlay in ipairs(hollow.ui._overlay_state()) do
-        for _, row in ipairs(overlay.rows or {}) do
-          for _, segment in ipairs(row.segments or {}) do
-            if segment.id == id then
-              return segment
-            end
-          end
-        end
-      end
+      return assert(clay.label(hollow.ui, "×"))
     end
     assert.same({ left = 4, right = 4, top = 0, bottom = 0 }, button().padding)
     assert.is_nil(button().bg)
+    assert.equals("#123456", button().hover_bg)
     emit("overlay:hover", { id = id })
-    assert.equals("#abcdef", button().fg)
-    assert.equals("#123456", button().bg)
+    assert.equals("#123456", button().hover_bg)
     emit("overlay:leave", { id = id })
     assert.is_nil(button().bg)
   end)

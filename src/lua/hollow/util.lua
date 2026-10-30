@@ -369,12 +369,40 @@ function M.utf8_len(s)
   return count
 end
 
+-- Native UI runtime uses Ghostty's exact grapheme rules. Standalone Lua has no
+-- authoritative Unicode data: keep its legacy one-cell-per-codepoint fallback
+-- rather than maintaining an incomplete width table. utf8_len remains a count.
+function M.text_graphemes(value)
+  value = tostring(value or "")
+  local host = rawget(_G, "host_api")
+  local provider = type(host) == "table" and rawget(host, "text_graphemes") or nil
+  if type(provider) == "function" then
+    local clusters = provider(value)
+    if type(clusters) == "table" then
+      return clusters
+    end
+  end
+  local clusters = {}
+  for text in value:gmatch("[^\128-\193][\128-\191]*") do
+    clusters[#clusters + 1] = { text = text, width = 1 }
+  end
+  return clusters
+end
+
+function M.display_width(value)
+  local width = 0
+  for _, cluster in ipairs(M.text_graphemes(value)) do
+    width = width + cluster.width
+  end
+  return width
+end
+
 ---@param value any
 ---@param width integer
 ---@return string
 function M.pad_right(value, width)
   value = tostring(value or "")
-  local len = M.utf8_len(value)
+  local len = M.display_width(value)
   if len >= width then
     return value
   end
@@ -383,40 +411,63 @@ end
 
 function M.pad_left(value, width)
   value = tostring(value or "")
-  local len = M.utf8_len(value)
+  local len = M.display_width(value)
   if len >= width then
     return value
   end
   return string.rep(" ", width - len) .. value
 end
 
+local function truncate(value, width, from_start)
+  value = tostring(value or "")
+  if width <= 0 then
+    return ""
+  end
+  local clusters = M.text_graphemes(value)
+  local total = 0
+  for _, cluster in ipairs(clusters) do
+    total = total + cluster.width
+  end
+  if total <= width then
+    return value
+  end
+  local budget = width <= 3 and width or width - 3
+  local used, first, last = 0, 1, #clusters
+  if from_start then
+    first = last + 1
+    for index = last, 1, -1 do
+      local cluster = clusters[index]
+      if used + cluster.width > budget then break end
+      used, first = used + cluster.width, index
+    end
+  else
+    last = 0
+    for index, cluster in ipairs(clusters) do
+      if used + cluster.width > budget then break end
+      used, last = used + cluster.width, index
+    end
+  end
+  local result = {}
+  for index = first, last do
+    result[#result + 1] = clusters[index].text
+  end
+  local text = table.concat(result)
+  if width <= 3 then return text end
+  return from_start and ("..." .. text) or (text .. "...")
+end
+
 ---@param value any
 ---@param width integer
 ---@return string
 function M.truncate_end(value, width)
-  value = tostring(value or "")
-  if M.utf8_len(value) <= width then
-    return value
-  end
-  if width <= 3 then
-    return value:sub(1, width)
-  end
-  return value:sub(1, width - 3) .. "..."
+  return truncate(value, width, false)
 end
 
 ---@param value any
 ---@param width integer
 ---@return string
 function M.truncate_start(value, width)
-  value = tostring(value or "")
-  local len = M.utf8_len(value)
-  if len <= width then
-    return value
-  end
-  if width <= 3 then
-    return value:sub(len - width + 1)
-  end
-  return "..." .. value:sub(len - width + 4)
+  return truncate(value, width, true)
 end
 
 return M

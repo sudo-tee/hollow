@@ -28,7 +28,7 @@ describe("Clay text-input overlay", function()
   end
 
   it("composes styled inline runs with a horizontal viewport and reveal target", function()
-    ui.input.open({ prompt = "Rename", default = "world", layout = "clay", width = 50 })
+    ui.input.open({ prompt = "Rename", default = "world", width = 50 })
     assert.is_true(ui._overlay_state()[1].clay)
     assert.is_nil(ui._overlay_state()[1].rows)
     local nodes = prepare()
@@ -56,7 +56,6 @@ describe("Clay text-input overlay", function()
     ui.input.open({
       prompt = "Rename",
       default = "main",
-      layout = "clay",
       on_confirm = function(v)
         value = v
       end,
@@ -82,7 +81,6 @@ describe("Clay text-input overlay", function()
     local submitted, cancelled = false, false
     ui.input.open({
       prompt = "Name",
-      layout = "clay",
       on_confirm = function()
         submitted = true
       end,
@@ -101,7 +99,6 @@ describe("Clay text-input overlay", function()
     ui.input.open({
       prompt = "Name",
       default = "tasks",
-      layout = "clay",
       on_confirm = function(value)
         ui.confirm.open({ prompt = value, layout = "clay" })
       end,
@@ -116,21 +113,21 @@ describe("Clay text-input overlay", function()
   end)
 
   it("keeps theme-owned backdrop live and respects an explicit opt-out", function()
-    ui.input.open({ prompt = "Name", layout = "clay" })
+    ui.input.open({ prompt = "Name" })
     stack[1]._palette.backdrop = { color = "#123456", alpha = 99 }
     assert.same({ color = "#123456", alpha = 99 }, ui._overlay_state()[1].backdrop)
     stack[1]._palette.backdrop = false
     assert.is_nil(ui._overlay_state()[1].backdrop)
     ui.input.close()
-    ui.input.open({ prompt = "Name", layout = "clay", backdrop = false })
+    ui.input.open({ prompt = "Name", backdrop = false })
     stack[1]._palette.backdrop = { color = "#ffffff", alpha = 255 }
     assert.is_nil(ui._overlay_state()[1].backdrop)
   end)
 
-  it("retains the legacy path by default", function()
+  it("always uses Clay without serialized overlay rows", function()
     ui.input.open({ prompt = "Name", default = "world" })
-    assert.is_nil(ui._overlay_state()[1].clay)
-    assert.is_not_nil(ui._overlay_state()[1].rows)
-    assert.is_nil(stack[1]._layout_surface)
+    assert.is_true(ui._overlay_state()[1].clay)
+    assert.is_nil(ui._overlay_state()[1].rows)
+    assert.is_not_nil(stack[1]._layout_surface)
   end)
 end)

@@ -20,9 +20,14 @@ const Field = enum {
     children,
     width,
     height,
+    min_width,
+    max_width,
+    min_height,
+    max_height,
     gap,
     radius,
     border_size,
+    border_width,
     value,
     fg,
     bg,
@@ -38,6 +43,7 @@ const Field = enum {
     full_bleed_x,
     align_y,
     wrap,
+    text_align,
     clickable,
     padding,
 };
@@ -110,6 +116,26 @@ pub const Surface = struct {
         return api.to_boolean(state, -1) != 0;
     }
 
+    fn parseFrame(api: lua.Api, state: *lua.State, frame_idx: c_int, cell_w: f32, cell_h: f32) c.HollowClayFrame {
+        var frame = std.mem.zeroes(c.HollowClayFrame);
+        frame.enabled = true;
+        frame.width = @max(0, number(api, state, frame_idx, "width")) * cell_w;
+        frame.height = @max(0, number(api, state, frame_idx, "height")) * cell_h;
+        frame.max_height = @max(0, number(api, state, frame_idx, "max_height")) * cell_h;
+        frame.align_x = @intFromFloat(number(api, state, frame_idx, "align_x"));
+        frame.align_y = @intFromFloat(number(api, state, frame_idx, "align_y"));
+        frame.margin = .{ .left = @intFromFloat(cell_w), .right = @intFromFloat(cell_w), .top = @intFromFloat(cell_h), .bottom = @intFromFloat(cell_h) };
+        api.get_field(state, frame_idx, "margin");
+        if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
+            const margin_idx = lua.absoluteIndex(api, state, -1);
+            inline for (.{ "top", "right", "bottom", "left" }) |side| {
+                @field(frame.margin, side) +|= @intFromFloat(@max(0, number(api, state, margin_idx, side)));
+            }
+        }
+        lua.pop(api, state, 1);
+        return frame;
+    }
+
     fn colorAt(api: lua.Api, state: *lua.State, index: c_int) c.Clay_Color {
         var len: usize = 0;
         const ptr = api.to_lstring(state, index, &len) orelse return std.mem.zeroes(c.Clay_Color);
@@ -157,9 +183,21 @@ pub const Surface = struct {
                 .children => node.children = @intFromFloat(@max(0, numberAt(api, state, -1))),
                 .width => node.width = numberAt(api, state, -1),
                 .height => node.height = numberAt(api, state, -1),
+                .min_width => node.min_width = @max(0, numberAt(api, state, -1)),
+                .max_width => node.max_width = @max(0, numberAt(api, state, -1)),
+                .min_height => node.min_height = @max(0, numberAt(api, state, -1)),
+                .max_height => node.max_height = @max(0, numberAt(api, state, -1)),
                 .gap => node.gap = @intFromFloat(@max(0, numberAt(api, state, -1))),
                 .radius => node.radius = @max(0, numberAt(api, state, -1)),
                 .border_size => node.border_size = @intFromFloat(@max(0, numberAt(api, state, -1))),
+                .border_width => if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
+                    node.border_width_set = true;
+                    const widths = lua.absoluteIndex(api, state, -1);
+                    inline for (.{ "left", "right", "top", "bottom" }) |side| {
+                        @field(node.border_width, side) = @intFromFloat(@max(0, number(api, state, widths, side)));
+                    }
+                    node.border_width.betweenChildren = @intFromFloat(@max(0, number(api, state, widths, "between_children")));
+                },
                 .value => node.value = std.math.clamp(numberAt(api, state, -1), 0, 1),
                 .fg => node.fg = colorAt(api, state, -1),
                 .bg => node.bg = colorAt(api, state, -1),
@@ -176,6 +214,7 @@ pub const Surface = struct {
                 .clickable => node.clickable = api.to_boolean(state, -1) != 0,
                 .align_y => node.align_y = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .wrap => node.wrap = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
+                .text_align => node.text_align = @intFromFloat(std.math.clamp(numberAt(api, state, -1), 0, 2)),
                 .padding => if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
                     const padding = lua.absoluteIndex(api, state, -1);
                     inline for (.{ "top", "right", "bottom", "left" }) |side| {
@@ -190,6 +229,17 @@ pub const Surface = struct {
 
     /// Must run before atlas upload / swapchain rendering. Own all Lua strings until next prepare.
     pub fn prepare(self: *Surface, runtime: *lua.Runtime, renderer: anytype, width: f32, height: f32) void {
+        self.prepareIndex(runtime, renderer, width, height, null);
+    }
+
+    /// Retained surfaces below the active overlay use the same sparse snapshot
+    /// parser, but select their own stack entry before reading published fields.
+    pub fn prepareOverlay(self: *Surface, runtime: *lua.Runtime, renderer: anytype, width: f32, height: f32, index: usize) void {
+        self.prepareIndex(runtime, renderer, width, height, index);
+        self.debug = false;
+    }
+
+    fn prepareIndex(self: *Surface, runtime: *lua.Runtime, renderer: anytype, width: f32, height: f32, overlay_index: ?usize) void {
         if (self.runtime_generation != runtime.generation) {
             self.deinit();
             self.* = .{ .runtime_generation = runtime.generation };
@@ -210,12 +260,13 @@ pub const Surface = struct {
             self.click_len = 0;
             call(api, state, "_layout_click", self.click_id[0..len]);
         }
-        api.get_field(state, ui_idx, "_layout_prepare");
+        api.get_field(state, ui_idx, if (overlay_index != null) "_layout_prepare_overlay" else "_layout_prepare");
+        if (overlay_index) |index| api.push_number(state, @floatFromInt(index));
         api.push_number(state, width);
         api.push_number(state, height);
         api.push_number(state, renderer.cell_w);
         api.push_number(state, renderer.cell_h);
-        if (api.pcall(state, 4, 0, 0) != 0) {
+        if (api.pcall(state, if (overlay_index != null) 5 else 4, 0, 0) != 0) {
             self.active = false;
             var error_len: usize = 0;
             if (api.to_lstring(state, -1, &error_len)) |ptr| std.log.err("Clay snapshot: {s}", .{ptr[0..error_len]});
@@ -233,21 +284,7 @@ pub const Surface = struct {
         self.frame = std.mem.zeroes(c.HollowClayFrame);
         api.get_field(state, ui_idx, "_layout_frame");
         if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
-            const frame_idx = lua.absoluteIndex(api, state, -1);
-            self.frame.enabled = true;
-            self.frame.width = @max(0, number(api, state, frame_idx, "width")) * renderer.cell_w;
-            self.frame.height = @max(0, number(api, state, frame_idx, "height")) * renderer.cell_h;
-            self.frame.align_x = @intFromFloat(number(api, state, frame_idx, "align_x"));
-            self.frame.align_y = @intFromFloat(number(api, state, frame_idx, "align_y"));
-            self.frame.margin = .{ .left = @intFromFloat(renderer.cell_w), .right = @intFromFloat(renderer.cell_w), .top = @intFromFloat(renderer.cell_h), .bottom = @intFromFloat(renderer.cell_h) };
-            api.get_field(state, frame_idx, "margin");
-            if (api.value_type(state, -1) == @backingInt(lua.LuaType.table)) {
-                const margin_idx = lua.absoluteIndex(api, state, -1);
-                inline for (.{ "top", "right", "bottom", "left" }) |side| {
-                    @field(self.frame.margin, side) +|= @intFromFloat(@max(0, number(api, state, margin_idx, side)));
-                }
-            }
-            lua.pop(api, state, 1);
+            self.frame = parseFrame(api, state, lua.absoluteIndex(api, state, -1), renderer.cell_w, renderer.cell_h);
         }
         lua.pop(api, state, 1);
         api.get_field(state, -1, "_layout_tree");
@@ -330,3 +367,64 @@ pub const Surface = struct {
         }
     }
 };
+
+test "Clay snapshot parser reads border overrides alignment and sizing constraints" {
+    const native = struct {
+        extern fn luaL_newstate() callconv(.c) ?*lua.State;
+        extern fn lua_close(*lua.State) callconv(.c) void;
+        extern fn luaL_loadbuffer(*lua.State, [*]const u8, usize, [*:0]const u8) callconv(.c) c_int;
+        extern fn lua_pcall(*lua.State, c_int, c_int, c_int) callconv(.c) c_int;
+        extern fn lua_gettop(*lua.State) callconv(.c) c_int;
+        extern fn lua_settop(*lua.State, c_int) callconv(.c) void;
+        extern fn lua_getfield(*lua.State, c_int, [*:0]const u8) callconv(.c) void;
+        extern fn lua_pushnil(*lua.State) callconv(.c) void;
+        extern fn lua_tolstring(*lua.State, c_int, *usize) callconv(.c) ?[*]const u8;
+        extern fn lua_tonumber(*lua.State, c_int) callconv(.c) f64;
+        extern fn lua_toboolean(*lua.State, c_int) callconv(.c) c_int;
+        extern fn lua_type(*lua.State, c_int) callconv(.c) c_int;
+        extern fn lua_next(*lua.State, c_int) callconv(.c) c_int;
+    };
+    const state = native.luaL_newstate() orelse return error.OutOfMemory;
+    defer native.lua_close(state);
+    // Only the parser's API subset is exercised; no application runtime needed.
+    var api: lua.Api = undefined;
+    api.get_top = native.lua_gettop;
+    api.set_top = native.lua_settop;
+    api.get_field = native.lua_getfield;
+    api.push_nil = native.lua_pushnil;
+    api.to_lstring = native.lua_tolstring;
+    api.to_number = native.lua_tonumber;
+    api.to_boolean = native.lua_toboolean;
+    api.value_type = native.lua_type;
+    api.next = native.lua_next;
+    var surface: Surface = .{};
+    defer surface.deinit();
+    const source =
+        \\return { border_size = 9, border_width = { left = 3, top = 1, between_children = 2 },
+        \\text_align = 2, min_width = 80, max_width = 120, min_height = 30, max_height = 60 }
+    ;
+    try std.testing.expectEqual(@as(c_int, 0), native.luaL_loadbuffer(state, source.ptr, source.len, "parser-test"));
+    try std.testing.expectEqual(@as(c_int, 0), native.lua_pcall(state, 0, 1, 0));
+    const node = try surface.parseNode(api, state, 1);
+    try std.testing.expectEqual(@as(c_int, 1), native.lua_gettop(state));
+    try std.testing.expect(node.border_width_set);
+    try std.testing.expectEqual(@as(u16, 9), node.border_size);
+    try std.testing.expectEqualDeep(c.Clay_BorderWidth{ .left = 3, .right = 0, .top = 1, .bottom = 0, .betweenChildren = 2 }, node.border_width);
+    try std.testing.expectEqual(@as(c_int, 2), node.text_align);
+    try std.testing.expectEqual(@as(f32, 80), node.min_width);
+    try std.testing.expectEqual(@as(f32, 120), node.max_width);
+    try std.testing.expectEqual(@as(f32, 30), node.min_height);
+    try std.testing.expectEqual(@as(f32, 60), node.max_height);
+    const frame = Surface.parseFrame(api, state, 1, 8, 19);
+    try std.testing.expectEqual(@as(f32, 1140), frame.max_height);
+    try std.testing.expectEqual(@as(c_int, 1), native.lua_gettop(state));
+    native.lua_settop(state, 0);
+    const invalid = "return { border_width = false, text_align = 99, min_width = -5, max_height = -1 }";
+    try std.testing.expectEqual(@as(c_int, 0), native.luaL_loadbuffer(state, invalid.ptr, invalid.len, "parser-test"));
+    try std.testing.expectEqual(@as(c_int, 0), native.lua_pcall(state, 0, 1, 0));
+    const clamped = try surface.parseNode(api, state, 1);
+    try std.testing.expect(!clamped.border_width_set);
+    try std.testing.expectEqual(@as(c_int, 2), clamped.text_align);
+    try std.testing.expectEqual(@as(f32, 0), clamped.min_width);
+    try std.testing.expectEqual(@as(f32, 0), clamped.max_height);
+}

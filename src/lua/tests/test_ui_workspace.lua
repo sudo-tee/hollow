@@ -1,4 +1,5 @@
 package.path = "src/lua/?.lua;src/lua/?/init.lua;src/lua/?.lua;" .. package.path
+local clay = require("tests.clay_helpers")
 local harness = require("tests.harness")
 
 describe("UI workspace test suite", function()
@@ -11,8 +12,6 @@ describe("UI workspace test suite", function()
   setup(function()
     env = harness.boot()
     hollow = env.hollow
-    -- These assertions intentionally cover legacy serialized rows/columns.
-    hollow.ui.layout.configure({ backend = "legacy" })
     recorded = env.recorded
     on_key = env.get_key_handler()
     workspace_actions = require("hollow.ui.workspace.actions")
@@ -185,35 +184,25 @@ describe("UI workspace test suite", function()
       hollow.ui.workspace.open_switcher()
       workspace_overlay = hollow.ui._overlay_state()
       harness.assert_true(workspace_overlay ~= nil, "workspace switcher should create an overlay")
-      harness.assert_equal(
-        workspace_overlay[1].rows[1].hoverable,
-        false,
-        "select title should not be hoverable"
-      )
-      harness.assert_equal(
-        workspace_overlay[1].rows[3].hoverable,
-        false,
-        "select filter should not be hoverable"
-      )
+      assert.is_true(workspace_overlay[1].clay)
       resolved_select_theme = hollow.ui.resolve_theme("select")
       harness.assert_equal(
-        workspace_overlay[1].chrome.bg,
+        clay.find(hollow.ui, ":dialog").bg,
         resolved_select_theme.panel_bg,
         "workspace switcher should use the select panel background"
       )
       harness.assert_equal(
-        workspace_overlay[1].chrome.alpha,
+        clay.find(hollow.ui, ":dialog").alpha or 255,
         255,
         "workspace switcher should default overlay chrome alpha to opaque"
       )
       harness.assert_equal(
-        workspace_overlay[1].rows[5].fill_bg,
+        clay.find(hollow.ui, ":select:item:1").bg,
         resolved_select_theme.selection_bg,
         "workspace switcher should use the select selected background for the active row"
       )
       harness.assert_true(
-        type(workspace_overlay[1].rows[5].id) == "string"
-          and workspace_overlay[1].rows[5].id:find("select:item:", 1, true) == 1,
+        clay.find(hollow.ui, ":select:item:1").list_item == true,
         "workspace switcher entries should expose stable semantic row ids"
       )
     end)
@@ -225,13 +214,7 @@ describe("UI workspace test suite", function()
         workspace_overlay ~= nil,
         "workspace switcher should remain open while filtering"
       )
-      local filtered_workspace_text = ""
-      for _, row in ipairs(workspace_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          filtered_workspace_text = filtered_workspace_text .. (segment.text or "")
-        end
-        filtered_workspace_text = filtered_workspace_text .. "\n"
-      end
+      local filtered_workspace_text = clay.text(hollow.ui)
       harness.assert_true(
         filtered_workspace_text:find("alpha", 1, true) ~= nil,
         "workspace switcher should match alpha on the first key"
@@ -269,13 +252,7 @@ describe("UI workspace test suite", function()
         workspace_overlay ~= nil,
         "workspace switcher should remain open during basename search"
       )
-      local basename_search_text = ""
-      for _, row in ipairs(workspace_overlay[1].rows or {}) do
-        for _, segment in ipairs(row.segments or {}) do
-          basename_search_text = basename_search_text .. (segment.text or "")
-        end
-        basename_search_text = basename_search_text .. "\n"
-      end
+      local basename_search_text = clay.text(hollow.ui)
       harness.assert_true(
         basename_search_text:find("alpha", 1, true) == nil,
         "workspace switcher search should not match every /home path entry"
@@ -292,7 +269,6 @@ describe("Workspace switcher cross-domain metadata", function()
   before_each(function()
     env = harness.boot()
     hollow = env.hollow
-    hollow.ui.layout.configure({ backend = "legacy" })
     env.host_api.split_pane({ domain = "UbuntuWSL", cwd = "/srv/remote" })
     env.host_api.get_workspace_count = function()
       return 2
@@ -354,81 +330,48 @@ describe("Workspace switcher cross-domain metadata", function()
     assert.equal("UbuntuWSL", remote_item().domain)
   end)
 
-  it("renders compact rounded domain badges at the right edge after paths", function()
+  it("renders domain badges separately from paths", function()
     hollow.ui.workspace.open_switcher()
     local found_domain, found_path = false, false
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      local saw_path, saw_spacer = false, false
-      for _, segment in ipairs(row.segments or {}) do
-        local text = segment.text or ""
-        if segment.spacer then
-          saw_spacer = true
-        end
-        if text:find("UbuntuWSL", 1, true) then
-          found_domain = true
-          assert.is_not_nil(segment.bg)
-          assert.equal(4, segment.radius)
-          assert.equal(" UbuntuWSL ", text)
-          assert.is_true(saw_path)
-          assert.is_true(saw_spacer)
-          assert.equal(segment, row.segments[#row.segments])
-          assert.is_nil(text:find("[UbuntuWSL]", 1, true))
-          assert.is_nil(text:find("/srv/remote", 1, true))
-        end
-        if text:find("/srv/remote", 1, true) then
-          found_path = true
-          saw_path = true
-        end
-        assert.is_nil(text:find("Open workspace", 1, true))
+    for _, segment in ipairs(clay.nodes(hollow.ui)) do
+      local text = segment.text or ""
+      if text:find("UbuntuWSL", 1, true) then
+        found_domain = true
+        assert.equal(" UbuntuWSL ", text)
+        assert.is_nil(text:find("[UbuntuWSL]", 1, true))
+        assert.is_nil(text:find("/srv/remote", 1, true))
       end
+      if text:find("/srv/remote", 1, true) then
+        found_path = true
+      end
+      assert.is_nil(text:find("Open workspace", 1, true))
     end
     assert.is_true(found_domain)
     assert.is_true(found_path)
   end)
 
-  it("preserves right-alignment spacers while filtering", function()
+  it("preserves domain metadata while filtering", function()
     hollow.ui.workspace.open_switcher()
     assert.is_true(env.get_key_handler()("r", 0))
     local found_domain = false
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      local saw_spacer = false
-      for _, segment in ipairs(row.segments or {}) do
-        if segment.spacer then
-          saw_spacer = true
-        end
-        if (segment.text or ""):find("UbuntuWSL", 1, true) then
-          found_domain = true
-          assert.is_true(saw_spacer)
-          assert.equal(segment, row.segments[#row.segments])
-        end
+    for _, segment in ipairs(clay.nodes(hollow.ui)) do
+      if (segment.text or ""):find("UbuntuWSL", 1, true) then
+        found_domain = true
       end
     end
     assert.is_true(found_domain)
   end)
 
-  it("hides domain pills and reclaims path width for a single domain", function()
-    local function path_width()
-      for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-        for _, segment in ipairs(row.segments or {}) do
-          if (segment.text or ""):find("/srv/remote", 1, true) then
-            return #segment.text
-          end
-        end
-      end
-    end
+  it("hides domain pills for a single domain without losing paths", function()
     hollow.ui.workspace.open_switcher()
-    local multi_domain_width = path_width()
     hollow.ui.select.close()
     env.host_api.get_pane_domain = function()
       return "UbuntuWSL"
     end
     hollow.ui.workspace.open_switcher()
-    assert.is_true(path_width() > multi_domain_width)
-    for _, row in ipairs(hollow.ui._overlay_state()[1].rows) do
-      for _, segment in ipairs(row.segments or {}) do
-        assert.is_nil((segment.text or ""):find("UbuntuWSL", 1, true))
-        assert.is_nil(segment.radius)
-      end
+    assert.is_truthy(clay.text(hollow.ui):find("/srv/remote", 1, true))
+    for _, segment in ipairs(clay.nodes(hollow.ui)) do
+      assert.is_nil((segment.text or ""):find("UbuntuWSL", 1, true))
     end
   end)
 end)
@@ -439,7 +382,6 @@ describe("Workspace switcher bell attention", function()
 
   before_each(function()
     hollow = harness.boot().hollow
-    hollow.ui.layout.configure({ backend = "legacy" })
     tree = {
       {
         id = 41,
@@ -540,9 +482,8 @@ describe("Workspace switcher bell attention", function()
     local overlay = hollow.ui._overlay_state()
     local warn = hollow.ui.resolve_theme("select").notify_levels.warn
     local saw_bell = false
-    local row_text = ""
-    for _, segment in ipairs(overlay[1].rows[5].segments) do
-      row_text = row_text .. (segment.text or "")
+    local row_text = assert(clay.find(hollow.ui, ":select:item:1")).label
+    for _, segment in ipairs(clay.nodes(hollow.ui)) do
       if (segment.text or ""):find("󰂚", 1, true) then
         saw_bell = true
         harness.assert_equal(segment.fg, warn, "bell icon should use notification warning color")

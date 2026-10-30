@@ -1,13 +1,11 @@
 -- Run each combination in a fresh process, using the busted environment:
--- source <(sed '$d' "$(command -v busted)"); luajit scripts/diagnose-picker-lifecycle.lua palette clay on 20 20 20
--- Arguments: picker, backend, JIT on/off, warmup cycles, cycles/batch, batches,
--- optional "reset-clicks" to test whether the callback registry owns survivors.
+-- source <(sed '$d' "$(command -v busted)"); luajit scripts/diagnose-picker-lifecycle.lua palette on 20 20 20
+-- Arguments: picker, JIT on/off, warmup cycles, cycles/batch, batches.
 package.path = "src/lua/?.lua;src/lua/?/init.lua;" .. package.path
-local picker, backend, jit_mode = arg[1] or "palette", arg[2] or "legacy", arg[3] or "on"
+local picker, jit_mode = arg[1] or "palette", arg[2] or "on"
 local warmup, cycles, batches =
-  tonumber(arg[4] or 20), tonumber(arg[5] or 20), tonumber(arg[6] or 20)
+  tonumber(arg[3] or 20), tonumber(arg[4] or 20), tonumber(arg[5] or 20)
 assert(picker == "palette" or picker == "workspace")
-assert(backend == "legacy" or backend == "clay")
 assert(jit_mode == "on" or jit_mode == "off")
 assert(warmup and warmup >= 0 and cycles and cycles > 0 and batches and batches > 0)
 if jit_mode == "off" then
@@ -36,23 +34,17 @@ local refs = {
 local serial = 0
 local function cycle()
   if picker == "palette" then
-    ui.command_palette.open({ entries = entries, layout = backend })
+    ui.command_palette.open({ entries = entries })
   else
-    ui.workspace.open_switcher({ layout = backend })
+    ui.workspace.open_switcher()
   end
   local widget = assert(stack[#stack])
-  assert(
-    ui._overlay_state()[1].clay == (backend == "clay")
-      or backend == "legacy" and not ui._overlay_state()[1].clay
-  )
+  assert(ui._overlay_state()[1].clay == true)
   ui._layout_prepare(1200, 900, 8, 19)
   serial = serial % cycles + 1
   refs.widget[serial], refs.palette[serial], refs.chrome[serial], refs.surface[serial] =
     widget, widget._palette, widget.chrome, widget._layout_surface
   ui.overlay.clear()
-  if arg[7] == "reset-clicks" then
-    require("hollow.ui.builder.internal.click_registry").reset()
-  end
 end
 local function heap()
   collectgarbage("collect")
@@ -72,9 +64,8 @@ end
 local previous = heap()
 print(
   string.format(
-    "%s %s jit=%s warmup=%d cycles=%d heap=%.1f KiB",
+    "%s jit=%s warmup=%d cycles=%d heap=%.1f KiB",
     picker,
-    backend,
     jit_mode,
     warmup,
     cycles,

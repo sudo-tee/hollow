@@ -156,6 +156,80 @@ test "Clay scroll containers clip and hit test visible children" {
     try std.testing.expectEqual(@as(c_int, 4), c.hollow_clay_hit(surface, &nodes, nodes.len, 150, 70));
 }
 
+test "Clay pointer queries select deepest clickable node at arbitrary event coordinates" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{
+        node(0, -1, -1, 2), node(0, -1, 40, 1),
+        node(0, 80, 60, 0), node(0, -1, 40, 0),
+    };
+    for (&nodes) |*n| n.clickable = true;
+    // First layout has no previous geometry. Events need not share the layout's
+    // pointer position, and repeated queries must not leave stale overlaps.
+    _ = layout(surface, &nodes, 200, 100, 0);
+    try std.testing.expectEqual(@as(c_int, 2), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+    try std.testing.expectEqual(@as(c_int, 1), c.hollow_clay_hit(surface, &nodes, nodes.len, 100, 10));
+    // Overflowing child overlaps the later sibling: paint order wins, not depth.
+    try std.testing.expectEqual(@as(c_int, 3), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 50));
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, -1, -1));
+    nodes[2].clickable = false;
+    try std.testing.expectEqual(@as(c_int, 1), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+    // Layout rebuild/resize updates overlap geometry immediately.
+    _ = layout(surface, &nodes, 50, 100, 0);
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, 100, 10));
+}
+
+test "Clay pointer queries switch surface context and restore the caller context" {
+    const first = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(first);
+    const second = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(second);
+    var first_nodes = [_]c.HollowClayNode{node(0, -1, -1, 0)};
+    var second_nodes = [_]c.HollowClayNode{node(0, -1, -1, 0)};
+    first_nodes[0].clickable = true;
+    second_nodes[0].clickable = true;
+    _ = layout(first, &first_nodes, 100, 100, 0);
+    _ = layout(second, &second_nodes, 300, 100, 0);
+    const previous = c.Clay_GetCurrentContext();
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(first, &first_nodes, first_nodes.len, 200, 50));
+    try std.testing.expectEqual(previous, c.Clay_GetCurrentContext());
+    try std.testing.expectEqual(@as(c_int, 0), c.hollow_clay_hit(second, &second_nodes, second_nodes.len, 200, 50));
+    c.Clay_SetCurrentContext(null);
+    try std.testing.expectEqual(@as(c_int, 0), c.hollow_clay_hit(first, &first_nodes, first_nodes.len, 50, 50));
+    try std.testing.expect(c.Clay_GetCurrentContext() == null);
+}
+
+test "Clay inspector floating capture prevents clicks through to ordinary nodes" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    // Fixed width deliberately extends under the floating inspector panel.
+    var nodes = [_]c.HollowClayNode{node(0, 1200, 800, 0)};
+    nodes[0].clickable = true;
+    c.hollow_clay_set_debug(surface, true);
+    _ = layout(surface, &nodes, 1200, 800, 0);
+    try std.testing.expect(!c.hollow_clay_failed(surface));
+    const bounds = c.hollow_clay_visible_bounds(surface, &nodes, nodes.len, 0);
+    try std.testing.expect(bounds.found and bounds.boundingBox.width == 1200);
+    try std.testing.expectEqual(@as(c_int, 0), c.hollow_clay_hit(surface, &nodes, nodes.len, 100, 100));
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, 1100, 100));
+}
+
+test "Clay empty and rejected layouts never return stale pointer hits" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{node(0, -1, -1, 0)};
+    nodes[0].clickable = true;
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+    _ = layout(surface, &nodes, 100, 100, 0);
+    try std.testing.expectEqual(@as(c_int, 0), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+    _ = layout(surface, nodes[0..0], 100, 100, 0);
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+    _ = layout(surface, &nodes, 100, 100, 0);
+    _ = c.hollow_clay_layout(surface, &nodes, c.HOLLOW_CLAY_MAX_NODES + 1, 100, 100, 8, 16, 10, 10, 0, 0);
+    try std.testing.expect(c.hollow_clay_failed(surface));
+    try std.testing.expectEqual(@as(c_int, -1), c.hollow_clay_hit(surface, &nodes, nodes.len, 10, 10));
+}
+
 test "Clay wraps text using Hollow cell metrics and resets measurement cache" {
     const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
     defer c.hollow_clay_destroy(surface);
@@ -176,6 +250,134 @@ test "Clay wraps text using Hollow cell metrics and resets measurement cache" {
         if (command.commandType == c.CLAY_RENDER_COMMAND_TYPE_TEXT) lines += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), lines);
+    try std.testing.expect(!c.hollow_clay_failed(surface));
+}
+
+test "Clay per-side border widths replace uniform fallback including zero sides" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{node(0, -1, -1, 0)};
+    nodes[0].border = .{ .r = 1, .g = 2, .b = 3, .a = 255 };
+    nodes[0].border_size = 9;
+    nodes[0].border_width_set = true;
+    nodes[0].border_width = .{ .left = 3, .right = 0, .top = 1, .bottom = 2, .betweenChildren = 0 };
+    var commands = layout(surface, &nodes, 200, 100, 0);
+    var found = false;
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_BORDER) continue;
+        try std.testing.expectEqualDeep(nodes[0].border_width, command.renderData.border.width);
+        found = true;
+    }
+    try std.testing.expect(found);
+    nodes[0].border_width_set = false;
+    commands = layout(surface, &nodes, 200, 100, 0);
+    found = false;
+    for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+        if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_BORDER) continue;
+        try std.testing.expectEqual(@as(u16, 9), command.renderData.border.width.left);
+        try std.testing.expectEqual(@as(u16, 9), command.renderData.border.width.right);
+        found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "Clay between-children borders emit divider rectangles in both directions" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, -1, -1, 3), node(0, 20, 20, 0), node(0, 20, 20, 0), node(0, 20, 20, 0) };
+    nodes[0].gap = 6;
+    nodes[0].border = .{ .r = 200, .g = 100, .b = 50, .a = 255 };
+    nodes[0].border_width_set = true;
+    nodes[0].border_width.betweenChildren = 2;
+    for ([_]c_int{ 0, 1 }) |kind| {
+        nodes[0].kind = kind;
+        const commands = layout(surface, &nodes, 200, 100, 0);
+        var dividers: usize = 0;
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_RECTANGLE or command.renderData.rectangle.backgroundColor.r != 200) continue;
+            try std.testing.expectEqual(@as(f32, 2), if (kind == 0) command.boundingBox.height else command.boundingBox.width);
+            try std.testing.expectEqual(if (kind == 0) @as(f32, 200) else @as(f32, 100), if (kind == 0) command.boundingBox.width else command.boundingBox.height);
+            dividers += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), dividers);
+        try std.testing.expect(!c.hollow_clay_failed(surface));
+    }
+}
+
+test "Clay text alignment positions shorter wrapped lines within their text box" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 64, 100, 1), node(2, 0, 0, 0) };
+    const text = "abcdefgh x";
+    nodes[1].text = .{ .chars = text, .length = text.len, .isStaticallyAllocated = true };
+    for ([_]f32{ 0, 28, 56 }, 0..) |expected_x, alignment| {
+        nodes[1].text_align = @intCast(alignment);
+        const commands = layout(surface, &nodes, 200, 100, 0);
+        var lines: usize = 0;
+        for (commands.internalArray[0..@intCast(commands.length)]) |command| {
+            if (command.commandType != c.CLAY_RENDER_COMMAND_TYPE_TEXT) continue;
+            if (command.renderData.text.stringContents.length == 1) {
+                try std.testing.expectEqual(expected_x, command.boundingBox.x);
+            }
+            lines += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), lines);
+    }
+}
+
+test "Clay FIT and GROW constraints bound dimensions while FIXED stays authoritative" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, -1, -1, 1), node(0, 0, 0, 0) };
+    nodes[1].min_width = 80;
+    nodes[1].max_width = 120;
+    nodes[1].min_height = 30;
+    nodes[1].max_height = 60;
+    _ = layout(surface, &nodes, 200, 100, 0);
+    var bounds = c.hollow_clay_bounds(surface, &nodes, 1).boundingBox;
+    try std.testing.expectEqual(@as(f32, 80), bounds.width);
+    try std.testing.expectEqual(@as(f32, 30), bounds.height);
+    nodes[1].width = -1;
+    nodes[1].height = -1;
+    _ = layout(surface, &nodes, 200, 100, 0);
+    bounds = c.hollow_clay_bounds(surface, &nodes, 1).boundingBox;
+    try std.testing.expectEqual(@as(f32, 120), bounds.width);
+    try std.testing.expectEqual(@as(f32, 60), bounds.height);
+    nodes[1].width = 150;
+    nodes[1].height = 70;
+    _ = layout(surface, &nodes, 200, 100, 0);
+    bounds = c.hollow_clay_bounds(surface, &nodes, 1).boundingBox;
+    try std.testing.expectEqual(@as(f32, 150), bounds.width);
+    try std.testing.expectEqual(@as(f32, 70), bounds.height);
+}
+
+test "Clay FIT frame constraints respect host size and frame maximum height" {
+    const surface = c.hollow_clay_create() orelse return error.OutOfMemory;
+    defer c.hollow_clay_destroy(surface);
+    var nodes = [_]c.HollowClayNode{ node(0, 0, 0, 1), node(0, 0, 0, 0) };
+    nodes[0].min_width = 80;
+    nodes[0].max_width = 120;
+    nodes[0].min_height = 80;
+    nodes[0].max_height = 200;
+    nodes[1].min_height = 150;
+    var frame: c.HollowClayFrame = std.mem.zeroes(c.HollowClayFrame);
+    frame.enabled = true;
+    frame.max_height = 100;
+    frame.margin = .{ .left = 10, .right = 10, .top = 10, .bottom = 10 };
+    c.hollow_clay_frame(surface, frame);
+    _ = layout(surface, &nodes, 200, 300, 0);
+    var bounds = c.hollow_clay_bounds(surface, &nodes, 0).boundingBox;
+    try std.testing.expectEqual(@as(f32, 80), bounds.width);
+    try std.testing.expectEqual(@as(f32, 100), bounds.height);
+    _ = layout(surface, &nodes, 70, 70, 0);
+    bounds = c.hollow_clay_bounds(surface, &nodes, 0).boundingBox;
+    try std.testing.expectEqual(@as(f32, 50), bounds.width);
+    try std.testing.expectEqual(@as(f32, 50), bounds.height);
+    // Explicit frame height is also bounded by max_height, not node limits.
+    frame.height = 250;
+    c.hollow_clay_frame(surface, frame);
+    _ = layout(surface, &nodes, 200, 300, 0);
+    try std.testing.expectEqual(@as(f32, 100), c.hollow_clay_bounds(surface, &nodes, 0).boundingBox.height);
     try std.testing.expect(!c.hollow_clay_failed(surface));
 }
 

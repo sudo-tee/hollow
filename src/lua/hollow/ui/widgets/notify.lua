@@ -1,3 +1,4 @@
+local box = require("hollow.ui.style.box")
 local shared = require("hollow.ui.shared")
 local styles = require("hollow.ui.styles.notify")
 local util = require("hollow.util")
@@ -28,6 +29,43 @@ local function notify_text(level, title, message, action)
   return prefix .. title_text .. message .. action_text
 end
 
+-- Toasts sharing an anchor flow through one Clay column. Oldest stays nearest
+-- the anchor; notification spacing remains independent of modal positioning.
+local function toast_group(widget)
+  local position
+  for index, candidate in ipairs(overlay_stack) do
+    if candidate == widget then
+      position = index
+      break
+    end
+  end
+  if not position then
+    return nil
+  end
+  for index = position + 1, #overlay_stack do
+    local candidate = overlay_stack[index]
+    if candidate._notify and candidate.align == widget.align then
+      return nil
+    end
+  end
+  local group = {}
+  for index = position, 1, -1 do
+    local candidate = overlay_stack[index]
+    if candidate._notify and candidate.align == widget.align then
+      group[#group + 1] = candidate
+    end
+  end
+  return group
+end
+
+local function invalidate_toasts()
+  for _, widget in ipairs(overlay_stack) do
+    if widget._notify and widget._layout_surface then
+      widget._layout_surface:invalidate()
+    end
+  end
+end
+
 ---@param message string
 ---@param opts HollowUiNotifyOptions|nil
 ---@return HollowUiWidget
@@ -55,11 +93,16 @@ function ui.notify.show(message, opts)
   local widget
 
   widget = ui.overlay.new({
-    render = function()
-      return ui.row({
-        ui.text(notify_text(level, opts.title, message, action), notification_style(theme, level)),
-      })
+    render = function(ctx)
+      local children = {}
+      local group = toast_group(widget) or {}
+      for index = 1, #group do
+        local toast = group[widget.align:find("bottom") and index or (#group - index + 1)]
+        children[#children + 1] = toast._toast_render(ctx)
+      end
+      return ui.layout.column(children, { gap = ctx.cell_h or 19 })
     end,
+    on_unmount = invalidate_toasts,
     align = opts.align or "top_right",
     chrome = opts.chrome or shared.theme_overlay_chrome(
       theme,
@@ -84,7 +127,41 @@ function ui.notify.show(message, opts)
   widget._notify = true
   widget._notify_id = opts.id
   widget._activity_id = activity_id
+  widget._layout_visible = function()
+    return toast_group(widget) ~= nil
+  end
+  widget._toast_render = function(ctx)
+    local text = notify_text(level, opts.title, message, action)
+    local chrome = shared.normalize_overlay_chrome(widget.chrome, theme) or {}
+    local padding = box.normalize(chrome.padding)
+    local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+    padding.left, padding.right = padding.left + cell_w * 1.5, padding.right + cell_w * 1.5
+    padding.top, padding.bottom = padding.top + cell_h, padding.bottom + cell_h * 0.5
+    return ui.layout.column(
+      { ui.layout.text(text, notification_style(theme, level), { wrap = "none" }) },
+      {
+        id = "notify:" .. tostring(widget._toast_id),
+        label = text,
+        padding = padding,
+        style = chrome,
+        on_click = function()
+          if action and type(action.fn) == "function" then
+            action.fn()
+          end
+          if widget._activity_id then
+            hollow.activity.dismiss(widget._activity_id)
+          end
+          ui.close_overlay_widget(widget)
+        end,
+      }
+    )
+  end
+  ui.notify._next_toast_id = (ui.notify._next_toast_id or 0) + 1
+  widget._toast_id = ui.notify._next_toast_id
   ui.overlay.push(widget)
+  widget._layout_surface.frame.margin =
+    box.normalize((shared.normalize_overlay_chrome(widget.chrome, theme) or {}).margin)
+  invalidate_toasts()
 
   local ttl = opts.ttl or 3000
   if type(ttl) == "number" and ttl > 0 then

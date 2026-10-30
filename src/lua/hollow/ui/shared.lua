@@ -816,19 +816,6 @@ function M.normalize_bar_items(rendered)
   return rendered
 end
 
----@param value any
----@param fallback_text string
----@param style HollowUiNodeStyle|nil
----@return HollowUiSegment
-function M.bar_value_to_segment(value, fallback_text, style)
-  local segments = M.bar_value_to_segments(value, fallback_text, style)
-  if #segments == 1 then
-    return segments[1]
-  end
-
-  return M.style_to_segment(M.segments_plain_text(segments), style)
-end
-
 -- ---------------------------------------------------------------------------
 -- Fuzzy search
 -- ---------------------------------------------------------------------------
@@ -1130,22 +1117,6 @@ function M.normalize_overlay_chrome(value, palette)
     chrome.border_size = surface.border_size or 1
   end
   return next(chrome) and chrome or nil
-end
-
---- Compatibility chrome fields replace whole boxes, unlike style layers.
----@param style? HollowUiSurfacePaint
----@param chrome? HollowUiChrome|boolean
----@param palette HollowUiTheme
----@return HollowUiChrome|nil
-function M.overlay_surface_style(style, chrome, palette)
-  if type(style) ~= "table" then
-    return M.normalize_overlay_chrome(chrome, palette)
-  end
-  local source = util.clone_value(style)
-  for key, value in pairs(type(chrome) == "table" and chrome or {}) do
-    source[key] = util.clone_value(value)
-  end
-  return M.normalize_overlay_chrome(source, palette)
 end
 
 --- The same row paint contract is consumed by overlay and sidebar adapters.

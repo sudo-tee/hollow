@@ -6,7 +6,6 @@ describe("Clay activity", function()
   before_each(function()
     env = harness.boot()
     hollow, ui = env.hollow, env.hollow.ui
-    ui.layout.configure({ backend = "auto" })
     entries, running, dismissed = {}, {}, {}
     hollow.activity.list = function()
       return entries
@@ -67,14 +66,21 @@ describe("Clay activity", function()
 
   it("keeps empty activity idle and ignores timers after close", function()
     local queue, requests = {}, 0
-    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
-    env.host_api.request_redraw = function() requests = requests + 1 end
-    env.host_api.request_layout_refresh = function() error("overlay invalidation must not relayout panes") end
+    env.host_api.defer = function(fn, delay)
+      queue[#queue + 1] = { fn = fn, delay = delay }
+    end
+    env.host_api.request_redraw = function()
+      requests = requests + 1
+    end
+    env.host_api.request_layout_refresh = function()
+      error("overlay invalidation must not relayout panes")
+    end
     local handle = ui.activity.open()
     local first = tree()
     assert.equals(first, tree())
     assert.equals(0, #queue)
-    running[1] = { id = "task:one", kind = "program", state = "working", started_ms = env.recorded.now_ms }
+    running[1] =
+      { id = "task:one", kind = "program", state = "working", started_ms = env.recorded.now_ms }
     hollow.events.emit("activity:changed", {})
     tree()
     assert.equals(1, #queue)
@@ -86,9 +92,14 @@ describe("Clay activity", function()
 
   it("refreshes spinner and elapsed labels only when their timer is due", function()
     local queue = {}
-    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
+    env.host_api.defer = function(fn, delay)
+      queue[#queue + 1] = { fn = fn, delay = delay }
+    end
     running[1] = {
-      id = "task:one", kind = "program", state = "working", app = "Compiler",
+      id = "task:one",
+      kind = "program",
+      state = "working",
+      app = "Compiler",
       started_ms = env.recorded.now_ms,
     }
     local handle = ui.activity.open()
@@ -104,9 +115,14 @@ describe("Clay activity", function()
 
   it("updates elapsed seconds without a spinner or continuous rebuilding", function()
     local queue = {}
-    env.host_api.defer = function(fn, delay) queue[#queue + 1] = { fn = fn, delay = delay } end
+    env.host_api.defer = function(fn, delay)
+      queue[#queue + 1] = { fn = fn, delay = delay }
+    end
     running[1] = {
-      id = "task:one", kind = "program", state = "blocked", app = "Compiler",
+      id = "task:one",
+      kind = "program",
+      state = "blocked",
+      app = "Compiler",
       started_ms = env.recorded.now_ms,
     }
     local handle = ui.activity.open()
@@ -121,17 +137,13 @@ describe("Clay activity", function()
     handle.close()
   end)
 
-  it("defaults to Clay and supports both legacy overrides", function()
+  it("uses Clay and preserves modal ownership on repeated opens", function()
     ui.activity.open()
     assert.is_not_nil(find(":activity:viewport"))
     assert.equals("Activity", find(":dialog").label)
     ui.activity.open() -- existing modal remains authoritative
     ui.close_overlay_widget(require("hollow.state").get().ui.overlay_stack[1])
-    ui.layout.configure({ backend = "legacy" })
     ui.activity.open()
-    assert.is_nil(tree())
-    ui.close_overlay_widget(require("hollow.state").get().ui.overlay_stack[1])
-    ui.activity.open({ layout = "clay" })
     assert.is_not_nil(find(":activity:viewport"))
   end)
 

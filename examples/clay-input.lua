@@ -12,7 +12,6 @@ hollow.config.set({
 })
 
 hollow.ui.input.open({
-  layout = "clay",
   prompt = "Rename workspace (arrows move; Enter confirms; Escape cancels)",
   default = "a-workspace-name-long-enough-to-exercise-horizontal-scrolling-and-caret-reveal",
   width = 65,

@@ -11,7 +11,6 @@
 --- })
 --- ```
 local shared = require("hollow.ui.shared")
-local util = require("hollow.util")
 local ui = _G.hollow.ui
 
 ui.input = ui.input or {}
@@ -36,21 +35,11 @@ function ui.input.open(opts)
   m = ui.modal({
     title = opts.prompt or "Text input",
     theme = base_theme,
-    layout_render = ui.layout.resolve_backend(opts.layout, "legacy") == "clay"
-        and function(theme, _, ctx)
-          return require("hollow.ui.builder.components.layout_dialog")({
-            title = opts.prompt,
-            body = require("hollow.ui.builder.components.layout_input")(input, theme, ctx),
-          }, theme, ctx)
-        end
-      or nil,
-    render = function(theme)
-      return ui.dialog({
+    render = function(theme, _, ctx)
+      return require("hollow.ui.builder.components.layout_dialog")({
         title = opts.prompt,
-        body = {
-          input.render(theme),
-        },
-      }, theme)
+        body = require("hollow.ui.builder.components.layout_input")(input, theme, ctx),
+      }, theme, ctx)
     end,
     width = opts.width,
     height = opts.height,

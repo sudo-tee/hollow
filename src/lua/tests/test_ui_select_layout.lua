@@ -56,7 +56,7 @@ describe("Clay selectable list", function()
   end
 
   it("insets accents without moving select or adapted row content", function()
-    ui.select.open({ layout = "clay", items = { "one", "two" } })
+    ui.select.open({ items = { "one", "two" } })
     local tree = prepare()
     local selected, other
     for index, node in ipairs(tree) do
@@ -80,9 +80,17 @@ describe("Clay selectable list", function()
     local adapter = require("hollow.ui.builder.components.layout_select")
     local theme = require("hollow.ui.shared").palette("select")
     local function adapted(radius, color)
-      return adapter.from_row(ui.row({ ui.text("palette") }, {
-        fill_radius = radius, accent_bar = color,
-      }), "palette:item", "palette", theme, { cell_h = 19 }, function() end)
+      return adapter.from_row(
+        ui.row({ ui.text("palette") }, {
+          fill_radius = radius,
+          accent_bar = color,
+        }),
+        "palette:item",
+        "palette",
+        theme,
+        { cell_h = 19 },
+        function() end
+      )
     end
     local rounded = adapted(4, "#123456")
     assert.equals(2, rounded.children[1].width)
@@ -107,14 +115,13 @@ describe("Clay selectable list", function()
       error("missing dialog")
     end
 
-    ui.select.open({ layout = "clay", items = { "one" }, width = 60 })
+    ui.select.open({ items = { "one" }, width = 60 })
     local shell = dialog()
     assert.same({ left = 13, right = 13, top = 19, bottom = 9 }, shell.padding)
     assert.equals(60, ui._layout_frame.width)
     ui.select.close()
 
     ui.select.open({
-      layout = "clay",
       items = { "one" },
       width = 60,
       chrome = { padding = { left = 3, right = 5, top = 2, bottom = 4 } },
@@ -125,7 +132,7 @@ describe("Clay selectable list", function()
   end)
 
   it("renders a bounded scroll viewport and reveals keyboard selection", function()
-    ui.select.open({ layout = "clay", items = items(1000), width = 60 })
+    ui.select.open({ items = items(1000), width = 60 })
     local tree = prepare()
     assert.is_true(ui._overlay_state()[1].clay)
     assert.is_nil(ui._overlay_state()[1].rows)
@@ -149,7 +156,7 @@ describe("Clay selectable list", function()
   end)
 
   it("fits short lists, reserves divider rows, and leaves the filter unpainted", function()
-    ui.select.open({ layout = "clay", items = { "one" }, max_height = 24 })
+    ui.select.open({ items = { "one" }, max_height = 24 })
     local tree = prepare()
     assert.equals((4 * 19 + 23 + 1.5 * 19) / 19, ui._layout_frame.height)
     local divider_rows, filter_view = 0, nil
@@ -170,13 +177,13 @@ describe("Clay selectable list", function()
       end
     end
     ui.select.close()
-    ui.select.open({ layout = "clay", items = { "one" }, height = 12 })
+    ui.select.open({ items = { "one" }, height = 12 })
     prepare()
     assert.equals(12, ui._layout_frame.height)
   end)
 
   it("uses measured viewport capacity for pages and wheel navigation", function()
-    ui.select.open({ layout = "clay", items = items(50) })
+    ui.select.open({ items = items(50) })
     measure(4)
     ui.dispatch_overlay_key("page_down", 0)
     assert.is_truthy(text():find("5/50", 1, true))
@@ -195,7 +202,7 @@ describe("Clay selectable list", function()
   end)
 
   it("publishes full-list scrollbar ratios and routes namespaced drag events", function()
-    ui.select.open({ layout = "clay", items = items(1000) })
+    ui.select.open({ items = items(1000) })
     measure(4)
     local view = viewport()
     assert.is_string(view.scrollbar_id)
@@ -216,7 +223,7 @@ describe("Clay selectable list", function()
   end)
 
   it("omits scrollbar gutter for lists that fit", function()
-    ui.select.open({ layout = "clay", items = { "one" } })
+    ui.select.open({ items = { "one" } })
     assert.is_nil(viewport().scrollbar_id)
     assert.equals(0, (viewport().padding or {}).right or 0)
   end)
@@ -224,7 +231,6 @@ describe("Clay selectable list", function()
   it("preserves plain ranking, query highlighting and filter caret editing", function()
     local selected
     ui.select.open({
-      layout = "clay",
       items = { "gamer-profile-app", "ost-propagate", "product-details" },
       fuzzy = false,
       actions = { {
@@ -255,7 +261,6 @@ describe("Clay selectable list", function()
   it("renders rich label/detail paint and routes namespaced row clicks", function()
     local chosen
     ui.select.open({
-      layout = "clay",
       items = { { name = "alpha", info = "details" }, { name = "beta", info = "more" } },
       label = function(item)
         return { ui.text(item.name, { fg = "#123456", bold = true }) }
@@ -290,7 +295,6 @@ describe("Clay selectable list", function()
   it("ignores stale row clicks after the filter removed that source entry", function()
     local calls = 0
     ui.select.open({
-      layout = "clay",
       items = { "alpha", "beta" },
       fuzzy = false,
       actions = { {
@@ -309,12 +313,11 @@ describe("Clay selectable list", function()
   it("allows existing button components inside labels without activating the parent row", function()
     local nested, selected
     ui.select.open({
-      layout = "clay",
       items = { "alpha", "beta" },
       label = function(value)
         return {
           ui.text(value),
-          ui.button({
+          ui.action_button({
             id = "inspect",
             text = "Inspect",
             on_click = function(event)
@@ -347,7 +350,6 @@ describe("Clay selectable list", function()
     local values = { "alpha one", "alpha two" }
     local chosen
     ui.select.open({
-      layout = "clay",
       query = "alpha",
       fuzzy = false,
       items = function()
@@ -371,7 +373,6 @@ describe("Clay selectable list", function()
   it("handles empty results, custom action chords and cancellation", function()
     local got, cancelled
     ui.select.open({
-      layout = "clay",
       items = { "alpha" },
       query = "zzz",
       fuzzy = false,
@@ -392,7 +393,6 @@ describe("Clay selectable list", function()
     assert.is_true(cancelled)
     assert.equals(0, #stack)
     ui.select.open({
-      layout = "clay",
       items = { "beta" },
       actions = {
         {
@@ -414,7 +414,6 @@ describe("Clay selectable list", function()
 
   it("degrades extremely fragmented rows instead of exceeding the arena", function()
     ui.select.open({
-      layout = "clay",
       items = items(1000),
       label = function(item)
         local fragments = {}
@@ -431,7 +430,7 @@ describe("Clay selectable list", function()
   end)
 
   it("does not rebuild static snapshots for unchanged viewport measurements", function()
-    ui.select.open({ layout = "clay", items = items(50) })
+    ui.select.open({ items = items(50) })
     measure(4)
     local view = viewport()
     local tree = prepare()
@@ -452,7 +451,6 @@ describe("Clay selectable list", function()
       }
     end
     ui.select.open({
-      layout = "clay",
       items = items(1000),
       height = 28,
       label = rich,
@@ -473,11 +471,8 @@ describe("Clay selectable list", function()
     assert.is_true(styled >= 24 * 2) -- Both label and detail stay rich.
   end)
 
-  it("keeps legacy rendering as default and destroys native callbacks on close", function()
-    ui.select.open({ items = { "legacy" } })
-    assert.is_nil(ui._overlay_state()[1].clay)
-    ui.select.close()
-    ui.select.open({ layout = "clay", items = { "native" } })
+  it("destroys native callbacks on close", function()
+    ui.select.open({ items = { "native" } })
     prepare()
     local surface = stack[1]._layout_surface
     ui.select.close()

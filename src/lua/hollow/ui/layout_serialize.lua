@@ -11,6 +11,7 @@ local shared = require("hollow.ui.shared")
 local tokens = require("hollow.ui.style.tokens")
 local wraps = { words = 0, newlines = 1, none = 2 }
 local alignments = { start = 0, center = 1, ["end"] = 2 }
+local text_alignments = { left = 0, center = 1, right = 2 }
 local EMPTY = {}
 
 local function size(value)
@@ -98,6 +99,11 @@ return function(root, palette, namespace)
       "invalid layout role"
     )
     assert(node.wrap == nil or wraps[node.wrap] ~= nil, "invalid text wrap mode")
+    local text_align = text_alignments[node.text_align] or node.text_align
+    assert(
+      text_align == nil or text_align == 0 or text_align == 1 or text_align == 2,
+      "invalid text alignment"
+    )
     assert(node.full_bleed_x == nil or type(node.full_bleed_x) == "boolean", "invalid full_bleed_x")
     assert(
       node.scrollbar_id == nil
@@ -120,6 +126,7 @@ return function(root, palette, namespace)
       label = node.label,
       list_item = node.role == "listitem" or nil,
       wrap = nonzero(wraps[node.wrap or "words"]),
+      text_align = nonzero(text_align or 0),
       clickable = clickable or nil,
       measure = node.measure == true or nil,
     }
@@ -153,6 +160,15 @@ return function(root, palette, namespace)
       end
       serialized.width = nonzero(size(node.width))
       serialized.height = nonzero(size(node.height))
+      for _, key in ipairs({ "min_width", "max_width", "min_height", "max_height" }) do
+        if node[key] ~= nil then
+          assert(
+            type(node[key]) == "number" and node[key] >= 0 and node[key] < 65536,
+            "invalid layout constraint"
+          )
+          serialized[key] = node[key]
+        end
+      end
       serialized.gap = nonzero(math.min(65535, box.px(node.gap, 0, true)))
       serialized.full_bleed_x = node.full_bleed_x == true or nil
       serialized.bg = paint.bg
@@ -160,8 +176,19 @@ return function(root, palette, namespace)
         serialized.alpha = paint.alpha
       end
       serialized.border = paint.border
-      serialized.border_size =
-        nonzero(math.min(65535, box.px(paint.border_size, paint.border and 1 or 0, true)))
+      local widths = node.border_width or style.border_width
+      if widths then
+        assert(type(widths) == "table", "invalid border widths")
+        serialized.border_width = {}
+        for _, side in ipairs({ "left", "right", "top", "bottom", "between_children" }) do
+          serialized.border_width[side] = math.min(65535, box.px(widths[side], 0, true))
+        end
+      else
+        local width = math.min(65535, box.px(paint.border_size, paint.border and 1 or 0, true))
+        if width > 0 then
+          serialized.border_width = { left = width, right = width, top = width, bottom = width }
+        end
+      end
       serialized.radius = nonzero(box.px(paint.radius, 0))
       serialized.hover_bg = type(style.hover) == "table" and style.hover.bg or nil
       serialized.scroll = node.scroll == true or nil

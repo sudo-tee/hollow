@@ -139,49 +139,47 @@ describe("production Clay pickers", function()
     assert.equals(name.id, find(":select:item:1:name").id)
   end)
 
-  it(
-    "uses identical unstyled Clay accessibility labels without resolving legacy palette",
-    function()
-      local items = {
-        {
-          name = "a very long workspace name to truncate",
-          cwd = "/some/long/path",
-          domain = "remote",
-          is_active = true,
-          program_status_badge = "✓ ",
-        },
-        { name = "other", cwd = "", domain = "local", has_bell = true },
-      }
-      require("hollow.ui.workspace.source").items = function()
-        return items
-      end
-      local open = ui.select.open
-      local opts
-      ui.select.open = function(value)
-        opts = value
-      end
-      local shared = require("hollow.ui.shared")
-      ui.workspace.open_switcher({ layout = "legacy" })
-      local legacy = {}
-      for i, item in ipairs(items) do
-        legacy[i] = shared.nodes_plain_text(opts.label(item))
-      end
-      ui.workspace.open_switcher({ layout = "clay" })
-      local theme = require("hollow.theme")
-      local resolve = theme.resolve_widget
-      local calls = 0
-      theme.resolve_widget = function(...)
-        calls = calls + 1
-        return resolve(...)
-      end
-      for i, item in ipairs(items) do
-        assert.equals(legacy[i], shared.nodes_plain_text(opts.label(item)))
-      end
-      theme.resolve_widget = resolve
-      ui.select.open = open
-      assert.equals(0, calls)
+  it("uses stable unstyled accessibility labels without resolving palette", function()
+    local items = {
+      {
+        name = "a very long workspace name to truncate",
+        cwd = "/some/long/path",
+        domain = "remote",
+        is_active = true,
+        program_status_badge = "✓ ",
+      },
+      { name = "other", cwd = "", domain = "local", has_bell = true },
+    }
+    require("hollow.ui.workspace.source").items = function()
+      return items
     end
-  )
+    local open = ui.select.open
+    local opts
+    ui.select.open = function(value)
+      opts = value
+    end
+    local shared = require("hollow.ui.shared")
+    ui.workspace.open_switcher()
+    local labels = {}
+    for i, item in ipairs(items) do
+      labels[i] = shared.nodes_plain_text(opts.label(item))
+    end
+    assert.is_truthy(labels[1]:find("a very long", 1, true))
+    assert.is_truthy(labels[2]:find("other", 1, true))
+    local theme = require("hollow.theme")
+    local resolve = theme.resolve_widget
+    local calls = 0
+    theme.resolve_widget = function(...)
+      calls = calls + 1
+      return resolve(...)
+    end
+    for i, item in ipairs(items) do
+      assert.equals(labels[i], shared.nodes_plain_text(opts.label(item)))
+    end
+    theme.resolve_widget = resolve
+    ui.select.open = open
+    assert.equals(0, calls)
+  end)
 
   it("preserves custom workspace formatters and rename/create keyboard flows", function()
     workspaces(1)
@@ -207,28 +205,25 @@ describe("production Clay pickers", function()
     assert.is_not_nil(text("New workspace name"))
   end)
 
-  it("honors global fallback, per-call overrides and auto reset", function()
+  it("uses Clay for every production dialog", function()
     workspaces(1)
-    ui.layout.configure({ backend = "legacy" })
     ui.command_palette.open({ entries = {} })
-    assert.is_nil(ui._overlay_state()[1].clay)
+    assert.is_true(ui._overlay_state()[1].clay)
     ui.overlay.clear()
     ui.workspace.open_switcher()
-    assert.is_nil(ui._overlay_state()[1].clay)
-    ui.overlay.clear()
-    ui.command_palette.open({ entries = {}, layout = "clay" })
     assert.is_true(ui._overlay_state()[1].clay)
     ui.overlay.clear()
-    ui.layout.configure({ backend = "clay" })
-    ui.input.open({ layout = "legacy" })
-    assert.is_nil(ui._overlay_state()[1].clay)
+    ui.confirm.open({ prompt = "Confirm" })
+    assert.is_true(ui._overlay_state()[1].clay)
+    ui.overlay.clear()
+    ui.input.open({})
+    assert.is_true(ui._overlay_state()[1].clay)
     ui.overlay.clear()
     ui.select.open({ items = {} })
     assert.is_true(ui._overlay_state()[1].clay)
     ui.overlay.clear()
-    ui.layout.configure({ backend = "auto" })
     ui.select.open({ items = {} })
-    assert.is_nil(ui._overlay_state()[1].clay)
+    assert.is_true(ui._overlay_state()[1].clay)
     ui.overlay.clear()
     ui.command_palette.open({ entries = {} })
     assert.is_true(ui._overlay_state()[1].clay)

@@ -108,8 +108,6 @@ end
 local function open_create_input(opts)
   opts = opts or {}
   local input_opts = hollow.util.clone_value(opts)
-  input_opts.layout =
-    ui.layout.resolve_backend(opts.layout or source.switcher_state().layout, "clay")
   input_opts.prompt = opts.prompt or "New workspace name"
   input_opts.on_confirm = function(value)
     local name = trim_string(value)
@@ -141,8 +139,6 @@ local function open_rename_input(workspace, opts)
   end
 
   local input_opts = hollow.util.clone_value(opts)
-  input_opts.layout =
-    ui.layout.resolve_backend(opts.layout or source.switcher_state().layout, "clay")
   input_opts.prompt = opts.prompt or "Rename workspace"
   input_opts.default = target_name
   input_opts.on_confirm = function(value)
