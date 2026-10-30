@@ -136,11 +136,11 @@ local function layout_format_item(workspace, domain_width, ctx, view)
   local variant = workspace.is_active and "active" or (workspace.is_open and "open" or "known")
   local s = styles(palette, { variant = variant })
   local match = require("hollow.ui.recipes.select")(view.theme).match
-  local cell_w, cell_h = ctx.cell_w or 8, ctx.cell_h or 19
+  local cell_h = ctx.cell_h or 19
   local status_width =
     math.max(2, tonumber(switcher.status_column_width) or DEFAULT_STATUS_COLUMN_WIDTH)
   local name_width = math.max(12, tonumber(switcher.name_column_width) or DEFAULT_NAME_COLUMN_WIDTH)
-  local gap = math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP) * cell_w
+  local gap = tostring(math.max(1, tonumber(switcher.column_gap) or DEFAULT_COLUMN_GAP)) .. "ch"
   local attention = workspace.has_bell or workspace.program_status_attention
   local bell = workspace.program_status_attention_level == "error" and palette.bell_error
     or palette.bell
@@ -168,10 +168,15 @@ local function layout_format_item(workspace, domain_width, ctx, view)
         ui.style(s.status, attention and { fg = bell, bold = true }),
         { wrap = "none" }
       ),
-    }, { width = status_width * cell_w }),
-    c.column({}, { width = gap }),
-    column(util.truncate_end(workspace.name, name_width), s.name, name_width * cell_w, "name"),
-    c.column({}, { width = gap }),
+    }, { width = tostring(status_width) .. "ch" }),
+    c.gap(gap),
+    column(
+      util.truncate_end(workspace.name, name_width),
+      s.name,
+      tostring(name_width) .. "ch",
+      "name"
+    ),
+    c.gap(gap),
   }
   local badge = workspace.program_status_badge or ""
   if badge ~= "" then
