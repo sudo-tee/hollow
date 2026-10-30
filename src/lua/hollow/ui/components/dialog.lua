@@ -1,5 +1,4 @@
 -- Clay-backed composition; behavior stays with the modal and navigation helpers.
-local button_styles = require("hollow.ui.recipes.button")
 local c = require("hollow.ui.components")
 local color = require("hollow.color")
 local variants = { default = true, primary = true, destructive = true }
@@ -15,26 +14,20 @@ return function(opts, theme, ctx)
     }, { __index = theme })
     local buttons = { c.column({}, { width = "grow" }) }
     for index, button in ipairs(opts.footer) do
-      local style = button_styles(palette, {
+      local node = c.button({
+        appearance = "quiet",
+        theme = palette,
         variant = variants[button.kind] and button.kind or "default",
         selected = opts.selected == index,
         hovered = opts.hovered == index,
-      }).dialog
-      style.radius = theme.radius
-      style.hover = {
-        bg = button_styles(palette, {
-          variant = variants[button.kind] and button.kind or "default",
-          selected = opts.selected == index,
-          hovered = true,
-        }).dialog.bg,
-      }
-      buttons[#buttons + 1] = c.column({ c.text(button.text, style, { wrap = "none" }) }, {
         id = button.id,
-        label = button.text,
+        text = button.text,
         on_click = button.on_click,
         padding = { x = cell_w },
-        style = style,
+        style = { radius = theme.radius },
       })
+      node.style.radius = theme.radius
+      buttons[#buttons + 1] = node
     end
     children[#children + 1] = c.column({}, { height = cell_h })
     children[#children + 1] = c.row(buttons, { width = "grow", gap = cell_w * 2 })

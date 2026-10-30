@@ -50,6 +50,44 @@ describe("unified component styling", function()
     end, "hollow.ui: unknown list_row variant typo")
   end)
 
+  it("uses scoped quiet button paint and disables interaction", function()
+    local palette = {
+      fg = "#111111",
+      selected_fg = "#eeeeee",
+      button_emphasis_bg = "#222222",
+      styles = { button = { dialog = { fg = "#abcdef" } } },
+    }
+    local surface = ui.layout.new({
+      theme = palette,
+      render = function()
+        return ui.components.column({
+          ui.components.button({
+            appearance = "quiet",
+            id = "active",
+            text = "Go",
+            selected = true,
+            on_click = function() end,
+          }),
+          ui.components.button({
+            appearance = "quiet",
+            id = "disabled",
+            text = "Stop",
+            disabled = true,
+            on_click = function() end,
+          }),
+        })
+      end,
+    })
+    local nodes = surface:snapshot()
+    assert.equals(5, #nodes)
+    assert.equals("#222222", nodes[2].bg)
+    assert.equals("#222222", nodes[2].hover_bg)
+    assert.equals("#eeeeee", nodes[3].fg)
+    assert.equals("#abcdef", nodes[5].fg)
+    assert.is_nil(nodes[4].clickable)
+    assert.is_nil(nodes[4].hover_bg)
+  end)
+
   it("does not retain disabled overlay callbacks from a previous enabled render", function()
     local clicks, disabled = 0, false
     local widget = ui.overlay.new({

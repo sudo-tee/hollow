@@ -126,6 +126,32 @@ end
 ---@return HollowUiLayoutNode
 function M.button(opts)
   opts = opts or {}
+  if opts.appearance == "quiet" then
+    local theme = opts.theme or props.scope().theme
+    local recipe = require("hollow.ui.recipes.button")
+    local sheet = require("hollow.ui.style.sheet")
+    local style = recipe(theme, opts).dialog
+    local hover = recipe(theme, {
+      variant = opts.variant,
+      size = opts.size,
+      selected = opts.selected,
+      hovered = true,
+    }).dialog
+    style.hover = { bg = hover.bg }
+    style = ui.styled(theme, style, opts.style)
+    if opts.disabled then
+      style.hover = nil
+    end
+    local root = {}
+    for key, value in pairs(opts) do
+      root[key] = value
+    end
+    root.label = opts.label or opts.text
+    root.style = style
+    root.on_click = not opts.disabled and opts.on_click or nil
+    return M.column({ M.text(opts.text, sheet.merge(style), { wrap = "none" }) }, root)
+  end
+  assert(opts.appearance == nil or opts.appearance == "solid", "unknown button appearance")
   local span = ui.button(opts)
   return M.column({ M.text(span.text, { fg = span.style.fg, bold = span.style.bold }) }, {
     id = opts.id,
