@@ -148,6 +148,22 @@ finished. These are separate runs, not controlled speedup thresholds:
 | Palette | Clay | 0.0023 | 2.7940 | 2.3117 | 2.4830 |
 | Workspace | Clay | 5.0531 | 4.2549 | 4.4573 | 4.7159 |
 
+### After Clay-only migration
+
+2026-10-30, same host, 40 steps/batch. Removing the legacy backend added
+display-width measurement to workspace and palette formatting, raising workspace
+steps to about 7 ms. `util.display_width` and `truncate_*` now skip grapheme
+tables for printable ASCII (one cell per byte, as in `text_width.c`):
+
+| Picker | Idle | Selection/page | Filter | Resize |
+| --- | ---: | ---: | ---: | ---: |
+| Palette | 0.0012 | 1.6490 | 1.8620 | 1.7221 |
+| Workspace | 0.0016 | 3.1340 | 3.4382 | 3.0418 |
+
+In the native runtime, the fast path also skips one `host_api.text_graphemes`
+call and table per label, so the gain there is likely larger than this harness
+fallback shows.
+
 The builtin Clay formatter generates cheap plain
 accessibility labels for the full list and styles only native visible/overscan
 columns.
@@ -221,6 +237,13 @@ Lifecycle batch deltas, in order, KiB:
 Several later lifecycle batches still grow; longer isolated runs and retained
 object analysis are needed to distinguish ongoing retention from warmup or caches.
 
+2026-10-30, after the Clay-only migration and ASCII width fast path: uncollected
+per step fell to 759/714/693 KiB (palette selection/filter/resize) and
+1112/1198/1196 KiB (workspace). Seven-batch lifecycle medians were +16.0 KiB
+(palette) and +11.5 KiB (workspace), but isolated 15-batch runs with JIT on and
+off stayed flat (within ±4 KiB per batch) and released every tracked widget,
+palette, chrome and surface, so the growth is warmup, not retention.
+
 ### Isolated lifecycle diagnosis
 
 Run one combination per fresh process, with the same harness dependencies:
@@ -266,3 +289,7 @@ context. This excludes adapter structures, input nodes/text, allocator overhead,
 Lua heap, font atlas and GPU memory. Timings use monotonic wall time and exclude
 Lua snapshots, native tree parsing/copying, glyph work, drawing and frame
 scheduling. These numbers cannot establish end-to-end rendering speed.
+
+On 2026-10-30 the same benchmark reported 27.26/50.88/27.65 µs and a
+1,668,160-byte arena. Each open overlay and each visible native bar, sidebar
+or debug surface owns one such context; overlay contexts are freed on close.

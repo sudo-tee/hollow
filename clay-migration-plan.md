@@ -292,7 +292,8 @@ Tests and docs shrink on top of this.
 | 6.4 modal sizing           | Kept `preferred_height` (see Findings)                                                                                     |
 | 6.5 / 6.6                  | Done (`text_width.zig`/`.c`, Lua `util.display_width`)                                                                     |
 
-Manual visual and mouse verification is still outstanding for everything above.
+Manual visual and mouse verification done by the operator (2026-10-30). Native
+`make test` (Nix invocation below) and `make test-lua` pass.
 
 ## Findings
 
@@ -422,13 +423,3 @@ ARGS="-Ddynamic-linker=$(dirname "$(cc -print-file-name=libc.so.6)")/ld-linux-x8
   the laid-out width, which covers both `max_width` and shrinking grow tabs.
   Serialized Lua tab state now holds the full text.
 
-  Every item in the plan is now done or set aside on purpose. Here's what's left, in the order I'd do it:
-
-1. **Visual and mouse check (most important).** Nothing in the migration has been checked on screen yet, and the plan's status table still lists it as outstanding. The tool I'd use for screenshots, `hollow-cli`, timed out on me. If you can run Hollow and either fix that tool or send screenshots, I'd check:
-   - The select, activity, mux navigator and confirm/input dialogs, including the new divider lines.
-   - Tab truncation when space is tight.
-   - Wide characters and emoji in labels.
-   - Clicking and hovering list rows, and scrolling.
-2. **4.4, a small first step:** let Clay handle mouse-wheel scrolling in the activity details view. I'd mark that one container, send its wheel input to Clay instead of Lua, and remove the Lua scroll offset there. The long lists keep their current wheel behaviour, where the wheel moves the selection. If that works, apply it to the REPL output next.
-3. **4.3, overlay caches (optional, bigger):** this is only worth doing if we keep a separate Clay layout per overlay. It would let us drop the separate stored copies of overlay geometry used for clicks, scrolling and accessibility. It's the most code removed, but also the riskiest. I'd do it only after step 1, and probably only after 4.4.
-4. **Cleanup:** remove  `clay-migration-plan.md` once its findings are moved into  `docs/clay-layout.md`, or keep it as a record.

@@ -389,7 +389,17 @@ function M.text_graphemes(value)
   return clusters
 end
 
+-- Printable ASCII is one cell per byte, matching the native fast path in
+-- text_width.c, so skip building cluster tables for most UI labels.
+local function printable_ascii(value)
+  return not value:find("[^\32-\126]")
+end
+
 function M.display_width(value)
+  value = tostring(value or "")
+  if printable_ascii(value) then
+    return #value
+  end
   local width = 0
   for _, cluster in ipairs(M.text_graphemes(value)) do
     width = width + cluster.width
@@ -423,6 +433,17 @@ local function truncate(value, width, from_start)
   if width <= 0 then
     return ""
   end
+  if printable_ascii(value) then
+    if #value <= width then
+      return value
+    end
+    local budget = width <= 3 and width or width - 3
+    local text = from_start and value:sub(#value - budget + 1) or value:sub(1, budget)
+    if width <= 3 then
+      return text
+    end
+    return from_start and ("..." .. text) or (text .. "...")
+  end
   local clusters = M.text_graphemes(value)
   local total = 0
   for _, cluster in ipairs(clusters) do
@@ -437,13 +458,17 @@ local function truncate(value, width, from_start)
     first = last + 1
     for index = last, 1, -1 do
       local cluster = clusters[index]
-      if used + cluster.width > budget then break end
+      if used + cluster.width > budget then
+        break
+      end
       used, first = used + cluster.width, index
     end
   else
     last = 0
     for index, cluster in ipairs(clusters) do
-      if used + cluster.width > budget then break end
+      if used + cluster.width > budget then
+        break
+      end
       used, last = used + cluster.width, index
     end
   end
@@ -452,7 +477,9 @@ local function truncate(value, width, from_start)
     result[#result + 1] = clusters[index].text
   end
   local text = table.concat(result)
-  if width <= 3 then return text end
+  if width <= 3 then
+    return text
+  end
   return from_start and ("..." .. text) or (text .. "...")
 end
 
