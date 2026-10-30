@@ -1191,6 +1191,7 @@ pub const App = struct {
             .request_redraw = lua_callbacks.luaRequestRedrawCallback,
             .copy_selection = lua_callbacks.luaCopySelectionCallback,
             .clipboard_write = lua_callbacks.luaClipboardWriteCallback,
+            .clipboard_read = lua_callbacks.luaClipboardReadCallback,
             .paste_clipboard = lua_callbacks.luaPasteClipboardCallback,
             .scroll_active = lua_callbacks.luaScrollActiveCallback,
             .scroll_active_page = lua_callbacks.luaScrollActivePageCallback,
@@ -1595,6 +1596,10 @@ pub const App = struct {
             return;
         }
         try mux_ops.sendPaste(self, text);
+    }
+
+    pub fn readClipboard(_: *App) []const u8 {
+        return std.mem.span(c.sapp_get_clipboard_string());
     }
 
     pub fn cellPointInPane(self: *App, pane: *Pane, x: f32, y: f32) ?selection.CellPoint {

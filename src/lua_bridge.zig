@@ -198,6 +198,9 @@ const embedded_lua_modules = [_]LuaModule{
     .{ .name = "hollow.ui.widgets.activity", .source = @embedFile("lua/hollow/ui/widgets/activity.lua") },
     .{ .name = "hollow.ui.widgets.confirm", .source = @embedFile("lua/hollow/ui/widgets/confirm.lua") },
     .{ .name = "hollow.ui.widgets.palette", .source = @embedFile("lua/hollow/ui/widgets/palette.lua") },
+    .{ .name = "hollow.ui.widgets.lua_repl", .source = @embedFile("lua/hollow/ui/widgets/lua_repl.lua") },
+    .{ .name = "hollow.ui.repl_tools", .source = @embedFile("lua/hollow/ui/repl_tools.lua") },
+    .{ .name = "hollow.ui.repl_signatures", .source = @embedFile("lua/hollow/ui/repl_signatures.lua") },
     .{ .name = "hollow.ui.widgets.mux_navigator", .source = @embedFile("lua/hollow/ui/widgets/mux_navigator.lua") },
     .{ .name = "hollow.ui.widgets.workspace", .source = @embedFile("lua/hollow/ui/widgets/workspace.lua") },
     .{ .name = "hollow.ui.workspace.actions", .source = @embedFile("lua/hollow/ui/workspace/actions.lua") },
@@ -307,6 +310,7 @@ pub const AppCallbacks = struct {
     request_redraw: ?*const fn (app: *anyopaque) void = null,
     copy_selection: *const fn (app: *anyopaque) void,
     clipboard_write: ?*const fn (app: *anyopaque, text: []const u8) bool = null,
+    clipboard_read: ?*const fn (app: *anyopaque) []const u8 = null,
     paste_clipboard: *const fn (app: *anyopaque) void,
     scroll_active: *const fn (app: *anyopaque, delta: isize) void,
     scroll_active_page: *const fn (app: *anyopaque, pages: isize) void,
@@ -2481,6 +2485,10 @@ pub const Runtime = struct {
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_clipboard_write, 1);
         api.set_field(self.state, -2, "clipboard_write");
+
+        api.push_light_userdata(self.state, self.context);
+        api.push_cclosure(self.state, l_clipboard_read, 1);
+        api.set_field(self.state, -2, "clipboard_read");
 
         api.push_light_userdata(self.state, self.context);
         api.push_cclosure(self.state, l_paste_clipboard, 1);
@@ -7016,6 +7024,16 @@ fn l_paste_clipboard(state: *State) callconv(.c) c_int {
     return 0;
 }
 
+fn l_clipboard_read(state: *State) callconv(.c) c_int {
+    const ctx = bridgeContext(state);
+    const text = if (ctx.app_callbacks) |cbs|
+        if (cbs.clipboard_read) |read| read(cbs.app) else ""
+    else
+        "";
+    ctx.api.push_lstring(state, text.ptr, text.len);
+    return 1;
+}
+
 fn l_scroll_active(state: *State) callconv(.c) c_int {
     const ctx = bridgeContext(state);
     const api = ctx.api;
@@ -7801,6 +7819,7 @@ test "clipboard bridge rejects writes without application callbacks" {
         \\assert(type(host_api.clipboard_write) == "function")
         \\assert(host_api.clipboard_write("hello\nworld") == false)
         \\assert(host_api.clipboard_write({}) == false)
+        \\assert(host_api.clipboard_read() == "")
     );
 }
 

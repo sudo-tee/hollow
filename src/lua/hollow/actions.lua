@@ -906,6 +906,14 @@ function M.setup(hollow, host_api)
     category = "general",
   })
 
+  register(hollow, "lua_repl", {
+    run = function()
+      return hollow.ui.lua_repl.open()
+    end,
+    desc = "Open Lua REPL (live runtime)",
+    category = "debug",
+  })
+
   register(hollow, "toggle_layout_inspector", {
     run = function()
       hollow.ui.layout.debug(not hollow.ui._layout_debug)

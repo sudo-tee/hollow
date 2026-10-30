@@ -2056,6 +2056,21 @@ function command_palette.open(opts) end
 
 function command_palette.close() end
 
+---@class HollowUiLuaReplOptions
+---@field width? integer Width in cells (default 80).
+---@field height? integer Fixed height in cells; omitted for automatic content sizing.
+---@field theme? HollowUiTheme
+
+---@class HollowUiLuaReplNamespace
+local lua_repl = {}
+
+---Open the Clay console in the live Lua runtime. Not sandboxed.
+---@param opts? HollowUiLuaReplOptions
+---@return HollowUiModalHandle? handle Nil if another modal is active.
+function lua_repl.open(opts) end
+
+function lua_repl.close() end
+
 ---@class HollowUiMuxNavigatorOptions
 ---@field layout? 'legacy'|'clay' Defaults to Clay; explicit choice overrides ui.layout.configure.
 ---@field query? string
@@ -2489,6 +2504,7 @@ ui.overlay = overlay
 ui.notify = notify
 ui.input = input
 ui.command_palette = command_palette
+ui.lua_repl = lua_repl
 ui.mux_navigator = mux_navigator
 ---@type HollowUiActivityNamespace
 ui.activity = {}
